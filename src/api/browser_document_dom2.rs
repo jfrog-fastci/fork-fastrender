@@ -79,8 +79,10 @@ impl BrowserDocumentDom2 {
     // `BrowserDocument::new` for details).
     let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
     let dom = if deadline_enabled {
-      let deadline =
-        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let deadline = crate::render_control::RenderDeadline::new(
+        options.timeout,
+        options.cancel_callback.clone(),
+      );
       let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
       renderer.parse_html(html)?
     } else {
@@ -294,8 +296,10 @@ impl BrowserDocumentDom2 {
   pub fn reset_with_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
     let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
     let dom = if deadline_enabled {
-      let deadline =
-        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let deadline = crate::render_control::RenderDeadline::new(
+        options.timeout,
+        options.cancel_callback.clone(),
+      );
       let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
       self.renderer.parse_html(html)?
     } else {
@@ -522,8 +526,10 @@ impl BrowserDocumentDom2 {
           .expect("prepared exists when can_incremental_relayout=true");
         match self.incremental_relayout_for_text_changes(&mut prepared) {
           Ok(true) => {
-            self.invalidation_counters.incremental_relayouts =
-              self.invalidation_counters.incremental_relayouts.saturating_add(1);
+            self.invalidation_counters.incremental_relayouts = self
+              .invalidation_counters
+              .incremental_relayouts
+              .saturating_add(1);
             // Incremental relayout produces fresh cached layout artifacts without taking a full
             // renderer-DOM snapshot, so we still need to record that we've now "seen" the live DOM
             // mutation generation. Without this, generation-based dirty detection would force an
@@ -629,11 +635,14 @@ impl BrowserDocumentDom2 {
     // JS + render), avoid installing a fresh deadline here. A fresh deadline would reset the start
     // time and effectively grant extra time for repaint.
     let _deadline_guard = if let Some(deadline) = deadline {
-      Some(crate::render_control::DeadlineGuard::install(Some(deadline)))
+      Some(crate::render_control::DeadlineGuard::install(Some(
+        deadline,
+      )))
     } else if crate::render_control::active_deadline().is_some() {
       None
     } else {
-      let deadline_enabled = self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+      let deadline_enabled =
+        self.options.timeout.is_some() || self.options.cancel_callback.is_some();
       deadline_enabled.then(|| {
         let options_deadline = crate::render_control::RenderDeadline::new(
           self.options.timeout,
@@ -646,9 +655,11 @@ impl BrowserDocumentDom2 {
     // relying on deep paint loops to periodically poll deadlines.
     crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
 
-    let scroll_state = ScrollState::from_parts(
+    let scroll_state = ScrollState::from_parts_with_deltas(
       Point::new(self.options.scroll_x, self.options.scroll_y),
       self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
     );
     let frame = prepared.paint_with_options_frame_with_animation_state_store(
       PreparedPaintOptions {
@@ -666,6 +677,8 @@ impl BrowserDocumentDom2 {
     self.options.scroll_x = frame.scroll_state.viewport.x;
     self.options.scroll_y = frame.scroll_state.viewport.y;
     self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
+    self.options.scroll_delta = frame.scroll_state.viewport_delta;
+    self.options.element_scroll_deltas = frame.scroll_state.elements_delta.clone();
 
     // A successful paint always satisfies any outstanding paint invalidation, but must not clear
     // pending style/layout dirtiness.
@@ -732,7 +745,13 @@ impl BrowserDocumentDom2 {
         ));
         let (prev_self, prev_image, prev_layout_image, prev_font) =
           renderer.push_resource_context(context);
-        let result = prepare_dom_inner(renderer, renderer_dom_ref, options.clone(), trace_handle, None);
+        let result = prepare_dom_inner(
+          renderer,
+          renderer_dom_ref,
+          options.clone(),
+          trace_handle,
+          None,
+        );
         renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
         drop(_root_span);
         trace.finalize(result)
@@ -824,13 +843,18 @@ impl BrowserDocumentDom2 {
     let parent_node = self.dom.node(parent);
     match &parent_node.kind {
       crate::dom2::NodeKind::Element {
-        tag_name, namespace, ..
+        tag_name,
+        namespace,
+        ..
       } => namespace.is_empty() && tag_name.eq_ignore_ascii_case("style"),
       _ => false,
     }
   }
 
-  fn incremental_relayout_for_text_changes(&mut self, prepared: &mut PreparedDocument) -> Result<bool> {
+  fn incremental_relayout_for_text_changes(
+    &mut self,
+    prepared: &mut PreparedDocument,
+  ) -> Result<bool> {
     let Some(mapping) = self.last_dom_mapping.as_ref() else {
       // Missing mapping implies we can't reliably map dom2 nodes to box-tree styled ids.
       return Ok(false);
@@ -867,13 +891,14 @@ impl BrowserDocumentDom2 {
       let trace_handle = trace.handle();
       let _root_span = trace_handle.span("browser_document_dom2_incremental_relayout", "pipeline");
 
-      let shared_diagnostics = self
-        .renderer
-        .diagnostics
-        .as_ref()
-        .map(|diag| super::SharedRenderDiagnostics {
-          inner: std::sync::Arc::clone(diag),
-        });
+      let shared_diagnostics =
+        self
+          .renderer
+          .diagnostics
+          .as_ref()
+          .map(|diag| super::SharedRenderDiagnostics {
+            inner: std::sync::Arc::clone(diag),
+          });
       let context = Some(self.renderer.build_resource_context(
         self.renderer.document_url_hint(),
         shared_diagnostics,
@@ -883,8 +908,10 @@ impl BrowserDocumentDom2 {
         self.renderer.push_resource_context(context);
 
       let result = (|| -> Result<()> {
-        let deadline =
-          crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+        let deadline = crate::render_control::RenderDeadline::new(
+          options.timeout,
+          options.cancel_callback.clone(),
+        );
         let _deadline_guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
         crate::render_control::check_active(RenderStage::Layout).map_err(Error::Render)?;
 
@@ -1176,7 +1203,9 @@ mod tests {
 
     // Register with the vm-js DOM source registry and ensure it is cleaned up across resets.
     let dom_source_id = doc.ensure_dom_source_registered();
-    assert!(crate::js::window_realm::is_dom_source_registered(dom_source_id));
+    assert!(crate::js::window_realm::is_dom_source_registered(
+      dom_source_id
+    ));
 
     let before_reset = doc.dom() as *const crate::dom2::Document;
     doc.reset_with_dom(
@@ -1233,7 +1262,8 @@ mod tests {
       </style>
       <div id="box"></div>
     "#;
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
 
     let clock = Arc::new(crate::js::clock::VirtualClock::new());
     doc.set_animation_clock(clock.clone());
@@ -1297,7 +1327,8 @@ mod tests {
       </html>
     "#;
     let renderer = renderer_for_tests();
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(2, 2))?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(2, 2))?;
 
     let clock = Arc::new(crate::js::clock::VirtualClock::new());
     doc.set_animation_clock(clock.clone());
@@ -1354,12 +1385,15 @@ mod tests {
     .expect("document");
 
     doc.render_frame().expect("render");
-    assert!(doc.last_dom_mapping().is_some(), "expected dom2↔renderer mapping");
+    assert!(
+      doc.last_dom_mapping().is_some(),
+      "expected dom2↔renderer mapping"
+    );
 
     let prepared = doc.prepared.as_ref().expect("prepared layout");
     let ids = crate::dom::enumerate_dom_ids(prepared.dom());
-    let target =
-      find_renderer_element_by_id(prepared.dom(), "target").expect("target element in renderer DOM");
+    let target = find_renderer_element_by_id(prepared.dom(), "target")
+      .expect("target element in renderer DOM");
     let preorder_id = *ids
       .get(&(target as *const crate::dom::DomNode))
       .expect("renderer preorder id for target");
@@ -1397,8 +1431,8 @@ mod tests {
     doc.render_frame().expect("render");
     let prepared = doc.prepared.as_ref().expect("prepared layout");
     let ids = crate::dom::enumerate_dom_ids(prepared.dom());
-    let after = find_renderer_element_by_id(prepared.dom(), "after")
-      .expect("after element in renderer DOM");
+    let after =
+      find_renderer_element_by_id(prepared.dom(), "after").expect("after element in renderer DOM");
     let preorder_id = *ids
       .get(&(after as *const crate::dom::DomNode))
       .expect("renderer preorder id for after element");

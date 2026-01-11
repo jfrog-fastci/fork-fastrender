@@ -2,8 +2,8 @@ use fastrender::api::{FastRender, RenderOptions};
 use fastrender::scroll::{ScrollBounds, ScrollChainState};
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
-use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::{Point, Size};
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
@@ -79,6 +79,7 @@ fn container_scroll_state_scrollable_bottom_tracks_element_scroll_offset() {
         overflow-y: auto;
         overflow-x: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { height: 200px; }
       #target { color: rgb(0, 0, 255); }
@@ -135,6 +136,7 @@ fn container_scroll_state_scrollable_top_tracks_element_scroll_offset() {
         overflow-y: auto;
         overflow-x: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { height: 200px; }
       #target { color: rgb(0, 0, 255); }
@@ -191,6 +193,7 @@ fn container_scroll_state_scrollable_right_tracks_element_scroll_offset() {
         overflow-x: auto;
         overflow-y: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { width: 200px; height: 1px; }
       #target { color: rgb(0, 0, 255); }
@@ -247,6 +250,7 @@ fn container_scroll_state_scrollable_left_tracks_element_scroll_offset() {
         overflow-x: auto;
         overflow-y: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { width: 200px; height: 1px; }
       #target { color: rgb(0, 0, 255); }
@@ -303,6 +307,7 @@ fn container_scroll_state_scrollable_x_matches_horizontal_scroll_containers() {
         overflow-x: auto;
         overflow-y: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { width: 200px; height: 1px; }
       #target { color: rgb(0, 0, 255); }
@@ -339,6 +344,7 @@ fn container_scroll_state_scrollable_none_matches_non_scrollable_containers() {
         overflow-y: auto;
         overflow-x: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #target { color: rgb(0, 0, 255); }
       @container scroller scroll-state(scrollable: none) {
@@ -374,6 +380,7 @@ fn container_scroll_state_scrollable_inline_start_respects_rtl_direction() {
         overflow-y: hidden;
         direction: rtl;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { width: 200px; height: 1px; }
       #target { color: rgb(0, 0, 255); }
@@ -440,6 +447,7 @@ fn container_scroll_state_scrollable_inline_end_respects_rtl_direction() {
         overflow-y: hidden;
         direction: rtl;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { width: 200px; height: 1px; }
       #target { color: rgb(0, 0, 255); }
@@ -505,6 +513,7 @@ fn container_scroll_state_scrollable_boolean_matches_even_at_scroll_end() {
         overflow-y: auto;
         overflow-x: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { height: 200px; }
       #target { color: rgb(0, 0, 255); }
@@ -560,6 +569,7 @@ fn container_scroll_state_scrollable_block_end_tracks_element_scroll_offset() {
         overflow-y: auto;
         overflow-x: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { height: 200px; }
       #target { color: rgb(0, 0, 255); }
@@ -615,6 +625,7 @@ fn container_scroll_state_scrollable_inline_keyword_matches_horizontal_scroll_co
         overflow-x: auto;
         overflow-y: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { width: 200px; height: 1px; }
       #target { color: rgb(0, 0, 255); }
@@ -651,6 +662,7 @@ fn container_scroll_state_scrollable_block_keyword_matches_vertical_scroll_conta
         overflow-y: auto;
         overflow-x: hidden;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { height: 200px; }
       #target { color: rgb(0, 0, 255); }
@@ -683,6 +695,7 @@ fn container_scroll_state_scrollable_top_tracks_viewport_scroll_offset() {
     <style>
       html {
         container-name: viewport;
+        container-type: scroll-state;
       }
       html, body { margin: 0; }
       #spacer { height: 2000px; }
@@ -730,6 +743,7 @@ fn container_scroll_state_stuck_top_tracks_viewport_scroll_offset() {
         position: sticky;
         top: 0;
         container-name: sticky;
+        container-type: scroll-state;
       }
       #target { color: rgb(0, 0, 255); }
       @container sticky scroll-state(stuck: top) {
@@ -766,7 +780,8 @@ fn container_scroll_state_stuck_top_tracks_viewport_scroll_offset() {
 }
 
 #[test]
-fn container_scroll_state_scrollable_inline_start_in_vertical_writing_mode_respects_rtl_direction() {
+fn container_scroll_state_scrollable_inline_start_in_vertical_writing_mode_respects_rtl_direction()
+{
   let html = r#"
     <style>
       #scroller {
@@ -777,6 +792,7 @@ fn container_scroll_state_scrollable_inline_start_in_vertical_writing_mode_respe
         writing-mode: vertical-rl;
         direction: rtl;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { height: 200px; }
       #target { color: rgb(0, 0, 255); }
@@ -832,7 +848,8 @@ fn container_scroll_state_scrollable_inline_start_in_vertical_writing_mode_respe
 }
 
 #[test]
-fn container_scroll_state_scrollable_block_end_in_vertical_writing_mode_tracks_horizontal_scroll_offset() {
+fn container_scroll_state_scrollable_block_end_in_vertical_writing_mode_tracks_horizontal_scroll_offset(
+) {
   let html = r#"
     <style>
       #scroller {
@@ -842,6 +859,7 @@ fn container_scroll_state_scrollable_block_end_in_vertical_writing_mode_tracks_h
         overflow-y: hidden;
         writing-mode: vertical-rl;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { width: 200px; height: 1px; }
       #target { color: rgb(0, 0, 255); }
@@ -897,7 +915,8 @@ fn container_scroll_state_scrollable_block_end_in_vertical_writing_mode_tracks_h
 }
 
 #[test]
-fn container_scroll_state_scrollable_inline_keyword_matches_vertical_scroll_containers_in_vertical_writing_mode() {
+fn container_scroll_state_scrollable_inline_keyword_matches_vertical_scroll_containers_in_vertical_writing_mode(
+) {
   let html = r#"
     <style>
       #scroller {
@@ -907,6 +926,7 @@ fn container_scroll_state_scrollable_inline_keyword_matches_vertical_scroll_cont
         overflow-x: hidden;
         writing-mode: vertical-rl;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { height: 200px; }
       #target { color: rgb(0, 0, 255); }
@@ -934,7 +954,8 @@ fn container_scroll_state_scrollable_inline_keyword_matches_vertical_scroll_cont
 }
 
 #[test]
-fn container_scroll_state_scrollable_block_keyword_matches_horizontal_scroll_containers_in_vertical_writing_mode() {
+fn container_scroll_state_scrollable_block_keyword_matches_horizontal_scroll_containers_in_vertical_writing_mode(
+) {
   let html = r#"
     <style>
       #scroller {
@@ -944,6 +965,7 @@ fn container_scroll_state_scrollable_block_keyword_matches_horizontal_scroll_con
         overflow-y: hidden;
         writing-mode: vertical-rl;
         container-name: scroller;
+        container-type: scroll-state;
       }
       #spacer { width: 200px; height: 1px; }
       #target { color: rgb(0, 0, 255); }
@@ -967,5 +989,181 @@ fn container_scroll_state_scrollable_block_keyword_matches_horizontal_scroll_con
     target.styles.color,
     Rgba::rgb(255, 0, 0),
     "expected scrollable: block to match for horizontal scrollers in vertical writing mode"
+  );
+}
+
+#[test]
+fn container_scroll_state_scrolled_bottom_tracks_element_scroll_delta() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        container-name: scroller;
+        container-type: scroll-state;
+      }
+      #spacer { height: 200px; }
+      #target { color: rgb(0, 0, 0); }
+      @container scroller scroll-state(scrolled: none) {
+        #target { color: rgb(0, 0, 255); }
+      }
+      @container scroller scroll-state(scrolled: bottom) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared_none = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare");
+  let scroller_box_id =
+    box_id_by_element_id(&prepared_none.box_tree().root, "scroller").expect("scroller box id");
+
+  let target_none = find_by_id(prepared_none.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_none.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scrolled: none to match when no scroll delta is provided"
+  );
+
+  let prepared_scrolled = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll_delta(scroller_box_id, 0.0, 1.0),
+    )
+    .expect("prepare scrolled");
+  let target_scrolled =
+    find_by_id(prepared_scrolled.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_scrolled.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrolled: bottom to match for a positive Y delta"
+  );
+}
+
+#[test]
+fn container_scroll_state_scrolled_bottom_tracks_viewport_scroll_delta() {
+  let html = r#"
+    <style>
+      html { container-name: viewport; container-type: scroll-state; }
+      html, body { margin: 0; }
+      #spacer { height: 2000px; }
+      #target { color: rgb(0, 0, 0); }
+      @container viewport scroll-state(scrolled: none) {
+        #target { color: rgb(0, 0, 255); }
+      }
+      @container viewport scroll-state(scrolled: bottom) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="spacer"></div>
+    <div id="target">hello</div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared_none = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare none");
+  let target_none = find_by_id(prepared_none.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_none.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scrolled: none to match when no viewport delta is provided"
+  );
+
+  let prepared_scrolled = renderer
+    .prepare_html(html, base_options.clone().with_scroll_delta(0.0, 1.0))
+    .expect("prepare scrolled");
+  let target_scrolled =
+    find_by_id(prepared_scrolled.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_scrolled.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrolled: bottom to match for a positive viewport Y delta"
+  );
+}
+
+#[test]
+fn container_scroll_state_snapped_x_matches_snapped_scroll_snap_target() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 100px;
+        height: 40px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        display: flex;
+        scroll-snap-type: x mandatory;
+      }
+      .item {
+        flex: 0 0 100px;
+        scroll-snap-align: start;
+      }
+      #b { container-name: target; container-type: scroll-state; }
+      #marker { color: rgb(0, 0, 255); }
+      @container target scroll-state(snapped: x) {
+        #marker { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="a" class="item"></div>
+      <div id="b" class="item"><div id="marker">hello</div></div>
+      <div id="c" class="item"></div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(100, 40);
+
+  let prepared = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare");
+  let scroller_box_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+
+  // Scroll near item #b (at x=100). Mandatory snap should snap to #b.
+  let prepared_snapped = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, 60.0, 0.0),
+    )
+    .expect("prepare snapped");
+  let marker_snapped = find_by_id(prepared_snapped.styled_tree(), "marker").expect("marker");
+  assert_eq!(
+    marker_snapped.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected snapped: x to match for the snapped target"
+  );
+
+  // Scroll near item #a (at x=0); #b should no longer be snapped.
+  let prepared_not_snapped = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, 10.0, 0.0),
+    )
+    .expect("prepare not snapped");
+  let marker_not_snapped =
+    find_by_id(prepared_not_snapped.styled_tree(), "marker").expect("marker");
+  assert_eq!(
+    marker_not_snapped.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected snapped: x to be false when a different snap target is active"
   );
 }

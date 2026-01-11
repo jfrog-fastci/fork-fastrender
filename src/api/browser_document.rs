@@ -59,8 +59,10 @@ impl BrowserDocument {
     // large HTML parses (e.g. browser UI `about:` pages) via `RenderOptions::{timeout,cancel_callback}`.
     let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
     let dom = if deadline_enabled {
-      let deadline =
-        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let deadline = crate::render_control::RenderDeadline::new(
+        options.timeout,
+        options.cancel_callback.clone(),
+      );
       let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
       renderer.parse_html(html)?
     } else {
@@ -254,7 +256,9 @@ impl BrowserDocument {
     if sanitized_document_url.is_empty() {
       self.renderer.clear_document_url();
     } else {
-      self.renderer.set_document_url(sanitized_document_url.to_string());
+      self
+        .renderer
+        .set_document_url(sanitized_document_url.to_string());
     }
 
     // Like `BrowserDocument::new`/`reset_with_html`, install a scoped deadline so callers can
@@ -264,8 +268,10 @@ impl BrowserDocument {
     // this API and may need to abort a large parse when a navigation is superseded.
     let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
     let dom_result = if deadline_enabled {
-      let deadline =
-        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let deadline = crate::render_control::RenderDeadline::new(
+        options.timeout,
+        options.cancel_callback.clone(),
+      );
       let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
       self.renderer.parse_html(html)
     } else {
@@ -377,8 +383,10 @@ impl BrowserDocument {
     // integrations that may cancel a navigation mid-way and immediately enqueue a new one.
     let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
     let dom = if deadline_enabled {
-      let deadline =
-        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let deadline = crate::render_control::RenderDeadline::new(
+        options.timeout,
+        options.cancel_callback.clone(),
+      );
       let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
       self.renderer.parse_html(html)?
     } else {
@@ -424,7 +432,8 @@ impl BrowserDocument {
 
     // Update our stable document URL hint (used for origin/referrer semantics) and the renderer's
     // navigation URL hints for relative URL resolution.
-    self.document_url = (!super::trim_ascii_whitespace(&committed_url).is_empty()).then_some(committed_url.clone());
+    self.document_url =
+      (!super::trim_ascii_whitespace(&committed_url).is_empty()).then_some(committed_url.clone());
     self.set_navigation_urls(Some(committed_url.clone()), Some(base_url.clone()));
 
     // Install the prepared layout result and mark paint dirty so the next render call produces a
@@ -449,16 +458,17 @@ impl BrowserDocument {
     // URL hints so the existing document continues to have consistent origin/base semantics.
     let prev_document_url = self.renderer.document_url.clone();
     let prev_base_url = self.renderer.base_url.clone();
-    let report = match self
-      .renderer
-      .prepare_http_request(url, method, headers, body, options.clone())
-    {
-      Ok(report) => report,
-      Err(err) => {
-        self.set_navigation_urls(prev_document_url, prev_base_url);
-        return Err(err);
-      }
-    };
+    let report =
+      match self
+        .renderer
+        .prepare_http_request(url, method, headers, body, options.clone())
+      {
+        Ok(report) => report,
+        Err(err) => {
+          self.set_navigation_urls(prev_document_url, prev_base_url);
+          return Err(err);
+        }
+      };
 
     let committed_url = report.final_url.clone().unwrap_or_else(|| url.to_string());
     let base_url = report
@@ -624,6 +634,10 @@ impl BrowserDocument {
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
   pub fn set_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
     if self.options.scroll_x != scroll_x || self.options.scroll_y != scroll_y {
+      self.options.scroll_delta = Point::new(
+        scroll_x - self.options.scroll_x,
+        scroll_y - self.options.scroll_y,
+      );
       self.options.scroll_x = scroll_x;
       self.options.scroll_y = scroll_y;
       self.paint_dirty = true;
@@ -653,14 +667,23 @@ impl BrowserDocument {
 
   /// Updates the full scroll state (viewport + element scroll offsets), marking paint dirty.
   pub fn set_scroll_state(&mut self, state: ScrollState) {
-    let ScrollState { viewport, elements } = state;
+    let ScrollState {
+      viewport,
+      elements,
+      viewport_delta,
+      elements_delta,
+    } = state;
     let changed = self.options.scroll_x != viewport.x
       || self.options.scroll_y != viewport.y
-      || self.options.element_scroll_offsets != elements;
+      || self.options.element_scroll_offsets != elements
+      || self.options.scroll_delta != viewport_delta
+      || self.options.element_scroll_deltas != elements_delta;
     if changed {
       self.options.scroll_x = viewport.x;
       self.options.scroll_y = viewport.y;
       self.options.element_scroll_offsets = elements;
+      self.options.scroll_delta = viewport_delta;
+      self.options.element_scroll_deltas = elements_delta;
       self.paint_dirty = true;
     }
   }
@@ -684,9 +707,11 @@ impl BrowserDocument {
 
   /// Returns the current scroll state used by this document.
   pub fn scroll_state(&self) -> ScrollState {
-    ScrollState::from_parts(
+    ScrollState::from_parts_with_deltas(
       Point::new(self.options.scroll_x, self.options.scroll_y),
       self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
     )
   }
 
@@ -755,7 +780,11 @@ impl BrowserDocument {
   /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
   /// cached layout artifacts.
   pub fn render_frame(&mut self) -> Result<super::Pixmap> {
-    Ok(self.render_frame_with_scroll_state_and_interaction_state(None)?.pixmap)
+    Ok(
+      self
+        .render_frame_with_scroll_state_and_interaction_state(None)?
+        .pixmap,
+    )
   }
 
   /// Renders one frame, applying an optional deadline to the *paint* phase.
@@ -813,7 +842,8 @@ impl BrowserDocument {
     if !self.is_dirty() && self.prepared.is_some() {
       return Ok(None);
     }
-    let frame = self.render_frame_with_deadlines_and_interaction_state(paint_deadline, interaction_state)?;
+    let frame =
+      self.render_frame_with_deadlines_and_interaction_state(paint_deadline, interaction_state)?;
     Ok(Some(frame))
   }
 
@@ -832,13 +862,14 @@ impl BrowserDocument {
     let needs_layout = self.style_dirty || self.layout_dirty;
     if needs_layout {
       let prev_prepared = self.prepared.take();
-      let mut prepared = match self.prepare_dom_with_options_and_interaction_state(interaction_state) {
-        Ok(prepared) => prepared,
-        Err(err) => {
-          self.prepared = prev_prepared;
-          return Err(err);
-        }
-      };
+      let mut prepared =
+        match self.prepare_dom_with_options_and_interaction_state(interaction_state) {
+          Ok(prepared) => prepared,
+          Err(err) => {
+            self.prepared = prev_prepared;
+            return Err(err);
+          }
+        };
 
       let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
       match now_ms {
@@ -911,12 +942,17 @@ impl BrowserDocument {
     // Prefer an explicitly provided deadline; otherwise fall back to this document's configured
     // `RenderOptions::{timeout,cancel_callback}`.
     let _deadline_guard = if let Some(deadline) = deadline {
-      Some(crate::render_control::DeadlineGuard::install(Some(deadline)))
+      Some(crate::render_control::DeadlineGuard::install(Some(
+        deadline,
+      )))
     } else {
-      let deadline_enabled = self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+      let deadline_enabled =
+        self.options.timeout.is_some() || self.options.cancel_callback.is_some();
       deadline_enabled.then(|| {
-        let options_deadline =
-          crate::render_control::RenderDeadline::new(self.options.timeout, self.options.cancel_callback.clone());
+        let options_deadline = crate::render_control::RenderDeadline::new(
+          self.options.timeout,
+          self.options.cancel_callback.clone(),
+        );
         crate::render_control::DeadlineGuard::install(Some(&options_deadline))
       })
     };
@@ -1011,7 +1047,13 @@ impl BrowserDocument {
       ));
       let (prev_self, prev_image, prev_layout_image, prev_font) =
         renderer.push_resource_context(context);
-      let result = prepare_dom_inner(renderer, dom, options.clone(), trace_handle, interaction_state);
+      let result = prepare_dom_inner(
+        renderer,
+        dom,
+        options.clone(),
+        trace_handle,
+        interaction_state,
+      );
       renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
       trace.finalize(result)
@@ -1149,9 +1191,11 @@ pub(super) fn prepare_dom_inner(
   let previous_dpr = renderer.device_pixel_ratio;
   let artifacts_result = (|| -> Result<super::LayoutArtifacts> {
     renderer.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-    let scroll_state = ScrollState::from_parts(
+    let scroll_state = ScrollState::from_parts_with_deltas(
       Point::new(options.scroll_x, options.scroll_y),
       options.element_scroll_offsets.clone(),
+      options.scroll_delta,
+      options.element_scroll_deltas.clone(),
     );
     renderer.layout_document_for_media_with_artifacts(
       dom,
@@ -1189,9 +1233,11 @@ pub(super) fn prepare_dom_inner(
     device_pixel_ratio: resolved_viewport.device_pixel_ratio,
     page_zoom: resolved_viewport.zoom,
     background_color: renderer.background_color,
-    default_scroll: ScrollState::from_parts(
+    default_scroll: ScrollState::from_parts_with_deltas(
       Point::new(options.scroll_x, options.scroll_y),
       options.element_scroll_offsets.clone(),
+      options.scroll_delta,
+      options.element_scroll_deltas.clone(),
     ),
     animation_time: options.animation_time,
     font_context: renderer.font_context.clone(),
@@ -1209,8 +1255,8 @@ mod tests {
   use crate::render_control::{push_stage_listener, RenderDeadline, StageHeartbeat};
   use crate::text::font_db::FontConfig;
   use std::sync::atomic::{AtomicUsize, Ordering};
-  use std::time::Duration;
   use std::sync::{Arc, Mutex};
+  use std::time::Duration;
   use tiny_skia::PremultipliedColorU8;
 
   fn capture_stages<T>(f: impl FnOnce() -> Result<T>) -> Result<Vec<StageHeartbeat>> {
@@ -1264,7 +1310,11 @@ mod tests {
 
   #[test]
   fn non_ascii_whitespace_set_navigation_urls_does_not_trim_nbsp_base_url() -> Result<()> {
-    let mut document = BrowserDocument::new(renderer_for_tests(), "<div>hi</div>", RenderOptions::default())?;
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      "<div>hi</div>",
+      RenderOptions::default(),
+    )?;
     let nbsp = "\u{00A0}".to_string();
     document.set_navigation_urls(None, Some(nbsp.clone()));
     assert_eq!(document.renderer.base_url.as_deref(), Some(nbsp.as_str()));
@@ -1272,7 +1322,8 @@ mod tests {
   }
 
   #[test]
-  fn csp_style_src_attr_meta_blocks_style_attributes_and_does_not_leak_across_reset() -> Result<()> {
+  fn csp_style_src_attr_meta_blocks_style_attributes_and_does_not_leak_across_reset() -> Result<()>
+  {
     let options = RenderOptions::default().with_viewport(20, 20);
     let html_blocked = r#"<!doctype html>
       <html>
@@ -1304,7 +1355,12 @@ mod tests {
     let pixmap_blocked = document.render_frame()?;
     let blocked = pixmap_blocked.pixel(5, 5).expect("pixel 5,5");
     assert_eq!(
-      [blocked.red(), blocked.green(), blocked.blue(), blocked.alpha()],
+      [
+        blocked.red(),
+        blocked.green(),
+        blocked.blue(),
+        blocked.alpha()
+      ],
       [0, 255, 0, 255],
       "expected style attribute to be blocked by CSP meta"
     );
@@ -1313,7 +1369,12 @@ mod tests {
     let pixmap_allowed = document.render_frame()?;
     let allowed = pixmap_allowed.pixel(5, 5).expect("pixel 5,5");
     assert_eq!(
-      [allowed.red(), allowed.green(), allowed.blue(), allowed.alpha()],
+      [
+        allowed.red(),
+        allowed.green(),
+        allowed.blue(),
+        allowed.alpha()
+      ],
       [255, 0, 0, 255],
       "expected CSP state not to leak across reset_with_html"
     );
@@ -1323,8 +1384,11 @@ mod tests {
 
   #[test]
   fn set_device_pixel_ratio_triggers_layout() -> Result<()> {
-    let mut document =
-      BrowserDocument::new(renderer_for_tests(), "<div>hi</div>", RenderOptions::default().with_viewport(32, 32))?;
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      "<div>hi</div>",
+      RenderOptions::default().with_viewport(32, 32),
+    )?;
     document.render_frame()?;
 
     document.set_device_pixel_ratio(2.0);
@@ -1339,14 +1403,16 @@ mod tests {
 
   #[test]
   fn needs_layout_transitions() -> Result<()> {
-    let mut document =
-      BrowserDocument::new(
-        renderer_for_tests(),
-        "<div>hi</div>",
-        RenderOptions::default().with_viewport(32, 32),
-      )?;
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      "<div>hi</div>",
+      RenderOptions::default().with_viewport(32, 32),
+    )?;
 
-    assert!(document.needs_layout(), "expected needs_layout before first render");
+    assert!(
+      document.needs_layout(),
+      "expected needs_layout before first render"
+    );
     document.render_frame()?;
     assert!(
       !document.needs_layout(),
@@ -1363,12 +1429,11 @@ mod tests {
 
   #[test]
   fn paint_from_cache_frame_with_deadline_can_cancel() -> Result<()> {
-    let mut document =
-      BrowserDocument::new(
-        renderer_for_tests(),
-        "<div>hi</div>",
-        RenderOptions::default().with_viewport(32, 32),
-      )?;
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      "<div>hi</div>",
+      RenderOptions::default().with_viewport(32, 32),
+    )?;
     document.render_frame()?;
 
     let cancel: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
@@ -1378,7 +1443,13 @@ mod tests {
       Err(err) => err,
     };
     assert!(
-      matches!(err, Error::Render(RenderError::Timeout { stage: RenderStage::Paint, .. })),
+      matches!(
+        err,
+        Error::Render(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        })
+      ),
       "expected paint timeout error, got {err:?}"
     );
     Ok(())
@@ -1457,7 +1528,8 @@ mod tests {
       "expected cached layout reuse after paint cancellation; got {stages:?}"
     );
     assert!(
-      stages.contains(&StageHeartbeat::PaintBuild) || stages.contains(&StageHeartbeat::PaintRasterize),
+      stages.contains(&StageHeartbeat::PaintBuild)
+        || stages.contains(&StageHeartbeat::PaintRasterize),
       "expected paint stage heartbeats; got {stages:?}"
     );
     Ok(())
@@ -1479,8 +1551,11 @@ mod tests {
     <div id="fixed"></div>
   </body>
 </html>"#;
-    let mut document =
-      BrowserDocument::new(renderer_for_tests(), html, RenderOptions::default().with_viewport(100, 100))?;
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      html,
+      RenderOptions::default().with_viewport(100, 100),
+    )?;
     // Prime the layout cache so we can repaint after changing scroll offsets.
     document.render_frame()?;
 
@@ -1518,8 +1593,11 @@ mod tests {
     <div id="scroller"><div id="content"></div></div>
   </body>
 </html>"#;
-    let mut document =
-      BrowserDocument::new(renderer_for_tests(), html, RenderOptions::default().with_viewport(200, 200))?;
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      html,
+      RenderOptions::default().with_viewport(200, 200),
+    )?;
     // Prime the layout cache so we can scroll and repaint.
     document.render_frame()?;
 
@@ -1721,9 +1799,8 @@ mod tests {
     // Ensure the HTML is large enough to require multiple reads; `DeadlineCheckedRead` caps reads
     // to 16KiB, so a >16KiB document guarantees multiple deadline checks during parsing.
     let large_comment = "x".repeat(32 * 1024);
-    let html = format!(
-      "<!doctype html><html><head><!--{large_comment}--></head><body>new</body></html>"
-    );
+    let html =
+      format!("<!doctype html><html><head><!--{large_comment}--></head><body>new</body></html>");
 
     let options = RenderOptions::new()
       .with_viewport(64, 64)

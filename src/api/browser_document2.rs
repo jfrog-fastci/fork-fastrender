@@ -1,3 +1,4 @@
+use crate::animation::TransitionState;
 use crate::dom::DomNode;
 use crate::dom2::{Document, RendererDomSnapshot};
 use crate::error::{Error, RenderError, RenderStage, Result};
@@ -5,7 +6,6 @@ use crate::geometry::Point;
 use crate::js::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
-use crate::animation::TransitionState;
 
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
 use std::sync::Arc;
@@ -45,8 +45,10 @@ impl BrowserDocument2 {
     // workers) to cancel expensive HTML parsing when a navigation is superseded.
     let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
     let dom = if deadline_enabled {
-      let deadline =
-        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let deadline = crate::render_control::RenderDeadline::new(
+        options.timeout,
+        options.cancel_callback.clone(),
+      );
       let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
       renderer.parse_html(html)?
     } else {
@@ -334,20 +336,27 @@ impl BrowserDocument2 {
     };
 
     let _deadline_guard = if let Some(deadline) = deadline {
-      Some(crate::render_control::DeadlineGuard::install(Some(deadline)))
+      Some(crate::render_control::DeadlineGuard::install(Some(
+        deadline,
+      )))
     } else {
-      let deadline_enabled = self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+      let deadline_enabled =
+        self.options.timeout.is_some() || self.options.cancel_callback.is_some();
       deadline_enabled.then(|| {
-        let options_deadline =
-          crate::render_control::RenderDeadline::new(self.options.timeout, self.options.cancel_callback.clone());
+        let options_deadline = crate::render_control::RenderDeadline::new(
+          self.options.timeout,
+          self.options.cancel_callback.clone(),
+        );
         crate::render_control::DeadlineGuard::install(Some(&options_deadline))
       })
     };
     crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
 
-    let scroll_state = ScrollState::from_parts(
+    let scroll_state = ScrollState::from_parts_with_deltas(
       Point::new(self.options.scroll_x, self.options.scroll_y),
       self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
     );
     let paint_options = PreparedPaintOptions {
       scroll: Some(scroll_state),
@@ -368,6 +377,8 @@ impl BrowserDocument2 {
     self.options.scroll_x = frame.scroll_state.viewport.x;
     self.options.scroll_y = frame.scroll_state.viewport.y;
     self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
+    self.options.scroll_delta = frame.scroll_state.viewport_delta;
+    self.options.element_scroll_deltas = frame.scroll_state.elements_delta.clone();
     self.paint_dirty = false;
 
     Ok(frame)
@@ -422,8 +433,13 @@ impl BrowserDocument2 {
       ));
       let (prev_self, prev_image, prev_layout_image, prev_font) =
         renderer.push_resource_context(context);
-      let result =
-        super::browser_document::prepare_dom_inner(renderer, dom, options.clone(), trace_handle, None);
+      let result = super::browser_document::prepare_dom_inner(
+        renderer,
+        dom,
+        options.clone(),
+        trace_handle,
+        None,
+      );
       renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
       trace.finalize(result)

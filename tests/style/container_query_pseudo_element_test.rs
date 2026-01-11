@@ -81,6 +81,8 @@ fn cascade_with_container_inline_size(inline_size: f32) -> StyledNode {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   )]);
   let ctx = ContainerQueryContext {
@@ -136,6 +138,8 @@ fn cascade_marker_with_container_inline_size(inline_size: f32) -> StyledNode {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   )]);
   let ctx = ContainerQueryContext {
@@ -191,6 +195,8 @@ fn cascade_first_line_with_container_inline_size(inline_size: f32) -> StyledNode
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   )]);
   let ctx = ContainerQueryContext {
@@ -248,7 +254,10 @@ fn marker_pseudo_element_container_query_applies_when_matched() {
 fn first_line_pseudo_element_container_query_filters_unmatched_rules() {
   let styled = cascade_first_line_with_container_inline_size(100.0);
   let target = find_by_id(&styled, "target").expect("target element");
-  let first_line = target.first_line_styles.as_ref().expect("first-line styles");
+  let first_line = target
+    .first_line_styles
+    .as_ref()
+    .expect("first-line styles");
   assert_eq!(first_line.color, Rgba::rgb(10, 20, 30));
 }
 
@@ -256,6 +265,9 @@ fn first_line_pseudo_element_container_query_filters_unmatched_rules() {
 fn first_line_pseudo_element_container_query_applies_when_matched() {
   let styled = cascade_first_line_with_container_inline_size(200.0);
   let target = find_by_id(&styled, "target").expect("target element");
-  let first_line = target.first_line_styles.as_ref().expect("first-line styles");
+  let first_line = target
+    .first_line_styles
+    .as_ref()
+    .expect("first-line styles");
   assert_eq!(first_line.color, Rgba::rgb(1, 2, 3));
 }

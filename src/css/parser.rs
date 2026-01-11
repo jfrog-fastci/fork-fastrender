@@ -18,9 +18,9 @@ use super::types::ContainerCondition;
 use super::types::ContainerQuery;
 use super::types::ContainerRule;
 use super::types::ContainerSizeQuery;
+use super::types::CssNamespaces;
 use super::types::CssParseError;
 use super::types::CssParseResult;
-use super::types::CssNamespaces;
 use super::types::CssRule;
 use super::types::CssString;
 use super::types::Declaration;
@@ -49,20 +49,21 @@ use super::types::PageMarginRule;
 use super::types::PagePseudoClass;
 use super::types::PageRule;
 use super::types::PageSelector;
+use super::types::PositionTryRule;
 use super::types::PropertyName;
 use super::types::PropertyRule;
-use super::types::PositionTryRule;
 use super::types::PropertyValue;
 use super::types::ScopeRule;
+use super::types::ScrollStateDirection;
+use super::types::ScrollStateFeature;
+use super::types::ScrollStateQueryExpr;
+use super::types::ScrollStateSnappedAxis;
 use super::types::StartingStyleRule;
 use super::types::StyleQueryExpr;
 use super::types::StyleQueryFeature;
 use super::types::StyleRange;
 use super::types::StyleRangeOp;
 use super::types::StyleRangeValue;
-use super::types::ScrollStateQueryExpr;
-use super::types::ScrollStateFeature;
-use super::types::ScrollStateDirection;
 use super::types::StyleRule;
 use super::types::StyleSheet;
 use super::types::SupportsCondition;
@@ -542,7 +543,9 @@ impl NamespaceParseState {
   fn namespaces_allowed(&self) -> bool {
     matches!(
       self.prelude_phase,
-      StylesheetPreludePhase::Start | StylesheetPreludePhase::Imports | StylesheetPreludePhase::Namespaces
+      StylesheetPreludePhase::Start
+        | StylesheetPreludePhase::Imports
+        | StylesheetPreludePhase::Namespaces
     )
   }
 
@@ -2256,10 +2259,7 @@ fn parse_scroll_state_in_parens<'i, 't>(
 }
 
 fn parse_scroll_state_direction(value: &str) -> Option<ScrollStateDirection> {
-  match trim_ascii_whitespace(value)
-    .to_ascii_lowercase()
-    .as_str()
-  {
+  match trim_ascii_whitespace(value).to_ascii_lowercase().as_str() {
     "none" => Some(ScrollStateDirection::None),
     "top" => Some(ScrollStateDirection::Top),
     "right" => Some(ScrollStateDirection::Right),
@@ -2273,6 +2273,18 @@ fn parse_scroll_state_direction(value: &str) -> Option<ScrollStateDirection> {
     "y" => Some(ScrollStateDirection::Y),
     "block" => Some(ScrollStateDirection::Block),
     "inline" => Some(ScrollStateDirection::Inline),
+    _ => None,
+  }
+}
+
+fn parse_scroll_state_snapped_axis(value: &str) -> Option<ScrollStateSnappedAxis> {
+  match trim_ascii_whitespace(value).to_ascii_lowercase().as_str() {
+    "none" => Some(ScrollStateSnappedAxis::None),
+    "x" => Some(ScrollStateSnappedAxis::X),
+    "y" => Some(ScrollStateSnappedAxis::Y),
+    "block" => Some(ScrollStateSnappedAxis::Block),
+    "inline" => Some(ScrollStateSnappedAxis::Inline),
+    "both" => Some(ScrollStateSnappedAxis::Both),
     _ => None,
   }
 }
@@ -2294,7 +2306,8 @@ fn parse_scroll_state_feature<'i, 't>(
     let raw_value = trim_ascii_whitespace(parser.slice_from(start));
     let value = trim_ascii_whitespace_end(raw_value.trim_end_matches(';')).to_string();
     if value.is_empty() {
-      return Err(parser.new_custom_error(()));
+      // Invalid value: preserve the feature in Unknown form so the surrounding query can continue.
+      return Ok(ScrollStateFeature::Unknown { name, value: None });
     }
 
     if name == "scrollable" {
@@ -2313,6 +2326,20 @@ fn parse_scroll_state_feature<'i, 't>(
         });
       }
     }
+    if name == "snapped" {
+      let axis = parse_scroll_state_snapped_axis(&value);
+      if let Some(axis) = axis {
+        return Ok(ScrollStateFeature::Snapped { axis: Some(axis) });
+      }
+    }
+    if name == "scrolled" {
+      let direction = parse_scroll_state_direction(&value);
+      if let Some(direction) = direction {
+        return Ok(ScrollStateFeature::Scrolled {
+          direction: Some(direction),
+        });
+      }
+    }
 
     return Ok(ScrollStateFeature::Unknown {
       name,
@@ -2326,6 +2353,12 @@ fn parse_scroll_state_feature<'i, 't>(
     }
     if name == "stuck" {
       return Ok(ScrollStateFeature::Stuck { direction: None });
+    }
+    if name == "snapped" {
+      return Ok(ScrollStateFeature::Snapped { axis: None });
+    }
+    if name == "scrolled" {
+      return Ok(ScrollStateFeature::Scrolled { direction: None });
     }
     return Ok(ScrollStateFeature::Unknown { name, value: None });
   }
@@ -3768,19 +3801,8 @@ fn parse_font_feature_values_rule<'i, 't>(
     // CSS Fonts 4 disallows generic/system family names in the `@font-feature-values` prelude.
     // Match case-insensitively (ASCII).
     match name.to_ascii_lowercase().as_str() {
-      "serif"
-      | "sans-serif"
-      | "monospace"
-      | "cursive"
-      | "fantasy"
-      | "system-ui"
-      | "ui-serif"
-      | "ui-sans-serif"
-      | "ui-monospace"
-      | "ui-rounded"
-      | "emoji"
-      | "math"
-      | "fangsong" => true,
+      "serif" | "sans-serif" | "monospace" | "cursive" | "fantasy" | "system-ui" | "ui-serif"
+      | "ui-sans-serif" | "ui-monospace" | "ui-rounded" | "emoji" | "math" | "fangsong" => true,
       _ => false,
     }
   }
@@ -3981,7 +4003,9 @@ fn parse_font_feature_values_rule<'i, 't>(
                     }
                     values.push(*v as u32);
                   }
-                  Ok(Token::Number { int_value: None, .. }) => {
+                  Ok(Token::Number {
+                    int_value: None, ..
+                  }) => {
                     valid = false;
                     skip_to_semicolon(group_parser);
                     break;
@@ -4451,11 +4475,16 @@ fn parse_position_try_rule<'i, 't>(
 
   let declarations = parser.parse_nested_block(|nested| {
     parse_declaration_list(nested, DeclarationContext::Style).map_err(|_| {
-      nested.new_custom_error(SelectorParseErrorKind::UnexpectedIdent("declaration".into()))
+      nested.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
+        "declaration".into(),
+      ))
     })
   })?;
 
-  Ok(Some(CssRule::PositionTry(PositionTryRule { name, declarations })))
+  Ok(Some(CssRule::PositionTry(PositionTryRule {
+    name,
+    declarations,
+  })))
 }
 
 fn parse_property_descriptors<'i, 't>(
@@ -6312,10 +6341,11 @@ fn repair_unterminated_url_functions(declarations_str: &str) -> Cow<'_, str> {
 
   // Fast path: no "url" substring at all.
   // (Case-insensitive check.)
-  if !bytes
-    .windows(3)
-    .any(|w| w[0].to_ascii_lowercase() == b'u' && w[1].to_ascii_lowercase() == b'r' && w[2].to_ascii_lowercase() == b'l')
-  {
+  if !bytes.windows(3).any(|w| {
+    w[0].to_ascii_lowercase() == b'u'
+      && w[1].to_ascii_lowercase() == b'r'
+      && w[2].to_ascii_lowercase() == b'l'
+  }) {
     return Cow::Borrowed(declarations_str);
   }
 
@@ -6372,8 +6402,12 @@ fn repair_unterminated_url_functions(declarations_str: &str) -> Cow<'_, str> {
 
     // Detect `url(` case-insensitively, allowing whitespace between `url` and `(`.
     if b.to_ascii_lowercase() == b'u'
-      && bytes.get(i + 1).is_some_and(|b| b.to_ascii_lowercase() == b'r')
-      && bytes.get(i + 2).is_some_and(|b| b.to_ascii_lowercase() == b'l')
+      && bytes
+        .get(i + 1)
+        .is_some_and(|b| b.to_ascii_lowercase() == b'r')
+      && bytes
+        .get(i + 2)
+        .is_some_and(|b| b.to_ascii_lowercase() == b'l')
       && (i == 0 || !is_ident_continue_byte(bytes[i - 1]))
     {
       let mut j = i + 3;
@@ -7210,7 +7244,11 @@ mod tests {
     let CssRule::Style(rule) = &sheet.rules[0] else {
       panic!("expected style rule");
     };
-    assert_eq!(rule.declarations.len(), 1, "expected -ms-grid-row declaration to be preserved");
+    assert_eq!(
+      rule.declarations.len(),
+      1,
+      "expected -ms-grid-row declaration to be preserved"
+    );
     assert_eq!(
       rule.declarations[0].property.as_str(),
       "-ms-grid-row",
@@ -7272,7 +7310,11 @@ mod tests {
     assert_eq!(stylesheet.rules.len(), 1);
     if let CssRule::Import(import) = &stylesheet.rules[0] {
       assert_eq!(import.href, "https://example.com/base.css");
-      assert_eq!(import.media.len(), 1, "expected one media query to be parsed");
+      assert_eq!(
+        import.media.len(),
+        1,
+        "expected one media query to be parsed"
+      );
       assert_eq!(import.media[0].media_type, Some(MediaType::Screen));
       assert!(
         import.media[0].modifier.is_none(),
@@ -7287,7 +7329,7 @@ mod tests {
       panic!("Expected import rule");
     }
   }
- 
+
   #[test]
   fn test_parse_import_rule_media_type_only() {
     let css = r#"@import "base.css" print;"#;
@@ -7601,10 +7643,7 @@ mod tests {
     assert_eq!(rule.name, "--foo");
     assert!(rule.syntax.is_universal(), "expected universal syntax");
     assert_eq!(rule.inherits, false);
-    let initial = rule
-      .initial_value
-      .as_ref()
-      .expect("expected initial-value");
+    let initial = rule.initial_value.as_ref().expect("expected initial-value");
     assert_eq!(initial.value, "(bar)");
     assert!(initial.typed.is_none());
   }
@@ -7625,10 +7664,7 @@ mod tests {
     let CssRule::Property(rule) = &stylesheet.rules[0] else {
       panic!("expected @property rule, got {:?}", stylesheet.rules[0]);
     };
-    let initial = rule
-      .initial_value
-      .as_ref()
-      .expect("expected initial-value");
+    let initial = rule.initial_value.as_ref().expect("expected initial-value");
     assert_eq!(initial.value, "(bar; baz)");
   }
 

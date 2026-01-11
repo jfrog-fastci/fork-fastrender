@@ -48,7 +48,11 @@ fn display(node: &StyledNode) -> String {
   node.styles.display.to_string()
 }
 
-fn cascade_with_optional_container(css: &str, inline_size: f32, use_container_ctx: bool) -> StyledNode {
+fn cascade_with_optional_container(
+  css: &str,
+  inline_size: f32,
+  use_container_ctx: bool,
+) -> StyledNode {
   let dom = dom::parse_html(HTML).unwrap();
   let ids = dom::enumerate_dom_ids(&dom);
   let container_node = find_dom_by_id(&dom, "c").expect("container node");
@@ -74,6 +78,8 @@ fn cascade_with_optional_container(css: &str, inline_size: f32, use_container_ct
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     Some(ContainerQueryContext {
@@ -109,7 +115,10 @@ fn element_does_not_query_itself() {
   "#;
 
   let styled = cascade_with_optional_container(css, 500.0, true);
-  assert_eq!(display(find_by_id(&styled, "c").expect("container")), "block");
+  assert_eq!(
+    display(find_by_id(&styled, "c").expect("container")),
+    "block"
+  );
 }
 
 #[test]

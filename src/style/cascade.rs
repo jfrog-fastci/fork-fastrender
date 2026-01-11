@@ -6,10 +6,10 @@
 //! Reference: CSS Cascading and Inheritance Level 4
 //! <https://www.w3.org/TR/css-cascade-4/>
 
-use crate::css::properties::parse_property_value;
 use crate::css::parser::parse_declarations;
 use crate::css::parser::parse_inline_style_declarations;
 use crate::css::parser::parse_stylesheet;
+use crate::css::properties::parse_property_value;
 use crate::css::selectors::FastRenderSelectorImpl;
 use crate::css::selectors::FormValidityIndex;
 use crate::css::selectors::PseudoClass;
@@ -31,6 +31,7 @@ use crate::css::types::ScopeContext;
 use crate::css::types::ScrollStateDirection;
 use crate::css::types::ScrollStateFeature;
 use crate::css::types::ScrollStateQueryExpr;
+use crate::css::types::ScrollStateSnappedAxis;
 use crate::css::types::StyleQueryExpr;
 use crate::css::types::StyleQueryFeature;
 use crate::css::types::StyleRange;
@@ -668,7 +669,11 @@ fn resolve_container_query_length(
         // For non-linear expressions we can't cheaply inspect individual terms here; conservatively
         // treat any missing container-query bases as making the query unknown.
         crate::style::values::LengthCalc::Expr(_) => {
-          if !cqw_base.is_finite() || !cqh_base.is_finite() || !cqi_base.is_finite() || !cqb_base.is_finite() {
+          if !cqw_base.is_finite()
+            || !cqh_base.is_finite()
+            || !cqi_base.is_finite()
+            || !cqb_base.is_finite()
+          {
             return None;
           }
         }
@@ -742,55 +747,55 @@ fn resolve_container_query_length(
       &|linear, base, vw, vh, font_px, root_px| {
         let base = base.filter(|b| b.is_finite());
         let mut total = 0.0;
-         for term in linear.terms() {
-           let resolved = match term.unit {
-             LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
-             u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
-             u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
-             LengthUnit::Em => Some(term.value * font_px),
-             LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
-             LengthUnit::Cap => Some(term.value * font_px * 0.7),
-             LengthUnit::Ic => Some(term.value * font_px),
-             LengthUnit::Rem => Some(term.value * root_px),
-             LengthUnit::Rex => Some(
-               term.value
-                 * root_font_metrics
-                   .map(|m| m.root_x_height_px)
-                   .unwrap_or(root_px * 0.5),
-             ),
-             LengthUnit::Rch => Some(
-               term.value
-                 * root_font_metrics
-                   .map(|m| m.root_ch_advance_px)
-                   .unwrap_or(root_px * 0.5),
-             ),
-             LengthUnit::Rcap => Some(
-               term.value
-                 * root_font_metrics
-                   .map(|m| m.root_cap_height_px)
-                   .unwrap_or(root_px * 0.7),
-             ),
-             LengthUnit::Ric => Some(
-               term.value
-                 * root_font_metrics
-                   .map(|m| m.root_ic_advance_px)
-                   .unwrap_or(root_px),
-             ),
-             LengthUnit::Rlh => Some(
-               term.value
-                 * root_font_metrics
+        for term in linear.terms() {
+          let resolved = match term.unit {
+            LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+            u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+            u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
+            LengthUnit::Em => Some(term.value * font_px),
+            LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+            LengthUnit::Cap => Some(term.value * font_px * 0.7),
+            LengthUnit::Ic => Some(term.value * font_px),
+            LengthUnit::Rem => Some(term.value * root_px),
+            LengthUnit::Rex => Some(
+              term.value
+                * root_font_metrics
+                  .map(|m| m.root_x_height_px)
+                  .unwrap_or(root_px * 0.5),
+            ),
+            LengthUnit::Rch => Some(
+              term.value
+                * root_font_metrics
+                  .map(|m| m.root_ch_advance_px)
+                  .unwrap_or(root_px * 0.5),
+            ),
+            LengthUnit::Rcap => Some(
+              term.value
+                * root_font_metrics
+                  .map(|m| m.root_cap_height_px)
+                  .unwrap_or(root_px * 0.7),
+            ),
+            LengthUnit::Ric => Some(
+              term.value
+                * root_font_metrics
+                  .map(|m| m.root_ic_advance_px)
+                  .unwrap_or(root_px),
+            ),
+            LengthUnit::Lh => Some(term.value * line_height),
+            LengthUnit::Rlh => Some(
+              term.value
+                * root_font_metrics
                   .map(|m| m.root_used_line_height_px)
                   .unwrap_or(root_px * 1.2),
-             ),
-             LengthUnit::Lh => Some(term.value * line_height),
-             LengthUnit::Calc => None,
-             _ => None,
-           }?;
-           total += resolved;
-         }
-         Some(total)
-       },
-     );
+            ),
+            LengthUnit::Calc => None,
+            _ => None,
+          }?;
+          total += resolved;
+        }
+        Some(total)
+      },
+    );
   }
 
   match length.unit {
@@ -1628,7 +1633,10 @@ fn eval_style_query(
   }
 }
 
-fn eval_scroll_state_query(query: &ScrollStateQueryExpr, container: &ContainerQueryInfo) -> QueryResult {
+fn eval_scroll_state_query(
+  query: &ScrollStateQueryExpr,
+  container: &ContainerQueryInfo,
+) -> QueryResult {
   match query {
     ScrollStateQueryExpr::Unknown => QueryResult::Unknown,
     ScrollStateQueryExpr::Feature(feature) => eval_scroll_state_feature(feature, container),
@@ -1664,12 +1672,17 @@ fn eval_scroll_state_query(query: &ScrollStateQueryExpr, container: &ContainerQu
   }
 }
 
-fn eval_scroll_state_feature(feature: &ScrollStateFeature, container: &ContainerQueryInfo) -> QueryResult {
+fn eval_scroll_state_feature(
+  feature: &ScrollStateFeature,
+  container: &ContainerQueryInfo,
+) -> QueryResult {
   match feature {
     ScrollStateFeature::Scrollable { direction } => {
       eval_scroll_state_scrollable(*direction, container)
     }
     ScrollStateFeature::Stuck { direction } => eval_scroll_state_stuck(*direction, container),
+    ScrollStateFeature::Snapped { axis } => eval_scroll_state_snapped(*axis, container),
+    ScrollStateFeature::Scrolled { direction } => eval_scroll_state_scrolled(*direction, container),
     ScrollStateFeature::Unknown { .. } => QueryResult::Unknown,
   }
 }
@@ -1678,6 +1691,11 @@ pub(crate) const CQ_STUCK_TOP: u8 = 1 << 0;
 pub(crate) const CQ_STUCK_RIGHT: u8 = 1 << 1;
 pub(crate) const CQ_STUCK_BOTTOM: u8 = 1 << 2;
 pub(crate) const CQ_STUCK_LEFT: u8 = 1 << 3;
+
+pub(crate) const CQ_SNAPPED_X: u8 = 1 << 0;
+pub(crate) const CQ_SNAPPED_Y: u8 = 1 << 1;
+pub(crate) const CQ_SNAPPED_INLINE: u8 = 1 << 2;
+pub(crate) const CQ_SNAPPED_BLOCK: u8 = 1 << 3;
 
 #[inline]
 fn stuck_mask_for_side(side: crate::style::PhysicalSide) -> u8 {
@@ -1712,14 +1730,26 @@ fn eval_scroll_state_stuck(
 
     if horizontal {
       if positive {
-        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        (
+          crate::style::PhysicalSide::Left,
+          crate::style::PhysicalSide::Right,
+        )
       } else {
-        (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+        (
+          crate::style::PhysicalSide::Right,
+          crate::style::PhysicalSide::Left,
+        )
       }
     } else if positive {
-      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+      (
+        crate::style::PhysicalSide::Top,
+        crate::style::PhysicalSide::Bottom,
+      )
     } else {
-      (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+      (
+        crate::style::PhysicalSide::Bottom,
+        crate::style::PhysicalSide::Top,
+      )
     }
   };
 
@@ -1735,7 +1765,8 @@ fn eval_scroll_state_stuck(
       ScrollStateDirection::X => (stuck & (CQ_STUCK_LEFT | CQ_STUCK_RIGHT)) != 0,
       ScrollStateDirection::Y => (stuck & (CQ_STUCK_TOP | CQ_STUCK_BOTTOM)) != 0,
       ScrollStateDirection::Inline => {
-        let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
+        let inline_horizontal =
+          crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
         if inline_horizontal {
           (stuck & (CQ_STUCK_LEFT | CQ_STUCK_RIGHT)) != 0
         } else {
@@ -1743,7 +1774,8 @@ fn eval_scroll_state_stuck(
         }
       }
       ScrollStateDirection::Block => {
-        let block_horizontal = crate::style::block_axis_is_horizontal(container.styles.writing_mode);
+        let block_horizontal =
+          crate::style::block_axis_is_horizontal(container.styles.writing_mode);
         if block_horizontal {
           (stuck & (CQ_STUCK_LEFT | CQ_STUCK_RIGHT)) != 0
         } else {
@@ -1806,14 +1838,26 @@ fn eval_scroll_state_scrollable(
 
     if horizontal {
       if positive {
-        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        (
+          crate::style::PhysicalSide::Left,
+          crate::style::PhysicalSide::Right,
+        )
       } else {
-        (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+        (
+          crate::style::PhysicalSide::Right,
+          crate::style::PhysicalSide::Left,
+        )
       }
     } else if positive {
-      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+      (
+        crate::style::PhysicalSide::Top,
+        crate::style::PhysicalSide::Bottom,
+      )
     } else {
-      (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+      (
+        crate::style::PhysicalSide::Bottom,
+        crate::style::PhysicalSide::Top,
+      )
     }
   };
 
@@ -1886,6 +1930,142 @@ fn eval_scroll_state_scrollable(
       Some(value) => QueryResult::from_bool(value),
       None => QueryResult::Unknown,
     },
+  }
+}
+
+fn eval_scroll_state_snapped(
+  axis: Option<ScrollStateSnappedAxis>,
+  container: &ContainerQueryInfo,
+) -> QueryResult {
+  let snapped = container.snapped_mask;
+  let snapped_x = (snapped & CQ_SNAPPED_X) != 0;
+  let snapped_y = (snapped & CQ_SNAPPED_Y) != 0;
+  let snapped_inline = (snapped & CQ_SNAPPED_INLINE) != 0;
+  let snapped_block = (snapped & CQ_SNAPPED_BLOCK) != 0;
+  let snapped_any = snapped_x || snapped_y;
+
+  match axis {
+    None => QueryResult::from_bool(snapped_any),
+    Some(axis) => QueryResult::from_bool(match axis {
+      ScrollStateSnappedAxis::None => !snapped_any,
+      ScrollStateSnappedAxis::X => snapped_x,
+      ScrollStateSnappedAxis::Y => snapped_y,
+      ScrollStateSnappedAxis::Block => snapped_block,
+      ScrollStateSnappedAxis::Inline => snapped_inline,
+      ScrollStateSnappedAxis::Both => snapped_x && snapped_y,
+    }),
+  }
+}
+
+fn eval_scroll_state_scrolled(
+  direction: Option<ScrollStateDirection>,
+  container: &ContainerQueryInfo,
+) -> QueryResult {
+  // Spec: `scrolled` is false for non-scroll containers.
+  if container.scroll_bounds.is_none() {
+    return QueryResult::False;
+  }
+
+  let dx = if container.scrolled_delta.x.is_finite() {
+    container.scrolled_delta.x
+  } else {
+    0.0
+  };
+  let dy = if container.scrolled_delta.y.is_finite() {
+    container.scrolled_delta.y
+  } else {
+    0.0
+  };
+  let eps = 1e-6;
+  let scrolled_x = dx.abs() > eps;
+  let scrolled_y = dy.abs() > eps;
+  let scrolled_any = scrolled_x || scrolled_y;
+
+  let axis_sides = |inline_axis: bool| {
+    let mode = container.styles.writing_mode;
+    let direction = container.styles.direction;
+    let horizontal = if inline_axis {
+      crate::style::inline_axis_is_horizontal(mode)
+    } else {
+      crate::style::block_axis_is_horizontal(mode)
+    };
+    let positive = if inline_axis {
+      crate::style::inline_axis_positive(mode, direction)
+    } else {
+      crate::style::block_axis_positive(mode)
+    };
+
+    if horizontal {
+      if positive {
+        (
+          crate::style::PhysicalSide::Left,
+          crate::style::PhysicalSide::Right,
+        )
+      } else {
+        (
+          crate::style::PhysicalSide::Right,
+          crate::style::PhysicalSide::Left,
+        )
+      }
+    } else if positive {
+      (
+        crate::style::PhysicalSide::Top,
+        crate::style::PhysicalSide::Bottom,
+      )
+    } else {
+      (
+        crate::style::PhysicalSide::Bottom,
+        crate::style::PhysicalSide::Top,
+      )
+    }
+  };
+
+  let physical_side_matches = |side: crate::style::PhysicalSide| -> bool {
+    match side {
+      crate::style::PhysicalSide::Top => dy < -eps,
+      crate::style::PhysicalSide::Bottom => dy > eps,
+      crate::style::PhysicalSide::Left => dx < -eps,
+      crate::style::PhysicalSide::Right => dx > eps,
+    }
+  };
+
+  let direction_matches = |dir: ScrollStateDirection| -> bool {
+    match dir {
+      ScrollStateDirection::None => !scrolled_any,
+      ScrollStateDirection::Top => dy < -eps,
+      ScrollStateDirection::Bottom => dy > eps,
+      ScrollStateDirection::Left => dx < -eps,
+      ScrollStateDirection::Right => dx > eps,
+      ScrollStateDirection::X => scrolled_x,
+      ScrollStateDirection::Y => scrolled_y,
+      ScrollStateDirection::Inline => {
+        let inline_horizontal =
+          crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
+        if inline_horizontal {
+          scrolled_x
+        } else {
+          scrolled_y
+        }
+      }
+      ScrollStateDirection::Block => {
+        let block_horizontal =
+          crate::style::block_axis_is_horizontal(container.styles.writing_mode);
+        if block_horizontal {
+          scrolled_x
+        } else {
+          scrolled_y
+        }
+      }
+      ScrollStateDirection::InlineStart => physical_side_matches(axis_sides(true).0),
+      ScrollStateDirection::InlineEnd => physical_side_matches(axis_sides(true).1),
+      ScrollStateDirection::BlockStart => physical_side_matches(axis_sides(false).0),
+      ScrollStateDirection::BlockEnd => physical_side_matches(axis_sides(false).1),
+    }
+  };
+
+  match direction {
+    None => QueryResult::from_bool(scrolled_any),
+    Some(dir) => QueryResult::from_bool(direction_matches(dir)),
   }
 }
 
@@ -2157,8 +2337,9 @@ fn eval_plain_style_feature(
   // We only need the string form for query evaluation, but `resolve_var_for_property` returns a
   // `Cow<'a, str>` tied to the lifetime of the input `PropertyValue` (including fallbacks). Keep
   // the original `PropertyValue` alive so any borrowed `Cow` remains valid.
-  let query_value_storage = crate::style::var_resolution::contains_arbitrary_substitution_function(value)
-    .then(|| PropertyValue::Custom(value.to_string()));
+  let query_value_storage =
+    crate::style::var_resolution::contains_arbitrary_substitution_function(value)
+      .then(|| PropertyValue::Custom(value.to_string()));
   let resolved_value: Cow<'_, str> = if let Some(query_value) = query_value_storage.as_ref() {
     match crate::style::var_resolution::resolve_var_for_property(
       query_value,
@@ -3509,7 +3690,9 @@ fn resolve_length_for_query(
         for term in linear.terms() {
           let resolved = match term.unit {
             u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
-            u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
+            u if u.is_viewport_relative() => {
+              Length::new(term.value, u).resolve_with_viewport(vw, vh)
+            }
             LengthUnit::Em => Some(term.value * font_px),
             LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
             LengthUnit::Cap => Some(term.value * font_px * 0.7),
@@ -3665,6 +3848,8 @@ fn resolve_style_query_container_query_lengths(
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let dummy_ctx = ContainerQueryContext {
@@ -3694,7 +3879,7 @@ fn parse_numeric_value(
   // numeric token.
   let query_value_storage =
     crate::style::var_resolution::contains_arbitrary_substitution_function(trimmed)
-    .then(|| PropertyValue::Custom(trimmed.to_string()));
+      .then(|| PropertyValue::Custom(trimmed.to_string()));
   let resolved: Cow<'_, str> = if let Some(query_value) = query_value_storage.as_ref() {
     match crate::style::var_resolution::resolve_var_for_property(
       query_value,
@@ -4212,6 +4397,12 @@ fn hash_scroll_state_feature_fingerprint(state: &mut impl Hasher, feature: &Scro
     ScrollStateFeature::Stuck { direction } => {
       direction.hash(state);
     }
+    ScrollStateFeature::Snapped { axis } => {
+      axis.hash(state);
+    }
+    ScrollStateFeature::Scrolled { direction } => {
+      direction.hash(state);
+    }
     ScrollStateFeature::Unknown { name, value } => {
       name.hash(state);
       value.hash(state);
@@ -4267,6 +4458,9 @@ fn container_query_cache_revision(
   f32_to_canonical_bits(container.scroll_offset.x).hash(&mut hasher);
   f32_to_canonical_bits(container.scroll_offset.y).hash(&mut hasher);
   container.stuck_mask.hash(&mut hasher);
+  container.snapped_mask.hash(&mut hasher);
+  f32_to_canonical_bits(container.scrolled_delta.x).hash(&mut hasher);
+  f32_to_canonical_bits(container.scrolled_delta.y).hash(&mut hasher);
   match container.scroll_bounds {
     Some(bounds) => {
       1u8.hash(&mut hasher);
@@ -4810,7 +5004,11 @@ fn apply_forced_colors_overrides(styles: &mut ComputedStyle) {
       && !matches!(style, BorderStyle::None | BorderStyle::Hidden)
       && !color.is_transparent()
   };
-  if border_is_visible(styles.border_top_width, styles.border_top_style, styles.border_top_color) {
+  if border_is_visible(
+    styles.border_top_width,
+    styles.border_top_style,
+    styles.border_top_color,
+  ) {
     styles.border_top_color = button_border;
   }
   if border_is_visible(
@@ -4837,7 +5035,10 @@ fn apply_forced_colors_overrides(styles: &mut ComputedStyle) {
 
   // Outline color.
   if styles.outline_width.to_px() > 0.0
-    && !matches!(styles.outline_style, OutlineStyle::None | OutlineStyle::Hidden)
+    && !matches!(
+      styles.outline_style,
+      OutlineStyle::None | OutlineStyle::Hidden
+    )
   {
     styles.outline_color = OutlineColor::Color(highlight);
   }
@@ -9001,9 +9202,15 @@ impl<'a> RuleIndex<'a> {
     for (selector_idx, analysis) in slotted_key_analyses.iter().enumerate() {
       let selector_idx = selector_index(selector_idx)?;
       if !analysis.mandatory_keys.is_empty() {
-        let anchor = choose_anchor_key(&analysis.mandatory_keys, &slotted_mandatory_key_frequencies);
+        let anchor =
+          choose_anchor_key(&analysis.mandatory_keys, &slotted_mandatory_key_frequencies);
         match anchor {
-          SelectorKey::Id(id) => index.slotted_buckets.by_id.entry(id).or_default().push(selector_idx),
+          SelectorKey::Id(id) => index
+            .slotted_buckets
+            .by_id
+            .entry(id)
+            .or_default()
+            .push(selector_idx),
           SelectorKey::Class(cls) => index
             .slotted_buckets
             .by_class
@@ -9016,14 +9223,31 @@ impl<'a> RuleIndex<'a> {
             .entry(attr)
             .or_default()
             .push(selector_idx),
-          SelectorKey::Tag(tag) => index.slotted_buckets.by_tag.entry(tag).or_default().push(selector_idx),
-          SelectorKey::Attribute(attr) => index.slotted_buckets.by_attr.entry(attr).or_default().push(selector_idx),
-          SelectorKey::Root | SelectorKey::Universal => index.slotted_buckets.universal.push(selector_idx),
+          SelectorKey::Tag(tag) => index
+            .slotted_buckets
+            .by_tag
+            .entry(tag)
+            .or_default()
+            .push(selector_idx),
+          SelectorKey::Attribute(attr) => index
+            .slotted_buckets
+            .by_attr
+            .entry(attr)
+            .or_default()
+            .push(selector_idx),
+          SelectorKey::Root | SelectorKey::Universal => {
+            index.slotted_buckets.universal.push(selector_idx)
+          }
         }
       } else if analysis.required_and {
         let anchor = choose_anchor_key(&analysis.all_keys, &slotted_key_frequencies);
         match anchor {
-          SelectorKey::Id(id) => index.slotted_buckets.by_id.entry(id).or_default().push(selector_idx),
+          SelectorKey::Id(id) => index
+            .slotted_buckets
+            .by_id
+            .entry(id)
+            .or_default()
+            .push(selector_idx),
           SelectorKey::Class(cls) => index
             .slotted_buckets
             .by_class
@@ -9036,14 +9260,31 @@ impl<'a> RuleIndex<'a> {
             .entry(attr)
             .or_default()
             .push(selector_idx),
-          SelectorKey::Tag(tag) => index.slotted_buckets.by_tag.entry(tag).or_default().push(selector_idx),
-          SelectorKey::Attribute(attr) => index.slotted_buckets.by_attr.entry(attr).or_default().push(selector_idx),
-          SelectorKey::Root | SelectorKey::Universal => index.slotted_buckets.universal.push(selector_idx),
+          SelectorKey::Tag(tag) => index
+            .slotted_buckets
+            .by_tag
+            .entry(tag)
+            .or_default()
+            .push(selector_idx),
+          SelectorKey::Attribute(attr) => index
+            .slotted_buckets
+            .by_attr
+            .entry(attr)
+            .or_default()
+            .push(selector_idx),
+          SelectorKey::Root | SelectorKey::Universal => {
+            index.slotted_buckets.universal.push(selector_idx)
+          }
         }
       } else {
         for &key in analysis.all_keys.iter() {
           match key {
-            SelectorKey::Id(id) => index.slotted_buckets.by_id.entry(id).or_default().push(selector_idx),
+            SelectorKey::Id(id) => index
+              .slotted_buckets
+              .by_id
+              .entry(id)
+              .or_default()
+              .push(selector_idx),
             SelectorKey::Class(cls) => index
               .slotted_buckets
               .by_class
@@ -9056,9 +9297,21 @@ impl<'a> RuleIndex<'a> {
               .entry(attr)
               .or_default()
               .push(selector_idx),
-            SelectorKey::Tag(tag) => index.slotted_buckets.by_tag.entry(tag).or_default().push(selector_idx),
-            SelectorKey::Attribute(attr) => index.slotted_buckets.by_attr.entry(attr).or_default().push(selector_idx),
-            SelectorKey::Root | SelectorKey::Universal => index.slotted_buckets.universal.push(selector_idx),
+            SelectorKey::Tag(tag) => index
+              .slotted_buckets
+              .by_tag
+              .entry(tag)
+              .or_default()
+              .push(selector_idx),
+            SelectorKey::Attribute(attr) => index
+              .slotted_buckets
+              .by_attr
+              .entry(attr)
+              .or_default()
+              .push(selector_idx),
+            SelectorKey::Root | SelectorKey::Universal => {
+              index.slotted_buckets.universal.push(selector_idx)
+            }
           }
         }
       }
@@ -10760,6 +11013,14 @@ pub struct ContainerQueryInfo {
   /// The mask uses physical directions (top/right/bottom/left) and is consumed by
   /// `scroll-state(stuck: ...)` container queries.
   pub stuck_mask: u8,
+  /// Bitmask describing the scroll snap "snapped" state of this query container.
+  ///
+  /// The mask uses [`CQ_SNAPPED_*`] bits to represent snapped axes and their logical mapping.
+  pub snapped_mask: u8,
+  /// The most recent relative scroll delta for this container.
+  ///
+  /// This is consumed by `scroll-state(scrolled: ...)` container queries.
+  pub scrolled_delta: Point,
 }
 
 /// Map of styled-node ids to their resolved container query metrics.
@@ -11107,14 +11368,7 @@ pub fn apply_styles_with_media_target_and_interaction_state(
   };
 
   prepared
-    .apply(
-      target_fragment,
-      interaction_state,
-      None,
-      None,
-      None,
-      None,
-    )
+    .apply(target_fragment, interaction_state, None, None, None, None)
     .unwrap_or_else(|_| fallback_styled_tree(dom))
 }
 
@@ -11185,16 +11439,16 @@ pub fn explain_property_for_node_with_imports(
   style_set.shadows = shadow_sheets;
 
   let mut prepared = PreparedCascade::new_for_style_set(
-      dom,
-      &style_set,
-      media_ctx,
-      import_loader,
-      base_url,
-      None,
-      None,
-      false,
-      CascadeOptions::default(),
-    )?;
+    dom,
+    &style_set,
+    media_ctx,
+    import_loader,
+    base_url,
+    None,
+    None,
+    false,
+    CascadeOptions::default(),
+  )?;
 
   with_target_fragment(target_fragment, || {
     with_image_set_dpr(media_ctx.device_pixel_ratio, || {
@@ -14375,7 +14629,11 @@ fn part_names(node: &DomNode) -> Vec<CssString> {
   names
 }
 
-fn exported_pseudo_part_names(node_id: usize, pseudo: &PseudoElement, dom_maps: &DomMaps) -> Vec<CssString> {
+fn exported_pseudo_part_names(
+  node_id: usize,
+  pseudo: &PseudoElement,
+  dom_maps: &DomMaps,
+) -> Vec<CssString> {
   let Some(mappings) = dom_maps.exportparts_map.get(&node_id) else {
     return Vec::new();
   };
@@ -14448,7 +14706,9 @@ fn match_exported_pseudo_part_rules<'a>(
   if !ancestors
     .iter()
     .any(|ancestor| matches!(ancestor.node_type, DomNodeType::ShadowRoot { .. }))
-    || ancestors.iter().any(|ancestor| ancestor.template_contents_are_inert())
+    || ancestors
+      .iter()
+      .any(|ancestor| ancestor.template_contents_are_inert())
   {
     return Vec::new();
   }
@@ -14549,8 +14809,13 @@ fn match_exported_pseudo_part_rules<'a>(
           None => current_slot_map,
         };
 
-        let host_ref =
-          build_element_ref_chain(host, host_id, host_ancestors, slot_map, Some(element_attr_cache));
+        let host_ref = build_element_ref_chain(
+          host,
+          host_id,
+          host_ancestors,
+          slot_map,
+          Some(element_attr_cache),
+        );
         let shadow_host = if allow_shadow_host {
           containing_scope_host
             .and_then(|scope_host_id| {
@@ -14676,18 +14941,15 @@ fn match_exported_pseudo_part_rules<'a>(
                 })
               })
             }
-            ScopeMatchResult::Unscoped => match_with_shadow_host(
-              allow_shadow_host,
-              &mut context,
-              shadow_host,
-              |ctx| {
+            ScopeMatchResult::Unscoped => {
+              match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
                 let prev_bloom_filter = ctx.bloom_filter;
                 ctx.bloom_filter = None;
                 let matched = matches_selector(selector, offset, None, &host_ref, ctx);
                 ctx.bloom_filter = prev_bloom_filter;
                 matched
-              },
-            ),
+              })
+            }
           };
 
           if allow_shadow_host && !selector_matches && selector_contains_host_context(selector) {
@@ -14707,11 +14969,8 @@ fn match_exported_pseudo_part_rules<'a>(
                   })
                 })
               }
-              ScopeMatchResult::Unscoped => match_with_shadow_host(
-                allow_shadow_host,
-                &mut context,
-                shadow_host,
-                |ctx| {
+              ScopeMatchResult::Unscoped => {
+                match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
                   ctx.with_allow_featureless_host_traversal(true, |ctx| {
                     let prev_bloom_filter = ctx.bloom_filter;
                     ctx.bloom_filter = None;
@@ -14719,12 +14978,13 @@ fn match_exported_pseudo_part_rules<'a>(
                     ctx.bloom_filter = prev_bloom_filter;
                     matched
                   })
-                },
-              ),
+                })
+              }
             };
           }
 
-          if allow_shadow_host && !selector_matches && selector_contains_nonleftmost_host(selector) {
+          if allow_shadow_host && !selector_matches && selector_contains_nonleftmost_host(selector)
+          {
             selector_matches = match scope_match {
               ScopeMatchResult::Scoped(scope_root) => {
                 let (root, root_ancestors) = scope_root.root_and_ancestors(host, host_ancestors);
@@ -14741,11 +15001,8 @@ fn match_exported_pseudo_part_rules<'a>(
                   })
                 })
               }
-              ScopeMatchResult::Unscoped => match_with_shadow_host(
-                allow_shadow_host,
-                &mut context,
-                shadow_host,
-                |ctx| {
+              ScopeMatchResult::Unscoped => {
+                match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
                   ctx.with_allow_featureless_host_traversal(true, |ctx| {
                     let prev_bloom_filter = ctx.bloom_filter;
                     ctx.bloom_filter = None;
@@ -14753,8 +15010,8 @@ fn match_exported_pseudo_part_rules<'a>(
                     ctx.bloom_filter = prev_bloom_filter;
                     matched
                   })
-                },
-              ),
+                })
+              }
             };
           }
 
@@ -15002,8 +15259,12 @@ fn match_part_rules_internal<'a>(
             continue;
           }
 
-          if !rules.metadata_matches_node(indexed.metadata_id, node, node_summary, scopes.quirks_mode)
-          {
+          if !rules.metadata_matches_node(
+            indexed.metadata_id,
+            node,
+            node_summary,
+            scopes.quirks_mode,
+          ) {
             continue;
           }
 
@@ -15015,10 +15276,14 @@ fn match_part_rules_internal<'a>(
 
           let rule = &rules.rules[indexed.rule_idx];
           if !rule.container_conditions.is_empty() {
-            let container_matches = container_ctx
-              .is_some_and(|ctx| {
-                ctx.matches(node_id, query_ancestor_ids, &rule.container_conditions, include_self_container)
-              });
+            let container_matches = container_ctx.is_some_and(|ctx| {
+              ctx.matches(
+                node_id,
+                query_ancestor_ids,
+                &rule.container_conditions,
+                include_self_container,
+              )
+            });
             if !container_matches {
               continue;
             }
@@ -15065,11 +15330,8 @@ fn match_part_rules_internal<'a>(
                 })
               })
             }
-            ScopeMatchResult::Unscoped => match_with_shadow_host(
-              allow_shadow_host,
-              &mut context,
-              shadow_host,
-              |ctx| {
+            ScopeMatchResult::Unscoped => {
+              match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
                 let prev_bloom_filter = ctx.bloom_filter;
                 ctx.bloom_filter = None;
                 let matched = matches_selector_cascade_counted(
@@ -15080,8 +15342,8 @@ fn match_part_rules_internal<'a>(
                 );
                 ctx.bloom_filter = prev_bloom_filter;
                 matched
-              },
-            ),
+              })
+            }
           };
 
           if allow_shadow_host && !selector_matches && selector_contains_host_context(selector) {
@@ -15106,11 +15368,8 @@ fn match_part_rules_internal<'a>(
                   })
                 })
               }
-              ScopeMatchResult::Unscoped => match_with_shadow_host(
-                allow_shadow_host,
-                &mut context,
-                shadow_host,
-                |ctx| {
+              ScopeMatchResult::Unscoped => {
+                match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
                   ctx.with_allow_featureless_host_traversal(true, |ctx| {
                     let prev_bloom_filter = ctx.bloom_filter;
                     ctx.bloom_filter = None;
@@ -15123,12 +15382,13 @@ fn match_part_rules_internal<'a>(
                     ctx.bloom_filter = prev_bloom_filter;
                     matched
                   })
-                },
-              ),
+                })
+              }
             };
           }
 
-          if allow_shadow_host && !selector_matches && selector_contains_nonleftmost_host(selector) {
+          if allow_shadow_host && !selector_matches && selector_contains_nonleftmost_host(selector)
+          {
             selector_matches = match scope_match {
               ScopeMatchResult::Scoped(scope_root) => {
                 let (root, root_ancestors) = scope_root.root_and_ancestors(node, ancestors);
@@ -15150,11 +15410,8 @@ fn match_part_rules_internal<'a>(
                   })
                 })
               }
-              ScopeMatchResult::Unscoped => match_with_shadow_host(
-                allow_shadow_host,
-                &mut context,
-                shadow_host,
-                |ctx| {
+              ScopeMatchResult::Unscoped => {
+                match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
                   ctx.with_allow_featureless_host_traversal(true, |ctx| {
                     let prev_bloom_filter = ctx.bloom_filter;
                     ctx.bloom_filter = None;
@@ -15167,8 +15424,8 @@ fn match_part_rules_internal<'a>(
                     ctx.bloom_filter = prev_bloom_filter;
                     matched
                   })
-                },
-              ),
+                })
+              }
             };
           }
 
@@ -15405,8 +15662,14 @@ fn match_slotted_pseudo_rules<'a>(
     }
 
     if !rule.container_conditions.is_empty() {
-      let matches_container = container_ctx
-        .is_some_and(|ctx| ctx.matches(node_id, query_ancestor_ids, &rule.container_conditions, include_self_container));
+      let matches_container = container_ctx.is_some_and(|ctx| {
+        ctx.matches(
+          node_id,
+          query_ancestor_ids,
+          &rule.container_conditions,
+          include_self_container,
+        )
+      });
       if !matches_container {
         idx = end;
         continue;
@@ -15470,20 +15733,22 @@ fn match_slotted_pseudo_rules<'a>(
             })
           })
         }
-        ScopeMatchResult::Unscoped => match_with_shadow_host(true, &mut context, shadow_host_for_slotted, |ctx| {
-          ctx.with_featureless(false, |ctx| {
-            let prev_bloom_filter = ctx.bloom_filter;
-            ctx.bloom_filter = None;
-            let matched = matches_selector_cascade_counted(
-              selector,
-              Some(&indexed.ancestor_hashes),
-              &element_ref,
-              ctx,
-            );
-            ctx.bloom_filter = prev_bloom_filter;
-            matched
+        ScopeMatchResult::Unscoped => {
+          match_with_shadow_host(true, &mut context, shadow_host_for_slotted, |ctx| {
+            ctx.with_featureless(false, |ctx| {
+              let prev_bloom_filter = ctx.bloom_filter;
+              ctx.bloom_filter = None;
+              let matched = matches_selector_cascade_counted(
+                selector,
+                Some(&indexed.ancestor_hashes),
+                &element_ref,
+                ctx,
+              );
+              ctx.bloom_filter = prev_bloom_filter;
+              matched
+            })
           })
-        }),
+        }
       };
 
       if !selector_matches && selector_contains_host_context(selector) {
@@ -15510,22 +15775,24 @@ fn match_slotted_pseudo_rules<'a>(
               })
             })
           }
-          ScopeMatchResult::Unscoped => match_with_shadow_host(true, &mut context, shadow_host_for_slotted, |ctx| {
-            ctx.with_featureless(false, |ctx| {
-              ctx.with_allow_featureless_host_traversal(true, |ctx| {
-                let prev_bloom_filter = ctx.bloom_filter;
-                ctx.bloom_filter = None;
-                let matched = matches_selector_cascade_counted(
-                  selector,
-                  Some(&indexed.ancestor_hashes),
-                  &element_ref,
-                  ctx,
-                );
-                ctx.bloom_filter = prev_bloom_filter;
-                matched
+          ScopeMatchResult::Unscoped => {
+            match_with_shadow_host(true, &mut context, shadow_host_for_slotted, |ctx| {
+              ctx.with_featureless(false, |ctx| {
+                ctx.with_allow_featureless_host_traversal(true, |ctx| {
+                  let prev_bloom_filter = ctx.bloom_filter;
+                  ctx.bloom_filter = None;
+                  let matched = matches_selector_cascade_counted(
+                    selector,
+                    Some(&indexed.ancestor_hashes),
+                    &element_ref,
+                    ctx,
+                  );
+                  ctx.bloom_filter = prev_bloom_filter;
+                  matched
+                })
               })
             })
-          }),
+          }
         };
       }
 
@@ -15553,22 +15820,24 @@ fn match_slotted_pseudo_rules<'a>(
               })
             })
           }
-          ScopeMatchResult::Unscoped => match_with_shadow_host(true, &mut context, shadow_host_for_slotted, |ctx| {
-            ctx.with_featureless(false, |ctx| {
-              ctx.with_allow_featureless_host_traversal(true, |ctx| {
-                let prev_bloom_filter = ctx.bloom_filter;
-                ctx.bloom_filter = None;
-                let matched = matches_selector_cascade_counted(
-                  selector,
-                  Some(&indexed.ancestor_hashes),
-                  &element_ref,
-                  ctx,
-                );
-                ctx.bloom_filter = prev_bloom_filter;
-                matched
+          ScopeMatchResult::Unscoped => {
+            match_with_shadow_host(true, &mut context, shadow_host_for_slotted, |ctx| {
+              ctx.with_featureless(false, |ctx| {
+                ctx.with_allow_featureless_host_traversal(true, |ctx| {
+                  let prev_bloom_filter = ctx.bloom_filter;
+                  ctx.bloom_filter = None;
+                  let matched = matches_selector_cascade_counted(
+                    selector,
+                    Some(&indexed.ancestor_hashes),
+                    &element_ref,
+                    ctx,
+                  );
+                  ctx.bloom_filter = prev_bloom_filter;
+                  matched
+                })
               })
             })
-          }),
+          }
         };
       }
 
@@ -16065,7 +16334,10 @@ fn compute_base_styles<'a>(
       styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
       styles.recompute_inherited_custom_properties(parent_styles, viewport);
     }
-    if !Arc::ptr_eq(&styles.position_try_registry, &tree_scoped_position_try_registry) {
+    if !Arc::ptr_eq(
+      &styles.position_try_registry,
+      &tree_scoped_position_try_registry,
+    ) {
       styles.position_try_registry = tree_scoped_position_try_registry.clone();
     }
     propagate_text_decorations(node, &mut styles, parent_styles);
@@ -16227,7 +16499,10 @@ fn compute_base_styles<'a>(
   ));
   if is_root {
     if let Some(pref) = meta_color_scheme {
-      matching_rules.push(meta_color_scheme_matched_rule(pref, unlayered_layer_order.clone()));
+      matching_rules.push(meta_color_scheme_matched_rule(
+        pref,
+        unlayered_layer_order.clone(),
+      ));
     }
   }
   if include_starting_style {
@@ -16315,7 +16590,10 @@ fn compute_base_styles<'a>(
     styles.custom_property_registry = tree_scoped_custom_property_registry;
     styles.recompute_inherited_custom_properties(parent_styles, viewport);
   }
-  if !Arc::ptr_eq(&styles.position_try_registry, &tree_scoped_position_try_registry) {
+  if !Arc::ptr_eq(
+    &styles.position_try_registry,
+    &tree_scoped_position_try_registry,
+  ) {
     styles.position_try_registry = tree_scoped_position_try_registry;
   }
 
@@ -16487,14 +16765,23 @@ fn compute_base_styles<'a>(
     };
 
     if needs_substitution_context {
-      crate::style::var_resolution::with_substitution_context(node, viewport, color_scheme_pref, || {
-        recompute_var_and_current_color();
-      });
+      crate::style::var_resolution::with_substitution_context(
+        node,
+        viewport,
+        color_scheme_pref,
+        || {
+          recompute_var_and_current_color();
+        },
+      );
     } else {
       recompute_var_and_current_color();
     }
 
-    current_root_font_size = if is_root { styles.font_size } else { root_font_size };
+    current_root_font_size = if is_root {
+      styles.font_size
+    } else {
+      root_font_size
+    };
     styles.root_font_size = current_root_font_size;
     resolve_line_height_length(&mut styles, viewport);
     resolve_absolute_lengths(&mut styles, current_root_font_size, viewport);
@@ -16741,8 +17028,9 @@ fn compute_pseudo_styles(
   } else {
     Cow::Borrowed(ancestor_ids)
   };
-  let exportparts_pseudo_allowed =
-    !ancestors.iter().any(|ancestor| ancestor.template_contents_are_inert());
+  let exportparts_pseudo_allowed = !ancestors
+    .iter()
+    .any(|ancestor| ancestor.template_contents_are_inert());
   let has_exported_backdrop_part = exportparts_pseudo_allowed
     && !exported_pseudo_part_names(node_id, &PseudoElement::Backdrop, dom_maps).is_empty();
   let mut backdrop_styles = None;
@@ -17897,16 +18185,16 @@ fn apply_styles_internal_with_ancestors<'a>(
         if let Some(cached) = shared {
           (FrameBase::Shared { cached }, None)
         } else {
-           let base = Box::new(compute_base_styles(
-             child,
-             rule_scopes,
-             child_scope,
-             interaction_state,
-             selector_caches,
-             scratch,
-             inline_style_decls,
-             inheritance_parent_styles,
-             inheritance_parent_ua_styles,
+          let base = Box::new(compute_base_styles(
+            child,
+            rule_scopes,
+            child_scope,
+            interaction_state,
+            selector_caches,
+            scratch,
+            inline_style_decls,
+            inheritance_parent_styles,
+            inheritance_parent_ua_styles,
             inheritance_root_font_size,
             inheritance_ua_root_font_size,
             viewport,
@@ -17945,16 +18233,16 @@ fn apply_styles_internal_with_ancestors<'a>(
                 start_parent_root_font_size = start_parent_styles.root_font_size;
               }
             }
-             Some(Box::new(compute_base_styles(
-               child,
-               rule_scopes,
-               child_scope,
-               interaction_state,
-               selector_caches,
-               scratch,
-               inline_style_decls,
-               start_parent_styles,
-               inheritance_parent_ua_styles,
+            Some(Box::new(compute_base_styles(
+              child,
+              rule_scopes,
+              child_scope,
+              interaction_state,
+              selector_caches,
+              scratch,
+              inline_style_decls,
+              start_parent_styles,
+              inheritance_parent_ua_styles,
               start_parent_root_font_size,
               inheritance_ua_root_font_size,
               viewport,
@@ -18200,10 +18488,7 @@ fn apply_styles_internal_with_ancestors<'a>(
               }),
             );
           } else {
-            debug_assert!(
-              false,
-              "shareable keys require a UA computed style snapshot"
-            );
+            debug_assert!(false, "shareable keys require a UA computed style snapshot");
           }
         }
 
@@ -19137,7 +19422,7 @@ mod tests {
     )
     .expect("parse stylesheet");
 
-      let focused_empty_input = DomNode {
+    let focused_empty_input = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "input".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
@@ -19150,8 +19435,11 @@ mod tests {
       focus_chain: vec![1],
       ..InteractionState::default()
     };
-    let styled_focused =
-      apply_styles_with_interaction_state(&focused_empty_input, &stylesheet, Some(&interaction_state));
+    let styled_focused = apply_styles_with_interaction_state(
+      &focused_empty_input,
+      &stylesheet,
+      Some(&interaction_state),
+    );
     assert_eq!(
       styled_focused.styles.opacity, 1.0,
       "vendor placeholder selectors should not affect the input element opacity"
@@ -21221,6 +21509,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -21415,6 +21705,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -21494,6 +21786,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -21638,6 +21932,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -21775,6 +22071,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -21950,6 +22248,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -22046,6 +22346,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -22122,6 +22424,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -22230,6 +22534,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -22354,7 +22660,14 @@ mod tests {
     // descendants to reuse cached subtrees.
     let container_scope = HashSet::from([1usize]);
     let recascaded = prepared
-      .apply(None, None, None, Some(&container_scope), Some(&reuse_map), None)
+      .apply(
+        None,
+        None,
+        None,
+        Some(&container_scope),
+        Some(&reuse_map),
+        None,
+      )
       .expect("scoped recascade");
 
     assert!(
@@ -22415,6 +22728,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -22539,6 +22854,8 @@ mod tests {
             scroll_offset: Point::ZERO,
             scroll_bounds: None,
             stuck_mask: 0,
+            snapped_mask: 0,
+            scrolled_delta: Point::ZERO,
           },
         ),
         (
@@ -22556,6 +22873,8 @@ mod tests {
             scroll_offset: Point::ZERO,
             scroll_bounds: None,
             stuck_mask: 0,
+            snapped_mask: 0,
+            scrolled_delta: Point::ZERO,
           },
         ),
       ]),
@@ -22634,6 +22953,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -22677,6 +22998,8 @@ mod tests {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     containers.insert(
@@ -22694,6 +23017,8 @@ mod tests {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let ctx = ContainerQueryContext {
@@ -22748,6 +23073,8 @@ mod tests {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     containers.insert(
@@ -22765,6 +23092,8 @@ mod tests {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let ctx = ContainerQueryContext {
@@ -22807,6 +23136,8 @@ mod tests {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     containers.insert(
@@ -22824,6 +23155,8 @@ mod tests {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let ctx = ContainerQueryContext {
@@ -22866,6 +23199,8 @@ mod tests {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     containers.insert(
@@ -22883,6 +23218,8 @@ mod tests {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let ctx = ContainerQueryContext {
@@ -27240,10 +27577,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![(
-          "data-text".to_string(),
-          "Our business".to_string(),
-        )],
+        attributes: vec![("data-text".to_string(), "Our business".to_string())],
       },
       children: vec![],
     };
@@ -27252,7 +27586,10 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parse_stylesheet("div::after { content: attr(data-text); }").expect("stylesheet");
     let styled = apply_styles(&dom, &stylesheet);
     let after = styled.after_styles.as_ref().expect("generated ::after");
-    assert_eq!(after.content_value, ContentValue::from_string("Our business"));
+    assert_eq!(
+      after.content_value,
+      ContentValue::from_string("Our business")
+    );
   }
 
   #[test]
@@ -30615,13 +30952,11 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
 
     let styled = apply_styles(&dom, &StyleSheet::new());
     assert_eq!(styled.styles.color, Rgba::RED);
-    assert!(
-      styled
-        .styles
-        .font_family
-        .iter()
-        .any(|family| family == "monospace")
-    );
+    assert!(styled
+      .styles
+      .font_family
+      .iter()
+      .any(|family| family == "monospace"));
   }
 
   #[test]
@@ -30713,13 +31048,11 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let svg = &styled.children[1];
 
     assert_eq!(svg.styles.color, Rgba::rgb(0, 128, 0));
-    assert!(
-      svg
-        .styles
-        .font_family
-        .iter()
-        .any(|family| family == "sans-serif")
-    );
+    assert!(svg
+      .styles
+      .font_family
+      .iter()
+      .any(|family| family == "sans-serif"));
   }
 
   #[test]
@@ -32111,7 +32444,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
 
     let mut interaction_state = InteractionState::default();
     interaction_state.visited_links.insert(1);
-    let styled_visited = apply_styles_with_interaction_state(&visited, &StyleSheet::new(), Some(&interaction_state));
+    let styled_visited =
+      apply_styles_with_interaction_state(&visited, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_visited.styles.color, Rgba::new(85, 26, 139, 1.0));
 
     let active = DomNode {
@@ -32127,7 +32461,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       active_chain: vec![1],
       ..InteractionState::default()
     };
-    let styled_active = apply_styles_with_interaction_state(&active, &StyleSheet::new(), Some(&interaction_state));
+    let styled_active =
+      apply_styles_with_interaction_state(&active, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_active.styles.color, Rgba::new(255, 0, 0, 1.0));
   }
 
@@ -32146,7 +32481,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       hover_chain: vec![1],
       ..InteractionState::default()
     };
-    let styled_hover = apply_styles_with_interaction_state(&hover, &StyleSheet::new(), Some(&interaction_state));
+    let styled_hover =
+      apply_styles_with_interaction_state(&hover, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_hover.styles.color, Rgba::new(255, 0, 0, 1.0));
 
     let focus = DomNode {
@@ -32163,7 +32499,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       focus_chain: vec![1],
       ..InteractionState::default()
     };
-    let styled_focus = apply_styles_with_interaction_state(&focus, &StyleSheet::new(), Some(&interaction_state));
+    let styled_focus =
+      apply_styles_with_interaction_state(&focus, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_focus.styles.outline_style, OutlineStyle::Dotted);
     assert_eq!(styled_focus.styles.outline_width, Length::px(1.0));
   }
@@ -33223,6 +33560,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -33307,6 +33646,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     containers.insert(
@@ -33324,6 +33665,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -33412,6 +33755,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     containers.insert(
@@ -33429,6 +33774,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -33517,6 +33864,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     containers.insert(
@@ -33534,6 +33883,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -33615,6 +33966,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -36723,7 +37076,11 @@ pub(crate) fn resolve_absolute_lengths(
       LengthUnit::Ch => Length::px(len.value * styles.font_size * 0.5),
       LengthUnit::Rem => Length::px(len.value * root_font_size),
       u if u.is_viewport_relative() => len
-        .resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, styles.writing_mode)
+        .resolve_with_viewport_for_writing_mode(
+          viewport.width,
+          viewport.height,
+          styles.writing_mode,
+        )
         .map(Length::px)
         .unwrap_or(len),
       _ => len,
@@ -36939,8 +37296,8 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
     match typed {
       // `<length>` and `<length-percentage>` share the same typed representation (`Length`).
       // Canonicalize by resolving any non-% terms into px while preserving percentage components.
-      CustomPropertyTypedValue::Length(len) => CustomPropertyTypedValue::Length(
-        (*len).resolve_non_percentage_terms_to_px(
+      CustomPropertyTypedValue::Length(len) => {
+        CustomPropertyTypedValue::Length((*len).resolve_non_percentage_terms_to_px(
           viewport.width,
           viewport.height,
           styles.font_size,
@@ -36951,8 +37308,8 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
           cqi_base,
           cqb_base,
           styles.writing_mode,
-        ),
-      ),
+        ))
+      }
       CustomPropertyTypedValue::Number(n) => CustomPropertyTypedValue::Number(*n),
       CustomPropertyTypedValue::Integer(i) => CustomPropertyTypedValue::Integer(*i),
       CustomPropertyTypedValue::Percentage(p) => CustomPropertyTypedValue::Percentage(*p),
@@ -36960,11 +37317,9 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
       CustomPropertyTypedValue::TimeMs(ms) => {
         CustomPropertyTypedValue::TimeMs(if *ms == 0.0 { 0.0 } else { *ms })
       }
-      CustomPropertyTypedValue::ResolutionDppx(dppx) => CustomPropertyTypedValue::ResolutionDppx(if *dppx == 0.0 {
-        0.0
-      } else {
-        *dppx
-      }),
+      CustomPropertyTypedValue::ResolutionDppx(dppx) => {
+        CustomPropertyTypedValue::ResolutionDppx(if *dppx == 0.0 { 0.0 } else { *dppx })
+      }
       CustomPropertyTypedValue::Color(color) => {
         let rgba = color.to_rgba_with_scheme_and_forced_colors(
           styles.color,
@@ -38234,7 +38589,8 @@ fn svg_presentation_attribute_hints(
     let Some(parsed) = parse_property_value(property, value) else {
       return;
     };
-    let contains_var = crate::style::var_resolution::contains_arbitrary_substitution_function(value);
+    let contains_var =
+      crate::style::var_resolution::contains_arbitrary_substitution_function(value);
     decls.push(Declaration {
       property: property.into(),
       value: parsed,
@@ -38464,7 +38820,8 @@ fn svg_presentation_attribute_hints(
   let transform_attr_value = if let Some(tag) = node.tag_name() {
     if tag.eq_ignore_ascii_case("pattern") {
       node.get_attribute_ref("patternTransform")
-    } else if tag.eq_ignore_ascii_case("linearGradient") || tag.eq_ignore_ascii_case("radialGradient")
+    } else if tag.eq_ignore_ascii_case("linearGradient")
+      || tag.eq_ignore_ascii_case("radialGradient")
     {
       node.get_attribute_ref("gradientTransform")
     } else {
@@ -38778,7 +39135,9 @@ fn compute_pseudo_element_styles(
     slot_assignment,
     pseudo,
   );
-  let exportparts_allows = !ancestors.iter().any(|ancestor| ancestor.template_contents_are_inert());
+  let exportparts_allows = !ancestors
+    .iter()
+    .any(|ancestor| ancestor.template_contents_are_inert());
   let has_exported_pseudo_part =
     exportparts_allows && !exported_pseudo_part_names(node_id, pseudo, dom_maps).is_empty();
   if !has_pseudo_rules && !has_exported_pseudo_part {
@@ -39420,8 +39779,9 @@ fn compute_marker_styles(
     slot_assignment,
     &PseudoElement::Marker,
   );
-  let exportparts_pseudo_allowed =
-    !ancestors.iter().any(|ancestor| ancestor.template_contents_are_inert());
+  let exportparts_pseudo_allowed = !ancestors
+    .iter()
+    .any(|ancestor| ancestor.template_contents_are_inert());
   let has_exported_part = exportparts_pseudo_allowed
     && !exported_pseudo_part_names(node_id, &PseudoElement::Marker, dom_maps).is_empty();
 

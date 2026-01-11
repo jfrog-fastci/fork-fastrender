@@ -458,6 +458,8 @@ fn part_container_query_is_evaluated_against_the_part_element() {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };
@@ -545,6 +547,8 @@ fn part_container_query_uses_flat_tree_ancestors_when_host_is_slotted() {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       )]),
     };

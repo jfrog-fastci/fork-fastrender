@@ -21,6 +21,10 @@ pub struct ScrollState {
   pub viewport: Point,
   /// Scroll offsets for element scroll containers keyed by box_id
   pub elements: HashMap<usize, Point>,
+  /// Most recent viewport scroll delta (relative offset change).
+  pub viewport_delta: Point,
+  /// Most recent scroll deltas for element scroll containers keyed by box_id.
+  pub elements_delta: HashMap<usize, Point>,
 }
 
 impl ScrollState {
@@ -31,12 +35,37 @@ impl ScrollState {
 
   /// Creates a scroll state with explicit viewport and element offsets.
   pub fn from_parts(viewport: Point, elements: HashMap<usize, Point>) -> Self {
-    Self { viewport, elements }
+    Self {
+      viewport,
+      elements,
+      viewport_delta: Point::ZERO,
+      elements_delta: HashMap::new(),
+    }
+  }
+
+  /// Creates a scroll state with explicit offsets and deltas.
+  pub fn from_parts_with_deltas(
+    viewport: Point,
+    elements: HashMap<usize, Point>,
+    viewport_delta: Point,
+    elements_delta: HashMap<usize, Point>,
+  ) -> Self {
+    Self {
+      viewport,
+      elements,
+      viewport_delta,
+      elements_delta,
+    }
   }
 
   /// Returns the stored scroll offset for an element, if present.
   pub fn element_offset(&self, id: usize) -> Point {
     self.elements.get(&id).copied().unwrap_or(Point::ZERO)
+  }
+
+  /// Returns the stored scroll delta for an element, if present.
+  pub fn element_delta(&self, id: usize) -> Point {
+    self.elements_delta.get(&id).copied().unwrap_or(Point::ZERO)
   }
 }
 
@@ -49,6 +78,7 @@ impl Default for ScrollState {
 /// A single snap target along an axis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrollSnapTarget {
+  pub box_id: Option<usize>,
   pub position: f32,
   pub stop: ScrollSnapStop,
 }
@@ -62,6 +92,8 @@ pub struct ScrollSnapContainer {
   pub behavior: ScrollBehavior,
   pub snap_x: bool,
   pub snap_y: bool,
+  pub axis_is_inline_for_x: bool,
+  pub axis_is_inline_for_y: bool,
   pub padding_x: (f32, f32),
   pub padding_y: (f32, f32),
   pub scroll_bounds: Rect,
@@ -143,7 +175,11 @@ fn resolve_snap_length(len: Length, percentage_base: f32) -> f32 {
 }
 
 fn sanitize_snap_length(value: f32) -> f32 {
-  if value.is_finite() { value } else { 0.0 }
+  if value.is_finite() {
+    value
+  } else {
+    0.0
+  }
 }
 
 fn sanitize_scroll_padding(value: f32) -> f32 {
@@ -473,10 +509,19 @@ fn overflow_clip_rect(node: &FragmentNode, style: &ComputedStyle, viewport: Size
   let min_y = base_y.min_y() - expand_y;
   let max_y = base_y.max_y() + expand_y;
 
-  Rect::from_xywh(min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+  Rect::from_xywh(
+    min_x,
+    min_y,
+    (max_x - min_x).max(0.0),
+    (max_y - min_y).max(0.0),
+  )
 }
 
-fn clip_rect_from_style(node: &FragmentNode, style: &ComputedStyle, viewport: Size) -> Option<Rect> {
+fn clip_rect_from_style(
+  node: &FragmentNode,
+  style: &ComputedStyle,
+  viewport: Size,
+) -> Option<Rect> {
   if !matches!(style.position, Position::Absolute | Position::Fixed) {
     return None;
   }
@@ -484,16 +529,16 @@ fn clip_rect_from_style(node: &FragmentNode, style: &ComputedStyle, viewport: Si
   let width = node.bounds.width().max(0.0);
   let height = node.bounds.height().max(0.0);
 
-  let resolve_component = |component: &crate::style::types::ClipComponent, base: f32| match component
-  {
-    crate::style::types::ClipComponent::Auto => None,
-    crate::style::types::ClipComponent::Length(len) => Some(resolve_length_with_context(
-      *len,
-      Some(base),
-      viewport,
-      style,
-    )),
-  };
+  let resolve_component =
+    |component: &crate::style::types::ClipComponent, base: f32| match component {
+      crate::style::types::ClipComponent::Auto => None,
+      crate::style::types::ClipComponent::Length(len) => Some(resolve_length_with_context(
+        *len,
+        Some(base),
+        viewport,
+        style,
+      )),
+    };
 
   let left_offset = resolve_component(&clip.left, width).unwrap_or(0.0);
   let top_offset = resolve_component(&clip.top, height).unwrap_or(0.0);
@@ -508,11 +553,7 @@ fn clip_rect_from_style(node: &FragmentNode, style: &ComputedStyle, viewport: Si
   ))
 }
 
-fn annotate_overflow(
-  node: &mut FragmentNode,
-  has_fixed_cb_ancestor: bool,
-  viewport: Size,
-) -> Rect {
+fn annotate_overflow(node: &mut FragmentNode, has_fixed_cb_ancestor: bool, viewport: Size) -> Rect {
   let mut overflow = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
   let has_fixed_cb_ancestor = has_fixed_cb_ancestor
     || node
@@ -711,6 +752,7 @@ impl PendingContainer {
         self.start_positive_x,
       ) {
         self.targets_x.push(ScrollSnapTarget {
+          box_id: fragment_box_id(node),
           position: pos,
           stop: style.scroll_snap_stop,
         });
@@ -749,6 +791,7 @@ impl PendingContainer {
         self.start_positive_y,
       ) {
         self.targets_y.push(ScrollSnapTarget {
+          box_id: fragment_box_id(node),
           position: pos,
           stop: style.scroll_snap_stop,
         });
@@ -824,6 +867,8 @@ impl PendingContainer {
       behavior: self.behavior,
       snap_x: self.snap_x,
       snap_y: self.snap_y,
+      axis_is_inline_for_x: self.axis_is_inline_for_x,
+      axis_is_inline_for_y: self.axis_is_inline_for_y,
       padding_x: self.padding_x,
       padding_y: self.padding_y,
       scroll_bounds,
@@ -911,6 +956,28 @@ fn collect_scroll_metadata(
   }
 }
 
+fn dedup_snap_targets(targets: &mut Vec<ScrollSnapTarget>) {
+  use std::collections::hash_map::Entry;
+  let mut seen: HashMap<(Option<usize>, u32), usize> = HashMap::new();
+  let mut out: Vec<ScrollSnapTarget> = Vec::with_capacity(targets.len());
+  for target in targets.drain(..) {
+    let key = (target.box_id, target.position.to_bits());
+    match seen.entry(key) {
+      Entry::Occupied(entry) => {
+        let existing = &mut out[*entry.get()];
+        if matches!(target.stop, ScrollSnapStop::Always) {
+          existing.stop = ScrollSnapStop::Always;
+        }
+      }
+      Entry::Vacant(entry) => {
+        entry.insert(out.len());
+        out.push(target);
+      }
+    }
+  }
+  *targets = out;
+}
+
 fn merge_containers(containers: Vec<ScrollSnapContainer>) -> Vec<ScrollSnapContainer> {
   let mut merged: Vec<ScrollSnapContainer> = Vec::new();
   let mut by_id: HashMap<usize, usize> = HashMap::new();
@@ -930,6 +997,14 @@ fn merge_containers(containers: Vec<ScrollSnapContainer>) -> Vec<ScrollSnapConta
       debug_assert_eq!(
         existing.uses_viewport_scroll,
         container.uses_viewport_scroll
+      );
+      debug_assert_eq!(
+        existing.axis_is_inline_for_x,
+        container.axis_is_inline_for_x
+      );
+      debug_assert_eq!(
+        existing.axis_is_inline_for_y,
+        container.axis_is_inline_for_y
       );
       existing.strictness = match (existing.strictness, container.strictness) {
         (ScrollSnapStrictness::Mandatory, _) | (_, ScrollSnapStrictness::Mandatory) => {
@@ -968,6 +1043,11 @@ fn merge_containers(containers: Vec<ScrollSnapContainer>) -> Vec<ScrollSnapConta
       }
       merged.push(container);
     }
+  }
+
+  for container in &mut merged {
+    dedup_snap_targets(&mut container.targets_x);
+    dedup_snap_targets(&mut container.targets_y);
   }
 
   merged
@@ -1065,7 +1145,11 @@ fn snap_axis(
     return current;
   }
 
-  let bounds_max = if vertical { bounds.max_y() } else { bounds.max_x() };
+  let bounds_max = if vertical {
+    bounds.max_y()
+  } else {
+    bounds.max_x()
+  };
   if !bounds_max.is_finite() {
     return current;
   }
@@ -1178,7 +1262,10 @@ fn apply_element_scroll_offsets(
   });
   let (cumulative_translation, has_fixed_cb_ancestor) = if is_viewport_fixed {
     if cumulative_translation != Point::ZERO {
-      node.translate_root_in_place(Point::new(-cumulative_translation.x, -cumulative_translation.y));
+      node.translate_root_in_place(Point::new(
+        -cumulative_translation.x,
+        -cumulative_translation.y,
+      ));
     }
     (Point::ZERO, false)
   } else {
@@ -1349,7 +1436,12 @@ fn collect_bounds(
     return;
   }
 
-  let rect = Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height());
+  let rect = Rect::from_xywh(
+    origin.x,
+    origin.y,
+    node.bounds.width(),
+    node.bounds.height(),
+  );
 
   // When bubbling descendant bounds into ancestor scroll containers, apply clipping established by
   // intermediate overflow/clip ancestors. Overflow clipping uses the scrollport (padding edge minus
@@ -1475,7 +1567,8 @@ pub(crate) fn scroll_bounds_for_fragment(
   // not union the border box because it can include reserved scrollbar gutters, which would
   // incorrectly allow scrolling even when the scrollable contents do not overflow.
   if treat_as_root
-    && container.scrollbar_reservation == crate::tree::fragment_tree::ScrollbarReservation::default()
+    && container.scrollbar_reservation
+      == crate::tree::fragment_tree::ScrollbarReservation::default()
   {
     bounds.update(Rect::from_xywh(
       0.0,
@@ -1643,8 +1736,8 @@ pub fn build_scroll_chain_with_root_mode<'a>(
     origin,
     current_viewport,
     treat_root_as_scroll_container,
-      has_fixed_cb_ancestor,
-    ));
+    has_fixed_cb_ancestor,
+  ));
 
   for &idx in path {
     if let Some(child) = current.children.get(idx) {
@@ -1655,7 +1748,13 @@ pub fn build_scroll_chain_with_root_mode<'a>(
           .is_some_and(|style| style.establishes_fixed_containing_block());
       origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
       current_viewport = child.bounds.size;
-      stack.push((child, origin, current_viewport, false, has_fixed_cb_ancestor));
+      stack.push((
+        child,
+        origin,
+        current_viewport,
+        false,
+        has_fixed_cb_ancestor,
+      ));
       current = child;
     } else {
       break;
@@ -1801,11 +1900,20 @@ fn apply_scroll_snap_for_container(
   }
 
   let padding_x = (
-    sanitize_scroll_padding(resolve_snap_length(style.scroll_padding_left, viewport.width)),
-    sanitize_scroll_padding(resolve_snap_length(style.scroll_padding_right, viewport.width)),
+    sanitize_scroll_padding(resolve_snap_length(
+      style.scroll_padding_left,
+      viewport.width,
+    )),
+    sanitize_scroll_padding(resolve_snap_length(
+      style.scroll_padding_right,
+      viewport.width,
+    )),
   );
   let padding_y = (
-    sanitize_scroll_padding(resolve_snap_length(style.scroll_padding_top, viewport.height)),
+    sanitize_scroll_padding(resolve_snap_length(
+      style.scroll_padding_top,
+      viewport.height,
+    )),
     sanitize_scroll_padding(resolve_snap_length(
       style.scroll_padding_bottom,
       viewport.height,
@@ -1999,8 +2107,10 @@ pub(crate) fn collect_snap_targets(
       }
     }
     if snap_y {
-      let margin_start =
-        sanitize_snap_length(resolve_snap_length(style.scroll_margin_top, viewport.height));
+      let margin_start = sanitize_snap_length(resolve_snap_length(
+        style.scroll_margin_top,
+        viewport.height,
+      ));
       let margin_end = sanitize_snap_length(resolve_snap_length(
         style.scroll_margin_bottom,
         viewport.height,

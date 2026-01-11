@@ -3856,8 +3856,33 @@ pub enum ScrollStateFeature {
     /// When omitted (boolean context), matches when the container is stuck in any direction.
     direction: Option<ScrollStateDirection>,
   },
+  /// `snapped` / `snapped: <axis>`
+  ///
+  /// Queries whether the query container is currently snapped as a scroll snap target.
+  Snapped {
+    /// When omitted (boolean context), matches when the container is snapped along any axis.
+    axis: Option<ScrollStateSnappedAxis>,
+  },
+  /// `scrolled` / `scrolled: <direction>`
+  ///
+  /// Queries the most recent scroll delta direction of a scroll container.
+  Scrolled {
+    /// When omitted (boolean context), matches when the container has scrolled in any direction.
+    direction: Option<ScrollStateDirection>,
+  },
   /// Unknown/unsupported feature preserved for forward compatibility.
   Unknown { name: String, value: Option<String> },
+}
+
+/// Axis keywords accepted by `scroll-state(snapped: ...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScrollStateSnappedAxis {
+  None,
+  X,
+  Y,
+  Block,
+  Inline,
+  Both,
 }
 
 /// Direction/axis keywords accepted by `scroll-state(scrollable: ...)`.

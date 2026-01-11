@@ -4,13 +4,13 @@ use fastrender::geometry::Point;
 use fastrender::style::cascade::{
   apply_styles_with_media_target_and_imports, ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
-use fastrender::style::media::MediaContext;
 use fastrender::style::custom_properties::CustomPropertyRegistry;
 use fastrender::style::custom_properties::PropertyRule;
+use fastrender::style::media::MediaContext;
 use fastrender::style::types::{ContainerType, LineHeight, WritingMode};
-use fastrender::style::values::CustomPropertyValue;
 use fastrender::style::values::CustomPropertySyntax;
 use fastrender::style::values::CustomPropertyTypedValue;
+use fastrender::style::values::CustomPropertyValue;
 use fastrender::style::values::Length;
 use fastrender::style::values::LengthUnit;
 use fastrender::style::ComputedStyle;
@@ -97,6 +97,8 @@ fn cascade_with_container_styles(
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -163,6 +165,8 @@ fn cascade_with_custom_container(
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -197,7 +201,9 @@ fn cascade_with_containers(
   let mut container_map = HashMap::new();
   for (id, info) in containers {
     let node = find_dom_by_id(&dom, id).expect("container node");
-    let node_id = *ids.get(&(node as *const DomNode)).expect("id for container");
+    let node_id = *ids
+      .get(&(node as *const DomNode))
+      .expect("id for container");
     container_map.insert(node_id, info);
   }
   let ctx = ContainerQueryContext {
@@ -488,10 +494,9 @@ fn container_query_comma_conditions_select_independent_containers() {
   "#;
 
   let mut inner_styles = ComputedStyle::default();
-  inner_styles.custom_properties.insert(
-    Arc::from("--large"),
-    CustomPropertyValue::new("true", None),
-  );
+  inner_styles
+    .custom_properties
+    .insert(Arc::from("--large"), CustomPropertyValue::new("true", None));
   let inner_styles = Arc::new(inner_styles);
   let outer_styles = Arc::new(ComputedStyle::default());
 
@@ -514,6 +519,8 @@ fn container_query_comma_conditions_select_independent_containers() {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       ),
       (
@@ -531,6 +538,8 @@ fn container_query_comma_conditions_select_independent_containers() {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       ),
     ],
@@ -574,6 +583,8 @@ fn container_query_comma_conditions_allow_distinct_names() {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       ),
       (
@@ -591,6 +602,8 @@ fn container_query_comma_conditions_allow_distinct_names() {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       ),
     ],
@@ -667,10 +680,9 @@ fn not_container_query_with_invalid_var_length_does_not_match() {
   "#;
 
   let mut style = ComputedStyle::default();
-  style.custom_properties.insert(
-    Arc::from("--bad"),
-    CustomPropertyValue::new("foo", None),
-  );
+  style
+    .custom_properties
+    .insert(Arc::from("--bad"), CustomPropertyValue::new("foo", None));
 
   let styled = cascade_with_container_styles(css, 500.0, vec![], Arc::new(style));
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
@@ -707,6 +719,8 @@ fn not_container_query_with_unknown_block_size_does_not_match() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -745,6 +759,8 @@ fn container_style_query_container_units_with_unknown_block_size_do_not_match() 
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -783,6 +799,8 @@ fn container_style_query_cqmin_with_unknown_block_size_do_not_match() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -821,6 +839,8 @@ fn container_style_query_zero_container_unit_with_unknown_block_size_matches() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -859,6 +879,8 @@ fn container_style_query_zero_cqmax_with_unknown_block_size_matches() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -897,6 +919,8 @@ fn not_container_style_query_with_unknown_block_size_does_not_match() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -935,6 +959,8 @@ fn container_style_query_plain_container_units_with_unknown_block_size_do_not_ma
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -973,6 +999,8 @@ fn container_style_query_plain_calc_cancellation_with_unknown_block_size_matches
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1011,6 +1039,8 @@ fn container_style_query_plain_cqmin_with_unknown_block_size_do_not_match() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1049,6 +1079,8 @@ fn not_container_style_query_plain_with_unknown_block_size_does_not_match() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1087,6 +1119,8 @@ fn not_container_style_query_transform_container_units_with_unknown_block_size_d
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1125,6 +1159,8 @@ fn not_container_style_query_box_shadow_container_units_with_unknown_block_size_
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1158,7 +1194,10 @@ fn container_style_query_custom_property_container_units_with_unknown_block_size
     Arc::from("--x"),
     CustomPropertyValue::new(
       "1cqb",
-      Some(CustomPropertyTypedValue::Length(Length::new(1.0, LengthUnit::Cqb))),
+      Some(CustomPropertyTypedValue::Length(Length::new(
+        1.0,
+        LengthUnit::Cqb,
+      ))),
     ),
   );
   let styles = Arc::new(style);
@@ -1181,6 +1220,8 @@ fn container_style_query_custom_property_container_units_with_unknown_block_size
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1214,7 +1255,10 @@ fn not_container_style_query_custom_property_with_unknown_block_size_does_not_ma
     Arc::from("--x"),
     CustomPropertyValue::new(
       "2cqb",
-      Some(CustomPropertyTypedValue::Length(Length::new(2.0, LengthUnit::Cqb))),
+      Some(CustomPropertyTypedValue::Length(Length::new(
+        2.0,
+        LengthUnit::Cqb,
+      ))),
     ),
   );
   let styles = Arc::new(style);
@@ -1237,6 +1281,8 @@ fn not_container_style_query_custom_property_with_unknown_block_size_does_not_ma
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1270,7 +1316,10 @@ fn container_style_query_custom_property_cqmin_with_unknown_block_size_do_not_ma
     Arc::from("--x"),
     CustomPropertyValue::new(
       "1cqmin",
-      Some(CustomPropertyTypedValue::Length(Length::new(1.0, LengthUnit::Cqmin))),
+      Some(CustomPropertyTypedValue::Length(Length::new(
+        1.0,
+        LengthUnit::Cqmin,
+      ))),
     ),
   );
   let styles = Arc::new(style);
@@ -1293,6 +1342,8 @@ fn container_style_query_custom_property_cqmin_with_unknown_block_size_do_not_ma
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1326,7 +1377,10 @@ fn container_style_query_custom_property_zero_cqmax_with_unknown_block_size_matc
     Arc::from("--x"),
     CustomPropertyValue::new(
       "0cqmax",
-      Some(CustomPropertyTypedValue::Length(Length::new(0.0, LengthUnit::Cqmax))),
+      Some(CustomPropertyTypedValue::Length(Length::new(
+        0.0,
+        LengthUnit::Cqmax,
+      ))),
     ),
   );
   let styles = Arc::new(style);
@@ -1349,6 +1403,8 @@ fn container_style_query_custom_property_zero_cqmax_with_unknown_block_size_matc
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1387,6 +1443,8 @@ fn container_query_cqmin_with_unknown_block_size_do_not_match() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1425,6 +1483,8 @@ fn container_query_container_units_with_unknown_block_size_do_not_match() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1463,6 +1523,8 @@ fn container_query_zero_container_unit_with_unknown_block_size_matches() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1501,6 +1563,8 @@ fn container_query_zero_cqmax_with_unknown_block_size_matches() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1681,6 +1745,8 @@ fn container_query_resolves_lh_against_container_line_height() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1724,6 +1790,8 @@ fn container_query_resolves_lh_inside_calc_in_size_features() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );
@@ -1768,6 +1836,8 @@ fn container_query_resolves_cap_and_rlh_fallbacks() {
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
         stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::ZERO,
       },
     )],
   );

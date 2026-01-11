@@ -103,6 +103,8 @@ fn container_size_query_var_resolves_per_container() {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   containers.insert(
@@ -120,6 +122,8 @@ fn container_size_query_var_resolves_per_container() {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -141,8 +145,14 @@ fn container_size_query_var_resolves_per_container() {
     None,
   );
 
-  assert_eq!(display(find_by_id(&styled, "t1").expect("target 1")), "inline");
-  assert_eq!(display(find_by_id(&styled, "t2").expect("target 2")), "block");
+  assert_eq!(
+    display(find_by_id(&styled, "t1").expect("target 1")),
+    "inline"
+  );
+  assert_eq!(
+    display(find_by_id(&styled, "t2").expect("target 2")),
+    "block"
+  );
 }
 
 #[test]
@@ -157,7 +167,9 @@ fn container_size_query_var_fallback_used_when_missing() {
   let dom = dom::parse_html(HTML_ONE_CONTAINER).unwrap();
   let ids = dom::enumerate_dom_ids(&dom);
   let container = find_dom_by_id(&dom, "c1").expect("container");
-  let container_id = *ids.get(&(container as *const DomNode)).expect("id for container");
+  let container_id = *ids
+    .get(&(container as *const DomNode))
+    .expect("id for container");
 
   let base_media = MediaContext::screen(800.0, 600.0);
   let mut containers = HashMap::new();
@@ -176,6 +188,8 @@ fn container_size_query_var_fallback_used_when_missing() {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -197,7 +211,10 @@ fn container_size_query_var_fallback_used_when_missing() {
     None,
   );
 
-  assert_eq!(display(find_by_id(&styled, "t1").expect("target")), "inline");
+  assert_eq!(
+    display(find_by_id(&styled, "t1").expect("target")),
+    "inline"
+  );
 }
 
 #[test]
@@ -212,7 +229,9 @@ fn container_size_query_var_missing_without_fallback_is_false() {
   let dom = dom::parse_html(HTML_ONE_CONTAINER).unwrap();
   let ids = dom::enumerate_dom_ids(&dom);
   let container = find_dom_by_id(&dom, "c1").expect("container");
-  let container_id = *ids.get(&(container as *const DomNode)).expect("id for container");
+  let container_id = *ids
+    .get(&(container as *const DomNode))
+    .expect("id for container");
 
   let base_media = MediaContext::screen(800.0, 600.0);
   let mut containers = HashMap::new();
@@ -231,6 +250,8 @@ fn container_size_query_var_missing_without_fallback_is_false() {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -267,7 +288,9 @@ fn container_size_query_var_rem_uses_root_font_size() {
   let dom = dom::parse_html(HTML_ONE_CONTAINER).unwrap();
   let ids = dom::enumerate_dom_ids(&dom);
   let container = find_dom_by_id(&dom, "c1").expect("container");
-  let container_id = *ids.get(&(container as *const DomNode)).expect("id for container");
+  let container_id = *ids
+    .get(&(container as *const DomNode))
+    .expect("id for container");
 
   let base_media = MediaContext::screen(800.0, 600.0);
 
@@ -296,6 +319,8 @@ fn container_size_query_var_rem_uses_root_font_size() {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -318,7 +343,10 @@ fn container_size_query_var_rem_uses_root_font_size() {
   );
 
   // 12rem = 120px when resolved against the root font size (10px), so the query should match.
-  assert_eq!(display(find_by_id(&styled, "t1").expect("target")), "inline");
+  assert_eq!(
+    display(find_by_id(&styled, "t1").expect("target")),
+    "inline"
+  );
 }
 
 #[test]
@@ -333,7 +361,9 @@ fn container_size_query_var_orientation_parses_and_matches() {
   let dom = dom::parse_html(HTML_ONE_CONTAINER).unwrap();
   let ids = dom::enumerate_dom_ids(&dom);
   let container = find_dom_by_id(&dom, "c1").expect("container");
-  let container_id = *ids.get(&(container as *const DomNode)).expect("id for container");
+  let container_id = *ids
+    .get(&(container as *const DomNode))
+    .expect("id for container");
 
   let base_media = MediaContext::screen(800.0, 600.0);
   let mut containers = HashMap::new();
@@ -355,6 +385,8 @@ fn container_size_query_var_orientation_parses_and_matches() {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -376,7 +408,10 @@ fn container_size_query_var_orientation_parses_and_matches() {
     None,
   );
 
-  assert_eq!(display(find_by_id(&styled, "t1").expect("target")), "inline");
+  assert_eq!(
+    display(find_by_id(&styled, "t1").expect("target")),
+    "inline"
+  );
 }
 
 #[test]
@@ -391,7 +426,9 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
   let dom = dom::parse_html(HTML_ONE_CONTAINER).unwrap();
   let ids = dom::enumerate_dom_ids(&dom);
   let container = find_dom_by_id(&dom, "c1").expect("container");
-  let container_id = *ids.get(&(container as *const DomNode)).expect("id for container");
+  let container_id = *ids
+    .get(&(container as *const DomNode))
+    .expect("id for container");
 
   let base_media = MediaContext::screen(800.0, 600.0);
   let mut containers = HashMap::new();
@@ -413,6 +450,8 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -434,7 +473,10 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
     None,
   );
 
-  assert_eq!(display(find_by_id(&styled, "t1").expect("target")), "inline");
+  assert_eq!(
+    display(find_by_id(&styled, "t1").expect("target")),
+    "inline"
+  );
 }
 
 #[test]
@@ -449,7 +491,9 @@ fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
   let dom = dom::parse_html(HTML_ONE_CONTAINER).unwrap();
   let ids = dom::enumerate_dom_ids(&dom);
   let container = find_dom_by_id(&dom, "c1").expect("container");
-  let container_id = *ids.get(&(container as *const DomNode)).expect("id for container");
+  let container_id = *ids
+    .get(&(container as *const DomNode))
+    .expect("id for container");
 
   let base_media = MediaContext::screen(800.0, 600.0);
   let mut containers = HashMap::new();
@@ -468,6 +512,8 @@ fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
       stuck_mask: 0,
+      snapped_mask: 0,
+      scrolled_delta: Point::ZERO,
     },
   );
   let ctx = ContainerQueryContext {
@@ -489,5 +535,8 @@ fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
     None,
   );
 
-  assert_eq!(display(find_by_id(&styled, "t1").expect("target")), "inline");
+  assert_eq!(
+    display(find_by_id(&styled, "t1").expect("target")),
+    "inline"
+  );
 }

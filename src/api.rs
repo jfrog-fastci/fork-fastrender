@@ -1055,6 +1055,8 @@ pub struct RenderOptions {
   pub scroll_x: f32,
   /// Vertical scroll offset applied before painting.
   pub scroll_y: f32,
+  /// Most recent viewport scroll delta (relative offset change).
+  pub scroll_delta: Point,
   /// Optional animation/transition sampling time in milliseconds since document load.
   ///
   /// When set, time-based effects such as @starting-style transitions will be sampled at this
@@ -1065,6 +1067,8 @@ pub struct RenderOptions {
   pub animation_time: Option<f32>,
   /// Scroll offsets for element scroll containers keyed by box ID.
   pub element_scroll_offsets: HashMap<usize, Point>,
+  /// Most recent scroll deltas for element scroll containers keyed by box ID.
+  pub element_scroll_deltas: HashMap<usize, Point>,
   /// Maximum number of external stylesheets to inline. `None` means unlimited.
   pub css_limit: Option<usize>,
   /// When true, include an accessibility tree alongside rendering results.
@@ -1120,7 +1124,9 @@ impl Default for RenderOptions {
       media_type: MediaType::Screen,
       scroll_x: 0.0,
       scroll_y: 0.0,
+      scroll_delta: Point::ZERO,
       element_scroll_offsets: HashMap::new(),
+      element_scroll_deltas: HashMap::new(),
       css_limit: None,
       capture_accessibility: false,
       allow_partial: false,
@@ -1150,7 +1156,9 @@ impl std::fmt::Debug for RenderOptions {
       .field("media_type", &self.media_type)
       .field("scroll_x", &self.scroll_x)
       .field("scroll_y", &self.scroll_y)
+      .field("scroll_delta", &self.scroll_delta)
       .field("element_scroll_offsets", &self.element_scroll_offsets)
+      .field("element_scroll_deltas", &self.element_scroll_deltas)
       .field("css_limit", &self.css_limit)
       .field("capture_accessibility", &self.capture_accessibility)
       .field("allow_partial", &self.allow_partial)
@@ -1216,6 +1224,12 @@ impl RenderOptions {
     self
   }
 
+  /// Provide the most recent viewport scroll delta (relative offset change).
+  pub fn with_scroll_delta(mut self, delta_x: f32, delta_y: f32) -> Self {
+    self.scroll_delta = Point::new(delta_x, delta_y);
+    self
+  }
+
   /// Provide a sampling timestamp for animations/transitions in milliseconds since load.
   pub fn with_animation_time(mut self, time_ms: f32) -> Self {
     self.animation_time = Some(if time_ms.is_finite() {
@@ -1239,6 +1253,14 @@ impl RenderOptions {
   /// Apply a scroll offset for a specific element scroll container by box ID.
   pub fn with_element_scroll(mut self, box_id: usize, x: f32, y: f32) -> Self {
     self.element_scroll_offsets.insert(box_id, Point::new(x, y));
+    self
+  }
+
+  /// Provide the most recent scroll delta for a specific element scroll container by box ID.
+  pub fn with_element_scroll_delta(mut self, box_id: usize, dx: f32, dy: f32) -> Self {
+    self
+      .element_scroll_deltas
+      .insert(box_id, Point::new(dx, dy));
     self
   }
 
@@ -6219,7 +6241,9 @@ impl FastRender {
       height,
       options.scroll_x,
       options.scroll_y,
+      options.scroll_delta,
       options.element_scroll_offsets.clone(),
+      options.element_scroll_deltas.clone(),
       options.animation_time,
       options.media_type,
       fit_canvas_to_content,
@@ -6541,9 +6565,11 @@ impl FastRender {
         let previous_dpr = self.device_pixel_ratio;
         let artifacts_result = (|| -> Result<LayoutArtifacts> {
           self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-          let scroll_state = ScrollState::from_parts(
+          let scroll_state = ScrollState::from_parts_with_deltas(
             Point::new(options.scroll_x, options.scroll_y),
             options.element_scroll_offsets.clone(),
+            options.scroll_delta,
+            options.element_scroll_deltas.clone(),
           );
           self.layout_document_for_media_with_artifacts(
             &dom,
@@ -6586,9 +6612,11 @@ impl FastRender {
           device_pixel_ratio: resolved_viewport.device_pixel_ratio,
           page_zoom: resolved_viewport.zoom,
           background_color: self.background_color,
-          default_scroll: ScrollState::from_parts(
+          default_scroll: ScrollState::from_parts_with_deltas(
             Point::new(options.scroll_x, options.scroll_y),
             options.element_scroll_offsets.clone(),
+            options.scroll_delta,
+            options.element_scroll_deltas.clone(),
           ),
           animation_time: options.animation_time,
           font_context: self.font_context.clone(),
@@ -6697,7 +6725,9 @@ impl FastRender {
     height: u32,
     scroll_x: f32,
     scroll_y: f32,
+    scroll_delta: Point,
     element_scroll_offsets: HashMap<usize, Point>,
+    element_scroll_deltas: HashMap<usize, Point>,
     animation_time: Option<f32>,
     media_type: MediaType,
     fit_canvas_to_content: bool,
@@ -6837,9 +6867,11 @@ impl FastRender {
         dom_parse_rss_end,
         stage_mem_budget_bytes,
       )?;
-      let scroll_state = ScrollState::from_parts(
+      let scroll_state = ScrollState::from_parts_with_deltas(
         Point::new(scroll_x, scroll_y),
         element_scroll_offsets.clone(),
+        scroll_delta,
+        element_scroll_deltas.clone(),
       );
       let layout_artifacts = self.layout_document_for_media_with_artifacts_owned(
         dom,
@@ -7130,8 +7162,12 @@ impl FastRender {
         layout_viewport,
         paint_viewport,
       );
-      let mut scroll_state =
-        crate::scroll::ScrollState::from_parts(Point::new(scroll_x, scroll_y), element_scrolls);
+      let mut scroll_state = crate::scroll::ScrollState::from_parts_with_deltas(
+        Point::new(scroll_x, scroll_y),
+        element_scrolls,
+        scroll_delta,
+        element_scroll_deltas,
+      );
       let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
       scroll_state = scroll_result.state;
       let scroll = scroll_state.viewport;
@@ -7619,9 +7655,11 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-      let scroll_state = ScrollState::from_parts(
+      let scroll_state = ScrollState::from_parts_with_deltas(
         Point::new(options.scroll_x, options.scroll_y),
         options.element_scroll_offsets.clone(),
+        options.scroll_delta,
+        options.element_scroll_deltas.clone(),
       );
       self.layout_document_for_media_with_artifacts(
         dom,
@@ -7819,9 +7857,11 @@ impl FastRender {
       device_pixel_ratio: resolved_viewport.device_pixel_ratio,
       page_zoom: resolved_viewport.zoom,
       background_color: self.background_color,
-      default_scroll: ScrollState::from_parts(
+      default_scroll: ScrollState::from_parts_with_deltas(
         Point::new(options.scroll_x, options.scroll_y),
         options.element_scroll_offsets.clone(),
+        options.scroll_delta,
+        options.element_scroll_deltas.clone(),
       ),
       animation_time: options.animation_time,
       font_context: self.font_context.snapshot(),
@@ -7915,9 +7955,11 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-      let scroll_state = ScrollState::from_parts(
+      let scroll_state = ScrollState::from_parts_with_deltas(
         Point::new(options.scroll_x, options.scroll_y),
         options.element_scroll_offsets.clone(),
+        options.scroll_delta,
+        options.element_scroll_deltas.clone(),
       );
       self.layout_document_for_media_with_artifacts_owned(
         dom,
@@ -8116,9 +8158,11 @@ impl FastRender {
       device_pixel_ratio: resolved_viewport.device_pixel_ratio,
       page_zoom: resolved_viewport.zoom,
       background_color: self.background_color,
-      default_scroll: ScrollState::from_parts(
+      default_scroll: ScrollState::from_parts_with_deltas(
         Point::new(options.scroll_x, options.scroll_y),
         options.element_scroll_offsets.clone(),
+        options.scroll_delta,
+        options.element_scroll_deltas.clone(),
       ),
       animation_time: options.animation_time,
       font_context: self.font_context.snapshot(),
@@ -8212,9 +8256,11 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-      let scroll_state = ScrollState::from_parts(
+      let scroll_state = ScrollState::from_parts_with_deltas(
         Point::new(options.scroll_x, options.scroll_y),
         options.element_scroll_offsets.clone(),
+        options.scroll_delta,
+        options.element_scroll_deltas.clone(),
       );
       self.layout_document_for_media_with_artifacts_owned(
         dom,
@@ -8258,9 +8304,11 @@ impl FastRender {
       device_pixel_ratio: resolved_viewport.device_pixel_ratio,
       page_zoom: resolved_viewport.zoom,
       background_color: self.background_color,
-      default_scroll: ScrollState::from_parts(
+      default_scroll: ScrollState::from_parts_with_deltas(
         Point::new(options.scroll_x, options.scroll_y),
         options.element_scroll_offsets.clone(),
+        options.scroll_delta,
+        options.element_scroll_deltas.clone(),
       ),
       animation_time: options.animation_time,
       font_context: self.font_context.snapshot(),
@@ -9257,9 +9305,11 @@ impl FastRender {
       )?;
 
       let viewport_size = intermediates.fragment_tree.viewport_size();
-      let scroll_state = crate::scroll::ScrollState::from_parts(
+      let scroll_state = crate::scroll::ScrollState::from_parts_with_deltas(
         Point::new(options.scroll_x, options.scroll_y),
         options.element_scroll_offsets.clone(),
+        options.scroll_delta,
+        options.element_scroll_deltas.clone(),
       );
       let scroll_result =
         crate::scroll::apply_scroll_snap(&mut intermediates.fragment_tree, &scroll_state);
@@ -17996,6 +18046,9 @@ fn container_query_context_fingerprint(
         info.scroll_offset.x.to_bits().hash(&mut hasher);
         info.scroll_offset.y.to_bits().hash(&mut hasher);
         info.stuck_mask.hash(&mut hasher);
+        info.snapped_mask.hash(&mut hasher);
+        info.scrolled_delta.x.to_bits().hash(&mut hasher);
+        info.scrolled_delta.y.to_bits().hash(&mut hasher);
         match info.scroll_bounds {
           Some(bounds) => {
             1u8.hash(&mut hasher);
@@ -18915,6 +18968,17 @@ fn build_container_query_context(
     collect_fragment_sizes(extra, &mut sizes, &mut scrollbar_reservations);
   }
 
+  let mut snapped_scroll_state: Option<ScrollState> = None;
+  let scroll_state = if include_scroll_state {
+    // Ensure scroll snap is reflected in scroll-state container queries during layout/cascade,
+    // matching the paint pipeline which applies scroll snap before evaluating scroll-driven state.
+    let mut tree = fragments.clone();
+    snapped_scroll_state = Some(crate::scroll::apply_scroll_snap(&mut tree, scroll_state).state);
+    snapped_scroll_state.as_ref().unwrap()
+  } else {
+    scroll_state
+  };
+
   let mut scroll_bounds_by_box_id: HashMap<usize, crate::scroll::ScrollBounds> = HashMap::new();
   if include_scroll_state {
     fn merge_scroll_bounds(
@@ -19206,6 +19270,8 @@ fn build_container_query_context(
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
     }
@@ -19218,6 +19284,7 @@ fn build_container_query_context(
     scroll_bounds_by_box_id: &HashMap<usize, crate::scroll::ScrollBounds>,
     stuck_by_box_id: &HashMap<usize, u8>,
     scroll_state: &ScrollState,
+    box_id_to_styled_id: &mut HashMap<usize, usize>,
     styles: &HashMap<usize, Arc<ComputedStyle>>,
     containers: &mut HashMap<usize, ContainerQueryInfo>,
     parent_content_width: f32,
@@ -19317,8 +19384,7 @@ fn build_container_query_context(
     } else {
       0
     };
-    let is_scroll_state_container =
-      include_scroll_state && style.container_type.supports_scroll_state();
+    let is_scroll_state_container = include_scroll_state && style.container_type.supports_scroll_state();
     let is_size_container =
       style.container_type.supports_size() || style.container_type.supports_inline_size();
 
@@ -19353,6 +19419,15 @@ fn build_container_query_context(
         } else {
           Point::ZERO
         };
+        let scrolled_delta = if include_scroll_state {
+          if node.id == viewport_scroll_box_id {
+            scroll_state.viewport_delta
+          } else {
+            scroll_state.element_delta(node.id)
+          }
+        } else {
+          Point::ZERO
+        };
 
         containers
           .entry(styled_id)
@@ -19369,6 +19444,7 @@ fn build_container_query_context(
             entry.scroll_offset = scroll_offset;
             entry.scroll_bounds = scroll_bounds;
             entry.stuck_mask |= stuck_mask;
+            entry.scrolled_delta = scrolled_delta;
           })
           .or_insert_with(|| ContainerQueryInfo {
             box_id: Some(node.id),
@@ -19383,7 +19459,10 @@ fn build_container_query_context(
             scroll_offset,
             scroll_bounds,
             stuck_mask,
+            snapped_mask: 0,
+            scrolled_delta,
           });
+        box_id_to_styled_id.insert(node.id, styled_id);
       }
     }
 
@@ -19395,6 +19474,7 @@ fn build_container_query_context(
         scroll_bounds_by_box_id,
         stuck_by_box_id,
         scroll_state,
+        box_id_to_styled_id,
         styles,
         containers,
         child_base,
@@ -19412,6 +19492,7 @@ fn build_container_query_context(
         scroll_bounds_by_box_id,
         stuck_by_box_id,
         scroll_state,
+        box_id_to_styled_id,
         styles,
         containers,
         child_base,
@@ -19423,6 +19504,7 @@ fn build_container_query_context(
     }
   }
 
+  let mut box_id_to_styled_id: HashMap<usize, usize> = HashMap::new();
   walk_containers(
     &box_tree.root,
     &sizes,
@@ -19430,6 +19512,7 @@ fn build_container_query_context(
     &scroll_bounds_by_box_id,
     &stuck_by_box_id,
     scroll_state,
+    &mut box_id_to_styled_id,
     &styles,
     &mut containers,
     viewport.width,
@@ -19438,6 +19521,72 @@ fn build_container_query_context(
     include_scroll_state,
     box_tree.root.id,
   );
+
+  if include_scroll_state {
+    if let Some(metadata) = fragments.scroll_metadata.as_ref() {
+      let eps = 1e-3;
+      for container in metadata.containers.iter() {
+        let scroll_offset = if container.uses_viewport_scroll {
+          Some(scroll_state.viewport)
+        } else {
+          container
+            .box_id
+            .and_then(|id| scroll_state.elements.get(&id).copied())
+        };
+        let Some(scroll_offset) = scroll_offset else {
+          continue;
+        };
+
+        if container.snap_x && scroll_offset.x.is_finite() {
+          let snapped_pos = scroll_offset.x;
+          for target in container.targets_x.iter() {
+            let Some(box_id) = target.box_id else {
+              continue;
+            };
+            if (target.position - snapped_pos).abs() > eps {
+              continue;
+            }
+            let Some(styled_id) = box_id_to_styled_id.get(&box_id).copied() else {
+              continue;
+            };
+            let Some(info) = containers.get_mut(&styled_id) else {
+              continue;
+            };
+            info.snapped_mask |= crate::style::cascade::CQ_SNAPPED_X;
+            if container.axis_is_inline_for_x {
+              info.snapped_mask |= crate::style::cascade::CQ_SNAPPED_INLINE;
+            } else {
+              info.snapped_mask |= crate::style::cascade::CQ_SNAPPED_BLOCK;
+            }
+          }
+        }
+
+        if container.snap_y && scroll_offset.y.is_finite() {
+          let snapped_pos = scroll_offset.y;
+          for target in container.targets_y.iter() {
+            let Some(box_id) = target.box_id else {
+              continue;
+            };
+            if (target.position - snapped_pos).abs() > eps {
+              continue;
+            }
+            let Some(styled_id) = box_id_to_styled_id.get(&box_id).copied() else {
+              continue;
+            };
+            let Some(info) = containers.get_mut(&styled_id) else {
+              continue;
+            };
+            info.snapped_mask |= crate::style::cascade::CQ_SNAPPED_Y;
+            if container.axis_is_inline_for_y {
+              info.snapped_mask |= crate::style::cascade::CQ_SNAPPED_INLINE;
+            } else {
+              info.snapped_mask |= crate::style::cascade::CQ_SNAPPED_BLOCK;
+            }
+          }
+        }
+      }
+    }
+  }
 
   ContainerQueryContext {
     base_media: media_ctx.clone(),
@@ -19851,6 +20000,8 @@ pub(crate) fn render_html_with_shared_resources(
       height,
       0.0,
       0.0,
+      Point::ZERO,
+      HashMap::new(),
       HashMap::new(),
       None,
       MediaType::Screen,
@@ -25129,6 +25280,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
@@ -25226,6 +25379,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
@@ -25302,6 +25457,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
@@ -25385,6 +25542,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
@@ -25472,6 +25631,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
@@ -25561,6 +25722,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
@@ -25656,6 +25819,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
@@ -25749,6 +25914,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
@@ -25831,6 +25998,8 @@ mod tests {
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         },
       );
       ContainerQueryContext {
