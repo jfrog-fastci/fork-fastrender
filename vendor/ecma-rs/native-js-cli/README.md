@@ -80,6 +80,9 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
 opt-18 -verify -disable-output /tmp/out.ll
 ```
 
+This is especially useful when `clang` fails to compile the generated IR (the
+CLI normally writes IR to a temporary directory that is deleted on exit).
+
 Note: `native-js-cli` still runs the compiled program after writing the IR. If
 you want to stop after compilation, compile the emitted IR yourself:
 
