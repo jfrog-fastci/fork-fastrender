@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::task::Waker;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
+use crate::sync::GcAwareMutex;
 
 use crate::reactor::Interest;
 use crate::reactor::Reactor;
@@ -50,14 +50,14 @@ pub struct ReactorDriver {
 }
 
 struct Inner {
-  reactor: Mutex<Reactor>,
+  reactor: GcAwareMutex<Reactor>,
   reactor_waker: crate::reactor::Waker,
-  io_wakers: Mutex<HashMap<Token, Waker>>,
-  timers: Mutex<TimerDriver>,
+  io_wakers: GcAwareMutex<HashMap<Token, Waker>>,
+  timers: GcAwareMutex<TimerDriver>,
 
   // Only one thread should block in `poll()` at a time. This avoids surprising
   // interactions where multiple pollers race to consume readiness and timers.
-  poll_guard: Mutex<()>,
+  poll_guard: GcAwareMutex<()>,
 
   // Indicates whether a thread is currently blocked (or about to block) inside
   // the OS poll call. Used to avoid "stale" wakeups when registrations happen on
@@ -71,11 +71,11 @@ impl ReactorDriver {
     let reactor_waker = reactor.waker();
     Ok(Self {
       inner: Arc::new(Inner {
-        reactor: Mutex::new(reactor),
+        reactor: GcAwareMutex::new(reactor),
         reactor_waker,
-        io_wakers: Mutex::new(HashMap::new()),
-        timers: Mutex::new(TimerDriver::new()),
-        poll_guard: Mutex::new(()),
+        io_wakers: GcAwareMutex::new(HashMap::new()),
+        timers: GcAwareMutex::new(TimerDriver::new()),
+        poll_guard: GcAwareMutex::new(()),
         is_polling: AtomicBool::new(false),
       }),
     })
@@ -241,5 +241,116 @@ impl<'a> PollingGuard<'a> {
 impl Drop for PollingGuard<'_> {
   fn drop(&mut self) {
     self.flag.store(false, Ordering::SeqCst);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::threading;
+  use crate::threading::ThreadKind;
+  use std::sync::mpsc;
+  use std::time::Duration;
+  use std::time::Instant;
+
+  #[test]
+  fn reactor_driver_poll_guard_lock_is_gc_aware() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    const TIMEOUT: Duration = Duration::from_secs(2);
+    let driver = ReactorDriver::new().expect("failed to construct reactor driver");
+
+    std::thread::scope(|scope| {
+      // Thread A holds the poll_guard lock.
+      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+      // Thread C attempts to acquire poll_guard while it is held.
+      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_done_tx, c_done_rx) = mpsc::channel::<()>();
+
+      let driver_a = driver.clone();
+      scope.spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+        let guard = driver_a.inner.poll_guard.lock();
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+        drop(guard);
+
+        // Cooperatively stop at the safepoint request.
+        crate::rt_gc_safepoint();
+        threading::unregister_current_thread();
+      });
+
+      a_locked_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread A should acquire poll_guard");
+
+      let driver_c = driver.clone();
+      scope.spawn(move || {
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        c_registered_tx.send(id).unwrap();
+        c_start_rx.recv().unwrap();
+
+        let _guard = driver_c.inner.poll_guard.lock();
+        c_done_tx.send(()).unwrap();
+
+        threading::unregister_current_thread();
+      });
+
+      let c_id = c_registered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should register with the thread registry");
+
+      // Ensure thread C is actively contending on the lock before starting STW.
+      c_start_tx.send(()).unwrap();
+
+      // Wait until thread C is marked NativeSafe (this is what prevents STW deadlocks).
+      let start = Instant::now();
+      loop {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == c_id {
+            native_safe = t.is_native_safe();
+          }
+        });
+
+        if native_safe {
+          break;
+        }
+        if start.elapsed() > TIMEOUT {
+          panic!("thread C did not enter a GC-safe region while blocked on poll_guard");
+        }
+        std::thread::yield_now();
+      }
+
+      // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
+      let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
+        .expect("stop-the-world should not already be active");
+      assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
+      struct ResumeOnDrop;
+      impl Drop for ResumeOnDrop {
+        fn drop(&mut self) {
+          crate::threading::safepoint::rt_gc_resume_world();
+        }
+      }
+      let _resume = ResumeOnDrop;
+
+      // Let thread A release the lock and reach the safepoint.
+      a_release_tx.send(()).unwrap();
+
+      assert!(
+        crate::threading::safepoint::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
+        "world failed to stop within timeout; poll_guard contention must not block STW"
+      );
+
+      // Resume the world so the contending lock acquisition can complete.
+      crate::threading::safepoint::rt_gc_resume_world();
+
+      c_done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should finish after world is resumed");
+    });
   }
 }
