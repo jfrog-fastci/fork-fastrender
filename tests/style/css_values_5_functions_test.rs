@@ -119,6 +119,38 @@ fn typed_attr_url() {
 }
 
 #[test]
+fn typed_attr_url_uses_fallback_url_for_missing_or_empty_value() {
+  let css = r#"
+    #t1 { background-image: attr(data-bg url, url(fallback.png)); }
+    #t2 { background-image: attr(data-bg url, url(fallback.png)); }
+    #t3 { background-image: attr(data-bg url, url(fallback.png)); }
+  "#;
+  let html = r#"
+    <div id="t1" data-bg="foo.png"></div>
+    <div id="t2"></div>
+    <div id="t3" data-bg=""></div>
+  "#;
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = styled_for(css, html, &media);
+  let t1 = find_by_id(&styled, "t1").expect("t1");
+  let t2 = find_by_id(&styled, "t2").expect("t2");
+  let t3 = find_by_id(&styled, "t3").expect("t3");
+
+  assert_eq!(
+    t1.styles.background_images.as_ref(),
+    &[Some(BackgroundImage::Url("foo.png".to_string()))],
+  );
+  assert_eq!(
+    t2.styles.background_images.as_ref(),
+    &[Some(BackgroundImage::Url("fallback.png".to_string()))],
+  );
+  assert_eq!(
+    t3.styles.background_images.as_ref(),
+    &[Some(BackgroundImage::Url("fallback.png".to_string()))],
+  );
+}
+
+#[test]
 fn calc_size_parses_as_intrinsic_size_keyword() {
   let dom = dom::parse_html(r#"<div id="t1"></div>"#).unwrap();
   let css = r#"#t1 { width: calc-size(auto, size - 10px); }"#;

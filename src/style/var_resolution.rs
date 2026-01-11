@@ -1196,6 +1196,31 @@ where
   resolve_value_tokens(selected, custom_properties, stack, depth + 1, property_name)
 }
 
+fn serialize_css_string_token(value: &str) -> String {
+  // Prefer a quote character that avoids introducing CSS escape sequences. Most downstream
+  // property parsers in FastRender treat string contents as raw and do not interpret escapes, so
+  // only fall back to escaping when the value contains both quote characters.
+  if !value.contains('\'') {
+    return format!("'{value}'");
+  }
+  if !value.contains('"') {
+    return format!("\"{value}\"");
+  }
+
+  // Fall back to a double-quoted string with minimal escaping for embedded quotes/backslashes so
+  // the output remains a single valid CSS string token.
+  let mut out = String::with_capacity(value.len() + 2);
+  out.push('"');
+  for ch in value.chars() {
+    if ch == '"' || ch == '\\' {
+      out.push('\\');
+    }
+    out.push(ch);
+  }
+  out.push('"');
+  out
+}
+
 fn parse_attr_function<'a, 'i, 't>(
   parser: &mut Parser<'i, 't>,
   custom_properties: &'a CustomPropertyStore,
@@ -1206,31 +1231,6 @@ fn parse_attr_function<'a, 'i, 't>(
 where
   'a: 'i,
 {
-  fn serialize_css_string_token(value: &str) -> String {
-    // Prefer a quote character that avoids introducing CSS escape sequences. Most downstream
-    // property parsers in FastRender treat string contents as raw and do not interpret escapes, so
-    // only fall back to escaping when the value contains both quote characters.
-    if !value.contains('\'') {
-      return format!("'{value}'");
-    }
-    if !value.contains('"') {
-      return format!("\"{value}\"");
-    }
-
-    // Fall back to a double-quoted string with minimal escaping for embedded quotes/backslashes so
-    // the output remains a single valid CSS string token.
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-      if ch == '"' || ch == '\\' {
-        out.push('\\');
-      }
-      out.push(ch);
-    }
-    out.push('"');
-    out
-  }
-
   let (name, ty, fallback_value) = parse_attr_function_arguments(parser)
     .map_err(|_| VarResolutionResult::InvalidSyntax("attr".into()))?;
 
@@ -1429,6 +1429,9 @@ fn resolve_typed_attr_value(attr_value: &str, ty: &str) -> Option<String> {
       .map(|v| v.to_string()),
     "color" => Color::parse(attr_value).ok().map(|_| attr_value.to_string()),
     "url" => {
+      if attr_value.is_empty() {
+        return None;
+      }
       // Typed `attr(... url)` resolves the element attribute as a `<url>` token.
       //
       // Treat the attribute value as the raw URL string (i.e. authors do *not* write `url(...)` in

@@ -87,6 +87,7 @@ Conservative subset:
 - `number`
 - `integer`
 - `color`
+- `url`
 
 ### Fallback behavior
 
@@ -96,5 +97,4 @@ The fallback (second argument) is used when:
 - The requested type is unsupported
 
 Limitations:
-- `url` and other complex typed `attr()` categories are currently unsupported (fallback is used).
-
+- Other complex typed `attr()` categories are currently unsupported (fallback is used).
