@@ -335,6 +335,10 @@ The helper surface lives under `native_js::llvm`:
     `LLVMRunPasses`, plus `verify<safepoint-ir>` in debug builds, and then
     validates the resulting module with `Module::verify()` to fail fast on
     invalid IR)
+    - Note: LLVM 18's statepoint rewrite has known hard failures on some call
+      forms (e.g. `callbr`, `musttail`, and inline asm). `native-js` rejects
+      these constructs in GC-managed functions before running the pass pipeline
+      to avoid crashing/aborting the process.
 
 `rewrite-statepoints-for-gc` only rewrites call sites that occur inside
 **GC-managed functions** (i.e. functions annotated with `gc "<strategy>"`), so
