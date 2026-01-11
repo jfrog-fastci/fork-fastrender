@@ -1,12 +1,9 @@
-console.log:
+- name: console.log
   aliases:
     - console.log
   since: "baseline"
-  purity:
-    template: impure
-  throws: maybe
   effects:
-    template: io
-    io: true
-    network: false
-
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure

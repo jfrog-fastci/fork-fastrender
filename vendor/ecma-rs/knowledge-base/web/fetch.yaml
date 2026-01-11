@@ -1,0 +1,11 @@
+- name: fetch
+  aliases:
+    - fetch
+    - window.fetch
+    - globalThis.fetch
+  since: "baseline"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure

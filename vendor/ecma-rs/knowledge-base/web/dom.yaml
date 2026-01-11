@@ -1,73 +1,41 @@
-document.querySelector:
+- name: document.querySelector
   aliases:
     - document.querySelector
   since: "baseline"
-  purity:
-    # Reads the DOM, which is external state.
-    template: readonly
-  throws: maybe # Invalid selector syntax.
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: ReadOnly
 
-document.getElementById:
+- name: document.getElementById
   aliases:
     - document.getElementById
   since: "baseline"
-  purity:
-    template: readonly
-  throws: never
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: ReadOnly
 
-Element.prototype.querySelector:
+- name: Element.prototype.querySelector
   aliases:
     - Element.prototype.querySelector
   since: "baseline"
-  purity:
-    template: readonly
-  throws: maybe
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: ReadOnly
 
-Element.prototype.querySelectorAll:
+- name: Element.prototype.querySelectorAll
   aliases:
     - Element.prototype.querySelectorAll
   since: "baseline"
-  purity:
-    template: readonly
-  throws: maybe
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: ReadOnly
 
-Element.prototype.getAttribute:
+- name: Element.prototype.getAttribute
   aliases:
     - Element.prototype.getAttribute
   since: "baseline"
-  purity:
-    template: readonly
-  throws: never
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: ReadOnly
 
-Element.prototype.setAttribute:
+- name: Element.prototype.setAttribute
   aliases:
     - Element.prototype.setAttribute
   since: "baseline"
-  purity:
-    template: impure
-  throws: maybe # Invalid attribute name.
-  effects:
-    template: unknown
-    io: false
-    network: false
-
+  effects: Unknown
+  purity: Impure

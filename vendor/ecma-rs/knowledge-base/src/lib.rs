@@ -452,6 +452,16 @@ fn build_alias_map(apis: &BTreeMap<String, ApiSemantics>) -> Result<BTreeMap<Str
       }
 
       if let Some(prev) = apis.get(alias) {
+        // Some modules materialize alias spellings as standalone entries (e.g. `fs.readFile`)
+        // alongside a canonical form (e.g. `node:fs.readFile`) that also lists the alias.
+        //
+        // When the semantics match, this is redundant but unambiguous: lookups can resolve the
+        // alias directly via the entry, so we skip building an alias mapping rather than treating
+        // it as an error.
+        if prev.effects == api.effects && prev.purity == api.purity && prev.properties == api.properties {
+          continue;
+        }
+
         return Err(KnowledgeBaseError::DuplicateAlias {
           alias: alias.clone(),
           first: prev.name.clone(),
@@ -489,87 +499,6 @@ pub fn parse_api_semantics_yaml_str(yaml: &str) -> Result<Vec<ApiSemantics>, ser
     ApiSemanticsFile::One(one) => vec![one],
     ApiSemanticsFile::Many(many) => many,
   })
-}
-
-/// Schema v1 module file (the on-disk layout used under `knowledge-base/{node,web}`).
-///
-/// Format:
-/// ```yaml
-/// some.symbol:
-///   aliases: [some.symbol]
-///   since: "vX.Y.Z"
-///   purity:
-///     template: pure
-///   throws: maybe
-///   effects:
-///     template: io
-///     io: true
-///     network: false
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SchemaV1Module(pub BTreeMap<String, SchemaV1Entry>);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchemaV1Entry {
-  #[serde(default)]
-  pub aliases: Vec<String>,
-  pub since: String,
-  pub purity: SchemaV1Purity,
-  pub throws: SchemaV1Throws,
-  pub effects: SchemaV1Effects,
-
-  #[serde(flatten)]
-  pub extra: BTreeMap<String, serde_yaml::Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchemaV1Purity {
-  pub template: SchemaV1PurityTemplate,
-
-  #[serde(flatten)]
-  pub extra: BTreeMap<String, serde_yaml::Value>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SchemaV1PurityTemplate {
-  Pure,
-  Readonly,
-  Allocating,
-  Impure,
-  Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SchemaV1Throws {
-  Never,
-  Maybe,
-  Always,
-  Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchemaV1Effects {
-  pub template: SchemaV1EffectTemplate,
-  pub io: bool,
-  pub network: bool,
-
-  #[serde(flatten)]
-  pub extra: BTreeMap<String, serde_yaml::Value>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SchemaV1EffectTemplate {
-  Pure,
-  Io,
-  Unknown,
-}
-
-pub fn parse_schema_v1_yaml_str(yaml: &str) -> Result<SchemaV1Module, serde_yaml::Error> {
-  serde_yaml::from_str(yaml)
 }
 
 #[cfg(test)]
@@ -633,7 +562,7 @@ purity: DependsOnCallback
   }
 
   #[test]
-  fn schema_v1_modules_parse_and_have_unique_symbol_names() {
+  fn node_and_web_modules_parse_and_have_unique_api_names() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut yaml_paths = Vec::new();
     collect_yaml_files(&root.join("web"), &mut yaml_paths);
@@ -645,13 +574,14 @@ purity: DependsOnCallback
       let src = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!("failed to read {}: {err}", path.display());
       });
-      let SchemaV1Module(entries) = parse_schema_v1_yaml_str(&src).unwrap_or_else(|err| {
+      let entries = parse_api_semantics_yaml_str(&src).unwrap_or_else(|err| {
         panic!("failed to parse {}: {err}", path.display());
       });
-      for name in entries.keys() {
+      for entry in entries {
         assert!(
-          seen.insert(name.clone()),
-          "duplicate symbol `{name}` (while loading {})",
+          seen.insert(entry.name.clone()),
+          "duplicate API `{}` (while loading {})",
+          entry.name,
           path.display(),
         );
       }
