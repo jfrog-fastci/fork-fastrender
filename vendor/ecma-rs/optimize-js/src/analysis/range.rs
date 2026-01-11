@@ -1081,8 +1081,7 @@ mod tests {
     // Ensure labels exist in the graph even if disconnected.
     for &label in &labels {
       if !graph.contains(label) {
-        graph.connect(label, label);
-        graph.disconnect(label, label);
+        graph.ensure_label(label);
       }
     }
     let mut bblocks = CfgBBlocks::default();

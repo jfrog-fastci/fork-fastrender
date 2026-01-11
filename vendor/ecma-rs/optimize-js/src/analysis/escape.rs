@@ -869,8 +869,7 @@ mod tests {
     for &label in &labels {
       if !graph.contains(label) {
         // Ensure the node exists even if it has no edges.
-        graph.connect(label, label);
-        graph.disconnect(label, label);
+        graph.ensure_label(label);
       }
     }
     let mut bblocks = CfgBBlocks::default();

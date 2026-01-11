@@ -323,8 +323,7 @@ mod tests {
     }
     for &label in &labels {
       if !graph.contains(label) {
-        graph.connect(label, label);
-        graph.disconnect(label, label);
+        graph.ensure_label(label);
       }
     }
 
@@ -475,4 +474,3 @@ mod tests {
     assert!(result.no_alias(0, 2));
   }
 }
-

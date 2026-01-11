@@ -6,8 +6,7 @@ fn build_cfg(blocks: Vec<(u32, Vec<Inst>)>, edges: &[(u32, u32)]) -> Cfg {
   let mut graph = CfgGraph::default();
   // Ensure every label exists in the graph for liveness, even if it has no edges.
   for (label, _) in blocks.iter() {
-    graph.connect(*label, *label);
-    graph.disconnect(*label, *label);
+    graph.ensure_label(*label);
   }
   for &(parent, child) in edges {
     graph.connect(parent, child);
