@@ -8,7 +8,7 @@
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, Const, EffectSet, Inst, InstMeta, InstTyp, Nullability, UnOp};
 use crate::il::inst::NullabilityNarrowing;
-use crate::{FnId, Program};
+use crate::{FnId, Program, ProgramFunction};
 use ahash::HashMap;
 use ahash::HashMapExt;
 
@@ -39,6 +39,11 @@ pub fn analyze_cfg(cfg: &Cfg) -> FunctionAnalyses {
   }
 }
 
+/// Convenience wrapper for [`analyze_cfg`] when you have a [`ProgramFunction`].
+pub fn analyze_program_function(function: &ProgramFunction) -> FunctionAnalyses {
+  analyze_cfg(&function.body)
+}
+
 /// Typed entry point for [`analyze_cfg`].
 ///
 /// The current core analyses are driven entirely by IL metadata, so the typed
@@ -46,6 +51,15 @@ pub fn analyze_cfg(cfg: &Cfg) -> FunctionAnalyses {
 #[cfg(feature = "typed")]
 pub fn analyze_cfg_typed(cfg: &Cfg, _types: &crate::types::TypeContext) -> FunctionAnalyses {
   analyze_cfg(cfg)
+}
+
+/// Convenience wrapper for [`analyze_cfg_typed`] when you have a [`ProgramFunction`].
+#[cfg(feature = "typed")]
+pub fn analyze_program_function_typed(
+  function: &ProgramFunction,
+  types: &crate::types::TypeContext,
+) -> FunctionAnalyses {
+  analyze_cfg_typed(&function.body, types)
 }
 
 /// Stable identifier for a function in a [`Program`].
