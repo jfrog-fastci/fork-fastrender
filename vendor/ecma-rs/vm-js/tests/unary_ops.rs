@@ -46,11 +46,8 @@ fn delete_optional_chain_computed_member_does_not_evaluate_key_when_nullish() {
 }
 
 #[test]
-fn delete_identifier_strict_mode_throws() {
+fn delete_identifier_strict_mode_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#""use strict"; var x = 1; delete x;"#).unwrap_err();
-  match err {
-    VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Syntax(_) => {}
-    other => panic!("expected throw or syntax error, got {other:?}"),
-  }
+  assert!(matches!(err, VmError::Syntax(_)));
 }

@@ -4967,11 +4967,10 @@ impl<'a> Evaluator<'a> {
       OperatorName::Delete => match &*expr.argument.stx {
         Expr::Id(id) => {
           if self.strict {
-            return Err(throw_type_error(
-              self.vm,
-              scope,
+            return Err(syntax_error(
+              expr.argument.loc,
               "Delete of an unqualified identifier in strict mode.",
-            )?);
+            ));
           }
 
           // Sloppy-mode: deleting an unqualified identifier returns `true` if the reference is
@@ -5026,11 +5025,10 @@ impl<'a> Evaluator<'a> {
         }
         Expr::IdPat(id) => {
           if self.strict {
-            return Err(throw_type_error(
-              self.vm,
-              scope,
+            return Err(syntax_error(
+              expr.argument.loc,
               "Delete of an unqualified identifier in strict mode.",
-            )?);
+            ));
           }
 
           if let Some(env) = self.env.resolve_lexical_binding(
