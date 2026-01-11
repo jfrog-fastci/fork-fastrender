@@ -14,7 +14,7 @@
 //!
 //! See:
 //! - `docs/write_barrier.md` for the generational GC write barrier contract.
-//! - `include/runtime_native.h` for the stable C ABI surface.
+//! - `include/runtime_native.h` for the authoritative stable C ABI surface.
 
 pub mod abi;
 pub mod arch;
@@ -34,6 +34,8 @@ pub mod stackwalk_fp;
 pub mod test_util;
 
 mod alloc;
+#[cfg(feature = "gc_stats")]
+mod gc_stats;
 mod exports;
 mod interner;
 mod platform;
@@ -139,11 +141,14 @@ mod tests {
     // Keep these strings in sync with `include/runtime_native.h` to ensure we
     // don't forget to update the header when changing the exported ABI.
     const DECLS: &[&str] = &[
+      "void rt_thread_init(uint32_t kind);",
+      "void rt_thread_deinit(void);",
       "uint8_t* rt_alloc(size_t size, ShapeId shape);",
       "uint8_t* rt_alloc_pinned(size_t size, ShapeId shape);",
       "uint8_t* rt_alloc_array(size_t len, size_t elem_size);",
       "void rt_gc_safepoint(void);",
       "void rt_write_barrier(uint8_t* obj, uint8_t* slot);",
+      "void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);",
       "void rt_gc_collect(void);",
       "void rt_gc_set_young_range(uint8_t* start, uint8_t* end);",
       "void rt_gc_get_young_range(uint8_t** out_start, uint8_t** out_end);",
@@ -168,12 +173,24 @@ mod tests {
       );
     }
 
+    if cfg!(feature = "gc_stats") {
+      for decl in ["void rt_gc_stats_snapshot(RtGcStatsSnapshot* out);", "void rt_gc_stats_reset(void);"] {
+        assert!(
+          HEADER.contains(decl),
+          "`runtime_native.h` is missing expected gc_stats declaration: {decl}"
+        );
+      }
+    }
+
     // Ensure the Rust exports match the declared ABI shape.
+    let _thread_init: extern "C" fn(u32) = rt_thread_init;
+    let _thread_deinit: extern "C" fn() = rt_thread_deinit;
     let _alloc: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc;
     let _alloc_pinned: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc_pinned;
     let _alloc_array: extern "C" fn(usize, usize) -> *mut u8 = rt_alloc_array;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
+    let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) = rt_write_barrier_range;
     let _collect: extern "C" fn() = rt_gc_collect;
     let _set_young_range: extern "C" fn(*mut u8, *mut u8) = rt_gc_set_young_range;
     let _get_young_range: unsafe extern "C" fn(*mut *mut u8, *mut *mut u8) = rt_gc_get_young_range;
@@ -189,12 +206,23 @@ mod tests {
     let _promise_reject: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject;
     let _promise_then: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then;
     let _coro_await: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await;
+
+    #[cfg(feature = "gc_stats")]
+    let _stats_snapshot: unsafe extern "C" fn(*mut abi::RtGcStatsSnapshot) = rt_gc_stats_snapshot;
+    #[cfg(feature = "gc_stats")]
+    let _stats_reset: extern "C" fn() = rt_gc_stats_reset;
+    #[cfg(feature = "gc_stats")]
+    let _ = (_stats_snapshot, _stats_reset);
+
     let _ = (
+      _thread_init,
+      _thread_deinit,
       _alloc,
       _alloc_pinned,
       _alloc_array,
       _safepoint,
       _write_barrier,
+      _write_barrier_range,
       _collect,
       _set_young_range,
       _get_young_range,

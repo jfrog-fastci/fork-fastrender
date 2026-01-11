@@ -41,6 +41,23 @@ typedef struct StringRef {
 } StringRef;
 
 // -----------------------------------------------------------------------------
+// Thread registration
+// -----------------------------------------------------------------------------
+// Register the current OS thread with the runtime.
+//
+// Any thread that may execute compiled code and participate in GC safepoints
+// must call `rt_thread_init` before running mutator code, and `rt_thread_deinit`
+// before exiting.
+//
+// `kind` is a best-effort hint used for diagnostics only:
+//   0 = main
+//   1 = worker
+//   2 = io
+//   3 = external/unknown
+void rt_thread_init(uint32_t kind);
+void rt_thread_deinit(void);
+
+// -----------------------------------------------------------------------------
 // Memory
 // -----------------------------------------------------------------------------
 uint8_t* rt_alloc(size_t size, ShapeId shape);
@@ -54,6 +71,7 @@ uint8_t* rt_alloc_array(size_t len, size_t elem_size);
 // -----------------------------------------------------------------------------
 void rt_gc_safepoint(void);
 void rt_write_barrier(uint8_t* obj, uint8_t* slot);
+void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);
 void rt_gc_collect(void);
 
 // Update the active nursery (young generation) address range used by the write barrier.
@@ -62,6 +80,29 @@ void rt_gc_set_young_range(uint8_t* start, uint8_t* end);
 
 // Debug/test helper: read the current young-space range.
 void rt_gc_get_young_range(uint8_t** out_start, uint8_t** out_end);
+
+// Optional GC/runtime stats APIs.
+//
+// These entrypoints are only available when `runtime-native` was built with the
+// Cargo feature `gc_stats`. Define `RUNTIME_NATIVE_GC_STATS` to expose them in C.
+#ifdef RUNTIME_NATIVE_GC_STATS
+typedef struct RtGcStatsSnapshot {
+  uint64_t alloc_calls;
+  size_t alloc_bytes;
+  uint64_t alloc_array_calls;
+  size_t alloc_array_bytes;
+  uint64_t gc_collect_calls;
+  uint64_t safepoint_calls;
+  uint64_t write_barrier_calls;
+  uint64_t write_barrier_range_calls;
+  uint64_t set_young_range_calls;
+  uint64_t thread_init_calls;
+  uint64_t thread_deinit_calls;
+} RtGcStatsSnapshot;
+
+void rt_gc_stats_snapshot(RtGcStatsSnapshot* out);
+void rt_gc_stats_reset(void);
+#endif
 
 // -----------------------------------------------------------------------------
 // Strings

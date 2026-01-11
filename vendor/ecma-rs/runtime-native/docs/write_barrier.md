@@ -30,7 +30,7 @@ Old-generation marks are **sticky across minor GCs**: a minor GC does not clear/
 
 ### Signature
 
-Stable C ABI (see also `include/runtime_native.h`):
+Stable C ABI (**authoritative**: `include/runtime_native.h`):
 
 ```c
 void rt_write_barrier(uint8_t* obj, uint8_t* slot);

@@ -50,6 +50,26 @@ impl StringRef {
   }
 }
 
+/// Optional GC/runtime statistics snapshot exposed for debugging/benching.
+///
+/// Enabled by the `gc_stats` Cargo feature.
+#[cfg(feature = "gc_stats")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RtGcStatsSnapshot {
+  pub alloc_calls: u64,
+  pub alloc_bytes: usize,
+  pub alloc_array_calls: u64,
+  pub alloc_array_bytes: usize,
+  pub gc_collect_calls: u64,
+  pub safepoint_calls: u64,
+  pub write_barrier_calls: u64,
+  pub write_barrier_range_calls: u64,
+  pub set_young_range_calls: u64,
+  pub thread_init_calls: u64,
+  pub thread_deinit_calls: u64,
+}
+
 /// Shape identifier used by the AOT compiler to refer to statically-known object layouts.
 ///
 /// For now this is just a 128-bit value (passed through, unused by the milestone runtime).

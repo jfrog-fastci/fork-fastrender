@@ -90,10 +90,14 @@ fn c_can_link_and_call_runtime_native() {
 #include "runtime_native.h"
 
 int main(void) {
+  rt_thread_init(0);
   ShapeId shape = (ShapeId)0;
   uint8_t* pinned = rt_alloc_pinned(16, shape);
   (void)pinned;
   rt_gc_safepoint();
+  rt_gc_set_young_range((uint8_t*)0, (uint8_t*)0);
+  rt_write_barrier_range((uint8_t*)0, (uint8_t*)0, 0);
+  rt_thread_deinit();
   return 0;
 }
 "#,

@@ -7,6 +7,7 @@ use crate::alloc;
 use crate::async_rt;
 use crate::gc::ObjHeader;
 use crate::gc::YOUNG_SPACE;
+use crate::threading;
 use std::sync::atomic::Ordering;
 
 #[inline(always)]
@@ -19,6 +20,8 @@ fn ensure_event_loop_thread_registered() {
 
 #[no_mangle]
 pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_alloc(size);
   alloc::malloc_bytes(size, "rt_alloc")
 }
 
@@ -34,12 +37,40 @@ pub extern "C" fn rt_alloc_pinned(size: usize, _shape: ShapeId) -> *mut u8 {
 
 #[no_mangle]
 pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8 {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_alloc_array(len, elem_size);
   alloc::calloc_array(len, elem_size, "rt_alloc_array")
+}
+
+/// Register the current OS thread with the runtime.
+#[no_mangle]
+pub extern "C" fn rt_thread_init(kind: u32) {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_thread_init();
+
+  let kind = match kind {
+    0 => threading::ThreadKind::Main,
+    1 => threading::ThreadKind::Worker,
+    2 => threading::ThreadKind::Io,
+    3 => threading::ThreadKind::External,
+    _ => threading::ThreadKind::External,
+  };
+  threading::register_current_thread(kind);
+}
+
+/// Unregister the current OS thread from the runtime.
+#[no_mangle]
+pub extern "C" fn rt_thread_deinit() {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_thread_deinit();
+  threading::unregister_current_thread();
 }
 
 /// GC safepoint.
 #[no_mangle]
 pub extern "C" fn rt_gc_safepoint() {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_safepoint();
   crate::threading::safepoint::rt_gc_safepoint();
 }
 
@@ -49,6 +80,8 @@ pub extern "C" fn rt_gc_safepoint() {
 /// flip/resize that changes the current young generation region.
 #[no_mangle]
 pub extern "C" fn rt_gc_set_young_range(start: *mut u8, end: *mut u8) {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_set_young_range();
   YOUNG_SPACE.start.store(start as usize, Ordering::Release);
   YOUNG_SPACE.end.store(end as usize, Ordering::Release);
 }
@@ -72,6 +105,9 @@ pub unsafe extern "C" fn rt_gc_get_young_range(out_start: *mut *mut u8, out_end:
 /// Records old→young pointer stores in the remembered set.
 #[no_mangle]
 pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_write_barrier();
+
   if obj.is_null() || slot.is_null() {
     return;
   }
@@ -103,11 +139,69 @@ pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
   }
 }
 
+/// Range write barrier for GC.
+///
+/// Like [`rt_write_barrier`], but for a contiguous run of pointer slots.
+///
+/// - `start_slot` is the address of the first pointer slot.
+/// - `len` is the number of bytes to scan (must cover a whole number of pointer slots).
+#[no_mangle]
+pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u8, len: usize) {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_write_barrier_range();
+
+  if obj.is_null() || start_slot.is_null() || len == 0 {
+    return;
+  }
+
+  // Writes into young objects don't need a barrier: nursery tracing will find the edge.
+  if YOUNG_SPACE.contains(obj as usize) {
+    return;
+  }
+
+  let header = &mut *(obj as *mut ObjHeader);
+  if header.is_remembered() {
+    return;
+  }
+
+  // Scan slots for any young pointer. If we see one, remember the object.
+  let slot_count = len / core::mem::size_of::<*mut u8>();
+  let slots = start_slot as *const *mut u8;
+  for i in 0..slot_count {
+    let value = slots.add(i).read();
+    if value.is_null() {
+      continue;
+    }
+    if YOUNG_SPACE.contains(value as usize) {
+      header.set_remembered(true);
+      return;
+    }
+  }
+}
+
 /// Trigger a GC cycle.
 ///
 /// Milestone-1 runtime: no-op.
 #[no_mangle]
-pub extern "C" fn rt_gc_collect() {}
+pub extern "C" fn rt_gc_collect() {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_gc_collect();
+}
+
+#[cfg(feature = "gc_stats")]
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_stats_snapshot(out: *mut crate::abi::RtGcStatsSnapshot) {
+  if out.is_null() {
+    return;
+  }
+  *out = crate::gc_stats::snapshot();
+}
+
+#[cfg(feature = "gc_stats")]
+#[no_mangle]
+pub extern "C" fn rt_gc_stats_reset() {
+  crate::gc_stats::reset();
+}
 
 #[no_mangle]
 pub extern "C" fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
