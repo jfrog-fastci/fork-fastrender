@@ -7,7 +7,7 @@
 //! constructs.
 
 use diagnostics::{Diagnostic, Span, TextRange};
-use hir_js::{ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind};
+use hir_js::{BodyKind, ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind};
 use std::collections::{HashMap, HashSet};
 use typecheck_ts::{BodyId, DefId, FileId, Program, TypeId};
 use types_ts_interned as tti;
@@ -20,6 +20,11 @@ const CODE_NEW_FUNCTION: &str = "NJS0005";
 const CODE_WITH_STMT: &str = "NJS0006";
 const CODE_DYNAMIC_MEMBER: &str = "NJS0007";
 const CODE_ARGUMENTS: &str = "NJS0008";
+
+const CODE_ENTRYPOINT_MISSING: &str = "NJS0108";
+const CODE_ENTRYPOINT_NOT_LOCAL: &str = "NJS0109";
+const CODE_ENTRYPOINT_NOT_FUNCTION: &str = "NJS0110";
+const CODE_ENTRYPOINT_BAD_SIGNATURE: &str = "NJS0111";
 
 /// Validate that the given files use only the native-js strict TypeScript subset.
 ///
@@ -430,4 +435,115 @@ fn span_of_expr(body: &hir_js::Body, file: FileId, expr: ExprId) -> Option<Span>
     .exprs
     .get(expr.0 as usize)
     .map(|expr| Span::new(file, expr.span))
+}
+
+/// `native-js` currently expects an exported `main` function in the entry file.
+///
+/// This helper locates that function and validates basic requirements needed by
+/// the current HIR-based code generator.
+#[derive(Debug, Clone, Copy)]
+pub struct Entrypoint {
+  pub main_def: DefId,
+  pub main_body: BodyId,
+}
+
+pub fn entrypoint(program: &Program, entry_file: FileId) -> Result<Entrypoint, Vec<Diagnostic>> {
+  let exports = program.exports_of(entry_file);
+  let Some(entry) = exports.get("main") else {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_MISSING,
+      "entry file must export a `main` function",
+      Span::new(entry_file, TextRange::new(0, 0)),
+    )]);
+  };
+
+  let Some(def) = entry.def else {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_LOCAL,
+      "exported `main` must be defined in the entry file (re-exports are not supported yet)",
+      Span::new(entry_file, TextRange::new(0, 0)),
+    )]);
+  };
+
+  let span = program
+    .span_of_def(def)
+    .unwrap_or_else(|| Span::new(entry_file, TextRange::new(0, 0)));
+  if span.file != entry_file {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_LOCAL,
+      "exported `main` must be defined in the entry file",
+      span,
+    )]);
+  }
+
+  let Some(def_kind) = program.def_kind(def) else {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_FUNCTION,
+      "failed to resolve exported `main` definition",
+      span,
+    )]);
+  };
+  if !matches!(def_kind, typecheck_ts::DefKind::Function(_)) {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_FUNCTION,
+      "exported `main` must be a function",
+      span,
+    )]);
+  }
+
+  let Some(body) = program.body_of_def(def) else {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_FUNCTION,
+      "exported `main` must have a body",
+      span,
+    )]);
+  };
+
+  let Some(lowered) = program.hir_lowered(entry_file) else {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_FUNCTION,
+      "failed to access lowered HIR for entry file",
+      span,
+    )]);
+  };
+  let Some(hir_body) = lowered.body(body) else {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_FUNCTION,
+      "failed to access lowered HIR for `main` body",
+      span,
+    )]);
+  };
+  if hir_body.kind != BodyKind::Function {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_FUNCTION,
+      "exported `main` must be a function body",
+      span,
+    )]);
+  }
+  let Some(function) = hir_body.function.as_ref() else {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_NOT_FUNCTION,
+      "missing function metadata for `main` body",
+      span,
+    )]);
+  };
+  if !function.params.is_empty() {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_BAD_SIGNATURE,
+      "`main` must not accept parameters in native-js strict mode",
+      span,
+    )]);
+  }
+  if function.async_ || function.generator {
+    return Err(vec![Diagnostic::error(
+      CODE_ENTRYPOINT_BAD_SIGNATURE,
+      "`main` must not be async or a generator in native-js strict mode",
+      span,
+    )]);
+  }
+
+  Ok(Entrypoint {
+    main_def: def,
+    main_body: body,
+  })
 }

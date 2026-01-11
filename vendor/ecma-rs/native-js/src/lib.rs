@@ -1,10 +1,11 @@
 //! Native (LLVM-backed) code generation for `ecma-rs`.
 //!
 //! This crate is still early: most of the real TS/HIR lowering is not implemented yet.
-//! It wires up LLVM and provides the public API surface that future TS/HIR lowering will target.
 //!
-//! For now it also contains a tiny `parse-js`-driven LLVM IR emitter that is used by
-//! `native-js-cli` integration tests and for debugging the native pipeline.
+//! It currently contains:
+//! - A strict TypeScript subset validator + HIR-driven LLVM codegen used by the `native-js` binary.
+//! - A tiny `parse-js`-driven LLVM IR emitter used by `native-js-cli` integration tests and for
+//!   debugging the native pipeline.
 //!
 //! ## GC stack walking
 //! The native runtime performs **precise GC** using LLVM statepoints. In addition to stack maps,

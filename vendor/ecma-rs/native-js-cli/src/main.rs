@@ -41,6 +41,13 @@ fn main() {
     }
   };
 
+  if let Some(path) = args.emit_llvm.as_deref() {
+    if let Err(err) = std::fs::write(path, &ir) {
+      eprintln!("failed to write {}: {err}", path.display());
+      exit(1);
+    }
+  }
+
   let tmpdir = match tempfile::tempdir() {
     Ok(d) => d,
     Err(err) => {
@@ -55,15 +62,15 @@ fn main() {
     exit(1);
   }
 
-  if let Some(path) = args.emit_llvm.as_deref() {
-    if let Err(err) = std::fs::write(path, &ir) {
-      eprintln!("failed to write {}: {err}", path.display());
+  let exe_path = tmpdir.path().join("out");
+  let clang = match find_clang() {
+    Some(clang) => clang,
+    None => {
+      eprintln!("failed to find clang (tried clang-18 and clang)");
       exit(1);
     }
-  }
-
-  let exe_path = tmpdir.path().join("out");
-  let status = match Command::new("clang")
+  };
+  let status = match Command::new(clang)
     .arg("-x")
     .arg("ir")
     .arg(&ll_path)
@@ -97,3 +104,26 @@ fn main() {
 
   exit(status.code().unwrap_or(1));
 }
+
+fn find_clang() -> Option<&'static str> {
+  if Command::new("clang-18")
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok()
+  {
+    return Some("clang-18");
+  }
+  if Command::new("clang")
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok()
+  {
+    return Some("clang");
+  }
+  None
+}
+

@@ -5,13 +5,13 @@ members = [
   "diagnostics",
   "bench/minify-js",
   "bench/typecheck-ts",
+  "native-js",
+  "native-js-cli",
   "minify-js-cli",
   "minify-js-nodejs",
   "minify-js",
-  "native-js",
   "optimize-js-debugger",
   "optimize-js",
-  "native-js-cli",
   "parse-js-cli",
   "parse-js",
   "effect-model",
@@ -51,8 +51,9 @@ effect-js = { path = "effect-js", version = "0.1.0" }
 knowledge-base = { path = "knowledge-base", version = "0.1.0" }
 emit-js = { path = "emit-js", version = "0.1.0" }
 hir-js = { path = "hir-js", version = "0.1.0" }
-minify-js = { path = "minify-js", version = "0.6.0" }
 native-js = { path = "native-js", version = "0.1.0" }
+native-js-cli = { path = "native-js-cli", version = "0.1.0" }
+minify-js = { path = "minify-js", version = "0.6.0" }
 optimize-js = { path = "optimize-js", version = "0.1.0" }
 parse-js = { path = "parse-js", version = "0.24.1" }
 semantic-js = { path = "semantic-js", version = "0.1.0" }
@@ -120,6 +121,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3.19", default-features = false }
 unicode-ident = "1.0"
 walkdir = "2.5"
+wait-timeout = "0.2"
 
 [patch.crates-io]
 derive-visitor = { path = "third_party/derive-visitor" }
