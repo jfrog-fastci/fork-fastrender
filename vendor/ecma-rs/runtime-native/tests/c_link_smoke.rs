@@ -2,11 +2,37 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn find_c_compiler() -> Option<String> {
+#[derive(Clone, Debug)]
+struct Cc {
+  program: String,
+  args: Vec<String>,
+}
+
+impl Cc {
+  fn new(program: impl Into<String>) -> Self {
+    Self {
+      program: program.into(),
+      args: Vec::new(),
+    }
+  }
+
+  fn with_args(program: impl Into<String>, args: Vec<String>) -> Self {
+    Self {
+      program: program.into(),
+      args,
+    }
+  }
+}
+
+fn find_c_compiler() -> Option<Cc> {
   // Prefer $CC when set (common in CI / cross toolchains).
   if let Ok(cc) = std::env::var("CC") {
-    if !cc.trim().is_empty() {
-      return Some(cc);
+    let parts: Vec<&str> = cc.split_whitespace().collect();
+    if let Some((program, args)) = parts.split_first() {
+      return Some(Cc::with_args(
+        (*program).to_string(),
+        args.iter().map(|s| (*s).to_string()).collect(),
+      ));
     }
   }
 
@@ -19,7 +45,7 @@ fn find_c_compiler() -> Option<String> {
       .status()
       .is_ok_and(|s| s.success())
     {
-      return Some(candidate.to_string());
+      return Some(Cc::new(candidate));
     }
   }
 
@@ -245,10 +271,11 @@ int main(void) {
   // - GNU ld: use `link/stackmaps_gnuld.ld` (inserting after `.text` can produce an RWX PT_LOAD).
   // - lld: use `link/stackmaps.ld` (lld keeps `.data.rel.ro.*` out of the executable segment).
   let stackmaps_ld = if cfg!(target_os = "linux") {
-    let linker_version_out = Command::new(&cc)
+    let linker_version_out = Command::new(&cc.program)
+      .args(&cc.args)
       .args(["-Wl,--version"])
       .output()
-      .unwrap_or_else(|e| panic!("failed to query linker version via {cc}: {e}"));
+      .unwrap_or_else(|e| panic!("failed to query linker version via {}: {e}", cc.program));
     let linker_version = format!(
       "{}{}",
       String::from_utf8_lossy(&linker_version_out.stdout),
@@ -273,8 +300,9 @@ int main(void) {
     None
   };
 
-  let mut cmd = Command::new(cc);
+  let mut cmd = Command::new(&cc.program);
   cmd
+    .args(&cc.args)
     .arg("-std=c99")
     .arg("-I")
     .arg(&include_dir)
