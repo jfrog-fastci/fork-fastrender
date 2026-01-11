@@ -1,6 +1,6 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::os::fd::{AsRawFd, RawFd};
 use std::pin::Pin;
@@ -21,7 +21,7 @@ use crate::gc::{GcHeap, RootHandle, OBJ_HEADER_SIZE};
 use crate::threading;
 use crate::threading::ThreadKind;
 
-use super::limits::{IoLimitError, IoLimits, IoLimiter, IoPermit};
+use super::limits::{IoCounters, IoLimitError, IoLimits, IoLimiter, IoPermit};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
@@ -259,6 +259,21 @@ impl Future for ReadFuture {
     }
 
     Poll::Pending
+  }
+}
+
+impl Drop for ReadFuture {
+  fn drop(&mut self) {
+    // If the operation already completed, there is nothing to cancel.
+    if self.op.completion_started.load(Ordering::Acquire) {
+      return;
+    }
+
+    // Dropping the future means no one is waiting on the result anymore. Request an io_uring cancel
+    // so pinned backing stores and I/O limiter permits are released promptly.
+    if self.op.mark_cancel_requested() {
+      self.driver.request_cancel(self.op.id);
+    }
   }
 }
 
@@ -513,8 +528,6 @@ fn drain_eventfd(fd: RawFd) {
 
 #[cfg(target_os = "linux")]
 fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
-  use std::mem;
-
   threading::register_current_thread(ThreadKind::Io);
   struct Unregister;
   impl Drop for Unregister {
@@ -531,8 +544,10 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
   let ring_fd = ring.as_raw_fd();
 
   let mut ops: HashMap<u64, Arc<IoOp>> = HashMap::new();
+  let mut pending_cancels: VecDeque<u64> = VecDeque::new();
   let mut cancel_in_flight: usize = 0;
   let mut shutdown = false;
+  let mut shutdown_cancels_enqueued = false;
 
   loop {
     while let Ok(cmd) = cmd_rx.try_recv() {
@@ -542,23 +557,18 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
             op.complete(Err(IoError::Cancelled));
             continue;
           }
-           let ud = user_data(op.id, UserDataKind::Read);
-           let sqe = opcode::Read::new(types::Fd(fd), op.ptr, op.len as _)
-             .build()
-             .user_data(ud);
-           if let Err(err) = push_sqe_with_backpressure(&mut ring, &sqe) {
-             op.complete(Err(IoError::Uring(submit_errno(&err))));
-             continue;
-           }
-           ops.insert(decode_user_data_id(ud), op);
-         }
-        Command::Cancel { id } => {
-          let target = user_data(id, UserDataKind::Read);
-          let ud = user_data(id, UserDataKind::Cancel);
-          let sqe = opcode::AsyncCancel::new(target).build().user_data(ud);
-          if push_sqe_with_backpressure(&mut ring, &sqe).is_ok() {
-            cancel_in_flight = cancel_in_flight.saturating_add(1);
+          let ud = user_data(op.id, UserDataKind::Read);
+          let sqe = opcode::Read::new(types::Fd(fd), op.ptr, op.len as _)
+            .build()
+            .user_data(ud);
+          if let Err(err) = push_sqe_with_backpressure(&mut ring, &sqe) {
+            op.complete(Err(IoError::Uring(submit_errno(&err))));
+            continue;
           }
+          ops.insert(decode_user_data_id(ud), op);
+        }
+        Command::Cancel { id } => {
+          pending_cancels.push_back(id);
         }
         #[cfg(test)]
         Command::Barrier(done) => {
@@ -569,6 +579,35 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
         Command::Shutdown => {
           shutdown = true;
         }
+      }
+    }
+
+    // When the driver is dropped, cancel any still-in-flight operations so pinned backing stores and
+    // limiter permits are released before we exit the thread.
+    if shutdown && !shutdown_cancels_enqueued {
+      pending_cancels.extend(ops.keys().copied());
+      shutdown_cancels_enqueued = true;
+    }
+
+    // Drain any queued cancellation requests. If the SQ is temporarily full, keep the id queued and
+    // retry on the next loop turn.
+    while let Some(id) = pending_cancels.front().copied() {
+      if !ops.contains_key(&id) {
+        // Either the op hasn't been submitted yet (in which case `cancel_requested` will prevent it
+        // from being queued) or it already completed. No kernel cancel needed.
+        pending_cancels.pop_front();
+        continue;
+      }
+
+      let target = user_data(id, UserDataKind::Read);
+      let ud = user_data(id, UserDataKind::Cancel);
+      let sqe = opcode::AsyncCancel::new(target).build().user_data(ud);
+      match push_sqe_with_backpressure(&mut ring, &sqe) {
+        Ok(()) => {
+          pending_cancels.pop_front();
+          cancel_in_flight = cancel_in_flight.saturating_add(1);
+        }
+        Err(_) => break,
       }
     }
 
@@ -583,43 +622,7 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
       return;
     }
 
-    if shutdown {
-      // Drain any already-ready CQEs so completed ops don't force a leak.
-      {
-        let mut cq = ring.completion();
-        for cqe in &mut cq {
-          let ud = cqe.user_data();
-          let id = decode_user_data_id(ud);
-          match decode_user_data_kind(ud) {
-            UserDataKind::Read => {
-              if let Some(op) = ops.remove(&id) {
-                let res = cqe.result();
-                if res >= 0 {
-                  op.complete(Ok(res as usize));
-                } else if res == -libc::ECANCELED {
-                  op.complete(Err(IoError::Cancelled));
-                } else {
-                  op.complete(Err(IoError::Uring(res)));
-                }
-              }
-            }
-            UserDataKind::Cancel => {
-              cancel_in_flight = cancel_in_flight.saturating_sub(1);
-            }
-          }
-        }
-      }
-
-      if ops.is_empty() && cancel_in_flight == 0 {
-        unsafe {
-          libc::close(wake_fd);
-        }
-        return;
-      }
-
-      // Leak the ring and in-flight op state to avoid dropping kernel-referenced pointers early.
-      mem::forget(ring);
-      mem::forget(ops);
+    if shutdown && ops.is_empty() && cancel_in_flight == 0 && pending_cancels.is_empty() {
       unsafe {
         libc::close(wake_fd);
       }
@@ -638,9 +641,10 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
         revents: 0,
       },
     ];
+    let timeout_ms = if pending_cancels.is_empty() { -1 } else { 10 };
     loop {
       let poll_rc =
-        threading::park_while(|| unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) });
+        threading::park_while(|| unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout_ms) });
       if poll_rc >= 0 {
         break;
       }
@@ -920,6 +924,107 @@ mod tests {
     )
   }
 
+  #[test]
+  fn drop_driver_cancels_inflight_read_and_releases_io_limiter_permit() {
+    let _rt = TestRuntimeGuard::new();
+
+    // Skip if the kernel doesn't support io_uring in this environment.
+    match io_uring::IoUring::new(2) {
+      Ok(r) => drop(r),
+      Err(e) if is_uring_unavailable(&e) => return,
+      Err(e) => return Err(e).unwrap(),
+    }
+
+    let heap = Arc::new(Mutex::new(GcHeap::new()));
+    let limiter = Arc::new(IoLimiter::new(IoLimits {
+      max_pinned_bytes: 1024 * 1024,
+      max_inflight_ops: 1,
+      max_pinned_bytes_per_op: None,
+    }));
+    let driver = UringDriver::new_with_limiter(8, Arc::clone(&limiter)).unwrap();
+
+    // Keep the write end open but never write, so the read blocks in the kernel until cancelled.
+    let (rfd, _wfd) = pipe().unwrap();
+
+    let (array_obj, buffer_obj, promise_obj) = {
+      let mut heap = heap.lock().unwrap();
+      let buffer_obj = alloc_array_buffer(&mut heap, 1);
+      let array_obj = alloc_uint8_array(&mut heap, buffer_obj, 0, 1);
+      let promise_obj = alloc_dummy(&mut heap);
+      (array_obj, buffer_obj, promise_obj)
+    };
+
+    // Mirror `UringDriver::read_into_uint8_array`, but avoid constructing a `ReadFuture` so dropping
+    // the driver triggers shutdown while the read is still in-flight.
+    let pinned = unsafe { &*(array_obj.add(OBJ_HEADER_SIZE) as *const Uint8Array) }
+      .pin()
+      .expect("pin should succeed");
+    let permit = limiter
+      .try_acquire(pinned.backing_store_alloc_len())
+      .expect("io permit should be available");
+    let borrow = pinned
+      .backing_store()
+      .try_borrow_io_write()
+      .expect("buffer should not already be borrowed");
+
+    let id = driver.next_op_id();
+    let op = Arc::new(IoOp::new(
+      id,
+      Arc::clone(&heap),
+      array_obj,
+      promise_obj,
+      pinned,
+      borrow,
+      permit,
+    ));
+    driver
+      .inner
+      .cmd_tx
+      .send(Command::SubmitRead {
+        op: Arc::clone(&op),
+        fd: rfd.as_raw_fd(),
+      })
+      .unwrap();
+
+    // Ensure the driver thread has processed the submission (op is now in-flight and owns the only
+    // permit).
+    let (tx, rx) = mpsc::channel();
+    driver.inner.cmd_tx.send(Command::Barrier(tx)).unwrap();
+    driver.signal();
+    rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    assert_eq!(limiter.counters().inflight_ops_current, 1);
+    assert!(limiter.counters().pinned_bytes_current > 0);
+    assert!(pin_count(buffer_obj) > 0);
+
+    drop(op);
+    drop(driver);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+      let c = limiter.counters();
+      if c.inflight_ops_current == 0 && c.pinned_bytes_current == 0 && pin_count(buffer_obj) == 0 {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(1));
+    }
+
+    assert_eq!(
+      limiter.counters(),
+      IoCounters {
+        pinned_bytes_current: 0,
+        inflight_ops_current: 0,
+      },
+      "driver shutdown leaked I/O limiter accounting"
+    );
+    assert_eq!(
+      pin_count(buffer_obj),
+      0,
+      "driver shutdown leaked backing store pin count"
+    );
+    finalize_array_buffer(buffer_obj);
+  }
+
   #[repr(C)]
   struct FakeUint8ArrayObj {
     _header: ObjHeader,
@@ -933,7 +1038,7 @@ mod tests {
   }
 
   #[test]
-  fn drop_driver_with_inflight_read_keeps_backing_store_alive() {
+  fn drop_driver_with_inflight_read_cancels_and_frees_backing_store() {
     let _rt = TestRuntimeGuard::new();
 
     // Skip if the kernel doesn't support io_uring in this environment.
@@ -979,7 +1084,7 @@ mod tests {
     drop(fut);
     drop(driver);
 
-    let deadline = Instant::now() + Duration::from_millis(100);
+    let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
       if alloc.external_bytes() == 0 {
         break;
@@ -989,8 +1094,13 @@ mod tests {
 
     assert_eq!(
       alloc.external_bytes(),
-      1,
-      "backing store was freed while an io_uring op could still reference its pointer"
+      0,
+      "backing store was not freed after dropping the in-flight read future/driver"
     );
+
+    unsafe {
+      drop(Box::from_raw(array_obj as *mut FakeUint8ArrayObj));
+      drop(Box::from_raw(promise_obj as *mut FakePromiseObj));
+    }
   }
 }
