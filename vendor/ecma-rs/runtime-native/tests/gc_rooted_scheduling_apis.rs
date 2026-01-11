@@ -18,12 +18,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static OBSERVED: AtomicUsize = AtomicUsize::new(0);
 static DROPPED: AtomicUsize = AtomicUsize::new(0);
+static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" fn record_ptr(data: *mut u8) {
   OBSERVED.store(data as usize, Ordering::SeqCst);
 }
 
 extern "C" fn record_drop(data: *mut u8) {
+  DROP_COUNT.fetch_add(1, Ordering::SeqCst);
   DROPPED.store(data as usize, Ordering::SeqCst);
 }
 
@@ -82,6 +84,7 @@ fn queue_microtask_handle_reloads_userdata_from_persistent_handle() {
 
   OBSERVED.store(0, Ordering::SeqCst);
   DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
   runtime_native::rt_queue_microtask_handle(record_ptr, h);
 
   simulate_relocation(obj1, obj2);
@@ -98,6 +101,7 @@ fn queue_microtask_handle_reloads_userdata_from_persistent_handle() {
     0,
     "microtask without drop hook must not invoke drop_data"
   );
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
 
   threading::unregister_current_thread();
 }
@@ -115,6 +119,7 @@ fn queue_microtask_handle_with_drop_invokes_drop_hook() {
 
   OBSERVED.store(0, Ordering::SeqCst);
   DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
   runtime_native::rt_queue_microtask_handle_with_drop(record_ptr, h, record_drop);
 
   simulate_relocation(obj1, obj2);
@@ -123,6 +128,7 @@ fn queue_microtask_handle_with_drop_invokes_drop_hook() {
 
   assert_eq!(OBSERVED.load(Ordering::SeqCst), obj2 as usize);
   assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
   assert!(
     runtime_native::rt_handle_load(h).is_null(),
     "runtime must free the consumed handle after the microtask runs"
@@ -144,6 +150,7 @@ fn set_timeout_handle_reloads_userdata_from_persistent_handle() {
 
   OBSERVED.store(0, Ordering::SeqCst);
   DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
   let _timer = runtime_native::rt_set_timeout_handle(record_ptr, h, 0);
 
   simulate_relocation(obj1, obj2);
@@ -160,6 +167,7 @@ fn set_timeout_handle_reloads_userdata_from_persistent_handle() {
     0,
     "timeout without drop hook must not invoke drop_data"
   );
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
 
   threading::unregister_current_thread();
 }
@@ -177,6 +185,7 @@ fn clear_timeout_handle_with_drop_invokes_drop_hook_and_frees_handle() {
 
   OBSERVED.store(0, Ordering::SeqCst);
   DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
   let timer = runtime_native::rt_set_timeout_handle_with_drop(record_ptr, h, record_drop, 60_000);
 
   simulate_relocation(obj1, obj2);
@@ -185,6 +194,7 @@ fn clear_timeout_handle_with_drop_invokes_drop_hook_and_frees_handle() {
 
   assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
   assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
   assert!(
     runtime_native::rt_handle_load(h).is_null(),
     "runtime must free the consumed handle after the timeout is cleared"
@@ -210,6 +220,7 @@ fn set_interval_handle_keeps_userdata_rooted_until_cleared() {
 
   OBSERVED.store(0, Ordering::SeqCst);
   DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
   let timer = runtime_native::rt_set_interval_handle(record_ptr, h, 0);
 
   simulate_relocation(obj1, obj2);
@@ -226,6 +237,7 @@ fn set_interval_handle_keeps_userdata_rooted_until_cleared() {
     0,
     "interval without drop hook must not invoke drop_data"
   );
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
 
   // There should still be pending work since the interval reschedules itself.
   assert!(pending);
@@ -237,6 +249,41 @@ fn set_interval_handle_keeps_userdata_rooted_until_cleared() {
   );
 
   while runtime_native::rt_async_poll_legacy() {}
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn clear_interval_handle_with_drop_invokes_drop_hook_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  let timer = runtime_native::rt_set_interval_handle_with_drop(record_ptr, h, record_drop, 60_000);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_clear_timer(timer);
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+  assert!(
+    runtime_native::rt_handle_load(h).is_null(),
+    "runtime must free the consumed handle after the interval is cleared"
+  );
+
+  // Ensure the cleared interval does not fire later.
+  while runtime_native::rt_async_poll_legacy() {}
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
 
   threading::unregister_current_thread();
 }
@@ -281,6 +328,50 @@ fn io_register_handle_reloads_userdata_from_persistent_handle() {
 
   // Drain any wakeups triggered by unregistering the watcher.
   while runtime_native::rt_async_poll_legacy() {}
+
+  drop(rfd);
+  drop(wfd);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn io_register_handle_with_drop_invokes_drop_hook_on_unregister() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let (rfd, wfd) = pipe_nonblocking();
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  let watcher = runtime_native::rt_io_register_handle_with_drop(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h,
+    record_drop,
+  );
+  assert_ne!(watcher, 0, "rt_io_register_handle_with_drop should succeed");
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_io_unregister(watcher);
+
+  // No poll => no readiness callbacks should have run.
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+  assert!(
+    runtime_native::rt_handle_load(h).is_null(),
+    "runtime must free the consumed handle after the watcher is unregistered"
+  );
 
   drop(rfd);
   drop(wfd);
