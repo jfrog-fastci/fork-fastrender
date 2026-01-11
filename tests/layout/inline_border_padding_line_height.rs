@@ -1,26 +1,45 @@
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{FastRender, FontConfig};
 
-fn find_first_block_with_line_children<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
-  if matches!(node.content, FragmentContent::Block { .. })
-    && node
-      .children
-      .iter()
-      .any(|child| matches!(child.content, FragmentContent::Line { .. }))
-  {
+fn find_first_line<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
+  if matches!(node.content, FragmentContent::Line { .. }) {
     return Some(node);
   }
-
-  for child in node.children.iter() {
-    if let Some(found) = find_first_block_with_line_children(child) {
-      return Some(found);
-    }
-  }
-
-  None
+  node.children.iter().find_map(find_first_line)
 }
 
-fn line_heights(html: &str) -> Vec<f32> {
+fn fragment_contains_text(node: &FragmentNode, needle: &str) -> bool {
+  if let FragmentContent::Text { text, .. } = &node.content {
+    if text.contains(needle) {
+      return true;
+    }
+  }
+  node.children.iter().any(|child| fragment_contains_text(child, needle))
+}
+
+fn find_first_inline_with_text<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
+  if matches!(node.content, FragmentContent::Inline { .. }) && fragment_contains_text(node, needle) {
+    return Some(node);
+  }
+  node
+    .children
+    .iter()
+    .find_map(|child| find_first_inline_with_text(child, needle))
+}
+
+#[test]
+fn inline_border_and_padding_expand_line_box_height() {
+  // Browser engines include an inline box's vertical padding/borders when they extend beyond the
+  // line-height strut, so pill-style and bordered inline elements don't get clipped by
+  // `overflow: hidden` containers.
+  let html = r#"
+    <div style="font-family: 'DejaVu Sans', sans-serif; font-size: 11px; line-height: 11px">
+      before
+      <span style="border: 6px solid black; padding: 5px 4px;">?</span>
+      after
+    </div>
+  "#;
+
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())
     .build()
@@ -31,35 +50,20 @@ fn line_heights(html: &str) -> Vec<f32> {
     .layout_document(&dom, 800, 600)
     .expect("layout document");
 
-  let block =
-    find_first_block_with_line_children(&fragments.root).expect("block with line children");
+  let line = find_first_line(&fragments.root).expect("expected line fragment");
+  let inline = find_first_inline_with_text(line, "?").expect("expected inline fragment for '?'");
 
-  block
-    .children
-    .iter()
-    .filter(|child| matches!(child.content, FragmentContent::Line { .. }))
-    .map(|line| line.bounds.height())
-    .collect()
-}
-
-#[test]
-fn inline_border_and_padding_do_not_inflate_line_box_height() {
-  let html = r#"
-    <div style="font-family: 'DejaVu Sans', sans-serif; font-size: 11px; line-height: 11px">
-      before
-      <span style="border: 6px solid black; padding: 5px 4px;">?</span>
-      after
-    </div>
-  "#;
-
-  let heights = line_heights(html);
-  assert_eq!(heights.len(), 1);
-
-  let expected = 11.0;
-  let height = heights[0];
   assert!(
-    (height - expected).abs() < 0.1,
-    "expected line box height to be governed by line-height, got {height:.3} (expected {expected:.3})"
+    line.bounds.height() + 0.1 >= inline.bounds.height(),
+    "line box should enclose inline border box: line_height={} inline_height={}",
+    line.bounds.height(),
+    inline.bounds.height()
+  );
+  assert!(
+    inline.bounds.y() >= -0.01 && inline.bounds.max_y() <= line.bounds.height() + 0.1,
+    "inline border box should fit within the line box: y={} max_y={} line_height={}",
+    inline.bounds.y(),
+    inline.bounds.max_y(),
+    line.bounds.height()
   );
 }
-

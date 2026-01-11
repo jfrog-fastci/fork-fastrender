@@ -124,6 +124,7 @@ mod transform_stacking_context_paint_order;
 mod transform_translate_percentage_test;
 mod transform_overflow_clip;
 mod overflow_clip_test;
+mod rounded_clip_antialias_test;
 mod overflow_clip_margin_test;
 mod overflow_clip_root_decoration_disambiguation;
 mod overflow_hidden_does_not_create_stacking_context;

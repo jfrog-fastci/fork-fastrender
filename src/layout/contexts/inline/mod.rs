@@ -6995,8 +6995,21 @@ impl InlineFormattingContext {
     for (i, positioned) in items.iter().enumerate() {
       let item_width = positioned.item.width();
       let mut inline_pos = if rtl { cursor - item_width } else { cursor };
-      let block_pos = line.baseline + positioned.baseline_offset
-        - positioned.item.baseline_metrics().baseline_offset;
+      let mut block_pos =
+        line.baseline + positioned.baseline_offset - positioned.item.baseline_metrics().baseline_offset;
+      if let InlineItem::InlineBox(box_item) = &positioned.item {
+        // Inline boxes can have vertical padding/borders that extend above the line-height strut.
+        // The line builder sizes lines using `InlineBoxItem::metrics` (which may include that
+        // border box), but fragment construction expects `block_pos` to be the line-height box
+        // origin so it can convert to the painted border box top.
+        if !matches!(box_item.vertical_align, VerticalAlign::Top | VerticalAlign::Bottom) {
+          let half_leading = box_item.strut_metrics.half_leading();
+          let delta_above = (box_item.content_offset_y - half_leading).max(0.0);
+          if delta_above > 0.0 {
+            block_pos += delta_above;
+          }
+        }
+      }
 
       if rtl {
         let marker_gap = match &positioned.item {
@@ -9128,11 +9141,56 @@ fn compute_inline_items_single_line_layout(
 
 fn compute_inline_box_metrics(
   children: &[InlineItem],
-  _content_offset_y: f32,
-  _bottom_inset: f32,
+  content_offset_y: f32,
+  bottom_inset: f32,
   fallback: BaselineMetrics,
 ) -> BaselineMetrics {
-  compute_inline_box_line_metrics(children, fallback)
+  // Inline boxes can have vertical padding/borders that extend beyond the line-height strut.
+  //
+  // For example, pill-style `<a>`/`<span>` elements often rely on `padding-top/bottom` to make the
+  // clickable area taller than the surrounding text. Chromium (and typical web content) expects
+  // those border boxes to contribute to the line box height so they don't get clipped by
+  // `overflow: hidden` containers (e.g. nav bars with snap sliders).
+  //
+  // We therefore compute the inline box's line contribution as the union of:
+  // - its in-flow children (taking `vertical-align` into account), and
+  // - its own border box derived from the element's content area (font metrics) plus
+  //   vertical padding/borders.
+  let child_metrics = compute_inline_box_line_metrics(children, fallback);
+  if content_offset_y <= 0.0 && bottom_inset <= 0.0 {
+    return child_metrics;
+  }
+
+  let content_height = (fallback.ascent + fallback.descent).max(0.0);
+  let border_box_height = content_height + content_offset_y + bottom_inset;
+
+  // `child_metrics.baseline_offset` is measured from the top of the inline box's line-height strut
+  // (the line box within the inline element, excluding padding/borders). Convert it to a baseline
+  // position relative to the inline border box. Per CSS 2.1 §10.6.1, vertical padding/borders are
+  // applied around the *content area* (font metrics), so the border box origin is shifted by
+  // `half-leading - padding_top`.
+  let half_leading = fallback.half_leading();
+  let border_ascent = child_metrics.baseline_offset + content_offset_y - half_leading;
+  let border_ascent = border_ascent.max(0.0).min(border_box_height.max(0.0));
+  let border_descent = (border_box_height - border_ascent).max(0.0);
+
+  let child_ascent = child_metrics.baseline_offset.max(0.0);
+  let child_descent = (child_metrics.height - child_metrics.baseline_offset).max(0.0);
+
+  let max_ascent = child_ascent.max(border_ascent);
+  let max_descent = child_descent.max(border_descent);
+  let height = max_ascent + max_descent;
+
+  BaselineMetrics {
+    baseline_offset: max_ascent,
+    height,
+    ascent: max_ascent,
+    descent: max_descent,
+    line_gap: fallback.line_gap,
+    // Preserve the authored line-height for vertical-align percentage/length resolution.
+    line_height: fallback.line_height,
+    x_height: fallback.x_height,
+  }
 }
 
 fn compute_inline_box_line_metrics(

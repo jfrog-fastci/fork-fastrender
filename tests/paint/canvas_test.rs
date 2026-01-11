@@ -213,6 +213,31 @@ fn opaque_axis_aligned_rect_fills_are_pixel_snapped() {
 }
 
 #[test]
+fn opaque_axis_aligned_rect_fills_cover_partial_max_edge_scanline() {
+  // Regression for britannica.com: the header background ends at y=139.40625, which intersects the
+  // y=139 scanline but does not reach its center. Chrome's non-AA fill still covers that last
+  // partially-covered row; otherwise the header's own box-shadow becomes visible as a 1px light
+  // band.
+  let mut canvas = Canvas::new(10, 20, Rgba::WHITE).unwrap();
+  let header_color = Rgba::rgb(7, 28, 46);
+  canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.4), header_color);
+
+  let p10 = canvas.pixmap().pixel(0, 10).unwrap();
+  assert_eq!(
+    (p10.red(), p10.green(), p10.blue(), p10.alpha()),
+    (7, 28, 46, 255),
+    "expected the last partially-covered scanline to be fully filled"
+  );
+
+  let p11 = canvas.pixmap().pixel(0, 11).unwrap();
+  assert_eq!(
+    (p11.red(), p11.green(), p11.blue(), p11.alpha()),
+    (255, 255, 255, 255),
+    "expected fill to stop before the next scanline"
+  );
+}
+
+#[test]
 fn opaque_axis_aligned_rect_fills_do_not_overpaint_adjacent_fractional_strips() {
   let mut canvas = Canvas::new(10, 200, Rgba::WHITE).unwrap();
 

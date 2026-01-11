@@ -17006,24 +17006,14 @@ impl DisplayListRenderer {
 
     if let Some((pixmap, x, y)) = self.maybe_rasterize_linear_image_to_device_pixels(item, dest_rect)?
     {
-      let paint = tiny_skia::PixmapPaint {
-        opacity: self.canvas.opacity(),
-        blend_mode: self.canvas.blend_mode(),
-        // The pixmap has already been sampled onto the final device-pixel grid, so we only need a
-        // nearest-neighbour blit here.
-        quality: FilterQuality::Nearest,
-      };
-      let clip_mask = self.canvas.clip_mask().cloned();
+      // The pixmap has already been sampled onto the final device-pixel grid, so we only need a
+      // 1:1 nearest-neighbour blit here.
+      let opacity = self.canvas.opacity();
+      let blend_mode = self.canvas.blend_mode();
+      let clip_mask = self.canvas.clip_mask_rc();
       let pixmap_ref = pixmap.as_ref();
       self.canvas.with_mirrored_pixmap_mut(|dest| {
-        dest.draw_pixmap(
-          x,
-          y,
-          pixmap_ref.as_ref(),
-          &paint,
-          Transform::identity(),
-          clip_mask.as_ref(),
-        );
+        composite_layer_into_pixmap(dest, pixmap_ref, opacity, blend_mode, (x, y), clip_mask.as_deref());
       });
       self.record_background_paint(background_timer);
       return Ok(());
@@ -17290,6 +17280,8 @@ impl DisplayListRenderer {
       out_w,
       out_h,
     );
+    // Existing fast path for very small images (icons), where baking is cheap and avoids tiny-skia
+    // rounding drift.
     let should_bake_upscale = target_pixels > src_pixels && src_pixels <= 64 && target_pixels <= 4096;
     if should_bake_downscale {
       // Keep integer-aligned downscales on the existing cached pixmap path; only bake when subpixel

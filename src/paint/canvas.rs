@@ -2108,19 +2108,22 @@ impl Canvas {
       return None;
     }
 
-    // A pixel at integer coordinate `i` is filled if its center `i + 0.5` is inside the rect.
+    let min_x = dx0.min(dx1);
+    let max_x = dx0.max(dx1);
+    let min_y = dy0.min(dy1);
+    let max_y = dy0.max(dy1);
+
+    // Determine the covered pixel bounds in device space.
     //
-    // Chrome/Skia's axis-aligned, non-AA fills treat pixel centers on the *minimum* edge as
-    // outside, and pixel centers on the *maximum* edge as inside:
-    // `dx0 < i + 0.5 <= dx1`.
-    //
-    // This "open min / closed max" convention avoids double-filling at shared edges while also
-    // matching Chrome's border/background pixel snapping on half-integer coordinates (e.g. 13.5px
-    // padding from `0.75rem` at an 18px root font size).
-    let start_x = (dx0.min(dx1) + 0.5).floor();
-    let end_x = (dx0.max(dx1) + 0.5).floor();
-    let start_y = (dy0.min(dy1) + 0.5).floor();
-    let end_y = (dy0.max(dy1) + 0.5).floor();
+    // - Min edge: use Chrome/Skia's "open min" pixel-center rule so fractional starts don't bleed
+    //   upward/left into adjacent 1px borders.
+    // - Max edge: include the last partially-covered scanline/column even when the max edge does
+    //   not reach the pixel center. This matches Chrome's non-AA background fills and prevents the
+    //   element's own box-shadow from peeking through as a 1px band (regression: britannica.com).
+    let start_x = (min_x + 0.5).floor();
+    let end_x = max_x.ceil();
+    let start_y = (min_y + 0.5).floor();
+    let end_y = max_y.ceil();
 
     Some(Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y))
   }
