@@ -1574,6 +1574,43 @@ impl FontContext {
       }
       selected_iter.next();
 
+      // `font-display: swap` is intended to render immediately with fallback and then swap in the
+      // web font once it loads. When the font source is already local/cached (file/data/local()),
+      // browsers frequently have it available by first paint, so it participates in the initial
+      // layout without requiring an explicit wait window.
+      //
+      // FastRender models `font-display` phase changes deterministically by default: non-blocking
+      // faces are fetched asynchronously and only activated once callers opt into waiting via
+      // `wait_for_pending_web_fonts` / `FASTR_WEB_FONT_WAIT_MS`.
+      //
+      // However, for *local* swap fonts we can load synchronously during the CSS stage without
+      // involving background threads or network I/O, keeping deterministic output while matching
+      // browser first-paint behavior (important for offline fixtures where web fonts are bundled as
+      // `file:` URLs).
+      let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+      let has_http_source = face.sources.iter().any(|src| match src {
+        FontFaceSource::Local(_) => false,
+        FontFaceSource::Url(url_src) => {
+          let resolved = resolve_font_url(&url_src.url, face_base_url);
+          has_prefix_ignore_ascii_case(&resolved, "http://")
+            || has_prefix_ignore_ascii_case(&resolved, "https://")
+        }
+      });
+      if display == FontDisplay::Swap && policy_deadline.is_some() && !has_http_source {
+        let start = Instant::now();
+        let event = self.load_face_sources_with_report(
+          &family,
+          face,
+          base_url,
+          order,
+          start,
+          allow_remote,
+        );
+        record_font_event(&events, event);
+        started_count += 1;
+        continue;
+      }
+
       let display_block = display_deadlines(display).0;
       let should_block = display_block > Duration::ZERO && policy_deadline.is_some();
       let job_id = started_count;

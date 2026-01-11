@@ -55,11 +55,11 @@ fn swap_web_fonts_are_used_by_render_pipeline() {
 </html>
   "#;
 
-  // Swap web fonts are only activated after the initial stylesheet/font request work settles.
-  // Ensure the render pipeline waits for the swap window so the face is available for shaping.
+  // The swap font is loaded from a local `file:` URL, so it should be available for the initial
+  // render without requiring a post-layout wait window.
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_WEB_FONT_WAIT_MS".to_string(),
-    "500".to_string(),
+    "0".to_string(),
   )]));
   let config = FastRenderConfig::new()
     .with_font_sources(FontConfig::bundled_only())

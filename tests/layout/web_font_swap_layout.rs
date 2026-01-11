@@ -107,9 +107,11 @@ fn font_display_swap_web_font_participates_in_layout() {
     </html>"#
   );
 
+  // The font source is a local `file:` URL, so `font-display: swap` should still participate in
+  // layout immediately (matching the "cached on first paint" browser behavior).
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_WEB_FONT_WAIT_MS".to_string(),
-    "500".to_string(),
+    "0".to_string(),
   )]));
   let config = FastRenderConfig::default()
     .with_font_sources(FontConfig::bundled_only())
