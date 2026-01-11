@@ -108,3 +108,15 @@ mod tests {
   }
 }
 
+pub mod patterns;
+pub mod properties;
+
+pub fn effect_template_to_summary(template: &EffectTemplate) -> EffectSet {
+  match template {
+    EffectTemplate::Pure => EffectSet::empty(),
+    EffectTemplate::Io => EffectSet::IO | EffectSet::MAY_THROW,
+    EffectTemplate::Custom(base) => *base,
+    EffectTemplate::DependsOnArgs { base, .. } => *base,
+    EffectTemplate::Unknown => EffectSet::UNKNOWN | EffectSet::MAY_THROW,
+  }
+}

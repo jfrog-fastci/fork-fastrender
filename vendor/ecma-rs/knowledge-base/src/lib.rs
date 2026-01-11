@@ -1340,6 +1340,46 @@ properties:
   }
 
   #[test]
+  fn core_array_yaml_parses_and_has_pipeline_metadata() {
+    let yaml = include_str!("../core/array.yaml");
+    let entries = parse_api_semantics_yaml_str(yaml).expect("parse core/array.yaml");
+    let db = ApiDatabase::from_entries(entries);
+
+    let map = db
+      .get("Array.prototype.map")
+      .expect("Array.prototype.map exists in core/array.yaml");
+    let fusion_fusable_with = map
+      .properties
+      .get("fusion")
+      .and_then(|v| v.as_object())
+      .and_then(|obj| obj.get("fusable_with"))
+      .and_then(|v| v.as_array())
+      .expect("map.properties.fusion.fusable_with array");
+    assert!(
+      fusion_fusable_with
+        .iter()
+        .any(|v| v.as_str() == Some("Array.prototype.filter")),
+      "expected map to declare fusable_with Array.prototype.filter"
+    );
+
+    let map_len_relation = map
+      .properties
+      .get("output")
+      .and_then(|v| v.as_object())
+      .and_then(|obj| obj.get("length_relation"))
+      .and_then(|v| v.as_str());
+    assert_eq!(map_len_relation, Some("same_as_input"));
+
+    let parallel_requires_pure = map
+      .properties
+      .get("parallel")
+      .and_then(|v| v.as_object())
+      .and_then(|obj| obj.get("requires_callback_pure"))
+      .and_then(|v| v.as_bool());
+    assert_eq!(parallel_requires_pure, Some(true));
+  }
+
+  #[test]
   fn preserves_effect_summary_metadata() {
     let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
 

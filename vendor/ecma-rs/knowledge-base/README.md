@@ -148,7 +148,14 @@ console.log:
   effects: { template: io, io: true, may_throw: true }
 ```
 
-## String encoding properties
+## `properties` conventions
+
+`properties` is intentionally flexible so optimization passes can consume new
+metadata without requiring frequent schema migrations.
+
+Consumers must be tolerant of missing or malformed values.
+
+### String encoding properties
 
 `effect-js` uses `properties` on API entries to understand string encodings.
 
@@ -175,7 +182,7 @@ In YAML, `properties` is typically a map of string keys; encoding keys use a dot
     encoding.length_preserving_if: ascii
 ```
 
-## Arbitrary properties (typed)
+### Arbitrary properties (typed)
 
 `properties` preserves structured values (via `serde_json::Value`) so downstream analyses can use
 typed metadata without string parsing. For example:
@@ -190,6 +197,18 @@ typed metadata without string parsing. For example:
       category: timing
       notes: "may schedule work"
 ```
+
+### Array fusion + parallelization properties
+
+These properties are used to drive pipeline fusion (e.g. `map`/`filter`/`reduce`)
+and parallelization decisions.
+
+- `properties.fusion.fusable_with: [<canonical api name>, ...]`
+- `properties.output.length_relation: same_as_input | le_input | unknown`
+- `properties.parallel.requires_callback_pure: bool`
+- `properties.parallel.forbid_uses_index: bool`
+- `properties.parallel.forbid_uses_array: bool`
+- `properties.reduce.associative_if_callback_associative: bool` (optional; placeholder)
 
 ## Adding a module
 

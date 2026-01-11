@@ -42,9 +42,8 @@
     - URL.parse
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
 
 - name: URL.prototype.toString
@@ -64,9 +63,8 @@
     - URL.prototype.toJSON
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
   properties:
     encoding.output: ascii
@@ -101,9 +99,8 @@
     - URL.prototype.origin
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
   properties:
     encoding.output: ascii
@@ -113,9 +110,8 @@
     - URL.prototype.protocol
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
   properties:
     encoding.output: ascii
@@ -125,9 +121,8 @@
     - URL.prototype.host
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
   properties:
     encoding.output: ascii
@@ -137,9 +132,8 @@
     - URL.prototype.hostname
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
   properties:
     encoding.output: ascii
@@ -149,9 +143,8 @@
     - URL.prototype.port
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
   properties:
     encoding.output: ascii
@@ -161,9 +154,8 @@
     - URL.prototype.search
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
   properties:
     encoding.output: ascii
@@ -173,9 +165,8 @@
     - URL.prototype.hash
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
   properties:
     encoding.output: ascii
@@ -205,9 +196,8 @@
     - URLSearchParams.prototype.getAll
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
 
 - name: URLSearchParams.prototype.has
@@ -222,9 +212,8 @@
     - URLSearchParams.prototype.delete
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Impure
 
 - name: URLSearchParams.prototype.set
@@ -252,9 +241,8 @@
     - URLSearchParams.prototype.sort
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Impure
 
 - name: URLSearchParams.prototype.entries
@@ -262,9 +250,8 @@
     - URLSearchParams.prototype.entries
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
 
 - name: URLSearchParams.prototype.keys
@@ -272,9 +259,8 @@
     - URLSearchParams.prototype.keys
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
 
 - name: URLSearchParams.prototype.values
@@ -282,9 +268,8 @@
     - URLSearchParams.prototype.values
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
+    allocates: true
+    may_throw: false
   purity: Pure
 
 - name: URLSearchParams.prototype.forEach

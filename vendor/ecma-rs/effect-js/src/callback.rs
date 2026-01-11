@@ -34,9 +34,7 @@ pub fn callsite_info_for_args(
   let Some(callback_expr) = call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr) else {
     return crate::db::CallSiteInfo::default();
   };
-
   let callback = analyze_inline_callback(lowered, body, callback_expr, kb);
-
   crate::db::CallSiteInfo {
     callback_is_pure: callback.map(|cb| matches!(cb.purity, Purity::Pure | Purity::Allocating)),
     callback_uses_index: callback.map(|cb| cb.uses_index),

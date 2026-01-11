@@ -11,6 +11,17 @@
   properties:
     fusable: true
     output_length: same_as_input
+    fusion:
+      fusable_with:
+        - Array.prototype.map
+        - Array.prototype.filter
+        - Array.prototype.reduce
+    output:
+      length_relation: same_as_input
+    parallel:
+      requires_callback_pure: true
+      forbid_uses_index: true
+      forbid_uses_array: true
 
 - name: Array.prototype.filter
   semantics: Filter
@@ -25,6 +36,17 @@
   properties:
     fusable: true
     output_length: at_most_input
+    fusion:
+      fusable_with:
+        - Array.prototype.map
+        - Array.prototype.filter
+        - Array.prototype.reduce
+    output:
+      length_relation: le_input
+    parallel:
+      requires_callback_pure: true
+      forbid_uses_index: true
+      forbid_uses_array: true
 
 - name: Array.prototype.reduce
   semantics: Reduce
@@ -36,6 +58,11 @@
     depends_on_args:
       base: Pure
       args: [0]
+  properties:
+    output:
+      length_relation: unknown
+    reduce:
+      associative_if_callback_associative: true
 
 - name: Array.prototype.forEach
   semantics: ForEach
@@ -44,6 +71,9 @@
       base: MAY_THROW
       args: [0]
   purity: Impure
+  properties:
+    output:
+      length_relation: unknown
 
 - name: Array.prototype.every
   semantics: Every
