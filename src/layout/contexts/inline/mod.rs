@@ -11034,7 +11034,7 @@ impl InlineFormattingContext {
       let stable_factor = 0.9;
       let candidate_width = (subsequent_line_width * stable_factor).max(1.0);
       let stable_first = candidate_width;
-      return self.build_lines(
+      let mut stable_lines = self.build_lines(
         original_items,
         stable_first,
         candidate_width,
@@ -11051,7 +11051,17 @@ impl InlineFormattingContext {
         float_base_x,
         float_base_y,
         line_clamp,
-      );
+      )?;
+      if !build.lines.is_empty() {
+        let fallback = build.lines.last().expect("non-empty");
+        for (idx, line) in stable_lines.lines.iter_mut().enumerate() {
+          let base_line = build.lines.get(idx).unwrap_or(fallback);
+          line.available_width = base_line.available_width;
+          line.box_width = base_line.box_width;
+          line.left_offset = base_line.left_offset;
+        }
+      }
+      return Ok(stable_lines);
     }
 
     build = self.rebalance_text_wrap(
@@ -11318,6 +11328,13 @@ impl InlineFormattingContext {
       return Ok(base);
     }
 
+    let base_line_metrics: Vec<(f32, f32, f32)> = base
+      .lines
+      .iter()
+      .map(|line| (line.available_width, line.box_width, line.left_offset))
+      .collect();
+    let base_fallback_metrics = base_line_metrics.last().copied();
+
     if let Some(ctx) = float_ctx {
       if !ctx.is_empty() {
         // Float-shortened lines vary in width per line; keep greedy results to avoid instability.
@@ -11447,6 +11464,16 @@ impl InlineFormattingContext {
       if candidate_score + 0.01 < best_score {
         best_score = candidate_score;
         best_lines = candidate_lines;
+      }
+    }
+
+    if let Some(fallback) = base_fallback_metrics {
+      for (idx, line) in best_lines.lines.iter_mut().enumerate() {
+        let (available_width, box_width, left_offset) =
+          base_line_metrics.get(idx).copied().unwrap_or(fallback);
+        line.available_width = available_width;
+        line.box_width = box_width;
+        line.left_offset = left_offset;
       }
     }
 
@@ -25237,6 +25264,93 @@ mod tests {
       width_span(&balanced) < width_span(&auto),
       "balanced lines should be closer in width"
     );
+  }
+
+  #[test]
+  fn text_wrap_balance_does_not_reduce_line_box_width_for_alignment() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.text_wrap = TextWrap::Balance;
+    let text = "Balancing long headings keeps the final line from looking lonely";
+    let node = BoxNode::new_text(Arc::new(style.clone()), text.to_string());
+    let items = ifc
+      .create_inline_items_for_text(&node, text, false)
+      .expect("inline items");
+    let strut = ifc.compute_strut_metrics(&style);
+    let base_level = Some(unicode_bidi::Level::ltr());
+
+    let mut auto_style = style.clone();
+    auto_style.text_wrap = TextWrap::Auto;
+
+    let candidate_widths = [
+      200.0f32, 240.0, 280.0, 320.0, 360.0, 400.0, 480.0, 560.0, 640.0,
+    ];
+
+    let mut selected: Option<(f32, Vec<Line>)> = None;
+    for width in candidate_widths {
+      let balanced = ifc
+        .layout_segment_lines(
+          items.clone(),
+          true,
+          width,
+          width,
+          style.text_wrap,
+          0.0,
+          false,
+          true,
+          &strut,
+          base_level,
+          style.direction,
+          style.unicode_bidi,
+          None,
+          0.0,
+          0.0,
+          None,
+        )
+        .expect("balance line build")
+        .lines;
+
+      let auto = ifc
+        .layout_segment_lines(
+          items.clone(),
+          true,
+          width,
+          width,
+          auto_style.text_wrap,
+          0.0,
+          false,
+          true,
+          &strut,
+          base_level,
+          auto_style.direction,
+          auto_style.unicode_bidi,
+          None,
+          0.0,
+          0.0,
+          None,
+        )
+        .expect("auto line build")
+        .lines;
+
+      if line_texts(&balanced) != line_texts(&auto) {
+        selected = Some((width, balanced));
+        break;
+      }
+    }
+
+    let (width, balanced) = selected.expect("text-wrap: balance should differ from auto at some width");
+    for line in balanced {
+      assert!(
+        (line.available_width - width).abs() < 0.01,
+        "expected available_width to stay at {width} (got {})",
+        line.available_width
+      );
+      assert!(
+        (line.box_width - width).abs() < 0.01,
+        "expected box_width to stay at {width} (got {})",
+        line.box_width
+      );
+    }
   }
 
   #[test]

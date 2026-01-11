@@ -4445,6 +4445,10 @@ impl ImageCache {
     Arc::ptr_eq(image, &about_url_placeholder_image())
   }
 
+  pub(crate) fn is_placeholder_metadata(&self, meta: &Arc<CachedImageMetadata>) -> bool {
+    Arc::ptr_eq(meta, &about_url_placeholder_metadata())
+  }
+
   /// Attach a diagnostics sink for recording fetch failures.
   pub fn set_diagnostics_sink(&mut self, diagnostics: Option<Arc<Mutex<RenderDiagnostics>>>) {
     self.diagnostics = diagnostics;
@@ -5303,6 +5307,9 @@ impl ImageCache {
     record_image_cache_request();
     if let Some(img) = self.get_cached(cache_key) {
       record_image_cache_hit();
+      if self.is_placeholder_image(&img) {
+        return Ok(self.cache_placeholder_metadata(cache_key));
+      }
       return Ok(Arc::new(CachedImageMetadata::from(&*img)));
     }
 
@@ -6484,6 +6491,22 @@ impl ImageCache {
         self.record_image_error(resolved_url, &err);
         return Err(err);
       }
+      if resource.bytes.is_empty()
+        || crate::resource::content_type_is_offline_placeholder_png(resource.content_type.as_deref())
+        || resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes()
+      {
+        // Preserve the raw probe response when it was small enough to fit in this probe prefix so
+        // a later `load()` can reuse it without issuing another HTTP request.
+        if !resource.bytes.is_empty()
+          && resource.bytes.len() < limit
+          && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES
+        {
+          if let Ok(mut cache) = self.raw_cache.lock() {
+            cache.insert(cache_key.to_string(), Arc::clone(&resource));
+          }
+        }
+        return Ok(self.cache_placeholder_metadata(cache_key));
+      }
       if should_substitute_markup_payload_for_image(
         resolved_url,
         resource.final_url.as_deref(),
@@ -6590,6 +6613,17 @@ impl ImageCache {
     if let Err(err) = check_resource_allowed(resource.as_ref()) {
       self.record_image_error(resolved_url, &err);
       return Err(err);
+    }
+    if resource.bytes.is_empty()
+      || crate::resource::content_type_is_offline_placeholder_png(resource.content_type.as_deref())
+      || resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes()
+    {
+      if !resource.bytes.is_empty() && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES {
+        if let Ok(mut cache) = self.raw_cache.lock() {
+          cache.insert(cache_key.to_string(), Arc::clone(&resource));
+        }
+      }
+      return Ok(self.cache_placeholder_metadata(cache_key));
     }
     if should_substitute_markup_payload_for_image(
       resolved_url,

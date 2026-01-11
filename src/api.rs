@@ -14676,7 +14676,9 @@ impl FastRender {
       let probe_ms = probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
       let probe_ok = probe_result.is_ok();
 
-      let meta = probe_result.ok();
+      let meta = probe_result
+        .ok()
+        .filter(|meta| !image_cache.is_placeholder_metadata(meta));
       let mut outcomes = Vec::with_capacity(jobs.len());
 
       for job in jobs {
@@ -15406,65 +15408,67 @@ impl FastRender {
             }
 
             if let Ok(image) = probe_result {
-              let orientation = style.image_orientation.resolve(image.orientation, false);
-              explicit_no_ratio = image.aspect_ratio_none;
-              replaced_box.no_intrinsic_ratio = explicit_no_ratio;
-              if explicit_no_ratio {
-                replaced_box.aspect_ratio = None;
-              }
-              if needs_size_probe {
-                if let Some((w, h)) = image.css_dimensions(
-                  orientation,
-                  &style.image_resolution,
-                  self.device_pixel_ratio,
-                  selected.density,
-                ) {
-                  replaced_box.intrinsic_size = Some(Size::new(w, h));
-                  if !explicit_no_ratio {
-                    replaced_box.aspect_ratio = replaced_box
-                      .aspect_ratio
-                      .or_else(|| image.intrinsic_ratio(orientation))
-                      .or_else(|| if h > 0.0 { Some(w / h) } else { None });
-                  }
-                  have_resource_dimensions = true;
+              if !self.image_cache.is_placeholder_metadata(&image) {
+                let orientation = style.image_orientation.resolve(image.orientation, false);
+                explicit_no_ratio = image.aspect_ratio_none;
+                replaced_box.no_intrinsic_ratio = explicit_no_ratio;
+                if explicit_no_ratio {
+                  replaced_box.aspect_ratio = None;
                 }
-              } else if needs_ratio_probe && explicit_no_ratio {
-                if let Some((w, h)) = image.css_dimensions(
-                  orientation,
-                  &style.image_resolution,
-                  self.device_pixel_ratio,
-                  selected.density,
-                ) {
-                  if let Some(width) = authored_width {
-                    if intrinsic_axis_is_known(h) {
-                      replaced_box.intrinsic_size = Some(Size::new(width, h));
-                      have_resource_dimensions = true;
+                if needs_size_probe {
+                  if let Some((w, h)) = image.css_dimensions(
+                    orientation,
+                    &style.image_resolution,
+                    self.device_pixel_ratio,
+                    selected.density,
+                  ) {
+                    replaced_box.intrinsic_size = Some(Size::new(w, h));
+                    if !explicit_no_ratio {
+                      replaced_box.aspect_ratio = replaced_box
+                        .aspect_ratio
+                        .or_else(|| image.intrinsic_ratio(orientation))
+                        .or_else(|| if h > 0.0 { Some(w / h) } else { None });
                     }
-                  } else if let Some(height) = authored_height {
-                    if intrinsic_axis_is_known(w) {
-                      replaced_box.intrinsic_size = Some(Size::new(w, height));
-                      have_resource_dimensions = true;
+                    have_resource_dimensions = true;
+                  }
+                } else if needs_ratio_probe && explicit_no_ratio {
+                  if let Some((w, h)) = image.css_dimensions(
+                    orientation,
+                    &style.image_resolution,
+                    self.device_pixel_ratio,
+                    selected.density,
+                  ) {
+                    if let Some(width) = authored_width {
+                      if intrinsic_axis_is_known(h) {
+                        replaced_box.intrinsic_size = Some(Size::new(width, h));
+                        have_resource_dimensions = true;
+                      }
+                    } else if let Some(height) = authored_height {
+                      if intrinsic_axis_is_known(w) {
+                        replaced_box.intrinsic_size = Some(Size::new(w, height));
+                        have_resource_dimensions = true;
+                      }
                     }
                   }
-                }
-              } else if needs_ratio_probe && !explicit_no_ratio {
-                if let Some(ratio) = image
-                  .intrinsic_ratio(orientation)
-                  .filter(|ratio| aspect_ratio_is_usable(*ratio))
-                {
-                  if let Some(width) = authored_width {
-                    let height = width / ratio;
-                    if intrinsic_axis_is_known(height) {
-                      replaced_box.intrinsic_size = Some(Size::new(width, height));
-                      have_resource_dimensions = true;
-                      replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
-                    }
-                  } else if let Some(height) = authored_height {
-                    let width = height * ratio;
-                    if intrinsic_axis_is_known(width) {
-                      replaced_box.intrinsic_size = Some(Size::new(width, height));
-                      have_resource_dimensions = true;
-                      replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
+                } else if needs_ratio_probe && !explicit_no_ratio {
+                  if let Some(ratio) = image
+                    .intrinsic_ratio(orientation)
+                    .filter(|ratio| aspect_ratio_is_usable(*ratio))
+                  {
+                    if let Some(width) = authored_width {
+                      let height = width / ratio;
+                      if intrinsic_axis_is_known(height) {
+                        replaced_box.intrinsic_size = Some(Size::new(width, height));
+                        have_resource_dimensions = true;
+                        replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
+                      }
+                    } else if let Some(height) = authored_height {
+                      let width = height * ratio;
+                      if intrinsic_axis_is_known(width) {
+                        replaced_box.intrinsic_size = Some(Size::new(width, height));
+                        have_resource_dimensions = true;
+                        replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
+                      }
                     }
                   }
                 }
@@ -26769,6 +26773,74 @@ mod tests {
       intrinsic,
       Size::new(1.0, 1.0),
       "whitespace src must not resolve to placeholder intrinsic size"
+    );
+    assert!(
+      (intrinsic.width - expected.width).abs() < 0.01,
+      "alt text width should drive intrinsic width"
+    );
+    assert!(
+      (intrinsic.height - expected.height).abs() < 0.01,
+      "alt text height should match line height"
+    );
+    assert_eq!(
+      replaced.aspect_ratio,
+      Some(expected.width / expected.height),
+      "alt text should set aspect ratio"
+    );
+  }
+
+  #[test]
+  fn resolve_intrinsic_sizes_empty_image_response_does_not_force_placeholder_intrinsic_size() {
+    #[derive(Clone)]
+    struct EmptyImageFetcher;
+
+    impl ResourceFetcher for EmptyImageFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        let mut res = FetchedResource::new(Vec::new(), Some("image/png".to_string()));
+        res.status = Some(200);
+        res.final_url = Some(url.to_string());
+        Ok(res)
+      }
+    }
+
+    let renderer = FastRender::builder()
+      .fetcher(Arc::new(EmptyImageFetcher) as Arc<dyn ResourceFetcher>)
+      .build()
+      .expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+    let alt_text = "fallback alt";
+
+    let mut node = BoxNode::new_replaced(
+      style.clone(),
+      ReplacedType::Image {
+        src: "https://example.com/missing.png".to_string(),
+        alt: Some(alt_text.to_string()),
+        loading: Default::default(),
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+      },
+      None,
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+
+    let expected = renderer
+      .alt_intrinsic_size(&style, alt_text)
+      .expect("alt intrinsic size");
+    let intrinsic = replaced.intrinsic_size.expect("intrinsic size");
+    assert_ne!(
+      intrinsic,
+      Size::new(1.0, 1.0),
+      "empty image responses must not resolve to the placeholder intrinsic size"
     );
     assert!(
       (intrinsic.width - expected.width).abs() < 0.01,

@@ -1112,6 +1112,9 @@ impl GridFormattingContext {
     if !crate::style::inline_axis_is_horizontal(style.writing_mode) {
       return Ok(false);
     }
+    if !matches!(style.aspect_ratio, AspectRatio::Auto) {
+      return Ok(false);
+    }
     if style.grid_row_subgrid || style.grid_column_subgrid {
       return Ok(false);
     }

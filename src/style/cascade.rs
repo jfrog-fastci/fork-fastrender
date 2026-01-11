@@ -16627,6 +16627,10 @@ fn compute_base_styles<'a>(
   finalize_grid_placement(&mut ua_styles);
   resolve_match_parent_text_align_last(&mut ua_styles, parent_ua_styles, is_root);
   resolve_match_parent_text_align(&mut ua_styles, parent_ua_styles, is_root);
+  // `text-align: match-parent` may implicitly flip `text-align-last` from `auto` to `match-parent`.
+  // Resolve it again after `text-align` has been finalized so the computed value does not remain
+  // `match-parent` (which would otherwise affect last-line alignment during layout).
+  resolve_match_parent_text_align_last(&mut ua_styles, parent_ua_styles, is_root);
   resolve_relative_font_weight(&mut ua_styles, parent_ua_styles);
   propagate_text_decorations(node, &mut ua_styles, parent_ua_styles);
 
@@ -16726,6 +16730,8 @@ fn compute_base_styles<'a>(
   finalize_grid_placement(&mut styles);
   resolve_match_parent_text_align_last(&mut styles, parent_styles, is_root);
   resolve_match_parent_text_align(&mut styles, parent_styles, is_root);
+  // See UA pass above for why we run the `text-align-last` resolver twice.
+  resolve_match_parent_text_align_last(&mut styles, parent_styles, is_root);
   resolve_relative_font_weight(&mut styles, parent_styles);
   propagate_text_decorations(node, &mut styles, parent_styles);
 
@@ -33012,6 +33018,35 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn text_align_match_parent_does_not_leave_last_as_match_parent_when_parent_last_is_auto() {
+    let parent = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("style".to_string(), "text-align: center;".to_string())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("style".to_string(), "text-align: match-parent;".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+    let styled = apply_styles(&parent, &StyleSheet::new());
+    let child = styled.children.first().expect("child");
+    assert!(matches!(
+      child.styles.text_align,
+      crate::style::types::TextAlign::Center
+    ));
+    assert!(matches!(
+      child.styles.text_align_last,
+      crate::style::types::TextAlignLast::Auto
+    ));
+  }
+
+  #[test]
   fn text_align_last_match_parent_maps_start_end_using_parent_direction() {
     let parent = DomNode {
       node_type: DomNodeType::Element {
@@ -39677,6 +39712,7 @@ fn compute_pseudo_element_styles(
   );
   resolve_match_parent_text_align_last(&mut ua_styles, ua_parent_styles, false);
   resolve_match_parent_text_align(&mut ua_styles, ua_parent_styles, false);
+  resolve_match_parent_text_align_last(&mut ua_styles, ua_parent_styles, false);
   resolve_relative_font_weight(&mut ua_styles, ua_parent_styles);
   propagate_text_decorations(node, &mut ua_styles, ua_parent_styles);
   resolve_container_query_font_size(
@@ -39953,6 +39989,7 @@ fn compute_first_line_styles(
   );
   resolve_match_parent_text_align_last(&mut ua_styles, base_ua_styles, false);
   resolve_match_parent_text_align(&mut ua_styles, base_ua_styles, false);
+  resolve_match_parent_text_align_last(&mut ua_styles, base_ua_styles, false);
   resolve_relative_font_weight(&mut ua_styles, base_ua_styles);
   propagate_text_decorations(node, &mut ua_styles, base_ua_styles);
   resolve_container_query_font_size(
@@ -40112,6 +40149,7 @@ fn compute_first_letter_styles(
   );
   resolve_match_parent_text_align_last(&mut ua_styles, base_ua_styles, false);
   resolve_match_parent_text_align(&mut ua_styles, base_ua_styles, false);
+  resolve_match_parent_text_align_last(&mut ua_styles, base_ua_styles, false);
   resolve_relative_font_weight(&mut ua_styles, base_ua_styles);
   propagate_text_decorations(node, &mut ua_styles, base_ua_styles);
   resolve_container_query_font_size(
@@ -40288,6 +40326,7 @@ fn compute_marker_styles(
   );
   resolve_match_parent_text_align_last(&mut ua_styles, ua_list_item_styles, false);
   resolve_match_parent_text_align(&mut ua_styles, ua_list_item_styles, false);
+  resolve_match_parent_text_align_last(&mut ua_styles, ua_list_item_styles, false);
   resolve_relative_font_weight(&mut ua_styles, ua_list_item_styles);
   propagate_text_decorations(node, &mut ua_styles, ua_list_item_styles);
   resolve_container_query_font_size(

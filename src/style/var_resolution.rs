@@ -2513,6 +2513,7 @@ pub fn is_valid_custom_property_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::css::types::Transform;
   use crate::style::color::Color;
   use crate::style::values::CustomPropertyValue;
   use crate::style::values::Length;
@@ -2804,6 +2805,39 @@ mod tests {
         assert_eq!(len.unit, LengthUnit::Px);
       }
       other => panic!("expected Length(10px), got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn resolves_var_in_transform_calc_product_percentages() {
+    let props = make_props(&[("--direction-multiplier", "1")]);
+    let value = PropertyValue::Keyword(
+      "translateX(calc(var(--direction-multiplier,1) * -100%))".to_string(),
+    );
+    let resolved = resolve_var_for_property(&value, &props, "transform");
+
+    let VarResolutionResult::Resolved { value, css_text } = resolved else {
+      panic!("expected successful var() resolution, got {resolved:?}");
+    };
+    assert!(
+      !css_text.as_ref().is_empty(),
+      "expected resolved css_text to be populated for a var() call"
+    );
+    assert!(
+      !css_text.as_ref().contains("var("),
+      "expected resolved css_text to contain no var(), got {:?}",
+      css_text.as_ref()
+    );
+
+    match value.as_ref() {
+      PropertyValue::Transform(transforms) => {
+        assert_eq!(transforms.len(), 1);
+        assert!(
+          matches!(&transforms[0], Transform::TranslateX(x) if *x == Length::percent(-100.0)),
+          "expected translateX(-100%), got {transforms:?}"
+        );
+      }
+      other => panic!("expected parsed transform value, got {other:?} (css_text={:?})", css_text.as_ref()),
     }
   }
 

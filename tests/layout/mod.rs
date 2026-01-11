@@ -273,6 +273,7 @@ mod grid_percent_tracks_indefinite_shrinkwrap;
 mod grid_justify_content_normal_stretches_auto_tracks;
 mod grid_relative_positioning;
 mod grid_self_start_self_end_alignment;
+mod grid_simple_grid_aspect_ratio_stretches_child;
 mod grid_simple_grid_fast_path;
 mod grid_template_areas_explicit_grid_size;
 mod grid_template_areas_override_updates_line_names;
