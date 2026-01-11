@@ -1,8 +1,12 @@
 //! Loom model-checking tests for the `PromiseHeader` waiter registration + wake protocol.
 //!
 //! Run with:
-//!   cargo test -p runtime-native --features loom loom_
+//!   # `runtime-native` requires frame pointers; easiest is via the LLVM wrapper:
+//!   bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p runtime-native --features loom --test loom_promise_waiters
+//!
+//!   # Or, if you already have `RUSTFLAGS="-C force-frame-pointers=yes"` configured:
 //!   cargo test -p runtime-native --features loom --test loom_promise_waiters
+//!   cargo test -p runtime-native --features loom loom_
 
 #![cfg(feature = "loom")]
 
@@ -153,6 +157,44 @@ fn loom_register_after_settle_wakes_immediately() {
 
     unsafe {
       drop(Box::from_raw(waiter_ptr));
+    }
+  });
+}
+
+#[test]
+fn loom_two_waiters_register_after_settle() {
+  loom::model::Builder::new().check(|| {
+    let ready = Box::new(new_ready_queue());
+    let promise = Box::new(PromiseHeader::new());
+    let promise_ptr: *const PromiseHeader = &*promise;
+
+    // Settle before either waiter registers.
+    promise.settle();
+
+    let w1 = Box::new(Coroutine::new(1, &*ready));
+    let w2 = Box::new(Coroutine::new(2, &*ready));
+    let w1_ptr = Box::into_raw(w1);
+    let w2_ptr = Box::into_raw(w2);
+
+    let t1 = thread::spawn(move || unsafe {
+      (&*promise_ptr).register_waiter(w1_ptr);
+    });
+    let t2 = thread::spawn(move || unsafe {
+      (&*promise_ptr).register_waiter(w2_ptr);
+    });
+
+    let r1 = t1.join();
+    let r2 = t2.join();
+    r1.unwrap();
+    r2.unwrap();
+
+    assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1, 2]);
+    assert!(promise.is_settled());
+    assert!(promise.waiters_is_empty());
+
+    unsafe {
+      drop(Box::from_raw(w1_ptr));
+      drop(Box::from_raw(w2_ptr));
     }
   });
 }
