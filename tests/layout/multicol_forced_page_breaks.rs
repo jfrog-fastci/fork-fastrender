@@ -1,0 +1,154 @@
+use fastrender::api::{FastRender, LayoutDocumentOptions, PageStacking};
+use fastrender::style::media::MediaType;
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
+
+fn pages<'a>(tree: &'a FragmentTree) -> Vec<&'a FragmentNode> {
+  let mut roots = vec![&tree.root];
+  roots.extend(tree.additional_fragments.iter());
+  roots
+}
+
+fn page_document_wrapper<'a>(page: &'a FragmentNode) -> &'a FragmentNode {
+  page.children.first().expect("page document wrapper")
+}
+
+fn page_content<'a>(page: &'a FragmentNode) -> &'a FragmentNode {
+  page_document_wrapper(page)
+    .children
+    .first()
+    .expect("page content")
+}
+
+fn page_content_start_y(page: &FragmentNode) -> f32 {
+  page.bounds.y() + page_document_wrapper(page).bounds.y() + page_content(page).bounds.y()
+}
+
+fn find_text<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
+  if let FragmentContent::Text { text, .. } = &node.content {
+    if text.contains(needle) {
+      return Some(node);
+    }
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_text(child, needle) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn find_text_position(node: &FragmentNode, needle: &str, origin: (f32, f32)) -> Option<(f32, f32)> {
+  let current = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
+  if let FragmentContent::Text { text, .. } = &node.content {
+    if text.contains(needle) {
+      return Some(current);
+    }
+  }
+  for child in node.children.iter() {
+    if let Some(pos) = find_text_position(child, needle, current) {
+      return Some(pos);
+    }
+  }
+  None
+}
+
+#[test]
+fn multicol_break_before_page_promotes_to_next_column_set() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 140px; margin: 20px; }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { height: 60px; margin: 0; }
+          #b { break-before: page; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="blk" id="a">A</div>
+          <div class="blk" id="b">B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 2);
+
+  let page1 = page_roots[0];
+  let page2 = page_roots[1];
+
+  assert!(find_text(page1, "A").is_some());
+  assert!(find_text(page1, "B").is_none());
+  assert!(find_text(page2, "B").is_some());
+
+  let pos_b = find_text_position(page2, "B", (0.0, 0.0)).expect("B on page 2");
+  assert!(
+    pos_b.1 <= page_content_start_y(page2) + 1.0,
+    "expected B to start at the top of the second page; pos={pos_b:?} content_start_y={}",
+    page_content_start_y(page2)
+  );
+}
+
+#[test]
+fn multicol_break_after_recto_inserts_blank_page_rtl_progression() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :blank { @top-center { content: "Blank"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { height: 80px; margin: 0; }
+          #a { break-after: recto; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="blk" id="a">A</div>
+          <div class="blk" id="b">B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 3);
+
+  let page1 = page_roots[0];
+  let blank_page = page_roots[1];
+  let page3 = page_roots[2];
+
+  assert!(find_text(page1, "A").is_some());
+  assert!(find_text(page1, "B").is_none());
+
+  assert!(find_text(blank_page, "Blank").is_some());
+  assert!(find_text(page_content(blank_page), "A").is_none());
+  assert!(find_text(page_content(blank_page), "B").is_none());
+
+  assert!(find_text(page3, "B").is_some());
+  let pos_b = find_text_position(page3, "B", (0.0, 0.0)).expect("B on page 3");
+  assert!(
+    pos_b.1 <= page_content_start_y(page3) + 1.0,
+    "expected B to start at the top of the third page; pos={pos_b:?} content_start_y={}",
+    page_content_start_y(page3)
+  );
+}
+
