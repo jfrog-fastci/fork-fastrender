@@ -39,6 +39,9 @@ x!.y;
 f<T>(x);
 (x satisfies any).y;
 ((a + b) as any).c;
+
+// TS `this` parameters are type-only and must be erased.
+function f(this: any, x: number) { return this; }
 "#;
 
   let mut parsed = parse_ts(source);
