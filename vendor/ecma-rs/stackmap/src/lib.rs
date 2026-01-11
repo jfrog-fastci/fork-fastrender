@@ -187,9 +187,23 @@ where
     let base = access.read_usize(base_loc)?;
     let derived = access.read_usize(derived_loc)?;
 
-    let offset = (derived as isize).wrapping_sub(base as isize);
+    // Null convention:
+    // - If either old pointer is `0`, treat the derived pointer as null.
+    // - If the GC relocator returns `0` for a non-null base (should not happen), keep the derived
+    //   slot consistent by writing `0`.
+    if base == 0 || derived == 0 {
+      updates.push((derived_loc, 0));
+      continue;
+    }
+
     let new_base = relocate_base(base);
-    let new_derived = (new_base as isize).wrapping_add(offset) as usize;
+    let new_derived = if new_base == 0 {
+      0
+    } else {
+      // Derived relocation is defined as: `new_derived = new_base + (derived_old - base_old)`.
+      let delta = derived.wrapping_sub(base);
+      new_base.wrapping_add(delta)
+    };
 
     updates.push((derived_loc, new_derived));
   }
@@ -351,6 +365,152 @@ mod tests {
       access.values[&derived], 0x2020,
       "D should be recomputed from relocated base + (D - B) offset"
     );
+  }
+
+  #[test]
+  fn relocate_statepoint_derived_roots_preserves_null_derived() {
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      // Root #0: base=B, derived=B (relocates the base slot)
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      // Root #1: base=B, derived=D (interior pointer)
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 16,
+        size: 8,
+      },
+    ];
+
+    let view = StatepointRecordView::new(&locs).unwrap();
+
+    #[derive(Default)]
+    struct MapAccess {
+      values: HashMap<StackMapLocation, usize>,
+    }
+
+    impl LocationValueAccess for MapAccess {
+      type Error = ();
+
+      fn read_usize(&mut self, loc: &StackMapLocation) -> Result<usize, Self::Error> {
+        Ok(*self.values.get(loc).unwrap_or(&0))
+      }
+
+      fn write_usize(&mut self, loc: &StackMapLocation, value: usize) -> Result<(), Self::Error> {
+        self.values.insert(loc.clone(), value);
+        Ok(())
+      }
+    }
+
+    let base = StackMapLocation::Indirect {
+      dwarf_reg: 7,
+      offset: 8,
+      size: 8,
+    };
+    let derived = StackMapLocation::Indirect {
+      dwarf_reg: 7,
+      offset: 16,
+      size: 8,
+    };
+
+    let mut access = MapAccess::default();
+    access.values.insert(base.clone(), 0x1000);
+    access.values.insert(derived.clone(), 0);
+
+    relocate_statepoint_derived_roots(&view, &mut access, |ptr| match ptr {
+      0x1000 => 0x2000,
+      other => other,
+    })
+    .unwrap();
+
+    assert_eq!(access.values[&base], 0x2000);
+    assert_eq!(access.values[&derived], 0, "null derived must remain null");
+  }
+
+  #[test]
+  fn relocate_statepoint_derived_roots_forces_null_if_base_relocates_to_zero() {
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      // Root #0: base=B, derived=B (relocates the base slot)
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      // Root #1: base=B, derived=D (interior pointer)
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 16,
+        size: 8,
+      },
+    ];
+
+    let view = StatepointRecordView::new(&locs).unwrap();
+
+    #[derive(Default)]
+    struct MapAccess {
+      values: HashMap<StackMapLocation, usize>,
+    }
+
+    impl LocationValueAccess for MapAccess {
+      type Error = ();
+
+      fn read_usize(&mut self, loc: &StackMapLocation) -> Result<usize, Self::Error> {
+        Ok(*self.values.get(loc).unwrap_or(&0))
+      }
+
+      fn write_usize(&mut self, loc: &StackMapLocation, value: usize) -> Result<(), Self::Error> {
+        self.values.insert(loc.clone(), value);
+        Ok(())
+      }
+    }
+
+    let base = StackMapLocation::Indirect {
+      dwarf_reg: 7,
+      offset: 8,
+      size: 8,
+    };
+    let derived = StackMapLocation::Indirect {
+      dwarf_reg: 7,
+      offset: 16,
+      size: 8,
+    };
+
+    let mut access = MapAccess::default();
+    access.values.insert(base.clone(), 0x1000);
+    access.values.insert(derived.clone(), 0x1020);
+
+    relocate_statepoint_derived_roots(&view, &mut access, |_ptr| 0).unwrap();
+
+    assert_eq!(access.values[&base], 0);
+    assert_eq!(access.values[&derived], 0);
   }
 
   #[test]
