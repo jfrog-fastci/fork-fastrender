@@ -112,14 +112,6 @@ pub enum WalkError {
     #[source]
     source: crate::statepoints::StatepointError,
   },
-  #[error(
-    "derived pointers are not supported at return address {return_addr:#x} (base={base:?}, derived={derived:?})"
-  )]
-  DerivedPointerNotSupported {
-    return_addr: u64,
-    base: Location,
-    derived: Location,
-  },
   #[error("unsupported GC root location {loc:?} at return address {return_addr:#x}")]
   UnsupportedGcLocation { return_addr: u64, loc: Location },
   #[error(

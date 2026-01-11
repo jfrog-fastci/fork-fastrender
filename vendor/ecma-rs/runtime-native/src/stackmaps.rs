@@ -92,9 +92,6 @@ pub enum StackMapError {
   )]
   StackSlotOffsetOverflow { stack_size: u64, off: i32 },
 
-  #[error("derived pointers are not supported (base={base:?}, derived={derived:?})")]
-  DerivedPointerNotSupported { base: Location, derived: Location },
-
   #[error(transparent)]
   StatepointVerify(#[from] crate::statepoint_verify::VerifyError),
 
@@ -603,6 +600,10 @@ impl<'a> CallSite<'a> {
   /// record layout and enumerates only the `(base, derived)` GC root pairs (the
   /// leading header constants and any deopt operands are ignored).
   ///
+  /// Note: for derived pointers where `base != derived`, this returns **only the base slots**.
+  /// Derived slots are not GC roots and require special relocation based on the corresponding base
+  /// (handled by `stackwalk_fp` / `gc.relocate` pairing).
+  ///
   /// For non-statepoint records (those without the 3-constant prefix), this
   /// falls back to scanning all locations and treating `Indirect` stack slots as
   /// GC roots.
@@ -653,11 +654,16 @@ impl<'a> CallSite<'a> {
       for pair in statepoint.gc_pairs() {
         let base = &pair.base;
         let derived = &pair.derived;
-        if base != derived {
-          return Err(StackMapError::DerivedPointerNotSupported {
-            base: base.clone(),
-            derived: derived.clone(),
-          });
+
+        // Strict mode: even though we only return the base slot, validate the derived location too
+        // so callers catch unsupported register roots / base registers early.
+        match *derived {
+          Location::Indirect {
+            dwarf_reg, offset, ..
+          } => {
+            let _ = location_fp_offset(dwarf_reg, offset)?;
+          }
+          _ => return Err(StackMapError::UnsupportedGcLocation { loc: derived.clone() }),
         }
 
         let rbp_off = match *base {
@@ -1039,7 +1045,7 @@ mod tests {
   }
 
   #[test]
-  fn derived_pointers_are_rejected_by_gc_root_extraction() {
+  fn derived_pointers_return_base_offsets() {
     let mut bytes: Vec<u8> = Vec::new();
     build_header(&mut bytes, 1, 0, 1);
 
@@ -1090,11 +1096,8 @@ mod tests {
 
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();
-    let err = callsite.gc_root_rbp_offsets_strict().unwrap_err();
-    assert!(matches!(
-      err,
-      StackMapError::DerivedPointerNotSupported { .. }
-    ));
+    // base rbp_off = 8 - stack_size + rsp_off = 8 - 40 + 0 = -32
+    assert_eq!(callsite.gc_root_rbp_offsets_strict().unwrap(), vec![-32]);
   }
 
   #[test]
