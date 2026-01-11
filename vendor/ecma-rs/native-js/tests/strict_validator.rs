@@ -107,6 +107,24 @@ fn rejects_any_in_unused_return_annotation() {
 }
 
 #[test]
+fn rejects_any_in_pattern_types() {
+  let source = r#"const onlyAny = JSON.parse("1");"#;
+  let diags = validate(source, FileKind::Ts);
+  assert_has_code(&diags, "NJS0001");
+
+  let start = source.find("onlyAny").expect("needle") as u32;
+  let end = start + "onlyAny".len() as u32;
+  assert!(
+    diags
+      .iter()
+      .any(|d| d.code == "NJS0001" && d.primary.range.start == start && d.primary.range.end == end),
+    "expected NJS0001 span for pattern `onlyAny` ({}..{}), got: {diags:#?}",
+    start,
+    end
+  );
+}
+
+#[test]
 fn rejects_type_assertions() {
   let diags = validate(
     r#"
@@ -179,6 +197,24 @@ fn rejects_dynamic_member_access() {
     FileKind::Ts,
   );
   assert_has_code(&diags, "NJS0007");
+}
+
+#[test]
+fn allows_computed_member_access_with_literal_key() {
+  let diags = validate(
+    r#"
+      const obj = { a: 1 };
+      const x = obj["a"];
+      const y = [1, 2][0];
+      void x;
+      void y;
+    "#,
+    FileKind::Ts,
+  );
+  assert!(
+    diags.is_empty(),
+    "expected no strict diagnostics, got: {diags:#?}"
+  );
 }
 
 #[test]
