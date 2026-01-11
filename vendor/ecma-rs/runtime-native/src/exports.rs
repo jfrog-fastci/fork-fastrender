@@ -1905,6 +1905,11 @@ pub extern "C" fn rt_io_register_rooted(
 ///   fails).
 ///
 /// If `data` is stale (freed), readiness callbacks are treated as no-ops.
+///
+/// ## Nonblocking / edge-triggered contract
+///
+/// Like [`rt_io_register`], the provided `fd` **must already be set to `O_NONBLOCK`**. The runtime
+/// does not modify caller file descriptor flags.
 #[no_mangle]
 pub extern "C" fn rt_io_register_handle(
   fd: i32,
@@ -1980,6 +1985,11 @@ pub extern "C" fn rt_io_register_handle(
 ///
 /// `drop_data` is invoked exactly once when the watcher is unregistered or torn down (including on
 /// registration failure), and runs before the runtime frees the handle.
+///
+/// ## Nonblocking / edge-triggered contract
+///
+/// Like [`rt_io_register`], the provided `fd` **must already be set to `O_NONBLOCK`**. The runtime
+/// does not modify caller file descriptor flags.
 #[no_mangle]
 pub extern "C" fn rt_io_register_handle_with_drop(
   fd: i32,
