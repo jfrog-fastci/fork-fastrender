@@ -361,8 +361,11 @@ pub enum InstTyp {
   VarAssign,  // tgts[0] = args[0]
   PropAssign, // args[0][args[1]] = args[2]
   CondGoto,   // goto labels[0] if args[0] else labels[1]
-  Return,     // return args[0]
-  Throw,      // throw args[0]
+  /// Return from the current body (function). `args[0]` is the returned value.
+  /// (Use `undefined` for implicit `return;` / falling off the end.)
+  Return,
+  /// Throw from the current body (function or top-level). `args[0]` is the thrown value.
+  Throw,
   Call,       // tgts.at(0)? = args[0](this=args[1], ...args[2..])
   // A foreign variable is one in an ancestor scope, all the way up to and including the global scope.
   // We don't simply add another Target variant (e.g. Target::Foreign) as it makes analyses and optimisations more tedious. Consider that standard SSA doesn't really have a concept of nonlocal memory locations. In LLVM such vars are covered using ordinary memory location read/write instructions.
