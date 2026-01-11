@@ -144,4 +144,32 @@ mod tests {
         .unwrap_or_else(|err| panic!("oracle execution failed for {fixture:?}: {err:?}\nJS:\n{js}"));
     }
   }
+
+  #[cfg(feature = "optimize-js-fallback")]
+  #[test]
+  fn optimize_js_fallback_can_handle_emit_js_unsupported_syntax() {
+    // `emit-js`'s JS emitter is intentionally minimal; many statement kinds (like function
+    // declarations and switch statements) are not supported yet. When the fallback feature is
+    // enabled, the harness should be able to produce runnable JS anyway via the `optimize-js`
+    // decompiler.
+    let source = "switch(1){case 1:break;}";
+    let js = erase_typescript_to_js(source).expect("erase via optimize-js fallback");
+
+    parse_js::parse_with_options(
+      &js,
+      parse_js::ParseOptions {
+        dialect: parse_js::Dialect::Ecma,
+        source_type: parse_js::SourceType::Script,
+      },
+    )
+    .expect("fallback JS should parse as strict ECMAScript");
+
+    let vm = vm_js::Vm::new(vm_js::VmOptions::default());
+    let heap = vm_js::Heap::new(vm_js::HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("create oracle runtime");
+    runtime.vm.set_budget(vm_js::Budget::unlimited(1000));
+    runtime
+      .exec_script(&js)
+      .unwrap_or_else(|err| panic!("execute fallback JS: {err:?}\nJS:\n{js}"));
+  }
 }
