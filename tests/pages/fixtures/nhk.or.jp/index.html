@@ -19,11 +19,9 @@
     <meta property="og:image" content="https://www.nhk.or.jp/nhk-600x600.png">
     <meta property="og:site_name" content="NHK | 日本放送協会">
     <meta property="og:locale" content="ja_JP">
-    
     <link rel="alternate" media="handheld" href="http://k.nhk.jp/">
     <link rel="canonical" href="https://www.nhk.or.jp/">
     <link rel="stylesheet" href="assets/2cc854c70febd8528e73b0164d8e03dc.css">
-    <script src="/assets/conf/env.js"></script>
     <script type="application/ld+json">
       {
       "@context": "http://schema.org",
@@ -33,13 +31,217 @@
       "url": "https://www.nhk.or.jp/"
       }
     </script>
-  <script>
-(function(){if(window.BOOMR&&(window.BOOMR.version||window.BOOMR.snippetExecuted)){return}window.BOOMR=window.BOOMR||{};window.BOOMR.snippetStart=(new Date).getTime();window.BOOMR.snippetExecuted=true;window.BOOMR.snippetVersion=14;window.BOOMR.url="https://www.nhk.or.jp/mpulse/boomerang/"+"TYLUD-ZR8VD-VSNQ9-LLQE8-FD4H9";var where=document.currentScript||document.getElementsByTagName("script")[0],parentNode=where.parentNode,promoted=false,LOADER_TIMEOUT=3e3;function promote(){if(promoted){return}var script=document.createElement("script");script.id="boomr-scr-as";script.src=window.BOOMR.url;script.async=true;parentNode.appendChild(script);promoted=true}function iframeLoader(wasFallback){promoted=true;var dom,doc=document,bootstrap,iframe,iframeStyle,win=window;window.BOOMR.snippetMethod=wasFallback?"if":"i";bootstrap=function(parent,scriptId){var script=doc.createElement("script");script.id=scriptId||"boomr-if-as";script.src=window.BOOMR.url;BOOMR_lstart=(new Date).getTime();parent=parent||doc.body;parent.appendChild(script)};if(!window.addEventListener&&window.attachEvent&&navigator.userAgent.match(/MSIE [67]\./)){window.BOOMR.snippetMethod="s";bootstrap(parentNode,"boomr-async");return}iframe=document.createElement("IFRAME");iframe.src="about:blank";iframe.title="";iframe.role="presentation";iframe.loading="eager";iframeStyle=(iframe.frameElement||iframe).style;iframeStyle.width=0;iframeStyle.height=0;iframeStyle.border=0;iframeStyle.display="none";parentNode.appendChild(iframe);try{win=iframe.contentWindow;doc=win.document.open()}catch(e){dom=document.domain;iframe.src="javascript:var d=document.open();d.domain='"+dom+"';void 0;";win=iframe.contentWindow;doc=win.document.open()}if(dom){doc._boomrl=function(){this.domain=dom;bootstrap()};doc.write("<bo"+"dy onload='document._boomrl();'>")}else{win._boomrl=function(){bootstrap()};if(win.addEventListener){win.addEventListener("load",win._boomrl,false)}else if(win.attachEvent){win.attachEvent("onload",win._boomrl)}}doc.close()}var link=document.createElement("link");if(link.relList&&typeof link.relList.supports==="function"&&link.relList.supports("preload")&&"as"in link){window.BOOMR.snippetMethod="p";link.href=window.BOOMR.url;link.rel="preload";link.as="script";link.addEventListener("load",promote);link.addEventListener("error",function(){iframeLoader(true)});setTimeout(function(){if(!promoted){iframeLoader(true)}},LOADER_TIMEOUT);BOOMR_lstart=(new Date).getTime();parentNode.appendChild(link)}else{iframeLoader(false)}function boomerangSaveLoadTime(e){window.BOOMR_onload=e&&e.timeStamp||(new Date).getTime()}if(window.addEventListener){window.addEventListener("load",boomerangSaveLoadTime,false)}else if(window.attachEvent){window.attachEvent("onload",boomerangSaveLoadTime)}})();
-</script></head>
+    <style>
+      /* The live NHK homepage is rendered by JavaScript. Fixture renders run with scripts disabled
+         for determinism, so we include a representative static DOM that exercises the captured
+         layout, image, and Japanese text shaping/line-breaking behavior. */
+      @font-face {
+        font-family: "BIZ UDPGothic";
+        src: url("../../../fixtures/fonts/NotoSansJP-subset.ttf") format("truetype");
+        font-weight: 100 1000;
+        font-style: normal;
+      }
+
+      .nolMenuNav ul {
+        list-style-type: none;
+        margin: 16px 0 0;
+        padding: 0;
+      }
+      .nolMenuNav li {
+        margin: 0 0 12px;
+      }
+      .nolMenuNav a {
+        border: 1px solid var(--color-border, #d2d2d3);
+        border-radius: var(--border-radius-m, 8px);
+        display: block;
+        padding: 8px 12px;
+      }
+    </style>
+  </head>
   <body id="body">
     <p class="blockSkip"> <a href="#main">ページの本文へ</a></p>
     <h1 class="hiddenHeadline">NHK | 日本放送協会</h1>
-    <div id="app"></div>
-    <script src="/toppage/parts/js/20251231/onlinetop.js"></script>
+    <main id="main" class="main">
+      <div class="baseColumn">
+        <aside class="main__nolMenu">
+          <a href="#" aria-label="NHK">
+            <img src="assets/84a918e2925345d7c890205b30ac0fbb.svg" width="122" height="19" alt="NHK">
+          </a>
+          <nav class="nolMenuNav" aria-label="主要メニュー">
+            <ul>
+              <li><a href="#">ニュース</a></li>
+              <li><a href="#">番組表</a></li>
+              <li><a href="#">スポーツ</a></li>
+              <li><a href="#">天気</a></li>
+              <li><a href="#">防災</a></li>
+              <li><a href="#">受信料</a></li>
+            </ul>
+          </nav>
+        </aside>
+        <div class="main__nolContent">
+          <section class="section -topRecommend">
+            <div class="topRecommend--items">
+              <ul class="topRecommend--items--wrapper">
+                <li class="topRecommend__item" aria-hidden="false">
+                  <figure class="topRecommend__fig">
+                    <a href="#">
+                      <img src="assets/8fd9479666404f270479b9fdf5f9644f.png" width="135" height="132" alt="">
+                    </a>
+                  </figure>
+                  <div class="topRecommend__detail">
+                    <h2 class="topRecommend__ttl"><span>注目の番組</span>NHKスペシャル</h2>
+                    <p class="topRecommend__prg">
+                      日本語の文章では、スペースがなくても適切に折り返しが行われ、行頭に「、」や「。」が来ないように禁則処理が必要になります。
+                    </p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            <div class="topRecommend--thumb">
+              <ul class="topRecommend--thumb--wrapper">
+                <li class="topRecommend--thumb__item">
+                  <a class="topRecommend--thumb__fig" aria-selected="true" href="#">
+                    <span class="topRecommend--thumb__figure">
+                      <img src="assets/44af8a0d58d538a7736f6fd6f3ae926e.png" width="83" height="66" alt="">
+                    </span>
+                    <span class="topRecommend--thumb__detail">
+                      <span class="topRecommend--thumb__ttl">防災</span>
+                    </span>
+                  </a>
+                </li>
+                <li class="topRecommend--thumb__item">
+                  <a class="topRecommend--thumb__fig" aria-selected="false" href="#">
+                    <span class="topRecommend--thumb__figure">
+                      <img src="assets/490bbadef3a3dfb747e34df37008c400.png" width="129" height="66" alt="">
+                    </span>
+                    <span class="topRecommend--thumb__detail">
+                      <span class="topRecommend--thumb__ttl">気象</span>
+                    </span>
+                  </a>
+                </li>
+                <li class="topRecommend--thumb__item">
+                  <a class="topRecommend--thumb__fig" aria-selected="false" href="#">
+                    <span class="topRecommend--thumb__figure">
+                      <img src="assets/759dca2b0e1cc440a337750af802dfde.png" width="105" height="132" alt="">
+                    </span>
+                    <span class="topRecommend--thumb__detail">
+                      <span class="topRecommend--thumb__ttl">番組表</span>
+                    </span>
+                  </a>
+                </li>
+              </ul>
+            </div>
+          </section>
+          <section class="section -colored">
+            <div class="section__ttlWrap">
+              <div class="ttlArea">
+                <h2 class="section__ttl">最新ニュース</h2>
+              </div>
+              <p class="notes -right -fz12">※本文はフィクスチャ用サンプルです</p>
+            </div>
+            <div class="section__inner">
+              <p style="font-size:16px;line-height:175%;margin:0">
+                新年を迎え、全国各地で行われる伝統行事やイベントの情報が続々と発表されています。NHKは、地域のニュースと暮らしに役立つ情報を分かりやすくお届けします。
+              </p>
+            </div>
+          </section>
+          <section class="section">
+            <div class="section__ttlWrap">
+              <div class="ttlArea">
+                <h2 class="section__ttl">注目のコンテンツ</h2>
+              </div>
+            </div>
+            <ul class="nhkPR__list">
+              <li class="nhkPR__list__item">
+                <a href="#">
+                  <figure class="nhkPR__list__fig">
+                    <img src="assets/2b2961e9b88a17811f67f6bc3b988c99.png" width="152" height="152" alt="">
+                  </figure>
+                  <p class="nhkPR__list__ttl">特集：気象情報</p>
+                </a>
+              </li>
+              <li class="nhkPR__list__item">
+                <a href="#">
+                  <figure class="nhkPR__list__fig">
+                    <img src="assets/35f23d0863bb3b545fb7f4cde6b4dc23.png" width="299" height="29" alt="">
+                  </figure>
+                  <p class="nhkPR__list__ttl">配信：NHKプラス</p>
+                </a>
+              </li>
+              <li class="nhkPR__list__item">
+                <a href="#">
+                  <figure class="nhkPR__list__fig">
+                    <img src="assets/a456fca6dd25e0ff29b92d942cd2d4ed.png" width="299" height="29" alt="">
+                  </figure>
+                  <p class="nhkPR__list__ttl">特集：スポーツ</p>
+                </a>
+              </li>
+              <li class="nhkPR__list__item">
+                <a href="#">
+                  <figure class="nhkPR__list__fig">
+                    <img src="assets/44af8a0d58d538a7736f6fd6f3ae926e.png" width="83" height="66" alt="">
+                  </figure>
+                  <p class="nhkPR__list__ttl">地域：ローカル</p>
+                </a>
+              </li>
+              <li class="nhkPR__list__item">
+                <a href="#">
+                  <figure class="nhkPR__list__fig">
+                    <img src="assets/490bbadef3a3dfb747e34df37008c400.png" width="129" height="66" alt="">
+                  </figure>
+                  <p class="nhkPR__list__ttl">防災：備える</p>
+                </a>
+              </li>
+              <li class="nhkPR__list__item">
+                <a href="#">
+                  <figure class="nhkPR__list__fig">
+                    <img src="assets/759dca2b0e1cc440a337750af802dfde.png" width="105" height="132" alt="">
+                  </figure>
+                  <p class="nhkPR__list__ttl">文化：伝統</p>
+                </a>
+              </li>
+            </ul>
+          </section>
+          <section class="app">
+            <h2 class="app__ttl">NHKプラス</h2>
+            <div class="app__contWrap">
+              <div class="app__col1">
+                <img src="assets/2b2961e9b88a17811f67f6bc3b988c99.png" width="152" height="152" alt="NHKプラス">
+              </div>
+              <div class="app__col2">
+                <a class="app__link" href="#">
+                  今すぐ視聴する
+                </a>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+    <footer class="foot-links">
+      <div class="foot-links__inner">
+        <section>
+          <h3 class="foot-links__hd3"><a href="#"><span class="foot-links__hd__inner">サービス</span></a></h3>
+          <div class="foot-links__lists is-open">
+            <ul>
+              <li><a href="#">NHKプラス</a></li>
+              <li><a href="#">NHK ONE</a></li>
+              <li><a href="#">語学</a></li>
+              <li><a href="#">受信料</a></li>
+            </ul>
+          </div>
+        </section>
+        <section>
+          <h3 class="foot-links__hd3"><a href="#"><span class="foot-links__hd__inner">お知らせ</span></a></h3>
+          <div class="foot-links__lists is-open">
+            <ul>
+              <li><a href="#">緊急報道</a></li>
+              <li><a href="#">番組変更</a></li>
+              <li><a href="#">サイト利用規約</a></li>
+            </ul>
+          </div>
+        </section>
+      </div>
+    </footer>
   </body>
 </html>
