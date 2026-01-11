@@ -8,7 +8,7 @@ target_dir="${CARGO_TARGET_DIR:-${ecma_rs_root}/target}"
 
 echo "Building runtime-native (release)..." >&2
 cd "${ecma_rs_root}"
-cargo build -p runtime-native --release
+bash scripts/cargo_agent.sh build --release -p runtime-native
 
 lib_path="${target_dir}/release/libruntime_native.a"
 if [[ ! -f "${lib_path}" ]]; then
