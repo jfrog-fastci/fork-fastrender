@@ -46,6 +46,7 @@ pub mod reactor;
 pub mod timer_wheel;
 pub mod time;
 pub mod gc;
+pub mod gc_roots;
 pub mod io;
 pub mod buffer;
 pub mod immix;
