@@ -10,6 +10,7 @@ publish = false
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 diagnostics = { workspace = true }
+emit-js = { workspace = true }
 hir-js = { workspace = true }
 optimize-js = { workspace = true }
 parse-js = { workspace = true }
@@ -17,4 +18,3 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 walkdir = { workspace = true }
-

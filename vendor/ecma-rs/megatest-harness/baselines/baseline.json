@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "files": {
     "arena_gc.js": {
       "source_sha256": "c48efd4d4bcde6c5b6428b1a590eeda5eb8a8ffa278efa5e5ca2b46ecc0815d5",
@@ -21,7 +21,8 @@
         "summary": {
           "functions": 6,
           "instructions": 41,
-          "dom_calculations": 7
+          "dom_calculations": 7,
+          "decompiled_js_sha256": "a0e5724e4efae396e8878b448654b58496a03102691ebdd0029ba53bb588c5ca"
         }
       }
     },
@@ -45,7 +46,8 @@
         "summary": {
           "functions": 2,
           "instructions": 33,
-          "dom_calculations": 4
+          "dom_calculations": 4,
+          "decompiled_js_sha256": "3bcfb966e760e46996772c9f336e0cec9b9cae11c3e16ad1066abb588dc5a833"
         }
       }
     },
@@ -69,7 +71,8 @@
         "summary": {
           "functions": 5,
           "instructions": 54,
-          "dom_calculations": 9
+          "dom_calculations": 9,
+          "decompiled_js_sha256": "983b853bc2e0d1241aba93266bc98998d9b5f8de864c109dbbfa41e5fc03c39b"
         }
       }
     },
@@ -93,7 +96,8 @@
         "summary": {
           "functions": 12,
           "instructions": 176,
-          "dom_calculations": 23
+          "dom_calculations": 23,
+          "decompiled_js_sha256": "f2c7b46b15b42047f35abf5582a548fe39286305f825865ebab4b0241082ce9b"
         }
       }
     },
@@ -117,7 +121,8 @@
         "summary": {
           "functions": 3,
           "instructions": 238,
-          "dom_calculations": 6
+          "dom_calculations": 6,
+          "decompiled_js_sha256": "0fed01c161338f3246ef9c5a9b5ef469249f117b814f942e0a2f271e80b1ad60"
         }
       }
     },
@@ -141,7 +146,8 @@
         "summary": {
           "functions": 11,
           "instructions": 143,
-          "dom_calculations": 17
+          "dom_calculations": 17,
+          "decompiled_js_sha256": "4bfced30d78a7ae76824c9f4ec38225e1b2bfa2792f3ef549e6418f292555044"
         }
       }
     },
@@ -192,7 +198,8 @@
         "summary": {
           "functions": 6,
           "instructions": 582,
-          "dom_calculations": 11
+          "dom_calculations": 11,
+          "decompiled_js_sha256": "ca3c5c33356568a37a9320581f6b8bf9bcd717f82f6932d8526e5b6aa5ef996f"
         }
       }
     },
@@ -297,7 +304,8 @@
         "summary": {
           "functions": 20,
           "instructions": 618,
-          "dom_calculations": 45
+          "dom_calculations": 45,
+          "decompiled_js_sha256": "7a204e1a3733a3a241943dae38bce659846df743b934d25829acdcffe11f18b9"
         }
       }
     },

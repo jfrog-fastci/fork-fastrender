@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-pub const BASELINE_VERSION: u32 = 1;
+pub const BASELINE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Baseline {
@@ -48,6 +48,8 @@ pub struct OptimizeSummary {
   pub functions: usize,
   pub instructions: usize,
   pub dom_calculations: usize,
+  /// SHA256 of the emitted JS from `optimize-js`'s deterministic `program_to_js` decompiler.
+  pub decompiled_js_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -163,6 +165,11 @@ pub fn source_sha256(source: &str) -> String {
   hex_encode(&hash)
 }
 
+fn bytes_sha256(bytes: &[u8]) -> String {
+  let hash = sha2::Sha256::digest(bytes);
+  hex_encode(&hash)
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
   let mut out = String::with_capacity(bytes.len() * 2);
   for &b in bytes {
@@ -241,12 +248,20 @@ pub fn optimize(source: &str) -> Result<OptimizeOutcome> {
           .iter()
           .map(|func| func.stats.dom_calculations)
           .sum::<usize>();
+      let decompiled = optimize_js::program_to_js(
+        &program,
+        &optimize_js::DecompileOptions::default(),
+        emit_js::EmitOptions::minified(),
+      )
+      .map_err(|err| anyhow!("program_to_js failed: {err:?}"))?;
+      let decompiled_js_sha256 = bytes_sha256(&decompiled);
 
       Ok(OptimizeOutcome::Ok {
         summary: OptimizeSummary {
           functions,
           instructions,
           dom_calculations,
+          decompiled_js_sha256,
         },
       })
     }
