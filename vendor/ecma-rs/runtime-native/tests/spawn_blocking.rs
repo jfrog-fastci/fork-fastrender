@@ -1,0 +1,138 @@
+use runtime_native::abi::PromiseRef;
+use runtime_native::{
+  rt_async_poll, rt_async_sleep, rt_promise_resolve, rt_promise_then, rt_spawn_blocking,
+};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
+
+extern "C" fn task_set_flag(data: *mut u8, promise: PromiseRef) {
+  let flag = unsafe { &*(data as *const AtomicBool) };
+  flag.store(true, Ordering::SeqCst);
+  rt_promise_resolve(promise, core::ptr::null_mut());
+}
+
+extern "C" fn task_sleep_and_inc(data: *mut u8, promise: PromiseRef) {
+  std::thread::sleep(Duration::from_millis(20));
+  let counter = unsafe { &*(data as *const AtomicUsize) };
+  counter.fetch_add(1, Ordering::SeqCst);
+  rt_promise_resolve(promise, core::ptr::null_mut());
+}
+
+extern "C" fn task_long_sleep_and_inc(data: *mut u8, promise: PromiseRef) {
+  std::thread::sleep(Duration::from_millis(300));
+  let counter = unsafe { &*(data as *const AtomicUsize) };
+  counter.fetch_add(1, Ordering::SeqCst);
+  rt_promise_resolve(promise, core::ptr::null_mut());
+}
+
+extern "C" fn set_bool(data: *mut u8) {
+  let flag = unsafe { &*(data as *const AtomicBool) };
+  flag.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn inc_usize(data: *mut u8) {
+  let counter = unsafe { &*(data as *const AtomicUsize) };
+  counter.fetch_add(1, Ordering::SeqCst);
+}
+
+#[test]
+fn spawn_blocking_basic() {
+  let flag = Box::new(AtomicBool::new(false));
+  let settled = Box::new(AtomicBool::new(false));
+  let flag_ptr = Box::into_raw(flag);
+  let settled_ptr = Box::into_raw(settled);
+
+  let promise = rt_spawn_blocking(task_set_flag, flag_ptr.cast::<u8>());
+  rt_promise_then(promise, set_bool, settled_ptr.cast::<u8>());
+
+  while !unsafe { &*settled_ptr }.load(Ordering::SeqCst) {
+    rt_async_poll();
+  }
+
+  let flag = unsafe { &*flag_ptr };
+  assert!(flag.load(Ordering::SeqCst));
+
+  unsafe {
+    drop(Box::from_raw(flag_ptr));
+    drop(Box::from_raw(settled_ptr));
+  }
+}
+
+#[test]
+fn spawn_blocking_concurrency() {
+  const N: usize = 64;
+
+  let counter = Box::new(AtomicUsize::new(0));
+  let settled = Box::new(AtomicUsize::new(0));
+  let counter_ptr = Box::into_raw(counter);
+  let settled_ptr = Box::into_raw(settled);
+
+  for _ in 0..N {
+    let p = rt_spawn_blocking(task_sleep_and_inc, counter_ptr.cast::<u8>());
+    rt_promise_then(p, inc_usize, settled_ptr.cast::<u8>());
+  }
+
+  while unsafe { &*settled_ptr }.load(Ordering::SeqCst) != N {
+    rt_async_poll();
+  }
+
+  let counter = unsafe { &*counter_ptr };
+  assert_eq!(counter.load(Ordering::SeqCst), N);
+
+  unsafe {
+    drop(Box::from_raw(counter_ptr));
+    drop(Box::from_raw(settled_ptr));
+  }
+}
+
+#[test]
+fn spawn_blocking_does_not_block_event_loop() {
+  const N: usize = 32;
+
+  let start = Instant::now();
+  let timer_promise = rt_async_sleep(50);
+  let timer_settled = Box::new(AtomicBool::new(false));
+  let timer_settled_ptr = Box::into_raw(timer_settled);
+  rt_promise_then(timer_promise, set_bool, timer_settled_ptr.cast::<u8>());
+
+  let counter = Box::new(AtomicUsize::new(0));
+  let settled = Box::new(AtomicUsize::new(0));
+  let counter_ptr = Box::into_raw(counter);
+  let settled_ptr = Box::into_raw(settled);
+
+  for _ in 0..N {
+    let p = rt_spawn_blocking(task_long_sleep_and_inc, counter_ptr.cast::<u8>());
+    rt_promise_then(p, inc_usize, settled_ptr.cast::<u8>());
+  }
+
+  let mut timer_fired_at = None;
+  let mut counter_at_timer = 0;
+
+  while timer_fired_at.is_none() || unsafe { &*settled_ptr }.load(Ordering::SeqCst) != N {
+    rt_async_poll();
+    if timer_fired_at.is_none() && unsafe { &*timer_settled_ptr }.load(Ordering::SeqCst) {
+      timer_fired_at = Some(start.elapsed());
+      counter_at_timer = unsafe { &*settled_ptr }.load(Ordering::SeqCst);
+    }
+  }
+
+  let fired = timer_fired_at.expect("timer should have fired");
+
+  // The timer should not be delayed until *after* all blocking tasks complete.
+  assert!(counter_at_timer < N, "timer fired only after all blocking tasks completed");
+
+  // Also keep a loose upper bound to catch regressions where the event loop is actually blocked.
+  assert!(fired < Duration::from_millis(500), "timer fired too late: {fired:?}");
+
+  let counter = unsafe { &*counter_ptr };
+  assert_eq!(counter.load(Ordering::SeqCst), N);
+
+  unsafe {
+    drop(Box::from_raw(counter_ptr));
+    drop(Box::from_raw(settled_ptr));
+    drop(Box::from_raw(timer_settled_ptr));
+  }
+}

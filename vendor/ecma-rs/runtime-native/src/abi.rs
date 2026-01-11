@@ -33,6 +33,11 @@ impl PromiseRef {
   }
 }
 
+// `PromiseRef` is an opaque handle. The runtime API is responsible for ensuring thread-safety of
+// operations performed through this handle.
+unsafe impl Send for PromiseRef {}
+unsafe impl Sync for PromiseRef {}
+
 /// An FFI-friendly UTF-8 byte string reference.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

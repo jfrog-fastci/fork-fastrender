@@ -281,6 +281,16 @@ pub extern "C" fn rt_parallel_for(
 }
 
 #[no_mangle]
+pub extern "C" fn rt_spawn_blocking(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+) -> PromiseRef {
+  let _ = crate::rt_ensure_init();
+  ensure_event_loop_thread_registered();
+  crate::blocking_pool::spawn(task, data)
+}
+
+#[no_mangle]
 pub extern "C" fn rt_async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
@@ -297,6 +307,24 @@ pub extern "C" fn rt_async_poll() -> bool {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
   async_rt::poll()
+}
+
+#[no_mangle]
+pub extern "C" fn rt_async_sleep(delay_ms: u64) -> PromiseRef {
+  let _ = crate::rt_ensure_init();
+  ensure_event_loop_thread_registered();
+
+  extern "C" fn resolve_sleep(data: *mut u8) {
+    let promise = PromiseRef(data.cast());
+    async_rt::promise::promise_resolve(promise, core::ptr::null_mut());
+  }
+
+  let promise = async_rt::promise::promise_new();
+  let _timer_id = async_rt::global().schedule_timer_in(
+    std::time::Duration::from_millis(delay_ms),
+    async_rt::Task::new(resolve_sleep, promise.0 as *mut u8),
+  );
+  promise
 }
 
 // -----------------------------------------------------------------------------

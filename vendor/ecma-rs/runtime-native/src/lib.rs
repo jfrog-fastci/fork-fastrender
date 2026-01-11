@@ -48,6 +48,7 @@ pub mod shape_table;
 mod alloc;
 #[cfg(feature = "gc_stats")]
 mod gc_stats;
+mod blocking_pool;
 mod exports;
 mod interner;
 mod platform;

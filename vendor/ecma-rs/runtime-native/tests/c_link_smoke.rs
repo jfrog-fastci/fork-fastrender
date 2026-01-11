@@ -113,13 +113,15 @@ int main(void) {
     None
   };
 
-  let compile = Command::new(cc)
+  let mut compile_cmd = Command::new(cc);
+  compile_cmd
     .arg("-std=c99")
     .arg("-I")
     .arg(&include_dir)
     .arg(&c_path)
     .arg(&staticlib)
     .args(stackmaps_ld.as_ref().map(|p| format!("-Wl,-T,{}", p.display())))
+  let compile = compile_cmd
     .arg("-o")
     .arg(&bin_path)
     .status()
