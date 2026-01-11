@@ -152,6 +152,8 @@ Notes:
 * `<flags>` (5th argument) is a bitmask. On LLVM 18.x, the IR verifier only accepts
   values in the range **0..3** (bits 0 and 1). This project currently uses
   `flags = 0`.
+  Empirically, LLVM 18 sets `flags = 1` when a `"gc-transition"(...)` operand
+  bundle is present.
   In emitted stackmaps on x86_64, this value appears as the second constant
   header location in each record (location `#2` in `llvm-readobj --stackmap`
   output). LLVM may encode it as either a `Constant` or `ConstIndex`/`ConstantIndex`
