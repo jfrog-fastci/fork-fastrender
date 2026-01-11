@@ -1056,25 +1056,42 @@ impl CallbackAnalyzer<'_> {
               ObjectKey::Computed(expr) => {
                 self.visit_expr(body, *expr);
                 let expr_node = body.exprs.get(expr.0 as usize);
-                let idx = expr_node.and_then(|node| match &node.kind {
-                  ExprKind::Literal(hir_js::Literal::Number(n)) => Some(n.as_str()),
-                  ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.as_str()),
-                  _ => None,
-                });
-                match idx {
-                  Some("0") => {}
-                  Some("1") => self.uses_index = true,
-                  Some("2") => self.uses_array = true,
-                  Some("length") => {}
-                  // Array callbacks pass exactly 3 arguments (value, index, array),
-                  // so any other constant key does not depend on index/array.
-                  Some(_) => {}
+                match expr_node.map(|node| &node.kind) {
+                  Some(ExprKind::Literal(hir_js::Literal::Number(n))) => match n.as_str() {
+                    "0" => {}
+                    "1" => self.uses_index = true,
+                    "2" => self.uses_array = true,
+                    // Array callbacks pass exactly 3 arguments (value, index, array),
+                    // so any other constant slot does not depend on index/array.
+                    _ => {}
+                  },
+                  Some(ExprKind::Literal(hir_js::Literal::BigInt(n))) => match n.as_str() {
+                    "0" => {}
+                    "1" => self.uses_index = true,
+                    "2" => self.uses_array = true,
+                    _ => {}
+                  },
+                  Some(ExprKind::Literal(hir_js::Literal::String(s))) => match s.lossy.as_str() {
+                    "0" => {}
+                    "1" => self.uses_index = true,
+                    "2" => self.uses_array = true,
+                    "length" => {}
+                    // Array callbacks pass exactly 3 arguments (value, index, array),
+                    // so any other constant key does not depend on index/array.
+                    _ => {}
+                  },
+                  // Non-numeric primitive property keys cannot target the `index` / `array` slots.
+                  Some(ExprKind::Literal(
+                    hir_js::Literal::Boolean(_)
+                    | hir_js::Literal::Null
+                    | hir_js::Literal::Undefined,
+                  )) => {}
                   _ => {
                     // Unknown index; conservatively assume it may access either.
                     self.uses_index = true;
                     self.uses_array = true;
                   }
-                }
+                };
               }
               // Non-computed `arguments.foo` can't observe the index/array args;
               // only numeric slots can.
@@ -1704,6 +1721,66 @@ mod tests {
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
     assert_eq!(info.callback_uses_index, Some(false));
     assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn callback_using_arguments_bigint_literal_counts_as_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[1n]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_bigint_literal_counts_as_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[2n]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn callback_using_arguments_null_key_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[null]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_boolean_key_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[true]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
   }
 
   #[test]
