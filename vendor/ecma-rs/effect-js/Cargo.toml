@@ -20,3 +20,4 @@ typecheck-ts = { workspace = true, optional = true }
 
 [dev-dependencies]
 diagnostics = { workspace = true }
+serde_json = { workspace = true }

@@ -13,6 +13,7 @@ pub mod resolver;
 pub mod db;
 pub mod meta;
 pub mod signals;
+pub mod validate;
 
 #[cfg(feature = "typed")]
 pub mod typed;
