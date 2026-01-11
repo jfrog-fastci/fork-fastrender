@@ -119,7 +119,11 @@ impl ParallelRuntime {
     threading::safepoint_poll();
 
     let handle = crate::roots::global_persistent_handle_table().alloc(data);
-    let task_state = Arc::new(TaskState::new_with_root(task, data, Some(handle)));
+    self.spawn_rooted_handle(task, handle)
+  }
+
+  pub(crate) fn spawn_rooted_handle(&self, task: extern "C" fn(*mut u8), handle: HandleId) -> TaskId {
+    let task_state = Arc::new(TaskState::new_with_root(task, ptr::null_mut(), Some(handle)));
 
     self.scheduler.enqueue(task_state.clone());
     let id = Arc::into_raw(task_state) as u64;
@@ -128,6 +132,20 @@ impl ParallelRuntime {
       live.insert(id);
     }
     TaskId(id)
+  }
+
+  /// Like [`ParallelRuntime::spawn_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+  /// (pointer-to-slot).
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot that contains a
+  /// GC-managed object base pointer.
+  pub(crate) unsafe fn spawn_rooted_h(&self, task: extern "C" fn(*mut u8), slot: crate::roots::GcHandle) -> TaskId {
+    threading::register_current_thread(ThreadKind::External);
+    threading::safepoint_poll();
+
+    let handle = crate::roots::global_persistent_handle_table().alloc_from_slot(slot);
+    self.spawn_rooted_handle(task, handle)
   }
 
   pub(crate) fn join(&self, tasks: *const TaskId, count: usize) {

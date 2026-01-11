@@ -171,43 +171,35 @@ impl<T> HandleTable<T> {
   /// The allocated entry is considered a **GC root** until it is freed via [`HandleTable::free`].
   pub fn alloc(&self, ptr: NonNull<T>) -> HandleId {
     let mut inner = self.inner.write();
-    let HandleTableInner { slots, free_head } = &mut *inner;
+    Self::alloc_inner(&mut *inner, ptr)
+  }
 
-    if let Some(index) = *free_head {
-      let slot = &mut slots[index as usize];
-      let generation = match slot {
-        Slot::Free {
-          next_free,
-          generation,
-        } => {
-          *free_head = *next_free;
-          *generation
-        }
-        Slot::Live { .. } => unreachable!("free list points at a live slot"),
-      };
-
-      *slot = Slot::Live {
-        ptr: StoredPtr::from_nonnull(ptr),
-        generation,
-      };
-
-      return HandleId::from_parts(index, generation);
+  /// Like [`HandleTable::alloc`], but reads the pointer value from an addressable slot *after*
+  /// acquiring the handle table lock.
+  ///
+  /// This is used by runtime entrypoints that accept GC pointers as a `GcHandle` (pointer-to-slot)
+  /// handle. If lock acquisition blocks and the thread enters a GC-safe region, a moving GC may
+  /// relocate the pointer stored in `slot` before the lock is acquired. Reading the pointer only
+  /// after we hold the lock ensures we store the most up-to-date value.
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut T` slot.
+  pub unsafe fn alloc_from_slot(&self, slot: *mut *mut T) -> HandleId {
+    if slot.is_null() {
+      std::process::abort();
+    }
+    if (slot as usize) % core::mem::align_of::<*mut T>() != 0 {
+      std::process::abort();
     }
 
-    let index: u32 = slots
-      .len()
-      .try_into()
-      .expect("HandleTable index overflow (more than u32::MAX slots)");
+    // Acquire the lock before reading from `slot`: if lock acquisition blocks, the thread may enter
+    // a GC-safe region and a moving GC may update the slot.
+    let mut inner = self.inner.write();
 
-    // Start generations at 1 so HandleId(0) can be used as a sentinel (e.g. empty userdata).
-    let generation = 1;
-
-    slots.push(Slot::Live {
-      ptr: StoredPtr::from_nonnull(ptr),
-      generation,
-    });
-
-    HandleId::from_parts(index, generation)
+    // SAFETY: caller guarantees `slot` is valid for reads of `*mut T`.
+    let ptr = unsafe { slot.read() };
+    let ptr = NonNull::new(ptr).unwrap_or_else(|| std::process::abort());
+    Self::alloc_inner(&mut *inner, ptr)
   }
 
   /// Returns the current pointer for `id` if it is still live.
@@ -240,21 +232,28 @@ impl<T> HandleTable<T> {
   /// Returns `true` if `id` was live and successfully updated.
   pub fn set(&self, id: HandleId, ptr: NonNull<T>) -> bool {
     let mut inner = self.inner.write();
-    let slot = match inner.slots.get_mut(id.index() as usize) {
-      Some(slot) => slot,
-      None => return false,
-    };
+    Self::set_inner(&mut *inner, id, ptr)
+  }
 
-    match slot {
-      Slot::Live {
-        ptr: stored_ptr,
-        generation,
-      } if *generation == id.generation() => {
-        *stored_ptr = StoredPtr::from_nonnull(ptr);
-        true
-      }
-      _ => false,
+  /// Like [`HandleTable::set`], but reads the pointer value from an addressable slot *after*
+  /// acquiring the handle table lock.
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut T` slot.
+  pub unsafe fn set_from_slot(&self, id: HandleId, slot: *mut *mut T) -> bool {
+    if slot.is_null() {
+      std::process::abort();
     }
+    if (slot as usize) % core::mem::align_of::<*mut T>() != 0 {
+      std::process::abort();
+    }
+
+    let mut inner = self.inner.write();
+
+    // SAFETY: caller guarantees `slot` is valid for reads of `*mut T`.
+    let ptr = unsafe { slot.read() };
+    let ptr = NonNull::new(ptr).unwrap_or_else(|| std::process::abort());
+    Self::set_inner(&mut *inner, id, ptr)
   }
 
   /// Frees `id`, removing it from the persistent root set and making its slot reusable.
@@ -370,6 +369,64 @@ impl<T> HandleTable<T> {
       );
     }
     inner.free_head = next_free;
+  }
+
+  fn alloc_inner(inner: &mut HandleTableInner<T>, ptr: NonNull<T>) -> HandleId {
+    let HandleTableInner { slots, free_head } = inner;
+
+    if let Some(index) = *free_head {
+      let slot = &mut slots[index as usize];
+      let generation = match slot {
+        Slot::Free {
+          next_free,
+          generation,
+        } => {
+          *free_head = *next_free;
+          *generation
+        }
+        Slot::Live { .. } => unreachable!("free list points at a live slot"),
+      };
+
+      *slot = Slot::Live {
+        ptr: StoredPtr::from_nonnull(ptr),
+        generation,
+      };
+
+      return HandleId::from_parts(index, generation);
+    }
+
+    let index: u32 = slots
+      .len()
+      .try_into()
+      .expect("HandleTable index overflow (more than u32::MAX slots)");
+
+    // Start generations at 1 so HandleId(0) can be used as a sentinel (e.g. empty userdata).
+    let generation = 1;
+
+    slots.push(Slot::Live {
+      ptr: StoredPtr::from_nonnull(ptr),
+      generation,
+    });
+
+    HandleId::from_parts(index, generation)
+  }
+
+  fn set_inner(inner: &mut HandleTableInner<T>, id: HandleId, ptr: NonNull<T>) -> bool {
+    let slot = match inner.slots.get_mut(id.index() as usize) {
+      Some(slot) => slot,
+      None => return false,
+    };
+
+    match slot {
+      Slot::Live {
+        ptr: stored_ptr,
+        generation,
+      } if *generation == id.generation() => {
+        *stored_ptr = StoredPtr::from_nonnull(ptr);
+        true
+      }
+      _ => false,
+    }
   }
 }
 

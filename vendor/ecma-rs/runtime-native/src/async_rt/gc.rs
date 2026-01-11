@@ -44,6 +44,22 @@ impl Root {
     }
   }
 
+  /// Like [`Root::new_unchecked`], but reads the pointer value from an addressable slot after
+  /// acquiring the persistent handle table lock.
+  ///
+  /// This is intended for moving-GC-safe runtime entrypoints that receive GC-managed pointers as
+  /// `GcHandle` (pointer-to-slot) handles.
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot that contains a
+  /// GC-managed object base pointer.
+  pub unsafe fn new_from_slot_unchecked(slot: *mut *mut u8) -> Self {
+    let id = crate::roots::global_persistent_handle_table().alloc_from_slot(slot);
+    Self {
+      inner: Arc::new(RootInner { id }),
+    }
+  }
+
   pub fn id(&self) -> HandleId {
     self.inner.id
   }

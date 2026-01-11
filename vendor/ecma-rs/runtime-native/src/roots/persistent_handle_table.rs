@@ -38,6 +38,19 @@ impl PersistentHandleTable {
     self.inner.alloc(ptr)
   }
 
+  /// Like [`Self::alloc`], but reads the pointer value from an addressable slot *after* acquiring
+  /// the handle table lock.
+  ///
+  /// This is the moving-GC-safe variant used by exported C ABI entrypoints that accept GC-managed
+  /// pointers as `GcHandle` (pointer-to-slot) handles.
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot.
+  pub unsafe fn alloc_from_slot(&self, slot: *mut *mut u8) -> HandleId {
+    // Safety: caller contract.
+    unsafe { self.inner.alloc_from_slot(slot) }
+  }
+
   /// Resolves `id` to the current object pointer, or `None` if the handle is stale/freed.
   pub fn get(&self, id: HandleId) -> Option<*mut u8> {
     self.inner.get(id).map(|p| p.as_ptr())
@@ -54,6 +67,16 @@ impl PersistentHandleTable {
   pub fn set(&self, id: HandleId, ptr: *mut u8) -> bool {
     let ptr = NonNull::new(ptr).unwrap_or_else(|| std::process::abort());
     self.inner.set(id, ptr)
+  }
+
+  /// Like [`Self::set`], but reads the pointer value from an addressable slot *after* acquiring the
+  /// handle table lock.
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot.
+  pub unsafe fn set_from_slot(&self, id: HandleId, slot: *mut *mut u8) -> bool {
+    // Safety: caller contract.
+    unsafe { self.inner.set_from_slot(id, slot) }
   }
 
   /// Returns the number of currently-live handles in the table.
@@ -212,6 +235,102 @@ mod tests {
       assert_ne!(handle.to_u64(), 0);
 
       c_finish_tx.send(()).unwrap();
+    });
+  }
+
+  #[test]
+  fn alloc_from_slot_reads_pointer_after_lock_acquired() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+    global_persistent_handle_table().clear_for_tests();
+
+    const TIMEOUT: Duration = Duration::from_secs(2);
+
+    // Treat pointers as opaque addresses; they do not need to be dereferenceable in this test.
+    let mut slot_value: *mut u8 = 0x1111usize as *mut u8;
+    let new_value: *mut u8 = 0x2222usize as *mut u8;
+    // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+    let slot_ptr: usize = (&mut slot_value as *mut *mut u8) as usize;
+
+    std::thread::scope(|scope| {
+      // Thread A holds the persistent handle table lock.
+      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+      // Thread C attempts to allocate from a slot while the lock is held.
+      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_done_tx, c_done_rx) = mpsc::channel::<HandleId>();
+
+      scope.spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+        let table = global_persistent_handle_table();
+        table.inner.with_stw_update(|_| {
+          a_locked_tx.send(()).unwrap();
+          a_release_rx.recv().unwrap();
+        });
+        threading::unregister_current_thread();
+      });
+
+      a_locked_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread A should acquire the handle table lock");
+
+      scope.spawn(move || {
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        c_registered_tx.send(id).unwrap();
+
+        c_start_rx.recv().unwrap();
+
+        let slot_ptr = slot_ptr as *mut *mut u8;
+        // Safety: `slot_ptr` is a valid slot pointer.
+        let handle = unsafe { global_persistent_handle_table().alloc_from_slot(slot_ptr) };
+        c_done_tx.send(handle).unwrap();
+
+        threading::unregister_current_thread();
+      });
+
+      let c_id = c_registered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should register with the thread registry");
+
+      // Start thread C's allocation attempt (it should block on the handle table lock).
+      c_start_tx.send(()).unwrap();
+
+      // Wait until thread C is marked NativeSafe (meaning it's blocked on the GC-aware lock).
+      let start = Instant::now();
+      loop {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == c_id {
+            native_safe = t.is_native_safe();
+          }
+        });
+
+        if native_safe {
+          break;
+        }
+        if start.elapsed() > TIMEOUT {
+          panic!("thread C did not enter a GC-safe region while blocked on the persistent handle table lock");
+        }
+        std::thread::yield_now();
+      }
+
+      // Update the slot while thread C is blocked. If `alloc_from_slot` incorrectly read the slot
+      // before acquiring the lock, it would still observe the old value.
+      slot_value = new_value;
+
+      // Release the lock so `alloc_from_slot` can proceed and read the updated slot value.
+      a_release_tx.send(()).unwrap();
+
+      let handle = c_done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("handle allocation should complete after lock is released");
+      assert_eq!(
+        global_persistent_handle_table().get(handle),
+        Some(new_value),
+        "alloc_from_slot must read the slot after acquiring the lock"
+      );
+      let _ = global_persistent_handle_table().free(handle);
     });
   }
 }

@@ -217,8 +217,8 @@ These are the guarantees codegen is allowed to rely on.
 ### `rt_async_spawn(coro: CoroutineId) -> PromiseRef`
 
 - Takes ownership of the coroutine handle (`CoroutineId`), allocated via the persistent handle ABI
-  (`rt_handle_alloc`). The runtime consumes the handle and frees it when the coroutine completes (or
-  is cancelled).
+  (`rt_handle_alloc` / `rt_handle_alloc_h`). The runtime consumes the handle and frees it when the
+  coroutine completes (or is cancelled).
 - Allocates the result promise described by the coroutine frame's
   `CoroutineVTable.{promise_size,promise_align,promise_shape_id}`.
 - Stores the promise pointer into the coroutine frame's `promise` field.
@@ -419,12 +419,17 @@ alive *and* tolerate relocation.
 For this use-case, the runtime also exposes:
 
 - `rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_queue_microtask_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle)`
 
 Contract:
 
 - `data` must be a pointer to the **base** of a GC-managed object (start of its header).
 - The runtime registers a strong GC root for `data` until the microtask executes.
 - If the GC relocates the object, the callback receives the **updated** pointer.
+
+The `_h` ("handle") variant is preferred under a moving GC: it accepts a pointer-to-slot handle so
+the runtime can reload `data` after any potentially blocking lock acquisition while registering the
+persistent root.
 
 ## Exported symbols (async)
 
@@ -453,6 +458,8 @@ Contract:
 - `rt_promise_resolve_legacy(p: LegacyPromiseRef, value: ValueRef)`
 - `rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef)`
 - `rt_promise_then_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_promise_then_rooted_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_promise_then_rooted_h_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: GcHandle)`
 - `rt_promise_then_with_drop_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
 - `rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef`
 - `rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef`
@@ -466,13 +473,16 @@ Contract:
 - `rt_queue_microtask(task: Microtask)`
 - `rt_queue_microtask_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
 - `rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_queue_microtask_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle)`
 - `rt_drain_microtasks() -> bool`
 - `rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId`
 - `rt_set_timeout_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), delay_ms: u64) -> TimerId`
 - `rt_set_timeout_rooted(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId`
+- `rt_set_timeout_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle, delay_ms: u64) -> TimerId`
 - `rt_set_interval(cb: extern "C" fn(*mut u8), data: *mut u8, interval_ms: u64) -> TimerId`
 - `rt_set_interval_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), interval_ms: u64) -> TimerId`
 - `rt_set_interval_rooted(cb: extern "C" fn(*mut u8), data: *mut u8, interval_ms: u64) -> TimerId`
+- `rt_set_interval_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle, interval_ms: u64) -> TimerId`
 - `rt_clear_timer(id: TimerId)`
 
 ### I/O readiness watchers
@@ -494,12 +504,15 @@ Contract:
 - `rt_io_register_rooted(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8) -> IoWatcherId`
 - `rt_io_register_handle(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: u64) -> IoWatcherId`
 - `rt_io_register_handle_with_drop(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: u64, drop_data: extern "C" fn(*mut u8)) -> IoWatcherId`
+- `rt_io_register_rooted_h(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: GcHandle) -> IoWatcherId`
 - `rt_io_update(id: IoWatcherId, interests: u32)`
 - `rt_io_unregister(id: IoWatcherId)`
 
 ### Blocking thread pool
 
 - `rt_spawn_blocking(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef`
+- `rt_spawn_blocking_rooted(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef`
+- `rt_spawn_blocking_rooted_h(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: GcHandle) -> LegacyPromiseRef`
 
 `PromiseRef`, `LegacyPromiseRef`, `ValueRef`, `CoroutineId`, `CoroutineRef`, `RtCoroutineHeader`,
 `TimerId`, and `IoWatcherId` are ABI-level opaque types; their layout is defined in

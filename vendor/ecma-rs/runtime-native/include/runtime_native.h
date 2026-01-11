@@ -469,9 +469,13 @@ bool rt_gc_root_set(uint32_t handle, GcPtr ptr);
 // Persistent handles keep a GC-managed object alive and allow retrieving its (possibly relocated)
 // pointer later. Intended for crossing async/OS/thread boundaries where raw pointers are unsafe.
 HandleId rt_handle_alloc(GcPtr ptr);
+// Like `rt_handle_alloc`, but takes the pointer as a `GcHandle` (pointer-to-slot).
+HandleId rt_handle_alloc_h(GcHandle ptr);
 void rt_handle_free(HandleId handle);
 GcPtr rt_handle_load(HandleId handle);
 void rt_handle_store(HandleId handle, GcPtr ptr);
+// Like `rt_handle_store`, but takes the new pointer value as a `GcHandle` (pointer-to-slot).
+void rt_handle_store_h(HandleId handle, GcHandle ptr);
 
 // Update the active nursery (young generation) address range used by the write barrier.
 // Must be called by the GC at initialization and after each nursery flip/resize.
@@ -526,6 +530,7 @@ void rt_debug_validate_heap(void);
 // Weak references (weak handles)
 // -----------------------------------------------------------------------------
 uint64_t rt_weak_add(GcPtr value);
+uint64_t rt_weak_add_h(GcHandle value);
 GcPtr rt_weak_get(uint64_t handle);
 void rt_weak_remove(uint64_t handle);
 
@@ -578,6 +583,8 @@ TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);
 // - The runtime registers a strong GC root for `data` until the task completes.
 // - The returned `TaskId` must still be joined exactly once.
 TaskId rt_parallel_spawn_rooted(void (*task)(uint8_t*), uint8_t* data);
+// Like `rt_parallel_spawn_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
+TaskId rt_parallel_spawn_rooted_h(void (*task)(uint8_t*), GcHandle data);
 // Spawn `task(data, promise)` on the runtime's parallel worker pool and return a legacy promise
 // settled by the task.
 //
@@ -627,6 +634,8 @@ LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uin
 // Rooted variant: `data` must be a GC-managed object base pointer. The runtime keeps the object
 // alive (and relocates the pointer across GC moves) until the blocking task finishes.
 LegacyPromiseRef rt_spawn_blocking_rooted(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);
+// Like `rt_spawn_blocking_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
+LegacyPromiseRef rt_spawn_blocking_rooted_h(void (*task)(uint8_t*, LegacyPromiseRef), GcHandle data);
 
 // -----------------------------------------------------------------------------
 // Native promise ABI (PromiseHeader prefix)
@@ -655,6 +664,9 @@ typedef Coroutine* CoroutineRef;
 // `CoroutineId` handle instead of a raw `Coroutine*` pointer.
 //
 // `CoroutineId` values are allocated via the persistent handle ABI:
+//   // Under a moving GC, use the handle-based variant:
+//   //   GcPtr coro_ptr = (GcPtr)coro;
+//   //   CoroutineId id = rt_handle_alloc_h(&coro_ptr);
 //   CoroutineId id = rt_handle_alloc((GcPtr)coro_ptr);
 typedef uint64_t CoroutineId;
 
@@ -782,6 +794,7 @@ void rt_promise_then(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* d
 // IMPORTANT: `data` must be the GC *object base pointer* (the same kind of pointer returned by
 // `rt_alloc` / stored in `ValueRef`), not an interior pointer into an object payload.
 void rt_promise_then_rooted(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+void rt_promise_then_rooted_h(LegacyPromiseRef p, void (*on_settle)(uint8_t*), GcHandle data);
 
 // Forward declare legacy coroutine headers so compatibility aliases can use the type.
 typedef struct RtCoroutineHeader RtCoroutineHeader;
@@ -804,6 +817,7 @@ void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uin
 // - The runtime registers a strong GC root for `data` until the callback runs.
 // - When the callback runs, the runtime passes the *current* pointer (after any relocation).
 void rt_promise_then_rooted_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+void rt_promise_then_rooted_h_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), GcHandle data);
 void rt_promise_then_with_drop_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
 void rt_promise_drop_legacy(LegacyPromiseRef p);
 
@@ -867,6 +881,8 @@ void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*dr
 // - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
 // - The runtime registers a strong GC root for `data` until the microtask executes.
 void rt_queue_microtask_rooted(void (*cb)(uint8_t*), uint8_t* data);
+// Like `rt_queue_microtask_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
+void rt_queue_microtask_rooted_h(void (*cb)(uint8_t*), GcHandle data);
 // Drain only the microtask queue (does not run timers/reactor/macrotasks).
 // Returns true if any microtasks were executed.
 bool rt_drain_microtasks(void);
@@ -883,6 +899,8 @@ TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);
 // - The runtime registers a strong GC root for `data` until the timeout executes or is cleared.
 // - The callback receives the current relocated pointer.
 TimerId rt_set_timeout_rooted(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);
+// Like `rt_set_timeout_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
+TimerId rt_set_timeout_rooted_h(void (*cb)(uint8_t*), GcHandle data, uint64_t delay_ms);
 TimerId rt_set_timeout_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t delay_ms);
 TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);
 // Like `rt_set_interval`, but `data` is a GC-managed object that the runtime will keep alive until
@@ -893,6 +911,8 @@ TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_m
 // - The runtime registers a strong GC root for `data` until `rt_clear_timer` is called.
 // - Each callback receives the current relocated pointer.
 TimerId rt_set_interval_rooted(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);
+// Like `rt_set_interval_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
+TimerId rt_set_interval_rooted_h(void (*cb)(uint8_t*), GcHandle data, uint64_t interval_ms);
 TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t interval_ms);
 void rt_clear_timer(TimerId id);
 
@@ -942,6 +962,7 @@ IoWatcherId rt_io_register_handle_with_drop(
 //   until they return `EAGAIN`/`WouldBlock`.
 // - `rt_io_register*` returns 0 on failure.
 IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
+IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
 // Like `rt_io_register`, but `data` is a GC-managed object that the runtime will keep alive until
 // the watcher is unregistered with `rt_io_unregister`.
 //
@@ -950,7 +971,8 @@ IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t e
 // - The runtime registers a strong GC root for `data` until `rt_io_unregister` is called.
 // - Each callback receives the current relocated pointer.
 IoWatcherId rt_io_register_rooted(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
-IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
+// Like `rt_io_register_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
+IoWatcherId rt_io_register_rooted_h(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), GcHandle data);
 void rt_io_update(IoWatcherId id, uint32_t interests);
 void rt_io_unregister(IoWatcherId id);
 

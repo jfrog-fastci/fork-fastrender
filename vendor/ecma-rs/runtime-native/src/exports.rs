@@ -1065,6 +1065,23 @@ pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
   abort_on_panic(|| crate::roots::global_persistent_handle_table().alloc(ptr).to_u64())
 }
 
+/// Like [`rt_handle_alloc`], but takes the GC-managed pointer as a `GcHandle` (pointer-to-slot)
+/// handle.
+///
+/// This is the moving-GC-safe variant: the runtime will only read the pointer value from `slot`
+/// *after* acquiring the persistent handle table lock, so a GC can update the slot if lock
+/// acquisition blocks.
+///
+/// # Safety
+/// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_handle_alloc_h(slot: crate::roots::GcHandle) -> u64 {
+  crate::roots::global_persistent_handle_table()
+    .alloc_from_slot(slot)
+    .to_u64()
+}
+
 /// Free a persistent handle created by [`rt_handle_alloc`].
 ///
 /// Invalid handles are ignored.
@@ -1097,6 +1114,18 @@ pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
   })
 }
 
+/// Like [`rt_handle_store`], but takes the new pointer value as a `GcHandle` (pointer-to-slot)
+/// handle.
+///
+/// # Safety
+/// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_handle_store_h(handle: u64, slot: crate::roots::GcHandle) {
+  let _ =
+    crate::roots::global_persistent_handle_table().set_from_slot(HandleId::from_u64(handle), slot);
+}
+
 #[cfg(feature = "gc_stats")]
 #[no_mangle]
 pub unsafe extern "C" fn rt_gc_stats_snapshot(out: *mut RtGcStatsSnapshot) {
@@ -1127,6 +1156,16 @@ pub extern "C" fn rt_gc_stats_reset() {
 #[no_mangle]
 pub extern "C" fn rt_weak_add(value: crate::roots::GcPtr) -> u64 {
   abort_on_panic(|| crate::gc::weak::global_weak_add(value).as_u64())
+}
+
+/// Like [`rt_weak_add`], but takes the referent as a `GcHandle` (pointer-to-slot) handle.
+///
+/// # Safety
+/// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_weak_add_h(slot: crate::roots::GcHandle) -> u64 {
+  crate::gc::weak::global_weak_add_from_slot(slot).as_u64()
 }
 
 /// Resolve a weak handle back to a pointer, or null if the referent is dead/cleared.
@@ -1206,6 +1245,18 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
     let work = Box::new(WorkItem { task, data, promise });
     crate::rt_parallel().spawn_detached(run_work_item, Box::into_raw(work) as *mut u8);
     promise
+  })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_parallel_spawn_rooted_h(
+  task: extern "C" fn(*mut u8),
+  data: crate::roots::GcHandle,
+) -> TaskId {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    // Safety: caller promises `data` points at a valid `*mut u8` GC slot.
+    unsafe { crate::rt_parallel().spawn_rooted_h(task, data) }
   })
 }
 
@@ -1294,6 +1345,25 @@ pub extern "C" fn rt_spawn_blocking_rooted(
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
     crate::blocking_pool::spawn_rooted(task, data)
+  })
+}
+
+/// Like [`rt_spawn_blocking_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_spawn_blocking_rooted_h(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: crate::roots::GcHandle,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    // Safety: caller contract.
+    unsafe { crate::blocking_pool::spawn_rooted_h(task, data) }
   })
 }
 
@@ -1954,6 +2024,82 @@ pub extern "C" fn rt_io_register_rooted(
   })
 }
 
+/// Like [`rt_io_register_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_io_register_rooted_h(
+  fd: i32,
+  interests: u32,
+  cb: extern "C" fn(u32, *mut u8),
+  data: crate::roots::GcHandle,
+) -> IoWatcherId {
+  abort_on_panic(|| {
+    rt_io_set_last_error(rt_io_debug::OK);
+    if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      rt_io_set_last_error(rt_io_debug::ERR_INVALID_INTERESTS);
+      maybe_log_rt_io_failure(
+        "rt_io_register_rooted_h",
+        format_args!(
+          "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
+        ),
+      );
+      return 0;
+    }
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+
+    let ctx = Box::new(RootedIoWatcherData {
+      cb,
+      // Safety: caller contract.
+      root: unsafe { async_rt::gc::Root::new_from_slot_unchecked(data) },
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    match async_rt::global().register_io_with_drop(
+      fd,
+      interests,
+      rooted_io_watcher_cb,
+      ctx_ptr,
+      drop_rooted_io_watcher_data,
+    ) {
+      Ok(id) => id.as_raw(),
+      Err(err) => {
+        let is_nonblocking_contract_violation =
+          err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
+        let code = if is_nonblocking_contract_violation {
+          rt_io_debug::ERR_FD_NOT_NONBLOCKING
+        } else if err.kind() == io::ErrorKind::AlreadyExists {
+          rt_io_debug::ERR_ALREADY_REGISTERED
+        } else {
+          rt_io_debug::ERR_OTHER
+        };
+        rt_io_set_last_error(code);
+
+        // Registration failed; drop the rooted wrapper to avoid leaking the persistent handle.
+        drop_rooted_io_watcher_data(ctx_ptr);
+        if is_nonblocking_contract_violation {
+          maybe_log_rt_io_failure(
+            "rt_io_register_rooted_h",
+            format_args!(
+              "fd={fd} interests=0x{interests:x}: {err} (did you forget to set O_NONBLOCK?)"
+            ),
+          );
+        } else {
+          maybe_log_rt_io_failure(
+            "rt_io_register_rooted_h",
+            format_args!("fd={fd} interests=0x{interests:x}: {err}"),
+          );
+        }
+        0
+      }
+    }
+  })
+}
+
 /// Like [`rt_io_register`], but the callback userdata is a GC-rooted persistent handle.
 ///
 /// Ownership:
@@ -2127,6 +2273,7 @@ pub extern "C" fn rt_io_register_handle_with_drop(
 /// - [`rt_io_register`]
 /// - [`rt_io_register_with_drop`]
 /// - [`rt_io_register_rooted`]
+/// - [`rt_io_register_rooted_h`]
 /// - [`rt_io_register_handle`]
 /// - [`rt_io_register_handle_with_drop`]
 ///
@@ -2171,6 +2318,7 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
 /// - [`rt_io_register`]
 /// - [`rt_io_register_with_drop`]
 /// - [`rt_io_register_rooted`]
+/// - [`rt_io_register_rooted_h`]
 /// - [`rt_io_register_handle`]
 /// - [`rt_io_register_handle_with_drop`]
 ///
@@ -2383,6 +2531,26 @@ pub extern "C" fn rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *m
   })
 }
 
+/// Like [`rt_queue_microtask_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_queue_microtask_rooted_h(
+  cb: extern "C" fn(*mut u8),
+  data: crate::roots::GcHandle,
+) {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+    unsafe {
+      async_rt::global().enqueue_microtask(async_rt::Task::new_gc_rooted_h(cb, data));
+    }
+  })
+}
+
 #[no_mangle]
 pub extern "C" fn rt_queue_microtask_with_drop(
   cb: extern "C" fn(*mut u8),
@@ -2570,6 +2738,52 @@ pub extern "C" fn rt_set_timeout_rooted(
       cb,
       // Safety: rooted entrypoints require `data` be a GC-managed object base pointer.
       root: unsafe { async_rt::gc::Root::new_unchecked(data) },
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Timeout,
+        cb: rooted_web_timer_cb,
+        data: ctx_ptr,
+        drop_data: Some(drop_rooted_web_timer_data),
+        gc_root: None,
+        interval: Duration::ZERO,
+        internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+/// Like [`rt_set_timeout_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_set_timeout_rooted_h(
+  cb: extern "C" fn(*mut u8),
+  data: crate::roots::GcHandle,
+  delay_ms: u64,
+) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let delay = Duration::from_millis(delay_ms);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(delay).unwrap_or(now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    let ctx = Box::new(RootedWebTimerData {
+      cb,
+      // Safety: caller contract.
+      root: unsafe { async_rt::gc::Root::new_from_slot_unchecked(data) },
     });
     let ctx_ptr = Box::into_raw(ctx) as *mut u8;
 
@@ -2781,6 +2995,52 @@ pub extern "C" fn rt_set_interval_rooted(
   })
 }
 
+/// Like [`rt_set_interval_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_set_interval_rooted_h(
+  cb: extern "C" fn(*mut u8),
+  data: crate::roots::GcHandle,
+  interval_ms: u64,
+) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let interval = Duration::from_millis(interval_ms);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(interval).unwrap_or(now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    let ctx = Box::new(RootedWebTimerData {
+      cb,
+      // Safety: caller contract.
+      root: unsafe { async_rt::gc::Root::new_from_slot_unchecked(data) },
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Interval,
+        cb: rooted_web_timer_cb,
+        data: ctx_ptr,
+        drop_data: Some(drop_rooted_web_timer_data),
+        gc_root: None,
+        interval,
+        internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
 #[no_mangle]
 pub extern "C" fn rt_set_interval_with_drop(
   cb: extern "C" fn(*mut u8),
@@ -2948,6 +3208,15 @@ pub extern "C" fn rt_promise_then_rooted(p: PromiseRef, on_settle: extern "C" fn
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rt_promise_then_rooted_h(
+  p: PromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: crate::roots::GcHandle,
+) {
+  unsafe { rt_promise_then_rooted_h_legacy(p, on_settle, data) }
+}
+
+#[no_mangle]
 pub extern "C" fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
   abort_on_panic(|| rt_coro_await_legacy(coro, awaited, next_state))
 }
@@ -3045,6 +3314,19 @@ pub extern "C" fn rt_promise_then_rooted_legacy(p: PromiseRef, on_settle: extern
   abort_on_panic(|| {
     ensure_current_thread_registered();
     async_rt::promise::promise_then_rooted(p, on_settle, data)
+  })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_then_rooted_h_legacy(
+  p: PromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: crate::roots::GcHandle,
+) {
+  abort_on_panic(|| {
+    ensure_current_thread_registered();
+    // Safety: caller contract.
+    unsafe { async_rt::promise::promise_then_rooted_h(p, on_settle, data) }
   })
 }
 

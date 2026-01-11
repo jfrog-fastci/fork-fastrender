@@ -400,6 +400,24 @@ impl Task {
     }
   }
 
+  /// Like [`Task::new_gc_rooted`], but accepts the GC-managed `data` pointer as a `GcHandle`
+  /// (pointer-to-slot) so a moving GC can update it if lock acquisition blocks while registering the
+  /// persistent root.
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot that contains a
+  /// GC-managed object base pointer.
+  pub unsafe fn new_gc_rooted_h(callback: TaskFn, slot: crate::roots::GcHandle) -> Self {
+    Self {
+      callback,
+      // The rooted path always reloads from `gc_root`; the raw `data` field is ignored.
+      data: core::ptr::null_mut(),
+      drop: None,
+      // Safety: caller contract.
+      gc_root: Some(gc::Root::new_from_slot_unchecked(slot)),
+    }
+  }
+
   fn run(self) {
     let data = self
       .gc_root

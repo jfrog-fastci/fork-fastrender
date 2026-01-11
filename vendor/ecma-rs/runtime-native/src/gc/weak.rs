@@ -170,6 +170,27 @@ pub(crate) fn global_weak_add(ptr: *mut u8) -> WeakHandle {
   GLOBAL_WEAK_HANDLES.lock().weak_add(ptr)
 }
 
+/// Like [`global_weak_add`], but reads the pointer value from an addressable slot after acquiring
+/// the weak-handle table lock.
+///
+/// This is intended for moving-GC-safe exported entrypoints that accept GC pointers as `GcHandle`
+/// (pointer-to-slot) arguments.
+///
+/// # Safety
+/// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot.
+pub(crate) unsafe fn global_weak_add_from_slot(slot: *mut *mut u8) -> WeakHandle {
+  let mut table = GLOBAL_WEAK_HANDLES.lock();
+  if slot.is_null() {
+    std::process::abort();
+  }
+  if (slot as usize) % core::mem::align_of::<*mut u8>() != 0 {
+    std::process::abort();
+  }
+  // SAFETY: caller contract.
+  let ptr = unsafe { slot.read() };
+  table.weak_add(ptr)
+}
+
 pub(crate) fn global_weak_get(handle: WeakHandle) -> Option<*mut u8> {
   GLOBAL_WEAK_HANDLES.lock().weak_get(handle)
 }

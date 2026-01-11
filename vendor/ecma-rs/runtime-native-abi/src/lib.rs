@@ -569,9 +569,11 @@ extern "C" {
 
   // Persistent handles (stable u64 ids).
   pub fn rt_handle_alloc(ptr: GcPtr) -> HandleId;
+  pub fn rt_handle_alloc_h(ptr: GcHandle) -> HandleId;
   pub fn rt_handle_free(handle: HandleId);
   pub fn rt_handle_load(handle: HandleId) -> GcPtr;
   pub fn rt_handle_store(handle: HandleId, ptr: GcPtr);
+  pub fn rt_handle_store_h(handle: HandleId, ptr: GcHandle);
 
   pub fn rt_gc_set_young_range(start: *mut u8, end: *mut u8);
   pub fn rt_gc_get_young_range(out_start: *mut GcPtr, out_end: *mut GcPtr);
@@ -587,6 +589,7 @@ extern "C" {
 
   // Weak references (weak handles).
   pub fn rt_weak_add(value: GcPtr) -> u64;
+  pub fn rt_weak_add_h(value: GcHandle) -> u64;
   pub fn rt_weak_get(handle: u64) -> GcPtr;
   pub fn rt_weak_remove(handle: u64);
 
@@ -598,6 +601,7 @@ extern "C" {
   // Parallel
   pub fn rt_parallel_spawn(task: RtTaskFn, data: *mut u8) -> TaskId;
   pub fn rt_parallel_spawn_rooted(task: RtTaskFn, data: GcPtr) -> TaskId;
+  pub fn rt_parallel_spawn_rooted_h(task: RtTaskFn, data: GcHandle) -> TaskId;
   pub fn rt_parallel_spawn_promise_legacy(
     task: extern "C" fn(*mut u8, LegacyPromiseRef),
     data: *mut u8,
@@ -621,6 +625,10 @@ extern "C" {
   pub fn rt_spawn_blocking_rooted(
     task: extern "C" fn(*mut u8, LegacyPromiseRef),
     data: GcPtr,
+  ) -> LegacyPromiseRef;
+  pub fn rt_spawn_blocking_rooted_h(
+    task: extern "C" fn(*mut u8, LegacyPromiseRef),
+    data: GcHandle,
   ) -> LegacyPromiseRef;
 
   // Async
@@ -649,6 +657,7 @@ extern "C" {
     drop_data: extern "C" fn(*mut u8),
   );
   pub fn rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: GcPtr);
+  pub fn rt_queue_microtask_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle);
   pub fn rt_drain_microtasks() -> bool;
   pub fn rt_queue_microtask_handle(cb: extern "C" fn(GcPtr), data: HandleId);
   pub fn rt_queue_microtask_handle_with_drop(
@@ -658,6 +667,7 @@ extern "C" {
   );
   pub fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId;
   pub fn rt_set_timeout_rooted(cb: extern "C" fn(*mut u8), data: GcPtr, delay_ms: u64) -> TimerId;
+  pub fn rt_set_timeout_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle, delay_ms: u64) -> TimerId;
   pub fn rt_set_timeout_with_drop(
     cb: extern "C" fn(*mut u8),
     data: *mut u8,
@@ -679,6 +689,11 @@ extern "C" {
   pub fn rt_set_interval_rooted(
     cb: extern "C" fn(*mut u8),
     data: GcPtr,
+    interval_ms: u64,
+  ) -> TimerId;
+  pub fn rt_set_interval_rooted_h(
+    cb: extern "C" fn(*mut u8),
+    data: GcHandle,
     interval_ms: u64,
   ) -> TimerId;
   pub fn rt_set_interval_with_drop(
@@ -716,6 +731,12 @@ extern "C" {
     cb: extern "C" fn(u32, *mut u8),
     data: GcPtr,
   ) -> IoWatcherId;
+  pub fn rt_io_register_rooted_h(
+    fd: RtFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: GcHandle,
+  ) -> IoWatcherId;
   pub fn rt_io_register_handle(
     fd: RtFd,
     interests: u32,
@@ -746,6 +767,11 @@ extern "C" {
     on_settle: extern "C" fn(*mut u8),
     data: GcPtr,
   );
+  pub fn rt_promise_then_rooted_h(
+    p: LegacyPromiseRef,
+    on_settle: extern "C" fn(*mut u8),
+    data: GcHandle,
+  );
   pub fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: LegacyPromiseRef, next_state: u32);
 
   pub fn rt_promise_new_legacy() -> LegacyPromiseRef;
@@ -759,6 +785,11 @@ extern "C" {
     p: LegacyPromiseRef,
     on_settle: extern "C" fn(*mut u8),
     data: GcPtr,
+  );
+  pub fn rt_promise_then_rooted_h_legacy(
+    p: LegacyPromiseRef,
+    on_settle: extern "C" fn(*mut u8),
+    data: GcHandle,
   );
   pub fn rt_promise_then_with_drop_legacy(
     p: LegacyPromiseRef,

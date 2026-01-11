@@ -25,9 +25,15 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_gc_root_get(",
     "rt_gc_root_set(",
     "rt_handle_alloc(",
+    "rt_handle_alloc_h(",
     "rt_handle_free(",
     "rt_handle_load(",
     "rt_handle_store(",
+    "rt_handle_store_h(",
+    "rt_weak_add(",
+    "rt_weak_add_h(",
+    "rt_weak_get(",
+    "rt_weak_remove(",
     "rt_queue_microtask_handle(",
     "rt_queue_microtask_handle_with_drop(",
     "rt_set_timeout_handle(",
@@ -69,16 +75,21 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_thread_detach(",
     "rt_keep_alive_gc_ref(",
     "rt_parallel_spawn_rooted(",
+    "rt_parallel_spawn_rooted_h(",
     "rt_parallel_spawn_promise_rooted(",
     "rt_queue_microtask_rooted(",
     "rt_async_sleep(",
+    "rt_queue_microtask_rooted_h(",
     "rt_queue_microtask(",
     "rt_drain_microtasks(",
     "rt_set_timeout_rooted(",
+    "rt_set_timeout_rooted_h(",
     "rt_set_interval_rooted(",
+    "rt_set_interval_rooted_h(",
     // I/O watchers.
     "rt_io_register(",
     "rt_io_register_rooted(",
+    "rt_io_register_rooted_h(",
     "rt_io_register_with_drop(",
     "rt_io_update(",
     "rt_io_unregister(",
@@ -241,9 +252,14 @@ fn runtime_native_exports_match_expected_abi_signatures() {
 
   // Persistent handles (stable u64 IDs).
   let _handle_alloc: extern "C" fn(*mut u8) -> u64 = runtime_native::rt_handle_alloc;
+  let _handle_alloc_h: unsafe extern "C" fn(runtime_native::roots::GcHandle) -> u64 =
+    runtime_native::rt_handle_alloc_h;
   let _handle_free: extern "C" fn(u64) = runtime_native::rt_handle_free;
   let _handle_load: extern "C" fn(u64) -> *mut u8 = runtime_native::rt_handle_load;
   let _handle_store: extern "C" fn(u64, *mut u8) = runtime_native::rt_handle_store;
+  let _handle_store_h: unsafe extern "C" fn(u64, runtime_native::roots::GcHandle) =
+    runtime_native::rt_handle_store_h;
+  let _weak_add_h: unsafe extern "C" fn(runtime_native::roots::GcHandle) -> u64 = runtime_native::rt_weak_add_h;
 
   // Microtasks.
   let _queue_microtask: unsafe extern "C" fn(runtime_native::abi::Microtask) =
@@ -258,16 +274,24 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   // Rooted scheduling entrypoints.
   let _parallel_spawn_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> runtime_native::abi::TaskId =
     runtime_native::rt_parallel_spawn_rooted;
+  let _parallel_spawn_rooted_h: unsafe extern "C" fn(extern "C" fn(*mut u8), runtime_native::roots::GcHandle) -> runtime_native::abi::TaskId =
+    runtime_native::rt_parallel_spawn_rooted_h;
   let _queue_microtask_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = runtime_native::rt_queue_microtask_rooted;
   let _parallel_spawn_promise_rooted: extern "C" fn(
     extern "C" fn(*mut u8, runtime_native::abi::PromiseRef),
     *mut u8,
     runtime_native::PromiseLayout,
   ) -> runtime_native::abi::PromiseRef = runtime_native::rt_parallel_spawn_promise_rooted;
+  let _queue_microtask_rooted_h: unsafe extern "C" fn(extern "C" fn(*mut u8), runtime_native::roots::GcHandle) =
+    runtime_native::rt_queue_microtask_rooted_h;
   let _set_timeout_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> runtime_native::abi::TimerId =
     runtime_native::rt_set_timeout_rooted;
+  let _set_timeout_rooted_h: unsafe extern "C" fn(extern "C" fn(*mut u8), runtime_native::roots::GcHandle, u64) -> runtime_native::abi::TimerId =
+    runtime_native::rt_set_timeout_rooted_h;
   let _set_interval_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> runtime_native::abi::TimerId =
     runtime_native::rt_set_interval_rooted;
+  let _set_interval_rooted_h: unsafe extern "C" fn(extern "C" fn(*mut u8), runtime_native::roots::GcHandle, u64) -> runtime_native::abi::TimerId =
+    runtime_native::rt_set_interval_rooted_h;
   // I/O watchers.
   let _io_register: extern "C" fn(
     i32,
@@ -284,6 +308,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   ) -> runtime_native::abi::IoWatcherId = runtime_native::rt_io_register_with_drop;
   let _io_register_rooted: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> runtime_native::abi::IoWatcherId =
     runtime_native::rt_io_register_rooted;
+  let _io_register_rooted_h: unsafe extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), runtime_native::roots::GcHandle) -> runtime_native::abi::IoWatcherId =
+    runtime_native::rt_io_register_rooted_h;
   let _io_register_handle: extern "C" fn(
     i32,
     u32,
@@ -382,22 +408,30 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _root_get,
     _root_set,
     _handle_alloc,
+    _handle_alloc_h,
     _handle_free,
     _handle_load,
     _handle_store,
+    _handle_store_h,
+    _weak_add_h,
     _queue_microtask,
     _queue_microtask_with_drop,
     _drain_microtasks,
     _root_push,
     _root_pop,
     _parallel_spawn_rooted,
+    _parallel_spawn_rooted_h,
     _queue_microtask_rooted,
+    _queue_microtask_rooted_h,
     _parallel_spawn_promise_rooted,
     _set_timeout_rooted,
+    _set_timeout_rooted_h,
     _set_interval_rooted,
+    _set_interval_rooted_h,
     _io_register,
     _io_register_with_drop,
     _io_register_rooted,
+    _io_register_rooted_h,
     _io_register_handle,
     _io_register_handle_with_drop,
     _io_update,

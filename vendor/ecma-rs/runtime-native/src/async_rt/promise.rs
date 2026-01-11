@@ -514,6 +514,32 @@ pub(crate) fn promise_then_rooted(p: PromiseRef, on_settle: extern "C" fn(*mut u
   promise_register_reaction(p, node);
 }
 
+/// Like [`promise_then_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot) so a moving GC can update it if lock acquisition blocks while registering the
+/// persistent root.
+///
+/// # Safety
+/// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+pub(crate) unsafe fn promise_then_rooted_h(
+  p: PromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  slot: crate::roots::GcHandle,
+) {
+  if p.is_null() {
+    // Treat null as "never settles": keep it pending without retaining `slot`.
+    return;
+  }
+
+  // Safety: caller promises `slot` points at a GC-managed object base pointer.
+  let gc_root = Some(unsafe { async_gc::Root::new_from_slot_unchecked(slot) });
+
+  // Avoid holding a raw GC pointer across any potentially blocking operations: the callback will
+  // reload from `gc_root` at execution time.
+  let node = alloc_callback_reaction(on_settle, null_mut(), None, gc_root);
+  promise_register_reaction(p, node);
+}
+
 pub(crate) fn promise_then_with_drop(
   p: PromiseRef,
   on_settle: extern "C" fn(*mut u8),

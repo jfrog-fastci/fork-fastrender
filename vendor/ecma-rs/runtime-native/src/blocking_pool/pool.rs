@@ -143,6 +143,31 @@ impl BlockingPool {
     self.shared.cv.notify_one();
     promise
   }
+
+  pub(crate) unsafe fn spawn_rooted_h(
+    &self,
+    task: extern "C" fn(*mut u8, PromiseRef),
+    slot: crate::roots::GcHandle,
+  ) -> PromiseRef {
+    // Ensure the async runtime is initialized so promise settlement can wake a blocked `epoll_wait`.
+    let _ = async_rt::global();
+    let promise = async_rt::promise::promise_new();
+
+    // Safety: caller promises `slot` is a valid pointer-to-slot containing a GC-managed object base
+    // pointer.
+    let root = unsafe { async_rt::gc::Root::new_from_slot_unchecked(slot) };
+
+    {
+      let mut q = self.shared.queue.lock();
+      q.push_back(WorkItem {
+        task,
+        data: WorkData::Rooted(root),
+        promise,
+      });
+    }
+    self.shared.cv.notify_one();
+    promise
+  }
 }
 
 fn worker_loop(shared: Arc<Shared>) {
