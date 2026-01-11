@@ -4,7 +4,7 @@
 //! operations. This module defines the minimal operations that the binding layer needs from an
 //! embedded JS engine.
 
-pub use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
+pub use webidl::{interface_id_from_name, InterfaceId, WebIdlHooks, WebIdlLimits};
 use webidl_vm_js::CallbackHandle;
 
 /// The kind of property described by a [`JsOwnPropertyDescriptor`].
@@ -22,20 +22,6 @@ pub enum JsPropertyKind<V> {
 pub struct JsOwnPropertyDescriptor<V> {
   pub enumerable: bool,
   pub kind: JsPropertyKind<V>,
-}
-
-/// Derive a stable [`InterfaceId`] from an interface name.
-///
-/// This uses the 32-bit FNV-1a hash of the UTF-8 bytes. It is primarily intended for unit tests and
-/// scaffolding runtimes (like `VmJsRuntime`) that store interface names but still want to
-/// participate in InterfaceId-based hooks.
-pub fn interface_id_from_name(name: &str) -> InterfaceId {
-  let mut hash: u32 = 0x811c_9dc5;
-  for &b in name.as_bytes() {
-    hash ^= b as u32;
-    hash = hash.wrapping_mul(0x0100_0193);
-  }
-  InterfaceId(hash)
 }
 
 /// ECMAScript "IteratorRecord" (ECMA-262).

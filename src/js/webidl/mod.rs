@@ -17,21 +17,6 @@ pub use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 
 pub mod conversions;
 
-/// Derive a stable [`InterfaceId`] from an interface name.
-///
-/// This uses the 32-bit FNV-1a hash of the UTF-8 bytes, matching the helper used by the legacy
-/// `crates/webidl-js-runtime` scaffolding. Generated bindings can use this for interface-like checks
-/// (e.g. union conversion's platform object branch) before the bindings pipeline grows a dedicated
-/// per-world interface ID registry.
-pub fn interface_id_from_name(name: &str) -> InterfaceId {
-  let mut hash: u32 = 0x811c_9dc5;
-  for &b in name.as_bytes() {
-    hash ^= b as u32;
-    hash = hash.wrapping_mul(0x0100_0193);
-  }
-  InterfaceId(hash)
-}
-
 /// Canonical bindings runtime for installing WebIDL-generated APIs onto a real `vm-js` realm.
 pub use crate::js::webidl_runtime_vmjs::{
   IteratorRecord, NativeHostFunction, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime,

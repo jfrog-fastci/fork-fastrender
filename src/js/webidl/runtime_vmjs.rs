@@ -20,9 +20,13 @@ pub struct JsOwnPropertyDescriptor {
 /// This mirrors the ECMAScript `IteratorRecord` shape: iterator object + cached `next` method +
 /// `done` flag.
 ///
-/// `vm-js` does not yet provide `%Array.prototype%[@@iterator]`, so generated bindings include a
-/// minimal Array iteration fast-path so list arguments can accept arrays.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// For a real `vm-js` realm runtime ([`VmJsWebIdlBindingsCx`]), we delegate to the canonical
+/// `vm_js::iterator` module (which includes an Array fast-path while
+/// `%Array.prototype%[@@iterator]` is not implemented).
+///
+/// For the legacy heap-only runtime (`crates/webidl-js-runtime`) we keep a small in-tree iterator
+/// record implementation so WebIDL `sequence<T>` conversions can still accept arrays.
+#[derive(Debug, Clone, Copy)]
 pub struct IteratorRecord<V: Copy> {
   pub iterator: V,
   pub next_method: V,
@@ -30,8 +34,9 @@ pub struct IteratorRecord<V: Copy> {
   kind: IteratorRecordKind<V>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 enum IteratorRecordKind<V: Copy> {
+  VmJs(vm_js::iterator::IteratorRecord),
   Protocol,
   Array {
     array: V,
@@ -1070,10 +1075,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     let Value::Object(obj) = value else {
       return Ok(false);
     };
-    let Ok(intr) = self.intrinsics() else {
-      return Ok(false);
-    };
-    Ok(self.cx.scope.heap().object_prototype(obj)? == Some(intr.array_prototype()))
+    Ok(self.cx.scope.heap().object_is_array(obj)?)
   }
 
   fn get_method(
@@ -1097,6 +1099,28 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     host: &mut Host,
     iterable: Self::JsValue,
   ) -> Result<IteratorRecord<Self::JsValue>, Self::Error> {
+    // Prefer the engine's canonical iterator implementation when host hooks are available (native
+    // call/construct). This avoids drift between the bindings runtime and `vm-js` iterator
+    // semantics (Array fast-path, iterator protocol errors, and host-hook propagation).
+    if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      let record = vm_js::iterator::get_iterator(
+        &mut *self.cx.vm,
+        host,
+        hooks,
+        &mut self.cx.scope,
+        iterable,
+      )?;
+      return Ok(IteratorRecord {
+        iterator: record.iterator,
+        next_method: record.next_method,
+        done: record.done,
+        kind: IteratorRecordKind::VmJs(record),
+      });
+    }
+
+    // Fallback for contexts that do not have `VmHostHooks` (e.g. bindings installation). This path
+    // is intentionally small; most conversion-heavy code runs inside native-call dispatch where we
+    // take the canonical `vm-js` iterator path above.
     let Value::Object(obj) = iterable else {
       return Err(self.throw_type_error("GetIterator: expected object"));
     };
@@ -1104,28 +1128,26 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     self.with_stack_roots::<IteratorRecord<Self::JsValue>, _>(&[iterable], |rt| {
       // Minimal Array fast-path: `vm-js` does not yet expose `%Array.prototype%[@@iterator]` on the
       // intrinsic graph, but arrays should still be accepted as iterable inputs for `sequence<T>`.
-      if let Ok(intr) = rt.intrinsics() {
-        if rt.cx.scope.heap().object_prototype(obj)? == Some(intr.array_prototype()) {
-          let length_key = rt.property_key("length")?;
-          let len_value = rt.get(host, iterable, length_key)?;
-          let len = rt.to_number(host, len_value)?;
-          if !len.is_finite() || len < 0.0 {
-            return Err(rt.throw_type_error(
-              "GetIterator: array length is not a non-negative finite number",
-            ));
-          }
-          let length = len as u32;
-          return Ok(IteratorRecord {
-            iterator: iterable,
-            next_method: Value::Undefined,
-            done: false,
-            kind: IteratorRecordKind::Array {
-              array: iterable,
-              next_index: 0,
-              length,
-            },
-          });
+      if rt.cx.scope.heap().object_is_array(obj)? {
+        let length_key = rt.property_key("length")?;
+        let len_value = rt.get(host, iterable, length_key)?;
+        let len = rt.to_number(host, len_value)?;
+        if !len.is_finite() || len < 0.0 {
+          return Err(rt.throw_type_error(
+            "GetIterator: array length is not a non-negative finite number",
+          ));
         }
+        let length = len as u32;
+        return Ok(IteratorRecord {
+          iterator: iterable,
+          next_method: Value::Undefined,
+          done: false,
+          kind: IteratorRecordKind::Array {
+            array: iterable,
+            next_index: 0,
+            length,
+          },
+        });
       }
 
       let iterator_key = rt.symbol_iterator()?;
@@ -1142,6 +1164,23 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     iterable: Self::JsValue,
     method: Self::JsValue,
   ) -> Result<IteratorRecord<Self::JsValue>, Self::Error> {
+    if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      let record = vm_js::iterator::get_iterator_from_method(
+        &mut *self.cx.vm,
+        host,
+        hooks,
+        &mut self.cx.scope,
+        iterable,
+        method,
+      )?;
+      return Ok(IteratorRecord {
+        iterator: record.iterator,
+        next_method: record.next_method,
+        done: record.done,
+        kind: IteratorRecordKind::VmJs(record),
+      });
+    }
+
     let iterator = self.cx.vm.call(host, &mut self.cx.scope, method, iterable, &[])?;
     if !self.is_object(iterator) {
       return Err(self.throw_type_error("Iterator method did not return an object"));
@@ -1172,6 +1211,24 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     }
 
     match &mut iterator_record.kind {
+      IteratorRecordKind::VmJs(record) => {
+        let Some(hooks) = self.vm_host_hooks.as_deref_mut() else {
+          return Err(self.throw_type_error(
+            "IteratorStepValue: missing host hooks for vm-js iterator record",
+          ));
+        };
+        let out = vm_js::iterator::iterator_step_value(
+          &mut *self.cx.vm,
+          host,
+          hooks,
+          &mut self.cx.scope,
+          record,
+        )?;
+        iterator_record.iterator = record.iterator;
+        iterator_record.next_method = record.next_method;
+        iterator_record.done = record.done;
+        Ok(out)
+      }
       IteratorRecordKind::Array {
         array,
         next_index,
@@ -2421,6 +2478,13 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     )
   }
 
+  fn is_array(&mut self, value: Self::JsValue) -> Result<bool, Self::Error> {
+    let Value::Object(obj) = value else {
+      return Ok(false);
+    };
+    Ok(self.heap().object_is_array(obj)?)
+  }
+
   fn get_method(
     &mut self,
     _host: &mut Host,
@@ -2446,37 +2510,40 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
       self,
       &[iterable],
       |rt| {
-      // Minimal Array fast-path: `vm-js` does not yet expose `%Array.prototype%[@@iterator]` for
-      // heap-only runtimes, but arrays should still be accepted as iterable inputs for `sequence<T>`.
-      //
-      // Detect arrays by their non-enumerable, non-configurable own `length` data property (the
-      // shape created by `vm-js` array exotic objects).
-      let length_key =
-        <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_from_str(
-          rt, "length",
-        )?;
-      if let Ok(Some(desc)) = rt.heap().object_get_own_property(obj, &length_key) {
-        if !desc.enumerable && !desc.configurable {
-          if let PropertyKind::Data {
-            value: Value::Number(len),
-            writable: true,
-          } = desc.kind
-          {
-            if len.is_finite() && len >= 0.0 && len.fract() == 0.0 && len <= (u32::MAX as f64) {
-              return Ok(IteratorRecord {
-                iterator: iterable,
-                next_method: Value::Undefined,
-                done: false,
-                kind: IteratorRecordKind::Array {
-                  array: iterable,
-                  next_index: 0,
-                  length: len as u32,
-                },
-              });
-            }
-          }
+        // Minimal Array fast-path: `vm-js` does not yet expose `%Array.prototype%[@@iterator]` for
+        // heap-only runtimes, but arrays should still be accepted as iterable inputs for
+        // `sequence<T>`.
+        if rt.heap().object_is_array(obj)? {
+          let length_key =
+            <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_from_str(
+              rt, "length",
+            )?;
+           let len_value = <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get(
+             rt, iterable, length_key,
+           )?;
+           let Value::Number(len) = len_value else {
+            return Err(<webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::throw_type_error(
+              rt,
+              "GetIterator: array length is not a number",
+            ));
+           };
+           if !len.is_finite() || len < 0.0 || len.fract() != 0.0 || len > (u32::MAX as f64) {
+            return Err(<webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::throw_type_error(
+              rt,
+              "GetIterator: array length is not a uint32 number",
+            ));
+           }
+           return Ok(IteratorRecord {
+             iterator: iterable,
+             next_method: Value::Undefined,
+            done: false,
+            kind: IteratorRecordKind::Array {
+              array: iterable,
+              next_index: 0,
+              length: len as u32,
+            },
+          });
         }
-      }
 
       let iterator_key = <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(rt)?;
       let Some(method) =
@@ -2521,6 +2588,9 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     }
 
     match &mut iterator_record.kind {
+      IteratorRecordKind::VmJs(_) => Err(VmError::InvariantViolation(
+        "IteratorStepValue: unexpected vm-js iterator record in legacy bindings runtime",
+      )),
       IteratorRecordKind::Array {
         array,
         next_index,
@@ -2688,7 +2758,7 @@ mod tests {
   use crate::js::bindings::{
     install_window_bindings, BindingValue, DomExceptionClassVmJs, WebHostBindings,
   };
-  use vm_js::{Heap, HeapLimits, JsRuntime as VmJsRuntime, VmOptions};
+  use vm_js::{Heap, HeapLimits, JsRuntime as VmJsRuntime, MicrotaskQueue, VmOptions};
   use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
 
   struct NoHooks;
@@ -2819,6 +2889,49 @@ mod tests {
     )?;
     assert!(matches!(out, Value::Number(n) if (n - 3.0).abs() < f64::EPSILON));
     assert!(host.saw_record_host.get());
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_bindings_runtime_iterates_arrays_even_if_prototype_changed() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut runtime = VmJsRuntime::new(vm, heap)?;
+
+    let state = Box::new(VmJsWebIdlBindingsState::<TestHost>::new(
+      runtime.realm().global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    let mut host = TestHost::default();
+    let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
+    let mut scope = heap.scope();
+    let mut hooks = MicrotaskQueue::new();
+
+    let mut rt = VmJsWebIdlBindingsCx::from_native_call(vm, &mut scope, &mut hooks, &state);
+
+    let arr = rt.create_array(2)?;
+    let idx0 = rt.property_key("0")?;
+    rt.define_data_property_with_attrs(arr, idx0, Value::Number(1.0), true, true, true)?;
+    let idx1 = rt.property_key("1")?;
+    rt.define_data_property_with_attrs(arr, idx1, Value::Number(2.0), true, true, true)?;
+
+    // `Array.isArray` must remain true even when the object's `[[Prototype]]` is changed.
+    let new_proto = rt.create_object()?;
+    rt.set_prototype(arr, Some(new_proto))?;
+    assert!(rt.is_array(arr)?, "expected is_array to detect Array exotic objects");
+
+    let mut record = rt.get_iterator(&mut host, arr)?;
+    let values = rt.with_stack_roots(&[record.iterator, record.next_method], |rt| {
+      let mut values = Vec::new();
+      while let Some(v) = rt.iterator_step_value(&mut host, &mut record)? {
+        values.push(v);
+      }
+      Ok(values)
+    })?;
+
+    assert_eq!(values, vec![Value::Number(1.0), Value::Number(2.0)]);
     Ok(())
   }
 

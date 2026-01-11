@@ -3835,13 +3835,8 @@ fn interface_ids_for_fast_path(
   fp: &crate::webidl::overload_ir::TypeCategoryFastPath,
 ) -> Vec<(String, u32)> {
   fn interface_id_from_name_u32(name: &str) -> u32 {
-    // Must match `webidl_js_runtime::interface_id_from_name` (FNV-1a 32-bit).
-    let mut hash: u32 = 0x811c_9dc5;
-    for &b in name.as_bytes() {
-      hash ^= b as u32;
-      hash = hash.wrapping_mul(0x0100_0193);
-    }
-    hash
+    // Must match runtime interface ID generation (`webidl::interface_id_from_name`).
+    fastrender::js::webidl::interface_id_from_name(name).0
   }
 
   let mut out: Vec<(String, u32)> = Vec::new();

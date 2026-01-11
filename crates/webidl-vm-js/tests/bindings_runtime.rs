@@ -9,6 +9,7 @@ use webidl_vm_js::bindings_runtime::{
   BindingValue, BindingsHost, BindingsRuntime, DataPropertyAttributes, WebHostBindingsVm,
 };
 use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost, WebIdlBindingsHostSlot};
+use webidl_vm_js::bindings_runtime::{to_int32_f64, to_uint32_f64};
  
 struct HooksWithBindingsHost {
   slot: WebIdlBindingsHostSlot,
@@ -210,4 +211,64 @@ fn can_install_and_call_generated_like_operation() -> Result<(), VmError> {
   drop(scope);
   realm.teardown(&mut heap);
   Ok(())
+}
+
+#[test]
+fn to_int32_and_uint32_helpers_match_webidl_convert_to_int() {
+  let attrs = webidl::IntegerConversionAttrs::default();
+
+  let samples: &[f64] = &[
+    0.0,
+    -0.0,
+    1.0,
+    -1.0,
+    2.0,
+    -2.0,
+    2147483647.0,
+    2147483648.0,
+    4294967295.0,
+    4294967296.0,
+    9007199254740991.0,  // 2^53 - 1 (max safe integer)
+    -9007199254740991.0, // -(2^53 - 1)
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    f64::NAN,
+  ];
+
+  for &n in samples {
+    let expected_i32 = webidl::convert_to_int(n, 32, true, attrs).unwrap_or(0) as i32;
+    assert_eq!(
+      to_int32_f64(n),
+      expected_i32,
+      "to_int32_f64({n:?}) must match webidl::convert_to_int"
+    );
+
+    let expected_u32 = webidl::convert_to_int(n, 32, false, attrs).unwrap_or(0) as u32;
+    assert_eq!(
+      to_uint32_f64(n),
+      expected_u32,
+      "to_uint32_f64({n:?}) must match webidl::convert_to_int"
+    );
+  }
+
+  // Deterministically sample a set of f64 bit patterns (skipping NaN payloads) to prevent drift.
+  let mut x: u64 = 0x1234_5678_9abc_def0;
+  for _ in 0..10_000 {
+    // xorshift64*
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x2545_f491_4f6c_dd1d);
+
+    let n = f64::from_bits(x);
+    if n.is_nan() {
+      continue;
+    }
+
+    let expected_i32 = webidl::convert_to_int(n, 32, true, attrs).unwrap_or(0) as i32;
+    assert_eq!(to_int32_f64(n), expected_i32, "random bits {x:#x}");
+
+    let expected_u32 = webidl::convert_to_int(n, 32, false, attrs).unwrap_or(0) as u32;
+    assert_eq!(to_uint32_f64(n), expected_u32, "random bits {x:#x}");
+  }
 }

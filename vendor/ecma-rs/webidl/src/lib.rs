@@ -27,6 +27,23 @@ pub use to_js::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct InterfaceId(pub u32);
 
+/// Derive a stable [`InterfaceId`] from an interface name.
+///
+/// WebIDL itself does not define a global interface-ID registry; embedders typically assign their
+/// own stable IDs so runtime interface checks can be performed without string comparisons.
+///
+/// FastRender (and other early embedders of this crate) use a 32-bit FNV-1a hash of the UTF-8 bytes
+/// as a deterministic placeholder until a dedicated per-world interface registry is introduced.
+#[inline]
+pub fn interface_id_from_name(name: &str) -> InterfaceId {
+  let mut hash: u32 = 0x811c_9dc5;
+  for &b in name.as_bytes() {
+    hash ^= b as u32;
+    hash = hash.wrapping_mul(0x0100_0193);
+  }
+  InterfaceId(hash)
+}
+
 /// Runtime/embedding-provided hooks needed for WebIDL conversions.
 ///
 /// In particular, WebIDL interface conversions need to detect "platform objects" (objects owned by

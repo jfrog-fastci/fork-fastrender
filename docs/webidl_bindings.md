@@ -219,7 +219,9 @@ In practice:
   module).
 - **Iterator acquisition** for list conversions (`sequence<T>` / `FrozenArray<T>`) should call
   `WebIdlBindingsRuntime::get_iterator` so runtime-specific iterable handling (like Array
-  fast-paths in `vm-js`) is implemented once.
+  fast-paths in `vm-js`) is implemented once. For real `vm-js` realms, the bindings runtime
+  delegates these operations to `vm_js::iterator` to avoid duplicating ECMA-262 iterator logic in
+  FastRender.
 
 ### Troubleshooting
 

@@ -66,19 +66,13 @@ impl BindingValue {
 /// This is used by generated bindings when converting WebIDL integer types from `f64`.
 #[inline]
 pub fn to_int32_f64(n: f64) -> i32 {
-  if !n.is_finite() || n == 0.0 {
-    return 0;
-  }
-  let int = n.trunc();
-  let two32 = 4294967296.0;
-  let mut int32 = int % two32;
-  if int32 < 0.0 {
-    int32 += two32;
-  }
-  if int32 >= 2147483648.0 {
-    (int32 - two32) as i32
-  } else {
-    int32 as i32
+  let attrs = webidl::IntegerConversionAttrs::default();
+  match webidl::convert_to_int(n, 32, true, attrs) {
+    Ok(v) => v as i32,
+    Err(_) => {
+      debug_assert!(false, "default ToInt32 conversion should never error");
+      0
+    }
   }
 }
 
@@ -87,16 +81,14 @@ pub fn to_int32_f64(n: f64) -> i32 {
 /// This is used by generated bindings when converting WebIDL integer types from `f64`.
 #[inline]
 pub fn to_uint32_f64(n: f64) -> u32 {
-  if !n.is_finite() || n == 0.0 {
-    return 0;
+  let attrs = webidl::IntegerConversionAttrs::default();
+  match webidl::convert_to_int(n, 32, false, attrs) {
+    Ok(v) => v as u32,
+    Err(_) => {
+      debug_assert!(false, "default ToUint32 conversion should never error");
+      0
+    }
   }
-  let int = n.trunc();
-  let two32 = 4294967296.0;
-  let mut out = int % two32;
-  if out < 0.0 {
-    out += two32;
-  }
-  out as u32
 }
 
 /// Attributes for a data property definition.

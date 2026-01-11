@@ -954,7 +954,6 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
     self.root(Value::Object(object))?;
     let keys = self
       .scope
-      .heap()
       .ordinary_own_property_keys_with_tick(object, || self.vm.tick())?;
 
     let mut out = Vec::new();
@@ -1426,7 +1425,7 @@ pub fn invoke_callback_interface(
 mod tests {
   use super::VmJsWebIdlCx;
   use vm_js::{
-    GcObject, Heap, HeapLimits, Job, NativeFunctionId, PropertyDescriptor,
+    GcObject, Heap, HeapLimits, Job, MicrotaskQueue, NativeFunctionId, PropertyDescriptor,
     PropertyKey as VmPropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost,
     VmHostHooks, VmOptions,
   };
@@ -1667,6 +1666,53 @@ mod tests {
       })
       .collect::<Vec<_>>();
     assert_eq!(keys, vec!["b".to_string(), "a".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn own_property_keys_includes_string_object_indices_and_roots_them() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut cx = VmJsWebIdlCx::new(&mut vm, &mut heap, limits, &hooks);
+
+    // Box a string primitive into an object so it gets String-object `[[StringData]]` and virtual
+    // indexed properties (`"0"`, `"1"`, ...).
+    let s = cx.scope.alloc_string("ab")?;
+    let mut host = ();
+    let mut host_hooks = MicrotaskQueue::new();
+    let obj = cx
+      .scope
+      .to_object(&mut *cx.vm, &mut host, &mut host_hooks, Value::String(s))?;
+
+    let keys = cx.own_property_keys(obj)?;
+
+    // Force a GC cycle: String-object index keys are synthesized strings that are not reachable
+    // from the wrapper object unless `own_property_keys` roots them.
+    cx.scope.heap_mut().collect_garbage();
+
+    let string_keys = keys
+      .into_iter()
+      .filter_map(|k| match k {
+        WebIdlPropertyKey::String(s) => Some(cx.scope.heap().get_string(s).unwrap().to_utf8_lossy()),
+        WebIdlPropertyKey::Symbol(_) => None,
+      })
+      .collect::<Vec<_>>();
+
+    assert!(
+      string_keys.len() >= 2,
+      "expected String object keys to include index keys, got {string_keys:?}"
+    );
+    assert_eq!(&string_keys[..2], &["0".to_string(), "1".to_string()]);
+    assert!(
+      string_keys.contains(&"length".to_string()),
+      "expected String object own keys to include `length`, got {string_keys:?}"
+    );
+
+    drop(cx);
+    realm.teardown(&mut heap);
     Ok(())
   }
 
