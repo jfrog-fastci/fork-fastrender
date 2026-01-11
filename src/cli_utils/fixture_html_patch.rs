@@ -218,6 +218,15 @@ pub fn patch_html_bytes(
     // Chrome can capture before those async decodes have finished, producing blank thumbnails in
     // the baseline PNGs. Force synchronous decode so screenshots are more representative.
     out = replace_all_bytes(&out, br#"decoding="async""#, br#"decoding="sync""#);
+
+    // Chrome's native lazy-loading (`loading="lazy"`) can defer image fetch/decoding and, for
+    // animated images, delay animation start. In headless screenshot mode this can make baselines
+    // timing-sensitive (e.g. GIF frame mismatches) while FastRender currently loads images eagerly.
+    // Rewrite lazy-loading hints to eager so Chrome baselines stay deterministic and better aligned
+    // with FastRender fixture renders.
+    out = replace_all_bytes(&out, br#"loading="lazy""#, br#"loading="eager""#);
+    out = replace_all_bytes(&out, br#"loading='lazy'"#, br#"loading='eager'"#);
+    out = replace_all_bytes_with_ascii_boundaries(&out, b"loading=lazy", b"loading=eager");
   }
 
   out
@@ -240,6 +249,43 @@ fn replace_all_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<
   }
   out.extend_from_slice(&haystack[start..]);
   out
+}
+
+fn replace_all_bytes_with_ascii_boundaries(
+  haystack: &[u8],
+  needle: &[u8],
+  replacement: &[u8],
+) -> Vec<u8> {
+  if needle.is_empty() {
+    return haystack.to_vec();
+  }
+  let mut out = Vec::with_capacity(haystack.len());
+  let mut start = 0usize;
+  while let Some(pos) = haystack[start..]
+    .windows(needle.len())
+    .position(|window| window == needle)
+  {
+    let idx = start + pos;
+    let before = idx.checked_sub(1).and_then(|i| haystack.get(i));
+    let after = haystack.get(idx + needle.len());
+    let boundary_before_ok = before.is_none_or(|b| ascii_boundary(*b));
+    let boundary_after_ok = after.is_none_or(|b| ascii_boundary(*b));
+    if !(boundary_before_ok && boundary_after_ok) {
+      // Skip this match and continue searching past it.
+      out.extend_from_slice(&haystack[start..idx + needle.len()]);
+      start = idx + needle.len();
+      continue;
+    }
+    out.extend_from_slice(&haystack[start..idx]);
+    out.extend_from_slice(replacement);
+    start = idx + needle.len();
+  }
+  out.extend_from_slice(&haystack[start..]);
+  out
+}
+
+fn ascii_boundary(b: u8) -> bool {
+  matches!(b, b'>' | b' ' | b'\n' | b'\r' | b'\t' | b'/')
 }
 
 fn insert_after_open_tag(
@@ -388,6 +434,47 @@ mod tests {
     assert!(
       !output_str.contains("decoding=\"async\""),
       "patched HTML should rewrite decoding=async when JS is disabled; got: {output_str}"
+    );
+  }
+
+  #[test]
+  fn patch_html_forces_eager_loading_when_js_disabled() {
+    let input = b"<!doctype html><html><head></head><body><img loading=\"lazy\" src=\"x\"><img loading='lazy' src=\"y\"><img loading=lazy src=\"z\"></body></html>";
+    let output = patch_html_bytes(input, None, true, false, true);
+    let output_str = String::from_utf8_lossy(&output);
+    assert!(
+      output_str.contains("loading=\"eager\""),
+      "expected loading=\"lazy\" to be rewritten when JS is disabled; got: {output_str}"
+    );
+    assert!(
+      output_str.contains("loading='eager'"),
+      "expected loading='lazy' to be rewritten when JS is disabled; got: {output_str}"
+    );
+    assert!(
+      output_str.contains("loading=eager"),
+      "expected loading=lazy to be rewritten when JS is disabled; got: {output_str}"
+    );
+    assert!(
+      !output_str.contains("loading=\"lazy\"")
+        && !output_str.contains("loading='lazy'")
+        && !output_str.contains("loading=lazy"),
+      "expected loading=lazy variants to be removed when JS is disabled; got: {output_str}"
+    );
+  }
+
+  #[test]
+  fn patch_html_preserves_loading_lazy_when_js_enabled() {
+    let input =
+      b"<!doctype html><html><head></head><body><img loading=\"lazy\" src=\"x\"></body></html>";
+    let output = patch_html_bytes(input, None, false, false, true);
+    let output_str = String::from_utf8_lossy(&output);
+    assert!(
+      output_str.contains("loading=\"lazy\""),
+      "expected loading=\"lazy\" to remain when JS is enabled; got: {output_str}"
+    );
+    assert!(
+      !output_str.contains("loading=\"eager\""),
+      "expected loading to remain lazy when JS is enabled; got: {output_str}"
     );
   }
 
