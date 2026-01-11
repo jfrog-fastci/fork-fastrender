@@ -527,6 +527,14 @@ void rt_string_pin_interned(InternedId id);
 // - `data` must remain valid until the returned `TaskId` is passed to `rt_parallel_join`.
 // - The returned `TaskId` must be joined exactly once.
 TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);
+// Like `rt_parallel_spawn`, but `data` is a GC-managed object that the runtime
+// will keep alive until `task` finishes executing.
+//
+// Contract:
+// - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
+// - The runtime registers a strong GC root for `data` until the task completes.
+// - The returned `TaskId` must still be joined exactly once.
+TaskId rt_parallel_spawn_rooted(void (*task)(uint8_t*), uint8_t* data);
 void rt_parallel_join(const TaskId* tasks, size_t count);
 // Parallel-for convenience API.
 //
@@ -722,6 +730,13 @@ PromiseRef rt_async_sleep(uint64_t delay_ms);
 // coroutine wakeups).
 void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);
 void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
+// Like `rt_queue_microtask`, but `data` is a GC-managed object that the runtime
+// will keep alive until `cb` runs.
+//
+// Contract:
+// - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
+// - The runtime registers a strong GC root for `data` until the microtask executes.
+void rt_queue_microtask_rooted(void (*cb)(uint8_t*), uint8_t* data);
 
 // Timers. Timer callbacks are macrotasks; after each timer callback, `rt_async_poll_legacy` runs a
 // microtask checkpoint. This is a minimal API surface; HTML-specific clamping (e.g. nested 4ms

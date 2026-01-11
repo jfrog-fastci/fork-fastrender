@@ -72,28 +72,48 @@ mod imp {
 
   impl Arena {
     fn new() -> Self {
-      let arena_size = parse_env_size(ENV_ARENA_SIZE).unwrap_or(DEFAULT_ARENA_SIZE);
-      let arena_size = align_up(arena_size.max(CHUNK_ALIGN), CHUNK_ALIGN)
-        .unwrap_or_else(|| trap::rt_trap_invalid_arg("arena size overflow"));
-
       let chunk_size = parse_env_size(ENV_CHUNK_SIZE).unwrap_or(DEFAULT_CHUNK_SIZE);
       let chunk_size = align_up(chunk_size.max(CHUNK_ALIGN), CHUNK_ALIGN)
         .unwrap_or_else(|| trap::rt_trap_invalid_arg("chunk size overflow"));
 
-      let ptr = unsafe {
-        libc::mmap(
-          core::ptr::null_mut(),
-          arena_size,
-          libc::PROT_READ | libc::PROT_WRITE,
-          libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-          -1,
-          0,
-        )
-      };
+      let arena_env = parse_env_size(ENV_ARENA_SIZE);
+      let mut arena_size = arena_env.unwrap_or(DEFAULT_ARENA_SIZE);
+      arena_size = align_up(arena_size.max(chunk_size).max(CHUNK_ALIGN), CHUNK_ALIGN)
+        .unwrap_or_else(|| trap::rt_trap_invalid_arg("arena size overflow"));
 
-      if ptr == libc::MAP_FAILED || ptr.is_null() {
-        trap::rt_trap_oom(arena_size, "mmap bump arena");
-      }
+      // `check_runtime_native_abi.sh` runs a C smoke test under a tight `RLIMIT_AS`
+      // (virtual memory) cap. When the arena size is not explicitly configured,
+      // degrade gracefully by trying smaller arenas before treating it as fatal.
+      let mut attempt = arena_size;
+      let ptr = loop {
+        let ptr = unsafe {
+          libc::mmap(
+            core::ptr::null_mut(),
+            attempt,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+          )
+        };
+        if ptr != libc::MAP_FAILED && !ptr.is_null() {
+          arena_size = attempt;
+          break ptr;
+        }
+
+        if arena_env.is_some() {
+          trap::rt_trap_oom(attempt, "mmap bump arena");
+        }
+
+        // Fall back to a smaller reservation.
+        let next = attempt / 2;
+        let next = align_up(next.max(chunk_size).max(CHUNK_ALIGN), CHUNK_ALIGN)
+          .unwrap_or_else(|| trap::rt_trap_invalid_arg("arena size overflow"));
+        if next >= attempt {
+          trap::rt_trap_oom(attempt, "mmap bump arena");
+        }
+        attempt = next;
+      };
 
       Self {
         base: ptr as usize,

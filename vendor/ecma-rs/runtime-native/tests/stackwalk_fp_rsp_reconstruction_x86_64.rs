@@ -39,17 +39,18 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   //   [fp - 8]  = local slot #1
   //
   // Start walking from a runtime frame that "returns into" the managed frame at `callsite_ra`.
-  let caller_fp = align_up(base + 0x80, 16);
-  // Model the relationship between the callee frame pointer and the caller's stack pointer at the
-  // callsite:
-  // - x86_64 `call` pushes the return address (8 bytes),
-  // - the callee prologue pushes the caller's RBP (8 bytes),
-  // so `callee_fp = caller_sp_callsite - 16`.
+  let start_fp = align_up(base + 0x40, 16);
+  // Model a consistent caller/callee FP relationship:
   //
-  // With `stack_size = 24`, `caller_sp_callsite = caller_fp + 8 - stack_size = caller_fp - 16`, so
-  // `callee_fp = caller_fp - 32`.
-  let start_fp = caller_fp - (callsite.stack_size as usize) - 8;
-  assert!(caller_fp > start_fp);
+  // - The stack walker derives the caller's callsite SP from the *callee* FP:
+  //   `caller_sp_callsite = callee_fp + 16`.
+  // - For a frame-pointer prologue, the caller's FP is related to its callsite SP
+  //   by: `caller_fp = caller_sp_callsite + stack_size - 8`.
+  //
+  // Combining these gives: `caller_fp = callee_fp + stack_size + 8`.
+  let caller_fp = start_fp + (callsite.stack_size as usize) + 8;
+  assert_eq!(caller_fp % 16, 0, "expected caller FP to stay 16B-aligned");
+  assert!(caller_fp > start_fp, "caller FP must be above callee FP");
 
   let slot0 = caller_fp - 0x10;
   let slot1 = caller_fp - 0x8;

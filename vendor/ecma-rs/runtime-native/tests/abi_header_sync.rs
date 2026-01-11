@@ -35,6 +35,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_thread_attach(",
     "rt_thread_detach(",
     "rt_keep_alive_gc_ref(",
+    "rt_parallel_spawn_rooted(",
+    "rt_queue_microtask_rooted(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -142,6 +144,10 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   // Per-thread shadow stack root push/pop.
   let _root_push: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_push;
   let _root_pop: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_pop;
+  // Rooted scheduling entrypoints.
+  let _parallel_spawn_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> runtime_native::abi::TaskId =
+    runtime_native::rt_parallel_spawn_rooted;
+  let _queue_microtask_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = runtime_native::rt_queue_microtask_rooted;
 
   #[cfg(feature = "gc_stats")]
   {
@@ -181,5 +187,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _handle_store,
     _root_push,
     _root_pop,
+    _parallel_spawn_rooted,
+    _queue_microtask_rooted,
   );
 }

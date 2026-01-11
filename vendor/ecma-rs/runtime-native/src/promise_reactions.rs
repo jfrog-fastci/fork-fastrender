@@ -135,7 +135,6 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
     unsafe {
       (*head).next = null_mut();
     }
-
     let node = head;
     let job = Box::new(PromiseReactionJob {
       node,
@@ -146,7 +145,6 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
       Box::into_raw(job) as *mut u8,
       drop_promise_reaction_job,
     ));
-
     head = next;
   }
 

@@ -12,6 +12,7 @@ use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use crossbeam_utils::sync::{Parker, Unparker};
 
 use crate::abi::TaskId;
+use crate::gc::HandleId;
 use crate::sync::GcAwareMutex;
 use crate::threading::{self, ThreadKind};
 
@@ -105,6 +106,22 @@ impl ParallelRuntime {
     threading::safepoint_poll();
 
     let task_state = Arc::new(TaskState::new(task, data));
+    self.scheduler.enqueue(task_state.clone());
+    let id = Arc::into_raw(task_state) as u64;
+    {
+      let mut live = self.live_task_ids.lock();
+      live.insert(id);
+    }
+    TaskId(id)
+  }
+
+  pub(crate) fn spawn_rooted(&self, task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
+    threading::register_current_thread(ThreadKind::External);
+    threading::safepoint_poll();
+
+    let handle = crate::roots::global_persistent_handle_table().alloc(data);
+    let task_state = Arc::new(TaskState::new_with_root(task, data, Some(handle)));
+
     self.scheduler.enqueue(task_state.clone());
     let id = Arc::into_raw(task_state) as u64;
     {
@@ -226,6 +243,7 @@ type TaskFn = extern "C" fn(*mut u8);
 struct TaskState {
   func: TaskFn,
   data: *mut u8,
+  gc_root: Mutex<Option<HandleId>>,
   done: AtomicBool,
   done_lock: Mutex<()>,
   done_cv: Condvar,
@@ -240,9 +258,14 @@ unsafe impl Sync for TaskState {}
 
 impl TaskState {
   fn new(func: TaskFn, data: *mut u8) -> Self {
+    Self::new_with_root(func, data, None)
+  }
+
+  fn new_with_root(func: TaskFn, data: *mut u8, gc_root: Option<HandleId>) -> Self {
     Self {
       func,
       data,
+      gc_root: Mutex::new(gc_root),
       done: AtomicBool::new(false),
       done_lock: Mutex::new(()),
       done_cv: Condvar::new(),
@@ -252,7 +275,22 @@ impl TaskState {
   fn run(self: &Arc<Self>) {
     crate::rt_trace::tasks_executed_inc();
 
-    let res = catch_unwind(AssertUnwindSafe(|| (self.func)(self.data)));
+    let gc_root = self
+      .gc_root
+      .lock()
+      .unwrap_or_else(|_| std::process::abort())
+      .take();
+    let data = match gc_root {
+      Some(h) => crate::roots::global_persistent_handle_table()
+        .get(h)
+        .unwrap_or_else(|| std::process::abort()),
+      None => self.data,
+    };
+
+    let res = catch_unwind(AssertUnwindSafe(|| (self.func)(data)));
+    if let Some(h) = gc_root {
+      let _ = crate::roots::global_persistent_handle_table().free(h);
+    }
     if res.is_err() {
       // Never unwind across our `extern "C"` boundary.
       std::process::abort();

@@ -834,6 +834,25 @@ Tasks queued but not currently running are still GC roots:
 - The runtime must treat task queues as part of the root set (either by scanning
   them directly during GC or by representing queued tasks as GC-managed objects).
 
+### 6.4 Rooted scheduling entrypoints
+Some scheduling entrypoints accept an opaque `uint8_t* data` pointer and make no
+assumptions about whether it is GC-managed (tests and host embeddings often pass
+pointers to non-GC memory).
+
+For compiler-generated code that wants to pass GC-managed task contexts, the
+runtime provides *additive* “rooted” variants that explicitly treat `data` as a
+GC object pointer and keep it alive while queued:
+
+- `rt_parallel_spawn_rooted(task, data)`
+  - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
+  - The runtime registers a strong GC root for `data` until `task` finishes.
+- `rt_queue_microtask_rooted(cb, data)`
+  - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
+  - The runtime registers a strong GC root for `data` until the microtask runs.
+
+These APIs are additive: the existing unrooted scheduling entrypoints keep their
+original contract (“`data` is opaque; the caller owns the lifetime”).
+
 ---
 
 ## 7. Async runtime

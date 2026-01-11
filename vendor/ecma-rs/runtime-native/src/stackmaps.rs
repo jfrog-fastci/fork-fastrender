@@ -704,8 +704,8 @@ impl<'a> CallSite<'a> {
     //
     // A statepoint record begins with the fixed-length LLVM 18 header prefix, which is a sequence
     // of constant-like locations. Our codegen currently uses `LLVM_STATEPOINT_PATCHPOINT_ID` as a
-    // convention, but LLVM does not contractually guarantee that value (and external/older
-    // stackmaps may differ). Misclassifying a statepoint as a generic patchpoint would cause us to
+    // convention, but LLVM does not contractually guarantee that value: callsites may override it
+    // via `"statepoint-id"`. Misclassifying a statepoint as a generic patchpoint would cause us to
     // treat deopt operands as GC roots.
     let looks_like_statepoint = self.record.locations.len()
       >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
@@ -1821,8 +1821,8 @@ mod tests {
 
     // LiveOut[1]: reg=1,reserved=0,size=8.
     push_u16(&mut bytes, 1);
-    push_u8(&mut bytes, 0);
-    push_u8(&mut bytes, 8);
+    push_u8(&mut bytes, 0); // reserved
+    push_u8(&mut bytes, 8); // size
 
     // Pad with non-zero to validate we skip, not validate content.
     align_to_8_with(&mut bytes, 0xCD);

@@ -185,17 +185,39 @@ impl Marker<'_> {
       return;
     }
 
-    debug_assert!(
-      !self.heap.is_in_nursery(obj),
-      "major GC must not see nursery pointers (minor GC should run first)"
-    );
-
-    // SAFETY: `obj` is expected to be a valid heap object.
-    unsafe {
-      let header = &*(obj as *const ObjHeader);
-      if header.is_forwarded() {
-        obj = header.forwarding_ptr();
+    // Major GC runs a minor GC first, so ideally it should not see nursery pointers. Still, handle
+    // them defensively: if the nursery object was forwarded, follow the forwarding pointer;
+    // otherwise treat it as a dead/stale pointer and ignore it.
+    loop {
+      if self.heap.is_in_nursery(obj) {
+        // SAFETY: `obj` is in the nursery, so it points into reserved nursery memory.
+        unsafe {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+            continue;
+          }
+        }
+        return;
       }
+
+      // Ignore pointers that do not belong to this heap.
+      if !self.heap.is_in_immix(obj) && !self.heap.is_in_los(obj) {
+        return;
+      }
+
+      // Follow forwarding pointers (used by nursery evacuation today, and by potential future major
+      // GC compaction).
+      // SAFETY: `obj` is in this heap (Immix or LOS), so it points at an `ObjHeader`.
+      unsafe {
+        let header = &*(obj as *const ObjHeader);
+        if header.is_forwarded() {
+          obj = header.forwarding_ptr();
+          continue;
+        }
+      }
+
+      break;
     }
 
     // SAFETY: `obj` points to an `ObjHeader`.
@@ -311,20 +333,40 @@ impl Tracer for Compactor<'_> {
       return;
     }
 
-    debug_assert!(
-      !self.heap.is_in_nursery(obj),
-      "major GC must not see nursery pointers (minor GC should run first)"
-    );
-
-    // Follow forwarding pointers (objects already evacuated from candidate
-    // blocks) and update the slot.
-    // SAFETY: `obj` is expected to be a valid heap object.
-    unsafe {
-      let header = &*(obj as *const ObjHeader);
-      if header.is_forwarded() {
-        obj = header.forwarding_ptr();
-        *slot = obj;
+    // Major GC runs a minor GC first, so it should not see nursery pointers. Still, handle them
+    // defensively by following forwarding pointers (or ignoring dead/stale nursery refs).
+    loop {
+      if self.heap.is_in_nursery(obj) {
+        // SAFETY: `obj` is in the nursery, so it points into reserved nursery memory.
+        unsafe {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+            *slot = obj;
+            continue;
+          }
+        }
+        return;
       }
+
+      // Ignore pointers that do not belong to this heap.
+      if !self.heap.is_in_immix(obj) && !self.heap.is_in_los(obj) {
+        return;
+      }
+
+      // Follow forwarding pointers (objects already evacuated from candidate blocks) and update the
+      // slot.
+      // SAFETY: `obj` is in this heap (Immix or LOS), so it points at an `ObjHeader`.
+      unsafe {
+        let header = &*(obj as *const ObjHeader);
+        if header.is_forwarded() {
+          obj = header.forwarding_ptr();
+          *slot = obj;
+          continue;
+        }
+      }
+
+      break;
     }
 
     let mut pinned_block_id: Option<usize> = None;

@@ -256,3 +256,38 @@ fn callsite_reloc_pairs_do_not_require_statepoint_patchpoint_id() {
   );
   assert_eq!(pairs[0].base, pairs[0].derived);
 }
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn callsite_reloc_pairs_require_statepoint_layout() {
+  use runtime_native::stackmaps::{CallSite, StackMapRecord};
+
+  // Record that does *not* have the LLVM statepoint header prefix (3 leading constants). Even if it
+  // has an even number of pointer-bearing locations, `reloc_pairs` must treat it as a non-statepoint
+  // record and yield nothing.
+  let rec = StackMapRecord {
+    patchpoint_id: 123,
+    instruction_offset: 0,
+    locations: vec![
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+    ],
+    live_outs: vec![],
+  };
+
+  let callsite = CallSite {
+    stack_size: 32,
+    record: &rec,
+  };
+
+  let pairs: Vec<_> = callsite.reloc_pairs().collect();
+  assert!(pairs.is_empty());
+}

@@ -1142,6 +1142,18 @@ pub extern "C" fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8)
 }
 
 #[no_mangle]
+pub extern "C" fn rt_parallel_spawn_rooted(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let _ = crate::rt_ensure_init();
+    crate::rt_parallel().spawn_rooted(task, data)
+  }));
+  match res {
+    Ok(id) => id,
+    Err(_) => std::process::abort(),
+  }
+}
+
+#[no_mangle]
 pub extern "C" fn rt_parallel_join(tasks: *const TaskId, count: usize) {
   let res = catch_unwind(AssertUnwindSafe(|| {
     let _ = crate::rt_ensure_init();
@@ -1648,6 +1660,16 @@ pub extern "C" fn rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8) 
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
     async_rt::enqueue_microtask(cb, data);
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *mut u8) {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    unsafe {
+      async_rt::global().enqueue_microtask(async_rt::Task::new_gc_rooted(cb, data));
+    }
   })
 }
 

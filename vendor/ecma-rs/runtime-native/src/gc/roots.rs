@@ -305,3 +305,27 @@ impl RootSet for RootHandles {
     }
   }
 }
+
+/// Root-set enumerator for process-global, runtime-held GC roots.
+///
+/// This includes:
+/// - Root slots registered via the C ABI (`rt_gc_register_root_slot` / `rt_gc_pin`), and
+/// - Persistent roots stored in the global handle table (used by async tasks, I/O watchers, etc).
+///
+/// This is primarily a test convenience for driving the local `gc::GcHeap` collector while still
+/// treating the runtime's global root tables as part of the root set.
+#[derive(Default)]
+pub struct GlobalRootSet;
+
+impl GlobalRootSet {
+  pub fn new() -> Self {
+    Self
+  }
+}
+
+impl RootSet for GlobalRootSet {
+  fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
+    crate::roots::global_root_registry().for_each_root_slot(|slot| f(slot));
+    crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| f(slot));
+  }
+}

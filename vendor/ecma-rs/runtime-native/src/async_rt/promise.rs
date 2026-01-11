@@ -203,7 +203,6 @@ fn drain_reactions(ptr: *mut RtPromise) {
 
   // The list is pushed in LIFO order; reverse to preserve FIFO registration order.
   head = unsafe { reverse_list(head) };
-
   let promise = ptr.cast::<PromiseHeader>();
   enqueue_reaction_jobs(promise, head);
 }
