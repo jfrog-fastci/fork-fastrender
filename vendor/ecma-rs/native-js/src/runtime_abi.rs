@@ -1,8 +1,41 @@
+//! `native-js` ↔ `runtime-native` runtime entrypoints and call emission.
+//!
+//! ## GC correctness invariant: no may-GC wrapper frames
+//!
+//! LLVM stack maps are emitted only for *statepointed call sites* in functions marked with our GC
+//! strategy. If generated code calls a helper/wrapper function which then calls a GC-triggering
+//! runtime function, GC may run while that wrapper frame is on the stack — but the wrapper frame
+//! would not necessarily have a corresponding stackmap record.
+//!
+//! To avoid this class of bugs, `native-js` treats runtime calls as either:
+//! - **MayGC**: allocation/safepoints/collection. These calls must be the *actual* call site that is
+//!   rewritten into `gc.statepoint` by LLVM.
+//! - **NoGC**: operations like write barriers / keep-alive helpers. These must remain normal calls
+//!   and are marked `"gc-leaf-function"` so LLVM does not statepoint them.
+//!
+//! ## ABI vs GC pointer types
+//!
+//! `runtime-native` exports a C ABI which uses normal pointers (`ptr` / addrspace(0)). Meanwhile,
+//! LLVM's statepoint GC strategy identifies GC references via `ptr addrspace(1)`.
+//!
+//! `RuntimeAbi` keeps the runtime **extern declarations ABI-correct** (addrspace(0) pointers), and
+//! then adapts at the call site:
+//!
+//! - For **MayGC** calls whose codegen signature uses `ptr addrspace(1)` (e.g. allocators returning
+//!   GC pointers), we emit an **indirect call** to the raw runtime symbol using the addrspace(1)
+//!   signature. This avoids `addrspacecast` from addrspace(1) (forbidden by our GC lint) while
+//!   keeping the symbol's ABI stable (important for LTO).
+//! - For **NoGC** calls with `ptr addrspace(1)` parameters (e.g. write barriers), we emit a small
+//!   internal leaf wrapper (`rt_*_gc`) that performs the indirect call. Marking the wrapper as
+//!   `"gc-leaf-function"` ensures calls remain non-statepointed.
+
+use inkwell::attributes::AttributeLoc;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::{FunctionType, PointerType};
-use inkwell::values::{BasicMetadataValueEnum, CallSiteValue, FunctionValue};
+use inkwell::types::BasicType as _;
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, FunctionType, PointerType};
+use inkwell::values::{BasicMetadataValueEnum, CallSiteValue, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 
 use runtime_native_abi::RtShapeId;
@@ -11,67 +44,161 @@ use crate::llvm::gc;
 pub use crate::runtime_fn::{ArgRootingPolicy, RuntimeFn, RuntimeFnSpec};
 
 // Keep `native-js`'s LLVM declarations in sync with the runtime ABI.
+//
 // `RtShapeId` is a `u32` in `runtime-native-abi` / `runtime-native/include/runtime_native.h`.
-// If this ever changes, update the `i32` LLVM types below accordingly.
+// If this ever changes, update the `i32` LLVM types in this module accordingly.
 const _: [(); 4] = [(); core::mem::size_of::<RtShapeId>()];
 
-/// `native-js` ↔ `runtime-native` ABI boundary helpers.
-///
-/// # Problem
-/// LLVM's statepoint GC support expects *GC references* to be typed as
-/// `ptr addrspace(1)`, but our Rust runtime exports C ABI functions using normal
-/// pointers (`*mut u8` / `ptr` == addrspace(0)).
-///
-/// To keep the runtime ABI stable *and* keep LLVM's GC relocation machinery happy, we:
-///
-/// 1. Declare the runtime entrypoints using addrspace(0) pointer types (matching Rust's ABI).
-/// 2. Emit internal wrapper functions (`*_gc`) that expose addrspace(1) signatures to the rest of
-///    the generated code.
-///
-/// Critically, the wrappers **must not** `addrspacecast` GC pointers from addrspace(1) back to
-/// addrspace(0) because that would "hide" them from `rewrite-statepoints-for-gc`.
-///
-/// Instead, wrappers call the raw runtime symbol via an *indirect call* using the addrspace(1)
-/// signature. On our targets the address-space annotation does not affect the machine ABI (it's a
-/// type-system distinction only), but it keeps GC pointers visible to LLVM's statepoint passes.
-///
-/// Generated code should exclusively call the `*_gc` wrappers and never call the
-/// raw runtime functions directly with GC pointers.
-///
-/// These wrappers are intentionally **not** marked as GC-managed functions (`gc "coreclr"`), so
-/// they are outside the GC pointer discipline lint (which only applies to GC-managed functions).
-///
-/// # Naming
-/// We intentionally keep the runtime's exported symbol names (`rt_*`) as the raw
-/// externs, and suffix wrappers with `_gc` (e.g. `rt_alloc_gc`). This avoids any
-/// need to rename the Rust runtime ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AbiTy {
+  Void,
+  I1,
+  I32,
+  I64,
+  /// Raw runtime pointer (addrspace(0)).
+  RawPtr,
+  /// GC pointer in generated code (addrspace(1)).
+  GcPtr,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RuntimeFnMeta {
+  symbol: &'static str,
+  runtime_ret: AbiTy,
+  runtime_params: &'static [AbiTy],
+  codegen_ret: AbiTy,
+  codegen_params: &'static [AbiTy],
+}
+
+impl RuntimeFnMeta {
+  fn signatures_match(self) -> bool {
+    self.runtime_ret == self.codegen_ret && self.runtime_params == self.codegen_params
+  }
+}
+
+fn runtime_meta(f: RuntimeFn) -> RuntimeFnMeta {
+  match f {
+    RuntimeFn::Alloc => RuntimeFnMeta {
+      symbol: "rt_alloc",
+      runtime_ret: AbiTy::RawPtr,
+      runtime_params: &[AbiTy::I64, AbiTy::I32],
+      codegen_ret: AbiTy::GcPtr,
+      codegen_params: &[AbiTy::I64, AbiTy::I32],
+    },
+    RuntimeFn::AllocPinned => RuntimeFnMeta {
+      symbol: "rt_alloc_pinned",
+      runtime_ret: AbiTy::RawPtr,
+      runtime_params: &[AbiTy::I64, AbiTy::I32],
+      codegen_ret: AbiTy::GcPtr,
+      codegen_params: &[AbiTy::I64, AbiTy::I32],
+    },
+    RuntimeFn::GcSafepoint => RuntimeFnMeta {
+      symbol: "rt_gc_safepoint",
+      runtime_ret: AbiTy::Void,
+      runtime_params: &[],
+      codegen_ret: AbiTy::Void,
+      codegen_params: &[],
+    },
+    RuntimeFn::GcSafepointSlow => RuntimeFnMeta {
+      symbol: "rt_gc_safepoint_slow",
+      runtime_ret: AbiTy::Void,
+      runtime_params: &[AbiTy::I64],
+      codegen_ret: AbiTy::Void,
+      codegen_params: &[AbiTy::I64],
+    },
+    RuntimeFn::GcCollect => RuntimeFnMeta {
+      symbol: "rt_gc_collect",
+      runtime_ret: AbiTy::Void,
+      runtime_params: &[],
+      codegen_ret: AbiTy::Void,
+      codegen_params: &[],
+    },
+    RuntimeFn::GcPoll => RuntimeFnMeta {
+      symbol: "rt_gc_poll",
+      runtime_ret: AbiTy::I1,
+      runtime_params: &[],
+      codegen_ret: AbiTy::I1,
+      codegen_params: &[],
+    },
+    RuntimeFn::WriteBarrier => RuntimeFnMeta {
+      symbol: "rt_write_barrier",
+      runtime_ret: AbiTy::Void,
+      runtime_params: &[AbiTy::RawPtr, AbiTy::RawPtr],
+      codegen_ret: AbiTy::Void,
+      codegen_params: &[AbiTy::GcPtr, AbiTy::GcPtr],
+    },
+    RuntimeFn::KeepAliveGcRef => RuntimeFnMeta {
+      symbol: "rt_keep_alive_gc_ref",
+      runtime_ret: AbiTy::Void,
+      runtime_params: &[AbiTy::RawPtr],
+      codegen_ret: AbiTy::Void,
+      codegen_params: &[AbiTy::GcPtr],
+    },
+  }
+}
+
+/// Declared runtime entrypoints and helpers for a module.
+#[derive(Clone, Copy)]
+pub struct RuntimeFns<'ctx> {
+  // Raw runtime ABI symbols (addrspace(0)).
+  pub rt_alloc: FunctionValue<'ctx>,
+  pub rt_alloc_pinned: FunctionValue<'ctx>,
+  pub rt_gc_safepoint: FunctionValue<'ctx>,
+  pub rt_gc_safepoint_slow: FunctionValue<'ctx>,
+  pub rt_gc_collect: FunctionValue<'ctx>,
+  pub rt_gc_poll: FunctionValue<'ctx>,
+  pub rt_write_barrier: FunctionValue<'ctx>,
+  pub rt_keep_alive_gc_ref: FunctionValue<'ctx>,
+
+  // Leaf wrappers for NoGC runtime fns that want addrspace(1) parameters.
+  pub rt_write_barrier_gc: FunctionValue<'ctx>,
+  pub rt_keep_alive_gc_ref_gc: FunctionValue<'ctx>,
+
+  // Parallel scheduler entrypoints are raw ABI (no GC pointer wrapper needed).
+  pub rt_parallel_spawn: FunctionValue<'ctx>,
+  pub rt_parallel_join: FunctionValue<'ctx>,
+  pub rt_parallel_for: FunctionValue<'ctx>,
+}
+
 pub struct RuntimeAbi<'ctx, 'm> {
   context: &'ctx Context,
   module: &'m Module<'ctx>,
-  builder: Builder<'ctx>,
 }
 
 impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
   pub fn new(context: &'ctx Context, module: &'m Module<'ctx>) -> Self {
-    Self {
-      context,
-      module,
-      builder: context.create_builder(),
-    }
+    Self { context, module }
   }
 
-  /// Ensure the common runtime wrappers exist in this LLVM module.
+  /// Backwards-compatible alias: historically this runtime ABI layer only generated wrappers.
+  #[inline]
   pub fn ensure_wrappers(&self) -> RuntimeFns<'ctx> {
+    self.declare_all()
+  }
+
+  /// Ensure all currently-known runtime entrypoints are declared in this module.
+  ///
+  /// Note: this declares the *raw runtime ABI* symbols (addrspace(0) pointers), plus any required
+  /// leaf wrappers for NoGC entrypoints that use addrspace(1) parameters.
+  pub fn declare_all(&self) -> RuntimeFns<'ctx> {
+    // Ensure leaf wrappers exist so tests can assert on their presence.
+    let rt_write_barrier_gc = self.get_or_define_leaf_wrapper(RuntimeFn::WriteBarrier);
+    let rt_keep_alive_gc_ref_gc = self.get_or_define_leaf_wrapper(RuntimeFn::KeepAliveGcRef);
+
     RuntimeFns {
-      rt_alloc_gc: self.rt_alloc_gc(),
-      rt_alloc_pinned_gc: self.rt_alloc_pinned_gc(),
-      rt_gc_safepoint_gc: self.rt_gc_safepoint_gc(),
-      rt_gc_collect_gc: self.rt_gc_collect_gc(),
-      rt_write_barrier_gc: self.rt_write_barrier_gc(),
-      rt_keep_alive_gc_ref_gc: self.rt_keep_alive_gc_ref_gc(),
-      rt_parallel_spawn_raw: self.rt_parallel_spawn_raw(),
-      rt_parallel_join_raw: self.rt_parallel_join_raw(),
-      rt_parallel_for_raw: self.rt_parallel_for_raw(),
+      rt_alloc: self.get_or_declare_raw(RuntimeFn::Alloc),
+      rt_alloc_pinned: self.get_or_declare_raw(RuntimeFn::AllocPinned),
+      rt_gc_safepoint: self.get_or_declare_raw(RuntimeFn::GcSafepoint),
+      rt_gc_safepoint_slow: self.get_or_declare_raw(RuntimeFn::GcSafepointSlow),
+      rt_gc_collect: self.get_or_declare_raw(RuntimeFn::GcCollect),
+      rt_gc_poll: self.get_or_declare_raw(RuntimeFn::GcPoll),
+      rt_write_barrier: self.get_or_declare_raw(RuntimeFn::WriteBarrier),
+      rt_keep_alive_gc_ref: self.get_or_declare_raw(RuntimeFn::KeepAliveGcRef),
+      rt_write_barrier_gc,
+      rt_keep_alive_gc_ref_gc,
+      rt_parallel_spawn: self.rt_parallel_spawn_raw(),
+      rt_parallel_join: self.rt_parallel_join_raw(),
+      rt_parallel_for: self.rt_parallel_for_raw(),
     }
   }
 
@@ -83,11 +210,100 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     self.context.ptr_type(gc::gc_address_space())
   }
 
-  fn get_or_declare(&self, name: &str, ty: FunctionType<'ctx>) -> FunctionValue<'ctx> {
-    if let Some(existing) = self.module.get_function(name) {
-      return existing;
+  fn abi_ty_codegen_param(&self, ty: AbiTy) -> BasicMetadataTypeEnum<'ctx> {
+    match ty {
+      AbiTy::Void => panic!("void is not a valid parameter type"),
+      AbiTy::I1 => self.context.bool_type().into(),
+      AbiTy::I32 => self.context.i32_type().into(),
+      AbiTy::I64 => self.context.i64_type().into(),
+      AbiTy::RawPtr => self.ptr_raw().into(),
+      AbiTy::GcPtr => self.ptr_gc().into(),
     }
-    self.module.add_function(name, ty, None)
+  }
+
+  fn abi_ty_codegen_ret(&self, ty: AbiTy) -> Option<BasicTypeEnum<'ctx>> {
+    match ty {
+      AbiTy::Void => None,
+      AbiTy::I1 => Some(self.context.bool_type().into()),
+      AbiTy::I32 => Some(self.context.i32_type().into()),
+      AbiTy::I64 => Some(self.context.i64_type().into()),
+      AbiTy::RawPtr => Some(self.ptr_raw().into()),
+      AbiTy::GcPtr => Some(self.ptr_gc().into()),
+    }
+  }
+
+  fn abi_ty_runtime_param(&self, ty: AbiTy) -> BasicMetadataTypeEnum<'ctx> {
+    // `runtime-native` ABI uses raw pointers for all pointer values.
+    match ty {
+      AbiTy::Void => panic!("void is not a valid parameter type"),
+      AbiTy::I1 => self.context.bool_type().into(),
+      AbiTy::I32 => self.context.i32_type().into(),
+      AbiTy::I64 => self.context.i64_type().into(),
+      AbiTy::RawPtr | AbiTy::GcPtr => self.ptr_raw().into(),
+    }
+  }
+
+  fn abi_ty_runtime_ret(&self, ty: AbiTy) -> Option<BasicTypeEnum<'ctx>> {
+    match ty {
+      AbiTy::Void => None,
+      AbiTy::I1 => Some(self.context.bool_type().into()),
+      AbiTy::I32 => Some(self.context.i32_type().into()),
+      AbiTy::I64 => Some(self.context.i64_type().into()),
+      AbiTy::RawPtr | AbiTy::GcPtr => Some(self.ptr_raw().into()),
+    }
+  }
+
+  fn mark_gc_leaf(&self, func: FunctionValue<'ctx>) {
+    // A string attribute with an empty value prints as `"gc-leaf-function"` in IR and instructs
+    // LLVM's `rewrite-statepoints-for-gc` not to wrap calls to this function in a statepoint.
+    let leaf = self.context.create_string_attribute("gc-leaf-function", "");
+    func.add_attribute(AttributeLoc::Function, leaf);
+  }
+
+  fn codegen_fn_type(&self, meta: RuntimeFnMeta) -> FunctionType<'ctx> {
+    let params: Vec<BasicMetadataTypeEnum<'ctx>> = meta
+      .codegen_params
+      .iter()
+      .copied()
+      .map(|t| self.abi_ty_codegen_param(t))
+      .collect();
+    match self.abi_ty_codegen_ret(meta.codegen_ret) {
+      Some(ret) => ret.fn_type(&params, false),
+      None => self.context.void_type().fn_type(&params, false),
+    }
+  }
+
+  fn runtime_fn_type(&self, meta: RuntimeFnMeta) -> FunctionType<'ctx> {
+    let params: Vec<BasicMetadataTypeEnum<'ctx>> = meta
+      .runtime_params
+      .iter()
+      .copied()
+      .map(|t| self.abi_ty_runtime_param(t))
+      .collect();
+    match self.abi_ty_runtime_ret(meta.runtime_ret) {
+      Some(ret) => ret.fn_type(&params, false),
+      None => self.context.void_type().fn_type(&params, false),
+    }
+  }
+
+  /// Get or declare the raw runtime ABI entrypoint.
+  ///
+  /// For `!may_gc` entrypoints we apply `"gc-leaf-function"` to ensure LLVM does not rewrite calls
+  /// to them into statepoints.
+  pub fn get_or_declare_raw(&self, f: RuntimeFn) -> FunctionValue<'ctx> {
+    let meta = runtime_meta(f);
+    let func = if let Some(existing) = self.module.get_function(meta.symbol) {
+      existing
+    } else {
+      let fn_ty = self.runtime_fn_type(meta);
+      self.module.add_function(meta.symbol, fn_ty, None)
+    };
+
+    if !f.spec().may_gc {
+      self.mark_gc_leaf(func);
+    }
+
+    func
   }
 
   fn get_or_define_internal(
@@ -111,68 +327,170 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     func
   }
 
+  /// Produce a non-constant function pointer value for `raw` in the current function.
+  ///
+  /// This is required when we want to call `raw` with a *different* signature (e.g. returning
+  /// `ptr addrspace(1)` instead of `ptr`). If the callee operand is a direct `@function`, LLVM will
+  /// treat the call as a direct call and insist the callsite signature matches the function's
+  /// declared type.
+  fn load_indirect_callee_ptr(
+    &self,
+    builder: &Builder<'ctx>,
+    raw: FunctionValue<'ctx>,
+    hint: &str,
+  ) -> PointerValue<'ctx> {
+    let fn_ptr_ty = self.ptr_raw();
+    let bb = builder
+      .get_insert_block()
+      .expect("builder must have an insertion block");
+    let func = bb
+      .get_parent()
+      .expect("insertion block must have a parent function");
+    let entry = func
+      .get_first_basic_block()
+      .expect("function must have an entry block");
+    let entry_builder = self.context.create_builder();
+    match entry.get_first_instruction() {
+      Some(inst) => entry_builder.position_before(&inst),
+      None => entry_builder.position_at_end(entry),
+    }
+
+    let slot = entry_builder
+      .build_alloca(fn_ptr_ty, &format!("rt.fp.{hint}"))
+      .expect("alloca runtime fn ptr slot");
+    entry_builder
+      .build_store(slot, raw.as_global_value().as_pointer_value())
+      .expect("store runtime fn ptr");
+
+    builder
+      .build_load(fn_ptr_ty, slot, &format!("rt.fp.{hint}.ld"))
+      .expect("load runtime fn ptr")
+      .into_pointer_value()
+  }
+
+  fn get_or_define_leaf_wrapper(&self, f: RuntimeFn) -> FunctionValue<'ctx> {
+    let meta = runtime_meta(f);
+    if f.spec().may_gc || meta.signatures_match() {
+      // No wrapper needed.
+      return self.get_or_declare_raw(f);
+    }
+
+    let wrapper_name = format!("{}_gc", meta.symbol);
+    let wrapper_ty = self.codegen_fn_type(meta);
+
+    self.get_or_define_internal(&wrapper_name, wrapper_ty, |func| {
+      // Wrapper functions are leaf (NoGC) and must not be rewritten into statepoints.
+      self.mark_gc_leaf(func);
+
+      let builder = self.context.create_builder();
+      let entry = self.context.append_basic_block(func, "entry");
+      builder.position_at_end(entry);
+
+      // Indirect-call the raw runtime symbol using the addrspace(1) signature so we don't need an
+      // addrspacecast from addrspace(1) to addrspace(0) (which would hide GC pointers).
+      let raw = self.get_or_declare_raw(f);
+      let callee_ptr = self.load_indirect_callee_ptr(&builder, raw, &wrapper_name);
+
+      let mut args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(meta.codegen_params.len());
+      for i in 0..meta.codegen_params.len() {
+        args.push(func.get_nth_param(i as u32).expect("param").into());
+      }
+
+      let call = builder
+        .build_indirect_call(wrapper_ty, callee_ptr, &args, "rt.call")
+        .expect("build indirect call");
+      crate::stack_walking::mark_call_notail(call);
+
+      match self.abi_ty_codegen_ret(meta.codegen_ret) {
+        None => {
+          builder.build_return(None).expect("ret void");
+        }
+        Some(ret_ty) => {
+          let ret = call
+            .try_as_basic_value()
+            .left()
+            .unwrap_or_else(|| panic!("{wrapper_name} should return {ret_ty:?}"));
+          builder.build_return(Some(&ret)).expect("ret value");
+        }
+      }
+    })
+  }
+
+  /// Emit a call to a runtime function, enforcing GC-safety rules for its ABI.
+  ///
+  /// This emits a **normal call instruction** (not a `gc.statepoint`). For MayGC calls, LLVM's
+  /// `rewrite-statepoints-for-gc` pass will rewrite the call into a statepoint in GC-managed
+  /// functions.
+  pub fn emit_runtime_call(
+    &self,
+    builder: &Builder<'ctx>,
+    f: RuntimeFn,
+    args: &[BasicMetadataValueEnum<'ctx>],
+    name: &str,
+  ) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
+    let spec = f.spec();
+    validate_runtime_call_abi(spec, args)?;
+
+    let meta = runtime_meta(f);
+    debug_assert_eq!(meta.symbol, spec.name, "runtime_fn spec/name mismatch");
+
+    // NoGC + signature mismatch: call the leaf wrapper.
+    if !spec.may_gc && !meta.signatures_match() {
+      let wrapper = self.get_or_define_leaf_wrapper(f);
+      let call = builder
+        .build_call(wrapper, args, name)
+        .map_err(|e| RuntimeCallError::BuildCall {
+          name: spec.name,
+          message: e.to_string(),
+        })?;
+      crate::stack_walking::mark_call_notail(call);
+      return Ok(call);
+    }
+
+    let raw = self.get_or_declare_raw(f);
+
+    let call = if meta.signatures_match() {
+      builder
+        .build_call(raw, args, name)
+        .map_err(|e| RuntimeCallError::BuildCall {
+          name: spec.name,
+          message: e.to_string(),
+        })?
+    } else {
+      // MayGC call with an addrspace(1) signature mismatch: emit an indirect call to the raw symbol.
+      let codegen_ty = self.codegen_fn_type(meta);
+      let callee_ptr = self.load_indirect_callee_ptr(builder, raw, meta.symbol);
+      builder
+        .build_indirect_call(codegen_ty, callee_ptr, args, name)
+        .map_err(|e| RuntimeCallError::BuildCall {
+          name: spec.name,
+          message: e.to_string(),
+        })?
+    };
+    crate::stack_walking::mark_call_notail(call);
+    Ok(call)
+  }
+
   // -----------------------------------------------------------------------------
-  // Raw runtime extern declarations (addrspace(0))
+  // Parallel scheduler raw runtime extern declarations (addrspace(0))
   // -----------------------------------------------------------------------------
-
-  fn rt_alloc_raw(&self) -> FunctionValue<'ctx> {
-    // `runtime-native` exports:
-    //   `rt_alloc(size: usize, shape: RtShapeId) -> *mut u8`
-    let i64_ty = self.context.i64_type();
-    let i32_ty = self.context.i32_type();
-    let fn_ty = self
-      .ptr_raw()
-      .fn_type(&[i64_ty.into(), i32_ty.into()], false);
-    self.get_or_declare("rt_alloc", fn_ty)
-  }
-
-  fn rt_alloc_pinned_raw(&self) -> FunctionValue<'ctx> {
-    // `runtime-native` exports:
-    //   `rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8`
-    let i64_ty = self.context.i64_type();
-    let i32_ty = self.context.i32_type();
-    let fn_ty = self
-      .ptr_raw()
-      .fn_type(&[i64_ty.into(), i32_ty.into()], false);
-    self.get_or_declare("rt_alloc_pinned", fn_ty)
-  }
-
-  fn rt_gc_safepoint_raw(&self) -> FunctionValue<'ctx> {
-    let fn_ty = self.context.void_type().fn_type(&[], false);
-    self.get_or_declare("rt_gc_safepoint", fn_ty)
-  }
-
-  fn rt_gc_collect_raw(&self) -> FunctionValue<'ctx> {
-    let fn_ty = self.context.void_type().fn_type(&[], false);
-    self.get_or_declare("rt_gc_collect", fn_ty)
-  }
-
-  fn rt_write_barrier_raw(&self) -> FunctionValue<'ctx> {
-    let fn_ty = self
-      .context
-      .void_type()
-      .fn_type(&[self.ptr_raw().into(), self.ptr_raw().into()], false);
-    self.get_or_declare("rt_write_barrier", fn_ty)
-  }
-
-  fn rt_keep_alive_gc_ref_raw(&self) -> FunctionValue<'ctx> {
-    let fn_ty = self
-      .context
-      .void_type()
-      .fn_type(&[self.ptr_raw().into()], false);
-    self.get_or_declare("rt_keep_alive_gc_ref", fn_ty)
-  }
 
   fn rt_parallel_spawn_raw(&self) -> FunctionValue<'ctx> {
+    if let Some(existing) = self.module.get_function("rt_parallel_spawn") {
+      return existing;
+    }
     // `runtime-native` exports:
     //   `rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId`
     let i64_ty = self.context.i64_type();
     // In LLVM's opaque-pointer mode, function pointers are simply `ptr`.
     let fn_ty = i64_ty.fn_type(&[self.ptr_raw().into(), self.ptr_raw().into()], false);
-    self.get_or_declare("rt_parallel_spawn", fn_ty)
+    self.module.add_function("rt_parallel_spawn", fn_ty, None)
   }
 
   fn rt_parallel_join_raw(&self) -> FunctionValue<'ctx> {
+    if let Some(existing) = self.module.get_function("rt_parallel_join") {
+      return existing;
+    }
     // `runtime-native` exports:
     //   `rt_parallel_join(tasks: *const TaskId, count: usize)`
     let i64_ty = self.context.i64_type();
@@ -180,10 +498,13 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       .context
       .void_type()
       .fn_type(&[self.ptr_raw().into(), i64_ty.into()], false);
-    self.get_or_declare("rt_parallel_join", fn_ty)
+    self.module.add_function("rt_parallel_join", fn_ty, None)
   }
 
   fn rt_parallel_for_raw(&self) -> FunctionValue<'ctx> {
+    if let Some(existing) = self.module.get_function("rt_parallel_for") {
+      return existing;
+    }
     // `runtime-native` exports:
     //   `rt_parallel_for(start: usize, end: usize, body: extern "C" fn(usize, *mut u8), data: *mut u8)`
     let i64_ty = self.context.i64_type();
@@ -197,231 +518,8 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       ],
       false,
     );
-    self.get_or_declare("rt_parallel_for", fn_ty)
+    self.module.add_function("rt_parallel_for", fn_ty, None)
   }
-
-  // -----------------------------------------------------------------------------
-  // GC wrappers (addrspace(1))
-  // -----------------------------------------------------------------------------
-
-  fn rt_alloc_gc(&self) -> FunctionValue<'ctx> {
-    let i64_ty = self.context.i64_type();
-    let i32_ty = self.context.i32_type();
-    let fn_ty = self
-      .ptr_gc()
-      .fn_type(&[i64_ty.into(), i32_ty.into()], false);
-
-    self.get_or_define_internal("rt_alloc_gc", fn_ty, |func| {
-      let raw = self.rt_alloc_raw();
-      let entry = self.context.append_basic_block(func, "entry");
-      self.builder.position_at_end(entry);
-
-      let size = func.get_nth_param(0).expect("size").into_int_value();
-      let shape = func.get_nth_param(1).expect("shape").into_int_value();
-
-      // Indirect-call the raw symbol using the addrspace(1) signature so we don't need an
-      // addrspacecast (which would hide GC pointers from LLVM's statepoint rewriting).
-      let fn_ptr_ty = self.ptr_raw();
-      let fp_slot = self
-        .builder
-        .build_alloca(fn_ptr_ty, "rt_alloc_fp")
-        .expect("alloca rt_alloc fp");
-      self
-        .builder
-        .build_store(fp_slot, raw.as_global_value().as_pointer_value())
-        .expect("store rt_alloc fp");
-      let fp = self
-        .builder
-        .build_load(fn_ptr_ty, fp_slot, "rt_alloc_fp")
-        .expect("load rt_alloc fp")
-        .into_pointer_value();
-
-      let call = self
-        .builder
-        .build_indirect_call(fn_ty, fp, &[size.into(), shape.into()], "gc_ptr")
-        .expect("call rt_alloc via indirect call");
-      crate::stack_walking::mark_call_notail(call);
-      let gc_ptr = call
-        .try_as_basic_value()
-        .left()
-        .expect("rt_alloc returns ptr")
-        .into_pointer_value();
-
-      self
-        .builder
-        .build_return(Some(&gc_ptr))
-        .expect("return gc ptr");
-    })
-  }
-
-  fn rt_alloc_pinned_gc(&self) -> FunctionValue<'ctx> {
-    let i64_ty = self.context.i64_type();
-    let i32_ty = self.context.i32_type();
-    let fn_ty = self
-      .ptr_gc()
-      .fn_type(&[i64_ty.into(), i32_ty.into()], false);
-
-    self.get_or_define_internal("rt_alloc_pinned_gc", fn_ty, |func| {
-      let raw = self.rt_alloc_pinned_raw();
-      let entry = self.context.append_basic_block(func, "entry");
-      self.builder.position_at_end(entry);
-
-      let size = func.get_nth_param(0).expect("size").into_int_value();
-      let shape = func.get_nth_param(1).expect("shape").into_int_value();
-
-      let fn_ptr_ty = self.ptr_raw();
-      let fp_slot = self
-        .builder
-        .build_alloca(fn_ptr_ty, "rt_alloc_pinned_fp")
-        .expect("alloca rt_alloc_pinned fp");
-      self
-        .builder
-        .build_store(fp_slot, raw.as_global_value().as_pointer_value())
-        .expect("store rt_alloc_pinned fp");
-      let fp = self
-        .builder
-        .build_load(fn_ptr_ty, fp_slot, "rt_alloc_pinned_fp")
-        .expect("load rt_alloc_pinned fp")
-        .into_pointer_value();
-
-      let call = self
-        .builder
-        .build_indirect_call(fn_ty, fp, &[size.into(), shape.into()], "gc_ptr")
-        .expect("call rt_alloc_pinned via indirect call");
-      crate::stack_walking::mark_call_notail(call);
-      let gc_ptr = call
-        .try_as_basic_value()
-        .left()
-        .expect("rt_alloc_pinned returns ptr")
-        .into_pointer_value();
-
-      self
-        .builder
-        .build_return(Some(&gc_ptr))
-        .expect("return gc ptr");
-    })
-  }
-
-  fn rt_gc_safepoint_gc(&self) -> FunctionValue<'ctx> {
-    let fn_ty = self.context.void_type().fn_type(&[], false);
-
-    self.get_or_define_internal("rt_gc_safepoint_gc", fn_ty, |func| {
-      let raw = self.rt_gc_safepoint_raw();
-      let entry = self.context.append_basic_block(func, "entry");
-      self.builder.position_at_end(entry);
-      let call = self.builder.build_call(raw, &[], "").expect("call rt_gc_safepoint");
-      crate::stack_walking::mark_call_notail(call);
-      self.builder.build_return(None).expect("return void");
-    })
-  }
-
-  fn rt_gc_collect_gc(&self) -> FunctionValue<'ctx> {
-    let fn_ty = self.context.void_type().fn_type(&[], false);
-
-    self.get_or_define_internal("rt_gc_collect_gc", fn_ty, |func| {
-      let raw = self.rt_gc_collect_raw();
-      let entry = self.context.append_basic_block(func, "entry");
-      self.builder.position_at_end(entry);
-      let call = self.builder.build_call(raw, &[], "").expect("call rt_gc_collect");
-      crate::stack_walking::mark_call_notail(call);
-      self.builder.build_return(None).expect("return void");
-    })
-  }
-
-  fn rt_write_barrier_gc(&self) -> FunctionValue<'ctx> {
-    let fn_ty = self
-      .context
-      .void_type()
-      .fn_type(&[self.ptr_gc().into(), self.ptr_gc().into()], false);
-
-    self.get_or_define_internal("rt_write_barrier_gc", fn_ty, |func| {
-      let raw = self.rt_write_barrier_raw();
-      let entry = self.context.append_basic_block(func, "entry");
-      self.builder.position_at_end(entry);
-
-      let obj_gc = func.get_nth_param(0).expect("obj").into_pointer_value();
-      let field_gc = func.get_nth_param(1).expect("field").into_pointer_value();
-
-      // As with allocation, avoid addrspacecasting GC pointers back to addrspace(0); call the raw
-      // runtime symbol via an indirect call using the addrspace(1) signature.
-      let fn_ptr_ty = self.ptr_raw();
-      let fp_slot = self
-        .builder
-        .build_alloca(fn_ptr_ty, "rt_write_barrier_fp")
-        .expect("alloca rt_write_barrier fp");
-      self
-        .builder
-        .build_store(fp_slot, raw.as_global_value().as_pointer_value())
-        .expect("store rt_write_barrier fp");
-      let fp = self
-        .builder
-        .build_load(fn_ptr_ty, fp_slot, "rt_write_barrier_fp")
-        .expect("load rt_write_barrier fp")
-        .into_pointer_value();
-
-      let call = self
-        .builder
-        .build_indirect_call(fn_ty, fp, &[obj_gc.into(), field_gc.into()], "")
-        .expect("call rt_write_barrier via indirect call");
-      crate::stack_walking::mark_call_notail(call);
-
-      self.builder.build_return(None).expect("return void");
-    })
-  }
-
-  fn rt_keep_alive_gc_ref_gc(&self) -> FunctionValue<'ctx> {
-    let fn_ty = self
-      .context
-      .void_type()
-      .fn_type(&[self.ptr_gc().into()], false);
-
-    self.get_or_define_internal("rt_keep_alive_gc_ref_gc", fn_ty, |func| {
-      let raw = self.rt_keep_alive_gc_ref_raw();
-      let entry = self.context.append_basic_block(func, "entry");
-      self.builder.position_at_end(entry);
-
-      let gc_ref = func.get_nth_param(0).expect("gc_ref").into_pointer_value();
-
-      // Avoid addrspacecasting the GC pointer back to addrspace(0); call the raw runtime symbol via
-      // an indirect call using the addrspace(1) signature.
-      let fn_ptr_ty = self.ptr_raw();
-      let fp_slot = self
-        .builder
-        .build_alloca(fn_ptr_ty, "rt_keep_alive_gc_ref_fp")
-        .expect("alloca rt_keep_alive_gc_ref fp");
-      self
-        .builder
-        .build_store(fp_slot, raw.as_global_value().as_pointer_value())
-        .expect("store rt_keep_alive_gc_ref fp");
-      let fp = self
-        .builder
-        .build_load(fn_ptr_ty, fp_slot, "rt_keep_alive_gc_ref_fp")
-        .expect("load rt_keep_alive_gc_ref fp")
-        .into_pointer_value();
-
-      let call = self
-        .builder
-        .build_indirect_call(fn_ty, fp, &[gc_ref.into()], "")
-        .expect("call rt_keep_alive_gc_ref via indirect call");
-      crate::stack_walking::mark_call_notail(call);
-
-      self.builder.build_return(None).expect("return void");
-    })
-  }
-}
-
-/// Handles to the runtime wrapper functions defined in an LLVM module.
-#[derive(Clone, Copy)]
-pub struct RuntimeFns<'ctx> {
-  pub rt_alloc_gc: FunctionValue<'ctx>,
-  pub rt_alloc_pinned_gc: FunctionValue<'ctx>,
-  pub rt_gc_safepoint_gc: FunctionValue<'ctx>,
-  pub rt_gc_collect_gc: FunctionValue<'ctx>,
-  pub rt_write_barrier_gc: FunctionValue<'ctx>,
-  pub rt_keep_alive_gc_ref_gc: FunctionValue<'ctx>,
-  pub rt_parallel_spawn_raw: FunctionValue<'ctx>,
-  pub rt_parallel_join_raw: FunctionValue<'ctx>,
-  pub rt_parallel_for_raw: FunctionValue<'ctx>,
 }
 
 // -----------------------------------------------------------------------------
@@ -441,21 +539,19 @@ pub enum RuntimeCallError {
   BuildCall { name: &'static str, message: String },
 }
 
-/// Emit a call to a runtime function, enforcing GC-safety rules for its ABI.
-pub fn emit_runtime_call<'ctx>(
-  builder: &Builder<'ctx>,
-  callee: FunctionValue<'ctx>,
+fn validate_runtime_call_abi<'ctx>(
   spec: RuntimeFnSpec,
   args: &[BasicMetadataValueEnum<'ctx>],
-  name: &str,
-) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
+) -> Result<(), RuntimeCallError> {
   // Don't rely solely on the manually-maintained `gc_ptr_args` metadata; also validate against the
   // actual call argument types. This makes it hard to accidentally construct an unsound MayGC
   // runtime call by forgetting to update the registry.
   let actual_gc_ptr_args = args
     .iter()
     .filter(|arg| match arg {
-      BasicMetadataValueEnum::PointerValue(ptr) => ptr.get_type().get_address_space() == gc::gc_address_space(),
+      BasicMetadataValueEnum::PointerValue(ptr) => {
+        ptr.get_type().get_address_space() == gc::gc_address_space()
+      }
       _ => false,
     })
     .count();
@@ -475,35 +571,23 @@ pub fn emit_runtime_call<'ctx>(
     });
   }
 
+  Ok(())
+}
+
+/// Emit a call to a runtime function, enforcing GC-safety rules for its ABI.
+pub fn emit_runtime_call<'ctx>(
+  builder: &Builder<'ctx>,
+  callee: FunctionValue<'ctx>,
+  spec: RuntimeFnSpec,
+  args: &[BasicMetadataValueEnum<'ctx>],
+  name: &str,
+) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
+  validate_runtime_call_abi(spec, args)?;
+
   let call = builder.build_call(callee, args, name).map_err(|e| RuntimeCallError::BuildCall {
     name: spec.name,
     message: e.to_string(),
   })?;
   crate::stack_walking::mark_call_notail(call);
   Ok(call)
-}
-
-impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
-  pub fn runtime_fn(&self, f: RuntimeFn) -> FunctionValue<'ctx> {
-    match f {
-      RuntimeFn::Alloc => self.rt_alloc_gc(),
-      RuntimeFn::AllocPinned => self.rt_alloc_pinned_gc(),
-      RuntimeFn::GcSafepoint => self.rt_gc_safepoint_gc(),
-      RuntimeFn::GcCollect => self.rt_gc_collect_gc(),
-      RuntimeFn::WriteBarrier => self.rt_write_barrier_gc(),
-      RuntimeFn::KeepAliveGcRef => self.rt_keep_alive_gc_ref_gc(),
-    }
-  }
-
-  /// Convenience wrapper around [`emit_runtime_call`] for known runtime functions.
-  pub fn emit_runtime_call(
-    &self,
-    builder: &Builder<'ctx>,
-    f: RuntimeFn,
-    args: &[BasicMetadataValueEnum<'ctx>],
-    name: &str,
-  ) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
-    let callee = self.runtime_fn(f);
-    emit_runtime_call(builder, callee, f.spec(), args, name)
-  }
 }

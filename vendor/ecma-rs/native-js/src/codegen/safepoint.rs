@@ -29,6 +29,8 @@ use inkwell::IntPredicate;
 use llvm_sys::core::LLVMSetOrdering;
 use llvm_sys::LLVMAtomicOrdering;
 
+use crate::runtime_abi::{RuntimeAbi, RuntimeFn};
+
 fn get_or_declare_rt_gc_epoch<'ctx>(
   context: &'ctx Context,
   module: &Module<'ctx>,
@@ -41,17 +43,6 @@ fn get_or_declare_rt_gc_epoch<'ctx>(
   // The runtime defines the symbol; native-js only needs an external declaration
   // so it can emit an atomic load.
   module.add_global(context.i64_type(), None, "RT_GC_EPOCH")
-}
-
-fn get_or_declare_rt_gc_safepoint_slow<'ctx>(
-  context: &'ctx Context,
-  module: &Module<'ctx>,
-) -> FunctionValue<'ctx> {
-  if let Some(existing) = module.get_function("rt_gc_safepoint_slow") {
-    return existing;
-  }
-  let fn_ty = context.void_type().fn_type(&[context.i64_type().into()], false);
-  module.add_function("rt_gc_safepoint_slow", fn_ty, None)
 }
 
 /// Emit a GC poll at the current insertion point (intended for loop backedges).
@@ -91,8 +82,6 @@ pub fn emit_backedge_gc_poll<'ctx>(
     .build_int_compare(IntPredicate::NE, lowbit, i64_ty.const_zero(), "gc.poll.requested")
     .expect("build poll compare");
 
-  let rt_gc_safepoint_slow = get_or_declare_rt_gc_safepoint_slow(context, module);
-
   let slow_block = context.append_basic_block(current_fn, "gc.poll.slow");
   let cont_block = context.append_basic_block(current_fn, "gc.poll.cont");
   builder
@@ -100,10 +89,15 @@ pub fn emit_backedge_gc_poll<'ctx>(
     .expect("build poll branch");
 
   builder.position_at_end(slow_block);
-  let call = builder
-    .build_call(rt_gc_safepoint_slow, &[epoch.into()], "gc.safepoint")
-    .expect("build rt_gc_safepoint_slow call");
-  crate::stack_walking::mark_call_notail(call);
+  let rt = RuntimeAbi::new(context, module);
+  let _ = rt
+    .emit_runtime_call(
+      builder,
+      RuntimeFn::GcSafepointSlow,
+      &[epoch.into()],
+      "gc.safepoint",
+    )
+    .expect("emit rt_gc_safepoint_slow call");
   builder
     .build_unconditional_branch(cont_block)
     .expect("branch to poll continuation");

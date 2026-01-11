@@ -368,7 +368,14 @@ export function main() {
 "#,
     );
 
-    let program = Program::new(host, vec![key]);
+    let program = Program::new(host, vec![key.clone()]);
+    let file = program.file_id(&key).expect("file id");
+    let def = program
+      .exports_of(file)
+      .get("main")
+      .and_then(|e| e.def)
+      .expect("exported def for `main`");
+    let expected_symbol = crate::llvm_symbol_for_def(&program, def);
 
     let tmp = tempfile::tempdir().expect("create tempdir");
     let out_path = tmp.path().join("out.ll");
@@ -382,8 +389,8 @@ export function main() {
 
     let ir = out.llvm_ir.expect("llvm_ir");
     assert!(
-      ir.contains("__nativejs_def_"),
-      "expected generated IR to contain a __nativejs_def_ symbol, got:\n{ir}"
+      ir.contains(&expected_symbol),
+      "expected generated IR to mention `{expected_symbol}`, got:\n{ir}"
     );
     assert!(
       ir.contains("__nativejs_file_init_"),

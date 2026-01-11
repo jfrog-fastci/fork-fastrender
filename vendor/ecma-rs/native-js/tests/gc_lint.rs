@@ -1,14 +1,40 @@
 use inkwell::context::Context;
 use inkwell::AddressSpace;
 use native_js::llvm::{gc, lint_module_gc_pointer_discipline, LintRule};
-use native_js::runtime_abi::RuntimeAbi;
+use native_js::runtime_abi::{RuntimeAbi, RuntimeFn};
 
 #[test]
-fn runtime_abi_wrappers_pass_lint() {
+fn runtime_abi_emission_passes_lint() {
   let context = Context::create();
-  let module = context.create_module("gc_lint_wrappers_ok");
+  let module = context.create_module("gc_lint_runtime_calls_ok");
+  let builder = context.create_builder();
 
-  RuntimeAbi::new(&context, &module).ensure_wrappers();
+  let gc_ptr_ty = context.ptr_type(gc::gc_address_space());
+  let fn_ty = context.void_type().fn_type(&[gc_ptr_ty.into(), gc_ptr_ty.into()], false);
+  let func = module.add_function("test_runtime_calls", fn_ty, None);
+  gc::set_default_gc_strategy(&func).expect("set gc strategy");
+
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+
+  let obj = func.get_nth_param(0).unwrap().into_pointer_value();
+  let field = func.get_nth_param(1).unwrap().into_pointer_value();
+
+  let rt = RuntimeAbi::new(&context, &module);
+  let _ = rt
+    .emit_runtime_call(
+      &builder,
+      RuntimeFn::WriteBarrier,
+      &[obj.into(), field.into()],
+      "wb",
+    )
+    .expect("emit write barrier");
+  let size = context.i64_type().const_int(16, false);
+  let shape = context.i32_type().const_zero();
+  let _ = rt
+    .emit_runtime_call(&builder, RuntimeFn::Alloc, &[size.into(), shape.into()], "alloc")
+    .expect("emit alloc");
+  builder.build_return(None).unwrap();
 
   lint_module_gc_pointer_discipline(&module).unwrap();
 }

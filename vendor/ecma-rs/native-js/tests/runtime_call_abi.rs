@@ -9,6 +9,7 @@ fn runtime_call_registry_has_gc_safety_metadata() {
     RuntimeFn::Alloc,
     RuntimeFn::AllocPinned,
     RuntimeFn::GcSafepoint,
+    RuntimeFn::GcSafepointSlow,
     RuntimeFn::GcCollect,
   ] {
     let spec = f.spec();
@@ -33,14 +34,14 @@ fn runtime_call_registry_has_gc_safety_metadata() {
     "expected rt_write_barrier to take GC pointer args, got {wb:?}"
   );
 
-  let ka = RuntimeFn::KeepAliveGcRef.spec();
+  let keep_alive = RuntimeFn::KeepAliveGcRef.spec();
   assert!(
-    !ka.may_gc,
-    "expected rt_keep_alive_gc_ref to be may_gc=false, got {ka:?}"
+    !keep_alive.may_gc,
+    "expected rt_keep_alive_gc_ref to be may_gc=false, got {keep_alive:?}"
   );
   assert!(
-    ka.gc_ptr_args > 0,
-    "expected rt_keep_alive_gc_ref to take GC pointer args, got {ka:?}"
+    keep_alive.gc_ptr_args > 0,
+    "expected rt_keep_alive_gc_ref to take GC pointer args, got {keep_alive:?}"
   );
 }
 

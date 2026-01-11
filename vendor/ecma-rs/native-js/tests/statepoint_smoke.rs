@@ -80,6 +80,11 @@ fn statepoint_smoke() {
   let stackmap = StackMap::parse(stackmaps).expect("parse stackmap v3");
 
   assert_eq!(stackmap.version, runtime_native::stackmaps::STACKMAP_VERSION);
+  assert!(
+    !stackmap.records.is_empty(),
+    "expected at least one stackmap record"
+  );
+
   let call_ret_off = call_return_offset(&file, "ts_fn").expect("locate call instruction");
   let record = stackmap
     .records

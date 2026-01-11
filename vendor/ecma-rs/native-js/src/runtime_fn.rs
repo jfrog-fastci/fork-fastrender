@@ -16,12 +16,28 @@ pub enum RuntimeFn {
   AllocPinned,
   /// GC safepoint poll.
   GcSafepoint,
+  /// Slow path for explicit safepoint polling:
+  /// `rt_gc_safepoint_slow(epoch: u64)`.
+  ///
+  /// This is used by backedge polling fast paths (see `codegen::safepoint`).
+  GcSafepointSlow,
   /// Forces a GC cycle.
   GcCollect,
+  /// Poll-only helper (`rt_gc_poll() -> bool`).
+  ///
+  /// This must not allocate or safepoint.
+  GcPoll,
   /// Generational write barrier (must not allocate / GC).
   WriteBarrier,
-  /// Prevent the compiler from considering a GC reference dead while a raw pointer derived from it
-  /// is still in use.
+  /// Keep a GC object alive until after the last use of a derived raw pointer.
+  ///
+  /// This prevents the compiler from considering a GC reference dead while a raw pointer derived
+  /// from it is still in use.
+  ///
+  /// The native runtime uses this to ensure owner objects remain live when compiled code forms
+  /// derived/interior pointers that are used after a safepoint (Task 385).
+  ///
+  /// Contract: must not allocate or trigger GC.
   KeepAliveGcRef,
 }
 
@@ -97,9 +113,21 @@ impl RuntimeFn {
         gc_ptr_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
+      RuntimeFn::GcSafepointSlow => RuntimeFnSpec {
+        name: "rt_gc_safepoint_slow",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
       RuntimeFn::GcCollect => RuntimeFnSpec {
         name: "rt_gc_collect",
         may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::GcPoll => RuntimeFnSpec {
+        name: "rt_gc_poll",
+        may_gc: false,
         gc_ptr_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },

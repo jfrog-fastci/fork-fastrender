@@ -62,7 +62,7 @@ fn links_and_runs_rt_alloc_with_u32_shape_id_abi() {
   // Build an LLVM module that:
   // - uses `RuntimeAbi` wrappers (so the test follows whatever ABI native-js believes),
   // - exposes an exported `alloc_smoke` function whose second parameter type matches
-  //   `rt_alloc_gc`'s shape-id type.
+  //   `rt_alloc`'s shape-id type.
   //
   // The smoke binary's C `main` calls `alloc_smoke` using a `uint32_t` shape id,
   // and deliberately places non-zero junk in `%rdx` before the call. If native-js
@@ -73,10 +73,10 @@ fn links_and_runs_rt_alloc_with_u32_shape_id_abi() {
   let builder = context.create_builder();
 
   let wrappers = RuntimeAbi::new(&context, &module).ensure_wrappers();
-  let rt_alloc_gc = wrappers.rt_alloc_gc;
+  let rt_alloc = wrappers.rt_alloc;
 
-  let params = rt_alloc_gc.get_type().get_param_types();
-  assert_eq!(params.len(), 2, "rt_alloc_gc should take exactly 2 params");
+  let params = rt_alloc.get_type().get_param_types();
+  assert_eq!(params.len(), 2, "rt_alloc should take exactly 2 params");
   let shape_ty = params[1]
     .into_int_type();
 
@@ -114,8 +114,8 @@ fn links_and_runs_rt_alloc_with_u32_shape_id_abi() {
 
   builder.position_at_end(ok_block);
   let _ = builder
-    .build_call(rt_alloc_gc, &[size.into(), shape.into()], "obj")
-    .expect("call rt_alloc_gc");
+    .build_call(rt_alloc, &[size.into(), shape.into()], "obj")
+    .expect("call rt_alloc");
   builder
     .build_return(Some(&context.i32_type().const_int(0, false)))
     .expect("return ok");
@@ -138,7 +138,7 @@ fn links_and_runs_rt_alloc_with_u32_shape_id_abi() {
 
 #include <stdint.h>
 
-// `alloc_smoke` is implemented in LLVM IR (native-js) and calls `rt_alloc_gc`.
+// `alloc_smoke` is implemented in LLVM IR (native-js) and calls `rt_alloc`.
 extern int32_t alloc_smoke(uint64_t size, uint32_t shape);
 
 int main(void) {{
@@ -157,7 +157,7 @@ int main(void) {{
   rt_register_shape_table(kShapes, 1);
 
   // Force `%rdx` non-zero before the call. If `alloc_smoke` (and therefore
-  // `rt_alloc_gc`) ever takes an `i128` shape id, the high 64 bits will be read
+  // `rt_alloc`) ever takes an `i128` shape id, the high 64 bits will be read
   // from `%rdx` and the `shape == 1` check will fail.
   int32_t res;
   __asm__ __volatile__(
