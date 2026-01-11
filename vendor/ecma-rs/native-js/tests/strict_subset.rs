@@ -115,6 +115,18 @@ fn rejects_array_literal() {
 }
 
 #[test]
+fn rejects_float_literal() {
+  let err = validate("const x = 1.5;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_out_of_range_numeric_literal() {
+  let err = validate("const x = 2147483648;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
 fn rejects_string_literal() {
   let err = validate("const s = \"hi\";\nvoid s;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");

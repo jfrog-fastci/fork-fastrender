@@ -138,7 +138,16 @@ fn validate_body_syntax(
         push_unsupported_syntax(out, Span::new(file, expr.span), "`this` is not supported yet");
       }
       ExprKind::Literal(lit) => match lit {
-        hir_js::Literal::Number(_) | hir_js::Literal::Boolean(_) => {}
+        hir_js::Literal::Number(raw) => {
+          if !is_supported_i32_number_literal(raw) {
+            push_unsupported_syntax(
+              out,
+              Span::new(file, expr.span),
+              "numeric literals must be 32-bit signed integers in native-js strict subset",
+            );
+          }
+        }
+        hir_js::Literal::Boolean(_) => {}
         hir_js::Literal::String(_) => {
           push_unsupported_syntax(out, Span::new(file, expr.span), "string literals are not supported yet");
         }
@@ -582,6 +591,38 @@ fn callee_is_ident(body: &Body, lowered: &hir_js::LowerResult, expr: hir_js::Exp
     ExprKind::Ident(name) => lowered.names.resolve(*name) == Some(target),
     _ => false,
   }
+}
+
+fn is_supported_i32_number_literal(raw: &str) -> bool {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return false;
+  }
+
+  let normalized: String = raw.chars().filter(|c| *c != '_').collect();
+  let (radix, digits) = if let Some(rest) = normalized.strip_prefix("0x") {
+    (16, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0X") {
+    (16, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0b") {
+    (2, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0B") {
+    (2, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0o") {
+    (8, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0O") {
+    (8, rest)
+  } else {
+    if normalized.contains('.') || normalized.contains('e') || normalized.contains('E') {
+      return false;
+    }
+    (10, normalized.as_str())
+  };
+
+  let Ok(value) = i64::from_str_radix(digits, radix) else {
+    return false;
+  };
+  i32::try_from(value).is_ok()
 }
 
 fn resolve_import_def(program: &Program, def: typecheck_ts::DefId) -> Option<typecheck_ts::DefId> {
