@@ -85,6 +85,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("    call_conv={} flags={}", sp.call_conv, sp.flags);
             println!("    deopt_args={} gc_roots={}", sp.deopt_args.len(), sp.num_gc_roots());
 
+            if !sp.deopt_args.is_empty() {
+                println!("    deopt:");
+                for (i, loc) in sp.deopt_args.iter().enumerate() {
+                    println!("      deopt[{i}] {loc}");
+                }
+            }
+
             for (i, pair) in sp.gc_root_pairs().enumerate() {
                 println!("    root[{i}] base={} derived={}", pair.base, pair.derived);
             }
