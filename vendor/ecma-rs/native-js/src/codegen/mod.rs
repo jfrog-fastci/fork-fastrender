@@ -44,6 +44,7 @@
 //! (`NJS0108..NJS0111`).
 use crate::resolve::BindingId;
 use crate::strict::Entrypoint;
+use crate::codes;
 use crate::Resolver;
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
@@ -85,25 +86,129 @@ pub fn codegen<'ctx>(
   Ok(cg.finish())
 }
 
-fn main_allows_void_return(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TsAbiKind {
+  Number,
+  Boolean,
+  Void,
+}
+
+impl TsAbiKind {
+  fn from_param_type_kind(kind: &TypeKindSummary) -> Option<Self> {
+    match kind {
+      TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
+      TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
+      _ => None,
+    }
+  }
+
+  fn from_return_type_kind(kind: &TypeKindSummary) -> Option<Self> {
+    match kind {
+      TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
+      TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
+      TypeKindSummary::Void | TypeKindSummary::Undefined | TypeKindSummary::Never => Some(Self::Void),
+      _ => None,
+    }
+  }
+}
+
+#[derive(Clone, Debug)]
+struct TsFunctionSigKind {
+  #[allow(dead_code)]
+  params: Vec<TsAbiKind>,
+  ret: TsAbiKind,
+}
+
+fn ts_function_sig_kind(
   program: &Program,
-  main_def: DefId,
-  entry_file: FileId,
-) -> Result<bool, Vec<Diagnostic>> {
-  let func_ty = program.type_of_def_interned(main_def);
+  def: DefId,
+  file: FileId,
+  expected_param_count: usize,
+  is_entrypoint: bool,
+) -> Result<TsFunctionSigKind, Vec<Diagnostic>> {
+  let span = program
+    .span_of_def(def)
+    .unwrap_or_else(|| Span::new(file, TextRange::new(0, 0)));
+
+  let func_ty = program.type_of_def_interned(def);
   let sigs = program.call_signatures(func_ty);
-  let Some(sig) = sigs.first() else {
-    return Err(vec![Diagnostic::error(
-      "NJS0123",
-      "failed to resolve call signature for exported `main`",
-      Span::new(entry_file, TextRange::new(0, 0)),
+  if sigs.is_empty() {
+    if is_entrypoint {
+      return Err(vec![Diagnostic::error(
+        "NJS0123",
+        "failed to resolve call signature for exported `main`",
+        Span::new(file, TextRange::new(0, 0)),
+      )]);
+    }
+
+    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "failed to resolve call signature for function",
+      span,
+    )]);
+  }
+
+  if sigs.len() != 1 {
+    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "only single-signature functions are supported by native-js right now",
+      span,
+    )]);
+  }
+
+  let sig = &sigs[0].signature;
+  if sig.this_param.is_some() {
+    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "`this` parameters are not supported by native-js",
+      span,
+    )]);
+  }
+  if !sig.type_params.is_empty() {
+    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "generic functions are not supported by native-js",
+      span,
+    )]);
+  }
+
+  if sig.params.len() != expected_param_count {
+    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "native-js: signature/parameter count mismatch",
+      span,
+    )]);
+  }
+
+  let mut params = Vec::with_capacity(sig.params.len());
+  for (idx, param) in sig.params.iter().enumerate() {
+    if param.optional || param.rest {
+      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+        format!("optional/rest parameters are not supported by native-js yet (param #{idx})"),
+        span,
+      )]);
+    }
+
+    let kind = program.type_kind(param.ty);
+    let Some(kind) = TsAbiKind::from_param_type_kind(&kind) else {
+      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+        format!(
+          "unsupported parameter type for native-js ABI (expected number|boolean): {}",
+          program.display_type(param.ty)
+        ),
+        span,
+      )]);
+    };
+    params.push(kind);
+  }
+
+  let ret_kind = program.type_kind(sig.ret);
+  let Some(ret) = TsAbiKind::from_return_type_kind(&ret_kind) else {
+    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+      format!(
+        "unsupported return type for native-js ABI (expected number|boolean|void): {}",
+        program.display_type(sig.ret)
+      ),
+      span,
     )]);
   };
-  let ret_kind = program.type_kind(sig.signature.ret);
-  Ok(matches!(
-    ret_kind,
-    TypeKindSummary::Void | TypeKindSummary::Undefined
-  ))
+
+  Ok(TsFunctionSigKind { params, ret })
 }
 
 struct ProgramCodegen<'ctx, 'p> {
@@ -156,7 +261,9 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     let main_def = entrypoint.main_def;
-    let allow_void_main_return = main_allows_void_return(self.program, main_def, entry_file)?;
+    let main_sig = ts_function_sig_kind(self.program, main_def, entry_file, 0, true)?;
+    let main_ret_kind = main_sig.ret;
+    let allow_void_main_return = main_ret_kind == TsAbiKind::Void;
 
     let files = self.runtime_files(entry_file);
     self.collect_exported_defs(&files);
@@ -167,7 +274,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     // Predeclare all top-level functions (so calls can reference them).
-    let mut function_bodies: Vec<(DefId, FileId, hir_js::BodyId)> = Vec::new();
+    let mut function_bodies: Vec<(DefId, FileId, hir_js::BodyId, bool)> = Vec::new();
     for file in &files {
       let Some(lowered) = self.program.hir_lowered(*file) else {
         continue;
@@ -188,8 +295,15 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         let Some(function) = body.function.as_ref() else {
           continue;
         };
+
+        let allow_void_return = if def.id == main_def {
+          allow_void_main_return
+        } else {
+          let sig = ts_function_sig_kind(self.program, def.id, *file, function.params.len(), false)?;
+          sig.ret == TsAbiKind::Void
+        };
         self.ensure_ts_function(def.id, function.params.len());
-        function_bodies.push((def.id, *file, body_id));
+        function_bodies.push((def.id, *file, body_id, allow_void_return));
       }
     }
 
@@ -207,13 +321,12 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     // Define all top-level functions.
-    for (def, file, body_id) in function_bodies {
-      let allow_void_return = def == main_def && allow_void_main_return;
+    for (def, file, body_id, allow_void_return) in function_bodies {
       self.build_ts_function(def, file, body_id, allow_void_return)?;
     }
 
     // Build C entrypoint wrapper that runs module initializers and then calls TS main.
-    self.build_c_main(main_fn, &init_order);
+    self.build_c_main(main_fn, main_ret_kind, &init_order);
 
     Ok(())
   }
@@ -463,7 +576,12 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     Ok(())
   }
 
-  fn build_c_main(&mut self, ts_main: FunctionValue<'ctx>, init_order: &[FileId]) {
+  fn build_c_main(
+    &mut self,
+    ts_main: FunctionValue<'ctx>,
+    main_ret_kind: TsAbiKind,
+    init_order: &[FileId],
+  ) {
     // Define `main` with no parameters (`int main(void)`), since our generated
     // wrapper does not currently use `argc`/`argv`.
     //
@@ -494,8 +612,62 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       .left()
       .map(|v| v.into_int_value())
       .unwrap_or_else(|| self.i32_ty.const_zero());
+
+    match main_ret_kind {
+      TsAbiKind::Number => {
+        let printf = declare_printf(self.context, &self.module);
+        let fmt = builder
+          .build_global_string_ptr("%d\n", "native_js_main_ret_fmt")
+          .expect("failed to create printf format string");
+        builder
+          .build_call(
+            printf,
+            &[fmt.as_pointer_value().into(), ret_val.into()],
+            "native_js_print_main_ret",
+          )
+          .expect("failed to build printf call");
+      }
+      TsAbiKind::Boolean => {
+        let puts = declare_puts(self.context, &self.module);
+        let is_true = builder
+          .build_int_compare(IntPredicate::NE, ret_val, self.i32_ty.const_zero(), "is_true")
+          .expect("failed to build bool compare");
+
+        let true_s = builder
+          .build_global_string_ptr("true", "native_js_true")
+          .expect("failed to build true string");
+        let false_s = builder
+          .build_global_string_ptr("false", "native_js_false")
+          .expect("failed to build false string");
+
+        let sel = builder
+          .build_select(
+            is_true,
+            true_s.as_pointer_value(),
+            false_s.as_pointer_value(),
+            "native_js_bool_str",
+          )
+          .expect("failed to build select")
+          .into_pointer_value();
+
+        builder
+          .build_call(puts, &[sel.into()], "native_js_puts_bool")
+          .expect("failed to build puts call");
+      }
+      TsAbiKind::Void => {
+        // Chosen convention: `void`/`undefined` entrypoints print `undefined`.
+        let puts = declare_puts(self.context, &self.module);
+        let undef = builder
+          .build_global_string_ptr("undefined", "native_js_undefined")
+          .expect("failed to build undefined string");
+        builder
+          .build_call(puts, &[undef.as_pointer_value().into()], "native_js_puts_undefined")
+          .expect("failed to build puts call");
+      }
+    }
+
     builder
-      .build_return(Some(&ret_val))
+      .build_return(Some(&self.i32_ty.const_zero()))
       .expect("failed to build return");
   }
 
@@ -1927,6 +2099,15 @@ fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Functi
   let i32_ty = context.i32_type();
   let ptr_ty = context.i8_type().ptr_type(AddressSpace::default());
   module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
+}
+
+fn declare_puts<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("puts") {
+    return existing;
+  }
+  let i32_ty = context.i32_type();
+  let ptr_ty = context.i8_type().ptr_type(AddressSpace::default());
+  module.add_function("puts", i32_ty.fn_type(&[ptr_ty.into()], false), None)
 }
 
 fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'ctx>> {

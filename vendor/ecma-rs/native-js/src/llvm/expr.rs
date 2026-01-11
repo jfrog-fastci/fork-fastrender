@@ -197,21 +197,33 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
   pub fn codegen_function_body(&mut self, func: &hir_js::FunctionData, ret_kind: ValueKind) -> bool {
     match &func.body {
       FunctionBody::Expr(expr) => {
-        let Some(value) = self.codegen_expr(*expr) else {
-          return false;
-        };
-        let llvm_ret: BasicValueEnum<'ctx> = match ret_kind {
-          ValueKind::Number => match self.as_f64(value, *expr) {
-            Some(v) => v.as_basic_value_enum(),
-            None => return false,
-          },
-          ValueKind::Boolean => match self.as_bool(value, *expr) {
-            Some(v) => v.as_basic_value_enum(),
-            None => return false,
-          },
-        };
-        let _ = self.backend.builder.build_return(Some(&llvm_ret));
-        true
+        match ret_kind {
+          ValueKind::Void => {
+            // Evaluate the expression for side effects (even if we don't support
+            // many side effects yet), then return `void`.
+            let _ = self.codegen_expr(*expr);
+            let _ = self.backend.builder.build_return(None);
+            true
+          }
+          ValueKind::Number | ValueKind::Boolean => {
+            let Some(value) = self.codegen_expr(*expr) else {
+              return false;
+            };
+            let llvm_ret: BasicValueEnum<'ctx> = match ret_kind {
+              ValueKind::Number => match self.as_f64(value, *expr) {
+                Some(v) => v.as_basic_value_enum(),
+                None => return false,
+              },
+              ValueKind::Boolean => match self.as_bool(value, *expr) {
+                Some(v) => v.as_basic_value_enum(),
+                None => return false,
+              },
+              ValueKind::Void => unreachable!(),
+            };
+            let _ = self.backend.builder.build_return(Some(&llvm_ret));
+            true
+          }
+        }
       }
       FunctionBody::Block(stmts) => self.codegen_block(stmts, ret_kind),
     }
@@ -235,31 +247,46 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     };
     match &stmt.kind {
       StmtKind::Return(expr) => {
-        let Some(expr) = expr else {
-          self.diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "return without value not supported",
-            Span {
-              file: self.body_id.file(),
-              range: stmt.span,
-            },
-          ));
-          return false;
-        };
-        let Some(value) = self.codegen_expr(*expr) else {
-          return false;
-        };
-        let llvm_ret = match ret_kind {
-          ValueKind::Number => match self.as_f64(value, *expr) {
-            Some(v) => v.as_basic_value_enum(),
-            None => return false,
-          },
-          ValueKind::Boolean => match self.as_bool(value, *expr) {
-            Some(v) => v.as_basic_value_enum(),
-            None => return false,
-          },
-        };
-        let _ = self.backend.builder.build_return(Some(&llvm_ret));
-        true
+        match (ret_kind, expr) {
+          (ValueKind::Void, None) => {
+            let _ = self.backend.builder.build_return(None);
+            true
+          }
+          (ValueKind::Void, Some(expr)) => {
+            // Evaluate the expression for side effects, but ignore its value.
+            let _ = self.codegen_expr(*expr);
+            let _ = self.backend.builder.build_return(None);
+            true
+          }
+          (_, None) => {
+            self.diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
+              "return without value not supported",
+              Span {
+                file: self.body_id.file(),
+                range: stmt.span,
+              },
+            ));
+            false
+          }
+          (_, Some(expr)) => {
+            let Some(value) = self.codegen_expr(*expr) else {
+              return false;
+            };
+            let llvm_ret = match ret_kind {
+              ValueKind::Number => match self.as_f64(value, *expr) {
+                Some(v) => v.as_basic_value_enum(),
+                None => return false,
+              },
+              ValueKind::Boolean => match self.as_bool(value, *expr) {
+                Some(v) => v.as_basic_value_enum(),
+                None => return false,
+              },
+              ValueKind::Void => unreachable!(),
+            };
+            let _ = self.backend.builder.build_return(Some(&llvm_ret));
+            true
+          }
+        }
       }
       StmtKind::Expr(expr) => {
         self.codegen_expr(*expr);
@@ -349,6 +376,16 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
       ));
       return None;
     };
+    if kind == ValueKind::Void {
+      self.diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
+        "`void`/`undefined` local bindings are not supported by native-js yet",
+        self
+          .program
+          .pat_span(self.body_id, pat)
+          .unwrap_or(Span::new(self.body_id.file(), TextRange::new(0, 0))),
+      ));
+      return None;
+    }
     Some(kind)
   }
 
@@ -578,6 +615,10 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
           .ok()?
           .into()
       }
+      ValueKind::Void => {
+        self.emit_unsupported_type(expr, "comparisons on `void`/`undefined` values are not supported");
+        return None;
+      }
     };
     Some(value)
   }
@@ -650,7 +691,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
 
   fn codegen_conditional(
     &mut self,
-    _expr: ExprId,
+    expr: ExprId,
     test: ExprId,
     consequent: ExprId,
     alternate: ExprId,
@@ -682,6 +723,10 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     self.backend.builder.build_unconditional_branch(merge_block).ok()?;
 
     self.backend.builder.position_at_end(merge_block);
+    if result_kind == ValueKind::Void {
+      self.emit_unsupported_type(expr, "conditional expressions of type `void` are not supported");
+      return None;
+    }
     let phi_ty = self.backend.llvm_type(result_kind);
     let phi = self.backend.builder.build_phi(phi_ty, "condtmp").ok()?;
     phi.add_incoming(&[(&then_val, then_end_block), (&else_val, else_end_block)]);

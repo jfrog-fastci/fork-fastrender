@@ -76,7 +76,7 @@ export function main(): number {
     .expect("clang");
   assert!(status.success(), "clang failed with {status}");
 
-  let out = Command::new(&exe_path).status().expect("run exe");
-  assert_eq!(out.code(), Some(3));
+  let out = Command::new(&exe_path).output().expect("run exe");
+  assert!(out.status.success());
+  assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
 }
-

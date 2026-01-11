@@ -15,6 +15,7 @@ impl<'ctx> LlvmBackend<'ctx> {
     match kind {
       ValueKind::Number => self.f64_type().into(),
       ValueKind::Boolean => self.bool_type().into(),
+      ValueKind::Void => panic!("ValueKind::Void has no LLVM BasicTypeEnum representation"),
     }
   }
 

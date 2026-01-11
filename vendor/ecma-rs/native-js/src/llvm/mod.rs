@@ -269,6 +269,7 @@ pub fn target_triple_from_lexicon(triple: &Triple) -> TargetTriple {
 pub enum ValueKind {
   Number,
   Boolean,
+  Void,
 }
 
 impl ValueKind {
@@ -276,6 +277,7 @@ impl ValueKind {
     match kind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(ValueKind::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(ValueKind::Boolean),
+      TypeKindSummary::Void | TypeKindSummary::Undefined => Some(ValueKind::Void),
       _ => None,
     }
   }
@@ -284,6 +286,7 @@ impl ValueKind {
     match self {
       ValueKind::Number => "number",
       ValueKind::Boolean => "boolean",
+      ValueKind::Void => "void",
     }
   }
 }

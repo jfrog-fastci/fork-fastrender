@@ -21,11 +21,13 @@ use crate::{
   NativeJsError, OptLevel,
 };
 use diagnostics::{Diagnostic, Severity, Span, TextRange};
-use hir_js::{Body, BodyId, DefId, DefKind, ExprId, FunctionBody, FunctionData, NameId, PatKind, StmtId, StmtKind};
+use hir_js::{
+  Body, BodyId, DefId, DefKind, FunctionData, NameId, PatKind,
+};
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::module::Module;
-use inkwell::types::BasicType;
+use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::BasicValueEnum;
 use inkwell::OptimizationLevel;
 use std::collections::{BTreeMap, HashMap};
@@ -362,11 +364,19 @@ pub fn compile_entry_to_llvm_ir(program: &Program, file: FileId, entry_export: &
       .and_then(|bb| bb.get_terminator())
       .is_none();
     if !returned || needs_default_return {
-      let default_ret: BasicValueEnum<'_> = match symbol.ret {
-        ValueKind::Number => backend.f64_type().const_float(0.0).into(),
-        ValueKind::Boolean => backend.bool_type().const_int(0, false).into(),
-      };
-      let _ = backend.builder.build_return(Some(&default_ret));
+      match symbol.ret {
+        ValueKind::Number => {
+          let default_ret: BasicValueEnum<'_> = backend.f64_type().const_float(0.0).into();
+          let _ = backend.builder.build_return(Some(&default_ret));
+        }
+        ValueKind::Boolean => {
+          let default_ret: BasicValueEnum<'_> = backend.bool_type().const_int(0, false).into();
+          let _ = backend.builder.build_return(Some(&default_ret));
+        }
+        ValueKind::Void => {
+          let _ = backend.builder.build_return(None);
+        }
+      }
     }
   }
 
@@ -389,7 +399,7 @@ fn declare_function<'ctx>(
   diagnostics: &mut Vec<Diagnostic>,
   backend: &mut LlvmBackend<'ctx>,
   def_id: DefId,
-  name_id: NameId,
+  _name_id: NameId,
   body_id: BodyId,
   body: &Body,
 ) -> Option<FunctionSymbol<'ctx>> {
@@ -397,76 +407,121 @@ fn declare_function<'ctx>(
     return None;
   };
 
-  let types = program.check_body(body_id);
+  let span = program
+    .span_of_def(def_id)
+    .unwrap_or(Span::new(body_id.file(), body.span));
+
+  let fn_ty = program.type_of_def_interned(def_id);
+  let sigs = program.call_signatures(fn_ty);
+  if sigs.len() != 1 {
+    diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "only single-signature functions are supported by native-js right now",
+      span,
+    ));
+    return None;
+  }
+  let sig = &sigs[0].signature;
+  if sig.this_param.is_some() {
+    diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "`this` parameters are not supported by native-js",
+      span,
+    ));
+    return None;
+  }
+  if !sig.type_params.is_empty() {
+    diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "generic functions are not supported by native-js",
+      span,
+    ));
+    return None;
+  }
+
+  if sig.params.len() != func.params.len() {
+    diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
+      "native-js: signature/parameter count mismatch",
+      span,
+    ));
+    return None;
+  }
 
   // Infer parameter kinds. Bail out if any parameter is unsupported: we can't
   // represent it in the current subset and calls won't be type-safe.
   let mut param_kinds = Vec::new();
-  for param in func.params.iter() {
-    let PatKind::Ident(_) = body.pats.get(param.pat.0 as usize)?.kind else {
+  for (sig_param, hir_param) in sig.params.iter().zip(func.params.iter()) {
+    let PatKind::Ident(_) = body.pats.get(hir_param.pat.0 as usize)?.kind else {
       diagnostics.push(codes::UNSUPPORTED_EXPR.error(
         "unsupported parameter pattern",
         program
-          .pat_span(body_id, param.pat)
+          .pat_span(body_id, hir_param.pat)
           .unwrap_or(Span::new(body_id.file(), body.span)),
       ));
       return None;
     };
-    let Some(ty) = types.pat_type(param.pat) else {
+    if sig_param.optional || sig_param.rest {
       diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
-        "missing type for parameter",
+        "optional/rest parameters are not supported by native-js yet",
         program
-          .pat_span(body_id, param.pat)
+          .pat_span(body_id, hir_param.pat)
           .unwrap_or(Span::new(body_id.file(), body.span)),
       ));
       return None;
-    };
-    let kind = program.type_kind(ty);
-    let Some(kind) = ValueKind::from_type_kind(&kind) else {
+    }
+    let kind_summary = program.type_kind(sig_param.ty);
+    let Some(kind) = ValueKind::from_type_kind(&kind_summary) else {
       diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
-        format!("unsupported parameter type: {kind:?}"),
+        format!(
+          "unsupported parameter type for native-js ABI (expected number|boolean): {}",
+          program.display_type(sig_param.ty)
+        ),
         program
-          .pat_span(body_id, param.pat)
+          .pat_span(body_id, hir_param.pat)
           .unwrap_or(Span::new(body_id.file(), body.span)),
       ));
       return None;
     };
+    if kind == ValueKind::Void {
+      diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
+        "parameters of type `void`/`undefined` are not supported by native-js",
+        program
+          .pat_span(body_id, hir_param.pat)
+          .unwrap_or(Span::new(body_id.file(), body.span)),
+      ));
+      return None;
+    }
     param_kinds.push(kind);
   }
 
-  // Infer return kind from the body.
-  let ret_expr = return_expr(body, &func.body)?;
-  let ret_ty = program.type_of_expr(body_id, ret_expr);
-  let ret_kind_summary = program.type_kind(ret_ty);
+  let ret_kind_summary = program.type_kind(sig.ret);
   let ret_kind = match ValueKind::from_type_kind(&ret_kind_summary) {
     Some(kind) => kind,
     None => {
       // Keep compiling to surface expression-level diagnostics, but fall back to
       // `number` for the LLVM signature.
       diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
-        format!("unsupported return type: {ret_kind_summary:?}"),
-        program
-          .expr_span(body_id, ret_expr)
-          .unwrap_or(Span::new(body_id.file(), body.span)),
+        format!(
+          "unsupported return type for native-js ABI (expected number|boolean|void): {}",
+          program.display_type(sig.ret)
+        ),
+        span,
       ));
       ValueKind::Number
     }
   };
 
-  let ret_ty = backend.llvm_type(ret_kind);
-  let param_tys: Vec<_> = param_kinds
+  let param_tys: Vec<BasicMetadataTypeEnum<'ctx>> = param_kinds
     .iter()
     .copied()
     .map(|k| backend.llvm_type(k).into())
     .collect();
-  let fn_type = ret_ty.fn_type(&param_tys, false);
+  let fn_type = match ret_kind {
+    ValueKind::Number => backend.f64_type().fn_type(&param_tys, false),
+    ValueKind::Boolean => backend.bool_type().fn_type(&param_tys, false),
+    ValueKind::Void => backend.context.void_type().fn_type(&param_tys, false),
+  };
 
-  let base_name = program
-    .hir_lowered(def_id.file())
-    .and_then(|lowered| lowered.names.resolve(name_id).map(|s| s.to_string()))
-    .unwrap_or_else(|| format!("fn_{:x}", def_id.0));
-  let llvm_name = format!("{base_name}_{}", def_id.local());
+  let llvm_name = crate::llvm_symbol_for_def(program, def_id);
   let function = backend.module.add_function(&llvm_name, fn_type, None);
+  crate::stack_walking::apply_stack_walking_attrs(backend.context, function);
 
   Some(FunctionSymbol {
     function,
@@ -492,29 +547,6 @@ fn param_names(body: &Body, func: &FunctionData, diagnostics: &mut Vec<Diagnosti
     }
   }
   names
-}
-
-fn return_expr(body: &Body, func_body: &FunctionBody) -> Option<ExprId> {
-  match func_body {
-    FunctionBody::Expr(expr) => Some(*expr),
-    FunctionBody::Block(stmts) => find_return_expr_in_stmts(body, stmts),
-  }
-}
-
-fn find_return_expr_in_stmts(body: &Body, stmts: &[StmtId]) -> Option<ExprId> {
-  for stmt_id in stmts.iter().copied() {
-    let stmt = body.stmts.get(stmt_id.0 as usize)?;
-    match &stmt.kind {
-      StmtKind::Return(Some(expr)) => return Some(*expr),
-      StmtKind::Block(nested) => {
-        if let Some(expr) = find_return_expr_in_stmts(body, nested) {
-          return Some(expr);
-        }
-      }
-      _ => {}
-    }
-  }
-  None
 }
 
 pub(crate) fn compile_program(
@@ -686,11 +718,10 @@ impl<'a> Compiler<'a> {
         };
 
         write_file(&obj_path, &obj)?;
-
         if self.opts.debug {
-          let ir_path = path_with_suffix(&exe_path, ".ll");
+          let ll_path = path_with_suffix(&exe_path, ".ll");
           let ir = emit::emit_llvm_ir(module);
-          write_file(&ir_path, ir.as_bytes())?;
+          write_file(&ll_path, ir.as_bytes())?;
         }
 
         link::link_elf_executable_with_options(

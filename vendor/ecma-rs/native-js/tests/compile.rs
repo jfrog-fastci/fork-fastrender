@@ -1,4 +1,5 @@
 use native_js::{compile_program, CompilerOptions, EmitKind, NativeJsError};
+use std::io::Read;
 use typecheck_ts::{FileKey, MemoryHost, Program, Severity};
 
 #[test]
@@ -71,11 +72,23 @@ fn compile_emits_executable_and_runs() {
     panic!("compiled executable timed out");
   };
 
-  assert_eq!(
-    status.code(),
-    Some(3),
-    "expected exit code 3, got {status:?}"
-  );
+  let mut stdout = String::new();
+  child
+    .stdout
+    .take()
+    .unwrap()
+    .read_to_string(&mut stdout)
+    .unwrap();
+  let mut stderr = String::new();
+  child
+    .stderr
+    .take()
+    .unwrap()
+    .read_to_string(&mut stderr)
+    .unwrap();
+
+  assert!(status.success(), "expected success, got {status:?} stderr={stderr}");
+  assert_eq!(stdout, "3\n");
 
   let _ = std::fs::remove_file(&artifact.path);
 }
