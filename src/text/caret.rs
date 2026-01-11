@@ -684,4 +684,26 @@ mod tests {
       stops
     );
   }
+
+  #[test]
+  fn split_caret_affinity_maps_to_distinct_x_positions_at_bidi_boundary() {
+    let text = "ABCאבג";
+    // Byte offsets:
+    // - "ABC" => 0..3
+    // - "אבג" => 3..text.len()
+    let ltr = run(text, 0, 3, Direction::LeftToRight, 1.0, vec![0, 1, 2]);
+    // Simulate HarfBuzz output for RTL: glyph order reversed (clusters descending in bytes).
+    let rtl = run(text, 3, text.len(), Direction::RightToLeft, 1.0, vec![4, 2, 0]);
+    let runs = vec![ltr, rtl];
+    let stops = caret_stops_for_runs(text, &runs, 0.0);
+
+    assert_eq!(
+      caret_x_for_position(&stops, 3, CaretAffinity::Upstream),
+      Some(3.0),
+    );
+    assert_eq!(
+      caret_x_for_position(&stops, 3, CaretAffinity::Downstream),
+      Some(6.0),
+    );
+  }
 }
