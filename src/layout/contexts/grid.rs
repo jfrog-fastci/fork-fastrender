@@ -20731,6 +20731,59 @@ mod tests {
   }
 
   #[test]
+  fn grid_intrinsic_inline_size_aborts_taffy_when_nested_grid_times_out() {
+    let _lock = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    crate::layout::formatting_context::intrinsic_cache_clear();
+    let _taffy_guard = crate::layout::taffy_integration::enable_taffy_counters(true);
+    crate::layout::taffy_integration::reset_taffy_counters();
+
+    // This regression ensures that a timeout from a nested formatting context (triggered here by a
+    // deeply nested grid intrinsic sizing probe) aborts the outer Taffy computation and is surfaced
+    // as `LayoutError::Timeout` rather than a panic or a generic MissingContext error.
+    let fc = GridFormattingContext::new();
+
+    let mut outer_style = ComputedStyle::default();
+    outer_style.display = CssDisplay::Grid;
+    outer_style.grid_template_columns = vec![GridTrack::Auto];
+    let outer_style = Arc::new(outer_style);
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = CssDisplay::Grid;
+    inner_style.grid_template_columns = vec![GridTrack::Auto];
+    let inner_style = Arc::new(inner_style);
+
+    // Use enough in-flow children to trip the periodic `check_layout_deadline` call inside the
+    // nested grid intrinsic sizing code path (stride = 64). This makes the nested call return
+    // `LayoutError::Timeout`, which should then abort the outer Taffy pass.
+    let inner_children: Vec<BoxNode> = (0..32)
+      .map(|_| BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]))
+      .collect();
+    let inner_grid =
+      BoxNode::new_block(inner_style, FormattingContextType::Grid, inner_children);
+
+    let outer_grid =
+      BoxNode::new_block(outer_style, FormattingContextType::Grid, vec![inner_grid]);
+
+    let deadline = crate::render_control::RenderDeadline::new(
+      Some(std::time::Duration::from_millis(0)),
+      None,
+    );
+    let result = crate::render_control::with_deadline(Some(&deadline), || {
+      fc.compute_intrinsic_inline_size(&outer_grid, IntrinsicSizingMode::MinContent)
+    });
+
+    assert!(
+      matches!(result, Err(LayoutError::Timeout { .. })),
+      "expected timeout error, got {result:?}"
+    );
+    assert_eq!(
+      crate::layout::taffy_integration::taffy_counters().grid,
+      1,
+      "expected outer grid intrinsic sizing to invoke Taffy before aborting"
+    );
+  }
+
+  #[test]
   fn grid_intrinsic_inline_size_reuses_intrinsic_cache() {
     let _lock = crate::layout::formatting_context::intrinsic_cache_test_lock();
     crate::layout::formatting_context::intrinsic_cache_clear();
