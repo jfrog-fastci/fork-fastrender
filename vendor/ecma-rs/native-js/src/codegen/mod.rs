@@ -277,6 +277,7 @@ fn apply_stack_walking_attrs<'ctx>(context: &'ctx Context, func: FunctionValue<'
 
 mod builtins;
 mod llvm;
+pub mod safepoint;
 
 use crate::CompileOptions;
 use parse_js::ast::node::Node;
