@@ -7,6 +7,14 @@ use std::sync::Arc;
 ///
 /// This pass is intentionally conservative:
 /// - It only rewrites non-`new`, non-optional calls.
+/// - It only rewrites calls whose callee is a *static* identifier/member path (e.g. `fetch`,
+///   `JSON.parse`, `Math.sqrt`, `fs.readFile`).
+///   - The callee must be rooted at an identifier/member chain; calls like
+///     `require("node:fs").readFile(...)` are intentionally excluded because rewriting would drop
+///     evaluation of the `require(...)` expression.
+/// - It intentionally does **not** rewrite instance-method/prototype calls (e.g. `arr.map(...)`,
+///   `s.toLowerCase()`) because `ExprKind::KnownApiCall` cannot encode the receiver/`this`
+///   binding.
 /// - It never rewrites computed-member calls (e.g. `obj[prop](...)` or `obj["x"](...)`).
 /// - It never rewrites optional chaining calls (`obj?.method(...)` / `obj.method?.(...)`).
 /// - It requires non-spread arguments (since `ExprKind::KnownApiCall` can't encode spreads).
@@ -73,6 +81,7 @@ fn callee_is_supported(body: &Body, expr_id: ExprId) -> bool {
     return false;
   };
   match &expr.kind {
+    ExprKind::Ident(_) => true,
     ExprKind::Member(mem) => {
       if mem.optional {
         return false;
@@ -86,7 +95,10 @@ fn callee_is_supported(body: &Body, expr_id: ExprId) -> bool {
       // `strip_transparent_wrappers` should have removed these.
       false
     }
-    _ => true,
+    // Any other callee shape may have side effects (e.g. `require("x")`, `foo()`, `(cond ? a : b)`)
+    // and/or may depend on dynamic `this` binding. Since `KnownApiCall` cannot encode the callee
+    // expression, we only rewrite identifier/member-path calls.
+    _ => false,
   }
 }
 
@@ -110,7 +122,7 @@ fn resolve_call_api_id(
   body: &Body,
   call_expr: ExprId,
   db: &ApiDatabase,
-  types: Option<&dyn TypeProvider>,
+  _types: Option<&dyn TypeProvider>,
 ) -> Option<hir_js::ApiId> {
   // 1) Import/require-aware resolver (node/web modules).
   if let Some(name) = crate::resolver::resolve_api_call(db, lower, body_id, call_expr) {
@@ -129,9 +141,7 @@ fn resolve_call_api_id(
       }
     }
   }
-
-  // 3) Typed receiver → prototype API mapping (e.g. `arr.map` → `Array.prototype.map`).
-  resolve_typed_receiver_api(lower, body_id, body, call.callee, db, types)
+  None
 }
 
 fn static_callee_path(lower: &hir_js::LowerResult, body: &Body, expr_id: ExprId) -> Option<String> {
@@ -156,53 +166,6 @@ fn static_callee_path(lower: &hir_js::LowerResult, body: &Body, expr_id: ExprId)
     | ExprKind::Satisfies { expr: inner, .. } => static_callee_path(lower, body, *inner),
     _ => None,
   }
-}
-
-#[cfg(feature = "typed")]
-fn resolve_typed_receiver_api(
-  lower: &hir_js::LowerResult,
-  body_id: BodyId,
-  body: &Body,
-  callee: ExprId,
-  db: &ApiDatabase,
-  types: Option<&dyn TypeProvider>,
-) -> Option<hir_js::ApiId> {
-  let ExprKind::Member(mem) = &body.exprs[callee.0 as usize].kind else {
-    return None;
-  };
-  if mem.optional {
-    return None;
-  }
-  let ObjectKey::Ident(prop) = mem.property else {
-    return None;
-  };
-  let prop = lower.names.resolve(prop)?;
-
-  let types = types?;
-  let api_name = match prop {
-    "map" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.map"),
-    "filter" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.filter"),
-    "reduce" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.reduce"),
-    "find" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.find"),
-    "every" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.every"),
-    "some" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.some"),
-    "toLowerCase" if types.expr_is_string(body_id, mem.object) => Some("String.prototype.toLowerCase"),
-    _ => None,
-  }?;
-
-  db.id_of(api_name).map(hir_api_id_from_kb)
-}
-
-#[cfg(not(feature = "typed"))]
-fn resolve_typed_receiver_api(
-  _lower: &hir_js::LowerResult,
-  _body_id: BodyId,
-  _body: &Body,
-  _callee: ExprId,
-  _db: &ApiDatabase,
-  _types: Option<&dyn TypeProvider>,
-) -> Option<hir_js::ApiId> {
-  None
 }
 
 fn hir_api_id_from_kb(id: knowledge_base::ApiId) -> hir_js::ApiId {

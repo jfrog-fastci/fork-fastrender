@@ -186,6 +186,11 @@ pub fn detect_signals(file: &HirFile, body: &Body, names: &NameInterner) -> Vec<
   for (idx, expr) in body.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
     match &expr.kind {
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::PromiseAll { .. } => {
+        // `hir-js` lowers `Promise.all([..])` calls into `ExprKind::PromiseAll`.
+        signals.push(SemanticSignal::PromiseAll { expr: expr_id });
+      }
       ExprKind::Call(call) => {
         if !call.is_new && is_promise_all_call(body, names, call.callee) {
           signals.push(SemanticSignal::PromiseAll { expr: expr_id });

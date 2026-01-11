@@ -641,29 +641,20 @@ fn match_map_filter_reduce(body: &Body, names: &NameInterner, root: ExprId) -> O
 
   #[cfg(feature = "hir-semantic-ops")]
   if let ExprKind::ArrayChain { array, ops } = kind {
-    if ops.len() != 3 {
+    let [ArrayChainOp::Map(map_callback), ArrayChainOp::Filter(filter_callback), ArrayChainOp::Reduce(reduce_callback, reduce_init)] =
+      ops.as_slice()
+    else {
       return None;
-    }
-
-    let op0 = ops.get(0)?;
-    let op1 = ops.get(1)?;
-    let op2 = ops.get(2)?;
-
-    return match (op0, op1, op2) {
-      (
-        ArrayChainOp::Map(map_callback),
-        ArrayChainOp::Filter(filter_callback),
-        ArrayChainOp::Reduce(reduce_callback, reduce_init),
-      ) => Some(PartialMapFilterReduce {
-        root,
-        array: *array,
-        map_callback: *map_callback,
-        filter_callback: *filter_callback,
-        reduce_callback: *reduce_callback,
-        reduce_init: *reduce_init,
-      }),
-      _ => None,
     };
+
+    return Some(PartialMapFilterReduce {
+      root,
+      array: *array,
+      map_callback: *map_callback,
+      filter_callback: *filter_callback,
+      reduce_callback: *reduce_callback,
+      reduce_init: *reduce_init,
+    });
   }
 
   let ExprKind::Call(reduce_call) = kind else {

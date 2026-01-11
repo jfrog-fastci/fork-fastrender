@@ -249,6 +249,10 @@ Promise.all([t]);
 
   // Promise.all(...)
   let promise_all_call = find_expr(root_body, |_, kind| {
+    #[cfg(feature = "hir-semantic-ops")]
+    if matches!(kind, ExprKind::PromiseAll { .. }) {
+      return true;
+    }
     let ExprKind::Call(call) = kind else {
       return false;
     };
