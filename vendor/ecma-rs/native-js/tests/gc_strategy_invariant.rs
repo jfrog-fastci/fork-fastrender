@@ -5,8 +5,11 @@ use std::path::{Path, PathBuf};
 /// Guardrail: this repo standardizes on LLVM's production GC strategy name (`coreclr`) for all
 /// statepoint/stackmap fixtures and codegen.
 ///
-/// LLVM also ships a demo strategy (`statepoint-` + `example`). Allowing it to creep back into
-/// non-doc fixtures makes it too easy to accidentally generate inconsistent IR across modules.
+/// LLVM also ships a demo strategy (`statepoint-` + `example`). We allow that string only in:
+/// - markdown docs (where we mention it as an alternative), and
+/// - `native-js/src/llvm/gc.rs` where we centralize the constant/helper for tests/experiments.
+///
+/// Disallowing it everywhere else prevents accidental drift across modules/fixtures.
 #[test]
 fn statepoint_example_strategy_is_docs_only() {
   let native_js_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -23,7 +26,7 @@ fn statepoint_example_strategy_is_docs_only() {
   let needle_str = String::from_utf8_lossy(&needle);
   assert!(
     offenders.is_empty(),
-    "`{}` should only appear in markdown docs; found in:\n{}",
+    "`{}` should only appear in markdown docs or native-js/src/llvm/gc.rs; found in:\n{}",
     needle_str,
     offenders.join("\n")
   );
@@ -76,6 +79,11 @@ fn should_skip_dir(name: &OsStr) -> bool {
 }
 
 fn should_skip_file(path: &Path) -> bool {
+  // Allow the demo strategy in `native-js/src/llvm/gc.rs` (centralized helper/constant).
+  if path.ends_with(Path::new("native-js/src/llvm/gc.rs")) {
+    return true;
+  }
+
   // Allow the demo strategy name (`statepoint-` + `example`) in markdown docs (where we mention it
   // as an alternative strategy).
   if path.extension().and_then(|e| e.to_str()) == Some("md") {
