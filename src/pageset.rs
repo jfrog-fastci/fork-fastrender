@@ -212,6 +212,11 @@ fn canonicalize_pageset_url(value: &str) -> Option<String> {
   if host.is_empty() {
     return None;
   }
+  let host = if host.contains(':') && !host.starts_with('[') {
+    format!("[{host}]")
+  } else {
+    host.to_string()
+  };
   let mut out = format!("{scheme}://{host}");
   if let Some(port) = parsed.port() {
     let default_port = match scheme.as_str() {
@@ -479,6 +484,22 @@ mod tests {
     assert_eq!(
       canonicalize_pageset_url("HTTPS://WWW.Example.com./path#frag").as_deref(),
       Some("https://example.com/path")
+    );
+  }
+
+  #[test]
+  fn canonicalize_pageset_url_brackets_ipv6_hosts() {
+    assert_eq!(
+      canonicalize_pageset_url("https://[::1]/path?x=1#frag").as_deref(),
+      Some("https://[::1]/path?x=1")
+    );
+    assert_eq!(
+      canonicalize_pageset_url("https://[::1]:443/path").as_deref(),
+      Some("https://[::1]/path")
+    );
+    assert_eq!(
+      canonicalize_pageset_url("https://[::1]:8443/path").as_deref(),
+      Some("https://[::1]:8443/path")
     );
   }
 
