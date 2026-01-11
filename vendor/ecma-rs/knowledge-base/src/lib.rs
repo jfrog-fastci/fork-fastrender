@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 mod ids;
@@ -298,8 +298,16 @@ impl ApiDatabase {
   }
 
   pub fn validate(&self) -> Result<(), KnowledgeBaseError> {
-    build_alias_map(&self.apis)?;
-    build_id_map(&self.apis, &self.sources)?;
+    let aliases = build_alias_map(&self.apis)?;
+    debug_assert_eq!(
+      aliases, self.aliases,
+      "ApiDatabase internal alias map is out of sync; please rebuild the database"
+    );
+    let ids = build_id_map(&self.apis, &self.sources)?;
+    debug_assert_eq!(
+      ids, self.ids,
+      "ApiDatabase internal ApiId map is out of sync; please rebuild the database"
+    );
     self.warn_inconsistent_metadata();
     Ok(())
   }
@@ -487,8 +495,7 @@ struct ApiBodyRaw {
   properties: BTreeMap<String, JsonValue>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 enum EffectsRaw {
   Template(EffectTemplate),
   Details(EffectsDetailsRaw),
@@ -497,6 +504,50 @@ enum EffectsRaw {
 impl Default for EffectsRaw {
   fn default() -> Self {
     Self::Template(EffectTemplate::Unknown)
+  }
+}
+
+impl<'de> Deserialize<'de> for EffectsRaw {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    let value = JsonValue::deserialize(deserializer)?;
+
+    // Backwards compatibility: older KB entries (and some tests) used
+    // `DependsOnCallback` / `depends_on_callback` as a scalar. The effect-model
+    // now represents this as `DependsOnArgs { base, args }`.
+    if let JsonValue::String(s) = &value {
+      let token = s.trim().to_ascii_lowercase();
+      if token == "dependsoncallback" || token == "depends_on_callback" {
+        return Ok(Self::Template(EffectTemplate::DependsOnArgs {
+          base: EffectSet::MAY_THROW,
+          args: vec![0],
+        }));
+      }
+    }
+
+    // Prefer parsing as the canonical `EffectTemplate` (e.g. `Pure`, `Io`,
+    // `Custom: { flags, throws }`) and fall back to the more permissive details
+    // mapping (`{ template, allocates, io, ... }`).
+    let template_res = serde_json::from_value::<EffectTemplate>(value.clone());
+    if let Ok(template) = template_res {
+      return Ok(Self::Template(template));
+    }
+    let details_res = serde_json::from_value::<EffectsDetailsRaw>(value);
+    if let Ok(details) = details_res {
+      return Ok(Self::Details(details));
+    }
+
+    Err(D::Error::custom(format!(
+      "effects did not match EffectTemplate ({}) or EffectsDetailsRaw ({})",
+      template_res
+        .err()
+        .expect("template parse failed but error was None"),
+      details_res
+        .err()
+        .expect("details parse failed but error was None")
+    )))
   }
 }
 
@@ -521,8 +572,7 @@ struct EffectsDetailsRaw {
   nondeterministic: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 enum PurityRaw {
   Template(PurityTemplate),
   Details(PurityDetailsRaw),
@@ -531,6 +581,49 @@ enum PurityRaw {
 impl Default for PurityRaw {
   fn default() -> Self {
     Self::Template(PurityTemplate::Unknown)
+  }
+}
+
+impl<'de> Deserialize<'de> for PurityRaw {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    let value = JsonValue::deserialize(deserializer)?;
+
+    // Backwards compatibility: older KB entries used `DependsOnCallback` /
+    // `depends_on_callback` as a scalar. The effect-model now represents this
+    // as `DependsOnArgs { base, args }`.
+    if let JsonValue::String(s) = &value {
+      let token = s.trim().to_ascii_lowercase();
+      if token == "dependsoncallback" || token == "depends_on_callback" {
+        return Ok(Self::Template(PurityTemplate::DependsOnArgs {
+          base: Purity::Pure,
+          args: vec![0],
+        }));
+      }
+    }
+
+    // Prefer parsing as a `PurityTemplate` (e.g. `Pure`, `ReadOnly`) and fall
+    // back to the detail mapping (`{ template: ... }`).
+    let template_res = serde_json::from_value::<PurityTemplate>(value.clone());
+    if let Ok(template) = template_res {
+      return Ok(Self::Template(template));
+    }
+    let details_res = serde_json::from_value::<PurityDetailsRaw>(value);
+    if let Ok(details) = details_res {
+      return Ok(Self::Details(details));
+    }
+
+    Err(D::Error::custom(format!(
+      "purity did not match PurityTemplate ({}) or PurityDetailsRaw ({})",
+      template_res
+        .err()
+        .expect("template parse failed but error was None"),
+      details_res
+        .err()
+        .expect("details parse failed but error was None")
+    )))
   }
 }
 
@@ -646,12 +739,11 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, 
         flags |= EffectSet::UNKNOWN;
       }
 
-      let may_throw = match details.may_throw {
-        Some(v) => v,
-        None => throws
-          .and_then(parse_throw_behavior)
-          .map(|b| !matches!(b, ThrowBehavior::Never))
-          .unwrap_or_else(|| template != "pure"),
+      // Prefer the explicit `throws:` field (used by newer entries) over the
+      // legacy `effects.may_throw` boolean.
+      let may_throw = match throws.and_then(parse_throw_behavior) {
+        Some(throws) => !matches!(throws, ThrowBehavior::Never),
+        None => details.may_throw.unwrap_or_else(|| template != "pure"),
       };
       if may_throw {
         flags |= EffectSet::MAY_THROW;
