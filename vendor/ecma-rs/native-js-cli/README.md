@@ -274,12 +274,20 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   run path/to/entry.ts
 ```
 
+Pass arguments to the generated executable by putting them after `--`:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  run path/to/entry.ts -- arg1 arg2
+```
+
 ### Options (selected)
 
 - `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
   for module resolution.
 - `--emit=llvm-ir|bc|obj|asm --emit-path <PATH>`: write an intermediate artifact.
 - `--opt=0|1|2|3`: set the LLVM target machine optimization level.
+- `--debug`: best-effort debug build (passes `-g` to the system linker).
 
 ### Diagnostics
 
