@@ -286,6 +286,18 @@ fn strict_native_mode_inlines_const_enums() {
 }
 
 #[test]
+fn strict_native_mode_erases_exported_const_enum_bindings() {
+  let src = r#"
+    export const enum E { A = 1 }
+    export const x = E.A;
+    export { E, E as Alias };
+  "#;
+
+  let output = strict_erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert_eq!(output, "export const x=1;");
+}
+
+#[test]
 fn full_mode_lowers_runtime_ts_constructs() {
   let src = r#"
     export enum E { A, B = 5 }
