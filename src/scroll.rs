@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::geometry::{Point, Rect, Size};
+use crate::paint::display_list::Transform3D;
 use crate::style::position::Position;
 use crate::style::types::{
   Direction, Overflow, OverscrollBehavior, ScrollBehavior, ScrollSnapAlign, ScrollSnapAxis,
@@ -600,7 +601,28 @@ fn annotate_overflow(node: &mut FragmentNode, has_fixed_cb_ancestor: bool, viewp
       }
     }
 
-    if let Some(clipped) = clip.intersect_rect(translated) {
+    if let Some(mut clipped) = clip.intersect_rect(translated) {
+      // CSS transforms affect the visual overflow of descendants. The scrollable overflow region is
+      // defined in terms of *painted* boxes, so account for transforms when propagating child
+      // overflow into ancestors.
+      if let Some(style) = child_style {
+        if style.has_transform() || style.has_motion_path() {
+          let bounds = Rect::from_xywh(
+            child.bounds.x(),
+            child.bounds.y(),
+            child.bounds.width(),
+            child.bounds.height(),
+          );
+          if let Some(transform) = crate::paint::transform_resolver::resolve_transform3d(
+            style,
+            bounds,
+            Some((viewport.width, viewport.height)),
+          ) {
+            clipped = transform.transform_rect(clipped);
+          }
+        }
+      }
+
       overflow = overflow.union(clipped);
     }
   }
@@ -1434,6 +1456,7 @@ fn collect_bounds(
   clip: AxisClipRect,
   root: bool,
   viewport: Size,
+  transform: Transform3D,
   has_fixed_cb_ancestor: bool,
 ) {
   // Viewport-fixed descendants do not participate in scrollable overflow for any ancestor scroll
@@ -1455,6 +1478,24 @@ fn collect_bounds(
     node.bounds.height(),
   );
 
+  let next_transform = node.style.as_deref().and_then(|style| {
+    if style.has_transform() || style.has_motion_path() {
+      crate::paint::transform_resolver::resolve_transform3d(
+        style,
+        rect,
+        Some((viewport.width, viewport.height)),
+      )
+    } else {
+      None
+    }
+  });
+  let transform = if let Some(next_transform) = next_transform {
+    transform.multiply(&next_transform)
+  } else {
+    transform
+  };
+  let rect = transform.transform_rect(rect);
+
   // When bubbling descendant bounds into ancestor scroll containers, apply clipping established by
   // intermediate overflow/clip ancestors. Overflow clipping uses the scrollport (padding edge minus
   // any reserved scrollbar gutters), while CSS2.1 `clip: rect()` applies to the border box.
@@ -1465,7 +1506,7 @@ fn collect_bounds(
       let clip_y = overflow_axis_clips(style.overflow_y);
       if clip_x || clip_y {
         let local_clip = overflow_clip_rect(node, style, viewport);
-        let clip_rect = local_clip.translate(origin);
+        let clip_rect = transform.transform_rect(local_clip.translate(origin));
         let Some(updated) = node_clip.clip_to_rect_on_axes(clip_rect, clip_x, clip_y) else {
           return;
         };
@@ -1473,7 +1514,7 @@ fn collect_bounds(
       }
 
       if let Some(local_clip) = clip_rect_from_style(node, style, viewport) {
-        let clip_rect = local_clip.translate(origin);
+        let clip_rect = transform.transform_rect(local_clip.translate(origin));
         let Some(updated) = node_clip.clip_to_rect_on_axes(clip_rect, true, true) else {
           return;
         };
@@ -1496,14 +1537,6 @@ fn collect_bounds(
       .is_some_and(|style| style.establishes_fixed_containing_block());
 
   for child in node.children.iter() {
-    let child_is_viewport_fixed = child
-      .style
-      .as_deref()
-      .is_some_and(|style| matches!(style.position, Position::Fixed))
-      && !has_fixed_cb_ancestor;
-    if child_is_viewport_fixed {
-      continue;
-    }
     let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
     collect_bounds(
       child,
@@ -1512,6 +1545,7 @@ fn collect_bounds(
       child_clip,
       false,
       viewport,
+      transform,
       has_fixed_cb_ancestor,
     );
   }
@@ -1607,6 +1641,7 @@ pub(crate) fn scroll_bounds_for_fragment(
       AxisClipRect::unbounded(),
       false,
       viewport_for_units,
+      Transform3D::identity(),
       has_fixed_cb_ancestor_for_children,
     );
   }

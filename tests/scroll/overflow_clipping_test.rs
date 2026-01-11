@@ -1,3 +1,4 @@
+use fastrender::css::types::Transform;
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::{apply_scroll_snap, build_scroll_chain, ScrollState};
 use fastrender::style::types::{BorderStyle, Overflow, ScrollSnapAxis};
@@ -196,6 +197,49 @@ fn scroll_overflow_clips_to_padding_box_not_border_box() {
   assert!(
     (chain[0].bounds.max_y - 10.0).abs() < 1e-3,
     "scroll bounds should be derived from the clipped scrollport; got {:#?}",
+    chain[0].bounds
+  );
+}
+
+#[test]
+fn scroll_overflow_accounts_for_child_transforms() {
+  let mut root_style = ComputedStyle::default();
+  root_style.overflow_x = Overflow::Scroll;
+  root_style.overflow_y = Overflow::Scroll;
+  let root_style = Arc::new(root_style);
+
+  let mut child_style = ComputedStyle::default();
+  // Place the child partially outside the scrollport, then translate it left by 50% of its own
+  // size. The transformed box should not inflate the parent's scrollable overflow.
+  child_style
+    .transform
+    .push(Transform::Translate(Length::percent(-50.0), Length::percent(0.0)));
+  let child_style = Arc::new(child_style);
+
+  let child = FragmentNode::new_block_styled(
+    Rect::from_xywh(80.0, 0.0, 40.0, 20.0),
+    vec![],
+    child_style,
+  );
+  let root = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![child],
+    root_style,
+  );
+  let mut tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
+  tree.ensure_scroll_metadata();
+
+  assert!(
+    (tree.root.scroll_overflow.max_x() - 100.0).abs() < 1e-3,
+    "expected transformed child to fit within the scrollport; got {:#?}",
+    tree.root.scroll_overflow
+  );
+
+  let chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[]);
+  assert_eq!(chain.len(), 1);
+  assert!(
+    chain[0].bounds.max_x.abs() < 1e-3,
+    "expected no horizontal scroll range; got {:#?}",
     chain[0].bounds
   );
 }
