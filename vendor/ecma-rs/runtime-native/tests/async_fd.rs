@@ -163,3 +163,35 @@ fn drop_cancels_waiter() {
 
   assert!(!woke.load(Ordering::SeqCst), "dropped waiter was spuriously woken");
 }
+
+#[test]
+fn repoll_replaces_waker() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, wfd) = pipe().unwrap();
+  let afd = AsyncFd::new(rfd);
+
+  let woke1 = Arc::new(AtomicBool::new(false));
+  let waker1 = flag_waker(woke1.clone());
+  let mut cx1 = Context::from_waker(&waker1);
+
+  let woke2 = Arc::new(AtomicBool::new(false));
+  let waker2 = flag_waker(woke2.clone());
+  let mut cx2 = Context::from_waker(&waker2);
+
+  let mut fut = Box::pin(afd.readable());
+  assert!(matches!(fut.as_mut().poll(&mut cx1), Poll::Pending));
+  assert!(matches!(fut.as_mut().poll(&mut cx2), Poll::Pending));
+
+  write_byte(wfd.as_raw_fd());
+
+  let deadline = Instant::now() + Duration::from_secs(1);
+  while !woke2.load(Ordering::SeqCst) {
+    assert!(Instant::now() < deadline, "timed out waiting for waker wake");
+    rt_async_poll();
+  }
+
+  assert!(
+    !woke1.load(Ordering::SeqCst),
+    "first waker was woken after being replaced"
+  );
+}
