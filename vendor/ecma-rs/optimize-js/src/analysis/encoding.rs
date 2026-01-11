@@ -2,6 +2,7 @@ use crate::analysis::dataflow::{
   AnalysisBoundary, BlockState, DataFlowAnalysis, DataFlowResult, Direction,
   ResolvedAnalysisBoundary,
 };
+use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, StringEncoding, UnOp};
 use ahash::HashMap;
@@ -65,6 +66,25 @@ pub struct EncodingResult {
 }
 
 impl EncodingResult {
+  /// State at basic block entry, after merging all incoming edges.
+  pub fn state_at_block_entry(&self, label: u32) -> Option<&EncodingState> {
+    self.block_entry(label)
+  }
+
+  /// State at basic block exit.
+  pub fn state_at_block_exit(&self, label: u32) -> Option<&EncodingState> {
+    self.block_exit(label)
+  }
+
+  /// State flowing into `edge.to` along the given edge.
+  ///
+  /// Encoding analysis is not edge-sensitive, so the incoming state is the same
+  /// as the source block's exit state.
+  pub fn state_at_edge_entry(&self, edge: Edge) -> Option<&EncodingState> {
+    let _ = edge.to;
+    self.block_exit(edge.from)
+  }
+
   pub fn block_entry(&self, label: u32) -> Option<&EncodingState> {
     self.blocks.get(&label).map(|b| &b.entry)
   }
@@ -85,6 +105,47 @@ impl EncodingResult {
       .block_exit(label)
       .map(|state| state.get(var))
       .unwrap_or(StringEncoding::Unknown)
+  }
+
+  /// Compute the analysis state immediately before `inst_idx` in `label`.
+  ///
+  /// This is computed by replaying the transfer function inside the block from
+  /// the stored block entry state. This avoids storing per-instruction states.
+  pub fn state_before_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> EncodingState {
+    let entry = self
+      .block_entry(label)
+      .cloned()
+      .unwrap_or_else(EncodingState::bottom);
+    let mut analysis = EncodingAnalysis;
+    replay_forward_before_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
+      analysis.apply_to_instruction(label, inst_idx, inst, state);
+    })
+  }
+
+  /// Compute the analysis state immediately after `inst_idx` in `label`.
+  pub fn state_after_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> EncodingState {
+    let entry = self
+      .block_entry(label)
+      .cloned()
+      .unwrap_or_else(EncodingState::bottom);
+    let mut analysis = EncodingAnalysis;
+    replay_forward_after_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
+      analysis.apply_to_instruction(label, inst_idx, inst, state);
+    })
+  }
+
+  pub fn state_before_loc(&self, cfg: &Cfg, loc: InstLoc) -> EncodingState {
+    self.state_before_inst(cfg, loc.block, loc.inst)
+  }
+
+  pub fn state_after_loc(&self, cfg: &Cfg, loc: InstLoc) -> EncodingState {
+    self.state_after_inst(cfg, loc.block, loc.inst)
+  }
+
+  pub fn fact_for_arg(&self, state: &EncodingState, arg: &Arg) -> StringEncoding {
+    let _ = self;
+    let analysis = EncodingAnalysis;
+    analysis.encoding_of_arg(state, arg)
   }
 }
 

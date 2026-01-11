@@ -1,4 +1,5 @@
 use crate::analysis::dataflow_edge::{ForwardEdgeDataFlowAnalysis, ForwardEdgeDataFlowResult};
+use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
 use std::fmt;
@@ -195,6 +196,21 @@ pub struct NullabilityResult {
 }
 
 impl NullabilityResult {
+  /// State at basic block entry, after merging all incoming edges.
+  pub fn state_at_block_entry(&self, label: u32) -> Option<&State> {
+    self.result.block_entry.get(&label)
+  }
+
+  /// State at basic block exit, before successor-specific edge refinement.
+  pub fn state_at_block_exit(&self, label: u32) -> Option<&State> {
+    self.result.block_exit.get(&label)
+  }
+
+  /// State flowing into `edge.to` along the given edge.
+  pub fn state_at_edge_entry(&self, edge: Edge) -> Option<&State> {
+    self.result.edge_out.get(&(edge.from, edge.to))
+  }
+
   pub fn entry_state(&self, label: u32) -> &State {
     &self.result.block_entry[&label]
   }
@@ -215,6 +231,48 @@ impl NullabilityResult {
     self.entry_state(label).mask_of_var(var)
   }
 
+  /// Compute the analysis state immediately before `inst_idx` in `label`.
+  ///
+  /// This is computed by replaying the instruction transfer function inside the
+  /// block starting from the stored block entry state.
+  pub fn state_before_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> State {
+    let entry = self.entry_state(label).clone();
+    let mut analysis = NullabilityAnalysis {
+      var_count: entry.masks.len(),
+    };
+    replay_forward_before_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
+      analysis.apply_to_instruction(label, inst_idx, inst, state);
+    })
+  }
+
+  /// Compute the analysis state immediately after `inst_idx` in `label`.
+  pub fn state_after_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> State {
+    let entry = self.entry_state(label).clone();
+    let mut analysis = NullabilityAnalysis {
+      var_count: entry.masks.len(),
+    };
+    replay_forward_after_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
+      analysis.apply_to_instruction(label, inst_idx, inst, state);
+    })
+  }
+
+  pub fn state_before_loc(&self, cfg: &Cfg, loc: InstLoc) -> State {
+    self.state_before_inst(cfg, loc.block, loc.inst)
+  }
+
+  pub fn state_after_loc(&self, cfg: &Cfg, loc: InstLoc) -> State {
+    self.state_after_inst(cfg, loc.block, loc.inst)
+  }
+
+  pub fn fact_for_arg(&self, state: &State, arg: &Arg) -> NullabilityMask {
+    let _ = self;
+    match arg {
+      Arg::Var(v) => state.mask_of_var(*v),
+      Arg::Const(c) => const_mask(c),
+      Arg::Builtin(_) | Arg::Fn(_) => NullabilityMask::OTHER,
+    }
+  }
+
   /// Convenience helper for tests/clients that need instruction-level precision.
   ///
   /// Returns the nullability mask for `var` immediately *before* `inst_idx` in `label`.
@@ -225,20 +283,7 @@ impl NullabilityResult {
     inst_idx: usize,
     var: u32,
   ) -> NullabilityMask {
-    let mut state = self.entry_state(label).clone();
-    if !state.reachable {
-      return NullabilityMask::BOTTOM;
-    }
-    let mut analysis = NullabilityAnalysis {
-      var_count: state.masks.len(),
-    };
-    for (idx, inst) in cfg.bblocks.get(label).iter().enumerate().take(inst_idx) {
-      analysis.apply_to_instruction(label, idx, inst, &mut state);
-      if !state.reachable {
-        return NullabilityMask::BOTTOM;
-      }
-    }
-    state.mask_of_var(var)
+    self.state_before_inst(cfg, label, inst_idx).mask_of_var(var)
   }
 
   pub fn nullability_of_arg(&self, state: &State, arg: &Arg) -> NullishFlags {

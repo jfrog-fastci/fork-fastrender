@@ -1,5 +1,6 @@
 use crate::analysis::dataflow::BlockState;
 use crate::analysis::dataflow_edge::{ForwardEdgeDataFlowAnalysis, ForwardEdgeDataFlowResult};
+use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
 use crate::cfg::cfg::Cfg;
 use crate::dom::Dom;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
@@ -197,15 +198,35 @@ impl RangeState {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct RangeResult {
   pub blocks: HashMap<u32, BlockState<RangeState>>,
+  pub edges: HashMap<Edge, RangeState>,
 }
  
 impl RangeResult {
+  /// State at basic block entry, after merging all incoming edges.
   pub fn entry(&self, label: u32) -> Option<&RangeState> {
     self.blocks.get(&label).map(|b| &b.entry)
   }
- 
+
+  pub fn state_at_block_entry(&self, label: u32) -> Option<&RangeState> {
+    self.entry(label)
+  }
+
+  /// State at basic block exit, before successor-specific edge refinement.
   pub fn exit(&self, label: u32) -> Option<&RangeState> {
     self.blocks.get(&label).map(|b| &b.exit)
+  }
+
+  pub fn state_at_block_exit(&self, label: u32) -> Option<&RangeState> {
+    self.exit(label)
+  }
+
+  /// State flowing into `edge.to` along the given edge.
+  pub fn edge_entry(&self, edge: Edge) -> Option<&RangeState> {
+    self.edges.get(&edge)
+  }
+
+  pub fn state_at_edge_entry(&self, edge: Edge) -> Option<&RangeState> {
+    self.edge_entry(edge)
   }
  
   pub fn var_at_entry(&self, label: u32, var: u32) -> Option<IntRange> {
@@ -215,6 +236,56 @@ impl RangeResult {
   pub fn var_at_exit(&self, label: u32, var: u32) -> Option<IntRange> {
     self.exit(label).map(|s| s.get_var_query(var))
   }
+
+  pub fn var_at_edge(&self, edge: Edge, var: u32) -> Option<IntRange> {
+    self.edge_entry(edge).map(|s| s.get_var_query(var))
+  }
+
+  /// Compute the analysis state immediately before `inst_idx` in `label`.
+  ///
+  /// This is computed by replaying the instruction transfer function inside the
+  /// block starting from the stored block entry state.
+  pub fn state_before_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> RangeState {
+    let entry = self.entry(label).cloned().unwrap_or(RangeState::Unreachable);
+    // `apply_to_instruction` does not depend on the loop header metadata, so we
+    // can use a lightweight dummy analysis instance for replay.
+    let mut analysis = RangeAnalysis {
+      back_preds: HashMap::default(),
+      entry_vars: Vec::new(),
+    };
+    replay_forward_before_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
+      analysis.apply_to_instruction(label, inst_idx, inst, state);
+    })
+  }
+
+  /// Compute the analysis state immediately after `inst_idx` in `label`.
+  pub fn state_after_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> RangeState {
+    let entry = self.entry(label).cloned().unwrap_or(RangeState::Unreachable);
+    let mut analysis = RangeAnalysis {
+      back_preds: HashMap::default(),
+      entry_vars: Vec::new(),
+    };
+    replay_forward_after_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
+      analysis.apply_to_instruction(label, inst_idx, inst, state);
+    })
+  }
+
+  pub fn state_before_loc(&self, cfg: &Cfg, loc: InstLoc) -> RangeState {
+    self.state_before_inst(cfg, loc.block, loc.inst)
+  }
+
+  pub fn state_after_loc(&self, cfg: &Cfg, loc: InstLoc) -> RangeState {
+    self.state_after_inst(cfg, loc.block, loc.inst)
+  }
+
+  pub fn fact_for_arg(&self, state: &RangeState, arg: &Arg) -> IntRange {
+    let _ = self;
+    match arg {
+      Arg::Const(c) => RangeAnalysis::const_range(c),
+      Arg::Var(v) => state.get_var_query(*v),
+      _ => IntRange::top(),
+    }
+  }
 }
  
 pub fn analyze_ranges(cfg: &Cfg) -> RangeResult {
@@ -222,6 +293,7 @@ pub fn analyze_ranges(cfg: &Cfg) -> RangeResult {
   let ForwardEdgeDataFlowResult {
     block_entry,
     block_exit,
+    edge_out,
     ..
   } = analysis.analyze(cfg, cfg.entry);
   let mut blocks = HashMap::<u32, BlockState<RangeState>>::default();
@@ -229,7 +301,11 @@ pub fn analyze_ranges(cfg: &Cfg) -> RangeResult {
     let exit = block_exit.get(&label).cloned().unwrap_or(RangeState::Unreachable);
     blocks.insert(label, BlockState { entry, exit });
   }
-  RangeResult { blocks }
+  let edges = edge_out
+    .into_iter()
+    .map(|((from, to), state)| (Edge { from, to }, state))
+    .collect();
+  RangeResult { blocks, edges }
 }
  
 struct RangeAnalysis {
