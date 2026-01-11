@@ -274,4 +274,5 @@ codegen-units = 1
 strip = true
 
 [patch.crates-io]
+cmake = { path = "vendor/cmake" }
 selectors = { path = "vendor/selectors" }

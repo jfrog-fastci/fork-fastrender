@@ -1776,10 +1776,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         Some(CachedHttpMetadata {
           stored_at: stored_time,
           max_age: None,
+          s_maxage: None,
           expires: None,
           date: None,
           age: None,
           stale_if_error: None,
+          stale_while_revalidate: None,
           last_modified: None,
           no_cache: false,
           no_store: true,
@@ -1837,10 +1839,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       self.disk_config.max_age.map(|max_age| CachedHttpMetadata {
         stored_at: stored_time,
         max_age: Some(max_age),
+        s_maxage: None,
         expires: None,
         date: None,
         age: None,
         stale_if_error: None,
+        stale_while_revalidate: None,
         last_modified: None,
         no_cache: false,
         no_store: false,
@@ -2403,7 +2407,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     if let Some(existing_vary) = existing_vary.as_deref() {
       // Avoid overwriting an existing vary bucket (e.g. from a successful response) with the
       // conservative error partitioning vary list.
-      if existing_vary != super::INFLIGHT_VARY_SIGNATURE_HEADERS {
+      if existing_vary != super::inflight_vary_signature_headers() {
         return;
       }
     }
@@ -2419,7 +2423,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let Some(vary_key) = super::compute_vary_key_for_request(
       &self.memory.inner,
       request,
-      Some(super::INFLIGHT_VARY_SIGNATURE_HEADERS),
+      Some(super::inflight_vary_signature_headers()),
     ) else {
       return;
     };
@@ -2444,10 +2448,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let cache_metadata = CachedHttpMetadata {
       stored_at: stored_time,
       max_age: None,
+      s_maxage: None,
       expires: None,
       date: None,
       age: None,
       stale_if_error: None,
+      stale_while_revalidate: None,
       last_modified: None,
       no_cache: false,
       no_store: true,
@@ -2527,7 +2533,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       .index
       .record_insert(&key, stored_at, 0, &data_path, &meta_path);
 
-    self.persist_vary_for_base_key(&base_key, Some(super::INFLIGHT_VARY_SIGNATURE_HEADERS));
+    self.persist_vary_for_base_key(&base_key, Some(super::inflight_vary_signature_headers()));
 
     drop(entry_lock);
 
@@ -3533,10 +3539,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                       http_cache: Some(CachedHttpMetadata {
                         stored_at,
                         max_age: None,
+                        s_maxage: None,
                         expires: None,
                         date: None,
                         age: None,
                         stale_if_error: None,
+                        stale_while_revalidate: None,
                         last_modified: None,
                         no_cache: false,
                         no_store: true,
@@ -3844,12 +3852,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               if let Some(vary_key) = super::compute_vary_key_for_request(
                 &self.memory.inner,
                 request,
-                Some(super::INFLIGHT_VARY_SIGNATURE_HEADERS),
+                Some(super::inflight_vary_signature_headers()),
               ) {
                 self.memory.cache_entry(
                   &key,
                   request,
-                  Some(super::INFLIGHT_VARY_SIGNATURE_HEADERS.to_string()),
+                  Some(super::inflight_vary_signature_headers().to_string()),
                   vary_key,
                   super::CacheEntry {
                     value: super::CacheValue::Error(err.clone()),
@@ -4421,6 +4429,8 @@ impl StoredAlias {
 pub(super) struct StoredCacheMetadata {
   stored_at: u64,
   max_age: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  s_maxage: Option<u64>,
   expires: Option<u64>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   date: Option<u64>,
@@ -4428,6 +4438,8 @@ pub(super) struct StoredCacheMetadata {
   age: Option<u64>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   stale_if_error: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  stale_while_revalidate: Option<u64>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   last_modified: Option<u64>,
   no_cache: bool,
@@ -4440,10 +4452,12 @@ impl StoredCacheMetadata {
     Some(Self {
       stored_at: system_time_to_secs(meta.stored_at)?,
       max_age: meta.max_age.map(|d| d.as_secs()),
+      s_maxage: meta.s_maxage.map(|d| d.as_secs()),
       expires: meta.expires.and_then(system_time_to_secs),
       date: meta.date.and_then(system_time_to_secs),
       age: meta.age.map(|d| d.as_secs()),
       stale_if_error: meta.stale_if_error.map(|d| d.as_secs()),
+      stale_while_revalidate: meta.stale_while_revalidate.map(|d| d.as_secs()),
       last_modified: meta.last_modified.and_then(system_time_to_secs),
       no_cache: meta.no_cache,
       no_store: meta.no_store,
@@ -4456,10 +4470,12 @@ impl StoredCacheMetadata {
     Some(CachedHttpMetadata {
       stored_at,
       max_age: self.max_age.map(Duration::from_secs),
+      s_maxage: self.s_maxage.map(Duration::from_secs),
       expires: self.expires.and_then(secs_to_system_time),
       date: self.date.and_then(secs_to_system_time),
       age: self.age.map(Duration::from_secs),
       stale_if_error: self.stale_if_error.map(Duration::from_secs),
+      stale_while_revalidate: self.stale_while_revalidate.map(Duration::from_secs),
       last_modified: self.last_modified.and_then(secs_to_system_time),
       no_cache: self.no_cache,
       no_store: self.no_store,
@@ -4470,6 +4486,7 @@ impl StoredCacheMetadata {
   fn to_policy(&self) -> HttpCachePolicy {
     HttpCachePolicy {
       max_age: self.max_age,
+      s_maxage: self.s_maxage,
       no_cache: self.no_cache,
       no_store: self.no_store,
       must_revalidate: self.must_revalidate,
@@ -4477,6 +4494,7 @@ impl StoredCacheMetadata {
       date: self.date.and_then(secs_to_system_time),
       age: self.age,
       stale_if_error: self.stale_if_error,
+      stale_while_revalidate: self.stale_while_revalidate,
       last_modified: self.last_modified.and_then(secs_to_system_time),
     }
   }
@@ -7399,10 +7417,12 @@ mod tests {
     let cache_meta = CachedHttpMetadata {
       stored_at: stored_time,
       max_age: Some(Duration::from_secs(120)),
+      s_maxage: None,
       expires: None,
       date: None,
       age: Some(Duration::from_secs(200)),
       stale_if_error: Some(Duration::from_secs(300)),
+      stale_while_revalidate: None,
       last_modified: None,
       no_cache: false,
       no_store: false,
@@ -9605,6 +9625,7 @@ mod tests {
           cache: Some(StoredCacheMetadata {
             stored_at: 0,
             max_age: None,
+            s_maxage: None,
             expires: None,
             no_cache: false,
             no_store: true,
@@ -9612,6 +9633,7 @@ mod tests {
             date: None,
             age: None,
             stale_if_error: None,
+            stale_while_revalidate: None,
             last_modified: None,
           }),
           error: Some("boom".to_string()),

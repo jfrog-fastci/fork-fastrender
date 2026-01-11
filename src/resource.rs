@@ -2429,6 +2429,7 @@ pub fn normalize_user_agent_for_log(ua: &str) -> &str {
 #[derive(Debug, Clone, Default)]
 pub struct HttpCachePolicy {
   pub max_age: Option<u64>,
+  pub s_maxage: Option<u64>,
   pub no_cache: bool,
   pub no_store: bool,
   pub must_revalidate: bool,
@@ -2439,6 +2440,8 @@ pub struct HttpCachePolicy {
   pub age: Option<u64>,
   /// Parsed `Cache-Control: stale-if-error=<seconds>` directive, when present.
   pub stale_if_error: Option<u64>,
+  /// Parsed `Cache-Control: stale-while-revalidate=<seconds>` directive, when present.
+  pub stale_while_revalidate: Option<u64>,
   /// Parsed `Last-Modified` response header (RFC 9110 HTTP-date), when present.
   ///
   /// Stored separately from [`FetchedResource::last_modified`], which preserves the raw header
@@ -2449,11 +2452,13 @@ pub struct HttpCachePolicy {
 impl HttpCachePolicy {
   fn is_empty(&self) -> bool {
     self.max_age.is_none()
+      && self.s_maxage.is_none()
       && !self.no_cache
       && !self.no_store
       && !self.must_revalidate
       && self.expires.is_none()
       && self.stale_if_error.is_none()
+      && self.stale_while_revalidate.is_none()
       && self.last_modified.is_none()
   }
 }
@@ -2462,10 +2467,12 @@ impl HttpCachePolicy {
 struct CachedHttpMetadata {
   stored_at: SystemTime,
   max_age: Option<Duration>,
+  s_maxage: Option<Duration>,
   expires: Option<SystemTime>,
   date: Option<SystemTime>,
   age: Option<Duration>,
   stale_if_error: Option<Duration>,
+  stale_while_revalidate: Option<Duration>,
   last_modified: Option<SystemTime>,
   no_cache: bool,
   no_store: bool,
@@ -2480,10 +2487,12 @@ impl CachedHttpMetadata {
     Some(Self {
       stored_at,
       max_age: policy.max_age.map(Duration::from_secs),
+      s_maxage: policy.s_maxage.map(Duration::from_secs),
       expires: policy.expires,
       date: policy.date,
       age: policy.age.map(Duration::from_secs),
       stale_if_error: policy.stale_if_error.map(Duration::from_secs),
+      stale_while_revalidate: policy.stale_while_revalidate.map(Duration::from_secs),
       last_modified: policy.last_modified,
       no_cache: policy.no_cache,
       no_store: policy.no_store,
@@ -2541,6 +2550,9 @@ impl CachedHttpMetadata {
 
   fn freshness_lifetime(&self) -> Option<Duration> {
     // RFC 9111 §4.2.1.
+    if let Some(max_age) = self.s_maxage {
+      return Some(max_age);
+    }
     if let Some(max_age) = self.max_age {
       return Some(max_age);
     }
@@ -2571,6 +2583,18 @@ impl CachedHttpMetadata {
 
   fn within_stale_if_error(&self, now: SystemTime, freshness_cap: Option<Duration>) -> bool {
     let Some(window) = self.stale_if_error else {
+      return false;
+    };
+    let lifetime = self
+      .freshness_lifetime()
+      .unwrap_or(Duration::ZERO)
+      .min(freshness_cap.unwrap_or(Duration::MAX));
+    let age = self.current_age(now);
+    age <= lifetime.saturating_add(window)
+  }
+
+  fn within_stale_while_revalidate(&self, now: SystemTime, freshness_cap: Option<Duration>) -> bool {
+    let Some(window) = self.stale_while_revalidate else {
       return false;
     };
     let lifetime = self
@@ -4054,6 +4078,103 @@ fn is_cors_safelisted_method(method: &str) -> bool {
   method.eq_ignore_ascii_case("GET")
     || method.eq_ignore_ascii_case("HEAD")
     || method.eq_ignore_ascii_case("POST")
+}
+
+fn is_cors_unsafe_request_header_byte(byte: u8) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-byte
+  if byte < 0x20 && byte != 0x09 {
+    return true;
+  }
+  matches!(
+    byte,
+    0x22 | 0x28 | 0x29 | 0x3A | 0x3C | 0x3E | 0x3F | 0x40 | 0x5B | 0x5C | 0x5D | 0x7B | 0x7D
+      | 0x7F
+  )
+}
+
+fn is_cors_safelisted_language_byte(byte: u8) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header
+  matches!(
+    byte,
+    b'0'..=b'9'
+      | b'A'..=b'Z'
+      | b'a'..=b'z'
+      | b' '
+      | b'*'
+      | b','
+      | b'-'
+      | b'.'
+      | b';'
+      | b'='
+  )
+}
+
+fn is_safelisted_range_header_value(value: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header (range case)
+  let trimmed = trim_http_whitespace(value);
+  let Some(rest) = trimmed
+    .strip_prefix("bytes=")
+    .or_else(|| trimmed.strip_prefix("Bytes="))
+    .or_else(|| trimmed.strip_prefix("BYTES="))
+  else {
+    return false;
+  };
+
+  let Some((start, end)) = rest.split_once('-') else {
+    return false;
+  };
+
+  if start.is_empty() {
+    return false;
+  }
+  if !start.chars().all(|c| c.is_ascii_digit()) {
+    return false;
+  }
+  if !end.is_empty() && !end.chars().all(|c| c.is_ascii_digit()) {
+    return false;
+  }
+
+  true
+}
+
+fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header
+  if value.as_bytes().len() > 128 {
+    return false;
+  }
+
+  match name {
+    "accept" => !value
+      .as_bytes()
+      .iter()
+      .copied()
+      .any(is_cors_unsafe_request_header_byte),
+    "accept-language" | "content-language" => value
+      .as_bytes()
+      .iter()
+      .copied()
+      .all(is_cors_safelisted_language_byte),
+    "content-type" => {
+      if value
+        .as_bytes()
+        .iter()
+        .copied()
+        .any(is_cors_unsafe_request_header_byte)
+      {
+        return false;
+      }
+      let essence =
+        trim_http_whitespace(value.split(';').next().unwrap_or("")).to_ascii_lowercase();
+      matches!(
+        essence.as_str(),
+        "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+      )
+    }
+    // Privileged APIs can attach a `Range` header without triggering preflight in browsers; treat it
+    // as safelisted when it follows the simple `bytes=<start>-<end>` syntax.
+    "range" => is_safelisted_range_header_value(value),
+    _ => false,
+  }
 }
 
 fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String> {
@@ -8903,11 +9024,27 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
             }
           }
         }
+        "s-maxage" => {
+          if let Some(raw) = value {
+            let raw = raw.trim_matches('"');
+            if let Ok(parsed) = raw.parse::<u64>() {
+              policy.s_maxage = Some(parsed);
+            }
+          }
+        }
         "stale-if-error" => {
           if let Some(raw) = value {
             let raw = raw.trim_matches('"');
             if let Ok(parsed) = raw.parse::<u64>() {
               policy.stale_if_error = Some(parsed);
+            }
+          }
+        }
+        "stale-while-revalidate" => {
+          if let Some(raw) = value {
+            let raw = raw.trim_matches('"');
+            if let Ok(parsed) = raw.parse::<u64>() {
+              policy.stale_while_revalidate = Some(parsed);
             }
           }
         }
@@ -10256,6 +10393,13 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
             is_stale: false,
           };
         }
+        if !is_fresh && meta.within_stale_while_revalidate(now, freshness_cap) {
+          return CachePlan {
+            cached,
+            action: CacheAction::UseCached,
+            is_stale: true,
+          };
+        }
         if self.config.stale_policy == CacheStalePolicy::UseStaleWhenDeadline
           && render_control::root_deadline()
             .as_ref()
@@ -10997,10 +11141,12 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                       http_cache: Some(CachedHttpMetadata {
                         stored_at,
                         max_age: None,
+                        s_maxage: None,
                         expires: None,
                         date: None,
                         age: None,
                         stale_if_error: None,
+                        stale_while_revalidate: None,
                         last_modified: None,
                         no_cache: false,
                         no_store: true,
@@ -22586,6 +22732,104 @@ mod tests {
   }
 
   #[test]
+  fn parse_http_cache_policy_parses_s_maxage_and_swr() {
+    let mut headers = HeaderMap::new();
+    headers.append(
+      "cache-control",
+      http::HeaderValue::from_static("max-age=0"),
+    );
+    headers.append(
+      "cache-control",
+      http::HeaderValue::from_static("s-maxage=60, stale-while-revalidate=3600"),
+    );
+
+    let policy = parse_http_cache_policy(&headers).expect("policy");
+    assert_eq!(policy.max_age, Some(0));
+    assert_eq!(policy.s_maxage, Some(60));
+    assert_eq!(policy.stale_while_revalidate, Some(3600));
+  }
+
+  #[test]
+  fn cached_http_metadata_freshness_prefers_s_maxage() {
+    let stored_at = UNIX_EPOCH
+      .checked_add(Duration::from_secs(1_000_000))
+      .unwrap();
+    let now = stored_at.checked_add(Duration::from_secs(10)).unwrap();
+
+    let policy = HttpCachePolicy {
+      max_age: Some(0),
+      s_maxage: Some(60),
+      date: Some(stored_at),
+      ..Default::default()
+    };
+    let meta = CachedHttpMetadata::from_policy(&policy, stored_at).expect("meta");
+    assert!(
+      meta.is_fresh(now, None),
+      "s-maxage should override max-age when computing freshness lifetime"
+    );
+
+    let policy_without_s_maxage = HttpCachePolicy {
+      max_age: Some(0),
+      date: Some(stored_at),
+      ..Default::default()
+    };
+    let meta_without_s_maxage =
+      CachedHttpMetadata::from_policy(&policy_without_s_maxage, stored_at).expect("meta");
+    assert!(
+      !meta_without_s_maxage.is_fresh(now, None),
+      "entry should become stale immediately when max-age=0 and no s-maxage is present"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_serves_stale_within_stale_while_revalidate() {
+    #[derive(Clone)]
+    struct CountingFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for CountingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut resource = FetchedResource::new(b"cached".to_vec(), Some("text/plain".to_string()));
+        resource.status = Some(200);
+        resource.final_url = Some(url.to_string());
+        resource.cache_policy = Some(HttpCachePolicy {
+          max_age: Some(0),
+          stale_while_revalidate: Some(3600),
+          age: Some(1),
+          ..Default::default()
+        });
+        Ok(resource)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::with_config(
+      CountingFetcher {
+        calls: Arc::clone(&calls),
+      },
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        ..CachingFetcherConfig::default()
+      },
+    );
+    let url = "https://example.com/stale-while-revalidate";
+
+    let first = cache.fetch(url).expect("seed fetch");
+    assert_eq!(first.bytes, b"cached");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let second = cache.fetch(url).expect("cached fetch");
+    assert_eq!(second.bytes, b"cached");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "entry within stale-while-revalidate should be served without a refresh fetch"
+    );
+  }
+
+  #[test]
   fn freshness_cap_limits_http_freshness() {
     let cache = CachingFetcher::with_config(
       ScriptedFetcher::new(vec![]),
@@ -22601,10 +22845,12 @@ mod tests {
     let http_cache = CachedHttpMetadata {
       stored_at,
       max_age: Some(Duration::from_secs(3600)),
+      s_maxage: None,
       expires: None,
       date: None,
       age: None,
       stale_if_error: None,
+      stale_while_revalidate: None,
       last_modified: None,
       no_cache: false,
       no_store: false,
@@ -22642,10 +22888,12 @@ mod tests {
     let base = CachedHttpMetadata {
       stored_at,
       max_age: Some(Duration::from_secs(20)),
+      s_maxage: None,
       expires: None,
       date: Some(stored_at),
       age: None,
       stale_if_error: None,
+      stale_while_revalidate: None,
       last_modified: None,
       no_cache: false,
       no_store: false,
@@ -22677,10 +22925,12 @@ mod tests {
     let meta = CachedHttpMetadata {
       stored_at,
       max_age: None,
+      s_maxage: None,
       expires: Some(expires),
       date: Some(date),
       age: None,
       stale_if_error: None,
+      stale_while_revalidate: None,
       last_modified: None,
       no_cache: false,
       no_store: false,
@@ -22712,10 +22962,12 @@ mod tests {
     let meta = CachedHttpMetadata {
       stored_at,
       max_age: None,
+      s_maxage: None,
       expires: None,
       date: Some(date),
       age: None,
       stale_if_error: None,
+      stale_while_revalidate: None,
       last_modified: Some(last_modified),
       no_cache: false,
       no_store: false,
