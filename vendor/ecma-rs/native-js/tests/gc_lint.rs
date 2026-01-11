@@ -1,7 +1,7 @@
 use inkwell::context::Context;
 use inkwell::AddressSpace;
-use native_js::runtime_abi::RuntimeAbi;
 use native_js::llvm::{gc, lint_module_gc_pointer_discipline, LintRule};
+use native_js::runtime_abi::RuntimeAbi;
 
 #[test]
 fn runtime_abi_wrappers_pass_lint() {
@@ -9,6 +9,24 @@ fn runtime_abi_wrappers_pass_lint() {
   let module = context.create_module("gc_lint_wrappers_ok");
 
   RuntimeAbi::new(&context, &module).ensure_wrappers();
+
+  lint_module_gc_pointer_discipline(&module).unwrap();
+}
+
+#[test]
+fn good_gc_managed_function_passes() {
+  let context = Context::create();
+  let module = context.create_module("gc_lint_good");
+  let builder = context.create_builder();
+
+  let gc_ptr_ty = context.ptr_type(gc::gc_address_space());
+  let fn_ty = context.void_type().fn_type(&[gc_ptr_ty.into()], false);
+  let func = module.add_function("good", fn_ty, None);
+  func.set_gc(gc::GC_STRATEGY);
+
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+  builder.build_return(None).unwrap();
 
   lint_module_gc_pointer_discipline(&module).unwrap();
 }
@@ -110,6 +128,44 @@ fn rejects_store_of_gc_pointer_into_non_pointer_slot() {
 }
 
 #[test]
+fn rejects_call_with_raw_pointer_derived_from_gc_pointer() {
+  let context = Context::create();
+  let module = context.create_module("gc_lint_bad_call");
+  let builder = context.create_builder();
+
+  let gc_ptr_ty = context.ptr_type(gc::gc_address_space());
+  let raw_ptr_ty = context.ptr_type(AddressSpace::default());
+
+  let sink_ty = context.void_type().fn_type(&[raw_ptr_ty.into()], false);
+  let sink = module.add_function("sink", sink_ty, None);
+
+  let fn_ty = context.void_type().fn_type(&[gc_ptr_ty.into()], false);
+  let func = module.add_function("bad_call", fn_ty, None);
+  func.set_gc(gc::GC_STRATEGY);
+
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+  let p = func.get_nth_param(0).unwrap().into_pointer_value();
+
+  // Launder the GC pointer through a local stack slot and load it as `ptr`.
+  let slot = builder.build_alloca(raw_ptr_ty, "slot").unwrap();
+  builder.build_store(slot, p).unwrap();
+  let raw = builder
+    .build_load(raw_ptr_ty, slot, "raw")
+    .unwrap()
+    .into_pointer_value();
+
+  builder.build_call(sink, &[raw.into()], "").unwrap();
+  builder.build_return(None).unwrap();
+
+  let err = lint_module_gc_pointer_discipline(&module).unwrap_err();
+  assert!(
+    err.has_rule(LintRule::CallAddrSpace0PointerDerivedFromGcPointer),
+    "{err}"
+  );
+}
+
+#[test]
 fn rejects_addrspacecast_from_gc_pointer_in_wrapper_gc_function() {
   let context = Context::create();
   let module = context.create_module("gc_lint_bad_wrapper_addrspacecast");
@@ -136,3 +192,27 @@ fn rejects_addrspacecast_from_gc_pointer_in_wrapper_gc_function() {
     "{err}"
   );
 }
+
+#[test]
+fn non_gc_wrapper_may_addrspacecast() {
+  let context = Context::create();
+  let module = context.create_module("gc_lint_non_gc_wrapper_ok");
+  let builder = context.create_builder();
+
+  // Not GC-managed: should be ignored by the lint.
+  let gc_ptr_ty = context.ptr_type(gc::gc_address_space());
+  let raw_ptr_ty = context.ptr_type(AddressSpace::default());
+  let fn_ty = context.void_type().fn_type(&[gc_ptr_ty.into()], false);
+  let wrapper = module.add_function("rt_alloc_gc", fn_ty, None);
+
+  let entry = context.append_basic_block(wrapper, "entry");
+  builder.position_at_end(entry);
+  let p = wrapper.get_nth_param(0).unwrap().into_pointer_value();
+  let _raw = builder
+    .build_address_space_cast(p, raw_ptr_ty, "raw")
+    .expect("addrspacecast");
+  builder.build_return(None).unwrap();
+
+  lint_module_gc_pointer_discipline(&module).unwrap();
+}
+

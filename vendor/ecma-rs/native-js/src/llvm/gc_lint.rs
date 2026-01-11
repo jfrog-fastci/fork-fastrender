@@ -1,9 +1,14 @@
 use inkwell::module::Module;
 use llvm_sys::core::{
-  LLVMCountBasicBlocks, LLVMDisposeMessage, LLVMGetAllocatedType, LLVMGetFirstBasicBlock,
-  LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFirstUse, LLVMGetGC, LLVMGetNextBasicBlock,
-  LLVMGetNextFunction, LLVMGetNextInstruction, LLVMGetNextUse, LLVMGetNumOperands, LLVMGetOperand,
-  LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetUser, LLVMPrintValueToString, LLVMTypeOf,
+  LLVMConstIntGetZExtValue, LLVMCountBasicBlocks, LLVMCountParams, LLVMDisposeMessage,
+  LLVMGetAllocatedType, LLVMGetArgOperand, LLVMGetConstOpcode, LLVMGetElementType,
+  LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFirstUse, LLVMGetGC,
+  LLVMGetGEPSourceElementType, LLVMGetInstructionOpcode, LLVMGetNextBasicBlock, LLVMGetNextFunction,
+  LLVMGetNextInstruction, LLVMGetNextUse, LLVMGetNumArgOperands, LLVMGetNumOperands, LLVMGetOperand,
+  LLVMGetParam, LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetUser, LLVMGlobalGetValueType,
+  LLVMIsAAllocaInst, LLVMIsABitCastInst, LLVMIsAConstantExpr, LLVMIsAConstantInt,
+  LLVMIsAGetElementPtrInst, LLVMIsAGlobalVariable, LLVMPrintTypeToString, LLVMPrintValueToString,
+  LLVMStructGetTypeAtIndex, LLVMTypeOf,
 };
 use llvm_sys::prelude::{LLVMModuleRef, LLVMTypeRef, LLVMUseRef, LLVMValueRef};
 use llvm_sys::{LLVMOpcode, LLVMTypeKind};
@@ -37,6 +42,8 @@ pub enum LintRule {
   StoreGcPointerToNonPointerSlot,
   /// Rule A: forbid returning `ptr` (addrspace(0)) derived from `ptr addrspace(1)`.
   ReturnAddrSpace0PointerDerivedFromGcPointer,
+  /// Rule A: forbid passing `ptr` (addrspace(0)) derived from `ptr addrspace(1)` as call args.
+  CallAddrSpace0PointerDerivedFromGcPointer,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +95,12 @@ pub fn lint_module_gc_pointer_discipline(module: &Module<'_>) -> Result<(), Lint
   unsafe { lint_module_gc_pointer_discipline_raw(module.as_mut_ptr()) }
 }
 
+/// Backwards-compatibility alias for older callsites/tests.
+#[inline]
+pub fn lint_gc_pointer_discipline(module: &Module<'_>) -> Result<(), LintError> {
+  lint_module_gc_pointer_discipline(module)
+}
+
 unsafe fn lint_module_gc_pointer_discipline_raw(module: LLVMModuleRef) -> Result<(), LintError> {
   assert!(!module.is_null(), "module must be non-null");
 
@@ -98,7 +111,7 @@ unsafe fn lint_module_gc_pointer_discipline_raw(module: LLVMModuleRef) -> Result
     if is_gc_managed_function(func) {
       let func_name = value_name(func);
       let is_wrapper = is_runtime_abi_wrapper_function_name(&func_name);
-      lint_instructions_in_function(func, func_name.as_str(), is_wrapper, &mut violations);
+      lint_function(func, func_name.as_str(), is_wrapper, &mut violations);
     }
 
     func = LLVMGetNextFunction(func);
@@ -131,7 +144,7 @@ fn is_runtime_abi_wrapper_function_name(name: &str) -> bool {
   name.starts_with("rt_") && name.ends_with("_gc")
 }
 
-unsafe fn lint_instructions_in_function(
+unsafe fn lint_function(
   func: LLVMValueRef,
   func_name: &str,
   is_wrapper: bool,
@@ -142,38 +155,129 @@ unsafe fn lint_instructions_in_function(
     return;
   }
 
+  // Collect instructions (needed for local tainting).
+  let mut insts: Vec<LLVMValueRef> = Vec::new();
   let mut bb = LLVMGetFirstBasicBlock(func);
   while !bb.is_null() {
     let mut inst = LLVMGetFirstInstruction(bb);
     while !inst.is_null() {
-      lint_instruction(func_name, is_wrapper, inst, violations);
+      insts.push(inst);
       inst = LLVMGetNextInstruction(inst);
     }
-
     bb = LLVMGetNextBasicBlock(bb);
+  }
+
+  // Best-effort taint analysis for values derived from `ptr addrspace(1)` through local stack
+  // slots and common pointer SSA operations.
+  let tainted_values = compute_tainted_values(func, &insts);
+
+  for &inst in &insts {
+    // Scan operands for constant-expression violations.
+    let mut visited = HashSet::new();
+    let num_ops = LLVMGetNumOperands(inst);
+    for i in 0..num_ops {
+      let op = LLVMGetOperand(inst, i as u32);
+      scan_forbidden_constexprs(func_name, is_wrapper, inst, op, &mut visited, violations);
+    }
+
+    match LLVMGetInstructionOpcode(inst) {
+      LLVMOpcode::LLVMPtrToInt => lint_ptrtoint(func_name, inst, violations),
+      LLVMOpcode::LLVMIntToPtr => lint_inttoptr(func_name, inst, violations),
+      LLVMOpcode::LLVMAddrSpaceCast => lint_addrspacecast(func_name, is_wrapper, inst, violations),
+      LLVMOpcode::LLVMStore => lint_store(func_name, inst, violations),
+      LLVMOpcode::LLVMRet => {
+        if !is_wrapper {
+          lint_return_raw_pointer(func_name, inst, &tainted_values, violations);
+        }
+      }
+      LLVMOpcode::LLVMCall | LLVMOpcode::LLVMInvoke => {
+        lint_call_args(func_name, inst, &tainted_values, violations)
+      }
+      _ => {}
+    }
   }
 }
 
-unsafe fn lint_instruction(
-  func_name: &str,
-  is_wrapper: bool,
-  inst: LLVMValueRef,
-  violations: &mut Vec<LintViolation>,
-) {
-  let opcode = llvm_sys::core::LLVMGetInstructionOpcode(inst);
+unsafe fn compute_tainted_values(
+  func: LLVMValueRef,
+  insts: &[LLVMValueRef],
+) -> HashSet<LLVMValueRef> {
+  let mut tainted_values: HashSet<LLVMValueRef> = HashSet::new();
+  let mut tainted_allocas: HashSet<LLVMValueRef> = HashSet::new();
 
-  match opcode {
-    LLVMOpcode::LLVMPtrToInt => lint_ptrtoint(func_name, inst, violations),
-    LLVMOpcode::LLVMIntToPtr => lint_inttoptr(func_name, inst, violations),
-    LLVMOpcode::LLVMAddrSpaceCast => lint_addrspacecast(func_name, is_wrapper, inst, violations),
-    LLVMOpcode::LLVMStore => lint_store(func_name, inst, violations),
-    LLVMOpcode::LLVMRet => {
-      if !is_wrapper {
-        lint_return_raw_pointer(func_name, inst, violations);
+  // Seed with `ptr addrspace(1)` params + SSA values.
+  let num_params = LLVMCountParams(func);
+  for i in 0..num_params {
+    let p = LLVMGetParam(func, i);
+    if value_is_gc_ptr(p) {
+      tainted_values.insert(p);
+    }
+  }
+  for &inst in insts {
+    if value_is_gc_ptr(inst) {
+      tainted_values.insert(inst);
+    }
+  }
+
+  let is_tainted = |v: LLVMValueRef, tainted: &HashSet<LLVMValueRef>| unsafe {
+    value_is_gc_ptr(v) || tainted.contains(&v)
+  };
+
+  loop {
+    let mut changed = false;
+
+    for &inst in insts {
+      match LLVMGetInstructionOpcode(inst) {
+        LLVMOpcode::LLVMStore => {
+          let stored = LLVMGetOperand(inst, 0);
+          let dst = LLVMGetOperand(inst, 1);
+          if is_tainted(stored, &tainted_values) {
+            if let Some(root) = base_alloca(dst) {
+              if tainted_allocas.insert(root) {
+                changed = true;
+              }
+            }
+          }
+        }
+
+        LLVMOpcode::LLVMLoad => {
+          let src = LLVMGetOperand(inst, 0);
+          if let Some(root) = base_alloca(src) {
+            if tainted_allocas.contains(&root) && tainted_values.insert(inst) {
+              changed = true;
+            }
+          }
+        }
+
+        LLVMOpcode::LLVMAddrSpaceCast
+        | LLVMOpcode::LLVMBitCast
+        | LLVMOpcode::LLVMGetElementPtr
+        | LLVMOpcode::LLVMPHI
+        | LLVMOpcode::LLVMSelect
+        | LLVMOpcode::LLVMPtrToInt
+        | LLVMOpcode::LLVMIntToPtr => {
+          let num_ops = LLVMGetNumOperands(inst);
+          for i in 0..num_ops {
+            let op = LLVMGetOperand(inst, i as u32);
+            if is_tainted(op, &tainted_values) {
+              if tainted_values.insert(inst) {
+                changed = true;
+              }
+              break;
+            }
+          }
+        }
+
+        _ => {}
       }
     }
-    _ => {}
+
+    if !changed {
+      break;
+    }
   }
+
+  tainted_values
 }
 
 unsafe fn lint_ptrtoint(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<LintViolation>) {
@@ -281,7 +385,7 @@ unsafe fn lint_wrapper_as0_to_as1_cast(
       continue;
     }
 
-    match llvm_sys::core::LLVMGetInstructionOpcode(user) {
+    match LLVMGetInstructionOpcode(user) {
       LLVMOpcode::LLVMRet => {
         // OK.
       }
@@ -389,7 +493,12 @@ unsafe fn lint_store(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<L
   }
 }
 
-unsafe fn lint_return_raw_pointer(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<LintViolation>) {
+unsafe fn lint_return_raw_pointer(
+  func_name: &str,
+  inst: LLVMValueRef,
+  tainted_values: &HashSet<LLVMValueRef>,
+  violations: &mut Vec<LintViolation>,
+) {
   // Operand 0: return value (absent for `ret void`).
   if LLVMGetNumOperands(inst) == 0 {
     return;
@@ -401,7 +510,7 @@ unsafe fn lint_return_raw_pointer(func_name: &str, inst: LLVMValueRef, violation
     return;
   }
 
-  if is_addrspace0_pointer_derived_from_gc_pointer(ret_val) {
+  if tainted_values.contains(&ret_val) {
     violations.push(LintViolation {
       rule: LintRule::ReturnAddrSpace0PointerDerivedFromGcPointer,
       message: format!(
@@ -413,49 +522,177 @@ unsafe fn lint_return_raw_pointer(func_name: &str, inst: LLVMValueRef, violation
   }
 }
 
-unsafe fn is_addrspace0_pointer_derived_from_gc_pointer(val: LLVMValueRef) -> bool {
-  let mut visited = HashSet::<LLVMValueRef>::new();
-  is_addrspace0_pointer_derived_from_gc_pointer_inner(val, &mut visited)
+unsafe fn lint_call_args(
+  func_name: &str,
+  inst: LLVMValueRef,
+  tainted_values: &HashSet<LLVMValueRef>,
+  violations: &mut Vec<LintViolation>,
+) {
+  let num_args = LLVMGetNumArgOperands(inst);
+  for i in 0..num_args {
+    let arg = LLVMGetArgOperand(inst, i);
+    let arg_ty = LLVMTypeOf(arg);
+    if is_pointer_type(arg_ty)
+      && LLVMGetPointerAddressSpace(arg_ty) == 0
+      && tainted_values.contains(&arg)
+    {
+      violations.push(LintViolation {
+        rule: LintRule::CallAddrSpace0PointerDerivedFromGcPointer,
+        message: format!(
+          "in `{}`: disallowed call arg {i}: `ptr` (addrspace(0)) derived from GC pointer: {}",
+          func_name,
+          value_to_string(inst)
+        ),
+      });
+    }
+  }
 }
 
-unsafe fn is_addrspace0_pointer_derived_from_gc_pointer_inner(
-  val: LLVMValueRef,
+// -----------------------------------------------------------------------------
+// Constant-expression scanning (best-effort)
+// -----------------------------------------------------------------------------
+
+unsafe fn scan_forbidden_constexprs(
+  func_name: &str,
+  is_wrapper: bool,
+  user_inst: LLVMValueRef,
+  value: LLVMValueRef,
   visited: &mut HashSet<LLVMValueRef>,
-) -> bool {
-  if val.is_null() || visited.contains(&val) {
-    return false;
+  violations: &mut Vec<LintViolation>,
+) {
+  if value.is_null() || visited.contains(&value) {
+    return;
   }
-  visited.insert(val);
+  visited.insert(value);
 
-  let ty = LLVMTypeOf(val);
-  if is_gc_pointer_type(ty) {
-    return true;
-  }
+  if !LLVMIsAConstantExpr(value).is_null() {
+    let opcode = LLVMGetConstOpcode(value);
+    match opcode {
+      LLVMOpcode::LLVMAddrSpaceCast => lint_constexpr_addrspacecast(
+        func_name,
+        is_wrapper,
+        user_inst,
+        value,
+        violations,
+      ),
 
-  // Only treat a narrow set of pointer->pointer SSA operations as "deriving" a pointer from
-  // another. This intentionally avoids treating `load ptr ...` as derived, since that may be a
-  // raw pointer field within a GC object.
-  if llvm_sys::core::LLVMIsAInstruction(val).is_null() {
-    return false;
-  }
-
-  match llvm_sys::core::LLVMGetInstructionOpcode(val) {
-    LLVMOpcode::LLVMAddrSpaceCast
-    | LLVMOpcode::LLVMBitCast
-    | LLVMOpcode::LLVMGetElementPtr
-    | LLVMOpcode::LLVMPHI
-    | LLVMOpcode::LLVMSelect => {
-      let num_ops = LLVMGetNumOperands(val);
-      for i in 0..num_ops {
-        let op = LLVMGetOperand(val, i as u32);
-        if is_addrspace0_pointer_derived_from_gc_pointer_inner(op, visited) {
-          return true;
+      LLVMOpcode::LLVMPtrToInt => {
+        let src = LLVMGetOperand(value, 0);
+        if is_gc_pointer_type(LLVMTypeOf(src)) {
+          violations.push(LintViolation {
+            rule: LintRule::PtrToIntFromGcPointer,
+            message: format!(
+              "in `{func_name}`: disallowed constant ptrtoint of GC pointer used by: {}",
+              value_to_string(user_inst)
+            ),
+          });
         }
       }
-      false
+
+      LLVMOpcode::LLVMIntToPtr => {
+        let dst_ty = LLVMTypeOf(value);
+        if is_gc_pointer_type(dst_ty) {
+          violations.push(LintViolation {
+            rule: LintRule::IntToPtrToGcPointer,
+            message: format!(
+              "in `{func_name}`: disallowed constant inttoptr to GC pointer used by: {}",
+              value_to_string(user_inst)
+            ),
+          });
+        }
+      }
+
+      _ => {}
     }
-    _ => false,
   }
+
+  let num_ops = LLVMGetNumOperands(value);
+  for i in 0..num_ops {
+    let op = LLVMGetOperand(value, i as u32);
+    scan_forbidden_constexprs(func_name, is_wrapper, user_inst, op, visited, violations);
+  }
+}
+
+unsafe fn lint_constexpr_addrspacecast(
+  func_name: &str,
+  is_wrapper: bool,
+  user_inst: LLVMValueRef,
+  cast: LLVMValueRef,
+  violations: &mut Vec<LintViolation>,
+) {
+  let operand = LLVMGetOperand(cast, 0);
+  let operand_ty = LLVMTypeOf(operand);
+  let result_ty = LLVMTypeOf(cast);
+
+  if !is_pointer_type(operand_ty) || !is_pointer_type(result_ty) {
+    return;
+  }
+
+  let src_as = LLVMGetPointerAddressSpace(operand_ty);
+  let dst_as = LLVMGetPointerAddressSpace(result_ty);
+
+  // Only care about casts involving AS1 (GC pointers).
+  if src_as != GC_ADDR_SPACE && dst_as != GC_ADDR_SPACE {
+    return;
+  }
+
+  let rule = if !is_wrapper {
+    LintRule::NonWrapperAddrSpaceCastToOrFromGcPointer
+  } else if src_as == 0 && dst_as == GC_ADDR_SPACE {
+    LintRule::WrapperAddrSpaceCastAs0ToAs1InvalidUse
+  } else if src_as == GC_ADDR_SPACE && dst_as == 0 {
+    LintRule::WrapperAddrSpaceCastAs1ToAs0InvalidUse
+  } else {
+    LintRule::WrapperAddrSpaceCastBetweenUnsupportedAddrSpaces
+  };
+
+  violations.push(LintViolation {
+    rule,
+    message: format!(
+      "in `{func_name}`: disallowed constant addrspacecast involving addrspace(1) used by: {}",
+      value_to_string(user_inst)
+    ),
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Slot/type inference helpers
+// -----------------------------------------------------------------------------
+
+unsafe fn strip_pointer_casts(mut ptr: LLVMValueRef) -> LLVMValueRef {
+  loop {
+    if !LLVMIsABitCastInst(ptr).is_null() {
+      ptr = LLVMGetOperand(ptr, 0);
+      continue;
+    }
+    if !llvm_sys::core::LLVMIsAInstruction(ptr).is_null()
+      && LLVMGetInstructionOpcode(ptr) == LLVMOpcode::LLVMAddrSpaceCast
+    {
+      ptr = LLVMGetOperand(ptr, 0);
+      continue;
+    }
+    break;
+  }
+  ptr
+}
+
+unsafe fn base_alloca(ptr: LLVMValueRef) -> Option<LLVMValueRef> {
+  if ptr.is_null() {
+    return None;
+  }
+
+  let ptr = strip_pointer_casts(ptr);
+
+  if !LLVMIsAAllocaInst(ptr).is_null() {
+    return Some(ptr);
+  }
+
+  if !LLVMIsAGetElementPtrInst(ptr).is_null() {
+    let base = LLVMGetOperand(ptr, 0);
+    return base_alloca(base);
+  }
+
+  None
 }
 
 unsafe fn is_pointer_type(ty: LLVMTypeRef) -> bool {
@@ -464,6 +701,10 @@ unsafe fn is_pointer_type(ty: LLVMTypeRef) -> bool {
 
 unsafe fn is_gc_pointer_type(ty: LLVMTypeRef) -> bool {
   is_pointer_type(ty) && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE
+}
+
+unsafe fn value_is_gc_ptr(val: LLVMValueRef) -> bool {
+  is_gc_pointer_type(LLVMTypeOf(val))
 }
 
 unsafe fn known_memory_slot_type(ptr: LLVMValueRef) -> Option<LLVMTypeRef> {
@@ -475,7 +716,7 @@ unsafe fn known_memory_slot_type(ptr: LLVMValueRef) -> Option<LLVMTypeRef> {
     if llvm_sys::core::LLVMIsAInstruction(cur).is_null() {
       break;
     }
-    let opcode = llvm_sys::core::LLVMGetInstructionOpcode(cur);
+    let opcode = LLVMGetInstructionOpcode(cur);
     if opcode == LLVMOpcode::LLVMBitCast || opcode == LLVMOpcode::LLVMAddrSpaceCast {
       cur = LLVMGetOperand(cur, 0);
       continue;
@@ -483,15 +724,15 @@ unsafe fn known_memory_slot_type(ptr: LLVMValueRef) -> Option<LLVMTypeRef> {
     break;
   }
 
-  if !llvm_sys::core::LLVMIsAAllocaInst(cur).is_null() {
+  if !LLVMIsAAllocaInst(cur).is_null() {
     return Some(LLVMGetAllocatedType(cur));
   }
 
-  if !llvm_sys::core::LLVMIsAGlobalVariable(cur).is_null() {
-    return Some(llvm_sys::core::LLVMGlobalGetValueType(cur));
+  if !LLVMIsAGlobalVariable(cur).is_null() {
+    return Some(LLVMGlobalGetValueType(cur));
   }
 
-  if !llvm_sys::core::LLVMIsAGetElementPtrInst(cur).is_null() {
+  if !LLVMIsAGetElementPtrInst(cur).is_null() {
     // In LLVM >= 15 (opaque pointers), the C API exposes the element type of a GEP result even
     // though the pointer value itself is opaque.
     return gep_result_element_type(cur);
@@ -501,7 +742,7 @@ unsafe fn known_memory_slot_type(ptr: LLVMValueRef) -> Option<LLVMTypeRef> {
 }
 
 unsafe fn gep_result_element_type(gep: LLVMValueRef) -> Option<LLVMTypeRef> {
-  let mut ty = llvm_sys::core::LLVMGetGEPSourceElementType(gep);
+  let mut ty = LLVMGetGEPSourceElementType(gep);
   if ty.is_null() {
     return None;
   }
@@ -520,14 +761,14 @@ unsafe fn gep_result_element_type(gep: LLVMValueRef) -> Option<LLVMTypeRef> {
     ty = match LLVMGetTypeKind(ty) {
       LLVMTypeKind::LLVMArrayTypeKind
       | LLVMTypeKind::LLVMVectorTypeKind
-      | LLVMTypeKind::LLVMScalableVectorTypeKind => llvm_sys::core::LLVMGetElementType(ty),
+      | LLVMTypeKind::LLVMScalableVectorTypeKind => LLVMGetElementType(ty),
 
       LLVMTypeKind::LLVMStructTypeKind => {
-        if llvm_sys::core::LLVMIsAConstantInt(idx).is_null() {
+        if LLVMIsAConstantInt(idx).is_null() {
           return None;
         }
-        let field_i = llvm_sys::core::LLVMConstIntGetZExtValue(idx);
-        llvm_sys::core::LLVMStructGetTypeAtIndex(ty, field_i as u32)
+        let field_i = LLVMConstIntGetZExtValue(idx);
+        LLVMStructGetTypeAtIndex(ty, field_i as u32)
       }
 
       // Indexing into a non-aggregate doesn't refine the pointee type. This is unusual but can
@@ -538,6 +779,10 @@ unsafe fn gep_result_element_type(gep: LLVMValueRef) -> Option<LLVMTypeRef> {
 
   Some(ty)
 }
+
+// -----------------------------------------------------------------------------
+// Debug helpers
+// -----------------------------------------------------------------------------
 
 unsafe fn value_name(val: LLVMValueRef) -> String {
   let mut len: usize = 0;
@@ -561,7 +806,7 @@ unsafe fn value_to_string(val: LLVMValueRef) -> String {
 }
 
 unsafe fn type_to_string(ty: LLVMTypeRef) -> String {
-  let s = llvm_sys::core::LLVMPrintTypeToString(ty);
+  let s = LLVMPrintTypeToString(ty);
   if s.is_null() {
     return "<unprintable>".to_string();
   }

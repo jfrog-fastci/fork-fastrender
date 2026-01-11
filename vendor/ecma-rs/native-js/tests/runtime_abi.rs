@@ -35,6 +35,14 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
     ir.contains("define internal ptr addrspace(1) @rt_alloc_gc"),
     "missing rt_alloc_gc wrapper:\n{ir}"
   );
+  let alloc_line = ir
+    .lines()
+    .find(|l| l.contains("define internal ptr addrspace(1) @rt_alloc_gc"))
+    .expect("rt_alloc_gc line");
+  assert!(
+    !alloc_line.contains("gc \"coreclr\""),
+    "rt_alloc_gc must not be GC-managed (ABI wrappers are outside GC pointer discipline lint):\n{alloc_line}\n\nIR:\n{ir}"
+  );
   let alloc = function_block(&ir, "@rt_alloc_gc");
   assert!(
     alloc.contains("store ptr @rt_alloc"),
@@ -70,6 +78,14 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
   assert!(
     ir.contains("define internal void @rt_write_barrier_gc"),
     "missing rt_write_barrier_gc wrapper:\n{ir}"
+  );
+  let wb_line = ir
+    .lines()
+    .find(|l| l.contains("define internal void @rt_write_barrier_gc"))
+    .expect("rt_write_barrier_gc line");
+  assert!(
+    !wb_line.contains("gc \"coreclr\""),
+    "rt_write_barrier_gc must not be GC-managed (ABI wrappers are outside GC pointer discipline lint):\n{wb_line}\n\nIR:\n{ir}"
   );
   let wb = function_block(&ir, "@rt_write_barrier_gc");
   assert!(

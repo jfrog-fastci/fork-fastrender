@@ -30,6 +30,9 @@ use crate::llvm::gc;
 /// Generated code should exclusively call the `*_gc` wrappers and never call the
 /// raw runtime functions directly with GC pointers.
 ///
+/// These wrappers are intentionally **not** marked as GC-managed functions (`gc "coreclr"`), so
+/// they are outside the GC pointer discipline lint (which only applies to GC-managed functions).
+///
 /// # Naming
 /// We intentionally keep the runtime's exported symbol names (`rt_*`) as the raw
 /// externs, and suffix wrappers with `_gc` (e.g. `rt_alloc_gc`). This avoids any
@@ -84,7 +87,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     define_body: impl FnOnce(FunctionValue<'ctx>),
   ) -> FunctionValue<'ctx> {
     if let Some(existing) = self.module.get_function(name) {
-      crate::stack_walking::apply_stack_walking_attrs(self.context, existing);
+      crate::stack_walking::apply_stack_walking_frame_attrs(self.context, existing);
       if existing.get_first_basic_block().is_some() {
         return existing;
       }
@@ -93,7 +96,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     }
 
     let func = self.module.add_function(name, ty, Some(Linkage::Internal));
-    crate::stack_walking::apply_stack_walking_attrs(self.context, func);
+    crate::stack_walking::apply_stack_walking_frame_attrs(self.context, func);
     define_body(func);
     func
   }

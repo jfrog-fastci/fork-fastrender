@@ -7,6 +7,11 @@ use inkwell::values::FunctionValue;
 
 use crate::llvm::gc::GC_STRATEGY;
 
+fn is_runtime_abi_wrapper(func: FunctionValue<'_>) -> bool {
+  let name = func.get_name().to_string_lossy();
+  name.starts_with("rt_") && name.ends_with("_gc")
+}
+
 pub(crate) fn apply_stack_walking_frame_attrs(context: &Context, func: FunctionValue<'_>) {
   // Required for deterministic GC stack walking:
   //
@@ -29,8 +34,8 @@ pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'
 /// This is currently a minimal façade around `inkwell` that guarantees stack-walkability
 /// invariants needed by precise GC (see `native-js/docs/gc_stack_walking.md`).
 ///
-/// It also marks all generated functions with the LLVM GC strategy used for statepoint lowering
-/// (see `native-js/docs/llvm_gc_strategy.md`).
+/// It also marks generated (GC-managed) functions with the LLVM GC strategy used for statepoint
+/// lowering (see `native-js/docs/llvm_gc_strategy.md`).
 pub struct CodeGen<'ctx> {
   context: &'ctx Context,
   module: Module<'ctx>,
@@ -80,7 +85,11 @@ impl<'ctx> CodeGen<'ctx> {
   fn enforce_stack_walking_invariants(&self) {
     let mut func = self.module.get_first_function();
     while let Some(f) = func {
-      apply_stack_walking_attrs(self.context, f);
+      if is_runtime_abi_wrapper(f) {
+        apply_stack_walking_frame_attrs(self.context, f);
+      } else {
+        apply_stack_walking_attrs(self.context, f);
+      }
       func = f.get_next_function();
     }
   }
