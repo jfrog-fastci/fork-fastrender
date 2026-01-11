@@ -1,7 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux {
   use anyhow::{bail, Context, Result};
-  use native_js::link::{link_elf_executable_with_options, LinkOpts};
+  use native_js::link::{link_elf_executable_with_options, LinkOpts, LinkerFlavor};
   use object::{Object, ObjectSection};
   use std::path::Path;
   use std::process::{Command, Stdio};
@@ -98,6 +98,22 @@ main:
 
     if !has_section_containing(&out_with_script, "llvm_stackmaps")? {
       bail!("expected llvm_stackmaps section(s) to survive --gc-sections when kept via linker script");
+    }
+
+    // Ensure the same linker script fragment is accepted by GNU ld too (in addition to lld).
+    let out_with_script_ld = td.path().join("c.out");
+    link_elf_executable_with_options(
+      &out_with_script_ld,
+      &[obj_path.clone()],
+      LinkOpts {
+        gc_sections: true,
+        linker: LinkerFlavor::System,
+        ..Default::default()
+      },
+    )
+    .context("link with KEEP() linker script (system ld)")?;
+    if !has_section_containing(&out_with_script_ld, "llvm_stackmaps")? {
+      bail!("expected llvm_stackmaps section(s) to survive --gc-sections (system ld)");
     }
 
     Ok(())
