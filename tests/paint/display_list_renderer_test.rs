@@ -2359,6 +2359,46 @@ fn linear_gradient_rasterization_matches_endpoints() {
 }
 
 #[test]
+fn linear_gradient_dither_phase_matches_skia() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::LinearGradient(LinearGradientItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    start: Point::new(0.0, 0.0),
+    end: Point::new(4.0, 0.0),
+    stops: vec![
+      GradientStop {
+        position: 0.0,
+        color: Rgba::BLACK,
+      },
+      GradientStop {
+        position: 1.0,
+        color: Rgba::WHITE,
+      },
+    ],
+    spread: GradientSpread::Pad,
+  }));
+
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let expected: [[u8; 4]; 4] = [
+    [32, 95, 160, 223],
+    [32, 96, 159, 223],
+    [32, 96, 159, 223],
+    [31, 96, 159, 224],
+  ];
+  for (y, row) in expected.iter().enumerate() {
+    for (x, v) in row.iter().enumerate() {
+      assert_eq!(
+        pixel(&pixmap, x as u32, y as u32),
+        (*v, *v, *v, 255),
+        "pixel {x},{y}"
+      );
+    }
+  }
+}
+
+#[test]
 fn transformed_linear_gradient_uses_bilinear_sampling() {
   let mut list = DisplayList::new();
   list.push(DisplayItem::PushTransform(fastrender::TransformItem {

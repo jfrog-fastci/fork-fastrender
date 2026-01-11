@@ -8732,6 +8732,40 @@ impl InlineFormattingContext {
         text_item.style.word_break,
         WordBreak::Anywhere | WordBreak::BreakWord
       ) || matches!(text_item.style.overflow_wrap, OverflowWrap::Anywhere);
+    let trim_collapsible_whitespace = matches!(
+      text_item.style.white_space,
+      WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+    );
+
+    let trim_segment = |mut start: usize, mut end: usize| -> (usize, usize) {
+      if !trim_collapsible_whitespace {
+        return (start, end);
+      }
+
+      // In whitespace-collapsing modes (e.g. `white-space: normal`), trailing whitespace at a line
+      // break does not contribute to the line's used width. The min-content inline size is the
+      // width of the longest unbreakable segment; do not let a trailing space after that segment
+      // inflate the measurement.
+      while start < end {
+        let Some(ch) = text_item.text[start..end].chars().next() else {
+          break;
+        };
+        if !is_ascii_whitespace_char(ch) {
+          break;
+        }
+        start += ch.len_utf8();
+      }
+      while end > start {
+        let Some(ch) = text_item.text[..end].chars().next_back() else {
+          break;
+        };
+        if !is_ascii_whitespace_char(ch) {
+          break;
+        }
+        end -= ch.len_utf8();
+      }
+      (start, end)
+    };
 
     for brk in &text_item.break_opportunities {
       if brk.kind == crate::text::line_break::BreakOpportunityKind::Emergency
@@ -8761,9 +8795,10 @@ impl InlineFormattingContext {
         continue;
       }
 
-      let mut segment_width = (text_item.advance_at_offset(brk.byte_offset)
-        - text_item.advance_at_offset(last_break))
-      .max(0.0);
+      let (segment_start, segment_end) = trim_segment(last_break, brk.byte_offset);
+      let mut segment_width =
+        (text_item.advance_at_offset(segment_end) - text_item.advance_at_offset(segment_start))
+          .max(0.0);
 
       // Collapsible whitespace (e.g. the normal HTML/CSS " " space) is not supposed to contribute to
       // the min-content width of the preceding segment.
@@ -8806,8 +8841,10 @@ impl InlineFormattingContext {
     }
 
     if last_break < len {
+      let (segment_start, segment_end) = trim_segment(last_break, len);
       let trailing =
-        (text_item.advance_at_offset(len) - text_item.advance_at_offset(last_break)).max(0.0);
+        (text_item.advance_at_offset(segment_end) - text_item.advance_at_offset(segment_start))
+          .max(0.0);
       tracker.add_width(trailing);
     }
   }
@@ -16168,6 +16205,46 @@ mod tests {
     assert!(
       (max - 200.0).abs() < 0.001,
       "expected max-content width 200, got {max}"
+    );
+  }
+
+  #[test]
+  fn intrinsic_min_content_ignores_trailing_collapsible_whitespace() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    let word = make_text_box("Commonwealth");
+    let other = make_text_box("X");
+    // The longest word is not at the end of the string. In whitespace-collapsing modes, the
+    // min-content width should be that word's width, not that word plus the trailing space.
+    let phrase = make_text_box("Commonwealth X");
+
+    let word_width = ifc
+      .intrinsic_width_for_children(
+        &container_style,
+        &[&word],
+        IntrinsicSizingMode::MaxContent,
+      )
+      .expect("word width");
+    let other_width = ifc
+      .intrinsic_width_for_children(
+        &container_style,
+        &[&other],
+        IntrinsicSizingMode::MaxContent,
+      )
+      .expect("other width");
+    let min_phrase = ifc
+      .intrinsic_width_for_children(
+        &container_style,
+        &[&phrase],
+        IntrinsicSizingMode::MinContent,
+      )
+      .expect("phrase width");
+
+    let expected = word_width.max(other_width);
+    assert!(
+      (min_phrase - expected).abs() < 0.001,
+      "expected min-content {expected}, got {min_phrase} (word={word_width}, other={other_width})"
     );
   }
 
