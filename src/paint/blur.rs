@@ -3,7 +3,10 @@ use crate::error::{RenderError, RenderStage};
 use crate::paint::painter::{paint_diagnostics_enabled, with_paint_diagnostics};
 use crate::paint::pixmap::{guard_allocation_bytes, new_pixmap_with_context};
 use crate::paint::svg_filter::FilterCacheConfig;
-use crate::render_control::{active_deadline, check_active, check_active_periodic, DeadlineGuard};
+use crate::render_control::{
+  active_allocation_budget, active_deadline, active_heartbeat, active_stage, check_active,
+  check_active_periodic, DeadlineGuard, StageAllocationBudgetGuard, StageGuard, StageHeartbeatGuard,
+};
 use lru::LruCache;
 use rayon::prelude::*;
 use rustc_hash::FxHasher;
@@ -2374,6 +2377,9 @@ fn tile_blur(
   }
 
   let deadline = active_deadline();
+  let stage = active_stage();
+  let heartbeat = active_heartbeat();
+  let allocation_budget = active_allocation_budget();
   let deadline_enabled = deadline.as_ref().map_or(false, |d| d.is_enabled());
   if deadline_enabled {
     check_active(RenderStage::Paint)?;
@@ -2564,8 +2570,19 @@ fn tile_blur(
     let tiles_x_usize = tiles_x as usize;
     let total_tiles_u64 = tiles_x as u64 * tiles_y as u64;
     let init = || {
-      let guard = deadline_enabled.then(|| DeadlineGuard::install(deadline.as_ref()));
-      (guard, TileScratch { tile: None })
+      let deadline_guard = deadline_enabled.then(|| DeadlineGuard::install(deadline.as_ref()));
+      // Propagate render-control thread locals into the worker so pixmap allocations performed by
+      // nested parallel blur jobs are attributed to the correct stage heartbeat.
+      let stage_guard = StageGuard::install(stage);
+      let heartbeat_guard = StageHeartbeatGuard::install(heartbeat);
+      let budget_guard = StageAllocationBudgetGuard::install(allocation_budget.as_ref());
+      (
+        deadline_guard,
+        stage_guard,
+        heartbeat_guard,
+        budget_guard,
+        TileScratch { tile: None },
+      )
     };
     if total_tiles_u64 <= usize::MAX as u64 {
       let total_tiles = total_tiles_u64 as usize;
@@ -2605,7 +2622,7 @@ fn tile_blur(
       (0..total_tiles)
         .into_par_iter()
         .with_min_len(blur_parallel_min_len(total_tiles))
-        .for_each_init(init, |state, idx| blur_tile(idx, &mut state.1));
+        .for_each_init(init, |state, idx| blur_tile(idx, &mut state.4));
     } else {
       // Extremely high tile counts can overflow usize on 32-bit platforms; fall back to row-parallel
       // iteration rather than allocating a tile job list.
@@ -2613,7 +2630,7 @@ fn tile_blur(
         .into_par_iter()
         .with_min_len(blur_parallel_min_len(tiles_y as usize))
         .for_each_init(init, |state, ty| {
-          let scratch = &mut state.1;
+          let scratch = &mut state.4;
           let y = (ty as u32).saturating_mul(tile_h);
           if y >= height {
             return;
