@@ -156,7 +156,7 @@ impl fmt::Display for VerifyError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(
       f,
-      "statepoint stackmap verification failed for return address {:#x} (patchpoint_id={:#x})",
+      "statepoint stackmap verification failed for callsite return address {:#x} (patchpoint_id={:#x})",
       self.callsite_address, self.patchpoint_id
     )?;
 

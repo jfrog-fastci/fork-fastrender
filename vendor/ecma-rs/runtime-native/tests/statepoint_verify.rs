@@ -1,7 +1,9 @@
 use runtime_native::stackmaps::{Location, StackMap, StackMapRecord, StackSizeRecord};
 use runtime_native::statepoint_verify::{
-  verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions, LLVM_STATEPOINT_PATCHPOINT_ID,
+  verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
+  LLVM_STATEPOINT_PATCHPOINT_ID,
 };
+use runtime_native::StackMaps;
 
 const STATEPOINT_X86_64: &[u8] = include_bytes!("fixtures/bin/statepoint_x86_64.bin");
 const STATEPOINT_AARCH64: &[u8] = include_bytes!("fixtures/bin/statepoint_aarch64.bin");
@@ -165,4 +167,35 @@ fn verifier_rejects_deopt_operands() {
   .unwrap_err();
   assert_eq!(err.location_index, Some(2));
   assert!(err.message.contains("deopt"));
+}
+
+#[test]
+fn stackmaps_parse_runs_statepoint_verifier() {
+  let mut bytes = if cfg!(target_arch = "x86_64") {
+    STATEPOINT_X86_64.to_vec()
+  } else if cfg!(target_arch = "aarch64") {
+    STATEPOINT_AARCH64.to_vec()
+  } else {
+    // runtime-native only supports x86_64/aarch64 today.
+    return;
+  };
+
+  const HEADER_SIZE: usize = 16;
+  const FUNCTION_RECORD_SIZE: usize = 24;
+  const RECORD_HEADER_SIZE: usize = 16;
+  const LOCATION_SIZE: usize = 12;
+
+  let location3_kind_offset =
+    HEADER_SIZE + FUNCTION_RECORD_SIZE + RECORD_HEADER_SIZE + LOCATION_SIZE * 3;
+  bytes[location3_kind_offset] = 1; // Register (LLVM stackmap kind)
+  bytes[location3_kind_offset + 8..location3_kind_offset + 12].fill(0);
+
+  let err = StackMaps::parse(&bytes).unwrap_err();
+  match err {
+    runtime_native::stackmaps::StackMapError::StatepointVerify(v) => {
+      assert_eq!(v.location_index, Some(3));
+      assert!(v.message.contains("expected Indirect"));
+    }
+    other => panic!("expected StatepointVerify error, got {other:?}"),
+  }
 }
