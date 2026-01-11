@@ -568,11 +568,7 @@ impl StackMaps {
     Self::parse(llvm_stackmaps_section_bytes())
   }
 }
-#[cfg(all(
-  target_os = "linux",
-  target_arch = "x86_64",
-  feature = "llvm_stackmaps_linker"
-))]
+#[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
 fn llvm_stackmaps_section_bytes() -> &'static [u8] {
   extern "C" {
     static __fastr_stackmaps_start: u8;

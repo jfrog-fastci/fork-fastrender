@@ -32,18 +32,30 @@ Example (from the workspace root):
 ```bash
 cc -std=c99 \
   -I runtime-native/include \
-  -Wl,-T,runtime-native/stackmaps.ld \
   /path/to/program.c \
   target/release/libruntime_native.a \
   -o program
 ```
 
-The `stackmaps.ld` linker script fragment defines the `__llvm_stackmaps_start` /
-`__llvm_stackmaps_end` symbols used by the runtime to locate the loaded
-`.llvm_stackmaps` section for stack walking. Cargo automatically applies this
-script when linking Rust binaries (via `runtime-native/build.rs`), but you must
-pass it explicitly when linking from C. When the section is absent, the script
-still defines an empty range.
+If your program uses LLVM statepoints / stackmaps (i.e. it contains an
+in-memory `.llvm_stackmaps` section) and you want the runtime to be able to
+locate it for stack walking, you must also export the boundary symbols:
+
+- `__fastr_stackmaps_start`
+- `__fastr_stackmaps_end`
+
+The `runtime-native/stackmaps.ld` linker script fragment defines these symbols
+(and legacy `__llvm_stackmaps_{start,end}` aliases). When the section is
+absent, the symbols still define an empty range (`start == end`).
+
+When linking from C/clang, pass it explicitly:
+
+```bash
+cc ... -Wl,-T,runtime-native/stackmaps.ld ...
+```
+
+When linking Rust binaries, `runtime-native/build.rs` injects `stackmaps.ld`
+only when the `llvm_stackmaps_linker` Cargo feature is enabled.
 
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.

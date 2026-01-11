@@ -18,9 +18,11 @@ SECTIONS
 {
   .llvm_stackmaps : ALIGN(8)
   {
+    __fastr_stackmaps_start = .;
     __llvm_stackmaps_start = .;
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
+    __fastr_stackmaps_end = .;
     __llvm_stackmaps_end = .;
   }
 }

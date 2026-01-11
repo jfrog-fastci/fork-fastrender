@@ -77,8 +77,12 @@ fn segment_is_read_only(flags: object::SegmentFlags) -> bool {
 
 #[test]
 fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
-  const START_SYM: &str = "__llvm_stackmaps_start";
-  const END_SYM: &str = "__llvm_stackmaps_end";
+  const START_SYM: &str = "__fastr_stackmaps_start";
+  const END_SYM: &str = "__fastr_stackmaps_end";
+  // Legacy aliases that some tooling used before we standardized on the
+  // `__fastr_stackmaps_*` naming.
+  const LEGACY_START_SYM: &str = "__llvm_stackmaps_start";
+  const LEGACY_END_SYM: &str = "__llvm_stackmaps_end";
 
   let td = tempfile::tempdir().unwrap();
   let obj = compile_obj(td.path());
@@ -109,8 +113,13 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let section_size = section.size();
   assert!(section_size > 0, "expected non-empty .llvm_stackmaps");
 
-  let (start, start_scope) = find_symbol(&file, START_SYM).expect("missing __llvm_stackmaps_start");
-  let (end, end_scope) = find_symbol(&file, END_SYM).expect("missing __llvm_stackmaps_end");
+  let (start, start_scope) = find_symbol(&file, START_SYM).expect("missing __fastr_stackmaps_start");
+  let (end, end_scope) = find_symbol(&file, END_SYM).expect("missing __fastr_stackmaps_end");
+
+  let (legacy_start, legacy_start_scope) =
+    find_symbol(&file, LEGACY_START_SYM).expect("missing __llvm_stackmaps_start");
+  let (legacy_end, legacy_end_scope) =
+    find_symbol(&file, LEGACY_END_SYM).expect("missing __llvm_stackmaps_end");
 
   assert_ne!(
     start_scope,
@@ -122,6 +131,16 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     SymbolScope::Compilation,
     "{END_SYM} must be globally linkable (not a local symbol)"
   );
+  assert_ne!(
+    legacy_start_scope,
+    SymbolScope::Compilation,
+    "{LEGACY_START_SYM} must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    legacy_end_scope,
+    SymbolScope::Compilation,
+    "{LEGACY_END_SYM} must be globally linkable (not a local symbol)"
+  );
 
   assert_eq!(
     start, section_addr,
@@ -132,6 +151,9 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     section_size,
     "end-start must equal the .llvm_stackmaps section size"
   );
+
+  assert_eq!(legacy_start, start, "legacy start symbol must match");
+  assert_eq!(legacy_end, end, "legacy end symbol must match");
 
   // Ensure the section is backed by a readable load segment so the runtime can
   // read the bytes directly from memory.

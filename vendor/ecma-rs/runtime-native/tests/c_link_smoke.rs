@@ -103,10 +103,12 @@ int main(void) {
   .expect("write smoke.c");
 
   let include_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
-  // On Linux, `runtime-native` uses a linker-script based mechanism to expose the
-  // in-memory `.llvm_stackmaps` section via `__llvm_stackmaps_start/end` symbols.
-  // When linking from C directly (bypassing Cargo/rustc), we must pass the same
-  // script to the linker.
+
+  // On Linux, `runtime-native` expects the final binary to export symbols that delimit the
+  // in-memory `.llvm_stackmaps` section (`__fastr_stackmaps_start/end`).
+  //
+  // When linking from C directly (bypassing Cargo/rustc), we must pass the same linker script
+  // fragment to define those symbols.
   let stackmaps_ld = if cfg!(target_os = "linux") {
     Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("stackmaps.ld"))
   } else {
