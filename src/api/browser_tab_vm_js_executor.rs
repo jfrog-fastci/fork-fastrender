@@ -247,6 +247,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let document_origin = self.document_origin.clone();
     let document_url = self.document_url.clone();
     let module_map = &mut self.module_map;
+    let module_url_by_id = &mut self.module_url_by_id;
     let import_map_state = &mut self.import_map_state;
     let fetcher = document.fetcher();
 
@@ -264,6 +265,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         fetcher,
         max_script_bytes,
         module_map,
+        module_url_by_id,
         import_map_state,
         document_origin,
         cors_mode: CorsMode::Anonymous,
