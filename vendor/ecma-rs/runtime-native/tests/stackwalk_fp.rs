@@ -1,5 +1,5 @@
 #[cfg(target_arch = "x86_64")]
-use runtime_native::{walk_gc_roots_from_fp, StackMaps};
+use runtime_native::{walk_gc_roots_from_fp, StackMaps, WalkError};
 
 #[cfg(target_arch = "aarch64")]
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
@@ -420,6 +420,134 @@ fn multiple_derived_pointers_share_base_and_are_relocated() {
   assert_eq!(base_after, base_val + 0x1000);
   assert_eq!(unsafe { read_u64(caller_sp + 8) }, base_after + 8);
   assert_eq!(unsafe { read_u64(caller_sp + 16) }, base_after + 16);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn out_of_bounds_start_fp_is_rejected() {
+  let bytes = build_stackmaps_with_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  let mut stack = vec![0u8; 128];
+  let base = stack.as_mut_ptr() as usize;
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+
+  // Point completely outside the synthetic stack range.
+  let start_fp = align_up(base + stack.len() + 64, 16);
+
+  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_| {}) };
+  assert!(matches!(res, Err(WalkError::FramePointerOutOfBounds { .. })));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn non_monotonic_fp_chain_is_rejected() {
+  let bytes = build_stackmaps_with_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  let mut stack = vec![0u8; 128];
+  let base = stack.as_mut_ptr() as usize;
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+
+  let start_fp = align_up(base + 32, 16);
+  unsafe {
+    // Loop back to itself.
+    write_u64(start_fp + 0, start_fp as u64);
+    write_u64(start_fp + 8, 0x1234);
+  }
+
+  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_| {}) };
+  assert!(matches!(res, Err(WalkError::NonMonotonicFp { .. })));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn out_of_bounds_caller_fp_is_rejected() {
+  let bytes = build_stackmaps_with_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  let mut stack = vec![0u8; 128];
+  let base = stack.as_mut_ptr() as usize;
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+
+  let start_fp = align_up(base + 32, 16);
+  // Older frames live at higher addresses; pick an aligned pointer above `start_fp` but outside bounds.
+  let caller_fp = align_up(base + stack.len() + 64, 16);
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, 0x1234);
+  }
+
+  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_| {}) };
+  assert!(matches!(res, Err(WalkError::FramePointerOutOfBounds { .. })));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn out_of_bounds_caller_sp_is_rejected() {
+  // Construct bounds that include the FP chain but exclude the reconstructed caller SP.
+  //
+  // This simulates a bad/partial stack bounds capture: the walker must stop cleanly rather than
+  // attempting to compute root addresses from an out-of-bounds `caller_sp`.
+  let bytes = build_stackmaps_with_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
+  let stack_size = callsite.stack_size;
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  let fp_delta = (stack_size - 8) as usize;
+  let caller_sp = align_up(base + 256, 16);
+  let caller_fp = caller_sp + fp_delta;
+  let start_fp = caller_fp - 16;
+  assert_eq!(start_fp % 16, 0);
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+    // Base slot is [SP + 0].
+    write_u64(caller_sp + 0, 0xdead_beef);
+    write_u64(caller_sp + 8, 0xdead_beef);
+  }
+
+  // Bounds start at the runtime frame FP, which is higher than the caller SP (256). This causes
+  // the walker to reject the derived `caller_sp` during stackmap root decoding.
+  let bounds = StackBounds::new(start_fp as u64, (base + stack.len()) as u64).unwrap();
+  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_| {}) };
+  assert!(matches!(res, Err(WalkError::StackPointerOutOfBounds { .. })));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn misaligned_root_slot_is_rejected() {
+  let bytes = build_stackmaps_with_shared_base_derived_offsets(&[1]);
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
+  let stack_size = callsite.stack_size;
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  let fp_delta = (stack_size - 8) as usize;
+  let caller_sp = align_up(base + 256, 16);
+  let caller_fp = caller_sp + fp_delta;
+  let start_fp = align_up(base + 128, 16);
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+    // Base slot is [SP + 0].
+    write_u64(caller_sp + 0, 0xdead_beef);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_| {}) };
+  assert!(matches!(res, Err(WalkError::MisalignedRootSlot { .. })));
 }
 
 fn align_up(v: usize, align: usize) -> usize {
