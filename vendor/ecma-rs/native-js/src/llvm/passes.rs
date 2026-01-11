@@ -512,10 +512,12 @@ unsafe fn replace_phi_incoming_block(
 // -----------------------------------------------------------------------------
 
 /// Error raised when a TS-generated function contains a stray `call`/`invoke` that was not rewritten
-/// into a `gc.statepoint`.
+/// into a `gc.statepoint` (and is not explicitly marked as a `"gc-leaf-function"` callsite).
 #[derive(Debug, thiserror::Error)]
 pub enum CallsiteInvariantError {
-  #[error("TS-generated function `{function}` contains a non-statepoint call/invoke after rewrite: {instruction}")]
+  #[error(
+    "TS-generated function `{function}` contains a call/invoke after rewrite that is neither a statepoint nor a `gc-leaf-function`: {instruction}"
+  )]
   StrayCall { function: String, instruction: String },
 }
 
@@ -655,7 +657,9 @@ fn verify_no_stray_calls_in_ts_generated_functions(
           match LLVMGetInstructionOpcode(inst) {
             LLVMOpcode::LLVMCall | LLVMOpcode::LLVMInvoke | LLVMOpcode::LLVMCallBr => {
               let callee = get_call_callee_operand(inst);
-              if !is_intrinsic_function(callee) {
+              let callee = strip_callee_pointer_casts(callee);
+              let is_leaf = !LLVMIsAFunction(callee).is_null() && is_gc_leaf_function(callee);
+              if !is_intrinsic_function(callee) && !is_leaf {
                 return Err(CallsiteInvariantError::StrayCall {
                   function: func_name,
                   instruction: value_to_string(inst),

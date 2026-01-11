@@ -1351,6 +1351,57 @@ entry:
 }
 
 #[test]
+fn ts_generated_function_allows_gc_leaf_calls_after_rewrite() {
+  // `native-js` enforces that TS-generated functions contain no stray non-leaf calls after
+  // statepoint rewriting, since those would break stackmap coverage.
+  //
+  // However, leaf runtime calls (marked `"gc-leaf-function"`) are intentionally *not* rewritten into
+  // statepoints (e.g. write barriers / keep-alive helpers), so the callsite invariant must accept
+  // them.
+  let before = r#"
+declare void @bar()
+declare void @leaf(ptr addrspace(1)) "gc-leaf-function"
+
+define void @__nativejs_def_deadbeef(ptr addrspace(1) %obj) gc "coreclr" {
+entry:
+  call void @bar()
+  call void @leaf(ptr addrspace(1) %obj)
+  ret void
+}
+"#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@__nativejs_def_deadbeef");
+
+  assert!(
+    func.contains("@llvm.experimental.gc.statepoint"),
+    "expected a statepoint for the non-leaf @bar call:\n{func}"
+  );
+
+  let leaf_call = func
+    .lines()
+    .find(|l| l.contains("call void @leaf("))
+    .unwrap_or_else(|| panic!("missing direct leaf call:\n{func}"));
+
+  for line in func.lines() {
+    assert!(
+      !(line.contains("@llvm.experimental.gc.statepoint") && line.contains("@leaf")),
+      "leaf call should not be wrapped in a statepoint, but found:\n{line}\n\n{func}"
+    );
+  }
+
+  let arg = extract_first_arg_after("ptr addrspace(1)", leaf_call)
+    .unwrap_or_else(|| panic!("failed to parse leaf call arg from: {leaf_call}"));
+
+  assert!(
+    func
+      .lines()
+      .any(|l| l.contains(&format!("{arg} = call")) && l.contains("@llvm.experimental.gc.relocate.p1")),
+    "expected leaf call to use a relocated SSA value ({arg}), but did not find it defined by gc.relocate:\n{func}"
+  );
+}
+
+#[test]
 fn relocation_is_chained_across_multiple_statepoints() {
   // Real-world pattern: a pointer is live across multiple safepoints (e.g.
   // multiple runtime calls). After each statepoint, subsequent safepoints must
