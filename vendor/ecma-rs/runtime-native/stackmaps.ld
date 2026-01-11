@@ -4,7 +4,7 @@
  * whole layout.
  *
  * We:
- *  - keep `.llvm_stackmaps` even under `--gc-sections`
+ *  - keep LLVM stackmaps even under `--gc-sections`
  *  - define start/end symbols over the *loaded* section bytes
  *  - inject the section into the default linker script via `INSERT AFTER`
  *
@@ -16,13 +16,17 @@
 
 SECTIONS
 {
-  .llvm_stackmaps : ALIGN(8)
+  /* Hardened location: writable during relocation, then protected by RELRO. */
+  .data.rel.ro.llvm_stackmaps : ALIGN(8)
   {
     /* Preferred symbol names (shared with native-js). */
     __fastr_stackmaps_start = .;
     /* Backwards compatible aliases (older runtime-native prototypes / generic tooling). */
     __stackmaps_start = .;
     __llvm_stackmaps_start = .;
+    KEEP(*(.data.rel.ro.llvm_stackmaps))
+    KEEP(*(.data.rel.ro.llvm_stackmaps.*))
+    /* Legacy: older LLVM/object files may still emit `.llvm_stackmaps`. */
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
     __fastr_stackmaps_end = .;

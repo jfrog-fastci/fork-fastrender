@@ -82,6 +82,7 @@ pub mod thread;
 pub mod thread_registry;
 pub mod stackmaps;
 pub mod stackmaps_loader;
+pub mod stackmap_loader;
 pub mod statepoints;
 pub mod stack_walk;
 pub mod stackwalk;

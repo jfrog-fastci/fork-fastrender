@@ -9,8 +9,8 @@ set -euo pipefail
 # - Linking into a PIE with lld fails by default if those relocations live in a read-only section.
 #
 # Our recommended PIE policy is PIE *without* text relocations:
-# - Rewrite `.llvm_stackmaps` to be writable in the object file (so relocations are applied to RW
-#   memory), using `llvm-objcopy-18`.
+# - Rewrite `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps` in the object file so relocations
+#   are applied to RW memory and the final bytes can be protected by RELRO.
 # - Link with a tiny linker-script fragment that `KEEP`s the section (so `--gc-sections` can't drop
 #   it) and defines `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (see
 #   `runtime-native/stackmaps.ld`).
@@ -116,10 +116,12 @@ for obj in "$@"; do
   patched="${tmpdir}/${i}-$(basename "${obj}")"
   cp "${obj}" "${patched}"
 
-  # If present, make `.llvm_stackmaps` writable to avoid PIE text relocations with lld.
-  if readelf -S "${patched}" 2>/dev/null | grep -q '\.llvm_stackmaps'; then
-    "${objcopy}" --set-section-flags \
-      .llvm_stackmaps=alloc,load,contents,data \
+  # If present, relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps` (RELRO-friendly).
+  if readelf -S "${patched}" 2>/dev/null | grep -q '\.data\.rel\.ro\.llvm_stackmaps'; then
+    : # already rewritten
+  elif readelf -S "${patched}" 2>/dev/null | grep -q '\.llvm_stackmaps'; then
+    "${objcopy}" --rename-section \
+      .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
       "${patched}"
   fi
 
