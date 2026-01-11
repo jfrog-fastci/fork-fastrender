@@ -59,21 +59,97 @@ fn collect_lexical_names(lower: &LowerResult, body: &Body) -> BTreeSet<NameId> {
     }
   }
 
-  for stmt_id in body.root_stmts.iter().copied() {
-    let stmt = &body.stmts[stmt_id.0 as usize];
+  fn visit_stmt_id(lower: &LowerResult, body: &Body, stmt_id: hir_js::StmtId, out: &mut BTreeSet<NameId>) {
+    let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+      return;
+    };
+
     match &stmt.kind {
       StmtKind::Var(var_decl) => {
         for decl in var_decl.declarators.iter() {
-          collect_pat_idents(body, decl.pat, &mut names);
+          collect_pat_idents(body, decl.pat, out);
         }
       }
       StmtKind::Decl(def) => {
         if let Some(def) = lower.def(*def) {
-          names.insert(def.name);
+          out.insert(def.name);
         }
       }
+      StmtKind::Block(stmts) => {
+        for stmt in stmts {
+          visit_stmt_id(lower, body, *stmt, out);
+        }
+      }
+      StmtKind::If {
+        consequent,
+        alternate,
+        ..
+      } => {
+        visit_stmt_id(lower, body, *consequent, out);
+        if let Some(alt) = alternate {
+          visit_stmt_id(lower, body, *alt, out);
+        }
+      }
+      StmtKind::While { body: inner, .. }
+      | StmtKind::DoWhile { body: inner, .. }
+      | StmtKind::With { body: inner, .. } => {
+        visit_stmt_id(lower, body, *inner, out);
+      }
+      StmtKind::For { init, body: inner, .. } => {
+        if let Some(init) = init {
+          if let hir_js::ForInit::Var(var) = init {
+            for decl in var.declarators.iter() {
+              collect_pat_idents(body, decl.pat, out);
+            }
+          }
+        }
+        visit_stmt_id(lower, body, *inner, out);
+      }
+      StmtKind::ForIn {
+        left,
+        body: inner,
+        ..
+      } => {
+        match left {
+          hir_js::ForHead::Pat(pat) => collect_pat_idents(body, *pat, out),
+          hir_js::ForHead::Var(var) => {
+            for decl in var.declarators.iter() {
+              collect_pat_idents(body, decl.pat, out);
+            }
+          }
+        }
+        visit_stmt_id(lower, body, *inner, out);
+      }
+      StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } => {
+        visit_stmt_id(lower, body, *block, out);
+        if let Some(catch) = catch {
+          if let Some(param) = catch.param {
+            collect_pat_idents(body, param, out);
+          }
+          visit_stmt_id(lower, body, catch.body, out);
+        }
+        if let Some(finally) = finally_block {
+          visit_stmt_id(lower, body, *finally, out);
+        }
+      }
+      StmtKind::Switch { cases, .. } => {
+        for case in cases {
+          for stmt in &case.consequent {
+            visit_stmt_id(lower, body, *stmt, out);
+          }
+        }
+      }
+      StmtKind::Labeled { body: inner, .. } => visit_stmt_id(lower, body, *inner, out),
       _ => {}
     }
+  }
+
+  for stmt_id in body.root_stmts.iter().copied() {
+    visit_stmt_id(lower, body, stmt_id, &mut names);
   }
 
   names

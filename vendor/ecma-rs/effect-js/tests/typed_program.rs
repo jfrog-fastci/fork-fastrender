@@ -56,6 +56,8 @@ fn typed_program_can_query_expr_types() {
     .iter()
     .enumerate()
     .find_map(|(idx, expr)| match &expr.kind {
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { array, .. } => (*array == nums_recv).then_some(ExprId(idx as u32)),
       ExprKind::Call(call) => {
         let callee = body.exprs.get(call.callee.0 as usize)?;
         let ExprKind::Member(member) = &callee.kind else {

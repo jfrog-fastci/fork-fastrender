@@ -6,6 +6,30 @@ use knowledge_base::{ApiDatabase, ApiId};
 use crate::resolve::resolve_call;
 use crate::types::{TypeId, TypeProvider};
 
+#[cfg(feature = "typed")]
+fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
+}
+
+#[cfg(feature = "typed")]
+fn unwrap_await_value(body: &Body, expr: ExprId) -> Option<ExprId> {
+  match &body.exprs.get(expr.0 as usize)?.kind {
+    ExprKind::Await { expr } => Some(*expr),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::AwaitExpr { value, .. } => Some(*value),
+    _ => None,
+  }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArrayOp {
   Map { callback: ExprId },
@@ -58,9 +82,22 @@ pub fn recognize_pattern_tables(
 ) -> PatternTables {
   // Build an ExprId-aligned table of resolved calls.
   let mut resolved_call: Vec<Option<ApiId>> = vec![None; body.exprs.len()];
-  for (idx, _expr) in body.exprs.iter().enumerate() {
+  for (idx, expr) in body.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
-    resolved_call[idx] = resolve_call(lowered, body_id, body, expr_id, db, types).map(|c| c.api_id);
+    resolved_call[idx] = match &expr.kind {
+      // `hir-js` `ArrayChain` nodes are not calls themselves, but they represent a
+      // chain ending in a known array operation. Map the terminal op to the same
+      // API ID the call-based representation would have had, so typed patterns can
+      // be recognized against the semantic-op HIR.
+      #[cfg(all(feature = "typed", feature = "hir-semantic-ops"))]
+      ExprKind::ArrayChain { ops, .. } => match ops.last() {
+        Some(hir_js::ArrayChainOp::Map(_)) => Some(ApiId::from_name("Array.prototype.map")),
+        Some(hir_js::ArrayChainOp::Filter(_)) => Some(ApiId::from_name("Array.prototype.filter")),
+        Some(hir_js::ArrayChainOp::Reduce(..)) => Some(ApiId::from_name("Array.prototype.reduce")),
+        _ => None,
+      },
+      _ => resolve_call(lowered, body_id, body, expr_id, db, types).map(|c| c.api_id),
+    };
   }
 
   let typed_json_parse = collect_typed_json_parse_targets(body_id, body, &resolved_call, types);
@@ -261,58 +298,141 @@ fn recognize_map_filter_reduce(
     return None;
   };
 
-  let ExprKind::Call(reduce) = &body.exprs.get(reduce_call.0 as usize)?.kind else {
-    return None;
-  };
-  if reduce.optional || reduce.is_new || reduce.args.len() != 2 {
-    return None;
-  }
-  if reduce.args[0].spread || reduce.args[1].spread {
-    return None;
-  }
-  let reduce_callback = reduce.args[0].expr;
-  let reduce_init = reduce.args[1].expr;
+  let reduce_expr = body.exprs.get(reduce_call.0 as usize)?;
 
-  let ExprKind::Member(reduce_callee) = &body.exprs.get(reduce.callee.0 as usize)?.kind else {
-    return None;
-  };
-  let mut cur = reduce_callee.object;
+  #[cfg(feature = "hir-semantic-ops")]
+  if let ExprKind::ArrayChain { array, ops } = &reduce_expr.kind {
+    let array = strip_transparent_wrappers(body, *array);
+    if !types.expr_is_array(body_id, array) {
+      return None;
+    }
 
-  let mut ops_rev = vec![ArrayOp::Reduce {
-    callback: reduce_callback,
-    init: reduce_init,
-  }];
+    let mut out_ops = Vec::<ArrayOp>::new();
+    for (idx, op) in ops.iter().enumerate() {
+      match op {
+        hir_js::ArrayChainOp::Map(cb) => out_ops.push(ArrayOp::Map { callback: *cb }),
+        hir_js::ArrayChainOp::Filter(cb) => out_ops.push(ArrayOp::Filter { callback: *cb }),
+        hir_js::ArrayChainOp::Reduce(cb, Some(init)) => {
+          if idx + 1 != ops.len() {
+            return None;
+          }
+          out_ops.push(ArrayOp::Reduce {
+            callback: *cb,
+            init: *init,
+          });
+        }
+        hir_js::ArrayChainOp::Reduce(_, None)
+        | hir_js::ArrayChainOp::Find(_)
+        | hir_js::ArrayChainOp::Every(_)
+        | hir_js::ArrayChainOp::Some(_) => return None,
+      }
+    }
+
+    // Require at least one map/filter op in addition to reduce.
+    if out_ops.len() < 2 {
+      return None;
+    }
+
+    return Some(RecognizedPattern::MapFilterReduce {
+      array,
+      ops: out_ops,
+    });
+  }
+
+  let (mut cur, mut ops_rev) = match &reduce_expr.kind {
+    ExprKind::Call(reduce) => {
+      if reduce.optional || reduce.is_new || reduce.args.len() != 2 {
+        return None;
+      }
+      if reduce.args[0].spread || reduce.args[1].spread {
+        return None;
+      }
+      let reduce_callback = reduce.args[0].expr;
+      let reduce_init = reduce.args[1].expr;
+
+      let ExprKind::Member(reduce_callee) = &body.exprs.get(reduce.callee.0 as usize)?.kind else {
+        return None;
+      };
+      (
+        reduce_callee.object,
+        vec![ArrayOp::Reduce {
+          callback: reduce_callback,
+          init: reduce_init,
+        }],
+      )
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayReduce {
+      array,
+      callback,
+      init: Some(init),
+    } => (
+      *array,
+      vec![ArrayOp::Reduce {
+        callback: *callback,
+        init: *init,
+      }],
+    ),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayReduce { init: None, .. } => return None,
+    _ => return None,
+  };
+
+  let array_map = ApiId::from_name("Array.prototype.map");
+  let array_filter = ApiId::from_name("Array.prototype.filter");
 
   loop {
-    let ExprKind::Call(call) = &body.exprs.get(cur.0 as usize)?.kind else {
-      break;
-    };
+    cur = strip_transparent_wrappers(body, cur);
+    match &body.exprs.get(cur.0 as usize)?.kind {
+      ExprKind::Call(call) => {
+        let api = resolved_call.get(cur.0 as usize).copied().flatten();
+        let op = match api {
+          Some(id) if id == array_map => array_map,
+          Some(id) if id == array_filter => array_filter,
+          _ => break,
+        };
+        if call.optional || call.is_new || call.args.len() != 1 {
+          return None;
+        }
+        if call.args[0].spread {
+          return None;
+        }
+        let callback = call.args[0].expr;
 
-    let api = resolved_call.get(cur.0 as usize).copied().flatten();
-    let op_kind = match api {
-      Some(id) if id == ApiId::from_name("Array.prototype.map") => "map",
-      Some(id) if id == ApiId::from_name("Array.prototype.filter") => "filter",
+        let ExprKind::Member(callee) = &body.exprs.get(call.callee.0 as usize)?.kind else {
+          return None;
+        };
+
+        ops_rev.push(if op == array_map {
+          ArrayOp::Map { callback }
+        } else {
+          ArrayOp::Filter { callback }
+        });
+        cur = callee.object;
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { array, callback } => {
+        ops_rev.push(ArrayOp::Map { callback: *callback });
+        cur = *array;
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayFilter { array, callback } => {
+        ops_rev.push(ArrayOp::Filter { callback: *callback });
+        cur = *array;
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        for op in ops.iter().rev() {
+          match op {
+            hir_js::ArrayChainOp::Map(cb) => ops_rev.push(ArrayOp::Map { callback: *cb }),
+            hir_js::ArrayChainOp::Filter(cb) => ops_rev.push(ArrayOp::Filter { callback: *cb }),
+            _ => return None,
+          }
+        }
+        cur = *array;
+      }
       _ => break,
-    };
-
-    if call.optional || call.is_new || call.args.len() != 1 {
-      return None;
     }
-    if call.args[0].spread {
-      return None;
-    }
-    let callback = call.args[0].expr;
-
-    let ExprKind::Member(callee) = &body.exprs.get(call.callee.0 as usize)?.kind else {
-      return None;
-    };
-
-    ops_rev.push(match op_kind {
-      "map" => ArrayOp::Map { callback },
-      "filter" => ArrayOp::Filter { callback },
-      _ => unreachable!(),
-    });
-    cur = callee.object;
   }
 
   // Require at least one map/filter op in addition to reduce.
@@ -374,21 +494,33 @@ fn recognize_promise_all_fetch(
   {
     return None;
   }
-  let ExprKind::Call(map) = &body.exprs.get(promises_expr.0 as usize)?.kind else {
-    return None;
+  let (urls, callback_expr) = match &body.exprs.get(promises_expr.0 as usize)?.kind {
+    ExprKind::Call(map) => {
+      if map.optional || map.is_new || map.args.len() != 1 {
+        return None;
+      }
+      if map.args[0].spread {
+        return None;
+      }
+      let callback_expr = map.args[0].expr;
+      let ExprKind::Member(map_callee) = &body.exprs.get(map.callee.0 as usize)?.kind else {
+        return None;
+      };
+      (map_callee.object, callback_expr)
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayMap { array, callback } => (*array, *callback),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayChain { array, ops } => {
+      let [hir_js::ArrayChainOp::Map(cb)] = ops.as_slice() else {
+        return None;
+      };
+      (*array, *cb)
+    }
+    _ => return None,
   };
-  if map.optional || map.is_new || map.args.len() != 1 {
-    return None;
-  }
-  if map.args[0].spread {
-    return None;
-  }
-  let callback_expr = map.args[0].expr;
 
-  let ExprKind::Member(map_callee) = &body.exprs.get(map.callee.0 as usize)?.kind else {
-    return None;
-  };
-  let urls = map_callee.object;
+  let urls = strip_transparent_wrappers(body, urls);
   if !types.expr_is_array(body_id, urls) {
     return None;
   }
@@ -409,6 +541,11 @@ fn recognize_promise_all_fetch(
   };
 
   // The arrow function expression body must be a strict `fetch(url)` call.
+  let mut fetch_call_expr = strip_transparent_wrappers(cb_body, fetch_call_expr);
+  if let Some(inner) = unwrap_await_value(cb_body, fetch_call_expr) {
+    fetch_call_expr = strip_transparent_wrappers(cb_body, inner);
+  }
+
   if resolve_call(lowered, *callback_body, cb_body, fetch_call_expr, db, Some(types))
     .map(|c| c.api_id)
     != Some(ApiId::from_name("fetch"))

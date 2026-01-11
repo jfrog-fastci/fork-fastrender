@@ -496,6 +496,367 @@ fn sort_patterns_by_span(body: &hir_js::Body, patterns: &mut Vec<RecognizedPatte
   patterns.sort_by(|a, b| key(body, a).cmp(&key(body, b)));
 }
 
+#[cfg(feature = "typed")]
+fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<ExprId> {
+  fn visit_pat(
+    body: &hir_js::Body,
+    pat_id: PatId,
+    reachable: &mut std::collections::HashSet<ExprId>,
+  ) {
+    let Some(pat) = body.pats.get(pat_id.0 as usize) else {
+      return;
+    };
+    match &pat.kind {
+      PatKind::Ident(_) => {}
+      PatKind::Array(arr) => {
+        for element in &arr.elements {
+          if let Some(element) = element {
+            visit_pat(body, element.pat, reachable);
+            if let Some(default_value) = element.default_value {
+              visit_expr(body, default_value, reachable);
+            }
+          }
+        }
+        if let Some(rest) = arr.rest {
+          visit_pat(body, rest, reachable);
+        }
+      }
+      PatKind::Object(obj) => {
+        for prop in &obj.props {
+          visit_pat(body, prop.value, reachable);
+          if let Some(default_value) = prop.default_value {
+            visit_expr(body, default_value, reachable);
+          }
+          if let hir_js::ObjectKey::Computed(expr) = prop.key {
+            visit_expr(body, expr, reachable);
+          }
+        }
+        if let Some(rest) = obj.rest {
+          visit_pat(body, rest, reachable);
+        }
+      }
+      PatKind::Rest(inner) => visit_pat(body, **inner, reachable),
+      PatKind::Assign {
+        target,
+        default_value,
+      } => {
+        visit_pat(body, *target, reachable);
+        visit_expr(body, *default_value, reachable);
+      }
+      PatKind::AssignTarget(expr) => visit_expr(body, *expr, reachable),
+    }
+  }
+
+  fn visit_var_decl(
+    body: &hir_js::Body,
+    decl: &hir_js::VarDecl,
+    reachable: &mut std::collections::HashSet<ExprId>,
+  ) {
+    for d in &decl.declarators {
+      visit_pat(body, d.pat, reachable);
+      if let Some(init) = d.init {
+        visit_expr(body, init, reachable);
+      }
+    }
+  }
+
+  fn visit_stmt(
+    body: &hir_js::Body,
+    stmt_id: StmtId,
+    reachable: &mut std::collections::HashSet<ExprId>,
+  ) {
+    let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+      return;
+    };
+    match &stmt.kind {
+      StmtKind::Expr(expr) => visit_expr(body, *expr, reachable),
+      StmtKind::Decl(_) => {}
+      StmtKind::Return(expr) => {
+        if let Some(expr) = expr {
+          visit_expr(body, *expr, reachable);
+        }
+      }
+      StmtKind::Block(stmts) => {
+        for stmt in stmts {
+          visit_stmt(body, *stmt, reachable);
+        }
+      }
+      StmtKind::If {
+        test,
+        consequent,
+        alternate,
+      } => {
+        visit_expr(body, *test, reachable);
+        visit_stmt(body, *consequent, reachable);
+        if let Some(alternate) = alternate {
+          visit_stmt(body, *alternate, reachable);
+        }
+      }
+      StmtKind::While { test, body: inner } | StmtKind::DoWhile { test, body: inner } => {
+        visit_expr(body, *test, reachable);
+        visit_stmt(body, *inner, reachable);
+      }
+      StmtKind::For {
+        init,
+        test,
+        update,
+        body: inner,
+      } => {
+        if let Some(init) = init {
+          match init {
+            hir_js::ForInit::Expr(expr) => visit_expr(body, *expr, reachable),
+            hir_js::ForInit::Var(var) => visit_var_decl(body, var, reachable),
+          }
+        }
+        if let Some(test) = test {
+          visit_expr(body, *test, reachable);
+        }
+        if let Some(update) = update {
+          visit_expr(body, *update, reachable);
+        }
+        visit_stmt(body, *inner, reachable);
+      }
+      StmtKind::ForIn {
+        left,
+        right,
+        body: inner,
+        ..
+      } => {
+        match left {
+          hir_js::ForHead::Pat(pat) => visit_pat(body, *pat, reachable),
+          hir_js::ForHead::Var(var) => visit_var_decl(body, var, reachable),
+        }
+        visit_expr(body, *right, reachable);
+        visit_stmt(body, *inner, reachable);
+      }
+      StmtKind::Switch { discriminant, cases } => {
+        visit_expr(body, *discriminant, reachable);
+        for case in cases {
+          if let Some(test) = case.test {
+            visit_expr(body, test, reachable);
+          }
+          for stmt in &case.consequent {
+            visit_stmt(body, *stmt, reachable);
+          }
+        }
+      }
+      StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } => {
+        visit_stmt(body, *block, reachable);
+        if let Some(catch) = catch {
+          if let Some(param) = catch.param {
+            visit_pat(body, param, reachable);
+          }
+          visit_stmt(body, catch.body, reachable);
+        }
+        if let Some(finally) = finally_block {
+          visit_stmt(body, *finally, reachable);
+        }
+      }
+      StmtKind::Throw(expr) => visit_expr(body, *expr, reachable),
+      StmtKind::Break(_) | StmtKind::Continue(_) => {}
+      StmtKind::Var(var) => visit_var_decl(body, var, reachable),
+      StmtKind::Labeled { body: inner, .. } => visit_stmt(body, *inner, reachable),
+      StmtKind::With { object, body: inner } => {
+        visit_expr(body, *object, reachable);
+        visit_stmt(body, *inner, reachable);
+      }
+      StmtKind::Debugger | StmtKind::Empty => {}
+    }
+  }
+
+  fn visit_expr(body: &hir_js::Body, expr_id: ExprId, reachable: &mut std::collections::HashSet<ExprId>) {
+    if !reachable.insert(expr_id) {
+      return;
+    }
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return;
+    };
+    match &expr.kind {
+      ExprKind::Missing
+      | ExprKind::Ident(_)
+      | ExprKind::This
+      | ExprKind::Super
+      | ExprKind::Literal(_)
+      | ExprKind::ImportMeta
+      | ExprKind::NewTarget => {}
+      ExprKind::Unary { expr, .. } | ExprKind::Update { expr, .. } | ExprKind::Await { expr } | ExprKind::NonNull { expr } => {
+        visit_expr(body, *expr, reachable);
+      }
+      ExprKind::Binary { left, right, .. } => {
+        visit_expr(body, *left, reachable);
+        visit_expr(body, *right, reachable);
+      }
+      ExprKind::Assignment { target, value, .. } => {
+        visit_pat(body, *target, reachable);
+        visit_expr(body, *value, reachable);
+      }
+      ExprKind::Call(call) => {
+        visit_expr(body, call.callee, reachable);
+        for arg in &call.args {
+          visit_expr(body, arg.expr, reachable);
+        }
+      }
+      ExprKind::Member(member) => {
+        visit_expr(body, member.object, reachable);
+        if let hir_js::ObjectKey::Computed(expr) = member.property {
+          visit_expr(body, expr, reachable);
+        }
+      }
+      ExprKind::Conditional {
+        test,
+        consequent,
+        alternate,
+      } => {
+        visit_expr(body, *test, reachable);
+        visit_expr(body, *consequent, reachable);
+        visit_expr(body, *alternate, reachable);
+      }
+      ExprKind::Array(array) => {
+        for element in &array.elements {
+          match element {
+            ArrayElement::Expr(expr) | ArrayElement::Spread(expr) => visit_expr(body, *expr, reachable),
+            ArrayElement::Empty => {}
+          }
+        }
+      }
+      ExprKind::Object(object) => {
+        for prop in &object.properties {
+          match prop {
+            ObjectProperty::KeyValue { key, value, .. } => {
+              if let hir_js::ObjectKey::Computed(expr) = key {
+                visit_expr(body, *expr, reachable);
+              }
+              visit_expr(body, *value, reachable);
+            }
+            ObjectProperty::Getter { key, .. } | ObjectProperty::Setter { key, .. } => {
+              if let hir_js::ObjectKey::Computed(expr) = key {
+                visit_expr(body, *expr, reachable);
+              }
+            }
+            ObjectProperty::Spread(expr) => visit_expr(body, *expr, reachable),
+          }
+        }
+      }
+      ExprKind::FunctionExpr { .. } | ExprKind::ClassExpr { .. } => {}
+      ExprKind::Template(template) => {
+        for span in &template.spans {
+          visit_expr(body, span.expr, reachable);
+        }
+      }
+      ExprKind::TaggedTemplate { tag, template } => {
+        visit_expr(body, *tag, reachable);
+        for span in &template.spans {
+          visit_expr(body, span.expr, reachable);
+        }
+      }
+      ExprKind::Yield { expr: Some(expr), .. } => visit_expr(body, *expr, reachable),
+      ExprKind::Yield { expr: None, .. } => {}
+      ExprKind::TypeAssertion { expr, .. } | ExprKind::Satisfies { expr, .. } => visit_expr(body, *expr, reachable),
+      ExprKind::ImportCall { argument, attributes } => {
+        visit_expr(body, *argument, reachable);
+        if let Some(attributes) = attributes {
+          visit_expr(body, *attributes, reachable);
+        }
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { array, callback }
+      | ExprKind::ArrayFilter { array, callback }
+      | ExprKind::ArrayFind { array, callback }
+      | ExprKind::ArrayEvery { array, callback }
+      | ExprKind::ArraySome { array, callback } => {
+        visit_expr(body, *array, reachable);
+        visit_expr(body, *callback, reachable);
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayReduce {
+        array,
+        callback,
+        init,
+      } => {
+        visit_expr(body, *array, reachable);
+        visit_expr(body, *callback, reachable);
+        if let Some(init) = init {
+          visit_expr(body, *init, reachable);
+        }
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        visit_expr(body, *array, reachable);
+        for op in ops {
+          match op {
+            hir_js::ArrayChainOp::Map(cb)
+            | hir_js::ArrayChainOp::Filter(cb)
+            | hir_js::ArrayChainOp::Find(cb)
+            | hir_js::ArrayChainOp::Every(cb)
+            | hir_js::ArrayChainOp::Some(cb) => visit_expr(body, *cb, reachable),
+            hir_js::ArrayChainOp::Reduce(cb, init) => {
+              visit_expr(body, *cb, reachable);
+              if let Some(init) = init {
+                visit_expr(body, *init, reachable);
+              }
+            }
+          }
+        }
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+        for promise in promises {
+          visit_expr(body, *promise, reachable);
+        }
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::AwaitExpr { value, .. } => visit_expr(body, *value, reachable),
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::KnownApiCall { args, .. } => {
+        for arg in args {
+          visit_expr(body, *arg, reachable);
+        }
+      }
+      ExprKind::Jsx(jsx) => {
+        for attr in &jsx.attributes {
+          match attr {
+            hir_js::JsxAttr::Named { value, .. } => {
+              if let Some(value) = value {
+                match value {
+                  hir_js::JsxAttrValue::Expression(container) => {
+                    if let Some(expr) = container.expr {
+                      visit_expr(body, expr, reachable);
+                    }
+                  }
+                  hir_js::JsxAttrValue::Element(expr) => visit_expr(body, *expr, reachable),
+                  hir_js::JsxAttrValue::Text(_) => {}
+                }
+              }
+            }
+            hir_js::JsxAttr::Spread { expr } => visit_expr(body, *expr, reachable),
+          }
+        }
+        for child in &jsx.children {
+          match child {
+            hir_js::JsxChild::Element(expr) => visit_expr(body, *expr, reachable),
+            hir_js::JsxChild::Expr(container) => {
+              if let Some(expr) = container.expr {
+                visit_expr(body, expr, reachable);
+              }
+            }
+            hir_js::JsxChild::Text(_) => {}
+          }
+        }
+      }
+    }
+  }
+
+  let mut reachable = std::collections::HashSet::new();
+  for stmt in &body.root_stmts {
+    visit_stmt(body, *stmt, &mut reachable);
+  }
+  reachable
+}
+
 pub fn recognize_patterns_untyped(
   kb: &KnowledgeBase,
   lowered: &LowerResult,
@@ -1378,7 +1739,7 @@ fn parse_array_chain(
   {
     let expr = body.exprs.get(expr_id.0 as usize)?;
     if let ExprKind::ArrayChain { array, ops } = &expr.kind {
-      let base = *array;
+      let base = strip_transparent_wrappers(body, *array);
       if !types.expr_is_array(body_id, base) {
         return None;
       }
@@ -1479,6 +1840,11 @@ pub fn recognize_patterns_typed(
   let map_has = kb.id_of("Map.prototype.has");
   let map_get = kb.id_of("Map.prototype.get");
   let mut patterns = Vec::new();
+  // `hir-js/semantic-ops` may lower a source expression into a semantic-op node
+  // (e.g. `ExprKind::ArrayChain`) and leave the original `Call`/`Member` nodes in
+  // the arena but unreachable from the root statements. Filter to the reachable
+  // subgraph so we don't emit patterns for dead nodes.
+  let reachable_exprs = collect_reachable_exprs(body_ref);
 
   for stmt_id in &body_ref.root_stmts {
     walk_stmt(body_ref, *stmt_id, |stmt_id, stmt| match stmt {
@@ -1587,9 +1953,9 @@ pub fn recognize_patterns_typed(
   }
 
   // 1) Canonical call sites, using types to gate prototype/instance methods.
-  for (idx, expr) in body_ref.exprs.iter().enumerate() {
+  for (idx, _expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
-    if !matches!(expr.kind, ExprKind::Call(_)) {
+    if !reachable_exprs.contains(&expr_id) {
       continue;
     }
     if let Some(api) = resolver.resolve_call_typed(body, expr_id, types) {
@@ -1607,6 +1973,9 @@ pub fn recognize_patterns_typed(
   let mut non_outermost_array_exprs = std::collections::HashSet::<ExprId>::new();
   for (idx, _expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
+    if !reachable_exprs.contains(&expr_id) {
+      continue;
+    }
     let Some((recv, _node)) = classify_array_call(lowered, body_ref, expr_id) else {
       continue;
     };
@@ -1654,6 +2023,9 @@ pub fn recognize_patterns_typed(
 
   for (idx, expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
+    if !reachable_exprs.contains(&expr_id) {
+      continue;
+    }
 
     // ArrayChain: recognize only at the outermost chain call.
     if !non_outermost_array_exprs.contains(&expr_id) {
@@ -1690,6 +2062,56 @@ pub fn recognize_patterns_typed(
           filter_call: chain[1].0,
           reduce_call: chain[2].0,
         });
+      }
+    }
+
+    #[cfg(feature = "hir-semantic-ops")]
+    if let ExprKind::ArrayChain { array, ops } = &expr.kind {
+      let base = strip_transparent_wrappers(body_ref, *array);
+      if types.expr_is_array(body, base) {
+        if let [hir_js::ArrayChainOp::Map(map_cb), hir_js::ArrayChainOp::Filter(filter_cb), hir_js::ArrayChainOp::Reduce(_reduce_cb, _reduce_init)] =
+          ops.as_slice()
+        {
+          // Note: `hir-js` collapses chained calls into a single `ArrayChain` node,
+          // but the intermediate call expressions still exist (typically unreachable)
+          // in the expression arena. Best-effort recover them so downstream can
+          // still point at the per-call nodes.
+          let map_call = body_ref
+            .exprs
+            .iter()
+            .enumerate()
+            .find_map(|(idx, candidate)| match &candidate.kind {
+              ExprKind::ArrayMap { array, callback }
+                if strip_transparent_wrappers(body_ref, *array) == base && callback == map_cb =>
+              {
+                Some(ExprId(idx as u32))
+              }
+              _ => None,
+            })
+            .unwrap_or(expr_id);
+
+          let filter_call = body_ref
+            .exprs
+            .iter()
+            .enumerate()
+            .find_map(|(idx, candidate)| match &candidate.kind {
+              ExprKind::ArrayChain { array, ops }
+                if strip_transparent_wrappers(body_ref, *array) == base
+                  && matches!(ops.as_slice(), [hir_js::ArrayChainOp::Map(a), hir_js::ArrayChainOp::Filter(b)] if a == map_cb && b == filter_cb) =>
+              {
+                Some(ExprId(idx as u32))
+              }
+              _ => None,
+            })
+            .unwrap_or(expr_id);
+
+          patterns.push(RecognizedPattern::MapFilterReduce {
+            base,
+            map_call,
+            filter_call,
+            reduce_call: expr_id,
+          });
+        }
       }
     }
 

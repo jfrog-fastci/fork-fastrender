@@ -140,6 +140,15 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
       .iter()
       .enumerate()
       .find_map(|(idx, expr)| match &expr.kind {
+        #[cfg(feature = "hir-semantic-ops")]
+        ExprKind::ArrayMap { array, .. } if prop_expected == "map" => {
+          let recv = body.exprs.get(array.0 as usize)?;
+          let ExprKind::Ident(name) = recv.kind else {
+            return None;
+          };
+          let recv_name = lowered.names.resolve(name)?;
+          (recv_name == recv_expected).then_some(ExprId(idx as u32))
+        }
         ExprKind::Call(call) => {
           let callee = body.exprs.get(call.callee.0 as usize)?;
           let ExprKind::Member(member) = &callee.kind else {
