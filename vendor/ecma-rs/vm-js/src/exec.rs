@@ -1322,6 +1322,12 @@ impl<'a> Evaluator<'a> {
           }
           for declarator in &var.stx.declarators {
             self.tick()?;
+            if var.stx.mode == VarDeclMode::Const && declarator.initializer.is_none() {
+              return Err(syntax_error(
+                declarator.pattern.loc,
+                "Missing initializer in const declaration",
+              ));
+            }
             self.collect_lexical_decl_names_from_pat(
               &declarator.pattern.stx.pat.stx,
               stmt.loc,
@@ -1742,6 +1748,12 @@ impl<'a> Evaluator<'a> {
         {
           for declarator in &var.stx.declarators {
             self.tick()?;
+            if var.stx.mode == VarDeclMode::Const && declarator.initializer.is_none() {
+              return Err(syntax_error(
+                declarator.pattern.loc,
+                "Missing initializer in const declaration",
+              ));
+            }
             // Reuse lexical declaration collection logic to detect duplicates across complex patterns.
             let mut tmp = Vec::new();
             self.collect_lexical_decl_names_from_pat(
@@ -2444,8 +2456,10 @@ impl<'a> Evaluator<'a> {
       VarDeclMode::Const => {
         for declarator in &decl.declarators {
           let Some(init) = &declarator.initializer else {
-            // TODO: should be a syntax error (early error).
-            return Err(VmError::Unimplemented("const without initializer"));
+            return Err(syntax_error(
+              declarator.pattern.loc,
+              "Missing initializer in const declaration",
+            ));
           };
           let value = self.eval_expr(scope, init)?;
 

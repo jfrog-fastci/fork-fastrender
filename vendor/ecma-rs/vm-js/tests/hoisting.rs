@@ -36,3 +36,18 @@ fn lexical_declarations_have_tdz() {
   }
 }
 
+#[test]
+fn const_without_initializer_is_syntax_error_and_does_not_pollute_global_env() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("const x;").unwrap_err();
+  match err {
+    VmError::Syntax(_) => {}
+    other => panic!("expected syntax error, got {other:?}"),
+  }
+
+  // If hoisting ran before the early error, we would have left behind an
+  // uninitialised lexical binding, and `typeof x` would throw instead of
+  // returning `"undefined"`.
+  let value = rt.exec_script(r#"typeof x === "undefined""#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
