@@ -27,6 +27,9 @@ pub fn validate_native_strict_body(
   let proxy_name = name_interner.intern("Proxy");
   let revocable_name = name_interner.intern("revocable");
   let arguments_name = name_interner.intern("arguments");
+  let call_name = name_interner.intern("call");
+  let apply_name = name_interner.intern("apply");
+  let bind_name = name_interner.intern("bind");
   let set_prototype_of_name = name_interner.intern("setPrototypeOf");
   let define_property_name = name_interner.intern("defineProperty");
   let define_properties_name = name_interner.intern("defineProperties");
@@ -103,6 +106,27 @@ pub fn validate_native_strict_body(
       }
     }
     false
+  }
+
+  fn expr_is_builtin_member(
+    body: &Body,
+    expr_id: hir_js::ExprId,
+    global_this_name: hir_js::NameId,
+    base_name: hir_js::NameId,
+    base_str: &str,
+    member_name: hir_js::NameId,
+    member_str: &str,
+  ) -> bool {
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return false;
+    };
+    let ExprKind::Member(mem) = &expr.kind else {
+      return false;
+    };
+    expr_is_ident_or_global_this_member(body, mem.object, global_this_name, base_name, base_str)
+      && (object_key_is_ident(&mem.property, member_name)
+        || object_key_is_string(&mem.property, member_str)
+        || object_key_is_literal_string(body, &mem.property, member_str))
   }
 
   fn expr_is_global_this(
@@ -372,11 +396,11 @@ pub fn validate_native_strict_body(
             .copied()
             .unwrap_or(callee.span);
 
-            if !call.is_new {
-              let direct_eval =
-                matches!(&callee.kind, ExprKind::Ident(name) if *name == eval_name);
-              let global_eval = match &callee.kind {
-                ExprKind::Member(mem) => {
+        if !call.is_new {
+          let direct_eval =
+            matches!(&callee.kind, ExprKind::Ident(name) if *name == eval_name);
+          let global_eval = match &callee.kind {
+            ExprKind::Member(mem) => {
                   let prop_is_eval =
                     object_key_is_ident(&mem.property, eval_name)
                       || object_key_is_string(&mem.property, "eval")
@@ -393,6 +417,63 @@ pub fn validate_native_strict_body(
                 "`eval` is forbidden when `native_strict` is enabled",
                 Span::new(file, callee_span),
               ));
+            }
+
+            if let ExprKind::Member(member) = &callee.kind {
+              let is_call_like =
+                (object_key_is_ident(&member.property, call_name)
+                  || object_key_is_string(&member.property, "call")
+                  || object_key_is_literal_string(body, &member.property, "call"))
+                  || (object_key_is_ident(&member.property, apply_name)
+                    || object_key_is_string(&member.property, "apply")
+                    || object_key_is_literal_string(body, &member.property, "apply"))
+                  || (object_key_is_ident(&member.property, bind_name)
+                    || object_key_is_string(&member.property, "bind")
+                    || object_key_is_literal_string(body, &member.property, "bind"));
+              if is_call_like
+                && expr_is_ident_or_global_this_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  eval_name,
+                  "eval",
+                )
+              {
+                diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                  "`eval` is forbidden when `native_strict` is enabled",
+                  Span::new(file, callee_span),
+                ));
+              }
+              if is_call_like
+                && expr_is_ident_or_global_this_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  function_name,
+                  "Function",
+                )
+              {
+                diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                  "`Function` constructor is forbidden when `native_strict` is enabled",
+                  Span::new(file, callee_span),
+                ));
+              }
+              if is_call_like
+                && expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  proxy_name,
+                  "Proxy",
+                  revocable_name,
+                  "revocable",
+                )
+              {
+                diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                  "`Proxy` is forbidden when `native_strict` is enabled",
+                  Span::new(file, callee_span),
+                ));
+              }
             }
           }
 

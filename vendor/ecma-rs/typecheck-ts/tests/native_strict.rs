@@ -20,7 +20,11 @@ declare const arguments: IArguments;
 
 declare function eval(x: string): unknown;
 
-interface Function {}
+interface Function {
+  call: (this_arg: unknown, ...args: unknown[]) => unknown;
+  apply: (this_arg: unknown, args: unknown[]) => unknown;
+  bind: (this_arg: unknown, ...args: unknown[]) => Function;
+}
 declare const Function: { new (...args: string[]): Function; (...args: string[]): Function };
 
 declare const Object: {
@@ -105,6 +109,23 @@ fn native_strict_bans_eval() {
 }
 
 #[test]
+fn native_strict_bans_eval_call() {
+  let source = "eval.call(null, \"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "eval.call";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_new_function() {
   let source = "new Function(\"return 1\");";
   let (diagnostics, file_id) = check(source, true);
@@ -117,6 +138,23 @@ fn native_strict_bans_new_function() {
         && diag.primary.range == span
     }),
     "expected native_strict new Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_function_call() {
+  let source = "Function.call(null, \"return 1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Function.call";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
   );
 }
 
@@ -298,6 +336,23 @@ fn native_strict_bans_new_proxy() {
         && diag.primary.range == span
     }),
     "expected native_strict new Proxy diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_proxy_revocable_call() {
+  let source = "Proxy.revocable.call(null, {}, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Proxy.revocable.call";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Proxy diagnostic at {span:?}, got {diagnostics:?}"
   );
 }
 
