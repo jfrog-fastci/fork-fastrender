@@ -167,12 +167,18 @@ fn global_heap() -> &'static GlobalHeap {
     let heap_ptr = Box::into_raw(heap) as usize;
 
     // Initialize the write barrier's young-space range to the nursery backing this heap.
-    unsafe {
-      let nursery = &(*(heap_ptr as *mut crate::gc::GcHeap)).nursery;
-      YOUNG_SPACE
-        .start
-        .store(nursery.start() as usize, Ordering::Release);
-      YOUNG_SPACE.end.store(nursery.end() as usize, Ordering::Release);
+    //
+    // Some tests install a synthetic young range (via `rt_gc_set_young_range`) to exercise the
+    // exported write barrier without allocating a full GC heap. Avoid clobbering a non-empty range
+    // that was explicitly configured by the test/embedding.
+    if YOUNG_SPACE.start.load(Ordering::Acquire) == 0 && YOUNG_SPACE.end.load(Ordering::Acquire) == 0 {
+      unsafe {
+        let nursery = &(*(heap_ptr as *mut crate::gc::GcHeap)).nursery;
+        YOUNG_SPACE
+          .start
+          .store(nursery.start() as usize, Ordering::Release);
+        YOUNG_SPACE.end.store(nursery.end() as usize, Ordering::Release);
+      }
     }
 
     GlobalHeap {
@@ -286,11 +292,22 @@ pub(crate) fn on_thread_registered(_id: ThreadId) {
     return;
   }
 
+  // Eagerly initialize the process-global GC heap when a thread registers so `rt_gc_collect` never
+  // needs to allocate while the world is stopped.
+  let _ = global_heap();
+
   let _ = TLS_ALLOC.try_with(|alloc| unsafe {
     let alloc = &mut *alloc.get();
     alloc.nursery_epoch = NURSERY_EPOCH.load(Ordering::Relaxed);
     alloc.major_epoch = MAJOR_EPOCH.load(Ordering::Relaxed);
   });
+
+  // Keep write-barrier behavior deterministic for tests that intentionally set a synthetic
+  // young-generation range (see `tests/write_barrier_integration.rs`). Only restore the global heap
+  // nursery range if the range is currently unset.
+  if YOUNG_SPACE.start.load(Ordering::Acquire) == 0 && YOUNG_SPACE.end.load(Ordering::Acquire) == 0 {
+    ensure_global_heap_init();
+  }
 }
 
 pub(crate) fn on_thread_unregistered(_id: ThreadId) {

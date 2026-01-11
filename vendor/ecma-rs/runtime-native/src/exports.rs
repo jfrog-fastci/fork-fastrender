@@ -916,6 +916,11 @@ pub extern "C" fn rt_gc_collect() {
       return;
     }
 
+    // Tests may reset the exported young-generation range (`rt_gc_set_young_range`) between runs.
+    // Ensure it is set to the global heap's nursery so write-barrier checks remain sound, and so
+    // tests that query `rt_gc_get_young_range` immediately after a GC observe a valid range.
+    crate::rt_alloc::ensure_global_heap_init();
+
     // Attempt to become the stop-the-world coordinator.
     let Some(stop_epoch) = crate::threading::safepoint::rt_gc_try_request_stop_the_world() else {
       // Lost the race; if a GC is now active, join it.
@@ -952,9 +957,10 @@ pub extern "C" fn rt_gc_collect() {
       let mut remembered = global_remset::WorldStoppedRememberedSet::new();
       let mut roots = AbiRootSet { stop_epoch };
 
-      let res = crate::rt_alloc::with_heap_lock_world_stopped(|heap| heap.collect_major(&mut roots, &mut remembered));
+      let res =
+        crate::rt_alloc::with_heap_lock_world_stopped(|heap| heap.collect_major(&mut roots, &mut remembered));
       if res.is_err() {
-        std::process::abort();
+        crate::trap::rt_trap_oom(0, "rt_gc_collect: major collection failed");
       }
     });
   })

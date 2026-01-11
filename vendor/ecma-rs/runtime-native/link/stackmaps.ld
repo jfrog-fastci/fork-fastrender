@@ -14,14 +14,13 @@
  *     __stackmaps_start / __stackmaps_end (generic aliases)
  *     __fastr_stackmaps_* / __llvm_stackmaps_* (legacy aliases)
  *
- * It also defines aliases:
- *   - `__stackmaps_{start,end}` (generic alias)
- *   - `__fastr_stackmaps_{start,end}` / `__llvm_stackmaps_{start,end}` (legacy)
- *
- * `native-js` rewrites `.llvm_stackmaps` / `.llvm_faultmaps` input sections to
- * `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` (via
- * `llvm-objcopy --rename-section ...`) before linking. This makes the sections
- * writable during relocation without requiring text relocations (DT_TEXTREL).
+ * PIE note:
+ * LLVM stackmaps contain code pointers, which become runtime relocations under
+ * PIE. lld rejects text relocations, so stackmaps must live in writable memory
+ * during relocation. In our pipeline, `.llvm_stackmaps` / `.llvm_faultmaps`
+ * input sections may be rewritten to `.data.rel.ro.llvm_stackmaps` /
+ * `.data.rel.ro.llvm_faultmaps` (via `llvm-objcopy --rename-section ...`) so
+ * they naturally land in RELRO-friendly memory.
  *
  * RELRO + lld constraints:
  * - For PIE/DSO links we want stackmaps/faultmaps to be writable while the

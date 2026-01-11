@@ -1,6 +1,6 @@
 use std::io;
 use std::ptr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Default nursery size used by [`NurserySpace::new_default`].
 ///
@@ -57,6 +57,7 @@ pub struct NurserySpace {
   start: *mut u8,
   size_bytes: usize,
   bump_offset: AtomicUsize,
+  epoch: AtomicU64,
   #[cfg(not(unix))]
   layout: std::alloc::Layout,
 }
@@ -120,6 +121,7 @@ impl NurserySpace {
         start: ptr.cast::<u8>(),
         size_bytes,
         bump_offset: AtomicUsize::new(0),
+        epoch: AtomicU64::new(0),
       })
     }
 
@@ -140,6 +142,7 @@ impl NurserySpace {
         start,
         size_bytes,
         bump_offset: AtomicUsize::new(0),
+        epoch: AtomicU64::new(0),
         layout,
       })
     }
@@ -182,6 +185,16 @@ impl NurserySpace {
     self.bump_offset.load(Ordering::Acquire)
   }
 
+  /// Monotonically increasing nursery epoch.
+  ///
+  /// This is bumped on every [`NurserySpace::reset`]. Thread-local allocators
+  /// must treat an epoch change as invalidating any outstanding TLAB
+  /// reservations.
+  #[inline]
+  pub fn epoch(&self) -> u64 {
+    self.epoch.load(Ordering::Acquire)
+  }
+
   /// Reset the nursery to its initial empty state.
   ///
   /// # Safety
@@ -191,6 +204,7 @@ impl NurserySpace {
   /// become invalid after this call.
   pub unsafe fn reset(&self) {
     self.bump_offset.store(0, Ordering::Release);
+    self.epoch.fetch_add(1, Ordering::AcqRel);
   }
 
   #[inline]
@@ -288,6 +302,7 @@ pub struct NurseryStats {
 pub struct ThreadNursery {
   pub cursor: *mut u8,
   pub limit: *mut u8,
+  epoch: u64,
 }
 
 impl Default for ThreadNursery {
@@ -302,6 +317,7 @@ impl ThreadNursery {
     Self {
       cursor: ptr::null_mut(),
       limit: ptr::null_mut(),
+      epoch: 0,
     }
   }
 
@@ -344,6 +360,16 @@ impl ThreadNursery {
       return None;
     }
 
+    let epoch = nursery.epoch();
+    if self.epoch != epoch {
+      // Nursery was reset; any outstanding TLAB reservation is invalid and
+      // would allow allocating from a region the global bump pointer considers
+      // free.
+      self.cursor = ptr::null_mut();
+      self.limit = ptr::null_mut();
+      self.epoch = epoch;
+    }
+
     // Fast path: bump within the thread-local TLAB.
     if let Some(ptr) = self.try_alloc_fast(size, align) {
       return Some(ptr);
@@ -368,6 +394,7 @@ impl ThreadNursery {
     self.cursor = chunk_start;
     // SAFETY: `chunk_start` points to `TLAB_SIZE` bytes in the nursery.
     self.limit = unsafe { chunk_start.add(TLAB_SIZE) };
+    self.epoch = epoch;
 
     // This allocation must now succeed: `chunk_start` is aligned to at
     // least `align`, and the chunk is at least `size` bytes long.
@@ -382,5 +409,6 @@ impl ThreadNursery {
   pub fn clear(&mut self) {
     self.cursor = ptr::null_mut();
     self.limit = ptr::null_mut();
+    self.epoch = 0;
   }
 }
