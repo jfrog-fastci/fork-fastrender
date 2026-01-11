@@ -892,6 +892,7 @@ fn debug_define_weak_rt_gc_safepoint_slow_stub(module: &Module<'_>) {
 mod tests {
   use super::*;
   use crate::llvm::gc;
+  use inkwell::attributes::AttributeLoc;
   use inkwell::context::Context;
   use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
   use inkwell::OptimizationLevel;
@@ -961,6 +962,53 @@ mod tests {
     module.set_data_layout(&tm.get_target_data().get_data_layout());
 
     // After rewriting, the call is wrapped in a statepoint intrinsic, and the verifier should pass.
+    rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
+    debug_verify_no_stray_calls_in_gc_functions(&module).expect("verifier should pass after rewrite");
+  }
+
+  #[test]
+  fn stray_call_verifier_allows_leaf_calls_in_gc_functions() {
+    let context = Context::create();
+    let module = context.create_module("passes_stray_call_verify_leaf");
+    let builder = context.create_builder();
+
+    let void_ty = context.void_type();
+    let i8_ty = context.i8_type();
+    let gc_ptr_ty = gc::gc_ptr_type(&context);
+
+    let callee_ty = void_ty.fn_type(&[], false);
+    let callee = module.add_function("callee", callee_ty, None);
+    let leaf = context.create_string_attribute("gc-leaf-function", "");
+    callee.add_attribute(AttributeLoc::Function, leaf);
+
+    let test_ty = void_ty.fn_type(&[gc_ptr_ty.into()], false);
+    let test_fn = module.add_function("test", test_ty, None);
+    gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+    let obj = test_fn
+      .get_first_param()
+      .expect("missing obj param")
+      .into_pointer_value();
+
+    let entry = context.append_basic_block(test_fn, "entry");
+    builder.position_at_end(entry);
+    builder.build_load(i8_ty, obj, "pre").expect("load");
+    builder.build_call(callee, &[], "call").expect("call");
+    builder.build_load(i8_ty, obj, "post").expect("load");
+    builder.build_return(None).expect("ret void");
+
+    if let Err(err) = module.verify() {
+      panic!("input module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+    }
+
+    // Leaf calls are allowed to remain as plain calls even in GC-managed functions.
+    debug_verify_no_stray_calls_in_gc_functions(&module).expect("verifier should allow leaf calls");
+
+    let tm = host_target_machine();
+    module.set_triple(&tm.get_triple());
+    module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+    // Leaf calls should remain valid after the full RS4GC pipeline too.
     rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
     debug_verify_no_stray_calls_in_gc_functions(&module).expect("verifier should pass after rewrite");
   }
