@@ -279,6 +279,38 @@ void rt_gc_collect(void);
 size_t rt_backing_store_external_bytes(void);
 
 // -----------------------------------------------------------------------------
+// LLVM stackmaps (precise stack scanning)
+// -----------------------------------------------------------------------------
+//
+// Native code may be delivered as multiple DSOs (`dlopen`) or generated at
+// runtime (JIT). Each module can expose its own `.llvm_stackmaps` blob and
+// register it explicitly into the global runtime registry.
+//
+// The common ELF setup is to link the module with `runtime-native/link/stackmaps.ld`,
+// which defines `__llvm_stackmaps_start` / `__llvm_stackmaps_end` symbols for the
+// module's stackmaps output section.
+bool rt_stackmaps_register(const uint8_t* start, const uint8_t* end);
+bool rt_stackmaps_unregister(const uint8_t* start);
+
+// Convenience helper for ELF DSOs: emit a constructor that registers this
+// module's stackmaps at load time.
+//
+// Usage:
+//   RT_STACKMAPS_AUTO_REGISTER();
+//
+// (Call once per module.)
+#if defined(__GNUC__) && !defined(_WIN32)
+#define RT_STACKMAPS_AUTO_REGISTER()                                                \
+  static void __attribute__((constructor)) __rt_stackmaps_ctor(void) {              \
+    extern uint8_t __llvm_stackmaps_start;                                          \
+    extern uint8_t __llvm_stackmaps_end;                                            \
+    (void)rt_stackmaps_register(&__llvm_stackmaps_start, &__llvm_stackmaps_end);    \
+  }
+#else
+#define RT_STACKMAPS_AUTO_REGISTER()
+#endif
+
+// -----------------------------------------------------------------------------
 // GC roots / handles
 // -----------------------------------------------------------------------------
 // LLVM stackmaps cover mutator stack/register roots, but the runtime must also

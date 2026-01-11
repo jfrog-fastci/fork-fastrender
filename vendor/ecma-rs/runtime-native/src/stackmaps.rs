@@ -17,6 +17,9 @@
 
 #[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
 use anyhow::Context;
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
 pub const STACKMAP_VERSION: u8 = 3;
@@ -547,9 +550,6 @@ pub struct CallsiteEntry {
   pub record_index: usize,
 }
 
-/// Alias to match callers that expect a "registry" name.
-pub type StackMapRegistry = StackMaps;
-
 #[derive(Debug, Clone, Copy)]
 pub struct CallSite<'a> {
   /// See [`CallsiteEntry::stack_size`].
@@ -972,6 +972,265 @@ impl StackMaps {
   pub fn load_self() -> anyhow::Result<Self> {
     anyhow::bail!("StackMaps::load_self is only supported on Linux 64-bit little-endian");
   }
+}
+
+// -----------------------------------------------------------------------------
+// Global stackmap registry (multi-module / dlopen / JIT)
+// -----------------------------------------------------------------------------
+
+/// A handle to a callsite entry stored in a [`StackMapRegistry`].
+///
+/// This keeps the underlying parsed [`StackMaps`] alive via an [`Arc`], so it
+/// can be used after dropping the registry lock.
+#[derive(Clone, Debug)]
+pub struct CallSiteHandle {
+  pc: u64,
+  stack_size: u64,
+  stackmaps: Arc<StackMaps>,
+  stackmap_index: usize,
+  record_index: usize,
+}
+
+impl CallSiteHandle {
+  #[inline]
+  pub fn pc(&self) -> u64 {
+    self.pc
+  }
+
+  #[inline]
+  pub fn stack_size(&self) -> u64 {
+    self.stack_size
+  }
+
+  #[inline]
+  pub fn record(&self) -> &StackMapRecord {
+    // Safety/invariants:
+    // - `stackmaps` is kept alive by `Arc`.
+    // - `stackmap_index`/`record_index` are derived from `StackMaps::callsites()`.
+    &self.stackmaps.raws()[self.stackmap_index].records[self.record_index]
+  }
+
+  #[inline]
+  pub fn as_call_site(&self) -> CallSite<'_> {
+    CallSite {
+      stack_size: self.stack_size,
+      record: self.record(),
+    }
+  }
+}
+
+#[derive(Debug, Error)]
+pub enum StackMapRegistryError {
+  #[error("stackmaps register/unregister received a null pointer")]
+  NullPointer,
+
+  #[error("invalid stackmaps byte range: end < start")]
+  InvalidRange,
+
+  #[error("stackmaps provider already registered with a different byte range")]
+  AlreadyRegisteredDifferentRange,
+
+  #[error(transparent)]
+  Parse(#[from] StackMapError),
+}
+
+#[derive(Debug, Default)]
+pub struct StackMapRegistry {
+  providers: HashMap<usize, Provider>,
+  callsites: HashMap<u64, CallSiteHandle>,
+}
+
+#[derive(Debug)]
+struct Provider {
+  end: usize,
+  callsites: Vec<u64>,
+}
+
+impl StackMapRegistry {
+  #[inline]
+  pub fn lookup(&self, callsite_return_addr: u64) -> Option<CallSiteHandle> {
+    self.callsites.get(&callsite_return_addr).cloned()
+  }
+
+  #[inline]
+  pub fn lookup_return_address(&self, pc: usize) -> Option<CallSiteHandle> {
+    self.lookup(pc as u64)
+  }
+
+  /// Register a stackmaps provider, identified by its `[start, end)` byte range.
+  ///
+  /// The range is parsed as a `.llvm_stackmaps` output section (which may contain
+  /// multiple concatenated StackMap v3 blobs).
+  ///
+  /// When a module is `dlclose`d, call [`StackMapRegistry::unregister`] with the
+  /// same `start` pointer to remove its callsite mappings.
+  pub fn register(
+    &mut self,
+    start: *const u8,
+    end: *const u8,
+  ) -> Result<(), StackMapRegistryError> {
+    if start.is_null() || end.is_null() {
+      return Err(StackMapRegistryError::NullPointer);
+    }
+
+    let start_addr = start as usize;
+    let end_addr = end as usize;
+    if end_addr < start_addr {
+      return Err(StackMapRegistryError::InvalidRange);
+    }
+
+    if let Some(existing) = self.providers.get(&start_addr) {
+      if existing.end == end_addr {
+        // Idempotent registration.
+        return Ok(());
+      }
+      return Err(StackMapRegistryError::AlreadyRegisteredDifferentRange);
+    }
+
+    let len = end_addr - start_addr;
+    if len == 0 {
+      self.providers.insert(
+        start_addr,
+        Provider {
+          end: end_addr,
+          callsites: Vec::new(),
+        },
+      );
+      return Ok(());
+    }
+
+    // Safety: caller promises `[start, end)` is a valid readable range.
+    let bytes = unsafe { std::slice::from_raw_parts(start, len) };
+    let stackmaps = Arc::new(StackMaps::parse(bytes)?);
+
+    let mut provider = Provider {
+      end: end_addr,
+      callsites: Vec::new(),
+    };
+
+    for entry in stackmaps.callsites() {
+      let pc = entry.pc;
+      if self.callsites.contains_key(&pc) {
+        // Deterministic rule: first wins.
+        #[cfg(debug_assertions)]
+        eprintln!("runtime-native: duplicate stackmap for callsite pc=0x{pc:x}; keeping first");
+        continue;
+      }
+
+      self.callsites.insert(
+        pc,
+        CallSiteHandle {
+          pc,
+          stack_size: entry.stack_size,
+          stackmaps: stackmaps.clone(),
+          stackmap_index: entry.stackmap_index,
+          record_index: entry.record_index,
+        },
+      );
+      provider.callsites.push(pc);
+    }
+
+    self.providers.insert(start_addr, provider);
+    Ok(())
+  }
+
+  /// Unregister a previously registered provider.
+  pub fn unregister(&mut self, start: *const u8) -> bool {
+    if start.is_null() {
+      return false;
+    }
+    let start_addr = start as usize;
+    let Some(provider) = self.providers.remove(&start_addr) else {
+      return false;
+    };
+
+    for pc in provider.callsites {
+      self.callsites.remove(&pc);
+    }
+    true
+  }
+
+  /// Discover `.llvm_stackmaps` sections in all currently loaded ELF images and register them.
+  ///
+  /// This is a best-effort Linux fallback for environments where modules cannot
+  /// auto-register (e.g. missing constructors/symbols).
+  #[cfg(target_os = "linux")]
+  pub fn load_all_loaded_modules(&mut self) -> anyhow::Result<usize> {
+    let sections = crate::stackmap_loader::load_all_llvm_stackmaps()?;
+
+    let mut newly_registered = 0usize;
+    for section in sections {
+      let start = section.as_ptr();
+      let end = unsafe { section.as_ptr().add(section.len()) };
+
+      let before = self.providers.len();
+      self
+        .register(start, end)
+        .map_err(|err| anyhow::Error::new(err))?;
+      if self.providers.len() > before {
+        newly_registered += 1;
+      }
+    }
+
+    Ok(newly_registered)
+  }
+}
+
+static GLOBAL_STACKMAP_REGISTRY: OnceLock<RwLock<StackMapRegistry>> = OnceLock::new();
+
+/// Access the global merged stackmap registry.
+pub fn global_stackmap_registry() -> &'static RwLock<StackMapRegistry> {
+  GLOBAL_STACKMAP_REGISTRY.get_or_init(|| RwLock::new(StackMapRegistry::default()))
+}
+
+/// Convenience helper: look up a callsite in the global registry by return address.
+pub fn lookup(callsite_pc: usize) -> Option<CallSiteHandle> {
+  global_stackmap_registry()
+    .read()
+    .lookup_return_address(callsite_pc)
+}
+
+/// Register a `.llvm_stackmaps` byte range into the global registry.
+///
+/// This is the public ABI for dynamically loaded modules (`dlopen`) and JITs.
+#[no_mangle]
+pub extern "C" fn rt_stackmaps_register(start: *const u8, end: *const u8) -> bool {
+  crate::ffi::abort_on_panic(|| global_stackmap_registry().write().register(start, end).is_ok())
+}
+
+/// Unregister a previously registered provider from the global registry.
+#[no_mangle]
+pub extern "C" fn rt_stackmaps_unregister(start: *const u8) -> bool {
+  crate::ffi::abort_on_panic(|| global_stackmap_registry().write().unregister(start))
+}
+
+/// Emit an ELF `.init_array` constructor which registers the current module's
+/// `__llvm_stackmaps_start/end` range.
+///
+/// The containing module must define `__llvm_stackmaps_start` /
+/// `__llvm_stackmaps_end`, typically via the linker script in
+/// `runtime-native/link/stackmaps.ld`.
+#[macro_export]
+macro_rules! rt_stackmaps_init_array {
+  () => {
+    #[cfg(target_os = "linux")]
+    mod __rt_stackmaps_init_array {
+      extern "C" {
+        static __llvm_stackmaps_start: u8;
+        static __llvm_stackmaps_end: u8;
+      }
+
+      unsafe extern "C" fn __rt_stackmaps_ctor() {
+        let start = core::ptr::addr_of!(__llvm_stackmaps_start) as *const u8;
+        let end = core::ptr::addr_of!(__llvm_stackmaps_end) as *const u8;
+        let _ = $crate::stackmaps::rt_stackmaps_register(start, end);
+      }
+
+      #[used]
+      #[link_section = ".init_array"]
+      static __RT_STACKMAPS_INIT: unsafe extern "C" fn() = __rt_stackmaps_ctor;
+    }
+  };
 }
 
 #[cfg(test)]

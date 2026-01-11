@@ -152,7 +152,10 @@ pub use thread_registry::{
   rt_register_current_thread, rt_register_thread, rt_unregister_current_thread, rt_unregister_thread,
 };
 pub use gc_roots::{relocate_derived_pairs, RelocPair, StackRootEnumerator};
-pub use stackmaps::StackMaps;
+pub use stackmaps::{
+  global_stackmap_registry, lookup, rt_stackmaps_register, rt_stackmaps_unregister, CallSiteHandle,
+  StackMapRegistry, StackMaps,
+};
 pub use stackmaps_validate::{validate_stackmaps, ValidationError};
 pub use stackwalk_fp::{
   relocate_pair, walk_gc_root_pairs_from_fp, walk_gc_root_pairs_from_safepoint_context,

@@ -428,3 +428,37 @@ This crate provides [`gc::HandleTable`], a generational handle table intended to
 
 The GC-managed objects themselves remain movable; only the handle IDs and handle table slots are
 stable.
+
+## Stackmaps from multiple modules (dlopen / JIT)
+
+Precise stack scanning relies on LLVM's `.llvm_stackmaps` sections. In real
+deployments native code may live in multiple shared libraries (loaded via
+`dlopen`) or be JITed into memory; each module may have its own stackmaps blob.
+
+`runtime-native` supports this via explicit registration into a global registry:
+
+```c
+bool rt_stackmaps_register(const uint8_t* start, const uint8_t* end);
+bool rt_stackmaps_unregister(const uint8_t* start);
+```
+
+Modules should call `rt_stackmaps_register(__llvm_stackmaps_start, __llvm_stackmaps_end)` at load
+time (e.g. via an ELF constructor). `runtime-native/include/runtime_native.h` provides a helper:
+
+```c
+RT_STACKMAPS_AUTO_REGISTER();
+```
+
+> Note: if the module calls into the *host executable* (rather than a shared
+> `libruntime_native.so`), the host must export its symbols into the dynamic
+> symbol table (ELF `-rdynamic` / `--export-dynamic`) so `rt_stackmaps_register`
+> can be resolved at `dlopen` time.
+
+As a fallback (Linux-only), you can discover and register stackmaps from all
+currently loaded ELF images:
+
+```rust
+runtime_native::global_stackmap_registry()
+  .write()
+  .load_all_loaded_modules()?;
+```

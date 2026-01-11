@@ -15,6 +15,18 @@ fn main() {
   println!("cargo::rustc-check-cfg=cfg(runtime_native_has_stackmap_test_artifact)");
   println!("cargo::rustc-check-cfg=cfg(runtime_native_no_stackmap_test_artifact)");
 
+  // Integration tests `dlopen` small DSOs whose constructors call into this crate's
+  // `rt_stackmaps_register` export. On ELF, executables only export symbols into
+  // the dynamic symbol table when linked with `--export-dynamic` (aka `-rdynamic`).
+  //
+  // Keep this test-only so downstream consumers can opt into their preferred
+  // export strategy (e.g. `-rdynamic` on the host executable or building
+  // `runtime-native` as a shared library).
+  let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+  if target_os == "linux" {
+    println!("cargo:rustc-link-arg-tests=-Wl,--export-dynamic");
+  }
+
   // Linker script (optional): expose `.llvm_stackmaps` as a loaded in-memory byte slice via
   // linker-defined start/stop symbols (see `link/stackmaps.ld`).
   println!("cargo:rerun-if-changed=link/stackmaps.ld");

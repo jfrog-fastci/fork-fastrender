@@ -4,6 +4,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
 
   // Core barrier + GC range plumbing.
   for sym in [
+    "rt_stackmaps_register(",
+    "rt_stackmaps_unregister(",
     "rt_write_barrier(",
     "rt_write_barrier_range(",
     "rt_backing_store_external_bytes(",
@@ -62,15 +64,22 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_thread_attach;
   let _thread_detach: unsafe extern "C" fn(*mut runtime_native::Thread) = runtime_native::rt_thread_detach;
 
+  let _stackmaps_register: extern "C" fn(*const u8, *const u8) -> bool =
+    runtime_native::rt_stackmaps_register;
+  let _stackmaps_unregister: extern "C" fn(*const u8) -> bool =
+    runtime_native::rt_stackmaps_unregister;
+
   // GC write barrier entrypoints.
   let _gc_poll: extern "C" fn() -> bool = runtime_native::rt_gc_poll;
   let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = runtime_native::rt_write_barrier;
   let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) =
     runtime_native::rt_write_barrier_range;
-  let _backing_store_external_bytes: extern "C" fn() -> usize = runtime_native::rt_backing_store_external_bytes;
+  let _backing_store_external_bytes: extern "C" fn() -> usize =
+    runtime_native::rt_backing_store_external_bytes;
 
   // Global root registration.
-  let _register_root_slot: extern "C" fn(*mut *mut u8) -> u32 = runtime_native::rt_gc_register_root_slot;
+  let _register_root_slot: extern "C" fn(*mut *mut u8) -> u32 =
+    runtime_native::rt_gc_register_root_slot;
   let _unregister_root_slot: extern "C" fn(u32) = runtime_native::rt_gc_unregister_root_slot;
   let _pin: extern "C" fn(*mut u8) -> u32 = runtime_native::rt_gc_pin;
   let _unpin: extern "C" fn(u32) = runtime_native::rt_gc_unpin;
@@ -94,6 +103,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _thread_deinit,
     _register_current,
     _unregister_current,
+    _stackmaps_register,
+    _stackmaps_unregister,
     _gc_poll,
     _register_thread,
     _unregister_thread,

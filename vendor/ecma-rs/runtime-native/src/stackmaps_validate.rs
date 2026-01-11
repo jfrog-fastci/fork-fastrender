@@ -1,4 +1,4 @@
-use crate::stackmaps::{Location, StackMapRegistry, STACKMAP_VERSION};
+use crate::stackmaps::{Location, StackMaps, STACKMAP_VERSION};
 
 #[cfg(target_arch = "aarch64")]
 use crate::stackmaps::{AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP};
@@ -73,7 +73,7 @@ pub enum ValidationError {
 ///
 /// This is a **deterministic** structural check intended for tests and CI, guarding against LLVM
 /// changing stackmap emission in ways that would break in-place root relocation.
-pub fn validate_stackmaps(maps: &StackMapRegistry) -> Result<(), ValidationError> {
+pub fn validate_stackmaps(maps: &StackMaps) -> Result<(), ValidationError> {
   for raw in maps.raws() {
     if raw.version != STACKMAP_VERSION {
       return Err(ValidationError::UnsupportedVersion {

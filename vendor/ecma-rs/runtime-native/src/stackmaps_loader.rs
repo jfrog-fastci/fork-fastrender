@@ -46,6 +46,16 @@ mod linux {
     .weak __llvm_stackmaps_end
     .weak __fastr_stackmaps_start
     .weak __fastr_stackmaps_end
+    // Hide these fallback definitions so they don't get exported into the
+    // dynamic symbol table of host executables. Otherwise, dlopen'd modules
+    // that also define `__llvm_stackmaps_start` / `__llvm_stackmaps_end` can
+    // have their intra-DSO relocations preempted by the host's weak symbols,
+    // causing them to register the wrong (often empty) range.
+    .hidden __runtime_native_stackmaps_fallback
+    .hidden __llvm_stackmaps_start
+    .hidden __llvm_stackmaps_end
+    .hidden __fastr_stackmaps_start
+    .hidden __fastr_stackmaps_end
     __runtime_native_stackmaps_fallback:
     __stackmaps_start:
     __stackmaps_end:
