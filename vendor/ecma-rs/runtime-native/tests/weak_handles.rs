@@ -102,3 +102,64 @@ fn weak_handle_remove_reuses_slots_with_generation_bumps() {
   assert_eq!(heap.weak_get(ha), None);
   assert_eq!(heap.weak_get(hb), Some(b));
 }
+
+struct WeakHandleGuard(u64);
+
+impl WeakHandleGuard {
+  fn new(ptr: *mut u8) -> Self {
+    Self(runtime_native::rt_weak_add(ptr))
+  }
+
+  fn get(&self) -> *mut u8 {
+    runtime_native::rt_weak_get(self.0)
+  }
+}
+
+impl Drop for WeakHandleGuard {
+  fn drop(&mut self) {
+    runtime_native::rt_weak_remove(self.0);
+  }
+}
+
+#[test]
+fn abi_weak_handle_clears_on_minor_gc_when_unreachable() {
+  let mut heap = GcHeap::new();
+
+  let obj = heap.alloc_young(&BOXED_USIZE_DESC);
+  let handle = WeakHandleGuard::new(obj);
+
+  let mut roots = RootStack::new();
+  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+
+  assert!(handle.get().is_null());
+}
+
+#[test]
+fn abi_weak_handle_updates_on_minor_gc_when_reachable() {
+  let mut heap = GcHeap::new();
+
+  let obj = heap.alloc_young(&BOXED_USIZE_DESC);
+  let handle = WeakHandleGuard::new(obj);
+
+  let mut root_obj = obj;
+  let mut roots = RootStack::new();
+  roots.push(&mut root_obj as *mut *mut u8);
+
+  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+
+  assert!(!heap.is_in_nursery(root_obj));
+  assert_eq!(handle.get(), root_obj);
+}
+
+#[test]
+fn abi_weak_handle_clears_on_major_gc_when_unreachable() {
+  let mut heap = GcHeap::new();
+
+  let obj = heap.alloc_old(&BOXED_USIZE_DESC);
+  let handle = WeakHandleGuard::new(obj);
+
+  let mut roots = RootStack::new();
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+
+  assert!(handle.get().is_null());
+}

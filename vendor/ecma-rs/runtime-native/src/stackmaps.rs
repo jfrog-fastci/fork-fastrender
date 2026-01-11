@@ -781,15 +781,22 @@ mod tests {
     push_i32(&mut bytes, 0);
 
     // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    // Fill the padding with non-zero bytes to validate the parser skips it.
     align_to_8_with(&mut bytes, 0xAB);
 
-    push_u16(&mut bytes, 1); // num_liveouts
+    // Include an even number of liveouts so the record-end padding path is exercised.
+    push_u16(&mut bytes, 2); // num_liveouts
     push_u16(&mut bytes, 0);
 
-    // LiveOut: reg=0,reserved=0,size=8.
+    // LiveOut[0]: reg=0,reserved=0,size=8.
     push_u16(&mut bytes, 0);
     push_u8(&mut bytes, 8);
     push_u8(&mut bytes, 0);
+
+    // LiveOut[1]: reg=1,reserved=0,size=8.
+    push_u16(&mut bytes, 1);
+    push_u8(&mut bytes, 0);
+    push_u8(&mut bytes, 8);
 
     // Pad with non-zero to validate we skip, not validate content.
     align_to_8_with(&mut bytes, 0xCD);
@@ -799,7 +806,7 @@ mod tests {
     push_u32(&mut bytes, 0x20);
     push_u16(&mut bytes, 0);
     push_u16(&mut bytes, 0); // no locations
-    align_to_8_with(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0); // align before live-out header (no-op here)
     push_u16(&mut bytes, 0); // no liveouts
     push_u16(&mut bytes, 0);
     align_to_8_with(&mut bytes, 0);
@@ -808,7 +815,7 @@ mod tests {
     assert_eq!(sm.records.len(), 2);
     assert_eq!(sm.records[0].patchpoint_id, 100);
     assert_eq!(sm.records[1].patchpoint_id, 200);
-    assert_eq!(sm.records[0].live_outs.len(), 1);
+    assert_eq!(sm.records[0].live_outs.len(), 2);
     assert_eq!(sm.records[0].live_outs[0].size, 8);
   }
 
