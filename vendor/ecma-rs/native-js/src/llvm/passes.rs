@@ -8,9 +8,10 @@ use llvm_sys::core::{
 };
 use llvm_sys::core::{
   LLVMCountBasicBlocks, LLVMDisposeMessage, LLVMGetFirstFunction, LLVMGetFirstInstruction,
-  LLVMGetConstOpcode, LLVMGetInstructionOpcode, LLVMGetNextBasicBlock, LLVMGetNextFunction,
-  LLVMGetNextInstruction, LLVMGetNumArgOperands, LLVMGetOperand, LLVMGetValueName2,
-  LLVMIsAConstantExpr, LLVMIsAFunction, LLVMPrintValueToString,
+  LLVMGetConstOpcode, LLVMGetGC, LLVMGetInstructionOpcode, LLVMGetNextBasicBlock, LLVMGetNextFunction,
+  LLVMGetNextInstruction, LLVMGetNumOperands, LLVMGetOperand, LLVMGetStringAttributeAtIndex,
+  LLVMGetValueName2, LLVMIsAConstantExpr, LLVMIsAFunction, LLVMIsAInstruction, LLVMIsABitCastInst,
+  LLVMPrintValueToString,
 };
 use llvm_sys::error::{LLVMDisposeErrorMessage, LLVMGetErrorMessage};
 use llvm_sys::transforms::pass_builder::{
@@ -32,6 +33,14 @@ pub enum PassError {
   Verify { pipeline: String, message: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
   IncompatibleSafepointPollSignature { name: String },
+  #[error(
+    "GC-managed function `{function}` contains a non-intrinsic, non-leaf call (expected statepoint or `gc-leaf-function`): {call}\n  extracted_called_operand={called_operand}"
+  )]
+  StrayCallInGcFunction {
+    function: String,
+    call: String,
+    called_operand: String,
+  },
 }
 
 /// Ensure the module contains the `gc.safepoint_poll` declaration that LLVM's
@@ -109,6 +118,7 @@ pub fn rewrite_statepoints_for_gc(
     });
   }
 
+  debug_verify_no_stray_calls_in_gc_functions(module)?;
   super::debug_lint_module_gc_pointer_discipline(module)?;
   verify_no_stray_calls_in_ts_generated_functions(module)?;
   Ok(())
@@ -150,6 +160,7 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
     });
   }
   debug_define_weak_safepoint_poll_stub(module);
+  debug_verify_no_stray_calls_in_gc_functions(module)?;
   super::debug_lint_module_gc_pointer_discipline(module)?;
   verify_no_stray_calls_in_ts_generated_functions(module)?;
   Ok(())
@@ -206,6 +217,19 @@ fn strip_callee_pointer_casts(
 ) -> llvm_sys::prelude::LLVMValueRef {
   unsafe {
     loop {
+      // Peel through instruction pointer casts.
+      if !LLVMIsABitCastInst(val).is_null() {
+        val = LLVMGetOperand(val, 0);
+        continue;
+      }
+      if !LLVMIsAInstruction(val).is_null()
+        && LLVMGetInstructionOpcode(val) == LLVMOpcode::LLVMAddrSpaceCast
+      {
+        val = LLVMGetOperand(val, 0);
+        continue;
+      }
+
+      // Peel through constant-expression pointer casts.
       if !LLVMIsAConstantExpr(val).is_null() {
         match LLVMGetConstOpcode(val) {
           LLVMOpcode::LLVMBitCast | LLVMOpcode::LLVMAddrSpaceCast => {
@@ -222,24 +246,14 @@ fn strip_callee_pointer_casts(
 
 fn get_call_callee_operand(inst: llvm_sys::prelude::LLVMValueRef) -> llvm_sys::prelude::LLVMValueRef {
   unsafe {
-    // LLVM's C API treats "called value" differently across instruction kinds. For `call`/`invoke`
-    // it is *usually* operand 0, but for some intrinsics (notably statepoints) the called value can
-    // appear after the argument operands.
-    //
-    // Use a simple heuristic:
-    // - prefer whichever candidate strips to a `Function`
-    // - otherwise default to operand 0 (covers indirect calls).
-    let op0 = LLVMGetOperand(inst, 0);
-    let op_n = LLVMGetOperand(inst, LLVMGetNumArgOperands(inst));
-
-    let op0_is_fn = !LLVMIsAFunction(strip_callee_pointer_casts(op0)).is_null();
-    let op_n_is_fn = !LLVMIsAFunction(strip_callee_pointer_casts(op_n)).is_null();
-
-    match (op0_is_fn, op_n_is_fn) {
-      (true, false) => op0,
-      (false, true) => op_n,
-      _ => op0,
+    // For CallBase-like instructions (call/invoke/callbr), LLVM's operand list places the *called
+    // operand* last, with arguments (and operand-bundle inputs / dest blocks) before it.
+    let num_ops = LLVMGetNumOperands(inst) as u32;
+    debug_assert!(num_ops > 0, "call-like instruction should have at least one operand");
+    if num_ops == 0 {
+      return inst;
     }
+    LLVMGetOperand(inst, num_ops - 1)
   }
 }
 
@@ -296,7 +310,7 @@ fn verify_no_stray_calls_in_ts_generated_functions(
       let mut bb = LLVMGetFirstBasicBlock(func);
       while !bb.is_null() {
         let mut inst = LLVMGetFirstInstruction(bb);
-      while !inst.is_null() {
+        while !inst.is_null() {
           match LLVMGetInstructionOpcode(inst) {
             LLVMOpcode::LLVMCall | LLVMOpcode::LLVMInvoke | LLVMOpcode::LLVMCallBr => {
               let callee = get_call_callee_operand(inst);
@@ -320,6 +334,87 @@ fn verify_no_stray_calls_in_ts_generated_functions(
   }
 
   Ok(())
+}
+
+fn debug_verify_no_stray_calls_in_gc_functions(module: &Module<'_>) -> Result<(), PassError> {
+  if !cfg!(debug_assertions) {
+    return Ok(());
+  }
+
+  unsafe { verify_no_stray_calls_in_gc_functions_raw(module.as_mut_ptr()) }
+}
+
+unsafe fn verify_no_stray_calls_in_gc_functions_raw(
+  module: llvm_sys::prelude::LLVMModuleRef,
+) -> Result<(), PassError> {
+  assert!(!module.is_null(), "module must be non-null");
+
+  let mut func = LLVMGetFirstFunction(module);
+  while !func.is_null() {
+    // Skip declarations.
+    if LLVMCountBasicBlocks(func) == 0 {
+      func = LLVMGetNextFunction(func);
+      continue;
+    }
+
+    // Only enforce on GC-managed functions (i.e. those with a `gc "<strategy>"` attribute).
+    if LLVMGetGC(func).is_null() {
+      func = LLVMGetNextFunction(func);
+      continue;
+    }
+
+    let func_name = value_name(func);
+
+    let mut bb = LLVMGetFirstBasicBlock(func);
+    while !bb.is_null() {
+      let mut inst = LLVMGetFirstInstruction(bb);
+      while !inst.is_null() {
+        let opcode = LLVMGetInstructionOpcode(inst);
+        if opcode == LLVMOpcode::LLVMCall || opcode == LLVMOpcode::LLVMInvoke {
+          let callee = strip_callee_pointer_casts(get_call_callee_operand(inst));
+
+          // RS4GC should not leave indirect calls behind. The only safe plain calls are to
+          // `gc-leaf-function` callees, which requires a direct/global callee.
+          if LLVMIsAFunction(callee).is_null() {
+            return Err(PassError::StrayCallInGcFunction {
+              function: func_name,
+              call: value_to_string(inst),
+              called_operand: value_to_string(callee),
+            });
+          }
+
+          if !is_intrinsic_function(callee) && !is_gc_leaf_function(callee) {
+            return Err(PassError::StrayCallInGcFunction {
+              function: func_name,
+              call: value_to_string(inst),
+              called_operand: value_to_string(callee),
+            });
+          }
+        }
+
+        inst = LLVMGetNextInstruction(inst);
+      }
+      bb = LLVMGetNextBasicBlock(bb);
+    }
+
+    func = LLVMGetNextFunction(func);
+  }
+
+  Ok(())
+}
+
+fn is_gc_leaf_function(func: llvm_sys::prelude::LLVMValueRef) -> bool {
+  unsafe {
+    // Attribute keys in the C API are length-delimited, but must be NUL-terminated.
+    const KEY: &[u8] = b"gc-leaf-function\0";
+    let attr = LLVMGetStringAttributeAtIndex(
+      func,
+      llvm_sys::LLVMAttributeFunctionIndex,
+      KEY.as_ptr().cast(),
+      (KEY.len() - 1) as u32,
+    );
+    !attr.is_null()
+  }
 }
 
 fn run_pass_pipeline(
@@ -390,5 +485,83 @@ fn debug_define_weak_safepoint_poll_stub(module: &Module<'_>) {
     LLVMPositionBuilderAtEnd(builder, entry);
     LLVMBuildRetVoid(builder);
     LLVMDisposeBuilder(builder);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::llvm::gc;
+  use inkwell::context::Context;
+  use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
+  use inkwell::OptimizationLevel;
+
+  fn host_target_machine() -> TargetMachine {
+    crate::llvm::init_native_target().expect("failed to init native LLVM target");
+
+    let triple = TargetMachine::get_default_triple();
+    let target = Target::from_triple(&triple).expect("host target");
+    let cpu = TargetMachine::get_host_cpu_name().to_string();
+    let features = TargetMachine::get_host_cpu_features().to_string();
+    target
+      .create_target_machine(
+        &triple,
+        &cpu,
+        &features,
+        OptimizationLevel::None,
+        RelocMode::Default,
+        CodeModel::Default,
+      )
+      .expect("create target machine")
+  }
+
+  #[test]
+  fn stray_call_verifier_rejects_non_leaf_calls_in_gc_functions() {
+    let context = Context::create();
+    let module = context.create_module("passes_stray_call_verify");
+    let builder = context.create_builder();
+
+    let void_ty = context.void_type();
+    let i8_ty = context.i8_type();
+    let gc_ptr_ty = gc::gc_ptr_type(&context);
+
+    let callee_ty = void_ty.fn_type(&[], false);
+    let callee = module.add_function("callee", callee_ty, None);
+
+    let test_ty = void_ty.fn_type(&[gc_ptr_ty.into()], false);
+    let test_fn = module.add_function("test", test_ty, None);
+    gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+    let obj = test_fn
+      .get_first_param()
+      .expect("missing obj param")
+      .into_pointer_value();
+
+    let entry = context.append_basic_block(test_fn, "entry");
+    builder.position_at_end(entry);
+    builder.build_load(i8_ty, obj, "pre").expect("load");
+    builder.build_call(callee, &[], "call").expect("call");
+    builder.build_load(i8_ty, obj, "post").expect("load");
+    builder.build_return(None).expect("ret void");
+
+    if let Err(err) = module.verify() {
+      panic!("input module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+    }
+
+    // Before `rewrite-statepoints-for-gc`, a GC-managed function has a non-leaf call, so the verifier
+    // should reject it.
+    let err = debug_verify_no_stray_calls_in_gc_functions(&module).unwrap_err();
+    assert!(
+      matches!(err, PassError::StrayCallInGcFunction { .. }),
+      "expected StrayCallInGcFunction, got: {err}"
+    );
+
+    let tm = host_target_machine();
+    module.set_triple(&tm.get_triple());
+    module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+    // After rewriting, the call is wrapped in a statepoint intrinsic, and the verifier should pass.
+    rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
+    debug_verify_no_stray_calls_in_gc_functions(&module).expect("verifier should pass after rewrite");
   }
 }
