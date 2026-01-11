@@ -1,7 +1,7 @@
 use crate::async_rt;
 use crate::async_rt::Task;
+use crate::sync::GcAwareMutex;
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -57,13 +57,14 @@ impl std::error::Error for TimeoutError {}
 
 static NEXT_REGISTRATION_KEY: AtomicU64 = AtomicU64::new(1);
 
-static REGISTRY: Lazy<Mutex<HashMap<u64, Arc<SleepShared>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static REGISTRY: Lazy<GcAwareMutex<HashMap<u64, Arc<SleepShared>>>> =
+  Lazy::new(|| GcAwareMutex::new(HashMap::new()));
 
 #[derive(Debug)]
 struct SleepShared {
   active: AtomicBool,
   fired: AtomicBool,
-  waker: Mutex<Option<Waker>>,
+  waker: GcAwareMutex<Option<Waker>>,
 }
 
 impl SleepShared {
@@ -174,7 +175,7 @@ impl Future for Sleep {
         let shared = Arc::new(SleepShared {
           active: AtomicBool::new(true),
           fired: AtomicBool::new(false),
-          waker: Mutex::new(Some(cx.waker().clone())),
+          waker: GcAwareMutex::new(Some(cx.waker().clone())),
         });
 
         let key = NEXT_REGISTRATION_KEY.fetch_add(1, Ordering::Relaxed);
@@ -233,6 +234,16 @@ impl<F: Future> Future for Timeout<F> {
 // -------------------------------------------------------------------------------------------------
 // Debug / test hooks
 // -------------------------------------------------------------------------------------------------
+
+/// Test-only hook: execute `f` while holding the sleep/timeout registry lock.
+///
+/// This exists to deterministically force contention on the time module's
+/// internal registry lock for stop-the-world safepoint tests.
+#[doc(hidden)]
+pub fn debug_with_registry_lock<R>(f: impl FnOnce() -> R) -> R {
+  let _guard = REGISTRY.lock();
+  f()
+}
 
 /// Test-only helper: number of timer registrations currently owned by this module.
 ///

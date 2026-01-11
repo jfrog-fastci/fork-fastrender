@@ -1,4 +1,4 @@
-use parking_lot::Mutex;
+use crate::sync::GcAwareMutex;
 use std::sync::Arc;
 
 /// Errors produced while attempting to pin buffers for I/O.
@@ -69,14 +69,14 @@ struct IoState {
 #[derive(Debug)]
 pub struct IoLimiter {
   limits: IoLimits,
-  state: Mutex<IoState>,
+  state: GcAwareMutex<IoState>,
 }
 
 impl IoLimiter {
   pub fn new(limits: IoLimits) -> Self {
     Self {
       limits,
-      state: Mutex::new(IoState::default()),
+      state: GcAwareMutex::new(IoState::default()),
     }
   }
 

@@ -1,6 +1,6 @@
 use crate::abi::PromiseRef;
 use crate::roots;
-use parking_lot::Mutex;
+use crate::sync::GcAwareMutex;
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -215,7 +215,7 @@ pub(crate) struct IoOpRecord {
   /// `inflight_ops_current == 0` while root pins are still registered.
   pub(crate) pinned: PinnedIoOp,
   pub(crate) debug: Option<IoOpDebugHooks>,
-  outcome: Mutex<Option<IoOpOutcome>>,
+  outcome: GcAwareMutex<Option<IoOpOutcome>>,
 }
 
 // Safety: `IoOpRecord` contains raw pointers (inside `PinnedIoOp`'s `IoBuf`) and file descriptors.
@@ -241,7 +241,7 @@ impl IoOpRecord {
       roots,
       pinned,
       debug,
-      outcome: Mutex::new(None),
+      outcome: GcAwareMutex::new(None),
     }
   }
 

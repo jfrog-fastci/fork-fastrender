@@ -1,6 +1,7 @@
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
+use runtime_native::io::IoRuntime;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -143,3 +144,89 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_reactor_watcher_mutex() {
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn reactor_watcher_mutex_contention_not_supported_on_this_platform() {}
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_time_registry_mutex() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let handle = runtime_native::time::debug_with_registry_lock(|| {
+    let (tx_id, rx_id) = mpsc::channel();
+    let started = Arc::new(Barrier::new(2));
+
+    let started_worker = started.clone();
+    let handle = std::thread::spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      tx_id.send(id.get()).unwrap();
+      started_worker.wait();
+
+      // Contend on the registry lock deterministically.
+      let _ = runtime_native::time::debug_registration_count();
+
+      threading::unregister_current_thread();
+    });
+
+    let worker_id = rx_id.recv().unwrap();
+    started.wait();
+
+    wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+    runtime_native::rt_gc_request_stop_the_world();
+    let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+    runtime_native::rt_gc_resume_world();
+    assert!(
+      stopped,
+      "world did not stop while worker thread was blocked on the time registry mutex"
+    );
+
+    handle
+  });
+
+  handle.join().unwrap();
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_io_registry_mutex() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let io_rt = Arc::new(IoRuntime::new());
+
+  let handle = io_rt.debug_with_registry_lock(|| {
+    let (tx_id, rx_id) = mpsc::channel();
+    let started = Arc::new(Barrier::new(2));
+    let io_rt_worker = io_rt.clone();
+
+    let started_worker = started.clone();
+    let handle = std::thread::spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      tx_id.send(id.get()).unwrap();
+      started_worker.wait();
+
+      // Contend on the op registry lock deterministically.
+      let _ = io_rt_worker.debug_registry_len();
+
+      threading::unregister_current_thread();
+    });
+
+    let worker_id = rx_id.recv().unwrap();
+    started.wait();
+
+    wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+    runtime_native::rt_gc_request_stop_the_world();
+    let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+    runtime_native::rt_gc_resume_world();
+    assert!(
+      stopped,
+      "world did not stop while worker thread was blocked on the I/O op registry mutex"
+    );
+
+    handle
+  });
+
+  handle.join().unwrap();
+  drop(io_rt);
+  threading::unregister_current_thread();
+}

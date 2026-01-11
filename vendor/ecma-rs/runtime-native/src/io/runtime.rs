@@ -1,8 +1,8 @@
 use crate::abi::PromiseRef;
 use crate::buffer::Uint8Array;
+use crate::sync::GcAwareMutex;
 use crate::threading::ThreadKind;
 use crate::{async_rt, threading};
-use parking_lot::Mutex;
 use std::io;
 use std::ops::Range;
 use std::os::fd::{OwnedFd, RawFd};
@@ -29,7 +29,7 @@ impl RuntimeState {
 
 struct IoRuntimeInner {
   state: AtomicU8,
-  registry: Mutex<OpRegistry>,
+  registry: GcAwareMutex<OpRegistry>,
   limiter: Arc<IoLimiter>,
 }
 
@@ -133,7 +133,7 @@ impl IoRuntime {
     Self {
       inner: Arc::new(IoRuntimeInner {
         state: AtomicU8::new(RuntimeState::Running as u8),
-        registry: Mutex::new(OpRegistry::new()),
+        registry: GcAwareMutex::new(OpRegistry::new()),
         limiter: Arc::new(IoLimiter::new(limits)),
       }),
     }
@@ -271,6 +271,16 @@ impl IoRuntime {
   #[doc(hidden)]
   pub fn debug_registry_len(&self) -> usize {
     self.inner.registry.lock().len()
+  }
+
+  /// Test-only hook: execute `f` while holding the operation registry lock.
+  ///
+  /// This exists to deterministically force contention on the registry mutex for
+  /// stop-the-world safepoint tests.
+  #[doc(hidden)]
+  pub fn debug_with_registry_lock<R>(&self, f: impl FnOnce() -> R) -> R {
+    let _guard = self.inner.registry.lock();
+    f()
   }
 
   /// Test-only helper: snapshot current limiter counters.
