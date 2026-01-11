@@ -1446,22 +1446,6 @@ fn inferred_text_direction_from_dom(
   crate::style::types::Direction::Ltr
 }
 
-fn style_for_styled_node_id(box_tree: &BoxTree, node_id: usize) -> Option<Arc<ComputedStyle>> {
-  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
-  while let Some(node) = stack.pop() {
-    if node.styled_node_id == Some(node_id) {
-      return Some(node.style.clone());
-    }
-    if let Some(body) = node.footnote_body.as_deref() {
-      stack.push(body);
-    }
-    for child in node.children.iter().rev() {
-      stack.push(child);
-    }
-  }
-  None
-}
-
 #[derive(Debug, Clone, Copy)]
 struct VisualCaretStop {
   char_idx: usize,
