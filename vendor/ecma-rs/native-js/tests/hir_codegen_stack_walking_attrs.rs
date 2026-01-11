@@ -53,6 +53,13 @@ fn extract_attr_group(ir: &str, needle: &str) -> u32 {
     .unwrap_or_else(|_| panic!("invalid attribute group `{digits}` in line:\n{line}\n\nIR:\n{ir}"))
 }
 
+fn extract_def_line<'a>(ir: &'a str, needle: &str) -> &'a str {
+  let idx = ir
+    .find(needle)
+    .unwrap_or_else(|| panic!("missing function `{needle}` in IR:\n{ir}"));
+  ir[idx..].lines().next().expect("line")
+}
+
 fn assert_attr_group_has_stack_walking_attrs(ir: &str, group: u32) {
   let prefix = format!("attributes #{group} =");
   let idx = ir
@@ -108,9 +115,20 @@ fn hir_codegen_emits_stack_walking_attributes() {
   .expect("codegen");
 
   let ir = module.print_to_string().to_string();
+  let ts_def = extract_def_line(&ir, "define i32 @ts_main");
+  let main_def = extract_def_line(&ir, "define i32 @main");
+
+  assert!(
+    ts_def.contains("gc \"coreclr\""),
+    "ts_main missing `gc \"coreclr\"`:\n{ts_def}\n\nIR:\n{ir}"
+  );
+  assert!(
+    main_def.contains("gc \"coreclr\""),
+    "main missing `gc \"coreclr\"`:\n{main_def}\n\nIR:\n{ir}"
+  );
+
   let ts_group = extract_attr_group(&ir, "define i32 @ts_main");
   let main_group = extract_attr_group(&ir, "define i32 @main");
   assert_attr_group_has_stack_walking_attrs(&ir, ts_group);
   assert_attr_group_has_stack_walking_attrs(&ir, main_group);
 }
-

@@ -1,7 +1,6 @@
 use crate::strict::Entrypoint;
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{BinaryOp, ExprId, ExprKind, Literal, UnaryOp};
-use inkwell::attributes::AttributeLoc;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
@@ -63,7 +62,7 @@ fn declare_ts_main<'ctx>(
   i32_ty: IntType<'ctx>,
 ) -> FunctionValue<'ctx> {
   let func = module.add_function("ts_main", i32_ty.fn_type(&[], false), None);
-  apply_stack_walking_attrs(context, func);
+  crate::stack_walking::apply_stack_walking_attrs(context, func);
   func
 }
 
@@ -80,7 +79,7 @@ fn declare_c_main<'ctx>(
     i32_ty.fn_type(&[i32_ty.into(), argv_ty.into()], false),
     None,
   );
-  apply_stack_walking_attrs(context, func);
+  crate::stack_walking::apply_stack_walking_attrs(context, func);
   func
 }
 
@@ -265,14 +264,6 @@ fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'c
   let value = i64::from_str_radix(digits, radix).ok()?;
   let value = i32::try_from(value).ok()?;
   Some(i32_ty.const_int(value as u64, true))
-}
-
-fn apply_stack_walking_attrs<'ctx>(context: &'ctx Context, func: FunctionValue<'ctx>) {
-  let frame_pointer = context.create_string_attribute("frame-pointer", "all");
-  let disable_tail_calls = context.create_string_attribute("disable-tail-calls", "true");
-
-  func.add_attribute(AttributeLoc::Function, frame_pointer);
-  func.add_attribute(AttributeLoc::Function, disable_tail_calls);
 }
 
 mod builtins;
