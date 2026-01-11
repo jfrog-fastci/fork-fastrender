@@ -27,6 +27,15 @@ fn var_declarations_are_hoisted_to_undefined() {
 }
 
 #[test]
+fn var_declarations_inside_with_statements_are_hoisted() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script("if (false) { with ({}) { var x = 1; } } x === undefined;")
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn lexical_declarations_have_tdz() {
   let mut rt = new_runtime();
   let err = rt.exec_script("{ x; let x = 1; }").unwrap_err();

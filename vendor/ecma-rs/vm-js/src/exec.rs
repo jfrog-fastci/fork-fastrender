@@ -1457,6 +1457,9 @@ impl<'a> Evaluator<'a> {
       Stmt::Label(stmt) => {
         self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx)
       }
+      Stmt::With(stmt) => {
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
+      }
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -1535,6 +1538,7 @@ impl<'a> Evaluator<'a> {
         Ok(())
       }
       Stmt::Label(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.statement.stx, out),
+      Stmt::With(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -2043,6 +2047,9 @@ impl<'a> Evaluator<'a> {
       Stmt::Label(stmt) => {
         self.collect_var_names(&stmt.stx.statement.stx, out)?;
       }
+      Stmt::With(stmt) => {
+        self.collect_var_names(&stmt.stx.body.stx, out)?;
+      }
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -2054,8 +2061,6 @@ impl<'a> Evaluator<'a> {
           }
         }
       }
-
-      // TODO: other statement types.
       _ => {}
     }
     Ok(())
