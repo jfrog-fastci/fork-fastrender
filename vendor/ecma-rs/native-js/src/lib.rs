@@ -39,6 +39,7 @@
 //! let stackmaps = unsafe { std::slice::from_raw_parts(ptr, len) };
 //! ```
 
+pub mod compiler;
 pub mod codegen;
 pub mod codes;
 pub mod emit;
@@ -50,6 +51,7 @@ pub mod runtime_abi;
 pub mod poc_stackmaps;
 pub mod strict;
 pub mod llvm_passes;
+pub mod validate;
 
 mod stack_walking;
 pub use stack_walking::CodeGen;

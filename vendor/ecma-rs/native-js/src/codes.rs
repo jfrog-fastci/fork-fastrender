@@ -16,6 +16,14 @@ pub struct Code {
   pub description: &'static str,
 }
 
+/// NJS0009: Syntax is not supported by the native-js strict compilation subset.
+pub const STRICT_SUBSET_UNSUPPORTED_SYNTAX: Code =
+  Code::new("NJS0009", "unsupported syntax in native-js strict subset");
+
+/// NJS0010: Type is not supported by the native-js strict compilation subset.
+pub const STRICT_SUBSET_UNSUPPORTED_TYPE: Code =
+  Code::new("NJS0010", "unsupported type in native-js strict subset");
+
 impl Code {
   pub const fn new(id: &'static str, description: &'static str) -> Self {
     Self { id, description }
