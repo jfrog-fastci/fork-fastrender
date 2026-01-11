@@ -143,6 +143,16 @@ fn main() {
     modified = true;
   }
 
+  // cbindgen emits `rt_thread_register(enum RtThreadKind kind)` even though it also emits a typedef
+  // for `RtThreadKind`. Prefer the typedef name so the signature matches `runtime_native.h`.
+  if header.contains("rt_thread_register(enum RtThreadKind") {
+    header = header.replace(
+      "rt_thread_register(enum RtThreadKind",
+      "rt_thread_register(RtThreadKind",
+    );
+    modified = true;
+  }
+
   // Mirror `runtime_native.h` feature guards for optional GC stats/debug APIs.
   //
   // These entrypoints are only exported when `runtime-native` is built with the corresponding

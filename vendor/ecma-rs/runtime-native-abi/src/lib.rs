@@ -51,6 +51,19 @@ pub const RT_THREAD_KIND_WORKER: u32 = 1;
 pub const RT_THREAD_KIND_IO: u32 = 2;
 pub const RT_THREAD_KIND_EXTERNAL: u32 = 3;
 
+/// Thread kind enum used by [`rt_thread_register`].
+///
+/// Must match `RtThreadKind` in `runtime-native/include/runtime_native.h`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum RtThreadKind {
+  RT_THREAD_MAIN = 0,
+  RT_THREAD_WORKER = 1,
+  RT_THREAD_IO = 2,
+  RT_THREAD_EXTERNAL = 3,
+}
+
 // I/O watcher event flags (match `runtime-native/include/runtime_native.h`).
 pub const RT_IO_READABLE: u32 = 0x1;
 pub const RT_IO_WRITABLE: u32 = 0x2;
@@ -503,7 +516,7 @@ extern "C" {
   // Thread registration / state
   pub fn rt_thread_init(kind: u32);
   pub fn rt_thread_deinit();
-  pub fn rt_thread_register(kind: u32) -> u64;
+  pub fn rt_thread_register(kind: RtThreadKind) -> u64;
   pub fn rt_thread_unregister();
   pub fn rt_thread_set_parked(parked: bool);
   pub fn rt_thread_attach(runtime: *mut Runtime) -> *mut Thread;
@@ -885,6 +898,9 @@ mod tests {
 
     assert!(size_of::<AtomicU64>() == 8);
     assert!(align_of::<AtomicU64>() == 8);
+
+    assert!(size_of::<RtThreadKind>() == 4);
+    assert!(align_of::<RtThreadKind>() == 4);
   };
 
   #[test]
@@ -931,6 +947,7 @@ mod tests {
       "missing Microtask typedef"
     );
     for ty in [
+      "RtThreadKind",
       "RtShapeId",
       "InternedId",
       "TaskId",
@@ -1137,6 +1154,10 @@ mod tests {
     assert!(
       header.contains("void rt_queue_microtask(Microtask"),
       "generated header missing expected signature for `rt_queue_microtask(Microtask ...)`"
+    );
+    assert!(
+      header.contains("rt_thread_register(RtThreadKind"),
+      "generated header missing expected signature for `rt_thread_register(RtThreadKind ...)`"
     );
   }
 }
