@@ -916,6 +916,42 @@ fn checked_pipeline_run_exits_with_program_exit_code() {
 }
 
 #[test]
+fn checked_pipeline_boolean_entrypoint_exit_code() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): boolean { return true; }\n").unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(1)
+    .stdout(predicate::eq(""));
+}
+
+#[test]
+fn checked_pipeline_void_entrypoint_exits_zero_without_stdout() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): void {}\n").unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .code(0)
+    .stdout(predicate::eq(""));
+}
+
+#[test]
 fn checked_pipeline_emit_ir_contains_symbols() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
