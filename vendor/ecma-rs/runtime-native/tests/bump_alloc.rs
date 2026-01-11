@@ -57,7 +57,7 @@ fn round_up_16(n: usize) -> usize {
 fn alloc_alignment() {
   ensure_shape_table();
   for _ in 0..128 {
-    let ptr = rt_alloc(1, RtShapeId(1));
+    let ptr = rt_alloc(16, RtShapeId(1));
     assert_eq!((ptr as usize) & 15, 0);
   }
 }

@@ -20,6 +20,22 @@ use criterion::criterion_group;
 use criterion::criterion_main;
 #[cfg(target_os = "linux")]
 use criterion::Criterion;
+#[cfg(target_os = "linux")]
+use runtime_native::abi::{RtShapeDescriptor, RtShapeId};
+#[cfg(target_os = "linux")]
+use runtime_native::shape_table;
+
+#[cfg(target_os = "linux")]
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+#[cfg(target_os = "linux")]
+static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+  size: 16,
+  align: 16,
+  flags: 0,
+  ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+  ptr_offsets_len: 0,
+  reserved: 0,
+}];
 
 #[cfg(target_os = "linux")]
 fn init_bump_arena_for_bench() {
@@ -29,8 +45,12 @@ fn init_bump_arena_for_bench() {
     std::env::set_var("RUNTIME_NATIVE_BUMP_ARENA_SIZE", "1024G");
     std::env::set_var("RUNTIME_NATIVE_BUMP_CHUNK_SIZE", "1M");
 
+    unsafe {
+      shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+    }
+
     // Force arena initialization with a non-zero allocation.
-    black_box(runtime_native::rt_alloc(16, 0));
+    black_box(runtime_native::rt_alloc(16, RtShapeId(1)));
   });
 }
 
@@ -40,7 +60,7 @@ fn rt_alloc_single_thread(c: &mut Criterion) {
 
   c.bench_function("rt_alloc_16B_single_thread", |b| {
     b.iter(|| {
-      let ptr = runtime_native::rt_alloc(16, 0);
+      let ptr = runtime_native::rt_alloc(16, RtShapeId(1));
       black_box(ptr);
     });
   });
@@ -67,7 +87,7 @@ fn rt_alloc_multi_thread(c: &mut Criterion) {
         let n = per + usize::from(t < rem);
         handles.push(std::thread::spawn(move || {
           for _ in 0..n {
-            black_box(runtime_native::rt_alloc(16, 0));
+            black_box(runtime_native::rt_alloc(16, RtShapeId(1)));
           }
         }));
       }

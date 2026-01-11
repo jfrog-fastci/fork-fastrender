@@ -14,6 +14,7 @@ use crate::gc::ObjHeader;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
+use crate::shape_table;
 use crate::threading;
 use crate::Runtime;
 use crate::Thread;
@@ -35,10 +36,36 @@ fn ensure_event_loop_thread_registered() {
 }
 
 #[no_mangle]
-pub extern "C" fn rt_alloc(size: usize, _shape: RtShapeId) -> *mut u8 {
+pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8 {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc(size);
-  alloc::alloc_bytes(size, 16, "rt_alloc")
+
+  // Don't let panics unwind across the extern "C" boundary.
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let desc = shape_table::lookup_rt_descriptor(shape);
+    if size != desc.size as usize {
+      crate::trap::rt_trap_invalid_arg("rt_alloc: size does not match registered shape descriptor");
+    }
+
+    let align = desc.align as usize;
+    let obj = alloc::alloc_bytes(size, align, "rt_alloc");
+
+    // Ensure pointer slots start out as null so tracing never sees uninitialized garbage.
+    // SAFETY: `obj` is valid for `size` bytes.
+    unsafe {
+      std::ptr::write_bytes(obj, 0, size);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = shape_table::lookup_type_descriptor(shape) as *const _;
+      header.meta = 0;
+    }
+
+    obj
+  }));
+
+  match res {
+    Ok(ptr) => ptr,
+    Err(_) => std::process::abort(),
+  }
 }
 
 /// Allocate a pinned (non-moving) object.
@@ -47,8 +74,35 @@ pub extern "C" fn rt_alloc(size: usize, _shape: RtShapeId) -> *mut u8 {
 /// codegen/FFI can request a stable address today and so future GC-backed allocation can route
 /// pinned objects to a non-moving space.
 #[no_mangle]
-pub extern "C" fn rt_alloc_pinned(size: usize, _shape: RtShapeId) -> *mut u8 {
-  alloc::alloc_bytes(size, 16, "rt_alloc_pinned")
+pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
+  // Don't let panics unwind across the extern "C" boundary.
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let desc = shape_table::lookup_rt_descriptor(shape);
+    if size != desc.size as usize {
+      crate::trap::rt_trap_invalid_arg(
+        "rt_alloc_pinned: size does not match registered shape descriptor",
+      );
+    }
+
+    let align = desc.align as usize;
+    let obj = alloc::alloc_bytes(size, align, "rt_alloc_pinned");
+
+    // SAFETY: `obj` is valid for `size` bytes.
+    unsafe {
+      std::ptr::write_bytes(obj, 0, size);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = shape_table::lookup_type_descriptor(shape) as *const _;
+      header.meta = 0;
+      header.set_pinned(true);
+    }
+
+    obj
+  }));
+
+  match res {
+    Ok(ptr) => ptr,
+    Err(_) => std::process::abort(),
+  }
 }
 
 #[no_mangle]
