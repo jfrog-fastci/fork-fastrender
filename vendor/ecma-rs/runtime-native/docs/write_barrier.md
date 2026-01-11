@@ -213,7 +213,7 @@ barrier remains `NoGC`). When a per-object card table is present, it marks the c
 Because the remembered set stores raw object pointers, tests that manually allocate/free mock
 objects must clear it via `clear_write_barrier_state_for_tests` to avoid dangling pointers.
 
-Full GC wiring for the exported runtime (allocations + `rt_gc_collect`) is still TODO.
+Full GC wiring for the exported runtime (`rt_gc_collect` and integration with the GC prototype) is still TODO.
 
 ### Minor GC behavior (current `GcHeap`)
 

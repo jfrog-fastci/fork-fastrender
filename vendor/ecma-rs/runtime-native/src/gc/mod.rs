@@ -217,6 +217,7 @@ impl ObjHeader {
 
   #[inline]
   pub(crate) fn set_pinned(&mut self, pinned: bool) {
+    debug_assert!(!self.is_forwarded(), "pinned objects must not be forwarded");
     if self.is_forwarded() {
       return;
     }

@@ -465,6 +465,7 @@ run_cargo() {
   local toolchain_arg=""
   local subcommand=""
   local workdir="${cargo_workdir}"
+  local manifest_path=""
 
   # Cargo expects `-j/--jobs` to appear after the subcommand (`cargo test -j 1`, not `cargo -j 1 test`).
   # See: https://doc.rust-lang.org/cargo/commands/cargo.html
@@ -559,6 +560,36 @@ run_cargo() {
   fi
 
   cargo_cmd+=("$@")
+
+  # `vendor/ecma-rs` is a nested workspace that relies on `RUSTC_BOOTSTRAP=1` to
+  # compile a small amount of runtime code that still uses unstable feature
+  # gates (see `vendor/ecma-rs/.cargo/config.toml`). Since this wrapper supports
+  # invoking that workspace from the repo root via `--manifest-path`, ensure the
+  # env var is set even when Cargo doesn't discover the nested `.cargo` config.
+  for ((i = 0; i < ${#cargo_cmd[@]}; i++)); do
+    if [[ "${cargo_cmd[$i]}" == "--manifest-path" ]]; then
+      manifest_path="${cargo_cmd[$((i + 1))]:-}"
+      break
+    elif [[ "${cargo_cmd[$i]}" == --manifest-path=* ]]; then
+      manifest_path="${cargo_cmd[$i]#--manifest-path=}"
+      break
+    fi
+  done
+  if [[ -n "${manifest_path}" && ( "${manifest_path}" == "vendor/ecma-rs/Cargo.toml" || "${manifest_path}" == */vendor/ecma-rs/Cargo.toml ) ]]; then
+    export RUSTC_BOOTSTRAP="1"
+    # `runtime-native` (and any code it links against) relies on frame pointers
+    # for precise stack walking / GC root enumeration. The nested workspace
+    # provides an LLVM wrapper (`vendor/ecma-rs/scripts/cargo_llvm.sh`) that sets
+    # this flag automatically, but when we invoke the workspace from the repo
+    # root via `--manifest-path`, we need to inject it here.
+    if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+      if [[ -z "${RUSTFLAGS:-}" ]]; then
+        export RUSTFLAGS="-C force-frame-pointers=yes"
+      else
+        export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+      fi
+    fi
+  fi
 
   if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" ]]; then
     (cd "${workdir}" && "${cargo_cmd[@]}")

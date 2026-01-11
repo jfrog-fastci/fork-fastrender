@@ -109,16 +109,16 @@ pub fn enter_gc_safe_region() -> GcSafeGuard {
 
     // Publish a safepoint context *before* advertising NativeSafe to the GC.
     //
-    // If we entered the GC-safe region from within runtime code, the current
-    // frame may not have an LLVM stackmap record. Recover the nearest managed
-    // callsite cursor by walking the frame-pointer chain so stackmap-based root
-    // enumeration (for this thread) can still succeed while it is blocked.
+    // If we entered the GC-safe region from within runtime code, the current frame may not have an
+    // LLVM stackmap record. Recover the nearest managed callsite cursor by walking the frame-pointer
+    // chain so stackmap-based root enumeration (for this thread) can still succeed while it is
+    // blocked.
     //
     // Important: call `arch::capture_safepoint_context` directly from this helper frame when
-    // stackmaps are unavailable. The capture shim intentionally skips *this* runtime frame to
-    // return a context for the outer caller frame that remains live while NativeSafe. Calling it
-    // through combinators like `Option::unwrap_or_else` can introduce an extra stack frame and
-    // break that contract.
+    // stackmaps are unavailable. The capture shim intentionally skips *this* runtime frame to return
+    // a context for the outer caller frame that remains live while NativeSafe. Calling it through
+    // combinators like `Option::unwrap_or_else` can introduce an extra stack frame and break that
+    // contract.
     let ctx = match crate::stackmap::try_stackmaps()
       .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor_from_here(stackmaps))
     {

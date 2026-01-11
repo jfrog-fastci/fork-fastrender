@@ -9,7 +9,8 @@
 //! - `rt_alloc_array` is wired into the GC heap allocator (nursery/LOS/Immix).
 //! - `rt_gc_collect` is still a stop-the-world handshake stub (it does not yet run a full GC).
 //! - The exported write barrier is implemented and performs young-range checks + sets the per-object
-//!   remembered bit (see `docs/write_barrier.md`).
+//!   remembered bit and records newly-remembered objects into a process-global remembered set (see
+//!   `docs/write_barrier.md`).
 //!
 //! ## Pinned allocations
 //!

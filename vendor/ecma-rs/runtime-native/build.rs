@@ -338,8 +338,8 @@ target triple = "x86_64-unknown-linux-gnu"
 ; Keep the safepoint callee defined in this module so linking the generated
 ; object into Rust test binaries does not require any extra runtime stubs.
 ; Define `safepoint` as a *weak* symbol so tests can override it with a stronger
-; definition (used to capture fp/sp during stack walking validation) without
-; causing a duplicate-symbol link error.
+; definition (e.g. capturing FP/SP during stack walking validation) without
+; causing duplicate symbol errors.
 define weak void @safepoint() noinline nounwind {
 entry:
   ret void

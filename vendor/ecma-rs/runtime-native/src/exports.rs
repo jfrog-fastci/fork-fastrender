@@ -27,7 +27,6 @@ use crate::sync::gc_mutex::GcAwareMutex;
 use crate::threading;
 use crate::threading::registry;
 use crate::trap;
-use crate::rt_alloc as rt_alloc_mod;
 use crate::Runtime;
 use crate::Thread;
 use once_cell::sync::Lazy;
@@ -328,7 +327,7 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::
   let _ = spec;
 
   // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| rt_alloc_mod::alloc_array(len, elem_size)));
+  let res = catch_unwind(AssertUnwindSafe(|| crate::rt_alloc::alloc_array(len, elem_size)));
   match res {
     Ok(ptr) => ptr,
     Err(_) => std::process::abort(),
