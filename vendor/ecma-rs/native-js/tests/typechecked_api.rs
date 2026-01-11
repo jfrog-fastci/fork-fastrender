@@ -1,4 +1,4 @@
-use native_js::{compile, CompilerOptions, EmitKind};
+use native_js::{compile, CompilerOptions, EmitKind, NativeJsError};
 use std::process::Command;
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
@@ -82,4 +82,55 @@ fn compile_to_executable_and_run_returns_exit_code() {
     .expect("run compiled executable");
 
   assert_eq!(status.code(), Some(42));
+}
+
+#[test]
+fn compile_reports_typecheck_failed_for_type_errors() {
+  let mut host = MemoryHost::new();
+  let entry = FileKey::new("entry.ts");
+  host.insert(
+    entry.clone(),
+    "export function main(): number { return \"nope\"; }\n",
+  );
+
+  let program = Program::new(host, vec![entry.clone()]);
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::LlvmIr;
+
+  let err = compile(&program, &opts).expect_err("expected typecheck error");
+  match err {
+    NativeJsError::TypecheckFailed { diagnostics } => {
+      assert!(
+        diagnostics.iter().any(|d| d.code == "TS2322"),
+        "expected a TS2322 diagnostic, got: {diagnostics:?}"
+      );
+    }
+    other => panic!("expected NativeJsError::TypecheckFailed, got {other:?}"),
+  }
+}
+
+#[test]
+fn compile_rejects_multi_root_programs() {
+  let mut host = MemoryHost::new();
+  let a = FileKey::new("a.ts");
+  let b = FileKey::new("b.ts");
+  host.insert(a.clone(), "export function main(): number { return 0; }\n");
+  host.insert(b.clone(), "export function main(): number { return 0; }\n");
+
+  let program = Program::new(host, vec![a, b]);
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::LlvmIr;
+
+  let err = compile(&program, &opts).expect_err("expected unsupported feature error");
+  match err {
+    NativeJsError::UnsupportedFeature(msg) => {
+      assert!(
+        msg.contains("exactly one root file"),
+        "unexpected message: {msg}"
+      );
+    }
+    other => panic!("expected NativeJsError::UnsupportedFeature, got {other:?}"),
+  }
 }
