@@ -4,13 +4,19 @@ use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
+use native_js::toolchain::{LlvmToolchain, OptLevel};
 use object::{Object, ObjectSection};
 use runtime_native::stackmaps::Location;
 use runtime_native::stackmaps::StackMap;
 use runtime_native::statepoints::{StatepointRecord, LLVM18_STATEPOINT_HEADER_CONSTANTS};
 use std::collections::BTreeMap;
+use std::fs;
+use tempfile::tempdir;
 
-fn assert_no_register_gc_roots(stackmap: &StackMap) {
+fn assert_gc_root_locations(
+  stackmap: &StackMap,
+  expected_roots_hist: Option<BTreeMap<usize, usize>>,
+) {
   let mut gc_locs = 0usize;
   let mut sp_records = 0usize;
   let mut roots_hist: BTreeMap<usize, usize> = BTreeMap::new();
@@ -71,6 +77,12 @@ native-js requires stack-slot-only roots at safepoints; ensure LLVM CodeGen opti
   }
 
   assert!(gc_locs > 0, "test bug: expected at least one GC root location");
+  if let Some(expected_roots_hist) = expected_roots_hist {
+    assert_eq!(
+      roots_hist, expected_roots_hist,
+      "fixture invariant: unexpected gc root pair histogram"
+    );
+  }
   assert_eq!(
     sp_records, 12,
     "fixture invariant: expected 12 statepoint records (6 in @inner, 6 in @outer), got {sp_records}"
@@ -79,11 +91,6 @@ native-js requires stack-slot-only roots at safepoints; ensure LLVM CodeGen opti
     sp_records,
     stackmap.records.len(),
     "fixture invariant: expected all stackmap records to be statepoints"
-  );
-  assert_eq!(
-    roots_hist,
-    BTreeMap::from([(1, 2), (2, 2), (3, 2), (4, 2), (6, 4)]),
-    "fixture invariant: unexpected gc root pair histogram"
   );
 }
 
@@ -142,5 +149,41 @@ fn gc_statepoint_stackmaps_do_not_use_register_roots_o3() {
   let data = section.data().expect("read .llvm_stackmaps section");
 
   let stackmap = StackMap::parse(data).expect("parse stackmap v3 blob");
-  assert_no_register_gc_roots(&stackmap);
+  assert_gc_root_locations(
+    &stackmap,
+    Some(BTreeMap::from([(1, 2), (2, 2), (3, 2), (4, 2), (6, 4)])),
+  );
+}
+
+#[test]
+fn gc_statepoint_stackmaps_do_not_use_register_roots_o3_clang() {
+  let Ok(tc) = LlvmToolchain::detect() else {
+    eprintln!("skipping: clang not found in PATH");
+    return;
+  };
+
+  let tmp = tempdir().expect("create tempdir");
+  let ll_path = tmp.path().join("complex_ptr_statepoint.ll");
+  let obj_path = tmp.path().join("complex_ptr_statepoint.o");
+
+  let ir = include_str!("fixtures/complex_ptr_statepoint.ll");
+  fs::write(&ll_path, ir).expect("write LLVM IR fixture");
+
+  // Compile at O3 so register allocation has maximum freedom.
+  tc.compile_ll_to_object(&ll_path, &obj_path, OptLevel::O3)
+    .expect("clang compile .ll -> .o");
+
+  let obj = fs::read(&obj_path).expect("read object");
+  let file = object::File::parse(&*obj).expect("parse object file");
+  let section = file
+    .section_by_name(".llvm_stackmaps")
+    .or_else(|| file.section_by_name("__llvm_stackmaps"))
+    .expect("object missing .llvm_stackmaps section");
+  let data = section.data().expect("read .llvm_stackmaps section");
+
+  let stackmap = StackMap::parse(data).expect("parse stackmap v3 blob");
+  // Clang may run DCE over unused `gc.relocate` results, which changes the
+  // per-record gc-pair histogram. The critical invariant for this test is the
+  // *location kind* (stack slot vs register), not the exact root counts.
+  assert_gc_root_locations(&stackmap, None);
 }
