@@ -14,7 +14,6 @@
 //! `reg_value + offset`.
 
 use crate::stackmaps::{Location, StackMaps};
-use crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 use crate::statepoints::{StatepointError, StatepointRecord};
 use stackmap_context::{ThreadContext, DWARF_REG_IP};
 
@@ -114,9 +113,14 @@ pub fn scan_reloc_pairs(
     return Ok(Vec::new());
   };
 
-  // Only `gc.statepoint` records describe GC relocation pairs. Other stackmap records (patchpoints)
-  // should be ignored by the GC.
-  if callsite.record.patchpoint_id != LLVM_STATEPOINT_PATCHPOINT_ID {
+  // Detect LLVM `gc.statepoint` record layout by structure, not by `patchpoint_id`:
+  // LLVM allows overriding the statepoint ID (`"statepoint-id"` attribute).
+  let looks_like_statepoint = callsite.record.locations.len()
+    >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+    && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+      .iter()
+      .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+  if !looks_like_statepoint {
     return Ok(Vec::new());
   }
 
