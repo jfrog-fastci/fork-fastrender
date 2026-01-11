@@ -312,10 +312,10 @@ Diagnostics are rendered via `diagnostics::render` in a rustc-like format:
 
 ```text
 error[NJS0009]: property access is not supported by native-js yet
- --> entry.ts:1:43
+ --> entry.ts:1:41
   |
-1 | export function main(): number { return foo.bar; }
-  |                                   ^^^^^^^ property access is not supported by native-js yet
+1 | export function main(): number { return "hi".length; }
+  |                                         ^^^^^^^^^^^ property access is not supported by native-js yet
 ```
 
 ### Notes
