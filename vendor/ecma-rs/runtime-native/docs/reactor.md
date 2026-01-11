@@ -194,5 +194,5 @@ To force and test the pipe-based wake fallback even on platforms where `EVFILT_U
 ```bash
 RUSTFLAGS="-C force-frame-pointers=yes" \
   bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native \
-  --test reactor_kqueue_pipe_wake --features force_pipe_wake
+    --test reactor_kqueue_pipe_wake --features force_pipe_wake
 ```

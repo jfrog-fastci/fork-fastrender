@@ -6,6 +6,17 @@ ecma_rs_root="$(cd "${script_dir}/.." && pwd)"
 
 target_dir="${CARGO_TARGET_DIR:-${ecma_rs_root}/target}"
 
+# The runtime-native crate requires frame pointers for FP-based stack walking / GC root enumeration.
+# (Enforced by `runtime-native/build.rs`.) Inject the flag here so the helper script works out of
+# the box even when the caller isn't using `scripts/cargo_llvm.sh`.
+if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+  if [[ -z "${RUSTFLAGS:-}" ]]; then
+    export RUSTFLAGS="-C force-frame-pointers=yes"
+  else
+    export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+  fi
+fi
+
 echo "Building runtime-native (release)..." >&2
 cd "${ecma_rs_root}"
 # Use the LLVM wrapper:

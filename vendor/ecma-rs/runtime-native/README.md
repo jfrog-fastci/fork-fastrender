@@ -77,7 +77,15 @@ From the superproject repo root (or any cwd):
 bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p runtime-native --release
 ```
 
-Or via the helper script (prints include/lib paths for downstream build systems):
+If you don't have LLVM 18 installed, you can still build by providing the required
+rustc flag directly:
+
+```bash
+RUSTFLAGS="-C force-frame-pointers=yes" bash scripts/cargo_agent.sh build --release -p runtime-native
+```
+
+Or via the helper script (prints include/lib paths for downstream build systems and
+ensures frame pointers are enabled):
 
 ```bash
 bash scripts/build_runtime_native.sh

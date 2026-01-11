@@ -699,7 +699,8 @@ Scheduler threads execute compiled code, so they are **mutators**:
 
 - Worker threads must call `rt_thread_register` on start and unregister on exit.
 - At GC safepoints, workers must park quickly. The scheduler must therefore:
-  - insert `rt_gc_safepoint` in idle loops as well (not just compiled code),
+  - insert safepoint polls in idle loops as well (e.g. `rt_gc_poll` +
+    `rt_gc_safepoint_slow(epoch)`),
   - keep runtime “steal” loops either `NoGC` or statepointed.
 
 Tasks queued but not currently running are still GC roots:
@@ -774,7 +775,7 @@ Goal: verify that “GC roots at safepoints” works in a real linked executable
 Approach:
 - In tests, generate tiny LLVM IR modules that:
   - define one or two functions with `gc.statepoint` + `"gc-live"` bundles
-  - call `rt_gc_safepoint` and/or `rt_alloc`
+  - call `rt_gc_safepoint_slow` and/or `rt_alloc`
 - Compile them with LLVM to an object file and link into a test binary together
   with `runtime-native`.
 - At runtime, trigger a GC and assert the runtime enumerates the expected number

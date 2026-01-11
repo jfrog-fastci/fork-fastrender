@@ -6,8 +6,8 @@
 //! Run locally (macOS/BSD):
 //!
 //! ```bash
-//! bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native \
-//!   --test reactor_kqueue_pipe_wake --features force_pipe_wake
+//! RUSTFLAGS="-C force-frame-pointers=yes" bash vendor/ecma-rs/scripts/cargo_agent.sh \
+//!   test -p runtime-native --test reactor_kqueue_pipe_wake --features force_pipe_wake
 //! ```
 #![cfg(all(
   feature = "force_pipe_wake",
