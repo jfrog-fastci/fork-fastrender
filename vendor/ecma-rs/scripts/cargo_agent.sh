@@ -25,5 +25,34 @@ if [[ ! -f "${MONOREPO_WRAPPER}" ]]; then
   exit 1
 fi
 
+# Preserve the caller's working directory so we can normalize any relative
+# `--manifest-path` args before switching into the nested workspace. This keeps
+# invocations like:
+#   bash vendor/ecma-rs/scripts/cargo_agent.sh check --manifest-path vendor/ecma-rs/Cargo.toml -p native-js
+# working from the monorepo root.
+CALLER_DIR="$(pwd)"
+
+argv=("$@")
+for ((i = 0; i < ${#argv[@]}; i++)); do
+  # Stop once we reach the argument delimiter. Anything after `--` is forwarded
+  # to rustc / the test harness / the executed binary, and should not be
+  # rewritten.
+  if [[ "${argv[$i]}" == "--" ]]; then
+    break
+  fi
+
+  if [[ "${argv[$i]}" == "--manifest-path" ]]; then
+    path="${argv[$((i + 1))]:-}"
+    if [[ -n "${path}" && "${path}" != /* ]]; then
+      argv[$((i + 1))]="${CALLER_DIR}/${path}"
+    fi
+  elif [[ "${argv[$i]}" == --manifest-path=* ]]; then
+    path="${argv[$i]#--manifest-path=}"
+    if [[ -n "${path}" && "${path}" != /* ]]; then
+      argv[$i]="--manifest-path=${CALLER_DIR}/${path}"
+    fi
+  fi
+done
+
 cd "${ECMA_RS_ROOT}"
-exec bash "${MONOREPO_WRAPPER}" "$@"
+exec bash "${MONOREPO_WRAPPER}" "${argv[@]}"
