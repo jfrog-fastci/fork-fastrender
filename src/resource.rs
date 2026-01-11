@@ -5479,7 +5479,7 @@ impl HttpFetcher {
     if !unsafe_header_names.is_empty() {
       system_headers.push((
         "Access-Control-Request-Headers".to_string(),
-        unsafe_header_names.join(", "),
+        unsafe_header_names.join(","),
       ));
     }
 

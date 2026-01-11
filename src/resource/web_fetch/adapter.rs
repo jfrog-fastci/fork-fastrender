@@ -1462,6 +1462,10 @@ mod tests {
         lower.contains("access-control-request-headers: x-test"),
         "missing Access-Control-Request-Headers header:\n{headers}"
       );
+      assert!(
+        lower.contains("accept: */*"),
+        "missing Accept header:\n{headers}"
+      );
       let response = concat!(
         "HTTP/1.1 204 No Content\r\n",
         "Access-Control-Allow-Origin: https://client.example\r\n",
@@ -1535,6 +1539,10 @@ mod tests {
       assert!(
         lower.contains("access-control-request-headers: x-test"),
         "missing Access-Control-Request-Headers header:\n{headers}"
+      );
+      assert!(
+        lower.contains("accept: */*"),
+        "missing Accept header:\n{headers}"
       );
       let response = concat!(
         "HTTP/1.1 204 No Content\r\n",
@@ -3531,6 +3539,96 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_sends_access_control_request_headers() {
+    if skip_if_curl_backend_missing("cors_preflight_sends_access_control_request_headers") {
+      return;
+    }
+    let Some(listener) = try_bind_localhost("cors_preflight_sends_access_control_request_headers")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      // Preflight request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      *captured_req.lock().unwrap() = headers;
+      let response = concat!(
+        "HTTP/1.1 204 No Content\r\n",
+        "Access-Control-Allow-Origin: https://client.example\r\n",
+        "Access-Control-Allow-Methods: PUT\r\n",
+        "Access-Control-Allow-Headers: x-test\r\n",
+        "Content-Length: 0\r\n",
+        "Connection: close\r\n",
+        "\r\n"
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, body) = read_http_request(&mut stream);
+      let req = headers.to_ascii_lowercase();
+      assert!(
+        req.starts_with("put /sendhdrs"),
+        "expected PUT request line, got:\n{req}"
+      );
+      assert_eq!(body, b"payload");
+      let response_body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        response_body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(response_body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/sendhdrs");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let mut request = Request::new("PUT", &url);
+    request.set_mode(RequestMode::Cors);
+    request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let ctx = WebFetchExecutionContext {
+      destination: FetchDestination::StyleCors,
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle.join().unwrap();
+
+    let preflight = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      preflight.starts_with("options /sendhdrs"),
+      "expected OPTIONS request line, got:\n{preflight}"
+    );
+    assert!(
+      preflight.contains("access-control-request-method: put"),
+      "missing Access-Control-Request-Method header:\n{preflight}"
+    );
+    assert!(
+      preflight.contains("access-control-request-headers: x-test"),
+      "missing Access-Control-Request-Headers header:\n{preflight}"
+    );
+    assert!(
+      preflight.contains("accept: */*"),
+      "missing Accept header:\n{preflight}"
+    );
+  }
+
+  #[test]
   fn cors_preflight_access_control_request_headers_is_sorted_and_deduped() {
     if skip_if_curl_backend_missing(
       "cors_preflight_access_control_request_headers_is_sorted_and_deduped",
@@ -3608,7 +3706,7 @@ mod tests {
       1,
       "expected exactly one Access-Control-Request-Headers header, got:\n{preflight}"
     );
-    assert_eq!(lines.pop().unwrap(), "access-control-request-headers: x-a, x-b");
+    assert_eq!(lines.pop().unwrap(), "access-control-request-headers: x-a,x-b");
   }
 
   #[test]
