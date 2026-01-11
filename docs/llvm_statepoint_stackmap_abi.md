@@ -82,6 +82,8 @@ This means a runtime patcher must ensure the *actual* call return address matche
 Equivalently, the reserved patch region starts at:
 `patch_region_start = instruction_offset - patch_bytes`
 and ends at `instruction_offset`.
+LLVM may still emit additional NOP padding outside that reserved region (e.g. for
+alignment), so the instruction at `instruction_offset` can itself be a NOP.
 
 ## `gc.statepoint`: `flags` is a 2-bit mask on LLVM 18
 

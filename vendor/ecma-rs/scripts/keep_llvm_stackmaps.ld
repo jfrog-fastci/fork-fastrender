@@ -26,7 +26,7 @@
 
 SECTIONS
 {
-  /* Hardened location: writable during relocation, then protected by RELRO. */
+  /* Writable during relocation (avoids DT_TEXTREL). */
   .data.rel.ro.llvm_stackmaps : ALIGN(8)
   {
     /* Preferred stable symbol names (shared with native-js + runtime-native). */

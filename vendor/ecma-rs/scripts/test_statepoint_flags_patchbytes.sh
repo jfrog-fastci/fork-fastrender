@@ -4,9 +4,11 @@ set -euo pipefail
 # Regression test for LLVM 18 `gc.statepoint` stackmap encoding:
 # - Location #1 is the callsite calling convention ID ("callconv"; `ccc`=0, `fastcc`=8).
 # - Location #2 is `flags` (5th argument): a 2-bit mask (0..3) recorded in the stackmap.
+# - On 64-bit targets, LLVM reports these header constants (`#1/#2/#3`) with `size: 8`.
 # - `patch_bytes` (2nd argument) controls whether LLVM emits an actual call
 #   (`patch_bytes=0`) or a patchable NOP region (`patch_bytes>0`) and shifts the
-#   stackmap instruction offset accordingly.
+#   stackmap instruction offset accordingly. The reserved patch region starts at
+#   `instruction_offset - patch_bytes` and ends at `instruction_offset`.
 
 die() {
   echo "error: $*" >&2
