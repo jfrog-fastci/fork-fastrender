@@ -290,6 +290,7 @@ pub fn rt_gc_safepoint();
 /// header and then may hit a safepoint/GC before the last raw-pointer use.
 pub fn rt_keep_alive_gc_ref(gc_ref: *mut u8);
 pub fn rt_write_barrier(obj: *mut u8, field: *mut u8);
+pub fn rt_write_barrier_range(obj: *mut u8, start: *mut u8, len_bytes: usize);
 
 // Temporary roots (shadow stack for Rust/FFI code)
 pub fn rt_root_push(slot: GcHandle);
@@ -363,6 +364,7 @@ around `MayGC` calls (the runtime may safepoint/collect and relocate nursery obj
 | `rt_root_pop` | NoGC | Pop a root slot (must be called in strict LIFO order). |
 | `rt_keep_alive_gc_ref` | NoGC | Extends liveness of a GC reference until a specific program point (prevents UAF for derived raw pointers like backing-store `uint8_t*`). |
 | `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
+| `rt_write_barrier_range` | NoGC | Conservative post-bulk-write barrier; must not allocate or safepoint. |
 | `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
 | `rt_string_concat` | MayGC | Allocates a new string buffer (currently outside the GC heap; leak-only). |
 | `rt_string_intern` | MayGC | May allocate/update interner tables. |
