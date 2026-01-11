@@ -137,3 +137,22 @@ fn not_of_loose_nullish_check_is_handled() {
     "expected receiver to be refined to non-nullish before x.toString(), got {mask:?}"
   );
 }
+
+#[test]
+fn optional_chaining_refines_receiver_to_non_nullish() {
+  let src = r#"
+    let x = foo;
+    x?.toString();
+  "#;
+
+  let program = compile_source(src, TopLevelMode::Module, false);
+  let cfg = &program.top_level.body;
+  let analysis = calculate_nullability(cfg);
+
+  let (label, inst_idx, obj_var) = find_to_string_getprop(cfg);
+  let mask = analysis.mask_of_var_before_inst(cfg, label, inst_idx, obj_var);
+  assert!(
+    mask.is_non_nullish(),
+    "expected receiver to be refined to non-nullish before x?.toString(), got {mask:?}"
+  );
+}
