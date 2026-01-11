@@ -6,148 +6,154 @@
 # Aliases:
 # - Property-based import styles (e.g. `import _ from "lodash"`).
 
-schema_version: 1
-symbols:
-  - name: lodash.map
-    aliases: [_.map]
-    semantics: Map
-    since: "v0.1.0"
-    purity:
-      template: depends_on_callback
-    effects:
-      template: depends_on_callback
-      may_throw: true
-      allocates: true
-      io: false
-      network: false
-      nondeterministic: false
-    properties:
-      kind: collection_operator
-      output: new_array
-      preserves_order: true
+lodash.map:
+  aliases: [_.map]
+  semantics: Map
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: true
 
-  - name: lodash.filter
-    aliases: [_.filter]
-    semantics: Filter
-    since: "v0.1.0"
-    purity:
-      template: depends_on_callback
-    effects:
-      template: depends_on_callback
-      may_throw: true
-      allocates: true
-      io: false
-      network: false
-      nondeterministic: false
-    properties:
-      kind: collection_operator
-      output: new_array
-      preserves_order: true
+lodash.filter:
+  aliases: [_.filter]
+  semantics: Filter
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: true
 
-  - name: lodash.reduce
-    aliases: [_.reduce]
-    semantics: Reduce
-    since: "v0.1.0"
-    purity:
-      template: depends_on_callback
-    effects:
-      template: depends_on_callback
-      may_throw: true
-      allocates: false
-      io: false
-      network: false
-      nondeterministic: false
-    properties:
-      kind: collection_operator
-      output: accumulated_value
+lodash.reduce:
+  aliases: [_.reduce]
+  semantics: Reduce
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: accumulated_value
 
-  - name: lodash.cloneDeep
-    aliases: [_.cloneDeep]
-    semantics: CloneDeep
-    since: "v0.1.0"
-    purity:
-      # Pure-ish: does not intentionally mutate inputs, but allocates.
-      template: pure
-    effects:
-      template: pure
-      may_throw: true
-      allocates: true
-      io: false
-      network: false
-      nondeterministic: false
-    properties:
-      kind: cloning
-      does_not_mutate_inputs: true
+lodash.cloneDeep:
+  aliases: [_.cloneDeep]
+  semantics: CloneDeep
+  since: "v0.1.0"
+  purity:
+    # Pure-ish: does not intentionally mutate inputs, but allocates.
+    template: allocating
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: cloning
+    does_not_mutate_inputs: true
 
-  - name: lodash.merge
-    aliases: [_.merge]
-    semantics: Merge
-    since: "v0.1.0"
-    purity:
-      # Mutates the destination object (argument 0).
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      allocates: false
-      io: false
-      network: false
-      nondeterministic: false
-    properties:
-      kind: object_mutation
-      mutates_argument: 0
-      returns_argument: 0
+lodash.merge:
+  aliases: [_.merge]
+  semantics: Merge
+  since: "v0.1.0"
+  purity:
+    # Mutates the destination object (argument 0).
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_mutation
+    mutates_argument: 0
+    returns_argument: 0
 
-  - name: lodash.debounce
-    aliases: [_.debounce]
-    semantics: Debounce
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      allocates: true
-      io: false
-      network: false
-      nondeterministic: true
-    properties:
-      kind: timing
-      timer_based: true
-      returns: function
+lodash.debounce:
+  aliases: [_.debounce]
+  semantics: Debounce
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: timing
+    timer_based: true
+    returns: function
 
-  - name: lodash.throttle
-    aliases: [_.throttle]
-    semantics: Throttle
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      allocates: true
-      io: false
-      network: false
-      nondeterministic: true
-    properties:
-      kind: timing
-      timer_based: true
-      returns: function
+lodash.throttle:
+  aliases: [_.throttle]
+  semantics: Throttle
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: timing
+    timer_based: true
+    returns: function
 
-  - name: lodash.memoize
-    aliases: [_.memoize]
-    semantics: Memoize
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      allocates: true
-      io: false
-      network: false
-      nondeterministic: false
-    properties:
-      kind: caching
-      stateful_cache: true
-      returns: function
+lodash.memoize:
+  aliases: [_.memoize]
+  semantics: Memoize
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: caching
+    stateful_cache: true
+    returns: function
