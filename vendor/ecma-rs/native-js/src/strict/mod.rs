@@ -18,7 +18,7 @@
 //! - `NJS0007`: computed property access with non-literal keys (except array/tuple indexing)
 //! - `NJS0008`: use of the `arguments` identifier/object
 //! - `NJS0108`: entry file must export a `main` function
-//! - `NJS0109`: exported `main` must be defined in the entry file (no re-exports)
+//! - `NJS0109`: failed to resolve exported `main`
 //! - `NJS0110`: exported `main` must be a function with a body
 //! - `NJS0111`: exported `main` must have a supported signature (no params, not async/generator)
 
@@ -27,7 +27,7 @@ use hir_js::{
   BinaryOp, BodyKind, ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind,
 };
 use std::collections::{HashMap, HashSet};
-use typecheck_ts::{BodyCheckResult, BodyId, DefId, FileId, Program, TypeId, TypeKindSummary};
+use typecheck_ts::{BodyCheckResult, BodyId, DefId, FileId, ImportTarget, Program, TypeId, TypeKindSummary};
 use types_ts_interned as tti;
 
 const CODE_ANY: &str = "NJS0001";
@@ -533,6 +533,42 @@ pub struct Entrypoint {
   pub main_body: BodyId,
 }
 
+fn resolve_export_def(program: &Program, def: DefId) -> Option<DefId> {
+  // Follow `import { x } from "./dep"` through the module graph to find the
+  // underlying defining `DefId`.
+  //
+  // Note: `typecheck-ts` represents re-exported bindings (`export { x } from ...`
+  // and `export * from ...`) with `ExportEntry::def == None`, so this helper also
+  // falls back to `Program::symbol_info(export.symbol).def` when traversing
+  // exports.
+  let mut cur = def;
+  let mut seen = HashSet::<DefId>::new();
+  loop {
+    if !seen.insert(cur) {
+      return None;
+    }
+    let kind = program.def_kind(cur)?;
+    let typecheck_ts::DefKind::Import(import) = kind else {
+      return Some(cur);
+    };
+    match import.target {
+      ImportTarget::File(target_file) => {
+        let (symbol, local_def) = {
+          let exports = program.exports_of(target_file);
+          let entry = exports.get(import.original.as_str())?;
+          (entry.symbol, entry.def)
+        };
+
+        cur = program
+          .symbol_info(symbol)
+          .and_then(|info| info.def)
+          .or(local_def)?;
+      }
+      _ => return None,
+    }
+  }
+}
+
 pub fn entrypoint(program: &Program, entry_file: FileId) -> Result<Entrypoint, Vec<Diagnostic>> {
   let exports = program.exports_of(entry_file);
   let Some(entry) = exports.get("main") else {
@@ -543,24 +579,22 @@ pub fn entrypoint(program: &Program, entry_file: FileId) -> Result<Entrypoint, V
     )]);
   };
 
-  let Some(def) = entry.def else {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_LOCAL,
-      "exported `main` must be defined in the entry file (re-exports are not supported yet)",
-      Span::new(entry_file, TextRange::new(0, 0)),
-    )]);
-  };
+  let def = program
+    .symbol_info(entry.symbol)
+    .and_then(|info| info.def)
+    .or(entry.def)
+    .and_then(|def| resolve_export_def(program, def))
+    .ok_or_else(|| {
+      vec![Diagnostic::error(
+        CODE_ENTRYPOINT_NOT_LOCAL,
+        "failed to resolve exported `main` definition",
+        Span::new(entry_file, TextRange::new(0, 0)),
+      )]
+    })?;
 
   let span = program
     .span_of_def(def)
     .unwrap_or_else(|| Span::new(entry_file, TextRange::new(0, 0)));
-  if span.file != entry_file {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_LOCAL,
-      "exported `main` must be defined in the entry file",
-      span,
-    )]);
-  }
 
   let Some(def_kind) = program.def_kind(def) else {
     return Err(vec![Diagnostic::error(
@@ -585,10 +619,10 @@ pub fn entrypoint(program: &Program, entry_file: FileId) -> Result<Entrypoint, V
     )]);
   };
 
-  let Some(lowered) = program.hir_lowered(entry_file) else {
+  let Some(lowered) = program.hir_lowered(def.file()) else {
     return Err(vec![Diagnostic::error(
       CODE_ENTRYPOINT_NOT_FUNCTION,
-      "failed to access lowered HIR for entry file",
+      "failed to access lowered HIR for `main` file",
       span,
     )]);
   };
