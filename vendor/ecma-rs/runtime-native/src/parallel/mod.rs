@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ use crossbeam_utils::sync::{Parker, Unparker};
 
 use crate::abi::TaskId;
 use crate::gc::HandleId;
-use crate::sync::GcAwareMutex;
+use crate::sync::{GcAwareMutex, GcAwareRwLock};
 use crate::threading::{self, ThreadKind};
 
 #[path = "parallel_for.rs"]
@@ -37,14 +37,14 @@ fn default_cost_model(work: WorkEstimate) -> bool {
   work.items >= parallel_for_impl::min_grain() && work.cost >= parallel_for_impl::min_grain() as u64
 }
 
-static COST_MODEL: RwLock<CostModelFn> = RwLock::new(default_cost_model);
+static COST_MODEL: GcAwareRwLock<CostModelFn> = GcAwareRwLock::new(default_cost_model);
 
 pub fn set_cost_model(f: CostModelFn) {
-  *COST_MODEL.write().unwrap_or_else(|e| e.into_inner()) = f;
+  *COST_MODEL.write() = f;
 }
 
 pub fn should_parallelize(work: WorkEstimate) -> bool {
-  let f = *COST_MODEL.read().unwrap_or_else(|e| e.into_inner());
+  let f = *COST_MODEL.read();
   f(work)
 }
 
