@@ -224,12 +224,19 @@ pub extern "C" fn rt_gc_safepoint() {
   crate::threading::safepoint::rt_gc_safepoint();
 }
 
-/// Cheap leaf poll used by compiler-inserted loop backedge safepoints.
+/// Cheap GC poll used by compiler-inserted fast paths (e.g. loop backedge safepoints).
 ///
-/// Returns `true` if a stop-the-world safepoint is currently requested.
+/// Returns `true` if a stop-the-world GC/safepoint is currently requested.
+///
+/// Generated code typically uses this in a "fast poll" sequence:
+///
+/// 1. `if rt_gc_poll() { rt_gc_safepoint(); }`
+///
+/// `native-js` marks this function as a GC leaf (`"gc-leaf-function"`) so
+/// `rewrite-statepoints-for-gc` does not wrap the poll itself in a statepoint.
 #[no_mangle]
 pub extern "C" fn rt_gc_poll() -> bool {
-  crate::threading::safepoint::rt_gc_poll()
+  (crate::threading::safepoint::RT_GC_EPOCH.load(Ordering::Acquire) & 1) != 0
 }
 
 /// LLVM `place-safepoints` poll function.
