@@ -94,6 +94,33 @@ impl SimpleRememberedSet {
     self.add(obj);
   }
 
+  /// Record an object in the remembered set without requiring a 0→1 transition of the header bit.
+  ///
+  /// This is intended for use by the process-global write-barrier buffer (`gc::global_remset`):
+  /// the write barrier already sets the per-object `REMEMBERED` bit, but still needs a real list of
+  /// objects for the GC to scan. Draining that buffer into a `SimpleRememberedSet` must therefore
+  /// enqueue the object even if the bit is already set.
+  ///
+  /// Unlike [`SimpleRememberedSet::remember`], this method does **not** double-count
+  /// `gc_stats::remembered_objects_added` when the bit is already set.
+  pub(crate) fn remember_from_write_barrier_buffer(&mut self, obj: *mut u8) {
+    debug_assert!(!obj.is_null());
+    // SAFETY: `obj` must point to the start of a valid GC-managed object.
+    let header = unsafe { &*(obj as *const super::ObjHeader) };
+    if header.is_forwarded() {
+      // Forwarded (nursery) objects are never remembered; if the write barrier
+      // recorded one, it violated its contract. Skip defensively in release.
+      debug_assert!(false, "attempted to remember a forwarded (nursery) object");
+      return;
+    }
+    // Ensure the bit is set, but only record stats if we actually transitioned 0→1.
+    if header.set_remembered_idempotent() {
+      #[cfg(feature = "gc_stats")]
+      crate::gc_stats::record_remembered_object_added();
+    }
+    self.objs.push(obj);
+  }
+
   /// Like [`SimpleRememberedSet::remember`], but aborts instead of growing the backing storage.
   ///
   /// This is intended for use by `rt_write_barrier`, which is classified as `NoGC` and must not
@@ -117,9 +144,11 @@ impl SimpleRememberedSet {
 
   /// Sync this set's membership for `obj` with its header `REMEMBERED` bit.
   ///
-  /// This is a test/debug helper used by the exported write barrier model tests:
-  /// the ABI `rt_write_barrier` currently only sets the per-object header bit, so
-  /// tests maintain a process-global remembered-set mirror by consulting the bit.
+  /// This is a test/debug helper used by some unit tests to maintain a
+  /// process-local remembered-set mirror by consulting the per-object header bit.
+  ///
+  /// Integration tests should generally prefer draining the process-global
+  /// write-barrier buffer (`gc::global_remset`) instead.
   #[doc(hidden)]
   pub fn sync_from_header_bit(&mut self, obj: *mut u8) -> bool {
     if obj.is_null() {

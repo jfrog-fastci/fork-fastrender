@@ -117,8 +117,8 @@ fn gc_stats_counters_increment_across_barrier_and_minor_scan() {
     runtime_native::rt_write_barrier_range(big, big.add(start_offset), len);
   }
 
-  // Minor GC scans remembered objects (provided explicitly by the test harness; rt_write_barrier
-  // doesn't currently wire a remset data structure).
+  // Minor GC scans remembered objects. This test supplies the remembered set explicitly; the
+  // exported write barrier uses `gc::global_remset` to feed the collector in the real runtime.
   let mut root_old = old;
   let mut roots = RootStack::new();
   roots.push(&mut root_old as *mut *mut u8);
@@ -147,6 +147,49 @@ fn gc_stats_counters_increment_across_barrier_and_minor_scan() {
   assert_eq!(d_card_marks, 4);
   assert_eq!(d_cards_scanned_minor, 4);
   assert_eq!(d_cards_kept_after_rebuild, 0);
+
+  // Avoid leaking the heap's nursery range into other tests (young range is global).
+  runtime_native::clear_write_barrier_state_for_tests();
+}
+
+#[test]
+fn gc_stats_remembered_added_not_doubled_by_remset_drain() {
+  let _rt = TestRuntimeGuard::new();
+  runtime_native::rt_gc_stats_reset();
+  let before = snapshot();
+
+  // Use a registered thread so the write barrier records into a thread-local
+  // remset buffer (drained via `gc::global_remset`).
+  runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::External);
+
+  let mut heap = GcHeap::new();
+  runtime_native::test_util::gc_set_young_range_for_heap(&heap);
+
+  let old = heap.alloc_old(&NODE_DESC);
+  let young = heap.alloc_young(&NODE_DESC);
+  unsafe {
+    (*(old as *mut Node)).next = young;
+    let slot = ptr::addr_of_mut!((*(old as *mut Node)).next) as *mut u8;
+    runtime_native::rt_write_barrier(old, slot);
+  }
+
+  let after_barrier = snapshot();
+
+  let mut remembered = runtime_native::gc::SimpleRememberedSet::new();
+  runtime_native::gc::global_remset::remset_drain_into(&mut remembered);
+  assert!(remembered.contains(old));
+
+  let after_drain = snapshot();
+
+  // Draining the write-barrier buffers into the GC's remembered set should not
+  // double-count remembered-object additions: the barrier already recorded the
+  // 0→1 transition when it set the `REMEMBERED` bit.
+  let d_added_by_barrier =
+    delta_u64(before.remembered_objects_added, after_barrier.remembered_objects_added);
+  let d_added_by_drain =
+    delta_u64(after_barrier.remembered_objects_added, after_drain.remembered_objects_added);
+  assert_eq!(d_added_by_barrier, 1);
+  assert_eq!(d_added_by_drain, 0);
 
   // Avoid leaking the heap's nursery range into other tests (young range is global).
   runtime_native::clear_write_barrier_state_for_tests();

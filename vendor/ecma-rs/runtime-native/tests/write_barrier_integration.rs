@@ -86,3 +86,59 @@ fn write_barrier_feeds_remembered_set_for_minor_gc() {
 
   runtime_native::threading::unregister_current_thread();
 }
+
+#[test]
+fn remembered_entries_flush_when_thread_exits() {
+  let _gc = TestGcGuard::new();
+  runtime_native::clear_write_barrier_state_for_tests();
+
+  // Use a 1-byte "young range" around an arbitrary address so `rt_write_barrier`
+  // sees a young pointer without allocating a full GC heap.
+  let mut young_byte = Box::new(0u8);
+  let young_ptr = (&mut *young_byte) as *mut u8;
+  unsafe {
+    runtime_native::rt_gc_set_young_range(young_ptr, young_ptr.add(1));
+  }
+
+  #[repr(C)]
+  struct DummyObject {
+    header: ObjHeader,
+    field: *mut u8,
+  }
+
+  let mut old = Box::new(DummyObject {
+    // The write barrier only touches atomic metadata and doesn't require a valid
+    // type descriptor.
+    header: unsafe { std::mem::zeroed() },
+    field: young_ptr,
+  });
+
+  let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
+  let slot_ptr = (&mut old.field) as *mut *mut u8 as *mut u8;
+  let obj_addr = obj_ptr as usize;
+  let slot_addr = slot_ptr as usize;
+
+  // Record the old object from a registered thread so the write barrier uses the
+  // per-thread remset buffer. When the thread exits, its TLS registration is
+  // dropped and the buffer must be flushed to the global remset so GC doesn't
+  // miss the edge.
+  std::thread::spawn(move || {
+    runtime_native::threading::register_current_thread(ThreadKind::External);
+    unsafe {
+      runtime_native::rt_write_barrier(obj_addr as *mut u8, slot_addr as *mut u8);
+    }
+    // Intentionally do not call `unregister_current_thread`: dropping TLS on
+    // thread exit must still flush the remset buffer.
+  })
+  .join()
+  .unwrap();
+
+  let mut remembered = SimpleRememberedSet::new();
+  runtime_native::gc::global_remset::remset_drain_into(&mut remembered);
+  assert!(remembered.contains(obj_ptr));
+
+  // Clear while the dummy object is still alive so its header remembered bit is
+  // reset.
+  remembered.clear();
+  assert!(!unsafe { &*(obj_ptr as *const ObjHeader) }.is_remembered());
+}

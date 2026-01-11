@@ -85,17 +85,11 @@ impl GlobalRememberedSet {
       if obj.is_null() {
         continue;
       }
-
-      // The write barrier already set the remembered bit. `SimpleRememberedSet`
-      // only enqueues on the 0→1 transition, so clear first while the world is
-      // stopped.
-      //
-      // SAFETY: entries originate from the write barrier contract (object base
-      // pointers).
-      unsafe {
-        (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
-      }
-      dst.remember(obj);
+      // Entries originate from the write barrier contract (object base pointers)
+      // and already have their `REMEMBERED` bit set. When draining into
+      // `SimpleRememberedSet`, we must enqueue even if the bit is already set,
+      // and we must not double-count stats.
+      dst.remember_from_write_barrier_buffer(obj);
     }
   }
 }
@@ -246,10 +240,8 @@ pub(crate) fn remset_flush_thread_to_global(thread: &registry::ThreadState) {
 pub fn remset_drain_into(dst: &mut SimpleRememberedSet) {
   remembered_set().drain_into(dst);
   registry::for_each_thread(|thread| {
-    thread.remset_drain_raw(|obj| unsafe {
-      (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
-      dst.remember(obj);
-    });
+    thread
+      .remset_drain_raw(|obj| dst.remember_from_write_barrier_buffer(obj));
   });
 }
 
