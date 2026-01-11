@@ -250,4 +250,33 @@ mod tests {
     assert!(sem.effects.contains(EffectSet::ALLOCATES));
     assert!(!sem.effects.contains(EffectSet::UNKNOWN));
   }
+
+  #[test]
+  fn mutation_observer_constructor_is_allocating() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("MutationObserver").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::Allocating);
+    assert!(sem.effects.contains(EffectSet::ALLOCATES));
+  }
+
+  #[test]
+  fn mutation_observer_observe_writes_global() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("MutationObserver.prototype.observe").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::Impure);
+    assert!(sem.effects.contains(EffectSet::WRITES_GLOBAL));
+  }
+
+  #[test]
+  fn resize_observer_take_records_allocates_and_drains_queue() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("ResizeObserver.prototype.takeRecords").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::Impure);
+    assert!(sem.effects.contains(EffectSet::ALLOCATES));
+    assert!(sem.effects.contains(EffectSet::READS_GLOBAL));
+    assert!(sem.effects.contains(EffectSet::WRITES_GLOBAL));
+  }
 }

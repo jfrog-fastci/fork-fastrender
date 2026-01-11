@@ -92,6 +92,13 @@ mod tests {
       "Math.sqrt",
       "Math.floor",
       "fetch",
+      "MutationObserver",
+      "MutationObserver.prototype.observe",
+      "MutationObserver.prototype.takeRecords",
+      "IntersectionObserver",
+      "IntersectionObserver.prototype.takeRecords",
+      "ResizeObserver",
+      "ResizeObserver.prototype.takeRecords",
     ];
 
     for name in required {
