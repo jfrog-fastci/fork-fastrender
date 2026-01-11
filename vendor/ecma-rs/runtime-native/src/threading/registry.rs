@@ -2,7 +2,9 @@ use crate::arch::SafepointContext;
 use crate::gc::global_remset::ThreadRemsetBuffer;
 use crate::safepoint::FrameCursor;
 use crate::gc::shadow_stack::ShadowStack;
+use crate::sync::GcAwareMutex;
 use crate::threading::safepoint;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::AtomicBool;
@@ -11,7 +13,6 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 
@@ -205,48 +206,27 @@ impl ThreadState {
   }
 
   pub fn safepoint_context(&self) -> Option<SafepointContext> {
-    *self
-      .safepoint_context
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
+    *self.safepoint_context.lock()
   }
 
   pub fn safepoint_cursor(&self) -> Option<FrameCursor> {
-    *self
-      .safepoint_cursor
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
+    *self.safepoint_cursor.lock()
   }
 
   pub(crate) fn handle_stack_len(&self) -> usize {
-    self
-      .handle_stack
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .0
-      .len()
+    self.handle_stack.lock().0.len()
   }
 
   pub(crate) fn handle_stack_push(&self, slot: *mut *mut u8) {
-    self
-      .handle_stack
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .0
-      .push(slot);
+    self.handle_stack.lock().0.push(slot);
   }
 
   pub(crate) fn handle_stack_truncate(&self, len: usize) {
-    self
-      .handle_stack
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .0
-      .truncate(len);
+    self.handle_stack.lock().0.truncate(len);
   }
 
   pub(crate) fn handle_stack_pop_debug(&self, expected: *mut *mut u8) {
-    let mut stack = self.handle_stack.lock().unwrap_or_else(|e| e.into_inner());
+    let mut stack = self.handle_stack.lock();
     #[cfg(debug_assertions)]
     {
       let top = stack.0.last().copied();
@@ -260,7 +240,7 @@ impl ThreadState {
   }
 
   pub(crate) fn handle_stack_pop_checked(&self, expected: *mut *mut u8) {
-    let mut stack = self.handle_stack.lock().unwrap_or_else(|e| e.into_inner());
+    let mut stack = self.handle_stack.lock();
     let top = stack.0.last().copied();
     assert_eq!(
       top,
@@ -278,7 +258,6 @@ impl ThreadState {
       let Some(slot) = self
         .handle_stack
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .0
         .get(idx)
         .copied()
@@ -332,14 +311,14 @@ struct ThreadRegistry {
   //   the `Weak` can no longer be upgraded, and we prune the stale entry when iterating.
   //
   // This prevents stop-the-world GC waits from deadlocking on terminated threads.
-  threads: Mutex<HashMap<ThreadId, Weak<ThreadState>>>,
+  threads: GcAwareMutex<HashMap<ThreadId, Weak<ThreadState>>>,
 }
 
 impl ThreadRegistry {
   fn new() -> Self {
     Self {
       next_id: AtomicU64::new(1),
-      threads: Mutex::new(HashMap::new()),
+      threads: GcAwareMutex::new(HashMap::new()),
     }
   }
 
@@ -386,7 +365,7 @@ impl ThreadRegistry {
     });
 
     {
-      let mut threads = self.threads.lock().unwrap_or_else(|e| e.into_inner());
+      let mut threads = self.threads.lock();
       threads.insert(id, Arc::downgrade(&state));
     }
 
@@ -407,12 +386,12 @@ impl ThreadRegistry {
   }
 
   fn unregister_thread(&self, id: ThreadId) {
-    let mut threads = self.threads.lock().unwrap_or_else(|e| e.into_inner());
+    let mut threads = self.threads.lock();
     threads.remove(&id);
   }
 
   fn all_threads(&self) -> Vec<Arc<ThreadState>> {
-    let mut threads = self.threads.lock().unwrap_or_else(|e| e.into_inner());
+    let mut threads = self.threads.lock();
     let mut out = Vec::with_capacity(threads.len());
     threads.retain(|_, weak| {
       if let Some(state) = weak.upgrade() {
@@ -427,7 +406,7 @@ impl ThreadRegistry {
 
   fn counts(&self) -> ThreadCounts {
     let mut out = ThreadCounts::default();
-    let mut threads = self.threads.lock().unwrap_or_else(|e| e.into_inner());
+    let mut threads = self.threads.lock();
     threads.retain(|_, weak| {
       let Some(state) = weak.upgrade() else {
         return false;
@@ -567,10 +546,7 @@ pub fn all_threads() -> Vec<Arc<ThreadState>> {
 /// The callback is invoked while holding the thread registry lock; it must not call
 /// [`register_current_thread`] / [`unregister_current_thread`].
 pub fn for_each_thread(mut f: impl FnMut(&Arc<ThreadState>)) {
-  let mut threads = registry()
-    .threads
-    .lock()
-    .unwrap_or_else(|e| e.into_inner());
+  let mut threads = registry().threads.lock();
   threads.retain(|_, weak| {
     let Some(state) = weak.upgrade() else {
       return false;
@@ -582,10 +558,7 @@ pub fn for_each_thread(mut f: impl FnMut(&Arc<ThreadState>)) {
 
 /// Like [`for_each_thread`], but allows fallible iteration.
 pub fn try_for_each_thread<E>(mut f: impl FnMut(&Arc<ThreadState>) -> Result<(), E>) -> Result<(), E> {
-  let mut threads = registry()
-    .threads
-    .lock()
-    .unwrap_or_else(|e| e.into_inner());
+  let mut threads = registry().threads.lock();
   let mut err: Option<E> = None;
   threads.retain(|_, weak| {
     let Some(state) = weak.upgrade() else {
@@ -636,10 +609,7 @@ pub fn set_current_thread_safepoint_context(ctx: SafepointContext) {
     return;
   };
 
-  *state
-    .safepoint_context
-    .lock()
-    .unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+  *state.safepoint_context.lock() = Some(ctx);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -648,10 +618,7 @@ pub(crate) fn set_current_thread_safepoint_cursor(cursor: FrameCursor) {
     return;
   };
 
-  *state
-    .safepoint_cursor
-    .lock()
-    .unwrap_or_else(|e| e.into_inner()) = Some(cursor);
+  *state.safepoint_cursor.lock() = Some(cursor);
 }
 
 #[cfg(target_os = "macos")]
