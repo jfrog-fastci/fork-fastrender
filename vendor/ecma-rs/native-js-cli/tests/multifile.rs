@@ -716,3 +716,26 @@ fn type_only_reexport_does_not_execute_module() {
     .success()
     .stdout(predicate::eq("main\n"));
 }
+
+#[test]
+fn type_only_export_all_reexport_does_not_execute_module() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&dep, "export type T = number;\nconsole.log(\"dep\");\n").unwrap();
+  fs::write(
+    &main,
+    "export type * from './dep';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("main\n"));
+}

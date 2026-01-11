@@ -1490,6 +1490,37 @@ export function main(): number { print(3); return 0; }
 }
 
 #[test]
+fn type_only_export_all_reexport_does_not_execute_module() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"export type T = number;
+print(42);
+"#,
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"export type * from "./dep";
+export function main(): number { return 0; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq(""));
+}
+
+#[test]
 fn type_only_reexport_does_not_execute_module() {
   let tmp = TempDir::new().unwrap();
 
