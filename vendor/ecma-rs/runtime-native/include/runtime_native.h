@@ -150,6 +150,12 @@ extern _Atomic uint64_t RT_GC_EPOCH;
 extern uint64_t RT_GC_EPOCH;
 #endif
 
+// Convenience wrapper around `RT_GC_EPOCH` for code generators that prefer a
+// leaf function call over inlining the load+test sequence.
+//
+// Returns true if `RT_GC_EPOCH` is odd (stop-the-world requested).
+bool rt_gc_poll(void);
+
 void rt_gc_safepoint(void);
 // Safepoint slow path entered only when `RT_GC_EPOCH` is odd (stop-the-world requested).
 // Callers should pass the observed odd epoch value.

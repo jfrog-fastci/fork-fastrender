@@ -443,6 +443,7 @@ mod tests {
       "uint8_t* rt_alloc_pinned(size_t size, RtShapeId shape);",
       "uint8_t* rt_alloc_array(size_t len, size_t elem_size);",
       "void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);",
+      "bool rt_gc_poll(void);",
       "void rt_gc_safepoint(void);",
       "void rt_gc_safepoint_slow(uint64_t epoch);",
       "bool rt_gc_poll(void);",
@@ -507,6 +508,7 @@ mod tests {
     let _alloc_array: extern "C" fn(usize, usize) -> *mut u8 = rt_alloc_array;
     let _register_shape_table: unsafe extern "C" fn(*const abi::RtShapeDescriptor, usize) =
       crate::shape_table::rt_register_shape_table;
+    let _gc_poll: extern "C" fn() -> bool = rt_gc_poll;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _slow: unsafe extern "C" fn(u64) = rt_gc_safepoint_slow;
     let _gc_poll: extern "C" fn() -> bool = rt_gc_poll;
@@ -561,6 +563,7 @@ mod tests {
       _alloc_pinned,
       _alloc_array,
       _register_shape_table,
+      _gc_poll,
       _safepoint,
       _slow,
       _gc_poll,

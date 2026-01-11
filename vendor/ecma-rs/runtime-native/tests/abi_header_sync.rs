@@ -12,6 +12,7 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_gc_unpin(",
     "rt_gc_set_young_range(",
     "rt_gc_get_young_range(",
+    "rt_gc_poll(",
     "rt_thread_init(",
     "rt_thread_deinit(",
     "rt_register_current_thread(",
@@ -48,6 +49,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _unregister_current: extern "C" fn() = runtime_native::rt_unregister_current_thread;
 
   // GC write barrier entrypoints.
+  let _gc_poll: extern "C" fn() -> bool = runtime_native::rt_gc_poll;
   let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = runtime_native::rt_write_barrier;
   let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) =
     runtime_native::rt_write_barrier_range;
@@ -71,6 +73,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _thread_deinit,
     _register_current,
     _unregister_current,
+    _gc_poll,
     _write_barrier,
     _write_barrier_range,
     _register_root_slot,
