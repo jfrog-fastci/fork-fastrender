@@ -12,23 +12,39 @@ die() {
   exit 1
 }
 
-need_cmd() {
-  local cmd="$1"
-  command -v "$cmd" >/dev/null 2>&1 || die "missing required command: $cmd"
+find_llvm_tool() {
+  local name="$1"
+
+  # Prefer versioned binaries when present (Ubuntu packages often provide both).
+  if command -v "${name}-18" >/dev/null 2>&1; then
+    echo "${name}-18"
+    return 0
+  fi
+  if command -v "${name}" >/dev/null 2>&1; then
+    echo "${name}"
+    return 0
+  fi
+
+  echo ""
+  return 1
 }
 
-need_cmd llc
-need_cmd llvm-readobj
-need_cmd llvm-objdump
+LLC="$(find_llvm_tool llc)" || true
+LLVM_READOBJ="$(find_llvm_tool llvm-readobj)" || true
+LLVM_OBJDUMP="$(find_llvm_tool llvm-objdump)" || true
+
+[[ -n "${LLC}" ]] || die "llc (LLVM 18) not found in PATH"
+[[ -n "${LLVM_READOBJ}" ]] || die "llvm-readobj (LLVM 18) not found in PATH"
+[[ -n "${LLVM_OBJDUMP}" ]] || die "llvm-objdump (LLVM 18) not found in PATH"
 
 if [[ "$(uname -m)" != "x86_64" ]]; then
   echo "skipping: expected x86_64, got $(uname -m)" >&2
   exit 0
 fi
 
-llc_version_line="$(llc --version | head -n1 || true)"
+llc_version_line="$("${LLC}" --version | head -n1 || true)"
 if [[ "${llc_version_line}" != *"version 18."* ]]; then
-  die "expected LLVM 18.x (llc), got: ${llc_version_line}"
+  die "expected LLVM 18.x (${LLC}), got: ${llc_version_line}"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,7 +57,10 @@ IR_B="${FIXTURES_DIR}/gc_statepoint_patch_bytes_16_flags_2.ll"
 [[ -f "${IR_A}" ]] || die "missing fixture: ${IR_A}"
 [[ -f "${IR_B}" ]] || die "missing fixture: ${IR_B}"
 
-tmpdir="$(mktemp -d)"
+# Keep temp files under target/ so we don't dirty the working tree.
+TMP_BASE="${ECMA_RS_DIR}/target"
+mkdir -p "${TMP_BASE}"
+tmpdir="$(mktemp -d "${TMP_BASE}/statepoint-flags-patchbytes.XXXXXX")"
 trap 'rm -rf "${tmpdir}"' EXIT
 
 OBJ_A="${tmpdir}/a.o"
@@ -51,7 +70,7 @@ run_llc() {
   local in="$1"
   local out="$2"
   local err="${tmpdir}/$(basename "${out}").llc.err"
-  if ! llc -O0 -filetype=obj "${in}" -o "${out}" 2>"${err}"; then
+  if ! "${LLC}" -O0 -filetype=obj "${in}" -o "${out}" 2>"${err}"; then
     echo "llc failed for: ${in}" >&2
     cat "${err}" >&2
     exit 1
@@ -61,8 +80,8 @@ run_llc() {
 run_llc "${IR_A}" "${OBJ_A}"
 run_llc "${IR_B}" "${OBJ_B}"
 
-STACKMAP_A="$(llvm-readobj --stackmap "${OBJ_A}")"
-STACKMAP_B="$(llvm-readobj --stackmap "${OBJ_B}")"
+STACKMAP_A="$("${LLVM_READOBJ}" --stackmap "${OBJ_A}")"
+STACKMAP_B="$("${LLVM_READOBJ}" --stackmap "${OBJ_B}")"
 
 extract_instruction_offset() {
   local stackmap="$1"
@@ -110,15 +129,15 @@ if (( DELTA < MIN_DELTA )); then
   die "expected fixture B instruction offset to increase by at least ${MIN_DELTA}; got delta=${DELTA} (A=${OFF_A}, B=${OFF_B})"
 fi
 
-DIS_A="$(llvm-objdump -d "${OBJ_A}")"
-DIS_B="$(llvm-objdump -d "${OBJ_B}")"
+DIS_A="$("${LLVM_OBJDUMP}" -d "${OBJ_A}")"
+DIS_B="$("${LLVM_OBJDUMP}" -d "${OBJ_B}")"
 
-if ! grep -Eq '\bcallq\b' <<<"${DIS_A}"; then
+if ! grep -Eq '[[:space:]]call' <<<"${DIS_A}"; then
   echo "${DIS_A}" >&2
   die "expected fixture A to contain a direct call at the statepoint site (patch_bytes=0)"
 fi
 
-if grep -Eq '\bcallq\b' <<<"${DIS_B}"; then
+if grep -Eq '[[:space:]]call' <<<"${DIS_B}"; then
   echo "${DIS_B}" >&2
   die "expected fixture B to contain no direct call at the statepoint site (patch_bytes>0 should emit a NOP sled on x86_64)"
 fi
@@ -149,9 +168,9 @@ EOF
 
 INVALID_OBJ="${tmpdir}/invalid_flags.o"
 INVALID_ERR="${tmpdir}/invalid_flags.llc.err"
-if llc -O0 -filetype=obj "${INVALID_FLAGS_IR}" -o "${INVALID_OBJ}" 2>"${INVALID_ERR}"; then
+if "${LLC}" -O0 -filetype=obj "${INVALID_FLAGS_IR}" -o "${INVALID_OBJ}" 2>"${INVALID_ERR}"; then
   echo "unexpectedly accepted flags=4; expected LLVM 18 verifier to reject unknown bits" >&2
-  llvm-readobj --stackmap "${INVALID_OBJ}" >&2 || true
+  "${LLVM_READOBJ}" --stackmap "${INVALID_OBJ}" >&2 || true
   die "flags validation changed (expected flags >= 4 to be rejected on LLVM 18)"
 fi
 if ! grep -Eq 'unknown flag used' "${INVALID_ERR}"; then

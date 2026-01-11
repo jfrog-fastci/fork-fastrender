@@ -6,6 +6,10 @@ The automated check is:
 
 - `vendor/ecma-rs/scripts/test_stackmap_abi.sh`
 - Fixture IR: `vendor/ecma-rs/fixtures/llvm_stackmap_abi/statepoint.ll`
+- `vendor/ecma-rs/scripts/test_statepoint_flags_patchbytes.sh`
+- Fixture IR:
+  - `vendor/ecma-rs/fixtures/llvm_stackmap_abi/gc_statepoint_patch_bytes_0_flags_0.ll`
+  - `vendor/ecma-rs/fixtures/llvm_stackmap_abi/gc_statepoint_patch_bytes_16_flags_2.ll`
 
 ## Correct LLVM 18 textual IR shape
 
@@ -57,14 +61,34 @@ In our pipeline we use a dedicated GC address space; the fixture demonstrates th
 - a GC pointer can be represented as `ptr addrspace(1)`
 - `gc.relocate` must return the **same GC pointer type**, so the intrinsic must be the matching overload (e.g. `@llvm.experimental.gc.relocate.p1` returning `ptr addrspace(1)`).
 
-## StackMap record key: return address (next instruction after call)
+## StackMap record key: return address (next instruction)
 
 Empirically on LLVM 18.1.3, each `gc.statepoint` produces a stackmap record keyed by the **return address**:
 
 - `llvm-readobj --stackmap` reports an `instruction offset`
-- that offset corresponds to the **next instruction after the call** (i.e. the address the CPU would return to)
+- that offset corresponds to the **next instruction** (i.e. the address the CPU would return to)
 
 This is the lookup key used by stack walkers that match frames via their return PCs.
+
+Important nuance: `gc.statepoint` supports **patchable call sites** via the `patch_bytes` argument.
+When `patch_bytes > 0` on x86_64, LLVM 18 emits a NOP sled instead of an actual call instruction, and the stackmap instruction offset points to the end of that reserved region (the "return address" if/when a call is patched in).
+
+## `gc.statepoint`: `flags` is a 2-bit mask on LLVM 18
+
+`gc.statepoint` takes a `flags` immarg as its 5th argument.
+
+On LLVM 18.x, the IR verifier only accepts `flags` values in the range **0..3** (bits 0 and 1).
+Any value with bit 2 set (e.g. `flags = 4`) is rejected as an unknown flag.
+
+Project default: use `flags = 0` unless a specific flag is required.
+
+## `gc.statepoint`: `patch_bytes > 0` reserves a patchable region (x86_64)
+
+`patch_bytes` is the 2nd argument to `gc.statepoint`.
+
+- `patch_bytes = 0`: LLVM emits a normal call instruction.
+- `patch_bytes > 0`: LLVM reserves a patchable region at the statepoint site.
+  On x86_64 (LLVM 18.1.3), this becomes a NOP sled and shifts the stackmap instruction offset forward accordingly.
 
 ## Stack slot base register: caller-frame SP
 
@@ -78,4 +102,3 @@ Our regression test asserts we see at least one `Indirect [SP + ...]` / `Indirec
 ## StackMap register numbers are DWARF register numbers
 
 All register identifiers printed in stackmap records (e.g. `R#7`, `R#31`) are DWARF register numbers for the target, not LLVM’s internal register IDs.
-
