@@ -23,7 +23,7 @@ lodash.map:
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: true
+    preserves_order: "true"
 
 lodash.filter:
   aliases: [_.filter]
@@ -42,7 +42,7 @@ lodash.filter:
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: true
+    preserves_order: "true"
 
 lodash.reduce:
   aliases: [_.reduce]
@@ -68,7 +68,7 @@ lodash.cloneDeep:
   since: "v0.1.0"
   purity:
     # Pure-ish: does not intentionally mutate inputs, but allocates.
-    template: allocating
+    template: pure
   throws: maybe
   effects:
     template: pure
@@ -79,7 +79,7 @@ lodash.cloneDeep:
     nondeterministic: false
   properties:
     kind: cloning
-    does_not_mutate_inputs: true
+    does_not_mutate_inputs: "true"
 
 lodash.merge:
   aliases: [_.merge]
@@ -98,8 +98,8 @@ lodash.merge:
     nondeterministic: false
   properties:
     kind: object_mutation
-    mutates_argument: 0
-    returns_argument: 0
+    mutates_argument: "0"
+    returns_argument: "0"
 
 lodash.debounce:
   aliases: [_.debounce]
@@ -117,7 +117,7 @@ lodash.debounce:
     nondeterministic: true
   properties:
     kind: timing
-    timer_based: true
+    timer_based: "true"
     returns: function
 
 lodash.throttle:
@@ -136,7 +136,7 @@ lodash.throttle:
     nondeterministic: true
   properties:
     kind: timing
-    timer_based: true
+    timer_based: "true"
     returns: function
 
 lodash.memoize:
@@ -155,5 +155,5 @@ lodash.memoize:
     nondeterministic: false
   properties:
     kind: caching
-    stateful_cache: true
+    stateful_cache: "true"
     returns: function

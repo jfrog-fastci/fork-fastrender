@@ -9,7 +9,7 @@ rxjs.Observable:
   semantics: ObservableConstructor
   since: "v0.1.0"
   purity:
-    template: allocating
+    template: pure
   throws: maybe
   effects:
     template: pure
@@ -20,15 +20,15 @@ rxjs.Observable:
     nondeterministic: false
   properties:
     kind: observable
-    lazy: true
-    subscribe_function_argument: 0
+    lazy: "true"
+    subscribe_function_argument: "0"
 
 rxjs.of:
   aliases: []
   semantics: ObservableOf
   since: "v0.1.0"
   purity:
-    template: allocating
+    template: pure
   throws: maybe
   effects:
     template: pure
@@ -39,14 +39,14 @@ rxjs.of:
     nondeterministic: false
   properties:
     kind: observable_creation
-    lazy: true
+    lazy: "true"
 
 rxjs.from:
   aliases: []
   semantics: ObservableFrom
   since: "v0.1.0"
   purity:
-    template: allocating
+    template: pure
   throws: maybe
   effects:
     template: pure
@@ -57,7 +57,7 @@ rxjs.from:
     nondeterministic: true
   properties:
     kind: observable_creation
-    lazy: true
+    lazy: "true"
     nondeterministic_if: input_is_promise_or_async_iterable
 
 rxjs.merge:
@@ -65,7 +65,7 @@ rxjs.merge:
   semantics: ObservableMerge
   since: "v0.1.0"
   purity:
-    template: allocating
+    template: pure
   throws: maybe
   effects:
     template: pure
@@ -76,15 +76,15 @@ rxjs.merge:
     nondeterministic: true
   properties:
     kind: observable_combinator
-    lazy: true
-    interleaves_sources: true
+    lazy: "true"
+    interleaves_sources: "true"
 
 rxjs.combineLatest:
   aliases: []
   semantics: ObservableCombineLatest
   since: "v0.1.0"
   purity:
-    template: allocating
+    template: pure
   throws: maybe
   effects:
     template: pure
@@ -95,8 +95,8 @@ rxjs.combineLatest:
     nondeterministic: true
   properties:
     kind: observable_combinator
-    lazy: true
-    depends_on_scheduling: true
+    lazy: "true"
+    depends_on_scheduling: "true"
 
 rxjs.operators.map:
   aliases: []
@@ -151,7 +151,7 @@ rxjs.operators.mergeMap:
   properties:
     kind: operator
     operator_type: flattening
-    concurrency: true
+    concurrency: "true"
 
 rxjs.operators.switchMap:
   aliases: []
@@ -170,7 +170,7 @@ rxjs.operators.switchMap:
   properties:
     kind: operator
     operator_type: flattening
-    cancels_previous_inner: true
+    cancels_previous_inner: "true"
 
 rxjs.operators.tap:
   aliases: []
@@ -213,7 +213,7 @@ rxjs.operators.take:
   semantics: Take
   since: "v0.1.0"
   purity:
-    template: allocating
+    template: pure
   throws: maybe
   effects:
     template: pure
@@ -243,4 +243,4 @@ rxjs.operators.debounceTime:
   properties:
     kind: operator
     operator_type: timing
-    timer_based: true
+    timer_based: "true"
