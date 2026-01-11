@@ -64,6 +64,7 @@ fn spawn_vs_deferred_spawn_immediacy_native() {
     header: Coroutine {
       vtable: &COUNTER_VTABLE,
       promise: null_mut(),
+      next_waiter: null_mut(),
       flags: 0,
     },
     counter: &counter,
@@ -79,6 +80,7 @@ fn spawn_vs_deferred_spawn_immediacy_native() {
     header: Coroutine {
       vtable: &COUNTER_VTABLE,
       promise: null_mut(),
+      next_waiter: null_mut(),
       flags: 0,
     },
     counter: &counter,
@@ -150,6 +152,7 @@ fn deferred_spawn_registers_waiter_when_polled_native() {
     header: Coroutine {
       vtable: &YIELD_ONCE_VTABLE,
       promise: null_mut(),
+      next_waiter: null_mut(),
       flags: 0,
     },
     state: 0,
@@ -177,4 +180,3 @@ fn deferred_spawn_registers_waiter_when_polled_native() {
   while runtime_native::rt_async_poll() {}
   assert!(completed);
 }
-
