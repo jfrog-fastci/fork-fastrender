@@ -332,10 +332,7 @@ extern "C" fn spawn_blocking_reject_resume(coro: *mut RtCoroutineHeader) -> RtCo
         assert_eq!((*coro).header.await_is_error, 1);
         assert_eq!((*coro).header.await_error as usize, 0xDEAD_BEEF);
         *(*coro).completed = true;
-        runtime_native::rt_promise_resolve_legacy(
-          (*coro).header.promise,
-          core::ptr::null_mut::<core::ffi::c_void>(),
-        );
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -360,6 +357,7 @@ fn coroutine_can_await_spawn_blocking_rejection() {
     completed: &mut completed,
     awaited: PromiseRef::null(),
   });
+
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(!completed);
 

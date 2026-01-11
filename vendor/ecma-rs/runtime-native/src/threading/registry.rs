@@ -446,7 +446,8 @@ pub fn set_current_thread_parked(parked: bool) {
 }
 
 /// Update the current thread's observed safepoint epoch.
-pub(crate) fn set_current_thread_safepoint_epoch_observed(epoch: u64) {
+#[doc(hidden)]
+pub fn set_current_thread_safepoint_epoch_observed(epoch: u64) {
   TLS_THREAD_REGISTRATION.with(|cell| {
     if let Some(reg) = cell.borrow().as_ref() {
       reg
@@ -457,7 +458,8 @@ pub(crate) fn set_current_thread_safepoint_epoch_observed(epoch: u64) {
   });
 }
 
-pub(crate) fn set_current_thread_safepoint_context(ctx: SafepointContext) {
+#[doc(hidden)]
+pub fn set_current_thread_safepoint_context(ctx: SafepointContext) {
   let Some(state) = current_thread_state() else {
     return;
   };

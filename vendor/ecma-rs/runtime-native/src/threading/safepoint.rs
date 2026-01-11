@@ -865,6 +865,20 @@ pub fn for_each_reloc_pair_world_stopped(
 /// Panics if `stop_epoch` is not an odd (stop-the-world) epoch.
 pub fn for_each_root_slot_world_stopped(
   stop_epoch: u64,
+  f: impl FnMut(*mut *mut u8),
+) -> Result<(), crate::WalkError> {
+  for_each_root_slot_world_stopped_with_stackmaps(stop_epoch, stackmaps_for_self(), f)
+}
+
+/// Like [`for_each_root_slot_world_stopped`], but uses the provided `stackmaps` blob instead of
+/// loading `.llvm_stackmaps` from the current binary.
+///
+/// This exists to keep tests deterministic: integration tests are built as standalone binaries and
+/// do not necessarily contain stackmap metadata.
+#[doc(hidden)]
+pub fn for_each_root_slot_world_stopped_with_stackmaps(
+  stop_epoch: u64,
+  stackmaps: Option<&crate::StackMaps>,
   mut f: impl FnMut(*mut *mut u8),
 ) -> Result<(), crate::WalkError> {
   assert_eq!(
@@ -883,21 +897,37 @@ pub fn for_each_root_slot_world_stopped(
   crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| f(slot));
 
   // 4) Stack roots from stackmaps.
-  let Some(stackmaps) = stackmaps_for_self() else {
+  let Some(stackmaps) = stackmaps else {
     return Ok(());
   };
 
+  let coordinator_id = registry::current_thread_id();
   registry::try_for_each_thread(|thread| -> Result<(), crate::WalkError> {
+    if thread.is_detached() {
+      return Ok(());
+    }
     if thread.is_parked() {
+      return Ok(());
+    }
+
+    let is_coordinator = Some(thread.id()) == coordinator_id;
+    if is_coordinator && thread.is_native_safe() {
       return Ok(());
     }
     if !thread.is_native_safe() && thread.safepoint_epoch_observed() != stop_epoch {
       return Ok(());
     }
 
-    let ctx = thread
-      .safepoint_context()
-      .expect("thread eligible for stack root enumeration must have a published safepoint context");
+    let ctx = if is_coordinator {
+      let Some(ctx) = thread.safepoint_context() else {
+        return Ok(());
+      };
+      ctx
+    } else {
+      thread
+        .safepoint_context()
+        .expect("thread eligible for stack root enumeration must have a published safepoint context")
+    };
 
     let stack_bounds = thread
       .stack_bounds()

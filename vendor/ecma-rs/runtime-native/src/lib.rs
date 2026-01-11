@@ -539,8 +539,8 @@ mod tests {
     }
     let _deinit = Deinit { was_registered };
 
-    // Safety: the symbol is exported by this crate. When no stop-the-world GC is
-    // requested, the fast path returns immediately.
+    // Safety: the symbol is exported by this crate and is safe to call. When no
+    // stop-the-world GC is requested, the fast path returns immediately.
     unsafe {
       gc_safepoint_poll();
     }
