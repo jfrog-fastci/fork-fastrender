@@ -239,9 +239,9 @@ pub type TaskDropFn = extern "C" fn(*mut u8);
 // Thread registry integration
 // -----------------------------------------------------------------------------
 //
-// The async runtime is conceptually single-threaded (JS ordering). The first thread to drive the
-// event loop (e.g. via `rt_async_poll` / `rt_async_wait`) becomes the event-loop thread and is
-// registered as `ThreadKind::Main` so the GC can stop/scan it.
+// The async runtime is conceptually single-threaded (JS ordering). The first thread to enter the
+// JS-shaped runtime as a consumer (e.g. `rt_async_spawn`, `rt_async_poll`, `rt_async_wait`) becomes
+// the event-loop thread and is registered as `ThreadKind::Main` so the GC can stop/scan it.
 //
 // Other threads may still enter the async runtime (multi-producer). They are registered as
 // `ThreadKind::External`. Driving entrypoints are single-driver: concurrent driving from another
