@@ -53,9 +53,19 @@ unsafe extern "C" fn sigill_handler(_sig: libc::c_int, _info: *mut libc::siginfo
 
   let uc = uctx as *mut libc::ucontext_t;
   let mut ctx = ThreadContext::from_ucontext(uc);
-  let ip = ctx.get_dwarf_reg_u64(DWARF_REG_IP).unwrap();
+  let pc = ctx.get_dwarf_reg_u64(DWARF_REG_IP).unwrap();
 
-  let callsite = stackmaps.lookup(ip).expect("callsite record for SIGILL PC");
+  // LLVM's stackmap record for `llvm.experimental.stackmap` is emitted at the
+  // following instruction (here: `ud2`, i.e. `llvm.trap`).
+  //
+  // Linux is expected to report the PC at the trapping instruction, but some
+  // environments may report the PC *after* it. Be robust by checking PC and
+  // PC-2.
+  let (trap_pc, callsite) = stackmaps
+    .lookup(pc)
+    .map(|c| (pc, c))
+    .or_else(|| pc.checked_sub(2).and_then(|p| stackmaps.lookup(p).map(|c| (p, c))))
+    .expect("callsite record for SIGILL PC");
   assert_eq!(
     callsite.record.locations.len(),
     1,
@@ -80,7 +90,7 @@ unsafe extern "C" fn sigill_handler(_sig: libc::c_int, _info: *mut libc::siginfo
 
   // Skip the `ud2` instruction emitted by `llvm.trap` so execution resumes.
   ctx
-    .set_dwarf_reg_u64(DWARF_REG_IP, ip + 2)
+    .set_dwarf_reg_u64(DWARF_REG_IP, trap_pc + 2)
     .expect("set RIP");
   ctx.write_to_ucontext(uc);
 
