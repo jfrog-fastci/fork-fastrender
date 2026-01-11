@@ -701,7 +701,7 @@ it into the executable text PT_LOAD, producing an **RWX** segment. The repo's
 ### Default (non-PIE): debug (no section GC)
 
 ```bash
-clang-18 -fuse-ld=lld -no-pie \
+clang-18 -fuse-ld=lld-18 -no-pie \
   -Wl,--script=runtime-native/link/stackmaps.ld \
   -o app_debug \
   main.o codegen.o
@@ -710,7 +710,7 @@ clang-18 -fuse-ld=lld -no-pie \
 ### Default (non-PIE): release (`--gc-sections`)
 
 ```bash
-clang-18 -fuse-ld=lld -no-pie \
+clang-18 -fuse-ld=lld-18 -no-pie \
   -Wl,--gc-sections \
   -Wl,--script=runtime-native/link/stackmaps.ld \
   -o app_release \
@@ -726,7 +726,7 @@ llvm-objcopy-18 \
   --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
   codegen.o
 
-clang-18 -fuse-ld=lld -pie \
+clang-18 -fuse-ld=lld-18 -pie \
   -Wl,--script=runtime-native/link/stackmaps.ld \
   -o app_debug \
   main.o codegen.o
@@ -740,7 +740,7 @@ llvm-objcopy-18 \
   --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
   codegen.o
 
-clang-18 -fuse-ld=lld -pie \
+clang-18 -fuse-ld=lld-18 -pie \
   -Wl,--gc-sections \
   -Wl,--script=runtime-native/link/stackmaps.ld \
   -o app_release \
