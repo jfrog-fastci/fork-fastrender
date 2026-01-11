@@ -4,6 +4,9 @@ use crate::{FnId, Program};
 use effect_model::{EffectFlags, ThrowBehavior};
 use std::collections::BTreeSet;
 
+/// Function-level effect summaries for every function in a [`crate::Program`].
+///
+/// `functions` is index-aligned with `Program::functions` and `FnId`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FnEffectMap {
   pub top_level: EffectSet,
@@ -39,6 +42,11 @@ fn is_pure_consteval_builtin_call(path: &str) -> bool {
   )
 }
 
+/// Classify the local effects of a single IL instruction.
+///
+/// This excludes interprocedural callee summaries for direct `Arg::Fn` calls;
+/// those are incorporated by [`compute_program_effects`] (function summaries)
+/// and [`annotate_cfg_effects`] (per-instruction metadata).
 pub fn inst_local_effect(inst: &Inst) -> EffectSet {
   let mut effects = EffectSet::default();
 
@@ -49,7 +57,6 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
         effects.summary.throws = ThrowBehavior::Maybe;
       }
     }
-    InstTyp::Return => {}
     InstTyp::Throw => {
       effects.summary.throws = ThrowBehavior::Always;
     }
@@ -86,12 +93,24 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
           // The callee effects are accounted for interprocedurally.
         }
         Arg::Builtin(path) => match path.as_str() {
-          "__optimize_js_array"
-          | "__optimize_js_object"
-          | "__optimize_js_regex"
-          | "__optimize_js_template"
-          | "__optimize_js_tagged_template" => {
+          // Internal lowering helpers that construct literals / perform pure allocations.
+          "__optimize_js_array" | "__optimize_js_object" | "__optimize_js_regex" | "__optimize_js_template" => {
             effects.summary.flags |= EffectFlags::ALLOCATES;
+          }
+          // Tagged templates call the tag function; we conservatively treat them as unknown.
+          "__optimize_js_tagged_template" => {
+            effects.summary.flags |= EffectFlags::ALLOCATES;
+            effects.mark_unknown();
+          }
+          "__optimize_js_in" => {
+            // Property existence checks read heap state and can throw on nullish RHS.
+            effects.reads.insert(EffectLocation::Heap);
+            effects.summary.throws = ThrowBehavior::Maybe;
+          }
+          "__optimize_js_instanceof" => {
+            // `instanceof` can consult `Symbol.hasInstance` and invoke user code.
+            effects.reads.insert(EffectLocation::Heap);
+            effects.mark_unknown();
           }
           "__optimize_js_delete" => {
             effects.writes.insert(EffectLocation::Heap);
@@ -110,7 +129,12 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
         }
       }
     }
-    InstTyp::CondGoto | InstTyp::Un | InstTyp::VarAssign | InstTyp::Phi | InstTyp::_Label => {}
+    InstTyp::CondGoto
+    | InstTyp::Return
+    | InstTyp::Un
+    | InstTyp::VarAssign
+    | InstTyp::Phi
+    | InstTyp::_Label => {}
     // These should not exist after CFG construction but are treated as no-ops for analysis.
     InstTyp::_Goto | InstTyp::_Dummy => {}
   }
@@ -136,7 +160,7 @@ fn inst_total_effect(inst: &Inst, fn_summaries: &FnEffectMap) -> EffectSet {
 }
 
 fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
-  let mut labels = cfg.graph.labels().collect::<Vec<_>>();
+  let mut labels = cfg.bblocks.all().map(|(label, _)| label).collect::<Vec<_>>();
   labels.sort_unstable();
   labels
 }
@@ -166,6 +190,10 @@ fn cfg_direct_calls(cfg: &Cfg) -> BTreeSet<FnId> {
   callees
 }
 
+/// Whole-program effect analysis over the current IL.
+///
+/// This computes a fixpoint of function summaries so that direct `Arg::Fn`
+/// calls incorporate callee summaries (including recursion/cycles).
 pub fn compute_program_effects(program: &Program) -> FnEffectMap {
   let locals = FnEffectMap {
     top_level: cfg_local_effects(&program.top_level.body),
@@ -177,7 +205,11 @@ pub fn compute_program_effects(program: &Program) -> FnEffectMap {
   };
 
   let top_level_calls = cfg_direct_calls(&program.top_level.body);
-  let function_calls: Vec<_> = program.functions.iter().map(|f| cfg_direct_calls(&f.body)).collect();
+  let function_calls: Vec<_> = program
+    .functions
+    .iter()
+    .map(|f| cfg_direct_calls(&f.body))
+    .collect();
 
   // Start with purely local effects; iteratively fold in callee summaries until a fixpoint.
   let mut summaries = locals.clone();
@@ -221,6 +253,10 @@ pub fn compute_program_effects(program: &Program) -> FnEffectMap {
   summaries
 }
 
+/// Write per-instruction effects into [`crate::il::inst::InstMeta`].
+///
+/// This is intended to run on the finalized CFG (after `build_program_function`)
+/// and does not attempt to preserve metadata through subsequent opt passes.
 pub fn annotate_cfg_effects(cfg: &mut Cfg, fn_summaries: &FnEffectMap) {
   for label in cfg_labels_sorted(cfg) {
     for inst in cfg.bblocks.get_mut(label) {
@@ -262,6 +298,35 @@ mod tests {
   }
 
   #[test]
+  fn var_assign_is_pure() {
+    let inst = Inst::var_assign(0, Arg::Var(1));
+    let eff = inst_local_effect(&inst);
+    assert!(eff.is_pure());
+  }
+
+  #[test]
+  fn prop_assign_writes_heap_and_may_throw() {
+    let inst = Inst::prop_assign(
+      Arg::Var(0),
+      Arg::Const(Const::Str("k".to_string())),
+      Arg::Var(1),
+    );
+    let eff = inst_local_effect(&inst);
+    assert!(eff.writes.contains(&EffectLocation::Heap));
+    assert_eq!(eff.summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
+  fn unknown_load_reads_global_and_may_throw() {
+    let inst = Inst::unknown_load(0, "mystery".to_string());
+    let eff = inst_local_effect(&inst);
+    assert!(eff
+      .reads
+      .contains(&EffectLocation::Unknown("mystery".to_string())));
+    assert_eq!(eff.summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
   fn foreign_load_store_are_classified() {
     let sym = SymbolId(1);
 
@@ -287,7 +352,6 @@ mod tests {
       "__optimize_js_object",
       "__optimize_js_regex",
       "__optimize_js_template",
-      "__optimize_js_tagged_template",
     ] {
       let call = Inst::call(
         0,
@@ -312,6 +376,21 @@ mod tests {
       assert!(eff.reads.is_empty());
       assert!(eff.writes.is_empty());
     }
+  }
+
+  #[test]
+  fn tagged_template_is_unknown() {
+    let call = Inst::call(
+      0,
+      Arg::Builtin("__optimize_js_tagged_template".to_string()),
+      Arg::Const(Const::Undefined),
+      Vec::new(),
+      Vec::new(),
+    );
+    let eff = inst_local_effect(&call);
+    assert!(eff.summary.flags.contains(EffectFlags::ALLOCATES));
+    assert!(eff.unknown);
+    assert_eq!(eff.summary.throws, ThrowBehavior::Maybe);
   }
 
   #[test]
@@ -426,4 +505,4 @@ mod tests {
     let call_effects = &program.functions[1].body.bblocks.get(0)[0].meta.effects;
     assert_eq!(call_effects.summary.throws, ThrowBehavior::Maybe);
   }
-} 
+}

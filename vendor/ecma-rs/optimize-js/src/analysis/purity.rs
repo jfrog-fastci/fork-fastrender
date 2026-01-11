@@ -14,6 +14,10 @@ pub(crate) fn is_default_purity(purity: &Purity) -> bool {
   matches!(purity, Purity::Impure)
 }
 
+pub fn purity_of_effects(effects: &EffectSet) -> Purity {
+  purity_from_effects(effects)
+}
+
 /// Purity summaries for every function in a [`crate::Program`].
 ///
 /// `functions` is index-aligned with `Program::functions` and `FnId`.
@@ -51,20 +55,16 @@ fn purity_from_effects(effects: &EffectSet) -> Purity {
     return Purity::Impure;
   }
 
+  if !effects.summary.flags.is_empty() {
+    // Allocating is only used when allocation is the *only* tracked effect.
+    if effects.summary.flags == EffectFlags::ALLOCATES && effects.reads.is_empty() {
+      return Purity::Allocating;
+    }
+    return Purity::Impure;
+  }
+
   if !effects.reads.is_empty() {
     return Purity::ReadOnly;
-  }
-
-  if effects.summary.flags.contains(EffectFlags::ALLOCATES) {
-    // Allocating is only used when allocation is the *only* tracked effect.
-    if effects.summary.flags != EffectFlags::ALLOCATES {
-      return Purity::Impure;
-    }
-    return Purity::Allocating;
-  }
-
-  if !effects.summary.flags.is_empty() {
-    return Purity::Impure;
   }
 
   Purity::Pure
@@ -108,8 +108,10 @@ fn builtin_callee_purity(path: &str) -> Purity {
     "__optimize_js_array"
     | "__optimize_js_object"
     | "__optimize_js_regex"
-    | "__optimize_js_template"
-    | "__optimize_js_tagged_template" => Purity::Allocating,
+    | "__optimize_js_template" => Purity::Allocating,
+
+    // Helpers that can invoke user code or consult observable state.
+    "__optimize_js_tagged_template" | "__optimize_js_in" | "__optimize_js_instanceof" => Purity::Impure,
 
     _ => Purity::Impure,
   }
@@ -140,10 +142,11 @@ pub fn annotate_cfg_purity(cfg: &mut Cfg, purities: &FnPurityMap) {
 mod tests {
   use super::*;
   use crate::cfg::cfg::{CfgBBlocks, CfgGraph};
-  use crate::il::inst::{Const, Inst};
+  use crate::il::inst::{Const, EffectLocation, EffectSet, Inst};
   use crate::OptimizationStats;
   use crate::ProgramFunction;
   use crate::TopLevelMode;
+  use effect_model::EffectFlags;
 
   fn cfg_with_single_call(callee: Arg) -> Cfg {
     let mut graph = CfgGraph::default();
@@ -202,10 +205,45 @@ mod tests {
   }
 
   #[test]
+  fn tagged_template_call_is_impure() {
+    let mut cfg = cfg_with_single_call(Arg::Builtin("__optimize_js_tagged_template".to_string()));
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
+    assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Impure);
+  }
+
+  #[test]
   fn unknown_call_is_impure() {
     let mut cfg = cfg_with_single_call(Arg::Var(0));
     annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
     assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Impure);
+  }
+
+  #[test]
+  fn purity_of_effects_matches_expected_categories() {
+    let pure = EffectSet::default();
+    assert_eq!(purity_of_effects(&pure), Purity::Pure);
+    assert!(pure.is_pure());
+
+    let mut read_only = EffectSet::default();
+    read_only.reads.insert(EffectLocation::Heap);
+    assert_eq!(purity_of_effects(&read_only), Purity::ReadOnly);
+
+    let mut alloc_only = EffectSet::default();
+    alloc_only.summary.flags = EffectFlags::ALLOCATES;
+    assert_eq!(purity_of_effects(&alloc_only), Purity::Allocating);
+
+    let mut io = EffectSet::default();
+    io.summary.flags = EffectFlags::IO;
+    assert_eq!(purity_of_effects(&io), Purity::Impure);
+
+    let mut throws = EffectSet::default();
+    throws.summary.throws = ThrowBehavior::Maybe;
+    assert_eq!(purity_of_effects(&throws), Purity::Impure);
+
+    let mut alloc_and_read = EffectSet::default();
+    alloc_and_read.summary.flags = EffectFlags::ALLOCATES;
+    alloc_and_read.reads.insert(EffectLocation::Heap);
+    assert_eq!(purity_of_effects(&alloc_and_read), Purity::Impure);
   }
 
   #[test]
