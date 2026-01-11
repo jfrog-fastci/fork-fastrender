@@ -2,8 +2,7 @@ use inkwell::module::Module;
 use inkwell::targets::TargetMachine;
 use llvm_sys::core::{
   LLVMAddFunction, LLVMCountParamTypes, LLVMFunctionType, LLVMGetModuleContext, LLVMGetNamedFunction,
-  LLVMGetReturnType, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsFunctionVarArg,
-  LLVMVoidTypeInContext,
+  LLVMGetReturnType, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsFunctionVarArg, LLVMVoidTypeInContext,
 };
 use llvm_sys::error::{LLVMDisposeErrorMessage, LLVMGetErrorMessage};
 use llvm_sys::transforms::pass_builder::{
@@ -116,9 +115,20 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   };
 
   run_pass_pipeline(module, target_machine, pipeline)?;
-
   super::debug_lint_module_gc_pointer_discipline(module)?;
   Ok(())
+}
+
+/// Backwards-compatible alias for [`place_safepoints_and_rewrite_statepoints_for_gc`].
+///
+/// This matches the original API name used by the initial `place-safepoints`
+/// integration work; keep both so callers can pick whichever naming they prefer.
+#[inline]
+pub fn place_safepoints_and_rewrite_for_gc(
+  module: &Module<'_>,
+  target_machine: &TargetMachine,
+) -> Result<(), PassError> {
+  place_safepoints_and_rewrite_statepoints_for_gc(module, target_machine)
 }
 
 fn run_pass_pipeline(
