@@ -940,6 +940,12 @@ struct EffectsDetailsRaw {
 
   #[serde(default)]
   nondeterministic: Option<bool>,
+
+  #[serde(default)]
+  reads_global: Option<bool>,
+
+  #[serde(default)]
+  writes_global: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -1146,6 +1152,8 @@ fn normalize_effects(
       let mut base_io = false;
       let mut base_network = false;
       let mut base_nondeterministic = false;
+      let mut base_reads_global = false;
+      let mut base_writes_global = false;
       let mut base_may_throw = false;
       let mut base_unknown = false;
       for token in &details.base {
@@ -1154,6 +1162,8 @@ fn normalize_effects(
           "io" => base_io = true,
           "network" => base_network = true,
           "nondeterministic" | "non_deterministic" => base_nondeterministic = true,
+          "reads_global" | "read_global" => base_reads_global = true,
+          "writes_global" | "write_global" => base_writes_global = true,
           "may_throw" | "throws" => base_may_throw = true,
           "unknown" => base_unknown = true,
           // `async` is tracked by the top-level `async` API field, not the effect flags.
@@ -1182,6 +1192,12 @@ fn normalize_effects(
         .unwrap_or(unknown_default || base_nondeterministic)
       {
         flags |= EffectSet::NONDETERMINISTIC;
+      }
+      if details.reads_global.unwrap_or(base_reads_global) {
+        flags |= EffectSet::READS_GLOBAL;
+      }
+      if details.writes_global.unwrap_or(base_writes_global) {
+        flags |= EffectSet::WRITES_GLOBAL;
       }
 
       if unknown_default || base_unknown {
@@ -1711,6 +1727,23 @@ purity: Impure
     assert!(api.effect_summary.flags.contains(EffectSet::IO));
     assert!(!api.effect_summary.flags.contains(EffectSet::MAY_THROW));
     assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
+  fn effects_base_tokens_support_global_effects() {
+    let yaml = r#"
+name: x
+effects:
+  template: pure
+  base: [reads_global, writes_global]
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert!(api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
+    assert!(api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Never);
   }
 
   #[test]

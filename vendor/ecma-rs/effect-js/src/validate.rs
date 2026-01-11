@@ -310,10 +310,10 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       }
     }
 
-    let mut base_effects = EffectSet::empty();
-    if let Some(raw) = api.properties.get("effects.base") {
-      if let Some(arr) = raw.as_array() {
-        for token in arr {
+      let mut base_effects = EffectSet::empty();
+      if let Some(raw) = api.properties.get("effects.base") {
+        if let Some(arr) = raw.as_array() {
+          for token in arr {
           let Some(token) = token.as_str() else {
             errors.push(ValidationError::UnknownEnumString {
               api: api.name.clone(),
@@ -323,16 +323,18 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
             continue;
           };
 
-          match normalize_ident(token).as_str() {
-            "alloc" | "allocates" => base_effects |= EffectSet::ALLOCATES,
-            "io" => base_effects |= EffectSet::IO,
-            "network" => base_effects |= EffectSet::NETWORK,
-            "nondeterministic" | "non_deterministic" => base_effects |= EffectSet::NONDETERMINISTIC,
-            "may_throw" | "throws" => base_effects |= EffectSet::MAY_THROW,
-            "unknown" => base_effects |= EffectSet::UNKNOWN,
-            // Informational-only tags (no effect flags).
-            "async" | "depends_on_callback" | "depends_on_args" => {}
-            other => errors.push(ValidationError::UnknownEnumString {
+            match normalize_ident(token).as_str() {
+              "alloc" | "allocates" => base_effects |= EffectSet::ALLOCATES,
+              "io" => base_effects |= EffectSet::IO,
+              "network" => base_effects |= EffectSet::NETWORK,
+              "nondeterministic" | "non_deterministic" => base_effects |= EffectSet::NONDETERMINISTIC,
+              "reads_global" | "read_global" => base_effects |= EffectSet::READS_GLOBAL,
+              "writes_global" | "write_global" => base_effects |= EffectSet::WRITES_GLOBAL,
+              "may_throw" | "throws" => base_effects |= EffectSet::MAY_THROW,
+              "unknown" => base_effects |= EffectSet::UNKNOWN,
+              // Informational-only tags (no effect flags).
+              "async" | "depends_on_callback" | "depends_on_args" => {}
+              other => errors.push(ValidationError::UnknownEnumString {
               api: api.name.clone(),
               field: "effects.base".to_string(),
               value: other.to_string(),
@@ -350,9 +352,13 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 
     if let Some(raw_kind) = api.properties.get("purity.kind") {
       if let Some(kind) = raw_kind.as_str() {
-        if normalize_ident(kind) == "pure"
-          && base_effects.intersects(EffectSet::IO | EffectSet::NETWORK)
-        {
+        let forbidden = EffectSet::IO
+          | EffectSet::NETWORK
+          | EffectSet::READS_GLOBAL
+          | EffectSet::WRITES_GLOBAL
+          | EffectSet::NONDETERMINISTIC
+          | EffectSet::UNKNOWN;
+        if normalize_ident(kind) == "pure" && base_effects.intersects(forbidden) {
           errors.push(ValidationError::InconsistentPurityEffects {
             api: api.name.clone(),
             purity: PurityTemplate::Pure,
@@ -453,6 +459,23 @@ mod tests {
       e,
       ValidationError::InconsistentPurityEffects { .. }
     )));
+  }
+
+  #[test]
+  fn effects_base_accepts_global_tokens() {
+    let db = ApiDatabase::from_entries([api(
+      "queue.drain",
+      EffectTemplate::Custom(EffectSet::READS_GLOBAL | EffectSet::WRITES_GLOBAL),
+      PurityTemplate::Impure,
+      &[(
+        "effects.base",
+        JsonValue::Array(vec![
+          JsonValue::String("reads_global".to_string()),
+          JsonValue::String("writes_global".to_string()),
+        ]),
+      )],
+    )]);
+    validate(&db).expect("global effects.base tokens are accepted");
   }
 
   #[test]
