@@ -50,6 +50,11 @@ once**. The current milestone runtime does not yet have a per-type finalizer mec
 the GC, so `buffer::ArrayBuffer` exposes an explicit `finalize(_in)` API that a future GC finalizer
 should call.
 
+If finalization runs while the backing store is pinned (in-flight I/O), freeing is **deferred**:
+the `ArrayBuffer` header drops its handle and becomes detached, but the backing store allocation
+remains alive because pin guards keep a strong reference. The actual deallocation happens only when
+the last `BackingStore`/pin guard is dropped.
+
 ## Using buffers for I/O
 
 To obtain a `(ptr, len)` pair for kernel I/O:

@@ -59,6 +59,17 @@ In MVP:
 
 This ensures in-flight pinned buffers cannot be invalidated by detach/transfer/resize.
 
+### 4) GC finalization defers free while pinned
+
+Even if the `ArrayBuffer` header becomes unreachable (and its finalizer runs), the backing store
+must not be freed while it is pinned for in-flight I/O.
+
+In `runtime-native`, the backing store is an independently-owned, reference-counted object:
+
+- the GC finalizer drops the header's `BackingStore` handle (making the buffer detached)
+- each pin guard holds its own strong `BackingStore` handle, keeping the allocation alive
+- the allocation is freed when the last handle is dropped (with `pin_count == 0` asserted at drop)
+
 ## Notes
 
 This backing-store pin-count is distinct from GC pinning:

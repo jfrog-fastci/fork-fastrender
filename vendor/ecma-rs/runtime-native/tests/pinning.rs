@@ -170,8 +170,8 @@ fn finalize_defers_free_until_last_unpin() {
 
   let pinned = buffer.pin().unwrap();
 
-  // Finalization must not free while pinned; it should instead mark the backing store pending and
-  // detach the header.
+  // Finalization must not free while pinned: the header becomes detached, but the backing store
+  // stays alive until the last pin guard is dropped.
   buffer.finalize_in(&alloc);
   assert!(buffer.is_detached());
   assert_eq!(alloc.external_bytes(), 8);

@@ -136,7 +136,11 @@ impl ArrayBuffer {
       BackingStorePinError::OutOfBounds => ArrayBufferError::Range,
     })?;
 
-    Ok(PinnedArrayBuffer { pinned, ptr, len })
+    Ok(PinnedArrayBuffer {
+      _pinned: pinned,
+      ptr,
+      len,
+    })
   }
 
   pub fn slice(&self, start: usize, end: usize) -> Result<Self, ArrayBufferError> {
@@ -267,7 +271,7 @@ impl ArrayBuffer {
 /// buffer cannot be detached/transferred/resized while pinned.
 #[derive(Debug)]
 pub struct PinnedArrayBuffer {
-  pinned: PinnedBackingStore,
+  _pinned: PinnedBackingStore,
   ptr: *mut u8,
   len: usize,
 }
