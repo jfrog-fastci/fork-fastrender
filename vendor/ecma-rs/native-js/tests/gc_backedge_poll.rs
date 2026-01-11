@@ -1,10 +1,12 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::IntPredicate;
 use inkwell::OptimizationLevel;
 use native_js::codegen::safepoint;
 use native_js::llvm::{gc, passes};
+use object::Object;
 use std::collections::{HashMap, HashSet};
+use tempfile::tempdir;
 
 fn block_body(ir: &str, block: &str) -> String {
   let label_prefix = format!("{block}:");
@@ -158,6 +160,21 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
   }
 
   let ir = module.print_to_string().to_string();
+
+  // Stackmaps should be emitted once a statepoint exists in the module.
+  //
+  // NOTE: LLVM codegen may mutate the module (e.g. atomic lowering), so capture the textual IR
+  // *before* emitting the object file.
+  let tmp = tempdir().expect("failed to create tempdir");
+  let obj = tmp.path().join("gc_backedge_poll.o");
+  tm.write_to_file(&module, FileType::Object, &obj)
+    .expect("failed to emit object file");
+  let bytes = std::fs::read(&obj).expect("read emitted object file");
+  let file = object::File::parse(&*bytes).expect("parse emitted object file");
+  assert!(
+    file.section_by_name(".llvm_stackmaps").is_some(),
+    "expected .llvm_stackmaps section in emitted object"
+  );
 
   // Fast-path poll should inline the exported `RT_GC_EPOCH` flag in the backedge
   // block (no call/statepoint on the fast path).
