@@ -8,8 +8,11 @@ mod linux {
   use std::any::Any;
   use std::collections::HashMap;
   use std::collections::VecDeque;
+  use std::ffi::CString;
   use std::io;
+  use std::mem::MaybeUninit;
   use std::os::unix::io::RawFd;
+  use std::path::Path;
   use std::time::Duration;
 
   use io_uring::opcode;
@@ -18,6 +21,17 @@ mod linux {
   use io_uring::IoUring;
 
   use crate::timeout::duration_to_timespec;
+
+  fn cstring_from_path(path: &Path) -> io::Result<CString> {
+    use std::os::unix::ffi::OsStrExt;
+
+    CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+      io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "path contains an interior NUL byte",
+      )
+    })
+  }
 
   #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
   pub struct OpId(u64);
@@ -39,6 +53,21 @@ mod linux {
     Read {
       fd: RawFd,
       buf: Vec<u8>,
+      keep_alive: Option<Box<dyn Any + Send + Sync>>,
+    },
+    OpenAt {
+      dirfd: RawFd,
+      path: CString,
+      flags: i32,
+      mode: u32,
+      keep_alive: Option<Box<dyn Any + Send + Sync>>,
+    },
+    Statx {
+      dirfd: RawFd,
+      path: CString,
+      flags: i32,
+      mask: u32,
+      out: Box<MaybeUninit<libc::statx>>,
       keep_alive: Option<Box<dyn Any + Send + Sync>>,
     },
   }
@@ -64,10 +93,109 @@ mod linux {
       }
     }
 
+    pub fn openat(dirfd: RawFd, path: &Path, flags: i32, mode: u32) -> io::Result<Self> {
+      Ok(Self::OpenAt {
+        dirfd,
+        path: cstring_from_path(path)?,
+        flags,
+        mode,
+        keep_alive: None,
+      })
+    }
+
+    pub fn openat_with_keep_alive(
+      dirfd: RawFd,
+      path: &Path,
+      flags: i32,
+      mode: u32,
+      keep_alive: impl Any + Send + Sync,
+    ) -> io::Result<Self> {
+      Ok(Self::OpenAt {
+        dirfd,
+        path: cstring_from_path(path)?,
+        flags,
+        mode,
+        keep_alive: Some(Box::new(keep_alive)),
+      })
+    }
+
+    pub fn statx(dirfd: RawFd, path: &Path, flags: i32, mask: u32) -> io::Result<Self> {
+      Ok(Self::Statx {
+        dirfd,
+        path: cstring_from_path(path)?,
+        flags,
+        mask,
+        out: Box::new(MaybeUninit::uninit()),
+        keep_alive: None,
+      })
+    }
+
+    pub fn statx_with_keep_alive(
+      dirfd: RawFd,
+      path: &Path,
+      flags: i32,
+      mask: u32,
+      keep_alive: impl Any + Send + Sync,
+    ) -> io::Result<Self> {
+      Ok(Self::Statx {
+        dirfd,
+        path: cstring_from_path(path)?,
+        flags,
+        mask,
+        out: Box::new(MaybeUninit::uninit()),
+        keep_alive: Some(Box::new(keep_alive)),
+      })
+    }
+
+    pub fn into_statx_result(self, res: i32) -> io::Result<libc::statx> {
+      match self {
+        PreparedOp::Statx { out, .. } => {
+          if res == 0 {
+            Ok(unsafe { (*out).assume_init() })
+          } else if res < 0 {
+            Err(io::Error::from_raw_os_error(-res))
+          } else {
+            Err(io::Error::new(
+              io::ErrorKind::Other,
+              "statx returned an unexpected positive result",
+            ))
+          }
+        }
+        _ => Err(io::Error::new(
+          io::ErrorKind::InvalidInput,
+          "not a statx operation",
+        )),
+      }
+    }
+
     fn build_sqe(&mut self) -> squeue::Entry {
       match self {
         PreparedOp::Read { fd, buf, .. } => {
           opcode::Read::new(types::Fd(*fd), buf.as_mut_ptr(), buf.len() as _).build()
+        }
+        PreparedOp::OpenAt {
+          dirfd,
+          path,
+          flags,
+          mode,
+          ..
+        } => opcode::OpenAt::new(types::Fd(*dirfd), path.as_ptr())
+          .flags(*flags)
+          .mode(*mode)
+          .build(),
+        PreparedOp::Statx {
+          dirfd,
+          path,
+          flags,
+          mask,
+          out,
+          ..
+        } => {
+          let out_ptr = out.as_mut().as_mut_ptr() as *mut types::statx;
+          opcode::Statx::new(types::Fd(*dirfd), path.as_ptr(), out_ptr)
+            .flags(*flags)
+            .mask(*mask)
+            .build()
         }
       }
     }
@@ -133,6 +261,14 @@ mod linux {
       self.ring.submit()?;
 
       Ok(op_id)
+    }
+
+    pub fn submit_openat(&mut self, dirfd: RawFd, path: &Path, flags: i32, mode: u32) -> io::Result<OpId> {
+      self.submit(PreparedOp::openat(dirfd, path, flags, mode)?)
+    }
+
+    pub fn submit_statx(&mut self, dirfd: RawFd, path: &Path, flags: i32, mask: u32) -> io::Result<OpId> {
+      self.submit(PreparedOp::statx(dirfd, path, flags, mask)?)
     }
 
     /// Submit `op` with a per-operation timeout.

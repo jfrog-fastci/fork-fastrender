@@ -166,6 +166,7 @@ fn complete_just_before_timeout_race() {
   assert_eq!(target_res, 5);
   match target_op.unwrap() {
     PreparedOp::Read { buf, .. } => assert_eq!(&buf[..5], b"hello"),
+    other => panic!("expected Read op, got: {other:?}"),
   }
   assert_eq!(timeout_res, -libc::ECANCELED);
 }
