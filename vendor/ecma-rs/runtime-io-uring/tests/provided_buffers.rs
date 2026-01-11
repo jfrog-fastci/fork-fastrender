@@ -36,6 +36,17 @@ fn recv_with_buf_select_recycles_buffers() {
         eprintln!("skipping: IORING_OP_PROVIDE_BUFFERS not supported by kernel");
         return;
     }
+    let remove_supported = match runtime_io_uring::is_remove_buffers_supported(&driver) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("skipping: failed to probe io_uring ops: {err}");
+            return;
+        }
+    };
+    if !remove_supported {
+        eprintln!("skipping: IORING_OP_REMOVE_BUFFERS not supported by kernel");
+        return;
+    }
 
     let pool = ProvidedBufPool::new(&driver, 1, 8, 1).unwrap();
 
@@ -223,6 +234,17 @@ fn reprovide_keeps_slab_alive_until_cqe_drained() {
     };
     if !provide_supported {
         eprintln!("skipping: IORING_OP_PROVIDE_BUFFERS not supported by kernel");
+        return;
+    }
+    let remove_supported = match runtime_io_uring::is_remove_buffers_supported(&driver) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("skipping: failed to probe io_uring ops: {err}");
+            return;
+        }
+    };
+    if !remove_supported {
+        eprintln!("skipping: IORING_OP_REMOVE_BUFFERS not supported by kernel");
         return;
     }
 
