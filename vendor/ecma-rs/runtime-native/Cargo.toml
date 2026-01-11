@@ -37,8 +37,8 @@ force_pipe_wake = []
 
 [dependencies]
 ahash = { workspace = true }
-arc-swap = { workspace = true }
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 bitflags = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 crossbeam-deque = { workspace = true }

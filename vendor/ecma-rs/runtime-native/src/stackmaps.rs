@@ -15,6 +15,12 @@
 //!
 //! Format reference: LLVM `StackMaps` / `StackMaps.cpp` (version 3).
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use anyhow::Context;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use object::{Object, ObjectSection};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use std::ffi::CStr;
 use thiserror::Error;
 
 pub const STACKMAP_VERSION: u8 = 3;
@@ -461,10 +467,14 @@ pub struct StackMaps {
 #[derive(Debug, Clone, Copy)]
 pub struct CallsiteEntry {
   pub pc: u64,
+  pub function_address: u64,
   pub stack_size: u64,
   pub stackmap_index: usize,
   pub record_index: usize,
 }
+
+/// Alias to match callers that expect a "registry" name.
+pub type StackMapRegistry = StackMaps;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CallSite<'a> {
@@ -641,6 +651,7 @@ impl StackMaps {
 
           callsites.push(CallsiteEntry {
             pc,
+            function_address: f.address,
             stack_size: f.stack_size,
             stackmap_index,
             record_index,
@@ -739,12 +750,84 @@ impl StackMaps {
   /// them).
   ///
   /// Fallback options (not implemented here):
-  /// - Use `dl_iterate_phdr` to locate the section in the loaded ELF image.
-  /// - Parse `/proc/self/exe` to find `.llvm_stackmaps` on disk and apply relocations.
+  /// - Parse `/proc/self/exe` to find `.llvm_stackmaps` on disk and read it from mapped memory.
   #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
   pub fn parse_from_linker_symbols() -> Result<Self, StackMapError> {
     Self::parse(crate::stackmaps_section())
   }
+
+  /// Load the `.llvm_stackmaps` section for the current process (Linux x86_64).
+  ///
+  /// This is PIE/ASLR-safe because it reads from *mapped memory* (relocations already applied)
+  /// rather than from the on-disk bytes.
+  #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+  pub fn load_self() -> anyhow::Result<Self> {
+    let exe_path =
+      std::fs::read_link("/proc/self/exe").context("readlink /proc/self/exe")?;
+    let exe_bytes = std::fs::read(&exe_path)
+      .with_context(|| format!("read ELF file {}", exe_path.display()))?;
+
+    let elf = object::File::parse(&*exe_bytes).context("parse ELF")?;
+    let section = elf
+      .section_by_name(".llvm_stackmaps")
+      .ok_or_else(|| anyhow::anyhow!("main executable is missing .llvm_stackmaps section"))?;
+
+    let sh_addr = section.address();
+    let sh_size = section.size();
+    let sh_size_usize =
+      usize::try_from(sh_size).context(".llvm_stackmaps section size overflows usize")?;
+
+    let base = main_executable_base_addr().context("find main executable base address")?;
+    let mapped_addr_u64 = (base as u64).checked_add(sh_addr).ok_or_else(|| {
+      anyhow::anyhow!("mapped address overflow (base=0x{base:x} sh_addr=0x{sh_addr:x})")
+    })?;
+    let mapped_addr = usize::try_from(mapped_addr_u64).context("mapped address overflows")?;
+
+    // SAFETY: We trust the ELF metadata for `.llvm_stackmaps` and assume it is mapped as a
+    // readable segment in the current process.
+    let bytes = unsafe { std::slice::from_raw_parts(mapped_addr as *const u8, sh_size_usize) };
+    Ok(Self::parse(bytes).context("parse .llvm_stackmaps")?)
+  }
+
+  #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+  pub fn load_self() -> anyhow::Result<Self> {
+    anyhow::bail!("StackMaps::load_self is only supported on Linux x86_64");
+  }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn main_executable_base_addr() -> anyhow::Result<usize> {
+  unsafe extern "C" fn callback(
+    info: *mut libc::dl_phdr_info,
+    _size: libc::size_t,
+    data: *mut libc::c_void,
+  ) -> libc::c_int {
+    // SAFETY: `dl_iterate_phdr` guarantees `info` is valid for the duration of the callback.
+    let info = unsafe { &*info };
+    let out = unsafe { &mut *(data as *mut Option<usize>) };
+
+    let name = if info.dlpi_name.is_null() {
+      None
+    } else {
+      // SAFETY: `dlpi_name` is a NUL-terminated C string.
+      Some(unsafe { CStr::from_ptr(info.dlpi_name) })
+    };
+
+    // For the main executable, `dlpi_name` is typically an empty string.
+    let is_main = name.map_or(true, |s| s.to_bytes().is_empty());
+    if is_main {
+      *out = Some(info.dlpi_addr as usize);
+      return 1; // stop iterating
+    }
+    0
+  }
+
+  let mut base: Option<usize> = None;
+  let ret = unsafe { libc::dl_iterate_phdr(Some(callback), &mut base as *mut _ as *mut _) };
+  if ret < 0 {
+    anyhow::bail!("dl_iterate_phdr failed");
+  }
+  base.ok_or_else(|| anyhow::anyhow!("dl_iterate_phdr did not report the main executable"))
 }
 
 #[cfg(test)]
