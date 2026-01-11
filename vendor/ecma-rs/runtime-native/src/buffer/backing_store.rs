@@ -218,6 +218,18 @@ impl BackingStore {
     self.inner_nn().is_some_and(|inner| unsafe { inner.as_ref() }.borrow_state.load(Ordering::Acquire) != 0)
   }
 
+  /// Temporarily borrow the backing bytes as an immutable slice.
+  ///
+  /// Note: the callback is generic over the slice lifetime (`for<'a>`). This prevents callers from
+  /// returning the `&[u8]` and holding it beyond the callback, which would allow aliasing across
+  /// in-flight async I/O borrows.
+  ///
+  /// ```compile_fail
+  /// # use runtime_native::ArrayBuffer;
+  /// let buf = ArrayBuffer::new_zeroed(1).unwrap();
+  /// let store = buf.backing_store_handle().unwrap();
+  /// let _leaked: &[u8] = store.try_with_slice(|s| s).unwrap();
+  /// ```
   pub fn try_with_slice<R>(&self, f: impl for<'a> FnOnce(&'a [u8]) -> R) -> Result<R, BorrowError> {
     if self.is_io_borrowed() {
       return Err(BorrowError::Borrowed);
@@ -228,6 +240,20 @@ impl BackingStore {
     Ok(f(slice))
   }
 
+  /// Temporarily borrow the backing bytes as a mutable slice.
+  ///
+  /// Like [`Self::try_with_slice`], the callback is generic over the slice lifetime to prevent
+  /// leaking a `&mut [u8]` beyond the call.
+  ///
+  /// This additionally requires the backing store to be uniquely owned (`ref_count == 1`), since
+  /// creating a `&mut [u8]` while other handles exist would violate Rust aliasing rules.
+  ///
+  /// ```compile_fail
+  /// # use runtime_native::ArrayBuffer;
+  /// let buf = ArrayBuffer::new_zeroed(1).unwrap();
+  /// let mut store = buf.backing_store_handle().unwrap();
+  /// let _leaked: &mut [u8] = store.try_with_slice_mut(|s| s).unwrap();
+  /// ```
   pub fn try_with_slice_mut<R>(
     &mut self,
     f: impl for<'a> FnOnce(&'a mut [u8]) -> R,

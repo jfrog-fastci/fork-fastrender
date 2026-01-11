@@ -160,6 +160,16 @@ impl ArrayBuffer {
     Ok(store.try_borrow_io_write()?)
   }
 
+  /// Temporarily borrow the backing bytes as an immutable slice.
+  ///
+  /// The callback is generic over the slice lifetime (`for<'a>`), so callers cannot return the
+  /// `&[u8]` and hold it beyond the call.
+  ///
+  /// ```compile_fail
+  /// # use runtime_native::ArrayBuffer;
+  /// let buf = ArrayBuffer::new_zeroed(1).unwrap();
+  /// let _leaked: &[u8] = buf.try_with_slice(|s| s).unwrap();
+  /// ```
   pub fn try_with_slice<R>(&self, f: impl for<'a> FnOnce(&'a [u8]) -> R) -> Result<R, ArrayBufferError> {
     let Some(store) = self.backing_store.as_ref() else {
       return Err(ArrayBufferError::Detached);
@@ -167,6 +177,16 @@ impl ArrayBuffer {
     Ok(store.try_with_slice(f)?)
   }
 
+  /// Temporarily borrow the backing bytes as a mutable slice.
+  ///
+  /// Like [`Self::try_with_slice`], the callback is generic over the slice lifetime so the
+  /// `&mut [u8]` cannot escape.
+  ///
+  /// ```compile_fail
+  /// # use runtime_native::ArrayBuffer;
+  /// let mut buf = ArrayBuffer::new_zeroed(1).unwrap();
+  /// let _leaked: &mut [u8] = buf.try_with_slice_mut(|s| s).unwrap();
+  /// ```
   pub fn try_with_slice_mut<R>(
     &mut self,
     f: impl for<'a> FnOnce(&'a mut [u8]) -> R,
