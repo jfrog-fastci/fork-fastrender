@@ -134,6 +134,8 @@ mod flex_negative_padding_calc;
 mod flex_percent_padding_bottom;
 mod flex_row_reverse_percent_flex;
 mod flex_out_of_flow_positioned_descendants;
+mod fixed_flex_auto_height_does_not_use_intrinsic_block_size;
+mod text_wrap_pretty_does_not_rebalance;
 mod flex_positioned_relayout;
 mod flex_replaced_percentage;
 mod flex_replaced_percentage_height_indefinite;

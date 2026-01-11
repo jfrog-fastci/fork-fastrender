@@ -2906,6 +2906,18 @@ impl BlockFormattingContext {
           || original_style.height_keyword.is_some()
           || original_style.min_height_keyword.is_some()
           || original_style.max_height_keyword.is_some();
+        // When `top/bottom/height` are all `auto`, CSS2.1 sizes the abspos box based on its normal
+        // flow height (i.e. content height). In this case, block intrinsic probes (min/max-content)
+        // are unnecessary and can be actively harmful: intrinsic probes run under intrinsic inline
+        // constraints and may not match the final used inline size (e.g. `width: 100%`), leading to
+        // an oversized block-size. That in turn affects `justify-content` in flex containers and
+        // shifts content vertically (e.g. github.com's hero CTA).
+        let skip_block_intrinsics = positioned_style.height.is_auto()
+          && positioned_style.top.is_auto()
+          && positioned_style.bottom.is_auto()
+          && original_style.height_keyword.is_none()
+          && original_style.min_height_keyword.is_none()
+          && original_style.max_height_keyword.is_none();
         let (
           mut child_fragment,
           preferred_min_inline,
@@ -2943,7 +2955,7 @@ impl BlockFormattingContext {
               } else {
                 (None, None)
               };
-              let preferred_min_block = if needs_block_intrinsics {
+              let preferred_min_block = if needs_block_intrinsics && !skip_block_intrinsics {
                 match fc.compute_intrinsic_block_size(&pos_child, IntrinsicSizingMode::MinContent) {
                   Ok(value) => Some(value),
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -2952,7 +2964,7 @@ impl BlockFormattingContext {
               } else {
                 None
               };
-              let preferred_block = if needs_block_intrinsics {
+              let preferred_block = if needs_block_intrinsics && !skip_block_intrinsics {
                 match fc.compute_intrinsic_block_size(&pos_child, IntrinsicSizingMode::MaxContent) {
                   Ok(value) => Some(value),
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -2999,7 +3011,7 @@ impl BlockFormattingContext {
           } else {
             (None, None)
           };
-          let preferred_min_block = if needs_block_intrinsics {
+          let preferred_min_block = if needs_block_intrinsics && !skip_block_intrinsics {
             match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent) {
               Ok(value) => Some(value),
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -3008,7 +3020,7 @@ impl BlockFormattingContext {
           } else {
             None
           };
-          let preferred_block = if needs_block_intrinsics {
+          let preferred_block = if needs_block_intrinsics && !skip_block_intrinsics {
             match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent) {
               Ok(value) => Some(value),
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),

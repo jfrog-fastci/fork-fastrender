@@ -5879,12 +5879,7 @@ impl InlineFormattingContext {
       subsequent_line_width = clamp_limit;
     }
 
-    if start_is_para_start
-      && matches!(
-        text_wrap,
-        TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable
-      )
-    {
+    if start_is_para_start && matches!(text_wrap, TextWrap::Balance | TextWrap::Stable) {
       first_line_width = subsequent_line_width;
     }
     let float_integration = float_ctx.map(InlineFloatIntegration::new);
@@ -10816,10 +10811,7 @@ impl InlineFormattingContext {
     float_base_y: f32,
     line_clamp: Option<usize>,
   ) -> Result<line_builder::LineBuildResult, LayoutError> {
-    let first_width = if matches!(
-      text_wrap,
-      TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable
-    ) {
+    let first_width = if matches!(text_wrap, TextWrap::Balance | TextWrap::Stable) {
       subsequent_line_width
     } else if use_first_line_width {
       first_line_width
@@ -10827,11 +10819,7 @@ impl InlineFormattingContext {
       subsequent_line_width
     };
 
-    let needs_rebalance = use_first_line_width
-      && matches!(
-        text_wrap,
-        TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable
-      );
+    let needs_rebalance = use_first_line_width && matches!(text_wrap, TextWrap::Balance | TextWrap::Stable);
 
     if !needs_rebalance {
       return self.build_lines(
@@ -12768,10 +12756,7 @@ impl InlineFormattingContext {
         );
       }
       if !anchor_ids.is_empty() && !has_flow_content && !has_non_bookkeeping_anchor {
-        let base_width = if matches!(
-          style.text_wrap,
-          TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable
-        ) {
+        let base_width = if matches!(style.text_wrap, TextWrap::Balance | TextWrap::Stable) {
           subsequent_line_width
         } else if *use_first_line_width {
           first_line_width
