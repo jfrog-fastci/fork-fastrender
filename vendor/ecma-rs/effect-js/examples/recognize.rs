@@ -86,13 +86,13 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
     RecognizedPattern::CanonicalCall { call, api } => {
       let api_name = db
         .get_by_id(*api)
-        .map(|sem| sem.name.clone())
-        .unwrap_or_else(|| format!("id: 0x{:x}", api.raw()));
+        .map(|entry| entry.name.as_str())
+        .unwrap_or("<unknown>");
       format!(
         "CanonicalCall(call={}, api={}, {})",
         call.0,
         api_name,
-        format_kb_semantics(db, &api_name)
+        format_kb_semantics(db, api_name)
       )
     }
     RecognizedPattern::MapFilterReduce {
@@ -223,8 +223,8 @@ fn run(
           RecognizedPattern::CanonicalCall { .. } => seen.insert("CanonicalCall"),
           RecognizedPattern::MapFilterReduce { .. } => seen.insert("MapFilterReduce"),
           RecognizedPattern::ArrayChain { .. } => seen.insert("ArrayChain"),
-          RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
           RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
+          RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
           RecognizedPattern::JsonParseTyped { .. } => seen.insert("JsonParseTyped"),
           RecognizedPattern::AsyncIterator { .. } => seen.insert("AsyncIterator"),
           RecognizedPattern::StringTemplate { .. } => seen.insert("StringTemplate"),
@@ -313,8 +313,10 @@ fn main() {
   let db = ApiDatabase::from_embedded().expect("embedded knowledge base loads");
   db.validate().expect("knowledge base validates");
 
-  let types = TypedProgram::from_program(program.clone(), file);
-  run(lowered, &db, |body_id| recognize_patterns_typed(lowered, body_id, &types));
+  let types = TypedProgram::from_program(Arc::clone(&program), file);
+  run(lowered, &db, |body_id| {
+    recognize_patterns_typed(&db, lowered, body_id, &types)
+  });
 }
 
 #[cfg(not(feature = "typed"))]
@@ -324,5 +326,7 @@ fn main() {
   let db = ApiDatabase::from_embedded().expect("embedded knowledge base loads");
   db.validate().expect("knowledge base validates");
 
-  run(&lowered, &db, |body_id| recognize_patterns_best_effort_untyped(&lowered, body_id));
+  run(&lowered, &db, |body_id| {
+    recognize_patterns_best_effort_untyped(&db, &lowered, body_id)
+  });
 }

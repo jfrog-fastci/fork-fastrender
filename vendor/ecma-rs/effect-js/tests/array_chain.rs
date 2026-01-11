@@ -1,7 +1,7 @@
 #![cfg(feature = "typed")]
 
 use effect_js::typed::TypedProgram;
-use effect_js::{recognize_patterns_typed, ArrayChainOp, ArrayTerminal, RecognizedPattern};
+use effect_js::{load_default_api_database, recognize_patterns_typed, ArrayChainOp, ArrayTerminal, RecognizedPattern};
 use hir_js::{ExprId, ExprKind, Literal};
 use std::sync::Arc;
 use typecheck_ts::{FileKey, MemoryHost, Program};
@@ -48,7 +48,8 @@ fn detects_array_chains_typed() {
   let body = lowered.body(root_body).expect("root body exists");
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
-  let patterns = recognize_patterns_typed(&lowered, root_body, &types);
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_typed(&kb, &lowered, root_body, &types);
 
   let array_chains: Vec<_> = patterns
     .iter()

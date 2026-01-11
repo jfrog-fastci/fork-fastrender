@@ -1,10 +1,11 @@
-use effect_js::{recognize_patterns_best_effort_untyped, GuardKind, RecognizedPattern};
+use effect_js::{load_default_api_database, recognize_patterns_best_effort_untyped, GuardKind, RecognizedPattern};
 
 fn recognize(source: &str) -> Vec<RecognizedPattern> {
   let lowered = hir_js::lower_from_source(source).expect("lower source");
+  let kb = load_default_api_database();
   let mut out = Vec::new();
   for (body_id, _) in lowered.body_index.iter() {
-    out.extend(recognize_patterns_best_effort_untyped(&lowered, *body_id));
+    out.extend(recognize_patterns_best_effort_untyped(&kb, &lowered, *body_id));
   }
   out
 }

@@ -634,27 +634,12 @@ impl PartialMapFilterReduce {
 }
 
 fn match_map_filter_reduce(body: &Body, names: &NameInterner, root: ExprId) -> Option<PartialMapFilterReduce> {
-  let kind = &body.exprs.get(root.0 as usize)?.kind;
-
   #[cfg(feature = "hir-semantic-ops")]
-  if let ExprKind::ArrayChain { array, ops } = kind {
-    let [ArrayChainOp::Map(map_callback), ArrayChainOp::Filter(filter_callback), ArrayChainOp::Reduce(reduce_callback, reduce_init)] =
-      ops.as_slice()
-    else {
-      return None;
-    };
-
-    return Some(PartialMapFilterReduce {
-      root,
-      array: *array,
-      map_callback: *map_callback,
-      filter_callback: *filter_callback,
-      reduce_callback: *reduce_callback,
-      reduce_init: *reduce_init,
-    });
+  if let Some(pattern) = match_map_filter_reduce_semantic_ops(body, root) {
+    return Some(pattern);
   }
 
-  let ExprKind::Call(reduce_call) = kind else {
+  let ExprKind::Call(reduce_call) = &body.exprs.get(root.0 as usize)?.kind else {
     return None;
   };
   if reduce_call.optional || reduce_call.is_new {
@@ -719,6 +704,38 @@ fn match_map_filter_reduce(body: &Body, names: &NameInterner, root: ExprId) -> O
   })
 }
 
+#[cfg(feature = "hir-semantic-ops")]
+fn match_map_filter_reduce_semantic_ops(body: &Body, root: ExprId) -> Option<PartialMapFilterReduce> {
+  let ExprKind::ArrayChain { array, ops } = &body.exprs.get(root.0 as usize)?.kind else {
+    return None;
+  };
+  if ops.len() != 3 {
+    return None;
+  }
+
+  let map_callback = match ops.get(0)? {
+    hir_js::ArrayChainOp::Map(callback) => *callback,
+    _ => return None,
+  };
+  let filter_callback = match ops.get(1)? {
+    hir_js::ArrayChainOp::Filter(callback) => *callback,
+    _ => return None,
+  };
+  let (reduce_callback, reduce_init) = match ops.get(2)? {
+    hir_js::ArrayChainOp::Reduce(callback, init) => (*callback, *init),
+    _ => return None,
+  };
+
+  Some(PartialMapFilterReduce {
+    root,
+    array: *array,
+    map_callback,
+    filter_callback,
+    reduce_callback,
+    reduce_init,
+  })
+}
+
 fn match_promise_all_fetch(
   lowered: &LowerResult,
   names: &NameInterner,
@@ -769,6 +786,13 @@ fn match_promise_all_fetch(
     }
     #[cfg(feature = "hir-semantic-ops")]
     ExprKind::ArrayMap { array, callback } => (*array, *callback),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayChain { array, ops } => {
+      let [ArrayChainOp::Map(callback)] = ops.as_slice() else {
+        return None;
+      };
+      (*array, *callback)
+    }
     _ => return None,
   };
 

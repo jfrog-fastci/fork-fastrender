@@ -114,6 +114,10 @@ impl TypeProvider for TypedProgram {
       .flatten()
   }
 
+  fn display_type(&self, ty: TypeId) -> Option<String> {
+    Some(self.program.display_type(ty).to_string())
+  }
+
   fn type_kind(&self, ty: TypeId) -> Option<TypeKindSummary> {
     let store = self.program.interned_type_store();
     let mut ty = if store.contains_type_id(ty) {
@@ -168,10 +172,6 @@ impl TypeProvider for TypedProgram {
 
   fn def_name(&self, def: typecheck_ts::DefId) -> Option<String> {
     self.program.def_name(def)
-  }
-
-  fn display_type(&self, ty: TypeId) -> Option<String> {
-    Some(self.program.display_type(ty).to_string())
   }
 
   fn expr_is_array(&self, body: BodyId, expr: ExprId) -> bool {

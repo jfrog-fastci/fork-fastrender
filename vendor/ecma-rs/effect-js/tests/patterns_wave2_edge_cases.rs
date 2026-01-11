@@ -1,4 +1,4 @@
-use effect_js::{recognize_patterns_best_effort_untyped, GuardKind, RecognizedPattern};
+use effect_js::{load_default_api_database, recognize_patterns_best_effort_untyped, GuardKind, RecognizedPattern};
 use hir_js::ExprKind;
 
 #[test]
@@ -12,7 +12,8 @@ x;
   let body_id = lowered.root_body();
   let body = lowered.body(body_id).expect("root body");
 
-  let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, body_id);
   let guards: Vec<_> = patterns
     .iter()
     .filter_map(|pat| match pat {
@@ -42,7 +43,8 @@ x;
   let body_id = lowered.root_body();
   let body = lowered.body(body_id).expect("root body");
 
-  let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, body_id);
   let guards: Vec<_> = patterns
     .iter()
     .filter_map(|pat| match pat {
@@ -71,7 +73,8 @@ const [first, , third] = arr;
   let body_id = lowered.root_body();
   let body = lowered.body(body_id).expect("root body");
 
-  let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, body_id);
   let destructures: Vec<_> = patterns
     .iter()
     .filter_map(|pat| match pat {
@@ -104,7 +107,8 @@ const o = { ...a, [k]: 2 };
   let lowered = hir_js::lower_from_source(src).expect("lower");
   let body_id = lowered.root_body();
 
-  let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, body_id);
   assert!(
     !patterns
       .iter()
@@ -125,7 +129,8 @@ const o = {
   let lowered = hir_js::lower_from_source(src).expect("lower");
   let body_id = lowered.root_body();
 
-  let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, body_id);
   assert!(
     !patterns
       .iter()
@@ -133,4 +138,3 @@ const o = {
     "expected ObjectSpread to be skipped when accessors are present"
   );
 }
-

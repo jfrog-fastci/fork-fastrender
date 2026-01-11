@@ -1,4 +1,4 @@
-use effect_js::{recognize_patterns_best_effort_untyped, GuardKind, RecognizedPattern};
+use effect_js::{load_default_api_database, recognize_patterns_best_effort_untyped, GuardKind, RecognizedPattern};
 use hir_js::ExprKind;
 
 const SRC: &str = r#"
@@ -22,7 +22,8 @@ fn detects_wave2_patterns_once() {
   let root_body = lowered.root_body();
   let body = lowered.body(root_body).expect("root body exists");
 
-  let patterns = recognize_patterns_best_effort_untyped(&lowered, root_body);
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, root_body);
 
   let templates: Vec<_> = patterns
     .iter()

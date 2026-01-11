@@ -20,6 +20,24 @@ pub trait TypeProvider {
 
   fn pat_type(&self, body: BodyId, pat: PatId) -> Option<TypeId>;
 
+  /// Human-readable (best-effort) display string for a type.
+  ///
+  /// This is optional and intended for conservative heuristics that need
+  /// nominal names (e.g. `Promise<T>`). Implementations should return `None`
+  /// when rendering is not available or is too expensive.
+  ///
+  /// Typed implementations may forward to `typecheck_ts::Program::display_type`.
+  fn display_type(&self, _ty: TypeId) -> Option<String> {
+    None
+  }
+
+  /// Convenience wrapper to display an expression's type.
+  #[cfg(feature = "typed")]
+  fn expr_type_display(&self, body: BodyId, expr: ExprId) -> Option<String> {
+    let ty = self.expr_type(body, expr)?;
+    self.display_type(ty)
+  }
+
   /// Top-level kind summary for a type.
   ///
   /// In untyped builds this always returns `None`.
@@ -40,13 +58,6 @@ pub trait TypeProvider {
   #[cfg(feature = "typed")]
   fn def_name(&self, def: typecheck_ts::DefId) -> Option<String> {
     let _ = def;
-    None
-  }
-
-  /// Render a type as a string for debugging/heuristics.
-  ///
-  /// Typed implementations may forward to `typecheck_ts::Program::display_type`.
-  fn display_type(&self, _ty: TypeId) -> Option<String> {
     None
   }
 

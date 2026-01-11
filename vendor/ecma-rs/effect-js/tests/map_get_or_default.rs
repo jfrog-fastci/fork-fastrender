@@ -1,6 +1,6 @@
 #![cfg(feature = "typed")]
 
-use effect_js::{recognize_patterns_typed, ApiId, RecognizedPattern};
+use effect_js::{load_default_api_database, recognize_patterns_typed, RecognizedPattern};
 use effect_js::typed::TypedProgram;
 use hir_js::{ExprId, ExprKind};
 use std::sync::Arc;
@@ -59,9 +59,10 @@ fn recognizes_map_get_or_default_conditional() {
   let alternate = *alternate;
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
-  let patterns = recognize_patterns_typed(&lowered, root_body, &types);
-  let map_has = ApiId::from_name("Map.prototype.has");
-  let map_get = ApiId::from_name("Map.prototype.get");
+  let kb = load_default_api_database();
+  let map_has = kb.id_of("Map.prototype.has").unwrap();
+  let map_get = kb.id_of("Map.prototype.get").unwrap();
+  let patterns = recognize_patterns_typed(&kb, &lowered, root_body, &types);
 
   // Call resolution: `m.has(k)` and `m.get(k)` should resolve to Map prototype APIs.
   assert!(

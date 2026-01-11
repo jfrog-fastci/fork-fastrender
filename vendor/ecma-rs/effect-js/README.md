@@ -50,9 +50,11 @@ db.validate().expect("knowledge base is internally consistent");
 `effect-js` commonly refers to known APIs by a stable identifier type
 `effect_js::ApiId` (a re-export of `knowledge_base::ApiId`).
 
-An `ApiId` is a deterministic 64-bit FNV-1a hash of an API's *canonical* knowledge
-base name (e.g. `"JSON.parse"`). This allows analyses to store compact IDs while
-still being able to recover names via `ApiDatabase::get_by_id(...)`.
+An `ApiId` is a deterministic 64-bit FNV-1a hash of an API's *canonical*
+knowledge-base name (e.g. `"JSON.parse"`). This makes IDs reproducible across
+crates and runs, allows `hir-js` semantic-ops nodes to store API IDs without
+depending on string interning, and still allows recovering names via
+`ApiDatabase::get_by_id(...)`.
 
 To construct an ID directly (e.g. in tests), hash the canonical name:
 
@@ -68,7 +70,7 @@ The easiest way to get a `hir-js::LowerResult` (and, optionally, types) is via
 `typecheck-ts`:
 
 ```rust
-use effect_js::recognize_patterns_best_effort_untyped;
+use effect_js::{load_default_api_database, recognize_patterns_best_effort_untyped};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 let key = FileKey::new("index.ts");
@@ -80,9 +82,10 @@ assert!(program.check().is_empty());
 
 let file_id = program.file_id(&key).unwrap();
 let lowered = program.hir_lowered(file_id).unwrap();
+let kb = load_default_api_database();
 
 for body_id in lowered.hir.bodies.iter().copied() {
-  let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
+  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, body_id);
   for pat in patterns {
     println!("{body_id:?}: {pat:?}");
   }
@@ -106,13 +109,14 @@ Enable `effect-js`'s `typed` feature and pass a `TypeProvider`:
 ```rust
 use std::sync::Arc;
 use effect_js::typed::TypedProgram;
-use effect_js::recognize_patterns_typed;
+use effect_js::{load_default_api_database, recognize_patterns_typed};
 use typecheck_ts::Program;
 
 // `TypedProgram` snapshots per-body typing tables out of `typecheck-ts`.
 let program = Arc::new(program);
 let types = TypedProgram::from_program(program.clone(), file_id);
-let patterns = recognize_patterns_typed(&lowered, lowered.root_body(), &types);
+let kb = load_default_api_database();
+let patterns = recognize_patterns_typed(&kb, &lowered, lowered.root_body(), &types);
 ```
 
 ## Runnable example

@@ -257,17 +257,21 @@ fn run_analyze(
     }
   }
 
-  let builtin_calls = resolve_calls_best_effort_builtin(&lowered);
+  let builtin_calls = resolve_calls_best_effort_builtin(&kb, &lowered);
   println!();
   println!("== API resolution (best-effort builtins) ==");
   if builtin_calls.is_empty() {
     println!("(no resolved calls)");
   } else {
     for call in builtin_calls {
-      // Show KB details when available; otherwise fall back to the stable ApiId.
+      // Show KB details when available; otherwise fall back to the raw ID.
       if let Some(entry_any) = kb.get_by_id(call.api) {
-        let entry = kb.api_for_target(&entry_any.name, target).unwrap_or(entry_any);
-        let source = kb.source_for_target(&entry_any.name, target).unwrap_or("<unknown>");
+        let entry = kb
+          .api_for_target(entry_any.name.as_str(), target)
+          .unwrap_or(entry_any);
+        let source = kb
+          .source_for_target(entry.name.as_str(), target)
+          .unwrap_or("<unknown>");
         println!(
           "[{}..{}] {} => {} (source={source}, effects={:?}, purity={:?})",
           call.span.start,
@@ -279,7 +283,7 @@ fn run_analyze(
         );
       } else {
         println!(
-          "[{}..{}] {} => id: 0x{:x}",
+          "[{}..{}] {} => <unknown:{}>",
           call.span.start,
           call.span.end,
           call.call_text,
@@ -289,7 +293,7 @@ fn run_analyze(
     }
   }
 
-  let patterns = recognize_patterns_best_effort(&lowered);
+  let patterns = recognize_patterns_best_effort(&kb, &lowered);
   println!();
   println!("== Patterns ==");
   if patterns.is_empty() {
@@ -422,7 +426,10 @@ fn resolve_calls_kb(kb: &KnowledgeBase, lowered: &hir_js::LowerResult) -> Vec<Kb
   out
 }
 
-fn resolve_calls_best_effort_builtin(lowered: &hir_js::LowerResult) -> Vec<ResolvedCall> {
+fn resolve_calls_best_effort_builtin(
+  kb: &KnowledgeBase,
+  lowered: &hir_js::LowerResult,
+) -> Vec<ResolvedCall> {
   let mut out = Vec::new();
   for (body_id, _) in lowered.body_index.iter() {
     let Some(body) = lowered.body(*body_id) else {
@@ -433,7 +440,7 @@ fn resolve_calls_best_effort_builtin(lowered: &hir_js::LowerResult) -> Vec<Resol
         continue;
       }
       let expr_id = ExprId(idx as u32);
-      let Some(api) = resolve_api_call_best_effort_untyped(lowered, *body_id, expr_id) else {
+      let Some(api) = resolve_api_call_best_effort_untyped(kb, lowered, *body_id, expr_id) else {
         continue;
       };
       let call_text = format_expr_path(body, &lowered.names, expr_id, 8);
@@ -455,13 +462,13 @@ fn resolve_calls_best_effort_builtin(lowered: &hir_js::LowerResult) -> Vec<Resol
   out
 }
 
-fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternLine> {
+fn recognize_patterns_best_effort(kb: &KnowledgeBase, lowered: &hir_js::LowerResult) -> Vec<PatternLine> {
   let mut out = Vec::new();
   for (body_id, _) in lowered.body_index.iter() {
     let Some(body) = lowered.body(*body_id) else {
       continue;
     };
-    for pat in recognize_patterns_best_effort_untyped(lowered, *body_id) {
+    for pat in recognize_patterns_best_effort_untyped(kb, lowered, *body_id) {
       match pat {
         RecognizedPattern::CanonicalCall { .. } => {}
         RecognizedPattern::MapFilterReduce {

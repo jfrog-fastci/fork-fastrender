@@ -1,6 +1,5 @@
 #![deny(missing_debug_implementations)]
 
-mod api;
 mod api_use;
 pub mod callback;
 pub mod encoding;
@@ -25,7 +24,6 @@ pub mod typed;
 
 pub use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate};
 
-pub use api::ApiId;
 pub use callback::{
   analyze_inline_callback, callsite_info_for_args, eval_callsite_info_for_args, CallbackInfo,
 };
@@ -66,7 +64,10 @@ pub use resolve::{
 pub use resolve::resolve_member;
 pub use types::TypeProvider;
 
-pub use knowledge_base::{Api, KnowledgeBase};
+#[cfg(feature = "typed")]
+pub use resolve::resolve_api_call_typed;
+
+pub use knowledge_base::{Api, ApiId, KnowledgeBase};
 pub use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase, ApiSemantics};
 
 #[cfg(test)]

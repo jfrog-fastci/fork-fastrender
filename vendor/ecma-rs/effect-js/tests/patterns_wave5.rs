@@ -1,4 +1,4 @@
-use effect_js::{recognize_patterns_best_effort_untyped, RecognizedPattern};
+use effect_js::{load_default_api_database, recognize_patterns_best_effort_untyped, RecognizedPattern};
 use hir_js::ExprKind;
 
 const SRC: &str = r#"
@@ -13,7 +13,8 @@ fn detects_map_get_or_default_nullish_once() {
   let root_body = lowered.root_body();
   let body = lowered.body(root_body).expect("root body exists");
 
-  let patterns = recognize_patterns_best_effort_untyped(&lowered, root_body);
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, root_body);
   let found: Vec<_> = patterns
     .iter()
     .filter_map(|pat| match pat {

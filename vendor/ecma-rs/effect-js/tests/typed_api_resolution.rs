@@ -1,12 +1,25 @@
 #![cfg(feature = "typed")]
 
-use effect_js::{recognize_patterns_typed, recognize_patterns_untyped, ApiId, RecognizedPattern};
+use effect_js::{
+  load_default_api_database, recognize_patterns_typed, recognize_patterns_untyped, ApiId,
+  RecognizedPattern,
+};
 use effect_js::typed::TypedProgram;
 use hir_js::{ExprId, ExprKind, Literal, ObjectKey};
 use std::sync::Arc;
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 const INDEX_TS: &str = r#"
+declare module "node:fs" {
+  export function readFile(path: string, cb: (err: any, data: any) => void): void;
+}
+
+declare function fetch(input: string): Promise<unknown>;
+
+import { readFile } from "node:fs";
+readFile("x", () => {});
+fetch("https://example.com");
+
 const arr: number[] = [1, 2, 3];
 arr.map(x => x + 1);
 arr.forEach(x => x + 1);
@@ -73,15 +86,8 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   let body = lowered.body(root_body).expect("root body exists");
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
-  let patterns = recognize_patterns_typed(&lowered, root_body, &types);
-
-  let array_map = ApiId::from_name("Array.prototype.map");
-  let array_for_each = ApiId::from_name("Array.prototype.forEach");
-  let string_to_lower = ApiId::from_name("String.prototype.toLowerCase");
-  let string_split = ApiId::from_name("String.prototype.split");
-  let map_get = ApiId::from_name("Map.prototype.get");
-  let map_has = ApiId::from_name("Map.prototype.has");
-  let promise_then = ApiId::from_name("Promise.prototype.then");
+  let kb = load_default_api_database();
+  let patterns = recognize_patterns_typed(&kb, &lowered, root_body, &types);
 
   let apis: Vec<ApiId> = patterns
     .iter()
@@ -91,9 +97,21 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
     })
     .collect();
 
+  let node_read_file = kb.id_of("node:fs.readFile").unwrap();
+  let fetch = kb.id_of("fetch").unwrap();
+  let array_map = kb.id_of("Array.prototype.map").unwrap();
+  let array_for_each = kb.id_of("Array.prototype.forEach").unwrap();
+  let string_lower = kb.id_of("String.prototype.toLowerCase").unwrap();
+  let string_split = kb.id_of("String.prototype.split").unwrap();
+  let map_get = kb.id_of("Map.prototype.get").unwrap();
+  let map_has = kb.id_of("Map.prototype.has").unwrap();
+  let promise_then = kb.id_of("Promise.prototype.then").unwrap();
+
+  assert!(apis.contains(&node_read_file));
+  assert!(apis.contains(&fetch));
   assert!(apis.contains(&array_map));
   assert!(apis.contains(&array_for_each));
-  assert!(apis.contains(&string_to_lower));
+  assert!(apis.contains(&string_lower));
   assert!(apis.contains(&string_split));
   assert!(apis.contains(&map_get));
   assert!(apis.contains(&map_has));
@@ -124,17 +142,6 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
           let recv_name = lowered.names.resolve(name)?;
           (recv_name == recv_expected).then_some(ExprId(idx as u32))
         }
-        // When `hir-js` semantic-ops lowering is enabled, certain array prototype
-        // calls are represented as dedicated nodes instead of `Call(Member(...))`.
-        #[cfg(feature = "hir-semantic-ops")]
-        ExprKind::ArrayMap { array, .. } if prop_expected == "map" => {
-          let recv = body.exprs.get(array.0 as usize)?;
-          let ExprKind::Ident(name) = recv.kind else {
-            return None;
-          };
-          let recv_name = lowered.names.resolve(name)?;
-          (recv_name == recv_expected).then_some(ExprId(idx as u32))
-        }
         _ => None,
       })
       .unwrap_or_else(|| panic!("found {recv_expected}.{prop_expected} call"))
@@ -144,10 +151,10 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   let any_val_map_call = find_member_call("anyVal", "map");
 
   assert!(
-    !patterns.iter().any(|pat| matches!(
-      pat,
-      RecognizedPattern::CanonicalCall { call, api } if *call == any_val_map_call && *api == array_map
-    )),
+    !patterns.iter().any(|pat| match pat {
+      RecognizedPattern::CanonicalCall { call, api } => *call == any_val_map_call && *api == array_map,
+      _ => false,
+    }),
     "anyVal.map should not resolve to Array.prototype.map"
   );
 
@@ -161,7 +168,7 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   let alias_str_lower_call = find_member_call("aliasStr", "toLowerCase");
   assert!(patterns.iter().any(|pat| matches!(
     pat,
-    RecognizedPattern::CanonicalCall { call, api } if *call == alias_str_lower_call && *api == string_to_lower
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_str_lower_call && *api == string_lower
   )));
 
   let alias_map_get_call = find_member_call("aliasMap", "get");
@@ -235,7 +242,7 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   );
 
   // JsonParseTyped relies on a declared annotation and should work without typing.
-  let untyped = recognize_patterns_untyped(&lowered, root_body);
+  let untyped = recognize_patterns_untyped(&kb, &lowered, root_body);
   assert!(untyped
     .iter()
     .any(|pat| matches!(pat, RecognizedPattern::JsonParseTyped { .. })));

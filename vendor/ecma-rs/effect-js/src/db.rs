@@ -48,6 +48,7 @@ impl EffectDb {
 /// Compute per-body side tables using type information.
 #[cfg(feature = "typed")]
 pub fn analyze_body_tables_typed(
+  kb: &KnowledgeBase,
   lowered: &hir_js::LowerResult,
   types: &impl crate::types::TypeProvider,
 ) -> std::collections::HashMap<hir_js::BodyId, BodyTables> {
@@ -65,8 +66,8 @@ pub fn analyze_body_tables_typed(
       if !matches!(expr.kind, ExprKind::Member(_)) {
         continue;
       }
-      if let Some(res) = crate::resolve::resolve_member(lowered, body_id, ExprId(expr_idx as u32), types) {
-        tables.resolved_member[expr_idx] = Some(res.api);
+      if let Some(res) = crate::resolve::resolve_member(kb, lowered, body_id, ExprId(expr_idx as u32), types) {
+        tables.resolved_member[expr_idx] = Some(res.api_id);
       }
     }
 
