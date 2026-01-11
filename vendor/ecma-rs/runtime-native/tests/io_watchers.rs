@@ -1,6 +1,6 @@
 use runtime_native::abi::RT_IO_READABLE;
 use runtime_native::abi::RT_IO_WRITABLE;
-use runtime_native::rt_async_poll;
+use runtime_native::rt_async_poll_legacy as rt_async_poll;
 use runtime_native::rt_io_register;
 use runtime_native::rt_io_unregister;
 use std::sync::atomic::AtomicBool;

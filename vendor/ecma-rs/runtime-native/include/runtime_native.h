@@ -54,9 +54,25 @@ typedef uint64_t TimerId;
 // For now, values are passed as opaque pointers.
 typedef void* ValueRef;
 
-// Minimal promise placeholder.
+// -----------------------------------------------------------------------------
+// Native async/await ABI (Promise/Coroutine)
+// -----------------------------------------------------------------------------
+// Native codegen represents `async` functions as coroutines that produce a
+// GC-allocated `Promise<T>`.
+//
+// Each `Promise<T>` begins with a `PromiseHeader` prefix at offset 0. The
+// promise payload begins immediately after the header (layout chosen by the
+// compiler).
+//
+// The `PromiseHeader` layout is defined by the Rust ABI types in
+// `runtime-native/src/async_abi.rs`; for C callers/codegen this header treats it
+// as opaque.
+typedef struct PromiseHeader PromiseHeader;
+typedef PromiseHeader* PromiseRef;
+
+// Legacy promise placeholder (used by older runtime-native tests/utilities).
 typedef struct RtPromise RtPromise;
-typedef RtPromise* PromiseRef;
+typedef RtPromise* LegacyPromiseRef;
 
 // An FFI-friendly UTF-8 byte string reference.
 typedef struct StringRef {
@@ -227,24 +243,71 @@ void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), u
 // Blocking thread pool
 // -----------------------------------------------------------------------------
 // Run `task(data, promise)` on the runtime's dedicated blocking thread pool (for I/O, crypto,
-// etc.). The task must resolve/reject `promise` via `rt_promise_resolve` / `rt_promise_reject`.
+// etc.). The task must resolve/reject `promise` via `rt_promise_resolve_legacy` /
+// `rt_promise_reject_legacy`.
 //
 // Pool size:
 // - default: min(available_parallelism, 32)
 // - override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` (or legacy `RT_BLOCKING_THREADS`)
-PromiseRef rt_spawn_blocking(void (*task)(uint8_t*, PromiseRef), uint8_t* data);
+LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);
 
 // -----------------------------------------------------------------------------
-// Promise placeholder
+// Native promise ABI (PromiseHeader prefix)
 // -----------------------------------------------------------------------------
-PromiseRef rt_promise_new(void);
-void rt_promise_resolve(PromiseRef p, ValueRef value);
-void rt_promise_reject(PromiseRef p, ValueRef err);
-void rt_promise_then(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+void rt_promise_init(PromiseRef p);
+void rt_promise_fulfill(PromiseRef p);
+void rt_promise_reject(PromiseRef p);
 
 // -----------------------------------------------------------------------------
-// Coroutine ABI (LLVM-generated async/await state machines)
+// Native coroutine ABI (async/await lowering)
 // -----------------------------------------------------------------------------
+typedef struct Coroutine Coroutine;
+typedef struct CoroutineVTable CoroutineVTable;
+typedef Coroutine* CoroutineRef;
+
+typedef enum CoroutineStepTag {
+  RT_CORO_STEP_AWAIT = 0,
+  RT_CORO_STEP_COMPLETE = 1,
+} CoroutineStepTag;
+
+typedef struct CoroutineStep {
+  CoroutineStepTag tag;
+  // For `RT_CORO_STEP_AWAIT`, the promise being awaited. For `RT_CORO_STEP_COMPLETE`, this is NULL.
+  PromiseRef await_promise;
+} CoroutineStep;
+
+typedef CoroutineStep (*CoroutineResumeFn)(Coroutine*);
+
+struct CoroutineVTable {
+  CoroutineResumeFn resume;
+  uint32_t promise_size;
+  uint32_t promise_align;
+  uint32_t promise_shape_id;
+  uint32_t abi_version;
+  uintptr_t reserved[4];
+};
+
+// Generated coroutine frames are structs whose prefix is `Coroutine`.
+struct Coroutine {
+  const CoroutineVTable* vtable;
+  PromiseRef promise;
+  Coroutine* next_waiter;
+  uint32_t flags;
+};
+
+PromiseRef rt_async_spawn(CoroutineRef coro);
+
+// Drive the async runtime. Returns true if any work was performed.
+bool rt_async_poll(void);
+
+// -----------------------------------------------------------------------------
+// Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates)
+// -----------------------------------------------------------------------------
+LegacyPromiseRef rt_promise_new_legacy(void);
+void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);
+void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);
+void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+
 typedef enum RtCoroStatus {
   RT_CORO_DONE = 0,
   RT_CORO_PENDING = 1,
@@ -254,39 +317,34 @@ typedef enum RtCoroStatus {
 typedef struct RtCoroutineHeader RtCoroutineHeader;
 typedef RtCoroStatus (*RtCoroResumeFn)(RtCoroutineHeader*);
 
-// Generated coroutine frames are structs whose prefix is RtCoroutineHeader.
+// Legacy generated coroutine frames: prefix is RtCoroutineHeader.
 struct RtCoroutineHeader {
   RtCoroResumeFn resume;
-  PromiseRef promise;
+  LegacyPromiseRef promise;
   uint32_t state;
   uint32_t await_is_error;
   ValueRef await_value;
   ValueRef await_error;
 };
 
-// Spawn a coroutine and return its promise.
-// Runs the coroutine synchronously until it completes or reaches its first `await`.
-PromiseRef rt_async_spawn(RtCoroutineHeader* coro);
+LegacyPromiseRef rt_async_spawn_legacy(RtCoroutineHeader* coro);
+bool rt_async_poll_legacy(void);
+LegacyPromiseRef rt_async_sleep_legacy(uint64_t delay_ms);
+void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);
 
-// Drive the async runtime. Returns true if any work was performed.
-bool rt_async_poll(void);
-
-// Resolve a promise after `delay_ms` milliseconds.
-PromiseRef rt_async_sleep(uint64_t delay_ms);
+// -----------------------------------------------------------------------------
+// Microtasks + timers (queueMicrotask/setTimeout/setInterval)
+// -----------------------------------------------------------------------------
 // Enqueue a microtask to run during the next microtask checkpoint (end of the current macrotask,
-// or during `rt_async_poll` when the event loop is otherwise idle).
+// or during `rt_async_poll_legacy` when the event loop is otherwise idle).
 void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);
 
-// Timers. Timer callbacks are macrotasks; after each timer callback, `rt_async_poll` runs a
+// Timers. Timer callbacks are macrotasks; after each timer callback, `rt_async_poll_legacy` runs a
 // microtask checkpoint. This is a minimal API surface; HTML-specific clamping (e.g. nested 4ms
 // clamp) is handled at higher layers.
 TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);
 TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);
 void rt_clear_timer(TimerId id);
-
-// Suspend the coroutine on an awaited promise.
-// Registers a continuation and sets `coro->state = next_state`.
-void rt_coro_await(RtCoroutineHeader* coro, PromiseRef awaited, uint32_t next_state);
 
 // -----------------------------------------------------------------------------
 // I/O watchers (epoll-backed readiness notifications)

@@ -28,5 +28,5 @@ fn abi_layout_smoke() {
 
 #[test]
 fn rt_async_poll_smoke() {
-  let _ = runtime_native::rt_async_poll();
+  let _ = runtime_native::rt_async_poll_legacy();
 }

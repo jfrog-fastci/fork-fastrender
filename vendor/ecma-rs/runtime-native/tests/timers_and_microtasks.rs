@@ -1,4 +1,4 @@
-use runtime_native::{rt_async_poll, rt_clear_timer, rt_queue_microtask, rt_set_interval, rt_set_timeout};
+use runtime_native::{rt_async_poll_legacy as rt_async_poll, rt_clear_timer, rt_queue_microtask, rt_set_interval, rt_set_timeout};
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

@@ -135,6 +135,27 @@ fn rt_ensure_init() -> &'static GlobalRuntime {
   })
 }
 
+/// Spawn an async coroutine and return its result promise.
+///
+/// Generated code allocates a coroutine frame whose first field is a [`Coroutine`] header and calls
+/// this function to start execution. The runtime must allocate the coroutine's result promise (using
+/// metadata in [`CoroutineVTable`]) and store it into `coro.promise` before resuming.
+///
+/// # Safety
+/// `coro` must point to a valid coroutine frame whose prefix matches [`Coroutine`].
+#[no_mangle]
+pub unsafe extern "C" fn rt_async_spawn(_coro: CoroutineRef) -> PromiseRef {
+  todo!("rt_async_spawn is not implemented yet")
+}
+
+/// Drive the async scheduler/executor.
+///
+/// Returns `true` if any work was performed.
+#[no_mangle]
+pub unsafe extern "C" fn rt_async_poll() -> bool {
+  todo!("rt_async_poll is not implemented yet")
+}
+
 /// Initialize a newly allocated promise header to the pending state.
 ///
 /// This is part of the stable native async ABI defined in [`async_abi`]. The
@@ -156,6 +177,15 @@ pub unsafe extern "C" fn rt_promise_init(_p: PromiseRef) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
   todo!("rt_promise_fulfill is not implemented yet")
+}
+
+/// Mark a promise as rejected.
+///
+/// # Safety
+/// `p` must point to a valid promise allocation.
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_reject(_p: PromiseRef) {
+  todo!("rt_promise_reject is not implemented yet")
 }
 
 /// Request a stop-the-world GC safepoint.
@@ -429,19 +459,24 @@ mod tests {
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
       "void rt_parallel_join(const TaskId* tasks, size_t count);",
       "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
-      "PromiseRef rt_spawn_blocking(void (*task)(uint8_t*, PromiseRef), uint8_t* data);",
-      "PromiseRef rt_async_spawn(RtCoroutineHeader* coro);",
+      "LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
+      "void rt_promise_init(PromiseRef p);",
+      "void rt_promise_fulfill(PromiseRef p);",
+      "void rt_promise_reject(PromiseRef p);",
+      "PromiseRef rt_async_spawn(CoroutineRef coro);",
       "bool rt_async_poll(void);",
-      "PromiseRef rt_async_sleep(uint64_t delay_ms);",
+      "LegacyPromiseRef rt_promise_new_legacy(void);",
+      "void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);",
+      "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",
+      "void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
+      "LegacyPromiseRef rt_async_spawn_legacy(RtCoroutineHeader* coro);",
+      "bool rt_async_poll_legacy(void);",
+      "LegacyPromiseRef rt_async_sleep_legacy(uint64_t delay_ms);",
       "void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);",
       "TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);",
       "TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
       "void rt_clear_timer(TimerId id);",
-      "PromiseRef rt_promise_new(void);",
-      "void rt_promise_resolve(PromiseRef p, ValueRef value);",
-      "void rt_promise_reject(PromiseRef p, ValueRef err);",
-      "void rt_promise_then(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
-      "void rt_coro_await(RtCoroutineHeader* coro, PromiseRef awaited, uint32_t next_state);",
+      "void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
     ];
 
     for decl in DECLS {
@@ -490,18 +525,23 @@ mod tests {
     let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
     let _spawn_blocking: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
       rt_spawn_blocking;
-    let _async_spawn: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn;
-    let _async_poll: extern "C" fn() -> bool = rt_async_poll;
-    let _async_sleep: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep;
+    let _promise_init: unsafe extern "C" fn(PromiseRef) = rt_promise_init;
+    let _promise_fulfill: unsafe extern "C" fn(PromiseRef) = rt_promise_fulfill;
+    let _promise_reject: unsafe extern "C" fn(PromiseRef) = rt_promise_reject;
+    let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
+    let _async_poll: unsafe extern "C" fn() -> bool = rt_async_poll;
+    let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
+    let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
+    let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
+    let _promise_then_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then_legacy;
+    let _async_spawn_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn_legacy;
+    let _async_poll_legacy: extern "C" fn() -> bool = rt_async_poll_legacy;
+    let _async_sleep_legacy: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep_legacy;
     let _queue_microtask: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = rt_queue_microtask;
     let _set_timeout: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout;
     let _set_interval: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_interval;
     let _clear_timer: extern "C" fn(abi::TimerId) = rt_clear_timer;
-    let _promise_new: extern "C" fn() -> abi::PromiseRef = rt_promise_new;
-    let _promise_resolve: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve;
-    let _promise_reject: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject;
-    let _promise_then: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then;
-    let _coro_await: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await;
+    let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await_legacy;
 
     #[cfg(feature = "gc_stats")]
     let _stats_snapshot: unsafe extern "C" fn(*mut abi::RtGcStatsSnapshot) = rt_gc_stats_snapshot;
@@ -538,18 +578,23 @@ mod tests {
       _join,
       _for,
       _spawn_blocking,
+      _promise_init,
+      _promise_fulfill,
+      _promise_reject,
       _async_spawn,
       _async_poll,
-      _async_sleep,
+      _promise_new_legacy,
+      _promise_resolve_legacy,
+      _promise_reject_legacy,
+      _promise_then_legacy,
+      _async_spawn_legacy,
+      _async_poll_legacy,
+      _async_sleep_legacy,
       _queue_microtask,
       _set_timeout,
       _set_interval,
       _clear_timer,
-      _promise_new,
-      _promise_resolve,
-      _promise_reject,
-      _promise_then,
-      _coro_await,
+      _coro_await_legacy,
     );
   }
   #[test]

@@ -37,7 +37,7 @@ fn rt_async_poll_is_serialized_and_deadlock_free() {
 
   let t1 = thread::spawn(move || {
     while !t1_done.load(Ordering::SeqCst) {
-      runtime_native::rt_async_poll();
+      runtime_native::rt_async_poll_legacy();
       if Instant::now() > deadline {
         panic!("timeout waiting for rt_async_poll to make progress (thread 1)");
       }
@@ -46,7 +46,7 @@ fn rt_async_poll_is_serialized_and_deadlock_free() {
 
   let t2 = thread::spawn(move || {
     while !t2_done.load(Ordering::SeqCst) {
-      runtime_native::rt_async_poll();
+      runtime_native::rt_async_poll_legacy();
       if Instant::now() > deadline {
         panic!("timeout waiting for rt_async_poll to make progress (thread 2)");
       }

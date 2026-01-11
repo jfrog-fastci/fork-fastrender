@@ -31,7 +31,7 @@ fn stop_the_world_does_not_wait_for_async_poll_thread_blocked_in_epoll() {
   let poller = std::thread::spawn(move || {
     let id = threading::register_current_thread(ThreadKind::Main);
     tx_id.send(id.get()).unwrap();
-    let _ = runtime_native::rt_async_poll();
+    let _ = runtime_native::rt_async_poll_legacy();
     threading::unregister_current_thread();
   });
 
@@ -73,4 +73,3 @@ fn stop_the_world_does_not_wait_for_async_poll_thread_blocked_in_epoll() {
   poller.join().unwrap();
   threading::unregister_current_thread();
 }
-

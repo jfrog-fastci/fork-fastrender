@@ -21,7 +21,7 @@ extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     match (*coro).header.state {
       0 => {
         *(*coro).side_effect = true;
-        runtime_native::rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
         RtCoroStatus::Pending
       }
       1 => {
@@ -30,7 +30,7 @@ extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
 
         *(*coro).completed = true;
-        runtime_native::rt_promise_resolve((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -41,7 +41,7 @@ extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
 #[test]
 fn coroutine_spawn_runs_sync_until_first_await_and_resumes_as_microtask() {
   let _rt = TestRuntimeGuard::new();
-  let awaited = runtime_native::rt_promise_new();
+  let awaited = runtime_native::rt_promise_new_legacy();
   let mut side_effect = false;
   let mut completed = false;
 
@@ -59,7 +59,7 @@ fn coroutine_spawn_runs_sync_until_first_await_and_resumes_as_microtask() {
     awaited,
   });
 
-  let promise = runtime_native::rt_async_spawn(&mut coro.header);
+  let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
   // JS semantics: the coroutine runs immediately until its first `await`.
   assert!(side_effect);
@@ -67,10 +67,10 @@ fn coroutine_spawn_runs_sync_until_first_await_and_resumes_as_microtask() {
   assert_eq!(promise, coro.header.promise);
 
   // Settling the awaited promise should enqueue a microtask, not resume immediately.
-  runtime_native::rt_promise_resolve(awaited, 0xCAFE_BABE as ValueRef);
+  runtime_native::rt_promise_resolve_legacy(awaited, 0xCAFE_BABE as ValueRef);
   assert!(!completed);
 
-  while runtime_native::rt_async_poll() {}
+  while runtime_native::rt_async_poll_legacy() {}
 
   assert!(completed);
 }
@@ -90,13 +90,13 @@ extern "C" fn order_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
   unsafe {
     match (*coro).header.state {
       0 => {
-        runtime_native::rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
         RtCoroStatus::Pending
       }
       1 => {
         let log = &*(*coro).log;
         log.lock().unwrap().push((*coro).id);
-        runtime_native::rt_promise_resolve((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -108,7 +108,7 @@ extern "C" fn order_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
 fn promise_waiters_resume_in_fifo_order() {
   let _rt = TestRuntimeGuard::new();
 
-  let awaited = runtime_native::rt_promise_new();
+  let awaited = runtime_native::rt_promise_new_legacy();
   let log: &'static Mutex<Vec<u32>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 
   let mut coro1 = Box::new(OrderCoroutine {
@@ -138,11 +138,11 @@ fn promise_waiters_resume_in_fifo_order() {
     awaited,
   });
 
-  runtime_native::rt_async_spawn(&mut coro1.header);
-  runtime_native::rt_async_spawn(&mut coro2.header);
+  runtime_native::rt_async_spawn_legacy(&mut coro1.header);
+  runtime_native::rt_async_spawn_legacy(&mut coro2.header);
 
-  runtime_native::rt_promise_resolve(awaited, 0x1234usize as ValueRef);
-  while runtime_native::rt_async_poll() {}
+  runtime_native::rt_promise_resolve_legacy(awaited, 0x1234usize as ValueRef);
+  while runtime_native::rt_async_poll_legacy() {}
 
   assert_eq!(&*log.lock().unwrap(), &[1, 2]);
 }
@@ -161,12 +161,12 @@ extern "C" fn settled_await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus
   unsafe {
     match (*coro).header.state {
       0 => {
-        runtime_native::rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
         RtCoroStatus::Pending
       }
       1 => {
         *(*coro).completed = true;
-        runtime_native::rt_promise_resolve((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -179,8 +179,8 @@ fn strict_mode_awaiting_settled_promise_yields_to_microtask() {
   let _rt = TestRuntimeGuard::new();
   runtime_native::set_strict_await_yields(true);
 
-  let awaited = runtime_native::rt_promise_new();
-  runtime_native::rt_promise_resolve(awaited, 0xBEEFusize as ValueRef);
+  let awaited = runtime_native::rt_promise_new_legacy();
+  runtime_native::rt_promise_resolve_legacy(awaited, 0xBEEFusize as ValueRef);
 
   let mut completed = false;
   let mut coro = Box::new(SettledAwaitCoroutine {
@@ -196,12 +196,12 @@ fn strict_mode_awaiting_settled_promise_yields_to_microtask() {
     awaited,
   });
 
-  runtime_native::rt_async_spawn(&mut coro.header);
+  runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(!completed, "strict await should not resume synchronously inside rt_async_spawn");
 
-  runtime_native::rt_async_poll();
+  runtime_native::rt_async_poll_legacy();
   assert!(completed);
-  assert!(!runtime_native::rt_async_poll());
+  assert!(!runtime_native::rt_async_poll_legacy());
 }
 
 #[test]
@@ -209,8 +209,8 @@ fn non_strict_mode_awaiting_settled_promise_resumes_synchronously() {
   let _rt = TestRuntimeGuard::new();
   runtime_native::set_strict_await_yields(false);
 
-  let awaited = runtime_native::rt_promise_new();
-  runtime_native::rt_promise_resolve(awaited, 0xBEEFusize as ValueRef);
+  let awaited = runtime_native::rt_promise_new_legacy();
+  runtime_native::rt_promise_resolve_legacy(awaited, 0xBEEFusize as ValueRef);
 
   let mut completed = false;
   let mut coro = Box::new(SettledAwaitCoroutine {
@@ -226,9 +226,9 @@ fn non_strict_mode_awaiting_settled_promise_resumes_synchronously() {
     awaited,
   });
 
-  runtime_native::rt_async_spawn(&mut coro.header);
+  runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(completed, "non-strict await should resume synchronously inside rt_async_spawn");
-  assert!(!runtime_native::rt_async_poll());
+  assert!(!runtime_native::rt_async_poll_legacy());
 }
 
 // -----------------------------------------------------------------------------
@@ -237,7 +237,7 @@ fn non_strict_mode_awaiting_settled_promise_resumes_synchronously() {
 
 extern "C" fn blocking_resolve_value(_data: *mut u8, promise: PromiseRef) {
   std::thread::sleep(Duration::from_millis(20));
-  runtime_native::rt_promise_resolve(promise, 0xCAFE_BABEusize as ValueRef);
+  runtime_native::rt_promise_resolve_legacy(promise, 0xCAFE_BABEusize as ValueRef);
 }
 
 extern "C" fn blocking_reject_value(_data: *mut u8, promise: PromiseRef) {
@@ -260,14 +260,14 @@ extern "C" fn spawn_blocking_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatu
     match (*coro).header.state {
       0 => {
         (*coro).awaited = runtime_native::rt_spawn_blocking(blocking_resolve_value, core::ptr::null_mut());
-        runtime_native::rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
         RtCoroStatus::Pending
       }
       1 => {
         assert_eq!((*coro).header.await_is_error, 0);
         assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
         *(*coro).completed = true;
-        runtime_native::rt_promise_resolve((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -293,7 +293,7 @@ fn coroutine_can_await_spawn_blocking_promise() {
     awaited: PromiseRef::null(),
   });
 
-  runtime_native::rt_async_spawn(&mut coro.header);
+  runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(
     !completed,
     "spawn_blocking should not resume synchronously inside rt_async_spawn when the promise is pending"
@@ -301,7 +301,7 @@ fn coroutine_can_await_spawn_blocking_promise() {
 
   let start = Instant::now();
   while !completed {
-    runtime_native::rt_async_poll();
+    runtime_native::rt_async_poll_legacy();
     assert!(
       start.elapsed() < Duration::from_secs(2),
       "timeout waiting for spawn_blocking promise to resume coroutine"

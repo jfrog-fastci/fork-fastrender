@@ -40,7 +40,7 @@ fn safepoint_request_wakes_epoll_wait() {
   let poll_thread = std::thread::spawn(move || {
     runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Main);
     started_tx.send(()).unwrap();
-    runtime_native::rt_async_poll();
+    runtime_native::rt_async_poll_legacy();
   });
   started_rx
     .recv_timeout(Duration::from_secs(1))
@@ -81,4 +81,3 @@ fn safepoint_request_wakes_epoll_wait() {
     "GC stop-the-world did not complete in time; epoll_wait likely was not woken"
   );
 }
-

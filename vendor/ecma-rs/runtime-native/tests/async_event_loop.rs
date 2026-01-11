@@ -28,11 +28,11 @@ fn timer_fires() {
   let start = Instant::now();
   while !fired.load(Ordering::SeqCst) {
     assert!(start.elapsed() < Duration::from_secs(1), "timer did not fire");
-    runtime_native::rt_async_poll();
+    runtime_native::rt_async_poll_legacy();
   }
 
   // With no remaining timers or watchers, the runtime should become idle.
-  assert!(!runtime_native::rt_async_poll());
+  assert!(!runtime_native::rt_async_poll_legacy());
 }
 
 struct ReadCtx {
@@ -86,7 +86,7 @@ fn epoll_readiness() {
   });
 
   while !ctx.fired.load(Ordering::SeqCst) && !timed_out.load(Ordering::SeqCst) {
-    runtime_native::rt_async_poll();
+    runtime_native::rt_async_poll_legacy();
   }
 
   let ok = ctx.fired.load(Ordering::SeqCst);
@@ -99,7 +99,7 @@ fn epoll_readiness() {
   }
 
   assert!(ok, "timed out waiting for epoll readability");
-  assert!(!runtime_native::rt_async_poll());
+  assert!(!runtime_native::rt_async_poll_legacy());
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn wake_from_epoll_wait() {
   });
 
   let start = Instant::now();
-  let _pending = runtime_native::rt_async_poll();
+  let _pending = runtime_native::rt_async_poll_legacy();
   let elapsed = start.elapsed();
 
   let _ = producer.join();
@@ -136,7 +136,7 @@ fn wake_from_epoll_wait() {
     "rt_async_poll did not wake promptly (elapsed={elapsed:?})"
   );
   assert!(!timer_fired.load(Ordering::SeqCst), "poll returned only after timer fired");
-  assert!(!runtime_native::rt_async_poll());
+  assert!(!runtime_native::rt_async_poll_legacy());
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn idle_detection() {
   let _ = runtime_native::rt_async_poll();
 
   let start = Instant::now();
-  let pending = runtime_native::rt_async_poll();
+  let pending = runtime_native::rt_async_poll_legacy();
   let elapsed = start.elapsed();
 
   assert!(!pending, "expected quiescent runtime");
@@ -188,7 +188,7 @@ fn parked_event_loop_thread_counts_as_quiescent_for_stop_the_world() {
     tx_id.send(id).unwrap();
 
     // This should block in epoll_wait.
-    runtime_native::rt_async_poll();
+    runtime_native::rt_async_poll_legacy();
 
     threading::unregister_current_thread();
   });

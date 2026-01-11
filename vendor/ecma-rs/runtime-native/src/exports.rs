@@ -467,7 +467,7 @@ pub extern "C" fn rt_spawn_blocking(
 }
 
 #[no_mangle]
-pub extern "C" fn rt_async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
+pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> PromiseRef {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
   async_rt::coroutine::async_spawn(coro)
@@ -479,14 +479,14 @@ pub extern "C" fn rt_async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
 /// multiple threads, but calls are **globally serialized** (only one thread executes the poll loop
 /// at a time).
 #[no_mangle]
-pub extern "C" fn rt_async_poll() -> bool {
+pub extern "C" fn rt_async_poll_legacy() -> bool {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
   async_rt::poll()
 }
 
 #[no_mangle]
-pub extern "C" fn rt_async_sleep(delay_ms: u64) -> PromiseRef {
+pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
 
@@ -687,31 +687,31 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
 // -----------------------------------------------------------------------------
 
 #[no_mangle]
-pub extern "C" fn rt_promise_new() -> PromiseRef {
+pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
   ensure_event_loop_thread_registered();
   async_rt::promise::promise_new()
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_resolve(p: PromiseRef, value: ValueRef) {
+pub extern "C" fn rt_promise_resolve_legacy(p: PromiseRef, value: ValueRef) {
   ensure_event_loop_thread_registered();
   async_rt::promise::promise_resolve(p, value)
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_reject(p: PromiseRef, err: ValueRef) {
+pub extern "C" fn rt_promise_reject_legacy(p: PromiseRef, err: ValueRef) {
   ensure_event_loop_thread_registered();
   async_rt::promise::promise_reject(p, err)
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+pub extern "C" fn rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
   ensure_event_loop_thread_registered();
   async_rt::promise::promise_then(p, on_settle, data)
 }
 
 #[no_mangle]
-pub extern "C" fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
+pub extern "C" fn rt_coro_await_legacy(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
   ensure_event_loop_thread_registered();
   async_rt::coroutine::coro_await(coro, awaited, next_state)
 }

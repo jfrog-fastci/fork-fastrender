@@ -1,7 +1,11 @@
 use runtime_native::abi::PromiseRef;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{
-  rt_async_poll, rt_async_sleep, rt_promise_resolve, rt_promise_then, rt_spawn_blocking,
+  rt_async_poll_legacy as rt_async_poll,
+  rt_async_sleep_legacy as rt_async_sleep,
+  rt_promise_resolve_legacy as rt_promise_resolve,
+  rt_promise_then_legacy as rt_promise_then,
+  rt_spawn_blocking,
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
