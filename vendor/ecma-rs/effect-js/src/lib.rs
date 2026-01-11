@@ -7,6 +7,8 @@ mod resolve;
 
 pub mod kb;
 pub mod resolver;
+pub mod db;
+pub mod meta;
 
 #[cfg(feature = "typed")]
 pub mod typed;
@@ -18,6 +20,7 @@ pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 #[cfg(feature = "typed")]
 pub use encoding::analyze_string_encodings_typed;
 pub use kb::load_default_api_database;
+pub use db::{CallSiteInfo, EffectDb};
 pub use recognize::{
   recognize_patterns_best_effort_untyped, recognize_patterns_untyped, RecognizedPattern,
 };
@@ -28,6 +31,7 @@ pub use recognize::recognize_patterns_typed;
 
 pub use resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
 
+pub use knowledge_base::{Api, KnowledgeBase};
 pub use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase, ApiSemantics};
 
 pub fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
@@ -53,6 +57,7 @@ pub fn purity_template_to_purity(template: &PurityTemplate) -> Purity {
   match template {
     PurityTemplate::Pure => Purity::Pure,
     PurityTemplate::ReadOnly => Purity::ReadOnly,
+    PurityTemplate::Allocating => Purity::Allocating,
     PurityTemplate::DependsOnCallback => Purity::Unknown,
     PurityTemplate::Impure => Purity::Impure,
     PurityTemplate::Unknown => Purity::Unknown,
@@ -90,6 +95,10 @@ mod tests {
     assert_eq!(
       purity_template_to_purity(&PurityTemplate::ReadOnly),
       Purity::ReadOnly
+    );
+    assert_eq!(
+      purity_template_to_purity(&PurityTemplate::Allocating),
+      Purity::Allocating
     );
     assert_eq!(
       purity_template_to_purity(&PurityTemplate::DependsOnCallback),

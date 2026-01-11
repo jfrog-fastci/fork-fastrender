@@ -5,9 +5,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum ThrowBehavior {
+  #[cfg_attr(feature = "serde", serde(alias = "Never"))]
   Never,
+  #[cfg_attr(feature = "serde", serde(alias = "Maybe"))]
   Maybe,
+  #[cfg_attr(feature = "serde", serde(alias = "Always"))]
   Always,
 }
 
@@ -35,16 +39,22 @@ impl Default for ThrowBehavior {
 /// This is intentionally a small taxonomy; it can be joined conservatively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum Purity {
   /// No observable effects (including no throws).
+  #[cfg_attr(feature = "serde", serde(alias = "Pure"))]
   Pure,
   /// May read observable state, but performs no writes/allocations/IO.
+  #[cfg_attr(feature = "serde", serde(rename = "readonly", alias = "ReadOnly", alias = "read_only"))]
   ReadOnly,
   /// Only allocates (and does not throw).
+  #[cfg_attr(feature = "serde", serde(alias = "Allocating"))]
   Allocating,
   /// Performs some observable effect (writes/IO/throws/etc).
+  #[cfg_attr(feature = "serde", serde(alias = "Impure"))]
   Impure,
   /// Unknown / could not be analyzed.
+  #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
   Unknown,
 }
 
@@ -121,11 +131,17 @@ impl EffectSummary {
 /// conditional on runtime callback behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum EffectTemplate {
+  #[cfg_attr(feature = "serde", serde(alias = "Pure"))]
   Pure,
+  #[cfg_attr(feature = "serde", serde(alias = "Io"))]
   Io,
+  #[cfg_attr(feature = "serde", serde(alias = "DependsOnCallback"))]
   DependsOnCallback,
+  #[cfg_attr(feature = "serde", serde(alias = "Custom"))]
   Custom(EffectSummary),
+  #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
   Unknown,
 }
 
@@ -139,11 +155,19 @@ impl Default for EffectTemplate {
 /// runtime callback behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum PurityTemplate {
+  #[cfg_attr(feature = "serde", serde(alias = "Pure"))]
   Pure,
+  #[cfg_attr(feature = "serde", serde(rename = "readonly", alias = "ReadOnly", alias = "read_only"))]
   ReadOnly,
+  #[cfg_attr(feature = "serde", serde(alias = "Allocating"))]
+  Allocating,
+  #[cfg_attr(feature = "serde", serde(alias = "DependsOnCallback"))]
   DependsOnCallback,
+  #[cfg_attr(feature = "serde", serde(alias = "Impure"))]
   Impure,
+  #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
   Unknown,
 }
 
@@ -193,4 +217,3 @@ mod tests {
     assert_eq!(throwing.inferred_purity(), Purity::Impure);
   }
 }
-

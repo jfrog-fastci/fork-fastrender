@@ -4,6 +4,9 @@
       flags: NONDETERMINISTIC
       throws: Never
   purity: ReadOnly
+  async: false
+  deterministic: false
+  idempotent: false
 
 - name: Date.parse
   effects:

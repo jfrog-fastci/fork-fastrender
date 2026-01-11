@@ -17,6 +17,18 @@ pub struct ApiSemantics {
   #[serde(default)]
   pub purity: PurityTemplate,
 
+  #[serde(default, rename = "async", skip_serializing_if = "Option::is_none")]
+  pub async_: Option<bool>,
+
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub idempotent: Option<bool>,
+
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub deterministic: Option<bool>,
+
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub parallelizable: Option<bool>,
+
   /// Arbitrary key/value metadata for downstream analyses.
   ///
   /// `effect-js` uses this for optional string encoding semantics such as:
@@ -36,6 +48,9 @@ pub struct ApiDatabase {
 
 /// Backwards-compatible alias used by analysis passes.
 pub type KnowledgeBase = ApiDatabase;
+
+/// Backwards-compatible name used by `effect-js` query helpers.
+pub type Api = ApiSemantics;
 
 impl ApiDatabase {
   pub fn from_entries(entries: impl IntoIterator<Item = ApiSemantics>) -> Self {
@@ -85,7 +100,25 @@ impl ApiDatabase {
 
   pub fn validate(&self) -> Result<(), KnowledgeBaseError> {
     build_alias_map(&self.apis)?;
+    self.warn_inconsistent_metadata();
     Ok(())
+  }
+
+  fn warn_inconsistent_metadata(&self) {
+    for api in self.apis.values() {
+      if api.deterministic == Some(true) && api.purity == PurityTemplate::Impure {
+        tracing::warn!(
+          api = api.name,
+          "sanity check: deterministic=true but purity.template=impure (likely inconsistent)"
+        );
+      }
+      if api.async_ == Some(true) && api.purity == PurityTemplate::Pure {
+        tracing::warn!(
+          api = api.name,
+          "sanity check: async=true but purity.template=pure (rare; verify intent)"
+        );
+      }
+    }
   }
 }
 
@@ -169,6 +202,18 @@ struct ApiRaw {
   #[serde(default)]
   throws: Option<String>,
 
+  #[serde(default, rename = "async")]
+  async_: Option<bool>,
+
+  #[serde(default)]
+  idempotent: Option<bool>,
+
+  #[serde(default)]
+  deterministic: Option<bool>,
+
+  #[serde(default)]
+  parallelizable: Option<bool>,
+
   #[serde(default)]
   properties: BTreeMap<String, String>,
 }
@@ -186,6 +231,18 @@ struct ApiBodyRaw {
 
   #[serde(default)]
   throws: Option<String>,
+
+  #[serde(default, rename = "async")]
+  async_: Option<bool>,
+
+  #[serde(default)]
+  idempotent: Option<bool>,
+
+  #[serde(default)]
+  deterministic: Option<bool>,
+
+  #[serde(default)]
+  parallelizable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,6 +306,10 @@ fn normalize_api(raw: ApiRaw) -> ApiSemantics {
     aliases: raw.aliases,
     effects,
     purity,
+    async_: raw.async_,
+    idempotent: raw.idempotent,
+    deterministic: raw.deterministic,
+    parallelizable: raw.parallelizable,
     properties: raw.properties,
   }
 }
@@ -261,6 +322,10 @@ fn normalize_api_from_body(name: String, raw: ApiBodyRaw) -> ApiSemantics {
     aliases: raw.aliases,
     effects,
     purity,
+    async_: raw.async_,
+    idempotent: raw.idempotent,
+    deterministic: raw.deterministic,
+    parallelizable: raw.parallelizable,
     properties: BTreeMap::new(),
   }
 }
@@ -279,6 +344,7 @@ fn parse_purity_template(raw: &str) -> PurityTemplate {
   match normalize_ident(raw).as_str() {
     "pure" => PurityTemplate::Pure,
     "readonly" | "read_only" => PurityTemplate::ReadOnly,
+    "allocating" => PurityTemplate::Allocating,
     "depends_on_callback" => PurityTemplate::DependsOnCallback,
     "impure" => PurityTemplate::Impure,
     "unknown" => PurityTemplate::Unknown,
@@ -469,7 +535,14 @@ fn build_alias_map(apis: &BTreeMap<String, ApiSemantics>) -> Result<BTreeMap<Str
         // When the semantics match, this is redundant but unambiguous: lookups can resolve the
         // alias directly via the entry, so we skip building an alias mapping rather than treating
         // it as an error.
-        if prev.effects == api.effects && prev.purity == api.purity && prev.properties == api.properties {
+        if prev.effects == api.effects
+          && prev.purity == api.purity
+          && prev.async_ == api.async_
+          && prev.idempotent == api.idempotent
+          && prev.deterministic == api.deterministic
+          && prev.parallelizable == api.parallelizable
+          && prev.properties == api.properties
+        {
           continue;
         }
 
@@ -565,6 +638,10 @@ purity: DependsOnCallback
       aliases: vec![],
       effects: EffectTemplate::Pure,
       purity: PurityTemplate::Pure,
+      async_: None,
+      idempotent: None,
+      deterministic: None,
+      parallelizable: None,
       properties: BTreeMap::new(),
     }]);
 
@@ -596,6 +673,31 @@ purity: DependsOnCallback
         );
       }
     }
+  }
+
+  #[test]
+  fn load_default_includes_metadata_flags_and_roundtrips() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+
+    let fetch = kb.get("fetch").expect("fetch in knowledge base");
+    assert_eq!(fetch.async_, Some(true));
+    assert_eq!(fetch.parallelizable, Some(true));
+    assert_eq!(fetch.idempotent, Some(false));
+    assert_eq!(fetch.deterministic, Some(false));
+
+    let sqrt = kb.get("Math.sqrt").expect("Math.sqrt in knowledge base");
+    assert_eq!(sqrt.deterministic, Some(true));
+    assert_eq!(sqrt.idempotent, Some(true));
+    assert_eq!(sqrt.async_, Some(false));
+
+    let date_now = kb.get("Date.now").expect("Date.now in knowledge base");
+    assert_eq!(date_now.async_, Some(false));
+    assert_eq!(date_now.deterministic, Some(false));
+    assert_eq!(date_now.idempotent, Some(false));
+
+    let yaml = serde_yaml::to_string(fetch).unwrap();
+    let parsed: ApiSemantics = serde_yaml::from_str(&yaml).unwrap();
+    assert_eq!(&parsed, fetch);
   }
 
   #[test]

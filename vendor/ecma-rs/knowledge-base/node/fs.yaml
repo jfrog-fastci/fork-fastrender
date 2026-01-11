@@ -2,21 +2,31 @@
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.readFileSync
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
+  async: false
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.writeFile
   since: "v0.1.0"
   effects: Io
   purity: Impure
+  async: true
+  idempotent: false
 
 - name: node:fs.writeFileSync
   since: "v0.1.0"
   effects: Io
   purity: Impure
+  async: false
+  idempotent: false
 
 - name: node:fs.stat
   since: "v0.1.0"
@@ -50,11 +60,16 @@
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.promises.writeFile
   since: "v10.0.0"
   effects: Io
   purity: Impure
+  async: true
+  idempotent: false
 
 - name: node:fs.promises.stat
   since: "v10.0.0"

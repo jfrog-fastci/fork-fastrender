@@ -9,3 +9,7 @@
       flags: IO | NETWORK
       throws: Maybe
   purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false

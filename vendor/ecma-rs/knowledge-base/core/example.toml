@@ -5,9 +5,15 @@ name = "Math.sqrt"
 aliases = []
 effects = "Pure"
 purity = "Pure"
+async = false
+idempotent = true
+deterministic = true
 
 [[apis]]
 name = "Math.floor"
 aliases = []
 effects = "Pure"
 purity = "Pure"
+async = false
+idempotent = true
+deterministic = true

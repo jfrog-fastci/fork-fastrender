@@ -10,6 +10,7 @@ default = []
 typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
 
 [dependencies]
+anyhow = { workspace = true }
 effect-model = { workspace = true }
 knowledge-base = { workspace = true }
 hir-js = { workspace = true }
