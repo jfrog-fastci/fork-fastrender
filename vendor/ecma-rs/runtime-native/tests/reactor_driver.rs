@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
+use std::os::fd::IntoRawFd;
 use std::os::fd::OwnedFd;
 use std::task::RawWaker;
 use std::task::RawWakerVTable;
@@ -122,6 +123,61 @@ fn notify_breaks_blocking_poll_without_external_sources() {
 
   assert!(elapsed < Duration::from_secs(1), "notify did not break poll promptly: {elapsed:?}");
   assert!(!out.did_work(), "notify-only wakeup should be reported as no work");
+}
+
+#[test]
+fn token_is_not_reused_across_fd_reuse() {
+  let driver = ReactorDriver::new().unwrap();
+
+  let (read1, write1) = new_pipe().unwrap();
+  let old_fd = read1.as_raw_fd();
+  set_nonblocking(old_fd).unwrap();
+
+  let token1 = driver
+    .register_fd(read1.as_fd(), Interest::READABLE, counting_waker(Arc::new(AtomicUsize::new(0))))
+    .unwrap();
+  driver.deregister_fd(read1.as_fd()).unwrap();
+
+  // Avoid `OwnedFd` closing `old_fd` after we repurpose it with `dup2`.
+  let old_fd = read1.into_raw_fd();
+
+  // Create a new pipe and swap its read end onto the old numeric fd. Doing this with `dup2` avoids
+  // leaving `old_fd` temporarily free (which could allow other concurrently-running tests to reuse
+  // it).
+  let (read2, write2) = new_pipe().unwrap();
+  set_nonblocking(read2.as_raw_fd()).unwrap();
+
+  let read2_raw = read2.into_raw_fd();
+  let duped = unsafe { libc::dup2(read2_raw, old_fd) };
+  assert_eq!(duped, old_fd);
+  unsafe {
+    libc::close(read2_raw);
+  }
+
+  // The old pipe is now reader-less; close the writer to avoid EPIPE/SIGPIPE on drop.
+  drop(write1);
+
+  // SAFETY: `dup2` produced an owned fd at `old_fd`.
+  let read2 = unsafe { OwnedFd::from_raw_fd(old_fd) };
+
+  let wakes = Arc::new(AtomicUsize::new(0));
+  let token2 = driver
+    .register_fd(read2.as_fd(), Interest::READABLE, counting_waker(wakes.clone()))
+    .unwrap();
+
+  assert_ne!(token1, token2, "token should not be derived from the raw fd number");
+
+  // Ensure the new registration works.
+  let b = [0x1u8; 1];
+  let rc = unsafe { libc::write(write2.as_raw_fd(), b.as_ptr().cast::<libc::c_void>(), 1) };
+  assert_eq!(rc, 1);
+  let out = driver.poll(Some(Duration::from_secs(1))).unwrap();
+  assert_eq!(out.io_events, 1);
+  assert_eq!(wakes.load(Ordering::SeqCst), 1);
+
+  let _ = driver.deregister_fd(read2.as_fd());
+  drop(read2);
+  drop(write2);
 }
 
 fn new_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {

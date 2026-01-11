@@ -17,9 +17,8 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::os::fd::AsRawFd;
-use std::os::fd::BorrowedFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::Waker;
 use std::time::{Duration, Instant};
@@ -70,7 +69,8 @@ pub struct ReactorDriver {
 struct Inner {
   reactor: GcAwareMutex<Reactor>,
   reactor_waker: crate::reactor::Waker,
-  io_wakers: GcAwareMutex<HashMap<Token, Waker>>,
+  next_token: AtomicUsize,
+  io: GcAwareMutex<IoState>,
   timers: GcAwareMutex<TimerDriver>,
   clock: ArcSwap<ClockState>,
 
@@ -82,6 +82,27 @@ struct Inner {
   // the OS poll call. Used to avoid "stale" wakeups when registrations happen on
   // the poll thread itself.
   is_polling: AtomicBool,
+}
+
+#[derive(Default)]
+struct IoState {
+  by_fd: HashMap<RawFd, Token>,
+  wakers: HashMap<Token, Waker>,
+}
+
+impl Inner {
+  fn alloc_token(&self) -> io::Result<Token> {
+    self
+      .next_token
+      .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+        if cur == 0 || cur == Token::WAKE.0 {
+          return None;
+        }
+        Some(cur + 1)
+      })
+      .map(Token)
+      .map_err(|_| io::Error::new(io::ErrorKind::Other, "reactor token space exhausted"))
+  }
 }
 
 impl ReactorDriver {
@@ -104,7 +125,8 @@ impl ReactorDriver {
       inner: Arc::new(Inner {
         reactor: GcAwareMutex::new(reactor),
         reactor_waker,
-        io_wakers: GcAwareMutex::new(HashMap::new()),
+        next_token: AtomicUsize::new(1),
+        io: GcAwareMutex::new(IoState::default()),
         timers: GcAwareMutex::new(TimerDriver::new_at(base)),
         clock: ArcSwap::from_pointee(ClockState { clock, base }),
         poll_guard: GcAwareMutex::new(()),
@@ -117,7 +139,7 @@ impl ReactorDriver {
   ///
   /// This intentionally ignores the internal cross-thread wakeup mechanism.
   pub fn has_external_sources(&self) -> bool {
-    !self.inner.io_wakers.lock().is_empty() || !self.inner.timers.lock().is_empty()
+    !self.inner.io.lock().wakers.is_empty() || !self.inner.timers.lock().is_empty()
   }
 
   pub fn now(&self) -> Instant {
@@ -129,16 +151,52 @@ impl ReactorDriver {
   }
 
   pub fn register_fd(&self, fd: BorrowedFd<'_>, interest: Interest, waker: Waker) -> io::Result<Token> {
-    let token = Token(fd.as_raw_fd() as usize);
-    {
-      let reactor = self.inner.reactor.lock();
-      if self.inner.io_wakers.lock().contains_key(&token) {
-        reactor.reregister(fd, token, interest)?;
-      } else {
-        reactor.register(fd, token, interest)?;
+    let raw_fd = fd.as_raw_fd();
+
+    let reactor = self.inner.reactor.lock();
+    let mut io_state = self.inner.io.lock();
+
+    // `Token` values must remain stable across any OS wait call; using the raw fd number directly
+    // allows token reuse if the OS recycles the fd (and a readiness event from the old registration
+    // is still being processed). Use an internal monotonic token generator instead.
+    let (mut token, mut is_new) = match io_state.by_fd.get(&raw_fd).copied() {
+      Some(token) => (token, false),
+      None => {
+        let token = self.inner.alloc_token()?;
+        io_state.by_fd.insert(raw_fd, token);
+        (token, true)
       }
+    };
+
+    let mut res = if is_new {
+      reactor.register(fd, token, interest)
+    } else {
+      reactor.reregister(fd, token, interest)
+    };
+
+    // If the driver state got out of sync with the OS reactor (e.g. the fd was
+    // closed without deregistration and then re-opened/reused), attempt to recover
+    // by allocating a fresh token and re-registering.
+    if !is_new && matches!(&res, Err(err) if err.kind() == io::ErrorKind::NotFound) {
+      io_state.by_fd.remove(&raw_fd);
+      io_state.wakers.remove(&token);
+      token = self.inner.alloc_token()?;
+      io_state.by_fd.insert(raw_fd, token);
+      is_new = true;
+      res = reactor.register(fd, token, interest);
     }
-    self.inner.io_wakers.lock().insert(token, waker);
+
+    if let Err(err) = res {
+      // Roll back the logical registration if we inserted a new token mapping.
+      if is_new {
+        io_state.by_fd.remove(&raw_fd);
+      }
+      return Err(err);
+    }
+
+    io_state.wakers.insert(token, waker);
+    drop(io_state);
+    drop(reactor);
 
     // If another thread is blocked in `poll()`, wake it so it can observe the
     // updated registrations. (Registration itself is expected to be performed
@@ -152,9 +210,16 @@ impl ReactorDriver {
   }
 
   pub fn deregister_fd(&self, fd: BorrowedFd<'_>) -> io::Result<()> {
-    let token = Token(fd.as_raw_fd() as usize);
-    self.inner.reactor.lock().deregister(fd)?;
-    self.inner.io_wakers.lock().remove(&token);
+    let raw_fd = fd.as_raw_fd();
+
+    let reactor = self.inner.reactor.lock();
+    let mut io_state = self.inner.io.lock();
+    if let Some(token) = io_state.by_fd.remove(&raw_fd) {
+      io_state.wakers.remove(&token);
+    }
+    drop(io_state);
+    reactor.deregister(fd)?;
+    drop(reactor);
     if self.inner.is_polling.load(Ordering::SeqCst) {
       let _ = self.inner.reactor_waker.wake();
     }
@@ -229,20 +294,24 @@ impl ReactorDriver {
     let _n = poll_res?;
     drop(polling_guard);
 
-    let mut io_events = 0usize;
-    if !events.is_empty() {
-      let io_wakers = self.inner.io_wakers.lock();
-      for ev in events {
-        if ev.token == Token::WAKE {
-          continue;
-        }
-        if let Some(waker) = io_wakers.get(&ev.token) {
-          // We keep the waker registered; the corresponding future will update
-          // it on its next poll if needed.
-          waker.wake_by_ref();
-          io_events += 1;
-        }
-      }
+    let io_wakers: Vec<Waker> = if events.is_empty() {
+      Vec::new()
+    } else {
+      let io_state = self.inner.io.lock();
+      events
+        .into_iter()
+        .filter_map(|ev| {
+          if ev.token == Token::WAKE {
+            None
+          } else {
+            io_state.wakers.get(&ev.token).cloned()
+          }
+        })
+        .collect()
+    };
+    let io_events = io_wakers.len();
+    for waker in io_wakers {
+      waker.wake();
     }
 
     let expired = self.inner.timers.lock().poll_expired(self.now());
