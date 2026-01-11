@@ -6,7 +6,8 @@ set -euo pipefail
 #
 # This exercises the Linux AOT linking policy implemented by:
 # - `scripts/native_js_link_linux.sh` (objcopy rewrite + lld PIE link)
-# - `runtime-native/stackmaps.ld`      (KEEP + exported stackmap range symbols)
+# - `runtime-native/link/stackmaps.ld` (KEEP + exported stackmap range symbols)
+#   (`runtime-native/stackmaps.ld` is a compat alias)
 
 if [[ "${OSTYPE:-}" != linux* ]]; then
   echo "skipping: Linux-only (OSTYPE=${OSTYPE:-unknown})" >&2

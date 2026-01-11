@@ -141,12 +141,17 @@ out_dir="${ECMA_RS_ROOT}/target/runtime-native-abi-check"
 mkdir -p "${out_dir}"
 out_bin="${out_dir}/ffi_smoke"
 
+stackmaps_ld="${ECMA_RS_ROOT}/runtime-native/link/stackmaps.ld"
+if [[ ! -f "${stackmaps_ld}" ]]; then
+  stackmaps_ld="${ECMA_RS_ROOT}/runtime-native/stackmaps.ld"
+fi
+
 echo "[runtime-native] Compiling C smoke test..."
 clang-18 \
   -std=c11 \
   -Wall -Wextra -Werror \
   -I "${ECMA_RS_ROOT}/runtime-native/include" \
-  -Wl,-T,"${ECMA_RS_ROOT}/runtime-native/stackmaps.ld" \
+  -Wl,-T,"${stackmaps_ld}" \
   "${ECMA_RS_ROOT}/runtime-native/examples/ffi_smoke.c" \
   "${staticlib}" \
   -o "${out_bin}" \

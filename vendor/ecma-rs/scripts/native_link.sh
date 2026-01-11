@@ -57,7 +57,10 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ecma_root="$(cd "${script_dir}/.." && pwd)"
-stackmaps_ld="${ecma_root}/runtime-native/link/stackmaps.ld"
+stackmaps_ld_lld="${ecma_root}/runtime-native/link/stackmaps.ld"
+stackmaps_ld_gnuld="${ecma_root}/runtime-native/link/stackmaps_gnuld.ld"
+
+stackmaps_ld="${stackmaps_ld_lld}"
 if [[ ! -f "${stackmaps_ld}" ]]; then
   # Compatibility path for older docs/build scripts.
   stackmaps_ld="${ecma_root}/runtime-native/stackmaps.ld"
@@ -84,6 +87,11 @@ fi
 LINKER="${ECMA_RS_NATIVE_LINKER:-${default_linker}}"
 PIE="${ECMA_RS_NATIVE_PIE:-0}"
 GC_SECTIONS="${ECMA_RS_NATIVE_GC_SECTIONS:-1}"
+
+# GNU ld-specific script fragment for PIE mode (avoids RWX).
+if [[ "${LINKER}" == "ld" && "${PIE}" == "1" && -f "${stackmaps_ld_gnuld}" ]]; then
+  stackmaps_ld="${stackmaps_ld_gnuld}"
+fi
 
 link_args=()
 

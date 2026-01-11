@@ -13,7 +13,7 @@ set -euo pipefail
 #   are applied to RW memory and the final bytes can be protected by RELRO.
 # - Link with a tiny linker-script fragment that `KEEP`s the section (so `--gc-sections` can't drop
 #   it) and defines `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (see
-#   `runtime-native/stackmaps.ld`).
+#   `runtime-native/link/stackmaps.ld`, with `runtime-native/stackmaps.ld` as a compat alias).
 #
 # See: ../docs/gc_statepoints.md
 
@@ -92,7 +92,10 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ecma_rs_root="$(cd "${script_dir}/.." && pwd)"
-stackmaps_ld="${ecma_rs_root}/runtime-native/stackmaps.ld"
+stackmaps_ld="${ecma_rs_root}/runtime-native/link/stackmaps.ld"
+if [[ ! -f "${stackmaps_ld}" ]]; then
+  stackmaps_ld="${ecma_rs_root}/runtime-native/stackmaps.ld"
+fi
 if [[ ! -f "${stackmaps_ld}" ]]; then
   echo "error: missing linker script ${stackmaps_ld}" >&2
   exit 2

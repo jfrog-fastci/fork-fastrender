@@ -20,7 +20,10 @@ if [[ ! -f "${lib_path}" ]]; then
 fi
 
 include_dir="${ecma_rs_root}/runtime-native/include"
-stackmaps_ld="${ecma_rs_root}/runtime-native/stackmaps.ld"
+stackmaps_ld="${ecma_rs_root}/runtime-native/link/stackmaps.ld"
+if [[ ! -f "${stackmaps_ld}" ]]; then
+  stackmaps_ld="${ecma_rs_root}/runtime-native/stackmaps.ld"
+fi
 linker_script_line=""
 linker_script_flag=""
 if [[ "$(uname -s)" == "Linux" ]]; then

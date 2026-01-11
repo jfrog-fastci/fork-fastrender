@@ -26,6 +26,12 @@
  * empty `.rodata` output section, and will error if an `INSERT AFTER .rodata`
  * fragment is used when the input objects don't contribute any `.rodata`
  * (common in minimal binaries/tests).
+ *
+ * Note: GNU ld assigns an `INSERT AFTER .text` output section to the same LOAD
+ * segment as `.text` by default. If stackmaps are made writable to avoid
+ * `DT_TEXTREL` in PIE mode, that can produce an RWX segment. For GNU ld PIE
+ * builds, prefer `runtime-native/link/stackmaps_gnuld.ld` (or use
+ * `scripts/native_link.sh`, which selects the appropriate fragment).
  */
 
 SECTIONS {

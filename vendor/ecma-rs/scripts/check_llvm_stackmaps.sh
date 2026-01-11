@@ -164,6 +164,15 @@ must_not_have_textrel() {
   fi
 }
 
+must_not_have_rwx_segment() {
+  local bin="$1"
+  if "${READELF}" -l "${bin}" 2>/dev/null | grep -q "RWE"; then
+    echo "expected no RWX LOAD segment in: ${bin}" >&2
+    "${READELF}" -l "${bin}" >&2 || true
+    exit 1
+  fi
+}
+
 echo "[stackmaps] link: ld (no-pie, no gc-sections)"
 "${CLANG}" -no-pie -o "${tmp}/a_ld_nogc" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_ld_nogc"
@@ -206,6 +215,12 @@ must_have_stackmaps "${tmp}/a_policy"
 echo "[stackmaps] link: native_link.sh (ld explicit)"
 ECMA_RS_NATIVE_LINKER=ld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy_ld"
+
+echo "[stackmaps] link: native_link.sh (ld + PIE; stackmaps patched via objcopy)"
+ECMA_RS_NATIVE_LINKER=ld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld_pie" "${objs[@]}"
+must_have_stackmaps "${tmp}/a_policy_ld_pie"
+must_not_have_textrel "${tmp}/a_policy_ld_pie"
+must_not_have_rwx_segment "${tmp}/a_policy_ld_pie"
 
 if [[ -n "${LLD_FUSE}" ]]; then
   echo "[stackmaps] link: lld (no-pie, no gc-sections)"
