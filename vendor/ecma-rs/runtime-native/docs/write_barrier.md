@@ -23,7 +23,7 @@ It also records proposed policy defaults for **per-object card tables** intended
   - For objects with per-object card tables installed, it marks the relevant card dirty.
   - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards (minor GC scanning + sticky rebuild keeps correctness).
 - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
-- The exported symbol **`rt_gc_collect`** is still a no-op. The GC prototype is not fully wired up to the exported ABI surface yet (e.g. `rt_alloc*` still use the system allocator).
+- The exported symbol **`rt_gc_collect`** is still a no-op. The GC prototype is not fully wired up to the exported ABI surface yet (e.g. `rt_alloc` / `rt_alloc_pinned` still use the milestone bump allocator; only `rt_alloc_array` is currently GC-allocated).
 
 ---
 

@@ -5,7 +5,8 @@
 //! - A stop-the-world generational GC implementation (`gc::GcHeap`) used by tests and future ABI wiring.
 //!
 //! Note:
-//! - `rt_alloc*` is backed by the milestone bump allocator (linear, leak-only; no frees / no GC yet).
+//! - `rt_alloc` / `rt_alloc_pinned` are backed by the milestone bump allocator (linear, leak-only; no frees / no GC yet).
+//! - `rt_alloc_array` is wired into the GC heap allocator (nursery/LOS/Immix).
 //! - `rt_gc_collect` is still a stop-the-world handshake stub (it does not yet run a full GC).
 //! - The exported write barrier is implemented and performs young-range checks + sets the per-object
 //!   remembered bit (see `docs/write_barrier.md`).
