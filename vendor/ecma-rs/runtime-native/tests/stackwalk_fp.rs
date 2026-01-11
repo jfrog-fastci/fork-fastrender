@@ -385,6 +385,88 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
+#[cfg(any(debug_assertions, feature = "conservative_roots"))]
+fn missing_stackmap_uses_conservative_fallback_scan() {
+  use runtime_native::gc::ObjHeader;
+  use runtime_native::test_util::TestGcGuard;
+  use runtime_native::{GcHeap, TypeDescriptor};
+  use std::sync::atomic::AtomicUsize;
+
+  // The conservative fallback uses the type-descriptor registry (debug builds
+  // and/or `conservative_roots`) to filter candidate pointers down to likely
+  // object headers.
+  static DESC: TypeDescriptor = TypeDescriptor::new(core::mem::size_of::<ObjHeader>(), &[]);
+  let mut heap = GcHeap::new();
+  let _ = heap.alloc_old(&DESC);
+
+  // Set up a fake young-space range containing a synthetic object header.
+  let heap_bytes: Box<[u8; 256]> = Box::new([0; 256]);
+  let _gc_guard = TestGcGuard::new();
+
+  let heap_start = heap_bytes.as_ptr().cast_mut();
+  let heap_end = unsafe { heap_start.add(heap_bytes.len()) };
+  runtime_native::rt_gc_set_young_range(heap_start, heap_end);
+
+  let hdr_align = core::mem::align_of::<ObjHeader>();
+  let hdr_size = core::mem::size_of::<ObjHeader>();
+  let obj_addr = align_up(heap_start as usize, hdr_align);
+  assert!(
+    obj_addr + hdr_size <= heap_end as usize,
+    "fake heap not large enough for ObjHeader"
+  );
+  let obj_ptr = obj_addr as *mut u8;
+
+  unsafe {
+    // ObjHeader::type_desc is at offset 0 (repr(C)).
+    (obj_ptr as *mut *const TypeDescriptor).write(&DESC as *const TypeDescriptor);
+    // ObjHeader::meta follows the type descriptor pointer.
+    let meta_ptr = obj_ptr.add(core::mem::size_of::<*const TypeDescriptor>()) as *mut AtomicUsize;
+    meta_ptr.write(AtomicUsize::new(0));
+  }
+
+  let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_x86_64.bin"))
+    .expect("parse stackmaps");
+
+  // Ensure the chosen return address is not present in the stackmaps index so
+  // the FP walker uses the conservative fallback.
+  let missing_ra = 0x5555_u64;
+  assert!(stackmaps.lookup(missing_ra).is_none());
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  let start_fp = align_up(base + 128, 16);
+  let caller_fp = align_up(base + 256, 16);
+  let caller_sp = start_fp + 16;
+  let slot_addr = caller_sp + 32;
+
+  unsafe {
+    // runtime frame -> caller frame (no stackmap record)
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, missing_ra);
+
+    // caller frame -> end
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+
+    // Place the candidate pointer into the scanned range [caller_sp, caller_fp).
+    write_u64(slot_addr, obj_ptr as u64);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  let mut visited: Vec<usize> = Vec::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited.push(slot as usize);
+    })
+    .expect("walk");
+  }
+
+  assert_eq!(visited, vec![slot_addr]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
 fn non_statepoint_records_are_skipped() {
   let mut bytes = build_stackmaps_with_derived_pointer();
 
