@@ -107,6 +107,12 @@ ul, ol {
     padding-left: 40px;
 }
 
+/* Nested lists are typically rendered without extra vertical margins in browser UA stylesheets. */
+ul ul, ul ol, ol ul, ol ol {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
 ul {
     list-style-type: disc;
     counter-reset: list-item;

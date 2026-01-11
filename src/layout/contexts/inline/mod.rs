@@ -8684,6 +8684,18 @@ impl InlineFormattingContext {
       return;
     }
 
+    // Outside list markers (and other `is_marker` text items such as overflow markers) can be
+    // painted outside the content box and have a reduced `advance_for_layout` (often 0).
+    //
+    // Intrinsic sizing is used for shrink-to-fit (floats, tables, etc) and must match layout: if a
+    // marker has `advance_for_layout == 0`, it must not inflate the intrinsic inline size.
+    // Otherwise floats containing lists become too wide and shift surrounding text (observed on
+    // sqlite.org's right sidebar).
+    if text_item.is_marker {
+      tracker.add_width(text_item.advance_for_layout.max(0.0));
+      return;
+    }
+
     let len = text_item.text.len();
     let mut last_break = 0;
     let mut hyphen_width: Option<f32> = None;
@@ -8745,6 +8757,13 @@ impl InlineFormattingContext {
 
   fn measure_text_max_content(&self, text_item: &TextItem, tracker: &mut dyn SegmentConsumer) {
     if text_item.text.is_empty() {
+      return;
+    }
+
+    // Mirror `measure_text_min_content`'s marker behavior: use the layout advance so outside
+    // markers do not participate in intrinsic sizing.
+    if text_item.is_marker {
+      tracker.add_width(text_item.advance_for_layout.max(0.0));
       return;
     }
 
@@ -17887,6 +17906,38 @@ mod tests {
     );
     let children = vec![make_text_box("x"), inline_block, make_text_box("y")];
     assert_intrinsic_width_children_matches_container(&ifc, container_style, children);
+  }
+
+  #[test]
+  fn intrinsic_width_ignores_outside_list_marker() {
+    let ifc = InlineFormattingContext::new();
+
+    let container_style = default_style();
+
+    let mut marker_style = (*container_style).clone();
+    marker_style.list_style_position = ListStylePosition::Outside;
+    let marker = BoxNode::new_marker(
+      Arc::new(marker_style),
+      MarkerContent::Text("• ".to_string()),
+    );
+
+    let text = BoxNode::new_text(container_style.clone(), "Hello World".to_string());
+
+    let (min_text, max_text) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&text])
+      .expect("text intrinsic widths");
+    let (min_with_marker, max_with_marker) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&marker, &text])
+      .expect("marker + text intrinsic widths");
+
+    assert!(
+      (min_text - min_with_marker).abs() < 0.5,
+      "expected min-content to ignore outside marker: text={min_text:.2} marker+text={min_with_marker:.2}",
+    );
+    assert!(
+      (max_text - max_with_marker).abs() < 0.5,
+      "expected max-content to ignore outside marker: text={max_text:.2} marker+text={max_with_marker:.2}",
+    );
   }
 
   fn marker_and_text_positions(fragment: &FragmentNode) -> (Option<f32>, Option<f32>) {

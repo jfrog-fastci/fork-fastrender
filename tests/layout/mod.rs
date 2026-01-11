@@ -23,6 +23,7 @@ mod block_intrinsic_includes_child_margins;
 mod block_percent_height_auto;
 mod html_body_percent_height;
 mod block_margin_collapse;
+mod nested_list_user_agent_margins;
 mod block_nonblock_fc_does_not_inherit_definite_height;
 mod inline_percent_height_auto;
 mod box_shadow_outset_cutout;
