@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -182,42 +183,109 @@ pub fn relocate_statepoint_derived_roots<A>(
 where
   A: LocationValueAccess,
 {
-  let mut updates = Vec::with_capacity(record.gc_root_count());
-  let mut relocated_by_value: HashMap<usize, usize> = HashMap::new();
+  #[derive(Clone)]
+  struct PairSnapshot {
+    base_loc: StackMapLocation,
+    derived_loc: StackMapLocation,
+    base_old: usize,
+    derived_old: usize,
+  }
+
+  // Snapshot old values first so we can safely update repeated base locations in a second phase.
+  let mut pairs: Vec<PairSnapshot> = Vec::with_capacity(record.gc_root_count());
+  let mut base_old_by_loc: HashMap<StackMapLocation, usize> = HashMap::new();
+  let mut derived_old_by_loc: HashMap<StackMapLocation, usize> = HashMap::new();
 
   for (base_loc, derived_loc) in record.gc_roots() {
-    let base = access.read_usize(base_loc)?;
-    let derived = access.read_usize(derived_loc)?;
+    let base_old = access.read_usize(base_loc)?;
+    let derived_old = access.read_usize(derived_loc)?;
 
-    // Null convention:
-    // - If either old pointer is `0`, treat the derived pointer as null.
-    // - If the GC relocator returns `0` for a non-null base (should not happen), keep the derived
-    //   slot consistent by writing `0`.
-    if base == 0 || derived == 0 {
-      updates.push((derived_loc, 0));
-      continue;
+    match base_old_by_loc.entry(base_loc.clone()) {
+      Entry::Vacant(e) => {
+        e.insert(base_old);
+      }
+      Entry::Occupied(e) => {
+        debug_assert_eq!(*e.get(), base_old, "base location value changed while snapshotting");
+      }
     }
 
-    let new_base = if let Some(&cached) = relocated_by_value.get(&base) {
-      cached
+    match derived_old_by_loc.entry(derived_loc.clone()) {
+      Entry::Vacant(e) => {
+        e.insert(derived_old);
+      }
+      Entry::Occupied(e) => {
+        debug_assert_eq!(
+          *e.get(),
+          derived_old,
+          "derived location value changed while snapshotting"
+        );
+      }
+    }
+
+    pairs.push(PairSnapshot {
+      base_loc: base_loc.clone(),
+      derived_loc: derived_loc.clone(),
+      base_old,
+      derived_old,
+    });
+  }
+
+  // Relocate each unique base value once, and apply the result to each base location.
+  let mut relocated_by_value: HashMap<usize, usize> = HashMap::new();
+  let mut base_new_by_loc: HashMap<StackMapLocation, usize> = HashMap::new();
+  for (base_loc, base_old) in base_old_by_loc {
+    let base_new = if base_old == 0 {
+      0
     } else {
-      let new_base = relocate_base(base);
-      relocated_by_value.insert(base, new_base);
-      new_base
+      match relocated_by_value.entry(base_old) {
+        Entry::Occupied(e) => *e.get(),
+        Entry::Vacant(e) => {
+          let base_new = relocate_base(base_old);
+          e.insert(base_new);
+          base_new
+        }
+      }
     };
-    let new_derived = if new_base == 0 {
+    base_new_by_loc.insert(base_loc, base_new);
+  }
+
+  // Phase 2: write relocated base pointers.
+  for (base_loc, base_new) in &base_new_by_loc {
+    access.write_usize(base_loc, *base_new)?;
+  }
+
+  // Phase 3: write derived pointers using the snapshotted old values.
+  //
+  // Null convention:
+  // - If either old pointer is `0`, treat the derived pointer as null.
+  // - If the GC relocator returns `0` for a non-null base (should not happen), keep the derived
+  //   slot consistent by writing `0`.
+  for pair in pairs {
+    let base_new = *base_new_by_loc
+      .get(&pair.base_loc)
+      .expect("missing relocated base location");
+    let derived_new = if pair.base_old == 0 || pair.derived_old == 0 || base_new == 0 {
       0
     } else {
       // Derived relocation is defined as: `new_derived = new_base + (derived_old - base_old)`.
-      let delta = derived.wrapping_sub(base);
-      new_base.wrapping_add(delta)
+      let delta = pair.derived_old.wrapping_sub(pair.base_old);
+      base_new.wrapping_add(delta)
     };
 
-    updates.push((derived_loc, new_derived));
-  }
+    // Preserve any explicitly-null derived values.
+    //
+    // Note: if a derived location is duplicated in the record, ensure we always write the same
+    // value.
+    match derived_old_by_loc.get(&pair.derived_loc) {
+      Some(&old) => {
+        debug_assert_eq!(old, pair.derived_old);
+      }
+      None => {
+        debug_assert!(false, "derived location missing from snapshot map");
+      }
+    }
 
-  for (derived_loc, new_derived) in updates {
-    access.write_usize(derived_loc, new_derived)?;
+    access.write_usize(&pair.derived_loc, derived_new)?;
   }
 
   Ok(())
@@ -372,6 +440,73 @@ mod tests {
     assert_eq!(
       access.values[&derived], 0x2020,
       "D should be recomputed from relocated base + (D - B) offset"
+    );
+  }
+
+  #[test]
+  fn relocate_statepoint_derived_roots_updates_base_even_if_locations_differ() {
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      // Root #0: base=B, derived=D, but both point to the *same* value (no interior offset).
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 16,
+        size: 8,
+      },
+    ];
+
+    let view = StatepointRecordView::new(&locs).unwrap();
+
+    #[derive(Default)]
+    struct MapAccess {
+      values: HashMap<StackMapLocation, usize>,
+    }
+
+    impl LocationValueAccess for MapAccess {
+      type Error = ();
+
+      fn read_usize(&mut self, loc: &StackMapLocation) -> Result<usize, Self::Error> {
+        Ok(*self.values.get(loc).unwrap_or(&0))
+      }
+
+      fn write_usize(&mut self, loc: &StackMapLocation, value: usize) -> Result<(), Self::Error> {
+        self.values.insert(loc.clone(), value);
+        Ok(())
+      }
+    }
+
+    let base = StackMapLocation::Indirect {
+      dwarf_reg: 7,
+      offset: 8,
+      size: 8,
+    };
+    let derived = StackMapLocation::Indirect {
+      dwarf_reg: 7,
+      offset: 16,
+      size: 8,
+    };
+
+    let mut access = MapAccess::default();
+    access.values.insert(base.clone(), 0x1000);
+    access.values.insert(derived.clone(), 0x1000);
+
+    relocate_statepoint_derived_roots(&view, &mut access, |ptr| match ptr {
+      0x1000 => 0x2000,
+      other => other,
+    })
+    .unwrap();
+
+    assert_eq!(access.values[&base], 0x2000, "base location must be relocated");
+    assert_eq!(
+      access.values[&derived], 0x2000,
+      "derived location must be updated even when it is a distinct location holding the same value"
     );
   }
 
