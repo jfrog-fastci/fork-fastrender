@@ -127,3 +127,128 @@ fn loom_two_waiters_no_loss() {
     }
   });
 }
+
+/// Sanity check: prove the test suite can actually catch the classic lost-wakeup bug.
+///
+/// If a waiter registers with a lock-free stack but **does not** re-check the promise
+/// state after pushing (and call `wake_all()` if already settled), it is possible for:
+///   1) the promise to drain the waiter stack while it is still empty, then
+///   2) the waiter to push itself after settlement, and
+///   3) no one ever drains the stack again.
+///
+/// Loom should find this interleaving and make `check()` fail; we assert that it does.
+#[test]
+fn loom_sanity_missing_recheck_is_detected() {
+  use loom::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+  use loom::sync::Mutex;
+  use std::panic::{catch_unwind, AssertUnwindSafe};
+
+  const PENDING: u8 = 0;
+  const SETTLED: u8 = 1;
+
+  struct Waiter {
+    id: usize,
+    next: AtomicPtr<Waiter>,
+    ready: *const Mutex<Vec<usize>>,
+  }
+
+  impl Waiter {
+    fn new(id: usize, ready: &Mutex<Vec<usize>>) -> Self {
+      Self {
+        id,
+        next: AtomicPtr::new(core::ptr::null_mut()),
+        ready: ready as *const Mutex<Vec<usize>>,
+      }
+    }
+
+    fn wake(&self) {
+      unsafe {
+        (&*self.ready).lock().unwrap().push(self.id);
+      }
+    }
+  }
+
+  struct BrokenPromise {
+    state: AtomicU8,
+    waiters: AtomicPtr<Waiter>,
+  }
+
+  impl BrokenPromise {
+    fn new() -> Self {
+      Self {
+        state: AtomicU8::new(PENDING),
+        waiters: AtomicPtr::new(core::ptr::null_mut()),
+      }
+    }
+
+    fn register_waiter(&self, waiter_ptr: *mut Waiter) {
+      let mut head = self.waiters.load(Ordering::Acquire);
+      loop {
+        unsafe {
+          (*waiter_ptr).next.store(head, Ordering::Relaxed);
+        }
+        match self
+          .waiters
+          .compare_exchange(head, waiter_ptr, Ordering::AcqRel, Ordering::Acquire)
+        {
+          Ok(_) => break,
+          Err(new_head) => head = new_head,
+        }
+      }
+
+      // BUG: missing post-push recheck + wake_all() call when already settled.
+    }
+
+    fn settle(&self) {
+      self.state.store(SETTLED, Ordering::Release);
+      self.wake_all();
+    }
+
+    fn wake_all(&self) {
+      let mut head = self.waiters.swap(core::ptr::null_mut(), Ordering::AcqRel);
+      while !head.is_null() {
+        unsafe {
+          let waiter = &*head;
+          head = waiter.next.load(Ordering::Relaxed);
+          waiter.wake();
+        }
+      }
+    }
+  }
+
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    loom::model::Builder::new().check(|| {
+      let ready = Box::new(Mutex::new(Vec::with_capacity(8)));
+      let promise = Box::new(BrokenPromise::new());
+      let promise_ptr: *const BrokenPromise = &*promise;
+
+      let waiter = Box::new(Waiter::new(1, &*ready));
+      let waiter_ptr = Box::into_raw(waiter);
+
+      let t_register = loom::thread::spawn(move || unsafe {
+        (&*promise_ptr).register_waiter(waiter_ptr);
+      });
+      let t_settle = loom::thread::spawn(move || unsafe {
+        (&*promise_ptr).settle();
+      });
+
+      let r1 = t_register.join();
+      let r2 = t_settle.join();
+      r1.unwrap();
+      r2.unwrap();
+
+      let mut got = ready.lock().unwrap().clone();
+      got.sort_unstable();
+      assert_eq!(got, vec![1]);
+
+      unsafe {
+        drop(Box::from_raw(waiter_ptr));
+      }
+    });
+  }));
+
+  assert!(
+    res.is_err(),
+    "broken algorithm should be rejected by Loom (expected check() to panic)"
+  );
+}
