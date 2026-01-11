@@ -1,7 +1,7 @@
 use runtime_native::stackmaps::{Location, StackMap};
 use runtime_native::statepoints::{
   eval_location, RegFile, RootSlot, StatepointRecord, AARCH64_DWARF_REG_SP,
-  LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_SP,
+  LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP,
 };
 
 struct FakeRegs {
@@ -100,3 +100,17 @@ fn statepoint_aarch64_layout() {
   );
 }
 
+#[test]
+fn eval_direct_location_is_immediate_value() {
+  let loc = Location::Direct {
+    size: 8,
+    dwarf_reg: X86_64_DWARF_REG_FP,
+    offset: -8,
+  };
+
+  let regs = FakeRegs {
+    regs: [(X86_64_DWARF_REG_FP, 0x1000)].into_iter().collect(),
+  };
+  let slot = eval_location(&loc, &regs).unwrap();
+  assert_eq!(slot, RootSlot::Const { value: 0x0ff8 });
+}

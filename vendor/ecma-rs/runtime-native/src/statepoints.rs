@@ -102,7 +102,7 @@ pub enum RootSlot {
   Stack { addr: *mut u8 },
   /// The pointer value lives in a register (rare in observed statepoint output).
   Register { dwarf_reg: u16 },
-  /// A constant (non-root) value.
+  /// A non-addressable value (constant or computed).
   Const { value: u64 },
 }
 
@@ -112,15 +112,17 @@ pub fn eval_location(loc: &Location, regs: &impl RegFile) -> Result<RootSlot, St
       dwarf_reg, offset, ..
     } => eval_stack_indirect(dwarf_reg, offset, regs),
 
-    // LLVM StackMaps `Direct` semantics are "value is reg + offset" (no memory
-    // indirection), while `Indirect` is "value is *(reg + offset)".
-    //
-    // For statepoints we empirically only observe SP-relative `Indirect` slots.
-    // Keep this branch behaving like `Indirect` for now, and rely on tests to
-    // catch if `Direct` starts showing up in emitted statepoint stackmaps.
     Location::Direct {
       dwarf_reg, offset, ..
-    } => eval_stack_indirect(dwarf_reg, offset, regs),
+    } => {
+      // LLVM StackMaps `Direct` semantics are "value is reg + offset" (no memory indirection).
+      //
+      // This is different from `Indirect`, which identifies an addressable stack slot (where the
+      // pointer value lives). A `Direct` value is not an addressable root slot, so we surface it as
+      // an immediate value.
+      let value = eval_reg_plus_offset(dwarf_reg, offset, regs)?;
+      Ok(RootSlot::Const { value })
+    }
 
     Location::Register { dwarf_reg, .. } => Ok(RootSlot::Register { dwarf_reg }),
 
@@ -134,6 +136,17 @@ fn eval_stack_indirect(
   offset: i32,
   regs: &impl RegFile,
 ) -> Result<RootSlot, StatepointError> {
+  let addr = eval_reg_plus_offset(dwarf_reg, offset, regs)?;
+  Ok(RootSlot::Stack {
+    addr: addr as *mut u8,
+  })
+}
+
+fn eval_reg_plus_offset(
+  dwarf_reg: u16,
+  offset: i32,
+  regs: &impl RegFile,
+) -> Result<u64, StatepointError> {
   let base = regs
     .get(dwarf_reg)
     .ok_or(StatepointError::MissingRegister { dwarf_reg })?;
@@ -142,9 +155,5 @@ fn eval_stack_indirect(
   if !(0..=u64::MAX as i128).contains(&addr) {
     return Err(StatepointError::AddressOverflow { base, offset });
   }
-
-  Ok(RootSlot::Stack {
-    addr: (addr as u64) as *mut u8,
-  })
+  Ok(addr as u64)
 }
-
