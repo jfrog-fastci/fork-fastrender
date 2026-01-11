@@ -9,6 +9,15 @@
       "end": 7,
       "severity": "error",
       "message": "`any` is forbidden when `native_strict` is enabled"
+    },
+    {
+      "engine": "rust",
+      "code": "TC4000",
+      "file": "/any.ts",
+      "start": 23,
+      "end": 24,
+      "severity": "error",
+      "message": "`any` is forbidden when `native_strict` is enabled"
     }
   ]
 }
