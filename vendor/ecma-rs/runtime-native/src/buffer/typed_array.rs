@@ -250,3 +250,52 @@ unsafe impl runtime_io_uring::IoBufMut for PinnedUint8Array {
     NonNull::new(self.as_ptr()).expect("PinnedUint8Array pointer must not be null")
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::buffer::BorrowError;
+
+  #[test]
+  fn uint8_array_rejects_safe_access_while_io_borrowed() {
+    let mut buf = ArrayBuffer::new_zeroed(4).unwrap();
+    let view = Uint8Array::view(&buf, 0, 4).unwrap();
+
+    {
+      let _read = buf.try_borrow_io_read().unwrap();
+      assert_eq!(
+        view.as_ptr_range().unwrap_err(),
+        TypedArrayError::Buffer(ArrayBufferError::Borrow(BorrowError::Borrowed))
+      );
+      assert_eq!(
+        view.get(0).unwrap_err(),
+        TypedArrayError::Buffer(ArrayBufferError::Borrow(BorrowError::Borrowed))
+      );
+    }
+
+    assert_eq!(view.as_ptr_range().unwrap().1, 4);
+    assert_eq!(view.get(0).unwrap(), Some(0));
+
+    {
+      let _write = buf.try_borrow_io_write().unwrap();
+      assert_eq!(
+        view.as_ptr_range().unwrap_err(),
+        TypedArrayError::Buffer(ArrayBufferError::Borrow(BorrowError::Borrowed))
+      );
+      assert_eq!(
+        view.get(0).unwrap_err(),
+        TypedArrayError::Buffer(ArrayBufferError::Borrow(BorrowError::Borrowed))
+      );
+    }
+
+    assert_eq!(view.as_ptr_range().unwrap().1, 4);
+    assert_eq!(view.get(0).unwrap(), Some(0));
+
+    // Sanity: pinning through a view blocks detach until the pin guard is dropped.
+    let pinned = view.pin().unwrap();
+    assert_eq!(buf.detach().unwrap_err(), ArrayBufferError::Pinned);
+    drop(pinned);
+    buf.detach().unwrap();
+    assert!(buf.is_detached());
+  }
+}
