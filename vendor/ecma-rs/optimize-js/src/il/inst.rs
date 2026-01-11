@@ -100,6 +100,24 @@ impl OwnershipState {
   }
 }
 
+/// Branch-local nullability information derived from comparisons against `null`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum Nullability {
+  #[default]
+  Unknown,
+  Nullish,
+  NonNullish,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct NullabilityNarrowing {
+  pub var: u32,
+  pub when_true: Nullability,
+  pub when_false: Nullability,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
@@ -119,11 +137,19 @@ pub struct InstMeta {
     serde(default, skip_serializing_if = "OwnershipState::is_default")
   )]
   pub ownership: OwnershipState,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub nullability_narrowing: Option<NullabilityNarrowing>,
 }
 
 impl InstMeta {
   pub fn is_default(&self) -> bool {
-    self.effects.is_default() && self.result_type.is_default() && self.ownership.is_default()
+    self.effects.is_default()
+      && self.result_type.is_default()
+      && self.ownership.is_default()
+      && self.nullability_narrowing.is_none()
   }
 
   pub fn is_pure(&self) -> bool {
