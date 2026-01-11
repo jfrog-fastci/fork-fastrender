@@ -830,4 +830,17 @@ fn runtime_native_cdylib_exports_rt_symbols() {
     "expected gc.safepoint_poll to be exported from {}",
     cdylib.display()
   );
+
+  // Generated code typically polls the safepoint epoch directly. Ensure the exported global is
+  // visible from the shared library too.
+  assert!(
+    dylib_stdout.lines().any(|line| {
+      line
+        .split_whitespace()
+        .last()
+        .is_some_and(|name| name == "RT_GC_EPOCH")
+    }),
+    "expected RT_GC_EPOCH to be exported from {}",
+    cdylib.display()
+  );
 }

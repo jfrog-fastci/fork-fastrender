@@ -20,6 +20,9 @@
 // roots), so clobbering caller-saved scratch regs on the slow path entry does
 // not affect GC correctness.
 
+// Actual implementation is `runtime_native_gc_safepoint_asm`; the public ABI symbol
+// `rt_gc_safepoint` is a tiny Rust wrapper that tail-branches here so the symbol is exported from
+// `cdylib` builds.
 .globl runtime_native_gc_safepoint_asm
 runtime_native_gc_safepoint_asm:
   // Fast path: if (RT_GC_EPOCH & 1) == 0 return;

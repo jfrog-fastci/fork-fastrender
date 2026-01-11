@@ -140,6 +140,10 @@ int main(void) {
   // Use External kind; this test only validates dynamic linking works.
   rt_thread_init(3);
   rt_gc_safepoint();
+  // The slow-path entrypoint is implemented in platform-specific assembly (and has historically
+  // been easy to accidentally omit from `cdylib` exports). Call it with an even epoch so it returns
+  // immediately, but still exercises the symbol resolution + call path.
+  rt_gc_safepoint_slow((uint64_t)0);
   rt_thread_deinit();
   return 0;
 }
@@ -207,4 +211,3 @@ int main(void) {
 
   assert!(run.success(), "C binary exited non-zero: {run:?}");
 }
-

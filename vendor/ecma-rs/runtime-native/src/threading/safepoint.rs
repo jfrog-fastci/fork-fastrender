@@ -324,9 +324,9 @@ pub fn rt_gc_safepoint() {
 
 /// AArch64 safepoint poll.
 ///
-/// On AArch64 the exported `rt_gc_safepoint` entrypoint is implemented in
-/// assembly (`arch/aarch64/rt_gc_safepoint.S`) so we can capture the caller
-/// FP/LR and spill the register file before any Rust code runs.
+/// On AArch64 `rt_gc_safepoint` tail-branches into an assembly stub
+/// (`arch/aarch64/rt_gc_safepoint*.S`) so we can capture the caller FP/LR and spill the register
+/// file before any Rust code runs.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub fn rt_gc_safepoint() {

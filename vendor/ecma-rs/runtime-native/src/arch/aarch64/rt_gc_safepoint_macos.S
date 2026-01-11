@@ -17,6 +17,9 @@
 // This must be written in assembly so we can capture the caller's FP/LR/SP
 // before a Rust prologue can clobber them.
 
+// Actual implementation is `runtime_native_gc_safepoint_asm`; the public ABI symbol
+// `rt_gc_safepoint` is a tiny Rust wrapper that tail-branches here so the symbol is exported from
+// `cdylib` builds.
 .globl runtime_native_gc_safepoint_asm
 runtime_native_gc_safepoint_asm:
   // Fast path: if (RT_GC_EPOCH & 1) == 0 return;
