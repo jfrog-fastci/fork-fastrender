@@ -1028,7 +1028,7 @@ impl StackMaps {
 
           if base_rec.patchpoint_id != other_rec.patchpoint_id
             || base_rec.instruction_offset != other_rec.instruction_offset
-            || base_rec.locations != other_rec.locations
+            || !Self::locations_semantically_equal(&base_rec.locations, &other_rec.locations)
             || !live_outs_equal(&base_rec.live_outs, &other_rec.live_outs)
           {
             return Err(StackMapError::DuplicateCallSite { pc: base.pc });
@@ -1045,6 +1045,79 @@ impl StackMaps {
     }
 
     Ok(Self { raws, callsites })
+  }
+
+  fn locations_semantically_equal(a: &[Location], b: &[Location]) -> bool {
+    if a.len() != b.len() {
+      return false;
+    }
+    a.iter()
+      .zip(b.iter())
+      .all(|(a, b)| Self::location_semantically_equal(a, b))
+  }
+
+  fn location_semantically_equal(a: &Location, b: &Location) -> bool {
+    use Location::*;
+    match (a, b) {
+      (
+        Register {
+          size: a_size,
+          dwarf_reg: a_reg,
+          offset: a_off,
+        },
+        Register {
+          size: b_size,
+          dwarf_reg: b_reg,
+          offset: b_off,
+        },
+      ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+      (
+        Direct {
+          size: a_size,
+          dwarf_reg: a_reg,
+          offset: a_off,
+        },
+        Direct {
+          size: b_size,
+          dwarf_reg: b_reg,
+          offset: b_off,
+        },
+      ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+      (
+        Indirect {
+          size: a_size,
+          dwarf_reg: a_reg,
+          offset: a_off,
+        },
+        Indirect {
+          size: b_size,
+          dwarf_reg: b_reg,
+          offset: b_off,
+        },
+      ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+      (Constant { size: a_size, value: a_val }, Constant { size: b_size, value: b_val }) => {
+        a_size == b_size && a_val == b_val
+      }
+      (
+        ConstIndex {
+          size: a_size,
+          index: _,
+          value: a_val,
+        },
+        ConstIndex {
+          size: b_size,
+          index: _,
+          value: b_val,
+        },
+      ) => a_size == b_size && a_val == b_val,
+      // A constant can be stored inline (`Constant`) or in the constants table (`ConstIndex`). Treat
+      // them as equivalent if their resolved values match.
+      (Constant { size: a_size, value: a_val }, ConstIndex { size: b_size, value: b_val, .. })
+      | (ConstIndex { size: a_size, value: a_val, .. }, Constant { size: b_size, value: b_val }) => {
+        a_size == b_size && a_val == b_val
+      }
+      _ => false,
+    }
   }
 
   #[inline]
@@ -1479,6 +1552,53 @@ mod tests {
     bytes
   }
 
+  fn constindex_blob(
+    function_addr: u64,
+    patchpoint_id: u64,
+    instruction_offset: u32,
+    constants: &[u64],
+    const_index: u32,
+  ) -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::new();
+    build_header(&mut bytes, 1, constants.len() as u32, 1);
+
+    // Function record.
+    push_u64(&mut bytes, function_addr);
+    push_u64(&mut bytes, 32);
+    push_u64(&mut bytes, 1);
+
+    // Constants table.
+    for &c in constants {
+      push_u64(&mut bytes, c);
+    }
+
+    // Record with one ConstIndex location.
+    push_u64(&mut bytes, patchpoint_id);
+    push_u32(&mut bytes, instruction_offset);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 1); // num locations
+
+    // Location: ConstIndex[const_index]
+    push_u8(&mut bytes, 5); // kind
+    push_u8(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 8); // size
+    push_u16(&mut bytes, 0); // dwarf_reg
+    push_u16(&mut bytes, 0); // reserved2
+    push_i32(
+      &mut bytes,
+      i32::try_from(const_index).expect("const index fits i32"),
+    );
+
+    // Align to live-out header.
+    align_to_8_with(&mut bytes, 0);
+    // No live-outs.
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0);
+
+    bytes
+  }
+
   fn build_stackmaps_with_statepoint_pair(base_off: i32, derived_off: i32) -> Vec<u8> {
     // Minimal stackmap section containing a single statepoint record with one
     // `(base, derived)` pair.
@@ -1749,6 +1869,45 @@ mod tests {
     let sm = StackMaps::parse(&concat).unwrap();
     assert_eq!(sm.raws().len(), 2);
     assert_eq!(sm.callsites().len(), 1);
+    assert!(sm.lookup(0x1010).is_some());
+  }
+
+  #[test]
+  fn parse_deduplicates_duplicate_callsite_pcs_even_when_constindex_indices_differ() {
+    // The ConstantIndex `index` is local to a stackmap blob. Two semantically identical stackmap
+    // records can therefore differ only in that index (e.g. due to different constants table
+    // ordering), and this should not prevent deduplication when PCs collide under lld ICF.
+    let constant = 0x1122_3344_5566_7788;
+    let blob_a = constindex_blob(0x1000, 1, 0x10, &[constant, 0xDEAD_BEEF], 0);
+    let blob_b = constindex_blob(0x1000, 1, 0x10, &[0xDEAD_BEEF, constant], 1);
+
+    let mut concat = blob_a.clone();
+    concat.extend_from_slice(&blob_b);
+
+    let sm = StackMaps::parse(&concat).unwrap();
+    assert_eq!(sm.raws().len(), 2);
+    assert_eq!(sm.callsites().len(), 1);
+
+    match (&sm.raws()[0].records[0].locations[0], &sm.raws()[1].records[0].locations[0]) {
+      (
+        Location::ConstIndex {
+          index: idx0,
+          value: val0,
+          ..
+        },
+        Location::ConstIndex {
+          index: idx1,
+          value: val1,
+          ..
+        },
+      ) => {
+        assert_eq!(*val0, constant);
+        assert_eq!(*val1, constant);
+        assert_ne!(idx0, idx1, "expected different ConstIndex indices across blobs");
+      }
+      other => panic!("unexpected locations: {other:?}"),
+    }
+
     assert!(sm.lookup(0x1010).is_some());
   }
 
