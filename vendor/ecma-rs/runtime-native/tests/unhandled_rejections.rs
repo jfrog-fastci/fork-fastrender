@@ -289,6 +289,7 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
   let _ = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
 
   while runtime_native::rt_async_poll() {}
+  assert!(runtime_native::rt_handle_load(handle).is_null());
   assert_eq!(
     runtime_native::test_util::drain_promise_rejection_events(),
     vec![PromiseRejectionEvent::RejectionHandled { promise: p_ref }]

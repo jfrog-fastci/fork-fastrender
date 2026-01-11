@@ -236,6 +236,7 @@ fn native_async_non_strict_await_resumes_synchronously_on_already_settled_promis
   unsafe {
     let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
   }
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   assert!(
     completed,

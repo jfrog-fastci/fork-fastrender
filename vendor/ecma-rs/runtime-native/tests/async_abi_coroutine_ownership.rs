@@ -86,6 +86,7 @@ fn heap_owned_coroutine_is_destroyed_exactly_once_on_completion() {
   unsafe {
     let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
   }
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
   assert!(runtime_native::rt_handle_load(handle).is_null());
