@@ -299,7 +299,10 @@ fn stable_cfg(cfg: &Cfg) -> StableCfg {
       .graph
       .labels_sorted()
       .into_iter()
-      .map(|label| (label, cfg.graph.children_sorted(label)))
+      .filter_map(|label| {
+        let children = cfg.graph.children_sorted(label);
+        (!children.is_empty()).then_some((label, children))
+      })
       .collect(),
   }
 }
@@ -313,7 +316,10 @@ fn stable_step(name: impl Into<String>, cfg: &Cfg) -> StableDebugStep {
       .graph
       .labels_sorted()
       .into_iter()
-      .map(|label| (label, cfg.graph.children_sorted(label)))
+      .filter_map(|label| {
+        let children = cfg.graph.children_sorted(label);
+        (!children.is_empty()).then_some((label, children))
+      })
       .collect(),
   }
 }

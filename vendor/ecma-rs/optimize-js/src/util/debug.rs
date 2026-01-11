@@ -37,7 +37,10 @@ impl OptimizerDebug {
         .graph
         .labels_sorted()
         .into_iter()
-        .map(|k| (k, cfg.graph.children_sorted(k)))
+        .filter_map(|k| {
+          let children = cfg.graph.children_sorted(k);
+          (!children.is_empty()).then_some((k, children))
+        })
         .collect(),
     });
   }
