@@ -1,7 +1,7 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
-use native_js::llvm::{gc, passes};
+use native_js::{emit, llvm::gc};
 use object::Object;
 use tempfile::tempdir;
 
@@ -51,7 +51,10 @@ fn rewrite_statepoints_emits_stackmaps() {
   module.set_triple(&triple);
   module.set_data_layout(&tm.get_target_data().get_data_layout());
 
-  passes::rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
+  let tmp = tempdir().expect("failed to create tempdir");
+  let obj = tmp.path().join("statepoints.o");
+
+  emit::write_object_file(&module, &tm, &obj).expect("failed to run statepoint rewrite + emit object file");
 
   let ir = module.print_to_string().to_string();
   assert!(
@@ -74,11 +77,6 @@ fn rewrite_statepoints_emits_stackmaps() {
     ir.contains("\"gc-live\""),
     "expected `\"gc-live\"` operand bundle after rewriting\n{ir}"
   );
-
-  let tmp = tempdir().expect("failed to create tempdir");
-  let obj = tmp.path().join("statepoints.o");
-  tm.write_to_file(&module, FileType::Object, &obj)
-    .expect("failed to emit object file");
 
   let bytes = std::fs::read(&obj).expect("read emitted object file");
   let file = object::File::parse(&*bytes).expect("parse emitted object file");

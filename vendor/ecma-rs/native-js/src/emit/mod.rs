@@ -1,11 +1,57 @@
 //! Emission of compiler artifacts (LLVM IR, assembly, object files, etc).
+//!
+//! This module hosts the small "emit" surface used by `native-js-cli` and tests:
+//!
+//! - textual LLVM IR (`emit_llvm_ir`)
+//! - LLVM bitcode (`emit_bitcode`)
+//! - object files (`emit_object`)
+//! - assembly (`emit_asm`)
+//!
+//! For GC bring-up, it also includes a helper to run the statepoint rewrite pass
+//! and write an object file (`write_object_file`), which is used by the
+//! `.llvm_stackmaps` regression tests.
 
+use crate::llvm::passes;
 use inkwell::module::Module;
 use inkwell::targets::{
   CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
 use inkwell::OptimizationLevel;
+use std::path::{Path, PathBuf};
 use std::sync::Once;
+
+#[derive(Debug, thiserror::Error)]
+pub enum EmitError {
+  #[error(transparent)]
+  Pass(#[from] passes::PassError),
+
+  #[error("failed to emit LLVM module as {file_type:?} to {path}: {message}")]
+  Codegen {
+    file_type: FileType,
+    path: PathBuf,
+    message: String,
+  },
+}
+
+/// Runs the native-js LLVM pass pipeline and writes an object file.
+///
+/// This currently applies `rewrite-statepoints-for-gc` (and in debug builds
+/// `verify<safepoint-ir>`) before invoking LLVM codegen. The rewrite pass is what
+/// causes LLVM to emit `llvm.experimental.gc.statepoint.*` intrinsics and, during
+/// object emission, a `.llvm_stackmaps` section.
+pub fn write_object_file(module: &Module<'_>, target_machine: &TargetMachine, path: &Path) -> Result<(), EmitError> {
+  passes::rewrite_statepoints_for_gc(module, target_machine)?;
+
+  target_machine
+    .write_to_file(module, FileType::Object, path)
+    .map_err(|err| EmitError::Codegen {
+      file_type: FileType::Object,
+      path: path.to_path_buf(),
+      message: err.to_string(),
+    })?;
+
+  Ok(())
+}
 
 static TARGETS_INITIALIZED: Once = Once::new();
 
