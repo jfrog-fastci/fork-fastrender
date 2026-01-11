@@ -274,7 +274,6 @@ fn box_shadow_bounds(
       viewport,
     )
     .max(0.0);
-    let blur = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur_radius);
     let spread = resolve_length_for_paint(
       &shadow.spread_radius,
       style.font_size,
@@ -285,7 +284,7 @@ fn box_shadow_bounds(
     .max(-1e6);
     // Match the renderer's gaussian blur kernel radius (`ceil(3σ)`) so paint bounds remain
     // conservative and effects don't get clipped when allocating intermediate layers.
-    let blur_pad = (box_shadow_blur_radius_to_sigma(blur) * 3.0).ceil();
+    let blur_pad = (box_shadow_blur_radius_to_sigma(blur_radius) * 3.0).ceil();
     let left = blur_pad + spread - offset_x.min(0.0);
     let right = blur_pad + spread + offset_x.max(0.0);
     let top = blur_pad + spread - offset_y.min(0.0);

@@ -8942,7 +8942,6 @@ impl DisplayListBuilder {
         self.viewport,
       )
       .max(0.0);
-      let blur_radius = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur_radius);
       let spread = Self::resolve_length_for_paint(
         &shadow.spread_radius,
         style.font_size,
@@ -16005,7 +16004,7 @@ mod tests {
   }
 
   #[test]
-  fn box_shadow_blur_radius_converts_to_sigma() {
+  fn box_shadow_blur_radius_keeps_css_radius() {
     let mut style = ComputedStyle::default();
     style.display = Display::Block;
     style.box_shadow = vec![crate::css::types::BoxShadow {
@@ -16029,8 +16028,7 @@ mod tests {
       _ => None,
     });
     let item = item.expect("expected display list to contain a box shadow item");
-    let expected = crate::paint::blur::css_shadow_blur_radius_to_sigma(10.0);
-    assert!((item.blur_radius - expected).abs() < 1e-6);
+    assert!((item.blur_radius - 10.0).abs() < 1e-6);
   }
 
   #[test]

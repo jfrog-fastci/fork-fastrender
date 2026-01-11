@@ -10447,7 +10447,7 @@ impl Painter {
               percentage_base,
               viewport,
             );
-            let blur = resolve_length_for_paint(
+            let blur_radius = resolve_length_for_paint(
               &shadow.blur_radius,
               style.font_size,
               style.root_font_size,
@@ -10455,7 +10455,6 @@ impl Painter {
               viewport,
             )
             .max(0.0);
-            let blur = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur);
             let spread = resolve_length_for_paint(
               &shadow.spread_radius,
               style.font_size,
@@ -10464,14 +10463,17 @@ impl Painter {
               viewport,
             )
             .max(-1e6);
-            if !offset_x.is_finite() || !offset_y.is_finite() || !blur.is_finite() || !spread.is_finite()
+            if !offset_x.is_finite()
+              || !offset_y.is_finite()
+              || !blur_radius.is_finite()
+              || !spread.is_finite()
             {
               continue;
             }
             let shadow = crate::paint::rasterize::BoxShadow {
               offset_x: painter.device_length(offset_x),
               offset_y: painter.device_length(offset_y),
-              blur_radius: painter.device_length(blur),
+              blur_radius: painter.device_length(blur_radius),
               spread_radius: painter.device_length(spread),
               color: shadow.color,
               inset: false,
@@ -10656,7 +10658,7 @@ impl Painter {
               percentage_base,
               viewport,
             );
-            let blur = resolve_length_for_paint(
+            let blur_radius = resolve_length_for_paint(
               &shadow.blur_radius,
               style.font_size,
               style.root_font_size,
@@ -10664,7 +10666,6 @@ impl Painter {
               viewport,
             )
             .max(0.0);
-            let blur = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur);
             let spread = resolve_length_for_paint(
               &shadow.spread_radius,
               style.font_size,
@@ -10673,10 +10674,15 @@ impl Painter {
               viewport,
             )
             .max(-1e6);
-            if !offset_x.is_finite() || !offset_y.is_finite() || !blur.is_finite() || !spread.is_finite() {
+            if !offset_x.is_finite()
+              || !offset_y.is_finite()
+              || !blur_radius.is_finite()
+              || !spread.is_finite()
+            {
               continue;
             }
-            let delta = (blur.abs() * 3.0 + spread).max(0.0);
+            let blur_sigma = crate::paint::rasterize::box_shadow_blur_radius_to_sigma(blur_radius);
+            let delta = (blur_sigma * 3.0 + spread).max(0.0);
             left = left.max((delta - offset_x).max(0.0));
             right = right.max((delta + offset_x).max(0.0));
             top = top.max((delta - offset_y).max(0.0));

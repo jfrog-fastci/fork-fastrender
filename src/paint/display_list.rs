@@ -42,6 +42,7 @@ use crate::geometry::Size;
 use crate::paint::clip_path::ResolvedClipPath;
 use crate::paint::homography::Homography;
 use crate::paint::optimize::DisplayListOptimizer;
+use crate::paint::rasterize::box_shadow_blur_radius_to_sigma;
 use crate::style::color::Rgba;
 use crate::style::PhysicalSide;
 use crate::style::types::BackfaceVisibility;
@@ -202,7 +203,7 @@ impl DisplayItem {
         if item.inset {
           Some(item.rect)
         } else {
-          let blur_outset = item.blur_radius.abs() * 3.0;
+          let blur_outset = box_shadow_blur_radius_to_sigma(item.blur_radius) * 3.0;
           let spread = item.spread_radius;
           let shadow_rect = Rect::from_xywh(
             item.rect.x() + item.offset.x - spread,
@@ -1428,7 +1429,7 @@ pub struct BoxShadowItem {
   /// Shadow offset from box
   pub offset: Point,
 
-  /// Blur radius
+  /// Blur radius (CSS blur radius)
   pub blur_radius: f32,
 
   /// Spread radius
