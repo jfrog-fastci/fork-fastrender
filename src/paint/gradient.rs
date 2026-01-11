@@ -1,3 +1,4 @@
+use crate::debug::runtime;
 use crate::error::{RenderError, RenderStage};
 use crate::geometry::Point;
 use crate::paint::pixmap::new_pixmap_uninitialized;
@@ -32,6 +33,8 @@ const DEFAULT_GRADIENT_PIXMAP_CACHE_ITEMS: usize = 64;
 // long-scrolling pages). Keep the cache modest and bounded via LRU eviction to avoid runaway
 // memory usage when a page triggers unique gradients.
 const DEFAULT_GRADIENT_PIXMAP_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const ENV_GRADIENT_PIXMAP_CACHE_ITEMS: &str = "FASTR_GRADIENT_PIXMAP_CACHE_ITEMS";
+const ENV_GRADIENT_PIXMAP_CACHE_BYTES: &str = "FASTR_GRADIENT_PIXMAP_CACHE_BYTES";
 
 // Ordered dither matrix used by Chrome/Skia when quantizing gradients to 8-bit channels.
 //
@@ -102,12 +105,35 @@ pub struct GradientPixmapCacheConfig {
   pub max_bytes: usize,
 }
 
+impl GradientPixmapCacheConfig {
+  pub fn from_env() -> Self {
+    let toggles = runtime::runtime_toggles();
+    let max_items = toggles.usize_with_default(
+      ENV_GRADIENT_PIXMAP_CACHE_ITEMS,
+      DEFAULT_GRADIENT_PIXMAP_CACHE_ITEMS,
+    );
+    let max_bytes = toggles.usize_with_default(
+      ENV_GRADIENT_PIXMAP_CACHE_BYTES,
+      DEFAULT_GRADIENT_PIXMAP_CACHE_BYTES,
+    );
+    if max_items == 0 || max_bytes == 0 {
+      // Both knobs meaningfully bound memory usage; treat either one being set to 0 as a request
+      // to disable caching entirely.
+      return Self {
+        max_items: 0,
+        max_bytes: 0,
+      };
+    }
+    Self {
+      max_items,
+      max_bytes,
+    }
+  }
+}
+
 impl Default for GradientPixmapCacheConfig {
   fn default() -> Self {
-    Self {
-      max_items: DEFAULT_GRADIENT_PIXMAP_CACHE_ITEMS,
-      max_bytes: DEFAULT_GRADIENT_PIXMAP_CACHE_BYTES,
-    }
+    Self::from_env()
   }
 }
 
@@ -360,7 +386,7 @@ impl GradientPixmapCache {
         .inner
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-      if guard.config.max_items == 0 {
+      if guard.config.max_items == 0 || guard.config.max_bytes == 0 {
         drop(guard);
         return Ok(build()?.map(Arc::new));
       }
@@ -1934,7 +1960,10 @@ pub fn rasterize_radial_gradient(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{self, RuntimeToggles};
   use crate::render_control::{with_deadline, RenderDeadline};
+  use std::collections::HashMap;
+  use std::sync::Arc;
   use std::time::Instant;
 
   #[test]
@@ -1956,6 +1985,26 @@ mod tests {
       GradientPixmapCacheKey::linear(10, 10, start_neg, end_neg, SpreadMode::Pad, stops, 0, 0)
         .unwrap();
     assert!(pixmap_key == pixmap_key_neg);
+  }
+
+  #[test]
+  fn gradient_pixmap_cache_config_honors_env_overrides() {
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      (
+        ENV_GRADIENT_PIXMAP_CACHE_ITEMS.to_string(),
+        "12".to_string(),
+      ),
+      (
+        ENV_GRADIENT_PIXMAP_CACHE_BYTES.to_string(),
+        "3456".to_string(),
+      ),
+    ])));
+
+    runtime::with_runtime_toggles(toggles, || {
+      let config = GradientPixmapCacheConfig::default();
+      assert_eq!(config.max_items, 12);
+      assert_eq!(config.max_bytes, 3456);
+    });
   }
 
   #[test]

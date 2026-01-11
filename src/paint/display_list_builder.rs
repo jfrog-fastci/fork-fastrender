@@ -197,7 +197,10 @@ use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 use unicode_general_category::{get_general_category, GeneralCategory};
 
-const DECODED_IMAGE_CACHE_MAX_ENTRIES: usize = 256;
+const DEFAULT_DECODED_IMAGE_CACHE_MAX_ENTRIES: usize = 256;
+const DEFAULT_DECODED_IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+const ENV_DECODED_IMAGE_CACHE_ITEMS: &str = "FASTR_DECODED_IMAGE_CACHE_ITEMS";
+const ENV_DECODED_IMAGE_CACHE_BYTES: &str = "FASTR_DECODED_IMAGE_CACHE_BYTES";
 /// Maximum image size (in destination device pixels) that we attempt to decode synchronously when
 /// `decoding="async"` is set.
 ///
@@ -208,7 +211,6 @@ const DECODED_IMAGE_CACHE_MAX_ENTRIES: usize = 256;
 // `decoding="async"` still reliably appear in Chrome screenshots at moderate sizes.
 // Keep this threshold high enough to avoid hiding typical hero images.
 const ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS: u64 = 200_000;
-const DECODED_IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DEADLINE_STRIDE: usize = 256;
 
 /// Builder that converts a fragment tree to a display list
@@ -366,16 +368,30 @@ impl DecodedImageCache {
     }
   }
 
+  fn caching_disabled(&self) -> bool {
+    self.max_entries == 0 || self.max_bytes == 0
+  }
+
   fn estimate_bytes(image: &ImageData) -> usize {
     image.pixels.len()
   }
 
   fn get(&mut self, key: &ImageKey) -> Option<Arc<ImageData>> {
+    if self.caching_disabled() {
+      return None;
+    }
     self.inner.get(key).map(|entry| Arc::clone(&entry.image))
   }
 
   fn insert(&mut self, key: ImageKey, image: Arc<ImageData>) {
+    if self.caching_disabled() {
+      return;
+    }
     let bytes = Self::estimate_bytes(&image);
+    if self.max_bytes > 0 && bytes > self.max_bytes {
+      // Skip caching entries that would evict the entire cache on their own.
+      return;
+    }
     if let Some(entry) = self.inner.pop(&key) {
       self.current_bytes = self.current_bytes.saturating_sub(entry.bytes);
     }
@@ -696,6 +712,19 @@ fn parallel_config_from_env() -> (bool, usize, bool) {
 
 fn paint_build_breakdown_enabled() -> bool {
   paint_diagnostics_enabled() && runtime::runtime_toggles().truthy("FASTR_PAINT_BUILD_BREAKDOWN")
+}
+
+fn decoded_image_cache_limits_from_env() -> (usize, usize) {
+  let toggles = runtime::runtime_toggles();
+  let max_entries = toggles.usize_with_default(
+    ENV_DECODED_IMAGE_CACHE_ITEMS,
+    DEFAULT_DECODED_IMAGE_CACHE_MAX_ENTRIES,
+  );
+  let max_bytes = toggles.usize_with_default(
+    ENV_DECODED_IMAGE_CACHE_BYTES,
+    DEFAULT_DECODED_IMAGE_CACHE_MAX_BYTES,
+  );
+  (max_entries, max_bytes)
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -1329,12 +1358,13 @@ impl DisplayListBuilder {
     } else {
       parallel_min.saturating_mul(4)
     };
+    let (decoded_image_cache_entries, decoded_image_cache_bytes) = decoded_image_cache_limits_from_env();
     Self {
       list: DisplayList::new(),
       image_cache: Some(ImageCache::new()),
       decoded_image_cache: Arc::new(Mutex::new(DecodedImageCache::new(
-        DECODED_IMAGE_CACHE_MAX_ENTRIES,
-        DECODED_IMAGE_CACHE_MAX_BYTES,
+        decoded_image_cache_entries,
+        decoded_image_cache_bytes,
       ))),
       svg_filter_defs: None,
       svg_id_defs: None,
@@ -1374,12 +1404,13 @@ impl DisplayListBuilder {
     } else {
       parallel_min.saturating_mul(4)
     };
+    let (decoded_image_cache_entries, decoded_image_cache_bytes) = decoded_image_cache_limits_from_env();
     Self {
       list: DisplayList::new(),
       image_cache: Some(image_cache),
       decoded_image_cache: Arc::new(Mutex::new(DecodedImageCache::new(
-        DECODED_IMAGE_CACHE_MAX_ENTRIES,
-        DECODED_IMAGE_CACHE_MAX_BYTES,
+        decoded_image_cache_entries,
+        decoded_image_cache_bytes,
       ))),
       svg_filter_defs: None,
       svg_id_defs: None,

@@ -82,7 +82,14 @@ use tiny_skia::Pixmap;
 use tiny_skia::PixmapPaint;
 use tiny_skia::Transform;
 
+const DEFAULT_GLYPH_CACHE_ITEMS: usize = 2048;
 const DEFAULT_GLYPH_CACHE_BYTES: usize = 32 * 1024 * 1024;
+const ENV_GLYPH_CACHE_ITEMS: &str = "FASTR_GLYPH_CACHE_ITEMS";
+const ENV_GLYPH_CACHE_BYTES: &str = "FASTR_GLYPH_CACHE_BYTES";
+const DEFAULT_COLOR_GLYPH_CACHE_ITEMS: usize = 2048;
+const DEFAULT_COLOR_GLYPH_CACHE_BYTES: usize = 16 * 1024 * 1024;
+const ENV_COLOR_GLYPH_CACHE_ITEMS: &str = "FASTR_COLOR_GLYPH_CACHE_ITEMS";
+const ENV_COLOR_GLYPH_CACHE_BYTES: &str = "FASTR_COLOR_GLYPH_CACHE_BYTES";
 const SCALE_QUANTIZATION: f32 = 512.0;
 const DEADLINE_STRIDE: usize = 256;
 const SUBPIXEL_AA_SCALE_X: u32 = 3;
@@ -290,6 +297,8 @@ impl GlyphCacheStats {
 pub struct GlyphCache {
   /// Cached glyph paths
   glyphs: HashMap<GlyphCacheKey, CachedGlyph>,
+  /// Scratch slot used when caching is disabled (max entries/bytes set to 0).
+  scratch: Option<CachedGlyph>,
   /// Usage order for LRU eviction (key + generation)
   usage_queue: VecDeque<(GlyphCacheKey, u64)>,
   /// Maximum cache size
@@ -319,9 +328,10 @@ impl Default for GlyphCache {
 impl GlyphCache {
   /// Creates a new glyph cache with default size.
   pub fn new() -> Self {
-    let max_size = 2048;
+    let max_size = DEFAULT_GLYPH_CACHE_ITEMS;
     Self {
       glyphs: HashMap::new(),
+      scratch: None,
       max_size,
       max_bytes: Some(DEFAULT_GLYPH_CACHE_BYTES),
       usage_queue: VecDeque::new(),
@@ -336,9 +346,9 @@ impl GlyphCache {
 
   /// Creates a cache with custom maximum size.
   pub fn with_capacity(max_size: usize) -> Self {
-    let max_size = max_size.max(1);
     Self {
       glyphs: HashMap::with_capacity(max_size.min(256)),
+      scratch: None,
       max_size,
       max_bytes: Some(DEFAULT_GLYPH_CACHE_BYTES),
       usage_queue: VecDeque::new(),
@@ -353,9 +363,9 @@ impl GlyphCache {
 
   /// Creates a cache with both glyph count and memory budget.
   pub fn with_limits(max_size: usize, max_bytes: Option<usize>) -> Self {
-    let max_size = max_size.max(1);
     Self {
       glyphs: HashMap::with_capacity(max_size.min(256)),
+      scratch: None,
       max_size,
       max_bytes,
       usage_queue: VecDeque::new(),
@@ -370,14 +380,26 @@ impl GlyphCache {
 
   /// Updates the maximum number of cached glyphs.
   pub fn set_max_size(&mut self, max_size: usize) {
-    self.max_size = max_size.max(1);
+    self.max_size = max_size;
+    if self.caching_disabled() {
+      self.clear();
+      return;
+    }
     self.evict_if_needed();
   }
 
   /// Sets an optional memory budget (in bytes) for cached glyphs.
   pub fn set_max_bytes(&mut self, max_bytes: Option<usize>) {
     self.max_bytes = max_bytes;
+    if self.caching_disabled() {
+      self.clear();
+      return;
+    }
     self.evict_if_needed();
+  }
+
+  fn caching_disabled(&self) -> bool {
+    self.max_size == 0 || matches!(self.max_bytes, Some(0))
   }
 
   /// Gets a cached glyph path or builds and caches it.
@@ -392,6 +414,18 @@ impl GlyphCache {
     let key = GlyphCacheKey::new(font, glyph_id, instance.variation_hash(), font_size, hinting);
     let generation = self.bump_generation();
 
+    if self.caching_disabled() {
+      self.misses += 1;
+      self.scratch = None;
+      let mut cached = self.build_glyph_path(font, instance, glyph_id, font_size, hinting)?;
+      cached.last_used = generation;
+      self.scratch = Some(cached);
+      return self.scratch.as_ref();
+    }
+
+    // Ensure we don't retain a large outline in the scratch slot after caching has been enabled.
+    self.scratch = None;
+
     if let Some(entry) = self.glyphs.get_mut(&key) {
       self.hits += 1;
       entry.last_used = generation;
@@ -399,6 +433,15 @@ impl GlyphCache {
       self.misses += 1;
       let mut cached = self.build_glyph_path(font, instance, glyph_id, font_size, hinting)?;
       cached.last_used = generation;
+      if let Some(max_bytes) = self.max_bytes {
+        if max_bytes > 0 && cached.estimated_size > max_bytes {
+          // Preserve correctness when a single glyph exceeds the configured byte budget: return the
+          // rasterized outline but do not insert it into the cache (it would immediately evict
+          // itself and we'd return `None`).
+          self.scratch = Some(cached);
+          return self.scratch.as_ref();
+        }
+      }
       self.current_bytes = self.current_bytes.saturating_add(cached.estimated_size);
       self.peak_bytes = self.peak_bytes.max(self.current_bytes);
       self.glyphs.insert(key, cached);
@@ -453,6 +496,7 @@ impl GlyphCache {
   /// Clears all cached glyphs.
   pub fn clear(&mut self) {
     self.glyphs.clear();
+    self.scratch = None;
     self.usage_queue.clear();
     self.current_bytes = 0;
     self.peak_bytes = 0;
@@ -570,14 +614,7 @@ impl Default for ColorGlyphCache {
 }
 
 impl ColorGlyphCache {
-  pub(crate) fn new() -> Self {
-    // The cache stores both successful rasters and negative lookups (`None`) so we avoid
-    // repeatedly attempting expensive color-glyph rasterization for glyphs that fall back to
-    // outlines. Negative entries are tiny (no pixmap bytes) but they still occupy an LRU slot, so
-    // keep the default entry budget comfortably above the number of likely "text glyphs" to avoid
-    // crowding out actual color rasters on pages that mix emoji fonts with normal text.
-    let max_size = 2048;
-    let max_bytes = 16 * 1024 * 1024;
+  pub(crate) fn with_limits(max_size: usize, max_bytes: usize) -> Self {
     Self {
       glyphs: LruCache::unbounded(),
       max_size,
@@ -590,7 +627,24 @@ impl ColorGlyphCache {
     }
   }
 
+  pub(crate) fn new() -> Self {
+    // The cache stores both successful rasters and negative lookups (`None`) so we avoid
+    // repeatedly attempting expensive color-glyph rasterization for glyphs that fall back to
+    // outlines. Negative entries are tiny (no pixmap bytes) but they still occupy an LRU slot, so
+    // keep the default entry budget comfortably above the number of likely "text glyphs" to avoid
+    // crowding out actual color rasters on pages that mix emoji fonts with normal text.
+    Self::with_limits(DEFAULT_COLOR_GLYPH_CACHE_ITEMS, DEFAULT_COLOR_GLYPH_CACHE_BYTES)
+  }
+
+  fn caching_disabled(&self) -> bool {
+    self.max_size == 0 || self.max_bytes == 0
+  }
+
   fn get(&mut self, key: &ColorGlyphCacheKey) -> Option<Option<ColorGlyphRaster>> {
+    if self.caching_disabled() {
+      self.misses += 1;
+      return None;
+    }
     if let Some(value) = self.glyphs.get(key).cloned() {
       self.hits += 1;
       return Some(value);
@@ -600,6 +654,9 @@ impl ColorGlyphCache {
   }
 
   fn insert(&mut self, key: ColorGlyphCacheKey, value: Option<ColorGlyphRaster>) {
+    if self.caching_disabled() {
+      return;
+    }
     if let Some(existing) = self.glyphs.peek(&key) {
       self.current_bytes = self
         .current_bytes
@@ -652,12 +709,24 @@ impl ColorGlyphCache {
   }
 
   fn set_max_size(&mut self, max_size: usize) {
-    self.max_size = max_size.max(1);
+    self.max_size = max_size;
+    if self.caching_disabled() {
+      self.glyphs.clear();
+      self.current_bytes = 0;
+      self.peak_bytes = 0;
+      return;
+    }
     self.evict_if_needed();
   }
 
   fn set_max_bytes(&mut self, max_bytes: usize) {
-    self.max_bytes = max_bytes.max(1024 * 1024);
+    self.max_bytes = max_bytes;
+    if self.caching_disabled() {
+      self.glyphs.clear();
+      self.current_bytes = 0;
+      self.peak_bytes = 0;
+      return;
+    }
     self.evict_if_needed();
   }
 }
@@ -764,17 +833,45 @@ fn cache_transform_signature(state: Transform, rotation: Option<Transform>) -> u
   quantize_transform(transform)
 }
 
+fn shared_glyph_cache_limits_from_env() -> (usize, Option<usize>) {
+  let toggles = runtime::runtime_toggles();
+  let max_items = toggles.usize_with_default(ENV_GLYPH_CACHE_ITEMS, DEFAULT_GLYPH_CACHE_ITEMS);
+  let max_bytes = toggles.usize_with_default(ENV_GLYPH_CACHE_BYTES, DEFAULT_GLYPH_CACHE_BYTES);
+  if max_items == 0 || max_bytes == 0 {
+    return (0, Some(0));
+  }
+  (max_items, Some(max_bytes))
+}
+
+fn shared_color_glyph_cache_limits_from_env() -> (usize, usize) {
+  let toggles = runtime::runtime_toggles();
+  let max_items =
+    toggles.usize_with_default(ENV_COLOR_GLYPH_CACHE_ITEMS, DEFAULT_COLOR_GLYPH_CACHE_ITEMS);
+  let max_bytes =
+    toggles.usize_with_default(ENV_COLOR_GLYPH_CACHE_BYTES, DEFAULT_COLOR_GLYPH_CACHE_BYTES);
+  if max_items == 0 || max_bytes == 0 {
+    return (0, 0);
+  }
+  (max_items, max_bytes)
+}
+
 pub(crate) fn shared_glyph_cache() -> Arc<Mutex<GlyphCache>> {
   static CACHE: OnceLock<Arc<Mutex<GlyphCache>>> = OnceLock::new();
   CACHE
-    .get_or_init(|| Arc::new(Mutex::new(GlyphCache::new())))
+    .get_or_init(|| {
+      let (max_items, max_bytes) = shared_glyph_cache_limits_from_env();
+      Arc::new(Mutex::new(GlyphCache::with_limits(max_items, max_bytes)))
+    })
     .clone()
 }
 
 pub(crate) fn shared_color_cache() -> Arc<Mutex<ColorGlyphCache>> {
   static CACHE: OnceLock<Arc<Mutex<ColorGlyphCache>>> = OnceLock::new();
   CACHE
-    .get_or_init(|| Arc::new(Mutex::new(ColorGlyphCache::new())))
+    .get_or_init(|| {
+      let (max_items, max_bytes) = shared_color_glyph_cache_limits_from_env();
+      Arc::new(Mutex::new(ColorGlyphCache::with_limits(max_items, max_bytes)))
+    })
     .clone()
 }
 

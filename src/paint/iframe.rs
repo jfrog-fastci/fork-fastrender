@@ -1,4 +1,5 @@
 use crate::api::{render_html_with_shared_resources, ResourceContext, ResourceKind};
+use crate::debug::runtime;
 use crate::error::{Error, RenderStage};
 use crate::geometry::Rect;
 use crate::html::content_security_policy::CspPolicy;
@@ -24,8 +25,23 @@ use tiny_skia::Pixmap;
 
 const IFRAME_NESTING_LIMIT_MESSAGE: &str = "iframe nesting limit exceeded";
 
-const IFRAME_RENDER_CACHE_MAX_ENTRIES: usize = 128;
-const IFRAME_RENDER_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+const DEFAULT_IFRAME_RENDER_CACHE_MAX_ENTRIES: usize = 128;
+const DEFAULT_IFRAME_RENDER_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+const ENV_IFRAME_RENDER_CACHE_ITEMS: &str = "FASTR_IFRAME_RENDER_CACHE_ITEMS";
+const ENV_IFRAME_RENDER_CACHE_BYTES: &str = "FASTR_IFRAME_RENDER_CACHE_BYTES";
+
+fn iframe_render_cache_limits_from_env() -> (usize, usize) {
+  let toggles = runtime::runtime_toggles();
+  let max_entries = toggles.usize_with_default(
+    ENV_IFRAME_RENDER_CACHE_ITEMS,
+    DEFAULT_IFRAME_RENDER_CACHE_MAX_ENTRIES,
+  );
+  let max_bytes = toggles.usize_with_default(
+    ENV_IFRAME_RENDER_CACHE_BYTES,
+    DEFAULT_IFRAME_RENDER_CACHE_MAX_BYTES,
+  );
+  (max_entries, max_bytes)
+}
 
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
@@ -171,7 +187,14 @@ impl IframeRenderCache {
     }
   }
 
+  fn caching_disabled(&self) -> bool {
+    self.max_entries == 0 || self.max_bytes == 0
+  }
+
   fn get(&mut self, key: &IframeRenderCacheKey) -> Option<Arc<ImageData>> {
+    if self.caching_disabled() {
+      return None;
+    }
     self.inner.get(key).map(|entry| Arc::clone(&entry.image))
   }
 
@@ -186,6 +209,9 @@ impl IframeRenderCache {
   }
 
   fn insert(&mut self, key: IframeRenderCacheKey, image: Arc<ImageData>) {
+    if self.caching_disabled() {
+      return;
+    }
     let bytes = image.pixels.len();
     if self.max_bytes > 0 && bytes > self.max_bytes {
       // Skip caching entries that would evict the entire cache on their own.
@@ -218,9 +244,10 @@ static IFRAME_RENDER_CACHE: OnceLock<Mutex<IframeRenderCache>> = OnceLock::new()
 
 fn iframe_render_cache() -> &'static Mutex<IframeRenderCache> {
   IFRAME_RENDER_CACHE.get_or_init(|| {
+    let (max_entries, max_bytes) = iframe_render_cache_limits_from_env();
     Mutex::new(IframeRenderCache::new(
-      IFRAME_RENDER_CACHE_MAX_ENTRIES,
-      IFRAME_RENDER_CACHE_MAX_BYTES,
+      max_entries,
+      max_bytes,
     ))
   })
 }

@@ -221,6 +221,16 @@ High eviction counts typically imply cache pressure (raise `FASTR_TEXT_FALLBACK_
 - `FASTR_ANCESTOR_BLOOM=0` – disable the cascade's ancestor bloom filter fast-reject for descendant selectors.
 - `FASTR_SVG_FILTER_CACHE_ITEMS=<N>` – SVG filter cache capacity (default 256).
 - `FASTR_SVG_FILTER_CACHE_BYTES=<N>` – approximate SVG filter cache size limit in bytes (default 4 MiB).
+- `FASTR_IFRAME_RENDER_CACHE_ITEMS=<N>` – iframe render cache capacity in entries (default 128). `0` disables caching.
+- `FASTR_IFRAME_RENDER_CACHE_BYTES=<bytes>` – iframe render cache size limit in bytes (default 128 MiB). `0` disables caching.
+- `FASTR_DECODED_IMAGE_CACHE_ITEMS=<N>` – decoded image cache capacity (display-list builder; default 256). `0` disables caching.
+- `FASTR_DECODED_IMAGE_CACHE_BYTES=<bytes>` – decoded image cache size limit in bytes (default 128 MiB). `0` disables caching.
+- `FASTR_GRADIENT_PIXMAP_CACHE_ITEMS=<N>` – rasterized gradient pixmap cache capacity (default 64). `0` disables caching.
+- `FASTR_GRADIENT_PIXMAP_CACHE_BYTES=<bytes>` – rasterized gradient pixmap cache size limit in bytes (default 64 MiB). `0` disables caching.
+- `FASTR_GLYPH_CACHE_ITEMS=<N>` – shared glyph-outline cache capacity (default 2048). `0` disables caching.
+- `FASTR_GLYPH_CACHE_BYTES=<bytes>` – shared glyph-outline cache size limit in bytes (default 32 MiB). `0` disables caching.
+- `FASTR_COLOR_GLYPH_CACHE_ITEMS=<N>` – shared color glyph cache capacity (default 2048). `0` disables caching.
+- `FASTR_COLOR_GLYPH_CACHE_BYTES=<bytes>` – shared color glyph cache size limit in bytes (default 16 MiB). `0` disables caching.
 
 ## Parallelism tuning
 
