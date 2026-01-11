@@ -136,3 +136,89 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
     "expected poll calls to be rewritten (no direct call remains):\n{ir}"
   );
 }
+
+#[test]
+fn place_safepoints_inserts_backedge_poll_for_counted_loop() {
+  let context = Context::create();
+  let module = context.create_module("place_safepoints_counted_loop");
+  let builder = context.create_builder();
+
+  // Like `place_safepoints_polls_are_rewritten_into_statepoints`, but with a compile-time constant
+  // trip count. Without `--spp-all-backedges`, LLVM may insert only an entry poll for counted loops.
+  let void_ty = context.void_type();
+  let i8_ty = context.i8_type();
+  let i64_ty = context.i64_type();
+  let gc_ptr_ty = gc::gc_ptr_type(&context);
+
+  // define void @test(ptr addrspace(1)) gc "coreclr"
+  let test_ty = void_ty.fn_type(&[gc_ptr_ty.into()], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+  let obj = test_fn
+    .get_first_param()
+    .expect("missing obj param")
+    .into_pointer_value();
+
+  let entry = context.append_basic_block(test_fn, "entry");
+  let loop_header = context.append_basic_block(test_fn, "loop");
+  let loop_body = context.append_basic_block(test_fn, "loop_body");
+  let exit = context.append_basic_block(test_fn, "exit");
+
+  builder.position_at_end(entry);
+  builder
+    .build_unconditional_branch(loop_header)
+    .expect("br to loop header");
+
+  builder.position_at_end(loop_header);
+  let i_phi = builder.build_phi(i64_ty, "i").expect("phi");
+  i_phi.add_incoming(&[(&i64_ty.const_zero(), entry)]);
+
+  let i = i_phi.as_basic_value().into_int_value();
+  let n = i64_ty.const_int(1_000_000, false);
+  let cond = builder
+    .build_int_compare(IntPredicate::ULT, i, n, "cond")
+    .expect("icmp");
+  builder
+    .build_conditional_branch(cond, loop_body, exit)
+    .expect("condbr");
+
+  builder.position_at_end(loop_body);
+  let i_next = builder
+    .build_int_add(i, i64_ty.const_int(1, false), "i.next")
+    .expect("add");
+  builder
+    .build_unconditional_branch(loop_header)
+    .expect("backedge");
+  i_phi.add_incoming(&[(&i_next, loop_body)]);
+
+  builder.position_at_end(exit);
+  // Keep the GC pointer live across the loop so the inserted polls are "real"
+  // safepoints for a GC-managed function.
+  builder.build_load(i8_ty, obj, "v").expect("load");
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm)
+    .expect("place-safepoints + rewrite-statepoints-for-gc failed");
+
+  let ir = module.print_to_string().to_string();
+  let statepoint_polls = ir
+    .lines()
+    .filter(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("@gc.safepoint_poll"))
+    .count();
+  assert!(
+    statepoint_polls >= 2,
+    "expected >=2 statepoints that call gc.safepoint_poll even for a counted loop, got {statepoint_polls}:\n{ir}"
+  );
+}
