@@ -16,9 +16,11 @@ use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
 use typecheck_ts::{FileId, FileKey, Host, HostError, Program};
 
 const BUILTINS_D_TS: &str = r#"
-declare function print(value: string | number | boolean): void;
-declare function assert(cond: boolean, msg?: string): void;
-declare function panic(msg?: string): void;
+type __NativeJsPrintable = string | number | boolean | null | undefined;
+
+declare function print(...values: __NativeJsPrintable[]): void;
+declare function assert(cond: __NativeJsPrintable, msg?: __NativeJsPrintable): void;
+declare function panic(msg?: __NativeJsPrintable): void;
 declare function trap(): void;
 "#;
 
