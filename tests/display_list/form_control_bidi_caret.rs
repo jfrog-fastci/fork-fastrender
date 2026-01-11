@@ -72,6 +72,7 @@ fn display_list_form_control_rtl_caret_maps_logical_start_to_visual_right() {
     text_edit: Some(TextEditPaintState {
       node_id,
       caret: 0,
+      caret_affinity: Default::default(),
       selection: None,
     }),
     ..InteractionState::default()
@@ -87,6 +88,7 @@ fn display_list_form_control_rtl_caret_maps_logical_start_to_visual_right() {
     text_edit: Some(TextEditPaintState {
       node_id,
       caret: value_len,
+      caret_affinity: Default::default(),
       selection: None,
     }),
     ..InteractionState::default()

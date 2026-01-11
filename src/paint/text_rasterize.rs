@@ -1524,6 +1524,39 @@ impl TextRasterizer {
     let mut color_evictions = 0u64;
     let mut color_bytes = 0usize;
 
+    let instance =
+      FontInstance::new(font, variations).ok_or_else(|| RenderError::RasterizationFailed {
+        reason: format!("Failed to parse font: {}", font.family),
+      })?;
+
+    let units_per_em = instance.units_per_em();
+    if units_per_em == 0.0 {
+      return Err(
+        RenderError::RasterizationFailed {
+          reason: format!("Font {} has invalid units_per_em", font.family),
+        }
+        .into(),
+      );
+    }
+
+    // Font outlines are stored in font units, then mapped into device-space by `glyph_transform`
+    // (which applies `scale = font_size / units_per_em`). tiny-skia applies that transform to both
+    // the path geometry *and* the stroke width, meaning stroke widths must be expressed in the
+    // same coordinate space as the path (font units) to achieve a desired device-pixel width.
+    //
+    // Without this conversion, `-webkit-text-stroke` ends up scaled by `scale` and becomes far too
+    // thin for typical font sizes (notably netflix.com's Top 10 ranking numbers).
+    let scale = font_size / units_per_em;
+    if !scale.is_finite() || scale == 0.0 {
+      return Err(
+        RenderError::RasterizationFailed {
+          reason: format!("Font {} produced invalid scale for size {}", font.family, font_size),
+        }
+        .into(),
+      );
+    }
+    let inv_scale = 1.0 / scale.abs();
+
     // Create paint with fill color
     let mut paint = Paint::default();
     paint.set_color_rgba8(
@@ -1547,27 +1580,10 @@ impl TextRasterizer {
       );
       stroke_paint.anti_alias = true;
       stroke_paint.blend_mode = state.blend_mode;
-      stroke_style.width = stroke.width.abs();
+      stroke_style.width = (stroke.width.abs() * inv_scale).max(0.0);
       stroke_style.line_join = tiny_skia::LineJoin::Round;
       stroke_style.line_cap = tiny_skia::LineCap::Round;
     }
-
-    let instance =
-      FontInstance::new(font, variations).ok_or_else(|| RenderError::RasterizationFailed {
-        reason: format!("Failed to parse font: {}", font.family),
-      })?;
-
-    let units_per_em = instance.units_per_em();
-    if units_per_em == 0.0 {
-      return Err(
-        RenderError::RasterizationFailed {
-          reason: format!("Font {} has invalid units_per_em", font.family),
-        }
-        .into(),
-      );
-    }
-
-    let scale = font_size / units_per_em;
     let mut cursor_x = x;
     let mut cursor_y = 0.0_f32;
     let transform_signature = cache_transform_signature(state.transform, rotation);
@@ -1741,7 +1757,7 @@ impl TextRasterizer {
             }
             if synthetic_bold > 0.0 {
               let mut stroke = tiny_skia::Stroke::default();
-              stroke.width = synthetic_bold * 2.0;
+              stroke.width = (synthetic_bold * 2.0 * inv_scale).max(0.0);
               stroke.line_join = tiny_skia::LineJoin::Round;
               stroke.line_cap = tiny_skia::LineCap::Round;
               pixmap.stroke_path(path.as_ref(), &paint, &stroke, transform, state.clip_mask);
