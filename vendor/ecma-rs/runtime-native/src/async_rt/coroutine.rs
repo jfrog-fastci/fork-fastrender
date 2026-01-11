@@ -3,25 +3,60 @@ use crate::abi::PromiseResolveInput;
 use crate::abi::PromiseResolveKind;
 use crate::abi::RtCoroStatus;
 use crate::abi::RtCoroutineHeader;
+use crate::gc::OBJ_HEADER_SIZE;
 
 use super::promise::{
   promise_mark_handled, promise_new, promise_outcome, promise_register_reaction, promise_resolve_into, PromiseOutcome,
 };
 use super::strict_await_yields;
-use super::{queue_macrotask, queue_microtask, TaskFn};
+use super::{gc, global as async_global, Task, TaskFn};
+
+#[inline]
+fn coro_from_obj_ptr(obj: *mut u8) -> *mut RtCoroutineHeader {
+  if obj.is_null() {
+    return core::ptr::null_mut();
+  }
+  // Safety: `obj` is expected to be a GC object base pointer (ObjHeader). The coroutine frame
+  // header is stored in the payload immediately after the ObjHeader prefix.
+  unsafe { obj.add(OBJ_HEADER_SIZE).cast::<RtCoroutineHeader>() }
+}
+
+#[inline]
+fn coro_obj_ptr(coro: *mut RtCoroutineHeader) -> *mut u8 {
+  if coro.is_null() {
+    return core::ptr::null_mut();
+  }
+  // Safety: coroutine pointers are derived pointers into a GC-managed allocation:
+  //
+  //   obj_base == (coro as *mut u8) - OBJ_HEADER_SIZE
+  //
+  // The GC only understands object base pointers (ObjHeader), so any persistent rooting must use
+  // the base pointer and re-derive the coroutine pointer at the use site.
+  unsafe { (coro as *mut u8).sub(OBJ_HEADER_SIZE) }
+}
 
 extern "C" fn coro_resume_task(data: *mut u8) {
-  let coro = data as *mut RtCoroutineHeader;
-  // Safety: the caller is responsible for keeping the coroutine frame alive until completion.
+  let coro = coro_from_obj_ptr(data);
   run_coroutine(coro);
 }
 
 fn schedule_resume_macrotask(coro: *mut RtCoroutineHeader) {
-  queue_macrotask(coro_resume_task as TaskFn, coro as *mut u8);
+  let obj = coro_obj_ptr(coro);
+  // Safety: `obj` is the base pointer of a GC-managed coroutine frame. The task must keep it alive
+  // until it runs, and `Task::run` ensures the callback observes the updated (relocated) pointer.
+  unsafe {
+    async_global().enqueue_macrotask(Task::new_gc_rooted(coro_resume_task as TaskFn, obj));
+  }
 }
 
 fn schedule_resume_microtask(coro: *mut RtCoroutineHeader) {
-  queue_microtask(coro_resume_task as TaskFn, coro as *mut u8);
+  let obj = coro_obj_ptr(coro);
+  // Safety: `obj` is the base pointer of a GC-managed coroutine frame. The queued task must keep it
+  // alive until it runs, and `Task::run` ensures the callback observes the updated (relocated)
+  // pointer.
+  unsafe {
+    async_global().enqueue_microtask(Task::new_gc_rooted(coro_resume_task as TaskFn, obj));
+  }
 }
 
 #[inline]
@@ -57,7 +92,7 @@ fn run_coroutine(coro: *mut RtCoroutineHeader) {
 #[repr(C)]
 struct AwaitReaction {
   node: crate::promise_reactions::PromiseReactionNode,
-  coro: *mut RtCoroutineHeader,
+  coro: gc::Root,
 }
 
 extern "C" fn await_reaction_run(
@@ -72,19 +107,20 @@ extern "C" fn await_reaction_run(
     PromiseOutcome::Rejected(e) => (1, core::ptr::null_mut(), e),
     PromiseOutcome::Pending => {
       // Should not happen (reactions are scheduled after settlement), but be robust: resubscribe.
-      let new_node = alloc_await_reaction(node.coro);
+      let new_node = alloc_await_reaction(node.coro.clone());
       promise_register_reaction(awaited, new_node);
       return;
     }
   };
 
-  if !node.coro.is_null() {
+  let coro = coro_from_obj_ptr(node.coro.ptr());
+  if !coro.is_null() {
     unsafe {
-      (*node.coro).await_is_error = await_is_error;
-      (*node.coro).await_value = await_value;
-      (*node.coro).await_error = await_error;
+      (*coro).await_is_error = await_is_error;
+      (*coro).await_value = await_value;
+      (*coro).await_error = await_error;
     }
-    run_coroutine(node.coro);
+    run_coroutine(coro);
   }
 }
 
@@ -100,7 +136,7 @@ static AWAIT_REACTION_VTABLE: crate::promise_reactions::PromiseReactionVTable =
     drop: await_reaction_drop,
   };
 
-fn alloc_await_reaction(coro: *mut RtCoroutineHeader) -> *mut crate::promise_reactions::PromiseReactionNode {
+fn alloc_await_reaction(coro: gc::Root) -> *mut crate::promise_reactions::PromiseReactionNode {
   let node = Box::new(AwaitReaction {
     node: crate::promise_reactions::PromiseReactionNode {
       next: core::ptr::null_mut(),
@@ -196,7 +232,8 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
     }
   }
 
-  let node = alloc_await_reaction(coro);
+  let coro_root = unsafe { gc::Root::new_unchecked(coro_obj_ptr(coro)) };
+  let node = alloc_await_reaction(coro_root);
   promise_register_reaction(awaited, node);
 }
 

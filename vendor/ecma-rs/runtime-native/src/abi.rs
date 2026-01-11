@@ -172,9 +172,15 @@ pub enum RtCoroStatus {
   Yield = 2,
 }
 
-/// Header that prefixes all LLVM-generated coroutine frame structs.
+/// Header that prefixes all LLVM-generated coroutine frame payload structs.
 ///
-/// Generated code must ensure this is the first field of the frame struct (`#[repr(C)]`).
+/// Generated code must ensure this is the first field of the coroutine payload struct
+/// (`#[repr(C)]`).
+///
+/// When coroutine frames are allocated in the GC heap, the full allocation begins with the runtime
+/// [`crate::gc::ObjHeader`] prefix. In that case, the pointer passed to the legacy coroutine ABI
+/// (`*mut RtCoroutineHeader`) is a *derived pointer* to the payload immediately after the
+/// `ObjHeader`.
 #[repr(C)]
 pub struct RtCoroutineHeader {
   /// Entry point for resuming the coroutine.

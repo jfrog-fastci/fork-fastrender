@@ -1,74 +1,251 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::gc::ObjHeader;
+use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseLayout;
+use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Once};
 use std::time::{Duration, Instant};
+
+#[repr(C)]
+struct GcBox<T> {
+  header: ObjHeader,
+  payload: T,
+}
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    static SHAPES: [RtShapeDescriptor; 3] = [
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<AwaitParallelPromiseCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<AwaitWorkerWakeCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<AwaitAllCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+    ];
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
+
+unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
+  ensure_shape_table();
+  runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<T>>(), shape).cast::<GcBox<T>>()
+}
+
+extern "C" fn parallel_add_one_task(data: *mut u8, promise: PromiseRef) {
+  unsafe {
+    let input = &*(data as *const u32);
+    let out = runtime_native::rt_promise_payload_ptr(promise) as *mut u32;
+    *out = input.wrapping_add(1);
+    runtime_native::rt_promise_fulfill(promise);
+  }
+}
+
+#[repr(C)]
+struct AwaitParallelPromiseCoroutine {
+  header: RtCoroutineHeader,
+  completed: *mut bool,
+  input: *mut u32,
+}
+
+extern "C" fn await_parallel_promise_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
+  let coro = coro as *mut AwaitParallelPromiseCoroutine;
+  assert!(!coro.is_null());
+
+  unsafe {
+    match (*coro).header.state {
+      0 => {
+        let promise = runtime_native::rt_parallel_spawn_promise(
+          parallel_add_one_task,
+          (*coro).input as *mut u8,
+          PromiseLayout::of::<u32>(),
+        );
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, promise, 1);
+        RtCoroStatus::Pending
+      }
+      1 => {
+        assert_eq!((*coro).header.await_is_error, 0);
+        let payload = (*coro).header.await_value as *const u32;
+        assert_eq!(*payload, 42);
+        *(*coro).completed = true;
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
+        RtCoroStatus::Done
+      }
+      other => panic!("unexpected coroutine state: {other}"),
+    }
+  }
+}
+
+#[repr(C)]
+struct WorkerData {
+  input: u32,
+  main_thread: std::thread::ThreadId,
+  ran_on_other_thread: AtomicBool,
+}
+
+extern "C" fn parallel_worker_record_task(data: *mut u8, promise: PromiseRef) {
+  unsafe {
+    let data = &*(data as *const WorkerData);
+    let out = runtime_native::rt_promise_payload_ptr(promise) as *mut u32;
+    *out = data.input;
+    data
+      .ran_on_other_thread
+      .store(std::thread::current().id() != data.main_thread, Ordering::Release);
+    runtime_native::rt_promise_fulfill(promise);
+  }
+}
+
+#[repr(C)]
+struct AwaitWorkerWakeCoroutine {
+  header: RtCoroutineHeader,
+  completed: *mut bool,
+  data: *mut WorkerData,
+}
+
+extern "C" fn await_worker_wake_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
+  let coro = coro as *mut AwaitWorkerWakeCoroutine;
+  assert!(!coro.is_null());
+
+  unsafe {
+    match (*coro).header.state {
+      0 => {
+        let promise = runtime_native::rt_parallel_spawn_promise(
+          parallel_worker_record_task,
+          (*coro).data as *mut u8,
+          PromiseLayout::of::<u32>(),
+        );
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, promise, 1);
+        RtCoroStatus::Pending
+      }
+      1 => {
+        assert_eq!((*coro).header.await_is_error, 0);
+        let payload = (*coro).header.await_value as *const u32;
+        assert_eq!(*payload, 123);
+        *(*coro).completed = true;
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
+        RtCoroStatus::Done
+      }
+      other => panic!("unexpected coroutine state: {other}"),
+    }
+  }
+}
+
+extern "C" fn parallel_all_task(data: *mut u8, promise: PromiseRef) {
+  unsafe {
+    let input = data as usize as u32;
+    let out = runtime_native::rt_promise_payload_ptr(promise) as *mut u32;
+    *out = input.wrapping_mul(2);
+    runtime_native::rt_promise_fulfill(promise);
+  }
+}
+
+#[repr(C)]
+struct AllState {
+  remaining: AtomicUsize,
+  results: *mut u32,
+  all_promise: PromiseRef,
+}
+
+#[repr(C)]
+struct OneState {
+  idx: usize,
+  promise: PromiseRef,
+  all: *mut AllState,
+}
+
+extern "C" fn on_one_settle(data: *mut u8) {
+  // Safety: allocated as `Box<OneState>` in the test setup and freed by `drop_one_state`.
+  let one = unsafe { &*(data as *const OneState) };
+  let all = unsafe { &*one.all };
+
+  let payload = runtime_native::rt_promise_payload_ptr(one.promise) as *const u32;
+  if !payload.is_null() {
+    unsafe {
+      *all.results.add(one.idx) = *payload;
+    }
+  }
+
+  if all.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+    runtime_native::rt_promise_resolve_legacy(all.all_promise, all.results as ValueRef);
+  }
+}
+
+extern "C" fn drop_one_state(data: *mut u8) {
+  // Safety: allocated as `Box<OneState>` in the test setup.
+  unsafe {
+    drop(Box::from_raw(data as *mut OneState));
+  }
+}
+
+#[repr(C)]
+struct AwaitAllCoroutine {
+  header: RtCoroutineHeader,
+  completed: *mut bool,
+  awaited: PromiseRef,
+}
+
+extern "C" fn await_all_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
+  let coro = coro as *mut AwaitAllCoroutine;
+  assert!(!coro.is_null());
+
+  unsafe {
+    match (*coro).header.state {
+      0 => {
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
+        RtCoroStatus::Pending
+      }
+      1 => {
+        *(*coro).completed = true;
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
+        RtCoroStatus::Done
+      }
+      other => panic!("unexpected coroutine state: {other}"),
+    }
+  }
+}
 
 #[test]
 fn parallel_spawn_promise_can_be_awaited_from_coroutine() {
   let _rt = TestRuntimeGuard::new();
 
-  extern "C" fn task(data: *mut u8, promise: PromiseRef) {
-    unsafe {
-      let input = &*(data as *const u32);
-      let out = runtime_native::rt_promise_payload_ptr(promise) as *mut u32;
-      *out = input.wrapping_add(1);
-      runtime_native::rt_promise_fulfill(promise);
-    }
-  }
-
-  #[repr(C)]
-  struct TestCoroutine {
-    header: RtCoroutineHeader,
-    completed: *mut bool,
-    input: *mut u32,
-  }
-
-  extern "C" fn resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
-    let coro = coro as *mut TestCoroutine;
-    assert!(!coro.is_null());
-
-    unsafe {
-      match (*coro).header.state {
-        0 => {
-          let promise = runtime_native::rt_parallel_spawn_promise(
-            task,
-            (*coro).input as *mut u8,
-            PromiseLayout::of::<u32>(),
-          );
-          runtime_native::rt_coro_await_legacy(&mut (*coro).header, promise, 1);
-          RtCoroStatus::Pending
-        }
-        1 => {
-          assert_eq!((*coro).header.await_is_error, 0);
-          let payload = (*coro).header.await_value as *const u32;
-          assert_eq!(*payload, 42);
-          *(*coro).completed = true;
-          runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-          RtCoroStatus::Done
-        }
-        other => panic!("unexpected coroutine state: {other}"),
-      }
-    }
-  }
-
   let mut completed = false;
   let input = Box::new(41u32);
   let input_ptr = Box::into_raw(input);
 
-  let mut coro = Box::new(TestCoroutine {
-    header: RtCoroutineHeader {
-      resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    completed: &mut completed,
-    input: input_ptr,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitParallelPromiseCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_parallel_promise_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = &mut completed;
+  coro.input = input_ptr;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   let start = Instant::now();
@@ -90,61 +267,7 @@ fn parallel_spawn_promise_can_be_awaited_from_coroutine() {
 fn promise_is_fulfilled_on_worker_thread_and_wakes_event_loop() {
   let _rt = TestRuntimeGuard::new();
 
-  #[repr(C)]
-  struct Data {
-    input: u32,
-    main_thread: std::thread::ThreadId,
-    ran_on_other_thread: AtomicBool,
-  }
-
-  extern "C" fn task(data: *mut u8, promise: PromiseRef) {
-    unsafe {
-      let data = &*(data as *const Data);
-      let out = runtime_native::rt_promise_payload_ptr(promise) as *mut u32;
-      *out = data.input;
-      data
-        .ran_on_other_thread
-        .store(std::thread::current().id() != data.main_thread, Ordering::Release);
-      runtime_native::rt_promise_fulfill(promise);
-    }
-  }
-
-  #[repr(C)]
-  struct TestCoroutine {
-    header: RtCoroutineHeader,
-    completed: *mut bool,
-    data: *mut Data,
-  }
-
-  extern "C" fn resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
-    let coro = coro as *mut TestCoroutine;
-    assert!(!coro.is_null());
-
-    unsafe {
-      match (*coro).header.state {
-        0 => {
-          let promise = runtime_native::rt_parallel_spawn_promise(
-            task,
-            (*coro).data as *mut u8,
-            PromiseLayout::of::<u32>(),
-          );
-          runtime_native::rt_coro_await_legacy(&mut (*coro).header, promise, 1);
-          RtCoroStatus::Pending
-        }
-        1 => {
-          assert_eq!((*coro).header.await_is_error, 0);
-          let payload = (*coro).header.await_value as *const u32;
-          assert_eq!(*payload, 123);
-          *(*coro).completed = true;
-          runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-          RtCoroStatus::Done
-        }
-        other => panic!("unexpected coroutine state: {other}"),
-      }
-    }
-  }
-
-  let data = Box::new(Data {
+  let data = Box::new(WorkerData {
     input: 123,
     main_thread: std::thread::current().id(),
     ran_on_other_thread: AtomicBool::new(false),
@@ -152,18 +275,18 @@ fn promise_is_fulfilled_on_worker_thread_and_wakes_event_loop() {
   let data_ptr = Box::into_raw(data);
 
   let mut completed = false;
-  let mut coro = Box::new(TestCoroutine {
-    header: RtCoroutineHeader {
-      resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    completed: &mut completed,
-    data: data_ptr,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitWorkerWakeCoroutine>(RtShapeId(2)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_worker_wake_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = &mut completed;
+  coro.data = data_ptr;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   let start = Instant::now();
@@ -285,80 +408,6 @@ fn parallel_spawn_promise_promise_all_like() {
   let _rt = TestRuntimeGuard::new();
   const N: usize = 256;
 
-  extern "C" fn task(data: *mut u8, promise: PromiseRef) {
-    unsafe {
-      let input = data as usize as u32;
-      let out = runtime_native::rt_promise_payload_ptr(promise) as *mut u32;
-      *out = input.wrapping_mul(2);
-      runtime_native::rt_promise_fulfill(promise);
-    }
-  }
-
-  #[repr(C)]
-  struct AllState {
-    remaining: AtomicUsize,
-    results: *mut u32,
-    all_promise: PromiseRef,
-  }
-
-  #[repr(C)]
-  struct OneState {
-    idx: usize,
-    promise: PromiseRef,
-    all: *mut AllState,
-  }
-
-  extern "C" fn on_one_settle(data: *mut u8) {
-    // Safety: allocated as `Box<OneState>` in the test setup and freed by `drop_one_state`.
-    let one = unsafe { &*(data as *const OneState) };
-    let all = unsafe { &*one.all };
-
-    let payload = runtime_native::rt_promise_payload_ptr(one.promise) as *const u32;
-    if !payload.is_null() {
-      unsafe {
-        *all.results.add(one.idx) = *payload;
-      }
-    }
-
-    if all.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-      runtime_native::rt_promise_resolve_legacy(all.all_promise, all.results as ValueRef);
-    }
-  }
-
-  extern "C" fn drop_one_state(data: *mut u8) {
-    // Safety: allocated as `Box<OneState>` in the test setup.
-    unsafe {
-      drop(Box::from_raw(data as *mut OneState));
-    }
-  }
-
-  #[repr(C)]
-  struct AwaitAllCoroutine {
-    header: RtCoroutineHeader,
-    completed: *mut bool,
-    awaited: PromiseRef,
-  }
-
-  extern "C" fn await_all_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
-    let coro = coro as *mut AwaitAllCoroutine;
-    assert!(!coro.is_null());
-
-    unsafe {
-      match (*coro).header.state {
-        0 => {
-          runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-          RtCoroStatus::Pending
-        }
-        1 => {
-          *(*coro).completed = true;
-          runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-          RtCoroStatus::Done
-        }
-        other => panic!("unexpected coroutine state: {other}"),
-      }
-    }
-  }
-
   let all_promise = runtime_native::rt_promise_new_legacy();
   let results = vec![0u32; N].into_boxed_slice();
   let results_ptr = Box::into_raw(results) as *mut u32;
@@ -371,8 +420,11 @@ fn parallel_spawn_promise_promise_all_like() {
   let all_state_ptr = Box::into_raw(all_state);
 
   for i in 0..N {
-    let promise =
-      runtime_native::rt_parallel_spawn_promise(task, i as *mut u8, PromiseLayout::of::<u32>());
+    let promise = runtime_native::rt_parallel_spawn_promise(
+      parallel_all_task,
+      i as *mut u8,
+      PromiseLayout::of::<u32>(),
+    );
     let one = Box::new(OneState {
       idx: i,
       promise,
@@ -387,18 +439,18 @@ fn parallel_spawn_promise_promise_all_like() {
   }
 
   let mut completed = false;
-  let mut coro = Box::new(AwaitAllCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_all_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    completed: &mut completed,
-    awaited: all_promise,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitAllCoroutine>(RtShapeId(3)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_all_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = &mut completed;
+  coro.awaited = all_promise;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   let start = Instant::now();
@@ -421,4 +473,3 @@ fn parallel_spawn_promise_promise_all_like() {
     drop(Box::from_raw(all_state_ptr));
   }
 }
-

@@ -1,10 +1,52 @@
-use runtime_native::abi::{Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
 use runtime_native::async_abi::PromiseHeader;
+use runtime_native::gc::ObjHeader;
+use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
+use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::Once;
 use std::time::{Duration, Instant};
+
+#[repr(C)]
+struct GcBox<T> {
+  header: ObjHeader,
+  payload: T,
+}
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    static SHAPES: [RtShapeDescriptor; 2] = [
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<YieldTwiceCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<AwaitCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+    ];
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
+
+unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
+  ensure_shape_table();
+  runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<T>>(), shape).cast::<GcBox<T>>()
+}
 
 #[repr(C)]
 struct YieldTwiceCoroutine {
@@ -50,17 +92,17 @@ fn run_until_idle_drains_deferred_coroutines() {
   let done = Box::new(AtomicBool::new(false));
   let on_settle = Box::new(AtomicBool::new(false));
 
-  let mut coro = Box::new(YieldTwiceCoroutine {
-    header: RtCoroutineHeader {
-      resume: yield_twice_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    done: done.as_ref(),
-  });
+  let coro_obj = unsafe { alloc_pinned::<YieldTwiceCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: yield_twice_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.done = done.as_ref();
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
   runtime_native::rt_promise_then_legacy(promise, set_bool, on_settle.as_ref() as *const AtomicBool as *mut u8);
@@ -115,18 +157,18 @@ fn block_on_waits_for_promise_settlement() {
   let awaited = runtime_native::rt_promise_new_legacy();
   let done = Box::new(AtomicBool::new(false));
 
-  let mut coro = Box::new(AwaitCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    done: done.as_ref(),
-    awaited,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitCoroutine>(RtShapeId(2)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.done = done.as_ref();
+  coro.awaited = awaited;
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
 

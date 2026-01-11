@@ -1,11 +1,41 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
 use runtime_native::async_abi::{
-  Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, CORO_FLAG_RUNTIME_OWNS_FRAME,
-  RT_ASYNC_ABI_VERSION,
+  Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
+use runtime_native::gc::ObjHeader;
+use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
+use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
+
+#[repr(C)]
+struct GcBox<T> {
+  header: ObjHeader,
+  payload: T,
+}
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+      size: mem::size_of::<GcBox<LogCoroutine>>() as u32,
+      align: 16,
+      flags: 0,
+      ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+      ptr_offsets_len: 0,
+      reserved: 0,
+    }];
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
+
+unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
+  ensure_shape_table();
+  runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<T>>(), shape).cast::<GcBox<T>>()
+}
 
 #[repr(C)]
 struct LogCoroutine {
@@ -58,19 +88,19 @@ fn await_and_then_share_single_reaction_list_with_fifo_ordering() {
   let awaited = runtime_native::rt_promise_new_legacy();
   let log: &'static Mutex<Vec<u32>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 
-  let mut coro = Box::new(LogCoroutine {
-    header: RtCoroutineHeader {
-      resume: log_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    id: 1,
-    log,
-    awaited,
-  });
+  let coro_obj = unsafe { alloc_pinned::<LogCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: log_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.id = 1;
+  coro.log = log;
+  coro.awaited = awaited;
 
   // Register the await reaction first (via spawning the coroutine).
   runtime_native::rt_async_spawn_legacy(&mut coro.header);

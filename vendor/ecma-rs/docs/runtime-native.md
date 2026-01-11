@@ -414,6 +414,28 @@ This matches the object layout described in `EXEC.plan.md`, e.g.:
 `struct MyObject { header: ObjectHeader, field1, ... }` — the header is the
 first field in memory.
 
+### 4.1.1 Derived pointers (payload pointers) used by async/coroutine ABIs
+
+LLVM statepoints represent live managed references as `(base, derived)` pairs. In most cases
+`base == derived`, but some runtime-facing ABIs (notably async/coroutine frames) use *derived*
+pointers into an allocation payload.
+
+For the async runtime, the intended layout is:
+
+```
+obj (base)       +--------------------+
+                 | ObjHeader          |
+payload (derived)+--------------------+
+                 | Coroutine/Promise  |  (ABI header at offset 0 relative to the payload pointer)
+                 | ... locals ...     |
+                 +--------------------+
+```
+
+When the runtime needs to keep a coroutine/promise alive across an `await`/yield (e.g. while queued
+in the event loop), it must treat the **object base pointer** (`ObjHeader*`) as the GC root and
+re-derive the payload pointer at the use site. This avoids storing long-lived interior pointers
+that would become stale under a moving GC.
+
 ### 4.2 Alignment guarantees
 `rt_alloc(size, shape)` returns a pointer aligned to at least the registered
 shape descriptor’s `align` value (`RtShapeDescriptor.align`).

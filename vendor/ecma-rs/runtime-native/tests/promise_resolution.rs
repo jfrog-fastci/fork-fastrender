@@ -1,8 +1,50 @@
 use runtime_native::abi::{
-  PromiseRef, PromiseResolveInput, RtCoroStatus, RtCoroutineHeader, ThenableRef, ThenableRejectCallback,
-  ThenableResolveCallback, ThenableVTable, ValueRef,
+  PromiseRef, PromiseResolveInput, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ThenableRef,
+  ThenableRejectCallback, ThenableResolveCallback, ThenableVTable, ValueRef,
 };
+use runtime_native::gc::ObjHeader;
+use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
+use std::mem;
+use std::sync::Once;
+
+#[repr(C)]
+struct GcBox<T> {
+  header: ObjHeader,
+  payload: T,
+}
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    static SHAPES: [RtShapeDescriptor; 2] = [
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<AwaitPromiseCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<AwaitValueCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+    ];
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
+
+unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
+  ensure_shape_table();
+  runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<T>>(), shape).cast::<GcBox<T>>()
+}
 
 fn drain_event_loop() {
   while runtime_native::rt_async_poll_legacy() {}
@@ -86,21 +128,21 @@ fn self_resolution_rejects() {
   let mut error: ValueRef = core::ptr::null_mut();
   let mut done = false;
 
-  let mut coro = Box::new(AwaitPromiseCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_promise_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    awaited: p,
-    out_is_error: &mut is_error,
-    out_value: &mut value,
-    out_error: &mut error,
-    done: &mut done,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitPromiseCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_promise_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.awaited = p;
+  coro.out_is_error = &mut is_error;
+  coro.out_value = &mut value;
+  coro.out_error = &mut error;
+  coro.done = &mut done;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   drain_event_loop();
@@ -124,21 +166,21 @@ fn resolving_with_pending_promise_adopts_fulfillment() {
   let mut error: ValueRef = core::ptr::null_mut();
   let mut done = false;
 
-  let mut coro = Box::new(AwaitPromiseCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_promise_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    awaited: dst,
-    out_is_error: &mut is_error,
-    out_value: &mut value,
-    out_error: &mut error,
-    done: &mut done,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitPromiseCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_promise_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.awaited = dst;
+  coro.out_is_error = &mut is_error;
+  coro.out_value = &mut value;
+  coro.out_error = &mut error;
+  coro.done = &mut done;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   runtime_native::rt_promise_resolve_legacy(src, 0xCAFE_BABEusize as ValueRef);
@@ -163,21 +205,21 @@ fn resolving_with_pending_promise_adopts_rejection() {
   let mut error: ValueRef = core::ptr::null_mut();
   let mut done = false;
 
-  let mut coro = Box::new(AwaitPromiseCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_promise_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    awaited: dst,
-    out_is_error: &mut is_error,
-    out_value: &mut value,
-    out_error: &mut error,
-    done: &mut done,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitPromiseCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_promise_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.awaited = dst;
+  coro.out_is_error = &mut is_error;
+  coro.out_value = &mut value;
+  coro.out_error = &mut error;
+  coro.done = &mut done;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   runtime_native::rt_promise_reject_legacy(src, 0xDEAD_BEEFusize as ValueRef);
@@ -230,21 +272,21 @@ fn thenable_calling_resolve_twice_only_resolves_once() {
   let mut error: ValueRef = core::ptr::null_mut();
   let mut done = false;
 
-  let mut coro = Box::new(AwaitPromiseCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_promise_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    awaited: dst,
-    out_is_error: &mut is_error,
-    out_value: &mut value,
-    out_error: &mut error,
-    done: &mut done,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitPromiseCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_promise_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.awaited = dst;
+  coro.out_is_error = &mut is_error;
+  coro.out_value = &mut value;
+  coro.out_error = &mut error;
+  coro.done = &mut done;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
@@ -305,21 +347,21 @@ fn thenable_calling_resolve_then_reject_only_resolves() {
   let mut error: ValueRef = core::ptr::null_mut();
   let mut done = false;
 
-  let mut coro = Box::new(AwaitPromiseCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_promise_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    awaited: dst,
-    out_is_error: &mut is_error,
-    out_value: &mut value,
-    out_error: &mut error,
-    done: &mut done,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitPromiseCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_promise_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.awaited = dst;
+  coro.out_is_error = &mut is_error;
+  coro.out_value = &mut value;
+  coro.out_error = &mut error;
+  coro.done = &mut done;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
@@ -373,21 +415,21 @@ fn thenable_throwing_during_then_call_rejects() {
   let mut error: ValueRef = core::ptr::null_mut();
   let mut done = false;
 
-  let mut coro = Box::new(AwaitPromiseCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_promise_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    awaited: dst,
-    out_is_error: &mut is_error,
-    out_value: &mut value,
-    out_error: &mut error,
-    done: &mut done,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitPromiseCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_promise_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.awaited = dst;
+  coro.out_is_error = &mut is_error;
+  coro.out_value = &mut value;
+  coro.out_error = &mut error;
+  coro.done = &mut done;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   drain_event_loop();
@@ -435,21 +477,21 @@ fn await_thenable_uses_promise_resolve_and_marks_handled() {
   let mut error: ValueRef = core::ptr::null_mut();
   let mut done = false;
 
-  let mut coro = Box::new(AwaitValueCoroutine {
-    header: RtCoroutineHeader {
-      resume: await_value_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    awaited,
-    out_is_error: &mut is_error,
-    out_value: &mut value,
-    out_error: &mut error,
-    done: &mut done,
-  });
+  let coro_obj = unsafe { alloc_pinned::<AwaitValueCoroutine>(RtShapeId(2)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_value_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.awaited = awaited;
+  coro.out_is_error = &mut is_error;
+  coro.out_value = &mut value;
+  coro.out_error = &mut error;
+  coro.done = &mut done;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   drain_event_loop();

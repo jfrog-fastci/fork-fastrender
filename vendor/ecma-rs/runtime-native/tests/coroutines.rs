@@ -1,8 +1,98 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::gc::ObjHeader;
+use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
-use std::sync::Mutex;
+use std::mem;
+use std::sync::{Mutex, Once};
 use std::time::Duration;
 use std::time::Instant;
+
+#[repr(C)]
+struct GcBox<T> {
+  header: ObjHeader,
+  payload: T,
+}
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    // We treat test coroutines as GC leaf objects: they do not contain pointers into the GC heap.
+    // This keeps the shape table minimal and avoids requiring tests to describe precise pointer maps.
+    static SHAPES: [RtShapeDescriptor; 6] = [
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<TestCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<OrderCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<SettledAwaitCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<SpawnBlockingCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<SpawnBlockingRejectCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<YieldOnceCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+    ];
+
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
+
+unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
+  ensure_shape_table();
+  runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<T>>(), shape).cast::<GcBox<T>>()
+}
+
+fn coro_rooted_in_runtime(obj: *mut u8) -> bool {
+  runtime_native::threading::safepoint::with_world_stopped(|stop_epoch| {
+    let mut found = false;
+    runtime_native::threading::safepoint::for_each_root_slot_world_stopped(stop_epoch, |slot| {
+      let value = unsafe { core::ptr::read_unaligned(slot) };
+      if value == obj {
+        found = true;
+      }
+    })
+    .expect("root enumeration");
+    found
+  })
+}
 
 #[repr(C)]
 struct TestCoroutine {
@@ -45,19 +135,22 @@ fn coroutine_spawn_runs_sync_until_first_await_and_resumes_as_microtask() {
   let mut side_effect = false;
   let mut completed = false;
 
-  let mut coro = Box::new(TestCoroutine {
-    header: RtCoroutineHeader {
-      resume: test_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    side_effect: &mut side_effect,
-    completed: &mut completed,
-    awaited,
-  });
+  // Allocate the coroutine frame as a GC object. The legacy coroutine pointer passed to the runtime
+  // is a derived pointer to the frame payload after the `ObjHeader` prefix (see `async_rt::coroutine`).
+  let coro_obj = unsafe { alloc_pinned::<TestCoroutine>(RtShapeId(1)) };
+  let coro_base = coro_obj.cast::<u8>();
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: test_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.side_effect = &mut side_effect;
+  coro.completed = &mut completed;
+  coro.awaited = awaited;
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
@@ -65,6 +158,11 @@ fn coroutine_spawn_runs_sync_until_first_await_and_resumes_as_microtask() {
   assert!(side_effect);
   assert!(!completed);
   assert_eq!(promise, coro.header.promise);
+
+  assert!(
+    coro_rooted_in_runtime(coro_base),
+    "await-suspended coroutine frame must be registered as a GC root"
+  );
 
   // Settling the awaited promise should enqueue a microtask, not resume immediately.
   runtime_native::rt_promise_resolve_legacy(awaited, 0xCAFE_BABE as ValueRef);
@@ -111,32 +209,34 @@ fn promise_waiters_resume_in_fifo_order() {
   let awaited = runtime_native::rt_promise_new_legacy();
   let log: &'static Mutex<Vec<u32>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 
-  let mut coro1 = Box::new(OrderCoroutine {
-    header: RtCoroutineHeader {
-      resume: order_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    id: 1,
-    log,
-    awaited,
-  });
-  let mut coro2 = Box::new(OrderCoroutine {
-    header: RtCoroutineHeader {
-      resume: order_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    id: 2,
-    log,
-    awaited,
-  });
+  let coro1_obj = unsafe { alloc_pinned::<OrderCoroutine>(RtShapeId(2)) };
+  let coro2_obj = unsafe { alloc_pinned::<OrderCoroutine>(RtShapeId(2)) };
+  let coro1 = unsafe { &mut (*coro1_obj).payload };
+  let coro2 = unsafe { &mut (*coro2_obj).payload };
+
+  coro1.header = RtCoroutineHeader {
+    resume: order_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro1.id = 1;
+  coro1.log = log;
+  coro1.awaited = awaited;
+
+  coro2.header = RtCoroutineHeader {
+    resume: order_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro2.id = 2;
+  coro2.log = log;
+  coro2.awaited = awaited;
 
   runtime_native::rt_async_spawn_legacy(&mut coro1.header);
   runtime_native::rt_async_spawn_legacy(&mut coro2.header);
@@ -183,18 +283,18 @@ fn strict_mode_awaiting_settled_promise_yields_to_microtask() {
   runtime_native::rt_promise_resolve_legacy(awaited, 0xBEEFusize as ValueRef);
 
   let mut completed = false;
-  let mut coro = Box::new(SettledAwaitCoroutine {
-    header: RtCoroutineHeader {
-      resume: settled_await_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    completed: &mut completed,
-    awaited,
-  });
+  let coro_obj = unsafe { alloc_pinned::<SettledAwaitCoroutine>(RtShapeId(3)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: settled_await_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = &mut completed;
+  coro.awaited = awaited;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(!completed, "strict await should not resume synchronously inside rt_async_spawn");
@@ -213,22 +313,93 @@ fn non_strict_mode_awaiting_settled_promise_resumes_synchronously() {
   runtime_native::rt_promise_resolve_legacy(awaited, 0xBEEFusize as ValueRef);
 
   let mut completed = false;
-  let mut coro = Box::new(SettledAwaitCoroutine {
-    header: RtCoroutineHeader {
-      resume: settled_await_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    completed: &mut completed,
-    awaited,
-  });
+  let coro_obj = unsafe { alloc_pinned::<SettledAwaitCoroutine>(RtShapeId(3)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: settled_await_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = &mut completed;
+  coro.awaited = awaited;
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(completed, "non-strict await should resume synchronously inside rt_async_spawn");
   assert!(!runtime_native::rt_async_poll_legacy());
+}
+
+// -----------------------------------------------------------------------------
+// Yield rooting (macrotask scheduling)
+// -----------------------------------------------------------------------------
+
+#[repr(C)]
+struct YieldOnceCoroutine {
+  header: RtCoroutineHeader,
+  yielded: *mut bool,
+  completed: *mut bool,
+}
+
+extern "C" fn yield_once_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
+  let coro = coro as *mut YieldOnceCoroutine;
+  assert!(!coro.is_null());
+
+  unsafe {
+    match (*coro).header.state {
+      0 => {
+        *(*coro).yielded = true;
+        (*coro).header.state = 1;
+        RtCoroStatus::Yield
+      }
+      1 => {
+        *(*coro).completed = true;
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        RtCoroStatus::Done
+      }
+      other => panic!("unexpected coroutine state: {other}"),
+    }
+  }
+}
+
+#[test]
+fn coroutine_yield_is_rooted_while_enqueued_as_macrotask() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut yielded = false;
+  let mut completed = false;
+
+  let coro_obj = unsafe { alloc_pinned::<YieldOnceCoroutine>(RtShapeId(6)) };
+  let coro_base = coro_obj.cast::<u8>();
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: yield_once_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.yielded = &mut yielded;
+  coro.completed = &mut completed;
+
+  runtime_native::rt_async_spawn_legacy(&mut coro.header);
+  assert!(yielded);
+  assert!(!completed);
+
+  assert!(
+    coro_rooted_in_runtime(coro_base),
+    "yielded coroutine must be rooted while queued in the macrotask queue"
+  );
+
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert!(completed);
+  assert!(
+    !coro_rooted_in_runtime(coro_base),
+    "completed coroutine should not remain rooted by the runtime queues"
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -280,18 +451,18 @@ fn coroutine_can_await_spawn_blocking_promise() {
   let _rt = TestRuntimeGuard::new();
 
   let mut completed = false;
-  let mut coro = Box::new(SpawnBlockingCoroutine {
-    header: RtCoroutineHeader {
-      resume: spawn_blocking_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    completed: &mut completed,
-    awaited: PromiseRef::null(),
-  });
+  let coro_obj = unsafe { alloc_pinned::<SpawnBlockingCoroutine>(RtShapeId(4)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: spawn_blocking_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = &mut completed;
+  coro.awaited = PromiseRef::null();
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(
@@ -345,18 +516,18 @@ fn coroutine_can_await_spawn_blocking_rejection() {
   let _rt = TestRuntimeGuard::new();
 
   let mut completed = false;
-  let mut coro = Box::new(SpawnBlockingRejectCoroutine {
-    header: RtCoroutineHeader {
-      resume: spawn_blocking_reject_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    completed: &mut completed,
-    awaited: PromiseRef::null(),
-  });
+  let coro_obj = unsafe { alloc_pinned::<SpawnBlockingRejectCoroutine>(RtShapeId(5)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: spawn_blocking_reject_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = &mut completed;
+  coro.awaited = PromiseRef::null();
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(!completed);

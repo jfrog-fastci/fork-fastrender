@@ -1,7 +1,39 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::gc::ObjHeader;
+use runtime_native::shape_table;
 use runtime_native::test_util::{promise_waiters_is_empty, PromiseWaiterRaceGuard, TestRuntimeGuard};
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
 use std::time::{Duration, Instant};
+
+#[repr(C)]
+struct GcBox<T> {
+  header: ObjHeader,
+  payload: T,
+}
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+      size: mem::size_of::<GcBox<TestCoroutine>>() as u32,
+      align: 16,
+      flags: 0,
+      ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+      ptr_offsets_len: 0,
+      reserved: 0,
+    }];
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
+
+unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
+  ensure_shape_table();
+  runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<T>>(), shape).cast::<GcBox<T>>()
+}
 
 #[repr(C)]
 struct TestCoroutine {
@@ -48,18 +80,18 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
   let awaited = runtime_native::rt_promise_new_legacy();
   let completed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
 
-  let coro: &'static mut TestCoroutine = Box::leak(Box::new(TestCoroutine {
-    header: RtCoroutineHeader {
-      resume: test_resume,
-      promise: PromiseRef::null(),
-      state: 0,
-      await_is_error: 0,
-      await_value: core::ptr::null_mut(),
-      await_error: core::ptr::null_mut(),
-    },
-    completed,
-    awaited,
-  }));
+  let coro_obj = unsafe { alloc_pinned::<TestCoroutine>(RtShapeId(1)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: test_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = completed;
+  coro.awaited = awaited;
 
   // Avoid relying on `Send` impls for raw pointers/ABI handles in this regression test.
   let coro_ptr = (&mut coro.header as *mut RtCoroutineHeader) as usize;

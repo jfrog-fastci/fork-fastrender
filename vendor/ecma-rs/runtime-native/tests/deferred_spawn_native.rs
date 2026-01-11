@@ -1,8 +1,8 @@
 use core::ffi::c_void;
 use core::ptr::null_mut;
 use runtime_native::async_abi::{
-  Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader,
-  RT_ASYNC_ABI_VERSION, CORO_FLAG_RUNTIME_OWNS_FRAME,
+  Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader, CORO_FLAG_RUNTIME_OWNS_FRAME,
+  RT_ASYNC_ABI_VERSION,
 };
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseRef as AbiPromiseRef;

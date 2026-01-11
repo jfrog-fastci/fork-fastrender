@@ -207,6 +207,24 @@ Some embeddings require stable object addresses (FFI / host references). The run
 Pinned objects are still expected to be traced and collectible when the GC-backed allocator is
 wired up.
 
+## Legacy async runtime GC roots
+
+The crate currently contains a **legacy** async runtime (`rt_async_spawn_legacy`,
+`rt_async_poll_legacy`) that is used by tests and older codegen prototypes.
+
+That runtime stores coroutine pointers in runtime-owned queues (macrotasks/microtasks) and in
+promise reaction lists. When coroutine frames are allocated in the GC heap, these runtime-held
+references must participate in GC root enumeration.
+
+Contract for legacy coroutine frames:
+
+- The pointer passed to the legacy async ABI (`*mut RtCoroutineHeader`) is a **derived pointer** to
+  the coroutine frame payload stored immediately after the GC [`ObjHeader`] prefix.
+- The GC object base pointer is `coro_ptr - OBJ_HEADER_SIZE`.
+- While a coroutine is suspended (queued as a macrotask or attached as a promise reaction), the
+  runtime registers the **base pointer** as a strong root and re-derives the coroutine pointer when
+  resuming.
+
 ## ArrayBuffer / TypedArray backing stores (stable I/O buffers)
 
 Native I/O APIs require buffer pointers remain valid at a stable address (e.g. until an `io_uring`
