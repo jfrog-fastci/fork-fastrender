@@ -123,34 +123,26 @@ impl PinnedIoVec {
     for range in ranges {
       match *range {
         IoVecRange::ArrayBuffer { buffer, offset, len } => {
-          let pinned = buffer.pin()?;
           let end = offset
             .checked_add(len)
             .ok_or(IoVecError::ArrayBuffer(ArrayBufferError::Range))?;
-          if end > pinned.len() {
-            return Err(IoVecError::ArrayBuffer(ArrayBufferError::Range));
-          }
+          let pinned = buffer.pin_range(offset..end)?;
 
-          let base = unsafe { pinned.as_ptr().add(offset) };
           iovecs.push(libc::iovec {
-            iov_base: base as *mut libc::c_void,
-            iov_len: len,
+            iov_base: pinned.as_ptr() as *mut libc::c_void,
+            iov_len: pinned.len(),
           });
           pins.push(PinGuard::ArrayBuffer(pinned));
         }
         IoVecRange::Uint8Array { view, offset, len } => {
-          let pinned = view.pin()?;
           let end = offset
             .checked_add(len)
             .ok_or(IoVecError::TypedArray(TypedArrayError::Range))?;
-          if end > pinned.len() {
-            return Err(IoVecError::TypedArray(TypedArrayError::Range));
-          }
+          let pinned = view.pin_range(offset..end)?;
 
-          let base = unsafe { pinned.as_ptr().add(offset) };
           iovecs.push(libc::iovec {
-            iov_base: base as *mut libc::c_void,
-            iov_len: len,
+            iov_base: pinned.as_ptr() as *mut libc::c_void,
+            iov_len: pinned.len(),
           });
           pins.push(PinGuard::Uint8Array(pinned));
         }

@@ -66,7 +66,8 @@ To obtain a `(ptr, len)` pair for kernel I/O:
 - Create a typed view (`Uint8Array::view`).
 - Use either:
   - `Uint8Array::as_ptr_range()` for **immediate** / synchronous I/O (not pinned), or
-  - `Uint8Array::pin()` / `ArrayBuffer::pin()` for async I/O (pinned).
+  - `Uint8Array::pin()` / `Uint8Array::pin_range()` (or `ArrayBuffer::pin()` / `ArrayBuffer::pin_range()`)
+    for async I/O (pinned).
 
 `Uint8Array::as_ptr_range()` is *not* sufficient for async I/O: it does not pin
 the backing store, so the byte pointer can be invalidated by detach/transfer/resize

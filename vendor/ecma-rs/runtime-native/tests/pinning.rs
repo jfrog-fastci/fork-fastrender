@@ -1,5 +1,6 @@
 use std::mem;
 use std::ptr;
+use std::thread;
 
 use runtime_native::buffer::{
   ArrayBuffer, ArrayBufferError, BackingStoreAllocator, GlobalBackingStoreAllocator, Uint8Array,
@@ -135,6 +136,45 @@ fn pin_is_raii_on_panic() {
 }
 
 #[test]
+fn array_buffer_pin_range_returns_subslice() {
+  let buffer = ArrayBuffer::from_bytes((0u8..8).collect::<Vec<u8>>()).unwrap();
+  let base = buffer.data_ptr().unwrap();
+
+  let pinned = buffer.pin_range(2..6).unwrap();
+  assert_eq!(buffer.pin_count(), 1);
+  assert_eq!(pinned.len(), 4);
+  assert_eq!((pinned.as_ptr() as usize) - (base as usize), 2);
+  // SAFETY: slice is valid while `pinned` is alive.
+  unsafe {
+    assert_eq!(pinned.as_slice(), &[2, 3, 4, 5]);
+  }
+
+  drop(pinned);
+  assert_eq!(buffer.pin_count(), 0);
+}
+
+#[test]
+fn uint8_array_pin_range_returns_subslice() {
+  let buffer = ArrayBuffer::from_bytes((0u8..8).collect::<Vec<u8>>()).unwrap();
+  let view = Uint8Array::view(&buffer, 2, 4).unwrap();
+
+  let pinned = view.pin_range(1..3).unwrap();
+  assert_eq!(buffer.pin_count(), 1);
+  assert_eq!(pinned.len(), 2);
+
+  let base = buffer.data_ptr().unwrap();
+  assert_eq!((pinned.as_ptr() as usize) - (base as usize), 3);
+
+  // SAFETY: slice is valid while `pinned` is alive.
+  unsafe {
+    assert_eq!(pinned.as_slice(), &[3, 4]);
+  }
+
+  drop(pinned);
+  assert_eq!(buffer.pin_count(), 0);
+}
+
+#[test]
 fn detach_transfer_and_resize_are_blocked_while_pinned() {
   let alloc = GlobalBackingStoreAllocator::default();
   let mut buffer = ArrayBuffer::new_zeroed_in(&alloc, 8).unwrap();
@@ -153,6 +193,33 @@ fn detach_transfer_and_resize_are_blocked_while_pinned() {
   buffer.detach().unwrap();
   assert!(buffer.is_detached());
   assert_eq!(buffer.byte_len(), 0);
+  assert_eq!(alloc.external_bytes(), 0);
+}
+
+#[test]
+fn pinned_array_buffer_can_drop_on_other_thread_after_finalize() {
+  let alloc = GlobalBackingStoreAllocator::default();
+  let mut buffer = ArrayBuffer::new_zeroed_in(&alloc, 8).unwrap();
+  assert_eq!(alloc.external_bytes(), 8);
+
+  let pinned = buffer.pin().unwrap();
+  buffer.finalize_in(&alloc);
+  assert!(buffer.is_detached());
+  assert_eq!(alloc.external_bytes(), 8);
+
+  let alloc_thread = alloc.clone();
+  let handle = thread::spawn(move || {
+    let mut pinned = pinned;
+    assert_eq!(pinned.len(), 8);
+    // SAFETY: slice is valid while `pinned` is alive.
+    unsafe {
+      pinned.as_mut_slice().fill(0xAA);
+    }
+    drop(pinned);
+    assert_eq!(alloc_thread.external_bytes(), 0);
+  });
+
+  handle.join().unwrap();
   assert_eq!(alloc.external_bytes(), 0);
 }
 

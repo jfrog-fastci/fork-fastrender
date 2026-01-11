@@ -56,6 +56,15 @@ struct BackingStoreInner {
   pin_count: AtomicU32,
 }
 
+// Safety: a `BackingStore` points to a fixed, non-moving byte allocation that lives outside the GC
+// heap. The bytes may be accessed from other threads (e.g. kernel async I/O completion threads) via
+// raw pointers, so we allow backing store handles/guards to be sent and shared across threads.
+//
+// The contents are plain bytes; it is the caller's responsibility to uphold any synchronization
+// requirements when reading/writing through raw pointers.
+unsafe impl Send for BackingStoreInner {}
+unsafe impl Sync for BackingStoreInner {}
+
 impl Drop for BackingStoreInner {
   fn drop(&mut self) {
     debug_assert_eq!(

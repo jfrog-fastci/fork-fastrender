@@ -127,26 +127,37 @@ impl Uint8Array {
 
   /// Pin this view's backing store and return a stable pointer/length pair.
   pub fn pin(&self) -> Result<PinnedUint8Array, TypedArrayError> {
+    self.pin_range(0..self.length)
+  }
+
+  /// Pin a subrange of this view and return a stable pointer/length pair.
+  ///
+  /// `range` is relative to the start of the view (not the underlying buffer).
+  pub fn pin_range(&self, range: core::ops::Range<usize>) -> Result<PinnedUint8Array, TypedArrayError> {
     if self.is_detached() {
       return Err(TypedArrayError::Buffer(ArrayBufferError::Detached));
     }
-
-    // SAFETY: GC-managed edge (see above).
-    let buffer = unsafe { self.buffer.as_ref() };
-    let pinned = buffer.pin()?;
-
-    let end = self
-      .byte_offset
-      .checked_add(self.length)
-      .ok_or(TypedArrayError::Range)?;
-    if end > pinned.len() {
+    if range.start > range.end || range.end > self.length {
       return Err(TypedArrayError::Range);
     }
 
+    let abs_start = self
+      .byte_offset
+      .checked_add(range.start)
+      .ok_or(TypedArrayError::Range)?;
+    let abs_end = self
+      .byte_offset
+      .checked_add(range.end)
+      .ok_or(TypedArrayError::Range)?;
+
+    // SAFETY: GC-managed edge (see above).
+    let buffer = unsafe { self.buffer.as_ref() };
+    let pinned = buffer.pin_range(abs_start..abs_end)?;
+
     Ok(PinnedUint8Array {
       pinned,
-      start: self.byte_offset,
-      len: self.length,
+      start: 0,
+      len: abs_end - abs_start,
     })
   }
 }

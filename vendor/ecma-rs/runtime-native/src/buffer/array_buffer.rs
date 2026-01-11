@@ -122,6 +122,18 @@ impl ArrayBuffer {
   ///
   /// While the returned guard is alive, detach/transfer/resize must be rejected.
   pub fn pin(&self) -> Result<PinnedArrayBuffer, ArrayBufferError> {
+    self.pin_range(0..self.byte_len)
+  }
+
+  /// Pin a subrange of the backing store and return a stable pointer/length pair.
+  ///
+  /// This is primarily a convenience wrapper around [`BackingStore::pin_range`]. Pinning a subrange
+  /// still pins the *whole backing store* for invalidation purposes: detach/transfer/resize must be
+  /// rejected while any pin guard exists.
+  pub fn pin_range(
+    &self,
+    range: core::ops::Range<usize>,
+  ) -> Result<PinnedArrayBuffer, ArrayBufferError> {
     if self.is_detached() {
       return Err(ArrayBufferError::Detached);
     }
@@ -131,16 +143,12 @@ impl ArrayBuffer {
       .as_ref()
       .expect("detached check above");
 
-    let (pinned, (ptr, len)) = store.pin().map_err(|err| match err {
+    let (pinned, (ptr, len)) = store.pin_range(range).map_err(|err| match err {
       BackingStorePinError::NotAlive => ArrayBufferError::Detached,
       BackingStorePinError::OutOfBounds => ArrayBufferError::Range,
     })?;
 
-    Ok(PinnedArrayBuffer {
-      _pinned: pinned,
-      ptr,
-      len,
-    })
+    Ok(PinnedArrayBuffer { _pinned: pinned, ptr, len })
   }
 
   pub fn slice(&self, start: usize, end: usize) -> Result<Self, ArrayBufferError> {
@@ -275,6 +283,11 @@ pub struct PinnedArrayBuffer {
   ptr: *mut u8,
   len: usize,
 }
+
+// Safety: `PinnedArrayBuffer` is an in-flight I/O guard that may be dropped on an async completion
+// thread. The guard keeps the backing store alive and stable; the raw pointer is just an address.
+// Any concurrent access to the bytes is the caller's responsibility.
+unsafe impl Send for PinnedArrayBuffer {}
 
 impl PinnedArrayBuffer {
   #[inline]
