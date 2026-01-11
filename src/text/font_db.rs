@@ -2678,15 +2678,25 @@ impl FontMetrics {
     // avoid this drift. Keep the per-face ascent/descent values un-snapped so baselines and glyph
     // alignment remain driven by the font metrics; only the overall line box height is snapped.
     //
-    // Headless Chrome (Skia/FreeType) effectively truncates the scaled font height to whole CSS
-    // pixels for common text metrics. E.g. Roboto Flex at 21px yields a raw height of ~24.61px in
-    // font units, but Chrome lays out lines at 24px. Using `round()` here would inflate that to
-    // 25px, and that +1px/line quickly accumulates into visible vertical drift on real pages.
+    // Headless Chrome (Skia/FreeType) appears to bias toward truncation for typical sizes (e.g.
+    // 20.16px → 20px), but fully truncating values that are *very* close to the next pixel (e.g.
+    // 10.94px → 10px) can compress text-heavy tables and accumulate visible drift (HN subtext rows
+    // end up 1px shorter per item).
     //
-    // Important: do *not* clamp this to `ceil(ascent + descent)`. When ascent/descent scale to
-    // values like 20.16px, `ceil()` would force the line height up to 21px even though browsers
-    // truncate to 20px here. That 1px inflation per line accumulates into large vertical drift.
-    let line_height = raw_line_height.floor();
+    // Use a biased snap:
+    // - default to `floor()` to avoid the +1px/line inflation that `round()` can cause
+    // - but round up when the fractional part is extremely high, to avoid dropping ~1px
+    //
+    // This keeps the "don't over-inflate" invariant while avoiding pathological underflow for
+    // fractional font sizes (pt/em/etc.).
+    let mut line_height = raw_line_height.floor();
+    if raw_line_height.is_finite() {
+      let frac = raw_line_height - line_height;
+      // 0.9 is intentionally conservative: only values very close to the next pixel round up.
+      if frac >= 0.9 {
+        line_height += 1.0;
+      }
+    }
 
     ScaledMetrics {
       font_size,
@@ -2877,6 +2887,36 @@ mod tests {
 
     let scaled = metrics.scale(16.0);
     assert_eq!(scaled.line_height, 20.0);
+  }
+
+  #[test]
+  fn normal_line_height_rounding_avoids_large_underflow_near_next_pixel() {
+    // When the scaled font height lands very close to the next CSS pixel, truncation can drop
+    // nearly a full pixel of line height (e.g. 10.94px → 10px), which accumulates into visible
+    // drift on text-heavy pages (notably Hacker News subtext rows).
+    //
+    // Keep the "biased toward floor" behavior from `normal_line_height_rounding_does_not_over_inflate`,
+    // but ensure we don't underflow by almost a full pixel when the fractional part is extremely high.
+    let metrics = FontMetrics {
+      units_per_em: 64,
+      ascent: 0,
+      descent: 0,
+      line_gap: 0,
+      // 700 * (1px / 64 units) = 10.9375px.
+      line_height: 700,
+      x_height: None,
+      cap_height: None,
+      underline_position: 0,
+      underline_thickness: 0,
+      strikeout_position: None,
+      strikeout_thickness: None,
+      is_bold: false,
+      is_italic: false,
+      is_monospace: false,
+    };
+
+    let scaled = metrics.scale(1.0);
+    assert_eq!(scaled.line_height, 11.0);
   }
 
   #[test]
