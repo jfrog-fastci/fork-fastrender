@@ -73,9 +73,13 @@ fn snapshot_roundtrips_queries() {
   let total_type = total_entry.type_id.expect("total type");
   let total_body = program.body_of_def(total_def).expect("body for total");
   let call_offset = entry_source.find("add(1, 2)").unwrap() as u32;
+  let call_sig_offset = call_offset + 3; // points at `(` in `add(1, 2)`
   let type_at_call = program
     .type_at(file_entry, call_offset)
     .expect("type at call");
+  let call_sig = program
+    .call_signature_at(file_entry, call_sig_offset)
+    .expect("call signature at call");
 
   let snapshot = program.snapshot();
   let serialized = serde_json::to_string_pretty(&snapshot).expect("serialize snapshot");
@@ -102,6 +106,11 @@ fn snapshot_roundtrips_queries() {
       type_at_call, restored_type_at
     );
   }
+
+  let restored_call_sig = restored
+    .call_signature_at(restored_entry, call_sig_offset)
+    .expect("restored call signature");
+  assert_eq!(restored_call_sig, call_sig);
 }
 
 #[test]
