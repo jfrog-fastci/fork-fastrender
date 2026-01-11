@@ -11,7 +11,7 @@ needed to execute LLVM-generated coroutine state machines with JS-correct microt
 From the `vendor/ecma-rs/` workspace root:
 
 ```bash
-cargo build -p runtime-native --release
+bash scripts/cargo_agent.sh build --release -p runtime-native
 ```
 
 Or via the helper script (prints include/lib paths for downstream build systems):
