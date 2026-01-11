@@ -2,6 +2,7 @@
 
 use optimize_js::cfg::cfg::Cfg;
 use optimize_js::il::inst::{Inst, InstTyp};
+use optimize_js::types::ValueTypeSummary;
 use optimize_js::{
   compile_source_typed, compile_source_typed_cfg_options, CompileCfgOptions, Program, TopLevelMode,
 };
@@ -97,5 +98,47 @@ fn typed_keep_ssa_compile_is_deterministic() {
     collect_program_insts(&first),
     collect_program_insts(&second),
     "SSA output should be deterministic across runs"
+  );
+}
+
+#[test]
+fn typed_keep_ssa_phi_nodes_carry_type_metadata() {
+  let source = r#"
+    /// <reference no-default-lib="true" />
+    declare function unknown_cond(): boolean;
+    declare function unknown_num(): number;
+
+    const sink = (x: number) => x;
+
+    let x = 0;
+    if (unknown_cond()) {
+      x = unknown_num();
+    } else {
+      x = unknown_num();
+    }
+    sink(x);
+  "#;
+
+  let options = CompileCfgOptions {
+    keep_ssa: true,
+    ..CompileCfgOptions::default()
+  };
+  let program =
+    compile_source_typed_cfg_options(source, TopLevelMode::Module, false, options).expect("compile");
+
+  let insts = collect_insts(&program.top_level.body);
+  let phi = insts
+    .iter()
+    .find(|inst| {
+      inst.t == InstTyp::Phi
+        && inst.meta.type_id.is_some()
+        && inst.meta.type_summary == Some(ValueTypeSummary::Number)
+        && inst.meta.excludes_nullish
+    })
+    .expect("expected at least one Phi node to carry typed metadata");
+
+  assert!(
+    phi.meta.hir_expr.is_none(),
+    "phi nodes inserted for statement-level assignments should not have a single canonical hir_expr, got {phi:?}"
   );
 }

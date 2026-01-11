@@ -8,8 +8,8 @@ use native_js::gc::roots::GcFrame;
 use native_js::gc::statepoint::StatepointEmitter;
 use native_js::llvm::gc as llvm_gc;
 use native_js::runtime_fn::RuntimeFn;
-use native_js::stackmaps::StackMapsHeader;
 use object::{Object as _, ObjectSection as _};
+use runtime_native::stackmaps::parse_all_stackmaps;
 
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -116,9 +116,11 @@ fn compiled_calls_may_gc_are_emitted_as_statepoints() {
     .section_by_name(".llvm_stackmaps")
     .expect("missing .llvm_stackmaps section");
   let data = stackmaps.data().expect("read .llvm_stackmaps section");
-  let header = StackMapsHeader::parse(data).expect("parse stackmaps header");
+  let stackmaps = parse_all_stackmaps(data).expect("parse stackmaps section");
+  let num_records: usize = stackmaps.iter().map(|map| map.records.len()).sum();
   assert!(
-    header.num_records >= 2,
-    "expected at least 2 stackmap records (caller->callee + callee->alloc), got {header:?}"
+    num_records >= 2,
+    "expected at least 2 stackmap records (caller->callee + callee->alloc), got {num_records} ({} stackmap blobs)",
+    stackmaps.len(),
   );
 }

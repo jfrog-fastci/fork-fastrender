@@ -220,7 +220,11 @@ impl<'p> HirSourceToInst<'p> {
               Inst::var_assign(value_tmp_var, value_arg.clone()),
             );
             *assign_inst.args.last_mut().unwrap() = value_arg;
-            self.out.push(assign_inst);
+            if assign_inst.t == InstTyp::VarAssign {
+              self.push_value_inst(assign_expr_id, assign_inst);
+            } else {
+              self.out.push(assign_inst);
+            }
             Ok(Arg::Var(value_tmp_var))
           }
           AssignOp::LogicalAndAssign | AssignOp::LogicalOrAssign | AssignOp::NullishAssign => {
@@ -290,7 +294,11 @@ impl<'p> HirSourceToInst<'p> {
               Inst::var_assign(value_tmp_var, rhs.clone()),
             );
             *assign_inst.args.last_mut().unwrap() = rhs;
-            self.out.push(assign_inst);
+            if assign_inst.t == InstTyp::VarAssign {
+              self.push_value_inst(assign_expr_id, assign_inst);
+            } else {
+              self.out.push(assign_inst);
+            }
             self.out.push(Inst::label(converge_label_id));
 
             Ok(Arg::Var(value_tmp_var))
@@ -346,7 +354,11 @@ impl<'p> HirSourceToInst<'p> {
             let rhs_inst = Inst::bin(value_tmp_var, left_arg, op, value_arg);
             self.push_value_inst(assign_expr_id, rhs_inst);
             *assign_inst.args.last_mut().unwrap() = Arg::Var(value_tmp_var);
-            self.out.push(assign_inst);
+            if assign_inst.t == InstTyp::VarAssign {
+              self.push_value_inst(assign_expr_id, assign_inst);
+            } else {
+              self.out.push(assign_inst);
+            }
             Ok(Arg::Var(value_tmp_var))
           }
         }

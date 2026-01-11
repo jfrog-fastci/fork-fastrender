@@ -59,7 +59,6 @@ mod project;
 pub mod resolve;
 pub mod runtime_abi;
 pub mod runtime_fn;
-pub mod stackmaps;
 pub mod strict;
 pub mod validate;
 pub mod toolchain;
