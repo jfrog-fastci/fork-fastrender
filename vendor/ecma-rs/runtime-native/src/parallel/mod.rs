@@ -53,6 +53,12 @@ impl ParallelRuntime {
       std::process::abort();
     }
 
+    // `slice::from_raw_parts` requires alignment. Reject misaligned pointers
+    // before constructing the slice to avoid UB in case of ABI misuse.
+    if (tasks as usize) % std::mem::align_of::<TaskId>() != 0 {
+      std::process::abort();
+    }
+
     let ids = unsafe { std::slice::from_raw_parts(tasks, count) };
     let mut seen: HashSet<u64> = HashSet::with_capacity(ids.len());
     let mut tasks: Vec<Arc<TaskState>> = Vec::with_capacity(ids.len());
