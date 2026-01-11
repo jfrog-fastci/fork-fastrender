@@ -30,6 +30,7 @@ use crate::Runtime;
 use crate::Thread;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::io;
@@ -1467,6 +1468,58 @@ pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
 // I/O readiness watchers (reactor-backed)
 // -----------------------------------------------------------------------------
 
+/// Debug-only error codes for the `rt_io_*` C ABI entrypoints.
+///
+/// These entrypoints cannot return a rich `io::Error` over the stable C ABI (e.g.
+/// `rt_io_register` returns 0 on failure). The codes below allow tests (and
+/// embedders in debug builds) to diagnose common failure modes.
+///
+/// The numeric values are **not** part of the stable ABI contract; this module is
+/// `#[doc(hidden)]` and intended for tests/debugging only.
+#[doc(hidden)]
+pub mod rt_io_debug {
+  /// No error was recorded (success or no `rt_io_*` call yet on this thread).
+  pub const OK: u32 = 0;
+  /// `interests` did not include `RT_IO_READABLE` and/or `RT_IO_WRITABLE`.
+  pub const ERR_INVALID_INTERESTS: u32 = 1;
+  /// The fd was not `O_NONBLOCK` (required by edge-triggered reactor contract).
+  pub const ERR_FD_NOT_NONBLOCKING: u32 = 2;
+  /// The fd is already registered with the reactor.
+  pub const ERR_ALREADY_REGISTERED: u32 = 3;
+  /// Some other error occurred while registering the fd.
+  pub const ERR_OTHER: u32 = 4;
+  /// `rt_io_update` failed (invalid watcher id or fd no longer satisfies contract).
+  pub const ERR_UPDATE_FAILED: u32 = 5;
+  /// `rt_io_unregister` failed (invalid watcher id).
+  pub const ERR_UNREGISTER_FAILED: u32 = 6;
+}
+
+thread_local! {
+  static RT_IO_LAST_ERROR: Cell<u32> = Cell::new(rt_io_debug::OK);
+}
+
+#[inline]
+fn rt_io_set_last_error(code: u32) {
+  RT_IO_LAST_ERROR.with(|c| c.set(code));
+}
+
+/// Test/debug helper: return and clear the last `rt_io_*` failure code for the
+/// **current thread**.
+///
+/// This is `#[doc(hidden)]` because it is not part of the stable runtime-native
+/// C ABI.
+#[doc(hidden)]
+#[no_mangle]
+pub extern "C" fn rt_io_debug_take_last_error() -> u32 {
+  abort_on_panic(|| {
+    RT_IO_LAST_ERROR.with(|c| {
+      let code = c.get();
+      c.set(rt_io_debug::OK);
+      code
+    })
+  })
+}
+
 fn maybe_log_rt_io_failure(op: &str, msg: impl core::fmt::Display) {
   // These functions are part of the stable C ABI surface, but they cannot return
   // a rich error (e.g. `rt_io_register` returns 0 on failure). Emit a best-effort
@@ -1515,7 +1568,9 @@ pub extern "C" fn rt_io_register(
   data: *mut u8,
 ) -> IoWatcherId {
   abort_on_panic(|| {
+    rt_io_set_last_error(rt_io_debug::OK);
     if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      rt_io_set_last_error(rt_io_debug::ERR_INVALID_INTERESTS);
       maybe_log_rt_io_failure(
         "rt_io_register",
         format_args!(
@@ -1529,6 +1584,12 @@ pub extern "C" fn rt_io_register(
     match async_rt::global().register_io(fd, interests, cb, data) {
       Ok(id) => id.as_raw(),
       Err(err) => {
+        let code = match err.kind() {
+          io::ErrorKind::InvalidInput => rt_io_debug::ERR_FD_NOT_NONBLOCKING,
+          io::ErrorKind::AlreadyExists => rt_io_debug::ERR_ALREADY_REGISTERED,
+          _ => rt_io_debug::ERR_OTHER,
+        };
+        rt_io_set_last_error(code);
         if err.kind() == io::ErrorKind::InvalidInput {
           maybe_log_rt_io_failure(
             "rt_io_register",
@@ -1673,7 +1734,9 @@ pub extern "C" fn rt_io_register_rooted(
 #[no_mangle]
 pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
   abort_on_panic(|| {
+    rt_io_set_last_error(rt_io_debug::OK);
     if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      rt_io_set_last_error(rt_io_debug::ERR_INVALID_INTERESTS);
       maybe_log_rt_io_failure(
         "rt_io_update",
         format_args!(
@@ -1685,6 +1748,7 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
     if !async_rt::global().update_io(WatcherId::from_raw(id), interests) {
+      rt_io_set_last_error(rt_io_debug::ERR_UPDATE_FAILED);
       maybe_log_rt_io_failure(
         "rt_io_update",
         format_args!(
@@ -1702,9 +1766,11 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
 #[no_mangle]
 pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
   abort_on_panic(|| {
+    rt_io_set_last_error(rt_io_debug::OK);
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
     if !async_rt::global().deregister_fd(WatcherId::from_raw(id)) {
+      rt_io_set_last_error(rt_io_debug::ERR_UNREGISTER_FAILED);
       maybe_log_rt_io_failure(
         "rt_io_unregister",
         format_args!("id={id}: unregister failed (invalid id)"),
