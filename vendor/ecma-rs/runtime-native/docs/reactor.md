@@ -47,6 +47,31 @@ If `fd` is not registered with the reactor, `deregister` fails with:
 
 - `io::ErrorKind::NotFound` (Linux: `ENOENT`)
 
+### File descriptor lifecycle / reuse
+
+Registrations are tied to the **underlying OS object** (open file description), not the numeric file
+descriptor value.
+
+If a registered fd is **closed or replaced** (e.g. `close(fd)`, `dup2(other, fd)`), the reactor must
+subsequently treat that numeric fd as **unregistered**:
+
+- `deregister(fd)` / `reregister(fd, ...)` must fail with `io::ErrorKind::NotFound`.
+- `register(fd, ...)` must succeed (it must not spuriously return `AlreadyExists`).
+
+Callers are still encouraged to call `deregister` before closing to eagerly remove interest, but
+correctness must not depend on it.
+
+#### Implementation note (kqueue)
+
+`epoll` tracks registrations in-kernel, so closing an fd automatically removes it from the epoll set.
+
+`kqueue` requires the reactor to maintain a small user-space registration table in order to emulate
+mio-style `EEXIST`/`ENOENT` errors. To make this robust to fd-number reuse, each kqueue registration
+stores an `fstat` identity snapshot (`st_dev`, `st_ino`, and the file-type bits of `st_mode`) and
+validates it on every `register`/`reregister`/`deregister`. If the current fd's identity differs (or
+`fstat` fails with `EBADF`), the entry is treated as stale and removed, and the operation proceeds
+as if the fd was never registered.
+
 ## Trigger mode: edge-triggered
 
 The reactor is **edge-triggered** on all platforms:

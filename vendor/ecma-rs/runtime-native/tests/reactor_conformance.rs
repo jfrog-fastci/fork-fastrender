@@ -248,6 +248,43 @@ fn deregister_without_register_behavior() {
 }
 
 #[test]
+fn fd_reuse_via_dup2_clears_registration() {
+  let (a_read, _a_write) = pipe().unwrap();
+  set_nonblocking(a_read.as_raw_fd()).unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  reactor
+    .register(a_read.as_fd(), Token(16), Interest::READABLE)
+    .unwrap();
+
+  // Create a second fd and dup2 it into `a_read`'s numeric fd, replacing the underlying object.
+  let (b_read, _b_write) = pipe().unwrap();
+  set_nonblocking(b_read.as_raw_fd()).unwrap();
+
+  loop {
+    let rc = unsafe { libc::dup2(b_read.as_raw_fd(), a_read.as_raw_fd()) };
+    if rc != -1 {
+      assert_eq!(rc, a_read.as_raw_fd());
+      break;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    panic!("dup2 failed unexpectedly: {err:?}");
+  }
+
+  let err = reactor
+    .deregister(a_read.as_fd())
+    .expect_err("expected deregister to treat dup2-replaced fd as unregistered");
+  assert_eq!(err.kind(), io::ErrorKind::NotFound, "got {err:?}");
+
+  reactor
+    .register(a_read.as_fd(), Token(17), Interest::READABLE)
+    .unwrap();
+}
+
+#[test]
 fn read_ready_pipe() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();

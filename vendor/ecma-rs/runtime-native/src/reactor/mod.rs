@@ -524,6 +524,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
   use super::{Event, Interest, Token};
   use std::collections::HashMap;
   use std::io;
+  use std::mem::MaybeUninit;
   use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
   use std::time::{Duration, Instant};
 
@@ -533,10 +534,18 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     registrations: HashMap<RawFd, Registration>,
   }
 
+  #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+  struct FdIdentity {
+    dev: libc::dev_t,
+    ino: libc::ino_t,
+    file_type: libc::mode_t,
+  }
+
   #[derive(Copy, Clone, Debug)]
   struct Registration {
     token: Token,
     interest: Interest,
+    identity: FdIdentity,
   }
 
   impl ReactorSys {
@@ -599,14 +608,19 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 
     pub(super) fn register(&mut self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
-      if self.registrations.contains_key(&fd) {
+      if self.registration_if_fresh(fd)?.is_some() {
         return Err(io::Error::from_raw_os_error(libc::EEXIST));
       }
 
+      let identity = fd_identity(fd)?;
       let changes = changes_for_register(fd, token, interest);
       apply_changes(self.kqueue.as_raw_fd(), &changes)?;
 
-      self.registrations.insert(fd, Registration { token, interest });
+      self.registrations.insert(fd, Registration {
+        token,
+        interest,
+        identity,
+      });
       Ok(())
     }
 
@@ -616,19 +630,23 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       token: Token,
       interest: Interest,
     ) -> io::Result<()> {
-      let Some(old) = self.registrations.get(&fd).copied() else {
+      let Some(old) = self.registration_if_fresh(fd)? else {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
       };
 
       let changes = changes_for_reregister(fd, old, token, interest);
       apply_changes(self.kqueue.as_raw_fd(), &changes)?;
 
-      self.registrations.insert(fd, Registration { token, interest });
+      self.registrations.insert(fd, Registration {
+        token,
+        interest,
+        identity: old.identity,
+      });
       Ok(())
     }
 
     pub(super) fn deregister(&mut self, fd: RawFd) -> io::Result<()> {
-      let Some(old) = self.registrations.get(&fd).copied() else {
+      let Some(old) = self.registration_if_fresh(fd)? else {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
       };
 
@@ -637,6 +655,25 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
 
       self.registrations.remove(&fd);
       Ok(())
+    }
+
+    fn registration_if_fresh(&mut self, fd: RawFd) -> io::Result<Option<Registration>> {
+      let Some(reg) = self.registrations.get(&fd).copied() else {
+        return Ok(None);
+      };
+
+      match fd_identity(fd) {
+        Ok(current) if current == reg.identity => Ok(Some(reg)),
+        Ok(_) => {
+          self.registrations.remove(&fd);
+          Ok(None)
+        }
+        Err(err) if err.raw_os_error() == Some(libc::EBADF) => {
+          self.registrations.remove(&fd);
+          Ok(None)
+        }
+        Err(err) => Err(err),
+      }
     }
 
     pub(super) fn poll_raw(&mut self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {
@@ -743,6 +780,20 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       }
       Ok(())
     }
+  }
+
+  fn fd_identity(fd: RawFd) -> io::Result<FdIdentity> {
+    let mut st = MaybeUninit::<libc::stat>::uninit();
+    let rc = unsafe { libc::fstat(fd, st.as_mut_ptr()) };
+    if rc == -1 {
+      return Err(io::Error::last_os_error());
+    }
+    let st = unsafe { st.assume_init() };
+    Ok(FdIdentity {
+      dev: st.st_dev,
+      ino: st.st_ino,
+      file_type: st.st_mode & libc::S_IFMT,
+    })
   }
 
   fn apply_changes(kqueue: RawFd, changes: &[libc::kevent]) -> io::Result<()> {
