@@ -49,6 +49,7 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
       }
 
       let mut modes = vec![ArgUseMode::Borrow; inst.args.len()];
+      let mut any_consume = false;
 
       for (idx, arg) in inst.args.iter().enumerate() {
         if !is_consume_site(inst, idx) {
@@ -59,6 +60,7 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
         };
         if should_consume_var(*var, &live_out, ownership) {
           modes[idx] = ArgUseMode::Consume;
+          any_consume = true;
         }
       }
 
@@ -67,11 +69,14 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
           inst.meta.in_place_hint = Some(InPlaceHint::MoveNoClone { src: *src, tgt });
         }
       }
-      inst.meta.arg_use_modes = modes;
-      debug_assert_eq!(
-        inst.meta.arg_use_modes.len(),
-        inst.args.len(),
-        "InstMeta.arg_use_modes must be aligned with Inst.args"
+      if any_consume {
+        inst.meta.arg_use_modes = modes;
+      } else {
+        inst.meta.arg_use_modes.clear();
+      }
+      debug_assert!(
+        inst.meta.arg_use_modes.is_empty() || inst.meta.arg_use_modes.len() == inst.args.len(),
+        "InstMeta.arg_use_modes must be empty (all Borrow) or aligned with Inst.args"
       );
     }
   }
