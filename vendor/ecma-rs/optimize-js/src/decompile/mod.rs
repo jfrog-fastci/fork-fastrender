@@ -234,6 +234,7 @@ struct FunctionDecompiler<'a> {
   declared: HashSet<u32>,
   resolved_style: ResolvedTempDeclStyle,
   decl_mode: VarDeclMode,
+  emit_returns: bool,
   predeclared: bool,
   loop_labels: HashMap<LoopLabel, String>,
 }
@@ -264,6 +265,8 @@ impl<'a> FunctionDecompiler<'a> {
       ResolvedTempDeclStyle::LetWithVoidInit => VarDeclMode::Let,
     };
 
+    let emit_returns = matches!(scope, TempDeclScope::Function);
+
     Self {
       options,
       bindings,
@@ -271,6 +274,7 @@ impl<'a> FunctionDecompiler<'a> {
       declared: HashSet::new(),
       resolved_style,
       decl_mode,
+      emit_returns,
       predeclared: false,
       loop_labels,
     }
@@ -553,6 +557,9 @@ impl<'a> FunctionDecompiler<'a> {
         Ok(il::lower_unknown_store_inst(self, self, inst))
       }
       InstTyp::Return => {
+        if !self.emit_returns {
+          return Ok(None);
+        }
         self.ensure_supported_args(inst.args.iter())?;
         let value = self.lower_arg(inst.as_return())?;
         Ok(Some(node(Stmt::Return(node(ReturnStmt {
