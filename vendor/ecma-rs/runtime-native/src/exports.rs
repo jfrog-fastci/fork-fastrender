@@ -835,7 +835,7 @@ pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
 }
 
 // -----------------------------------------------------------------------------
-// I/O readiness watchers (epoll-backed)
+// I/O readiness watchers (reactor-backed)
 // -----------------------------------------------------------------------------
 
 #[no_mangle]

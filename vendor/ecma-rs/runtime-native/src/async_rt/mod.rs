@@ -204,8 +204,8 @@ static GLOBAL: OnceLock<AsyncRuntime> = OnceLock::new();
 static SAFEPOINT_REACTOR_WAKER_ONCE: Once = Once::new();
 
 fn wake_event_loop_for_safepoint() {
-  // Wake the global event loop so a thread blocked in `epoll_wait` can observe
-  // a stop-the-world safepoint request.
+  // Wake the global event loop so a thread blocked in the platform reactor wait syscall
+  // (`epoll_wait`/`kevent`) can observe a stop-the-world safepoint request.
   global().loop_.wake();
 }
 
@@ -213,7 +213,7 @@ pub fn global() -> &'static AsyncRuntime {
   let rt = GLOBAL.get_or_init(|| AsyncRuntime::new().expect("failed to initialize runtime-native async runtime"));
 
   // Register the reactor wake function exactly once so GC stop-the-world
-  // requests can wake a thread blocked in `epoll_wait`.
+  // requests can wake a thread blocked in the reactor wait syscall.
   SAFEPOINT_REACTOR_WAKER_ONCE.call_once(|| {
     crate::threading::register_reactor_waker(wake_event_loop_for_safepoint);
   });
@@ -313,7 +313,7 @@ pub fn register_fd(
   global().register_fd(fd, interest, Task::new(callback, data))
 }
 
-/// Test-only signal indicating whether some thread is currently blocked in `epoll_wait`.
+/// Test-only signal indicating whether some thread is currently blocked in the reactor wait syscall.
 #[doc(hidden)]
 pub fn debug_in_epoll_wait() -> bool {
   reactor::debug_in_epoll_wait()

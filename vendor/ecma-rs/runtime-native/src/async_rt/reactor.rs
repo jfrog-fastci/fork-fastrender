@@ -1,30 +1,21 @@
-use crate::abi::RT_IO_ERROR;
-use crate::abi::RT_IO_READABLE;
-use crate::abi::RT_IO_WRITABLE;
+use crate::abi::{RT_IO_ERROR, RT_IO_READABLE, RT_IO_WRITABLE};
 use crate::async_rt::Task;
-use crate::platform::linux_epoll::Epoll;
-use crate::platform::linux_epoll::EventFd;
-use crate::threading;
 use bitflags::bitflags;
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::RawFd;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
-static IN_EPOLL_WAIT: AtomicBool = AtomicBool::new(false);
+static IN_REACTOR_WAIT: AtomicBool = AtomicBool::new(false);
 
-/// Test-only signal indicating whether some thread is currently blocked in `epoll_wait`.
+/// Test-only signal indicating whether some thread is currently blocked in the reactor syscall
+/// (`epoll_wait` / `kevent`).
 ///
-/// This is not a synchronization primitive; it only exists to make it possible
-/// to deterministically reproduce and test the "GC request while blocked in
-/// epoll_wait" scenario.
+/// This is not a synchronization primitive; it only exists to make it possible to deterministically
+/// reproduce and test the "GC request while blocked in the reactor wait syscall" scenario.
 pub(crate) fn debug_in_epoll_wait() -> bool {
-  IN_EPOLL_WAIT.load(Ordering::Relaxed)
+  IN_REACTOR_WAIT.load(Ordering::Relaxed)
 }
 
 bitflags! {
@@ -32,20 +23,6 @@ bitflags! {
   pub struct Interest: u32 {
     const READABLE = 0b01;
     const WRITABLE = 0b10;
-  }
-}
-
-impl Interest {
-  fn to_epoll_events(self) -> u32 {
-    let mut events = 0;
-    if self.contains(Self::READABLE) {
-      events |= libc::EPOLLIN as u32;
-    }
-    if self.contains(Self::WRITABLE) {
-      events |= libc::EPOLLOUT as u32;
-    }
-    // Always report error/hangup conditions to the callback.
-    events | (libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32
   }
 }
 
@@ -65,8 +42,7 @@ impl WatcherId {
 const WAKE_TOKEN: u64 = 0;
 
 pub struct Reactor {
-  epoll: Epoll,
-  wake: EventFd,
+  sys: sys::ReactorSys,
   next_id: AtomicU64,
   watchers_count: AtomicUsize,
   watchers: Mutex<HashMap<WatcherId, Watcher>>,
@@ -111,13 +87,8 @@ extern "C" fn run_io_task(data: *mut u8) {
 
 impl Reactor {
   pub fn new() -> io::Result<Self> {
-    let epoll = Epoll::new()?;
-    let wake = EventFd::new()?;
-    epoll.ctl_add(wake.as_raw_fd(), libc::EPOLLIN as u32, WAKE_TOKEN)?;
-
     Ok(Self {
-      epoll,
-      wake,
+      sys: sys::ReactorSys::new()?,
       next_id: AtomicU64::new(1),
       watchers_count: AtomicUsize::new(0),
       watchers: Mutex::new(HashMap::new()),
@@ -125,11 +96,11 @@ impl Reactor {
   }
 
   pub fn wake(&self) {
-    self.wake.wake();
+    self.sys.wake();
   }
 
   pub fn drain_wake(&self) -> io::Result<()> {
-    self.wake.drain()
+    self.sys.drain_wake()
   }
 
   pub fn has_watchers(&self) -> bool {
@@ -138,7 +109,7 @@ impl Reactor {
 
   pub fn register(&self, fd: RawFd, interest: Interest, task: Task) -> io::Result<WatcherId> {
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
-    self.epoll.ctl_add(fd, interest.to_epoll_events(), id.0)?;
+    self.sys.ctl_add(fd, interest, id.as_raw())?;
     self.watchers.lock().unwrap().insert(
       id,
       Watcher {
@@ -161,7 +132,7 @@ impl Reactor {
   ) -> io::Result<WatcherId> {
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
     let interest = rt_interests_to_interest(interests);
-    self.epoll.ctl_add(fd, interest.to_epoll_events(), id.0)?;
+    self.sys.ctl_add(fd, interest, id.as_raw())?;
     self.watchers.lock().unwrap().insert(
       id,
       Watcher {
@@ -187,11 +158,7 @@ impl Reactor {
       return false;
     };
 
-    if self
-      .epoll
-      .ctl_mod(watcher.fd, interest.to_epoll_events(), id.0)
-      .is_err()
-    {
+    if self.sys.ctl_mod(watcher.fd, interest, id.as_raw()).is_err() {
       return false;
     }
 
@@ -213,7 +180,7 @@ impl Reactor {
     if let WatcherKind::Io(io) = watcher.kind {
       io.active.store(false, Ordering::Release);
     }
-    let _ = self.epoll.ctl_del(watcher.fd);
+    let _ = self.sys.ctl_del(watcher.fd);
     self.watchers_count.fetch_sub(1, Ordering::Release);
     self.wake();
     true
@@ -226,45 +193,17 @@ impl Reactor {
     }
 
     for (_id, watcher) in watchers.drain() {
-      let _ = self.epoll.ctl_del(watcher.fd);
+      let _ = self.sys.ctl_del(watcher.fd);
     }
     self.watchers_count.store(0, Ordering::Release);
     self.wake();
   }
 
   pub fn wait(&self, timeout_ms: i32) -> io::Result<Vec<Task>> {
-    const MAX_EVENTS: usize = 64;
-    let mut events: [libc::epoll_event; MAX_EVENTS] = unsafe { std::mem::zeroed() };
-    let n = if timeout_ms == 0 {
-      self.epoll.wait(&mut events, timeout_ms)?
-    } else {
-      IN_EPOLL_WAIT.store(true, Ordering::Release);
-      let guard = threading::ParkedGuard::new();
-      let res = self.epoll.wait(&mut events, timeout_ms);
-      // Clear this debug flag before potentially blocking while un-parking.
-      IN_EPOLL_WAIT.store(false, Ordering::Release);
-      drop(guard);
-      res?
-    };
-
-    if n == 0 {
-      return Ok(Vec::new());
-    }
-    crate::rt_trace::epoll_wakeups_inc();
-
-    let mut needs_wake_drain = false;
-    let mut ready_tokens: Vec<(WatcherId, u32)> = Vec::new();
-    for ev in events.iter().take(n) {
-      let token = ev.u64;
-      if token == WAKE_TOKEN {
-        needs_wake_drain = true;
-      } else {
-        ready_tokens.push((WatcherId(token), ev.events));
-      }
-    }
+    let (ready_tokens, needs_wake_drain) = self.sys.wait(timeout_ms)?;
 
     if needs_wake_drain {
-      self.wake.drain()?;
+      self.sys.drain_wake()?;
     }
 
     if ready_tokens.is_empty() {
@@ -281,8 +220,7 @@ impl Reactor {
             tasks.push(task.clone());
           }
           WatcherKind::Io(io) => {
-            let ready = epoll_events_to_rt(events);
-            let delivered = ready & (io.interests | RT_IO_ERROR);
+            let delivered = events & (io.interests | RT_IO_ERROR);
             if delivered == 0 {
               continue;
             }
@@ -312,16 +250,323 @@ fn rt_interests_to_interest(interests: u32) -> Interest {
   out
 }
 
-fn epoll_events_to_rt(events: u32) -> u32 {
-  let mut rt = 0;
-  if events & (libc::EPOLLIN as u32) != 0 {
-    rt |= RT_IO_READABLE;
+#[cfg(target_os = "linux")]
+mod sys {
+  use super::{Interest, WatcherId, IN_REACTOR_WAIT, WAKE_TOKEN};
+  use crate::abi::{RT_IO_ERROR, RT_IO_READABLE, RT_IO_WRITABLE};
+  use crate::platform::linux_epoll::{Epoll, EventFd};
+  use crate::threading;
+  use std::io;
+  use std::os::fd::RawFd;
+  use std::sync::atomic::Ordering;
+
+  pub(super) struct ReactorSys {
+    epoll: Epoll,
+    wake: EventFd,
   }
-  if events & (libc::EPOLLOUT as u32) != 0 {
-    rt |= RT_IO_WRITABLE;
+
+  impl ReactorSys {
+    pub(super) fn new() -> io::Result<Self> {
+      let epoll = Epoll::new()?;
+      let wake = EventFd::new()?;
+      epoll.ctl_add(wake.as_raw_fd(), libc::EPOLLIN as u32, WAKE_TOKEN)?;
+      Ok(Self { epoll, wake })
+    }
+
+    pub(super) fn wake(&self) {
+      self.wake.wake();
+    }
+
+    pub(super) fn drain_wake(&self) -> io::Result<()> {
+      self.wake.drain()
+    }
+
+    pub(super) fn ctl_add(&self, fd: RawFd, interest: Interest, token: u64) -> io::Result<()> {
+      self.epoll.ctl_add(fd, interest_to_epoll_events(interest), token)
+    }
+
+    pub(super) fn ctl_mod(&self, fd: RawFd, interest: Interest, token: u64) -> io::Result<()> {
+      self.epoll.ctl_mod(fd, interest_to_epoll_events(interest), token)
+    }
+
+    pub(super) fn ctl_del(&self, fd: RawFd) -> io::Result<()> {
+      self.epoll.ctl_del(fd)
+    }
+
+    pub(super) fn wait(&self, timeout_ms: i32) -> io::Result<(Vec<(WatcherId, u32)>, bool)> {
+      const MAX_EVENTS: usize = 64;
+      let mut events: [libc::epoll_event; MAX_EVENTS] = unsafe { std::mem::zeroed() };
+      let n = if timeout_ms == 0 {
+        self.epoll.wait(&mut events, timeout_ms)?
+      } else {
+        IN_REACTOR_WAIT.store(true, Ordering::Release);
+        let guard = threading::ParkedGuard::new();
+        let res = self.epoll.wait(&mut events, timeout_ms);
+        // Clear this debug flag before potentially blocking while un-parking.
+        IN_REACTOR_WAIT.store(false, Ordering::Release);
+        drop(guard);
+        res?
+      };
+
+      if n == 0 {
+        return Ok((Vec::new(), false));
+      }
+      crate::rt_trace::epoll_wakeups_inc();
+
+      let mut needs_wake_drain = false;
+      let mut ready_tokens: Vec<(WatcherId, u32)> = Vec::new();
+      for ev in events.iter().take(n) {
+        let token = ev.u64;
+        if token == WAKE_TOKEN {
+          needs_wake_drain = true;
+        } else {
+          ready_tokens.push((WatcherId::from_raw(token), epoll_events_to_rt(ev.events)));
+        }
+      }
+
+      Ok((ready_tokens, needs_wake_drain))
+    }
   }
-  if events & ((libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32) != 0 {
-    rt |= RT_IO_ERROR;
+
+  fn interest_to_epoll_events(interest: Interest) -> u32 {
+    let mut events = 0;
+    if interest.contains(Interest::READABLE) {
+      events |= libc::EPOLLIN as u32;
+    }
+    if interest.contains(Interest::WRITABLE) {
+      events |= libc::EPOLLOUT as u32;
+    }
+    // Always report error/hangup conditions to the callback.
+    events | (libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32
   }
-  rt
+
+  fn epoll_events_to_rt(events: u32) -> u32 {
+    let mut rt = 0;
+    if events & (libc::EPOLLIN as u32) != 0 {
+      rt |= RT_IO_READABLE;
+    }
+    if events & (libc::EPOLLOUT as u32) != 0 {
+      rt |= RT_IO_WRITABLE;
+    }
+    if events & ((libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32) != 0 {
+      rt |= RT_IO_ERROR;
+    }
+    rt
+  }
+}
+
+#[cfg(any(
+  target_os = "macos",
+  target_os = "freebsd",
+  target_os = "netbsd",
+  target_os = "openbsd",
+  target_os = "dragonfly"
+))]
+mod sys {
+  use super::{Interest, WatcherId, IN_REACTOR_WAIT, WAKE_TOKEN};
+  use crate::abi::{RT_IO_ERROR, RT_IO_READABLE, RT_IO_WRITABLE};
+  use crate::platform::kqueue::{kevent_token, make_kevent, Kqueue, Waker};
+  use crate::threading;
+  use std::io;
+  use std::os::fd::RawFd;
+  use std::sync::atomic::Ordering;
+
+  pub(super) struct ReactorSys {
+    kqueue: Kqueue,
+    wake: Waker,
+  }
+
+  impl ReactorSys {
+    pub(super) fn new() -> io::Result<Self> {
+      let kqueue = Kqueue::new()?;
+      let wake = Waker::new(&kqueue, WAKE_TOKEN)?;
+      Ok(Self { kqueue, wake })
+    }
+
+    pub(super) fn wake(&self) {
+      self.wake.wake();
+    }
+
+    pub(super) fn drain_wake(&self) -> io::Result<()> {
+      self.wake.drain()
+    }
+
+    pub(super) fn ctl_add(&self, fd: RawFd, interest: Interest, token: u64) -> io::Result<()> {
+      let mut changes: Vec<libc::kevent> = Vec::new();
+      if interest.contains(Interest::READABLE) {
+        changes.push(make_kevent(
+          fd,
+          libc::EVFILT_READ,
+          token,
+          libc::EV_ADD | libc::EV_ENABLE,
+        ));
+      }
+      if interest.contains(Interest::WRITABLE) {
+        changes.push(make_kevent(
+          fd,
+          libc::EVFILT_WRITE,
+          token,
+          libc::EV_ADD | libc::EV_ENABLE,
+        ));
+      }
+      self.kqueue.ctl(&changes)
+    }
+
+    pub(super) fn ctl_mod(&self, fd: RawFd, interest: Interest, token: u64) -> io::Result<()> {
+      self.ctl_del(fd)?;
+      self.ctl_add(fd, interest, token)
+    }
+
+    pub(super) fn ctl_del(&self, fd: RawFd) -> io::Result<()> {
+      // Best-effort delete; ignore ENOENT (already removed).
+      for filter in [libc::EVFILT_READ, libc::EVFILT_WRITE] {
+        let kev = libc::kevent {
+          ident: fd as libc::uintptr_t,
+          filter,
+          flags: libc::EV_DELETE,
+          fflags: 0,
+          data: 0,
+          udata: std::ptr::null_mut(),
+        };
+
+        loop {
+          let rc = unsafe {
+            libc::kevent(
+              self.kqueue.as_raw_fd(),
+              &kev as *const libc::kevent,
+              1,
+              std::ptr::null_mut(),
+              0,
+              std::ptr::null(),
+            )
+          };
+          if rc >= 0 {
+            break;
+          }
+
+          let err = io::Error::last_os_error();
+          if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
+          if err.raw_os_error() == Some(libc::ENOENT) {
+            break;
+          }
+          return Err(err);
+        }
+      }
+      Ok(())
+    }
+
+    pub(super) fn wait(&self, timeout_ms: i32) -> io::Result<(Vec<(WatcherId, u32)>, bool)> {
+      const MAX_EVENTS: usize = 64;
+      let mut events = [libc::kevent {
+        ident: 0,
+        filter: 0,
+        flags: 0,
+        fflags: 0,
+        data: 0,
+        udata: std::ptr::null_mut(),
+      }; MAX_EVENTS];
+
+      let n = if timeout_ms == 0 {
+        self.kqueue.wait(&mut events, timeout_ms)?
+      } else {
+        IN_REACTOR_WAIT.store(true, Ordering::Release);
+        let guard = threading::ParkedGuard::new();
+        let res = self.kqueue.wait(&mut events, timeout_ms);
+        IN_REACTOR_WAIT.store(false, Ordering::Release);
+        drop(guard);
+        res?
+      };
+
+      if n == 0 {
+        return Ok((Vec::new(), false));
+      }
+
+      let mut needs_wake_drain = false;
+      let mut ready_tokens: Vec<(WatcherId, u32)> = Vec::new();
+
+      for kev in events.iter().take(n) {
+        let token = kevent_token(kev);
+        if token == WAKE_TOKEN {
+          needs_wake_drain = true;
+          continue;
+        }
+
+        let ready = kevent_to_rt(kev);
+        if ready == 0 {
+          continue;
+        }
+
+        if let Some((_id, existing)) = ready_tokens.iter_mut().find(|(id, _)| id.as_raw() == token) {
+          *existing |= ready;
+        } else {
+          ready_tokens.push((WatcherId::from_raw(token), ready));
+        }
+      }
+
+      Ok((ready_tokens, needs_wake_drain))
+    }
+  }
+
+  fn kevent_to_rt(kev: &libc::kevent) -> u32 {
+    let mut rt = 0;
+    if kev.filter == libc::EVFILT_READ {
+      rt |= RT_IO_READABLE;
+    }
+    if kev.filter == libc::EVFILT_WRITE {
+      rt |= RT_IO_WRITABLE;
+    }
+    if (kev.flags & (libc::EV_ERROR | libc::EV_EOF)) != 0 {
+      rt |= RT_IO_ERROR;
+    }
+    rt
+  }
+}
+
+#[cfg(not(any(
+  target_os = "linux",
+  target_os = "macos",
+  target_os = "freebsd",
+  target_os = "netbsd",
+  target_os = "openbsd",
+  target_os = "dragonfly"
+)))]
+mod sys {
+  use super::{Interest, WatcherId};
+  use std::io;
+  use std::os::fd::RawFd;
+
+  pub(super) struct ReactorSys;
+
+  impl ReactorSys {
+    pub(super) fn new() -> io::Result<Self> {
+      Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "runtime-native async reactor is only supported on Linux (epoll) and kqueue platforms",
+      ))
+    }
+
+    pub(super) fn wake(&self) {}
+
+    pub(super) fn drain_wake(&self) -> io::Result<()> {
+      Ok(())
+    }
+
+    pub(super) fn ctl_add(&self, _fd: RawFd, _interest: Interest, _token: u64) -> io::Result<()> {
+      Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+    }
+
+    pub(super) fn ctl_mod(&self, _fd: RawFd, _interest: Interest, _token: u64) -> io::Result<()> {
+      Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+    }
+
+    pub(super) fn ctl_del(&self, _fd: RawFd) -> io::Result<()> {
+      Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+    }
+
+    pub(super) fn wait(&self, _timeout_ms: i32) -> io::Result<(Vec<(WatcherId, u32)>, bool)> {
+      Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+    }
+  }
 }

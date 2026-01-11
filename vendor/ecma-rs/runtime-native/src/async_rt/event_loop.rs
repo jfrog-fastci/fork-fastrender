@@ -257,10 +257,10 @@ impl EventLoop {
 
       // 4. Block until I/O readiness, timer, or wakeup.
       let timeout_ms = self.compute_timeout_ms();
-      // Poll safepoints immediately before and after `epoll_wait` so stop-the-world
+      // Poll safepoints immediately before and after the reactor wait syscall so stop-the-world
       // requests can interrupt the event loop promptly.
       threading::safepoint_poll();
-      // While blocked in `epoll_wait`, the event loop is *parked* inside the runtime and should be
+      // While blocked in the reactor wait syscall, the event loop is *parked* inside the runtime and should be
       // treated as quiescent by stop-the-world GC (no untracked GC pointers are expected on the
       // stack at this point).
       let parked = if timeout_ms != 0 {
@@ -268,7 +268,7 @@ impl EventLoop {
       } else {
         None
       };
-      let ready = self.reactor.wait(timeout_ms).expect("epoll_wait failed");
+      let ready = self.reactor.wait(timeout_ms).expect("reactor wait failed");
       threading::safepoint_poll();
       drop(parked);
       if !ready.is_empty() {
