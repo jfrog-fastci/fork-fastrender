@@ -23,6 +23,7 @@ use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::BackingStoreAllocator;
 use crate::shape_table;
+use crate::sync::gc_mutex::GcAwareMutex;
 use crate::threading;
 use crate::threading::registry;
 use crate::trap;
@@ -30,7 +31,6 @@ use crate::Runtime;
 use crate::Thread;
 use crate::rt_alloc as rt_alloc_mod;
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -1847,7 +1847,8 @@ struct WebTimerState {
 unsafe impl Send for WebTimerState {}
 
 static NEXT_WEB_TIMER_ID: AtomicU64 = AtomicU64::new(1);
-static WEB_TIMERS: Lazy<Mutex<HashMap<TimerId, WebTimerState>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static WEB_TIMERS: Lazy<GcAwareMutex<HashMap<TimerId, WebTimerState>>> =
+  Lazy::new(|| GcAwareMutex::new(HashMap::new()));
 
 pub(crate) fn clear_web_timers_for_tests() {
   let mut timers = WEB_TIMERS.lock();
@@ -1855,6 +1856,25 @@ pub(crate) fn clear_web_timers_for_tests() {
     if let Some(drop_data) = st.drop_data {
       (drop_data)(st.data);
     }
+  }
+}
+
+/// Debug/test helper: hold the global web-timer registry lock (`WEB_TIMERS`).
+///
+/// This is intentionally *not* a stable public API. It exists so integration
+/// tests can deterministically force contention on `WEB_TIMERS`.
+#[doc(hidden)]
+pub fn debug_hold_web_timers_lock() -> impl Drop {
+  struct Hold {
+    _guard: parking_lot::MutexGuard<'static, HashMap<TimerId, WebTimerState>>,
+  }
+
+  impl Drop for Hold {
+    fn drop(&mut self) {}
+  }
+
+  Hold {
+    _guard: WEB_TIMERS.lock(),
   }
 }
 
