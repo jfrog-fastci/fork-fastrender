@@ -16043,35 +16043,45 @@ impl DisplayListRenderer {
     let tx = dest_rect.x() - src_rect.x() * scale_x;
     let ty = dest_rect.y() - src_rect.y() * scale_y;
 
-    let transform =
-      Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty).post_concat(self.canvas.transform());
+    let image_transform = Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty);
     let needs_dest_clip = item.src_rect.is_some()
       && ((src_rect.x().abs() > 1e-6)
         || (src_rect.y().abs() > 1e-6)
         || ((src_rect.width() - full_src_rect.width()).abs() > 1e-6)
         || ((src_rect.height() - full_src_rect.height()).abs() > 1e-6));
 
-    if needs_dest_clip {
-      self.canvas.save();
-      if let Err(err) = self.canvas.set_clip(dest_rect) {
-        self.canvas.restore();
-        return Err(err);
-      }
-    }
     let clip_mask = self.canvas.clip_mask_rc();
+    let clip = clip_mask.as_deref();
     let pixmap_ref = pixmap.as_ref();
-    self.canvas.with_mirrored_pixmap_mut(|dest| {
-      dest.draw_pixmap(
-        0,
-        0,
-        pixmap_ref.as_ref(),
-        &paint,
-        transform,
-        clip_mask.as_deref(),
-      );
-    });
     if needs_dest_clip {
-      self.canvas.restore();
+      let Some(skia_rect) = tiny_skia::Rect::from_xywh(
+        dest_rect.x(),
+        dest_rect.y(),
+        dest_rect.width(),
+        dest_rect.height(),
+      ) else {
+        return Ok(());
+      };
+      let mut fill = tiny_skia::Paint::default();
+      fill.shader = Pattern::new(
+        pixmap_ref.as_ref(),
+        SpreadMode::Pad,
+        item.filter_quality.into(),
+        self.canvas.opacity(),
+        image_transform,
+      );
+      fill.anti_alias = false;
+      fill.blend_mode = self.canvas.blend_mode();
+
+      let transform = self.canvas.transform();
+      self.canvas.with_mirrored_pixmap_mut(|dest| {
+        dest.fill_rect(skia_rect, &fill, transform, clip);
+      });
+    } else {
+      let transform = image_transform.post_concat(self.canvas.transform());
+      self.canvas.with_mirrored_pixmap_mut(|dest| {
+        dest.draw_pixmap(0, 0, pixmap_ref.as_ref(), &paint, transform, clip);
+      });
     }
 
     self.record_background_paint(background_timer);
