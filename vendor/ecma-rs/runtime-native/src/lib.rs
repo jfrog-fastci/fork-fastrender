@@ -24,6 +24,13 @@
 //! - They are never moved by minor GC, major GC, or optional compaction.
 //! - They are still traced and reclaimed when unreachable.
 //!
+//! ## ArrayBuffer backing stores
+//!
+//! OS syscalls (especially async I/O like io_uring) require buffers remain valid at a stable
+//! address until completion. Under a moving GC this means `ArrayBuffer`/`TypedArray` data must live
+//! outside the GC heap. The [`buffer`] module provides a non-moving backing store allocator along
+//! with movable header structs (`ArrayBuffer`, `Uint8Array`).
+//!
 //! See:
 //! - `docs/write_barrier.md` for the generational GC write barrier contract.
 //! - `include/runtime_native.h` for the authoritative stable C ABI surface.
@@ -39,6 +46,7 @@ pub mod timer_wheel;
 pub mod time;
 pub mod gc;
 pub mod io;
+pub mod buffer;
 pub mod immix;
 pub mod los;
 pub mod nursery;
@@ -90,6 +98,12 @@ pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
 pub use rt_trace::rt_debug_snapshot_counters;
 pub use rt_trace::RtDebugCountersSnapshot;
 pub use string::*;
+pub use buffer::array_buffer::ArrayBuffer;
+pub use buffer::backing_store::{
+  BackingStore, BackingStoreAllocError, BackingStoreAllocator, GlobalBackingStoreAllocator,
+  BACKING_STORE_MIN_ALIGN,
+};
+pub use buffer::typed_array::Uint8Array;
 pub use timer_wheel::{TimerKey, TimerWheel};
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};
 pub use safepoint::{visit_reloc_pairs, with_world_stopped};
