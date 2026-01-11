@@ -13,8 +13,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 errors=0
 warnings=0
 
@@ -28,7 +26,7 @@ check_cmd() {
     return 0
   else
     echo -e "${RED}✗${NC} $cmd not found (install: $pkg)"
-    ((errors++))
+    ((errors+=1))
     return 1
   fi
 }
@@ -43,7 +41,7 @@ check_cmd_optional() {
     return 0
   else
     echo -e "${YELLOW}?${NC} $cmd not found (optional: $pkg)"
-    ((warnings++))
+    ((warnings+=1))
     return 1
   fi
 }
@@ -52,12 +50,12 @@ echo "=== System Check for ecma-rs Native Compilation ==="
 echo ""
 
 echo "--- Core Tools ---"
-check_cmd rustc "rustup (https://rustup.rs)"
-check_cmd cargo "rustup"
-check_cmd gcc "build-essential"
-check_cmd make "build-essential"
-check_cmd objdump "binutils"
-check_cmd git "git"
+check_cmd rustc "rustup (https://rustup.rs)" || true
+check_cmd cargo "rustup" || true
+check_cmd gcc "build-essential" || true
+check_cmd make "build-essential" || true
+check_cmd objdump "binutils" || true
+check_cmd git "git" || true
 
 echo ""
 echo "--- Workspace Sanity ---"
@@ -69,8 +67,8 @@ fi
 
 echo ""
 echo "--- Resource Limiting (required for multi-agent) ---"
-check_cmd flock "util-linux"
-check_cmd prlimit "util-linux"
+check_cmd flock "util-linux" || true
+check_cmd prlimit "util-linux" || true
 
 echo ""
 echo "--- LLVM 18 (for native codegen) ---"
@@ -81,7 +79,7 @@ elif check_cmd_optional llvm-config "llvm-dev"; then
   llvm_ver="$(llvm-config --version 2>/dev/null || echo "0")"
   if [[ "${llvm_ver%%.*}" -lt 18 ]]; then
     echo -e "${YELLOW}  Warning: LLVM ${llvm_ver} found, but LLVM 18+ recommended${NC}"
-    ((warnings++))
+    ((warnings+=1))
   fi
 fi
 
@@ -123,7 +121,7 @@ if (command -v llc-18 >/dev/null 2>&1 || command -v llc >/dev/null 2>&1) &&
     echo -e "${GREEN}✓${NC} stackmap ABI test passed"
   else
     echo -e "${RED}✗${NC} stackmap ABI test failed (run: bash ${SCRIPT_DIR}/test_stackmap_abi.sh)"
-    ((errors++))
+    ((errors+=1))
   fi
 
   # Additional x86_64-only corner-case checks (flags + patch_bytes).
@@ -132,15 +130,15 @@ if (command -v llc-18 >/dev/null 2>&1 || command -v llc >/dev/null 2>&1) &&
       echo -e "${GREEN}✓${NC} statepoint flags/patch_bytes test passed"
     else
       echo -e "${RED}✗${NC} statepoint flags/patch_bytes test failed (run: bash ${SCRIPT_DIR}/test_statepoint_flags_patchbytes.sh)"
-      ((errors++))
+      ((errors+=1))
     fi
   else
     echo -e "${YELLOW}?${NC} statepoint flags/patch_bytes test skipped (requires x86_64 host)"
-    ((warnings++))
+    ((warnings+=1))
   fi
 else
   echo -e "${YELLOW}?${NC} stackmap ABI tests skipped (missing llc/llvm-readobj/llvm-objdump)"
-  ((warnings++))
+  ((warnings+=1))
 fi
 
 if check_cmd_optional llvm-objcopy-18 "llvm-18"; then
@@ -159,11 +157,11 @@ if (command -v clang-18 >/dev/null 2>&1 || command -v clang >/dev/null 2>&1) &&
     echo -e "${GREEN}✓${NC} stackmaps retention check passed"
   else
     echo -e "${RED}✗${NC} stackmaps retention check failed (run: bash ${SCRIPT_DIR}/check_llvm_stackmaps.sh)"
-    ((errors++))
+    ((errors+=1))
   fi
 else
   echo -e "${YELLOW}?${NC} stackmaps retention check skipped (missing clang/readelf/objcopy/strip)"
-  ((warnings++))
+  ((warnings+=1))
 fi
 
 echo ""
@@ -173,14 +171,14 @@ if [[ -n "${LLVM_SYS_180_PREFIX:-}" ]]; then
     echo -e "${GREEN}✓${NC} LLVM_SYS_180_PREFIX=${LLVM_SYS_180_PREFIX}"
   else
     echo -e "${RED}✗${NC} LLVM_SYS_180_PREFIX=${LLVM_SYS_180_PREFIX} (directory not found)"
-    ((errors++))
+    ((errors+=1))
   fi
 else
   if [[ -d /usr/lib/llvm-18 ]]; then
     echo -e "${YELLOW}?${NC} LLVM_SYS_180_PREFIX not set (but /usr/lib/llvm-18 exists, will auto-detect)"
   else
     echo -e "${YELLOW}?${NC} LLVM_SYS_180_PREFIX not set"
-    ((warnings++))
+    ((warnings+=1))
   fi
 fi
 
@@ -194,10 +192,10 @@ if [[ -f /proc/meminfo ]]; then
     echo -e "${GREEN}✓${NC} RAM: ${mem_gb} GB"
   elif [[ $mem_gb -ge 32 ]]; then
     echo -e "${YELLOW}?${NC} RAM: ${mem_gb} GB (64GB+ recommended for LLVM builds)"
-    ((warnings++))
+    ((warnings+=1))
   else
     echo -e "${RED}✗${NC} RAM: ${mem_gb} GB (need at least 32GB for LLVM builds)"
-    ((errors++))
+    ((errors+=1))
   fi
 else
   echo -e "${YELLOW}?${NC} RAM: unable to detect"
@@ -217,10 +215,10 @@ if command -v df >/dev/null 2>&1; then
       echo -e "${GREEN}✓${NC} Disk available: ${disk_avail} GB"
     elif [[ $disk_avail -ge 50 ]]; then
       echo -e "${YELLOW}?${NC} Disk available: ${disk_avail} GB (100GB+ recommended)"
-      ((warnings++))
+      ((warnings+=1))
     else
       echo -e "${RED}✗${NC} Disk available: ${disk_avail} GB (need 50GB+ for builds)"
-      ((errors++))
+      ((errors+=1))
     fi
   fi
 fi
