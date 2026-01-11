@@ -18,6 +18,7 @@ graph TD
     minify_js_cli["minify-js-cli"]
     minify_js_nodejs["minify-js-nodejs"]
     native_js["native-js"]
+    native_js_cli["native-js-cli"]
     optimize_js["optimize-js"]
     optimize_js_debugger["optimize-js-debugger"]
     parse_js["parse-js"]
@@ -36,7 +37,10 @@ graph TD
     webidl["webidl"]
     webidl_vm_js["webidl-vm-js"]
     effect_js --> effect_model
+    effect_js --> hir_js
     effect_js --> knowledge_base
+    effect_js --> typecheck_ts
+    effect_js --> types_ts_interned
     emit_js --> diagnostics
     emit_js --> hir_js
     emit_js --> parse_js
@@ -55,6 +59,11 @@ graph TD
     minify_js_nodejs --> diagnostics
     minify_js_nodejs --> minify_js
     native_js --> diagnostics
+    native_js --> hir_js
+    native_js --> parse_js
+    native_js --> typecheck_ts
+    native_js --> types_ts_interned
+    native_js_cli --> native_js
     optimize_js --> diagnostics
     optimize_js --> emit_js
     optimize_js --> hir_js
