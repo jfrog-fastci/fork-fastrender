@@ -523,7 +523,8 @@ impl Rgba {
   #[inline]
   pub fn alpha_u8(self) -> u8 {
     let alpha = if self.a.is_finite() { self.a } else { 0.0 };
-    (alpha.clamp(0.0, 1.0) * 255.0).round() as u8
+    // Match Chrome/Skia's float→u8 conversion: round to nearest.
+    (alpha.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8
   }
 
   /// Creates an Rgba from r, g, b, a where alpha is u8 (0-255)

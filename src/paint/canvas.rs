@@ -4093,14 +4093,28 @@ pub(crate) fn composite_layer_into_pixmap(
     origin: (i32, i32),
     clip: Option<&Mask>,
   ) {
-    // Match Chrome/Skia: the layer opacity is quantized to an 8-bit alpha (using rounding) and
-    // then applied to the premultiplied source pixels using integer `mul/255` arithmetic.
+    // Match Chrome/Skia: evaluate `opacity` using unbiased 8-bit math.
     //
     // Importantly, we do *not* apply ordered dithering here. Chrome's `opacity` compositing (e.g.
     // `opacity: 0.3` over white) produces uniform pixels, whereas ordered dither introduces a
     // checkerboard ±1 pattern that dominates strict page diffs.
-    let opacity_u8 = (opacity * 255.0).round().clamp(0.0, 255.0) as u8;
-    if opacity_u8 == 0 {
+    //
+    // We do the blend in a 0..=256 alpha domain (instead of 0..=255) so 0.5 opacity maps to an
+    // exact 128/256 rather than 128/255, avoiding systematic darkening bias (e.g. 50% red over
+    // white should yield 128, not 127).
+    #[inline]
+    fn alpha255_to_256(a: u8) -> u16 {
+      let a = a as u16;
+      a + (a >> 7)
+    }
+    #[inline]
+    fn mul_div_256_round_u16(a: u16, b: u16) -> u16 {
+      // Computes `round((a * b) / 256)` for `a,b ∈ [0, 256]`.
+      (((a as u32) * (b as u32) + 128) >> 8) as u16
+    }
+
+    let opacity_256 = (opacity * 256.0).round().clamp(0.0, 256.0) as u16;
+    if opacity_256 == 0 {
       return;
     }
 
@@ -4152,40 +4166,42 @@ pub(crate) fn composite_layer_into_pixmap(
       let src_row = &src_pixels[src_row_start..src_row_start + copy_w];
 
       for (col, (dst_px, src_px)) in dst_row.iter_mut().zip(src_row.iter()).enumerate() {
-        let mut scale = opacity_u8 as u16;
+        let mut scale_256 = opacity_256;
         if let Some(clip_data) = clip_data {
           let m = clip_data[dst_y * clip_stride + dst_x0 as usize + col];
           if m == 0 {
             continue;
           }
           if m != 255 {
-            scale = (scale * m as u16) / 255u16;
-            if scale == 0 {
+            scale_256 = mul_div_256_round_u16(scale_256, alpha255_to_256(m));
+            if scale_256 == 0 {
               continue;
             }
           }
         }
 
-        let sr = (src_px.red() as u16 * scale) / 255u16;
-        let sg = (src_px.green() as u16 * scale) / 255u16;
-        let sb = (src_px.blue() as u16 * scale) / 255u16;
-        let sa = (src_px.alpha() as u16 * scale) / 255u16;
-        if sa == 0 {
+        // Scale source premultiplied pixels by layer opacity / clip coverage.
+        let sr = mul_div_256_round_u16(src_px.red() as u16, scale_256);
+        let sg = mul_div_256_round_u16(src_px.green() as u16, scale_256);
+        let sb = mul_div_256_round_u16(src_px.blue() as u16, scale_256);
+        let sa_256 = mul_div_256_round_u16(alpha255_to_256(src_px.alpha()), scale_256);
+        if sa_256 == 0 {
           continue;
         }
 
-        let inv_sa = 255u16 - sa;
+        let inv_sa_256 = 256u16.saturating_sub(sa_256);
         let dr = dst_px.red() as u16;
         let dg = dst_px.green() as u16;
         let db = dst_px.blue() as u16;
-        let da = dst_px.alpha() as u16;
+        let da_256 = alpha255_to_256(dst_px.alpha());
 
-        let out_a = sa + (da * inv_sa) / 255u16;
-        let out_r = sr + (dr * inv_sa) / 255u16;
-        let out_g = sg + (dg * inv_sa) / 255u16;
-        let out_b = sb + (db * inv_sa) / 255u16;
+        let out_a_256 = sa_256 + mul_div_256_round_u16(da_256, inv_sa_256);
+        let out_r = sr + mul_div_256_round_u16(dr, inv_sa_256);
+        let out_g = sg + mul_div_256_round_u16(dg, inv_sa_256);
+        let out_b = sb + mul_div_256_round_u16(db, inv_sa_256);
 
-        let out_a_u8 = out_a.min(255) as u8;
+        // Map 0..=256 alpha back to 0..=255.
+        let out_a_u8 = if out_a_256 >= 256 { 255 } else { out_a_256 as u8 };
         let clamp = out_a_u8 as u16;
         let out_r_u8 = out_r.min(clamp).min(255) as u8;
         let out_g_u8 = out_g.min(clamp).min(255) as u8;

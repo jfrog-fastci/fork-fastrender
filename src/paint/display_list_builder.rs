@@ -9020,6 +9020,8 @@ impl DisplayListBuilder {
                   intersection.height() * scale_y,
                 );
                 let src_rect = {
+                  // Avoid baking a crop when the computed source rect matches the full decoded
+                  // image (common for unclipped tiles).
                   let full_src_rect = src_rect.x().abs() < 1e-3
                     && src_rect.y().abs() < 1e-3
                     && (src_rect.width() - image.width as f32).abs() < 1e-3
@@ -9027,7 +9029,18 @@ impl DisplayListBuilder {
                   if full_src_rect {
                     None
                   } else {
-                    Some(src_rect)
+                    // Clamp to the decoded image bounds. Floating-point math can leave tiny
+                    // out-of-range values (e.g. `x == image.width`) at tile edges.
+                    let x0 = src_rect.x().max(0.0);
+                    let y0 = src_rect.y().max(0.0);
+                    let x1 = src_rect.max_x().min(image.width as f32);
+                    let y1 = src_rect.max_y().min(image.height as f32);
+                    let w = x1 - x0;
+                    let h = y1 - y0;
+                    if w <= 0.0 || h <= 0.0 || !w.is_finite() || !h.is_finite() {
+                      continue;
+                    }
+                    Some(Rect::from_xywh(x0, y0, w, h))
                   }
                 };
 

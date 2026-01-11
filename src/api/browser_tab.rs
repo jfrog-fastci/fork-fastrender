@@ -5195,7 +5195,10 @@ mod tests {
           "module script src attribute was present but empty/invalid".to_string(),
         ));
       };
-      fetcher.fetch_with_request(crate::resource::FetchRequest::new(url, FetchDestination::ScriptCors))?;
+      let cors_mode = spec.crossorigin.unwrap_or(crate::resource::CorsMode::Anonymous);
+      let req = FetchRequest::new(url, FetchDestination::ScriptCors)
+        .with_credentials_mode(cors_mode.credentials_mode());
+      let _ = fetcher.fetch_with_request(req)?;
       Ok(())
     }
   }

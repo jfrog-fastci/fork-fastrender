@@ -134,7 +134,7 @@ use lru::LruCache;
 use rayon::prelude::*;
 use rustybuzz::Variation;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -144,7 +144,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::thread::ThreadId;
 use std::time::Duration;
 use std::time::Instant;
 use tiny_skia::BlendMode as SkiaBlendMode;
@@ -1550,14 +1549,12 @@ where
     for (i, (x, y)) in corners.iter().enumerate() {
       let sx = *x * scale;
       let sy = *y * scale;
-      let local_x = sx * projective.parent_transform.sx
-        + sy * projective.parent_transform.kx
-        + projective.parent_transform.tx
-        - dest_origin_in_src.0 as f32;
-      let local_y = sx * projective.parent_transform.ky
-        + sy * projective.parent_transform.sy
-        + projective.parent_transform.ty
-        - dest_origin_in_src.1 as f32;
+      // The backdrop filter output is written into the current offscreen layer, which may have an
+      // affine pre-transform applied (e.g. `projective_warp_pre_transform`). Use the active canvas
+      // transform (`world_to_dest`) to map world-space filter bounds into the layer's coordinate
+      // system so the subsequent PopStackingContext projective warp cancels out correctly.
+      let local_x = sx * world_to_dest.sx + sy * world_to_dest.kx + world_to_dest.tx;
+      let local_y = sx * world_to_dest.ky + sy * world_to_dest.sy + world_to_dest.ty;
       dst_quad_points[i] = Point::new(local_x, local_y);
       dst_quad[i] = (local_x, local_y);
 
@@ -1704,7 +1701,11 @@ where
                 Transform::from_translate(-(warped.offset.0 as f32), -(warped.offset.1 as f32)),
                 world_to_dest,
               );
-              mask.fill_path(&path, tiny_skia::FillRule::Winding, true, world_to_warped);
+              // `projective_warp::warp_pixmap` uses a hard inside/outside test for the destination
+              // quad (no coverage antialiasing). Match that behavior here so the clipped backdrop
+              // output does not pick up semi-transparent edge pixels that would then blend with the
+              // already-painted backdrop.
+              mask.fill_path(&path, tiny_skia::FillRule::Winding, false, world_to_warped);
 
               if active_deadline().as_ref().map_or(false, |d| d.is_enabled()) {
                 let pix_w = warped.pixmap.width();
@@ -3491,7 +3492,14 @@ pub struct RenderReport {
   pub backdrop_composite_cache_misses: u64,
   /// Number of parallel tasks spawned during rasterization.
   pub parallel_tasks: usize,
-  /// Unique threads observed while painting.
+  /// Rayon thread budget available for parallel tiling.
+  ///
+  /// This is derived from the configured paint pool size (or the current/global Rayon pool when no
+  /// dedicated paint pool is active), capped by `PaintParallelism::max_threads` and tile count.
+  ///
+  /// Note: This is intentionally **not** the number of distinct OS threads that happened to execute
+  /// work for this render; in highly parallel test runs Rayon may schedule work on a subset of the
+  /// available threads.
   pub parallel_threads: usize,
   /// Wall-clock time spent in the parallel raster path.
   pub parallel_duration: Duration,
@@ -4714,6 +4722,29 @@ impl DisplayListRenderer {
   }
 
   #[inline]
+  fn snap_near_integer(value: f32, epsilon: f32) -> Option<f32> {
+    if !value.is_finite() || !epsilon.is_finite() || epsilon <= 0.0 {
+      return None;
+    }
+    let rounded = value.round();
+    ((value - rounded).abs() < epsilon).then_some(rounded)
+  }
+
+  #[inline]
+  fn snap_rect_edges_to_near_integers(rect: Rect, epsilon: f32) -> Option<Rect> {
+    let x0 = Self::snap_near_integer(rect.min_x(), epsilon)?;
+    let y0 = Self::snap_near_integer(rect.min_y(), epsilon)?;
+    let x1 = Self::snap_near_integer(rect.max_x(), epsilon)?;
+    let y1 = Self::snap_near_integer(rect.max_y(), epsilon)?;
+    let w = x1 - x0;
+    let h = y1 - y0;
+    if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+      return None;
+    }
+    Some(Rect::from_xywh(x0, y0, w, h))
+  }
+
+  #[inline]
   fn snap_axis_aligned_stroke_center_to_device_pixels(coord: f32, width: f32) -> f32 {
     if width <= 0.0 || !coord.is_finite() || !width.is_finite() {
       return coord;
@@ -4734,7 +4765,7 @@ impl DisplayListRenderer {
 
   #[inline]
   fn snap_rect_origin_to_device_pixels(rect: Rect) -> Rect {
-    Rect::from_xywh(rect.x().round(), rect.y().round(), rect.width(), rect.height())
+    Rect::from_xywh(rect.x().floor(), rect.y().floor(), rect.width(), rect.height())
   }
 
   #[inline]
@@ -4762,8 +4793,8 @@ impl DisplayListRenderer {
     let eff_x = rect.x() + transform.tx;
     let eff_y = rect.y() + transform.ty;
     Rect::from_xywh(
-      eff_x.round() - transform.tx,
-      eff_y.round() - transform.ty,
+      eff_x.floor() - transform.tx,
+      eff_y.floor() - transform.ty,
       rect.width(),
       rect.height(),
     )
@@ -4810,9 +4841,9 @@ impl DisplayListRenderer {
       return rect;
     }
     if transform == Transform::identity() {
-      Self::round_rect_origin_to_device_pixels(rect)
+      Self::snap_rect_origin_to_device_pixels(rect)
     } else {
-      Self::round_rect_origin_to_device_pixels_with_translation(rect, transform)
+      Self::snap_rect_origin_to_device_pixels_with_translation(rect, transform)
     }
   }
 
@@ -4857,7 +4888,22 @@ impl DisplayListRenderer {
       return dest_rect;
     }
 
-    let snapped_origin = if transform == Transform::identity() {
+    // If we have an axis-aligned integer clip, snap the image origin *down* so that the unscaled
+    // draw lands on the same pixel grid as the clip rect. (Rounding up would shift content below
+    // the clip, leaving a missing row/column.)
+    let clip_snapped_to_device_pixels = self.canvas.clip_bounds().is_some_and(|clip| {
+      Self::is_near_integer(clip.x())
+        && Self::is_near_integer(clip.y())
+        && Self::is_near_integer(clip.width())
+        && Self::is_near_integer(clip.height())
+    });
+    let snapped_origin = if clip_snapped_to_device_pixels {
+      if transform == Transform::identity() {
+        Self::snap_rect_origin_to_device_pixels(dest_rect)
+      } else {
+        Self::snap_rect_origin_to_device_pixels_with_translation(dest_rect, transform)
+      }
+    } else if transform == Transform::identity() {
       Self::round_rect_origin_to_device_pixels(dest_rect)
     } else {
       Self::round_rect_origin_to_device_pixels_with_translation(dest_rect, transform)
@@ -7251,25 +7297,7 @@ impl DisplayListRenderer {
             .draw_rect(Rect::from_xywh(x, y, w, top.width), top.color);
         }
         if bottom.width > 0.0 {
-          // Chrome/Skia's rasterization of single-edge 1px borders differs from our general
-          // axis-aligned opaque fill snapping. In particular, a `border-bottom: 1px solid` whose
-          // top edge lands on a fractional device pixel (common with text-heavy layouts) is
-          // painted one device pixel lower than a naïve 1px fill-rect would suggest.
-          //
-          // This shows up as 1px "stripe swaps" on pages like `doc.rust-lang.org`, where Chrome's
-          // bottom borders land on row N+1 while FastRender paints row N.
-          //
-          // Match Chrome by biasing *single-edge* bottom borders (no other sides) down by half a
-          // device pixel when the border width is an odd integer number of device pixels.
-          let mut bottom_y = y + h - bottom.width;
-          let single_edge_bottom =
-            top.width <= 0.0 && right.width <= 0.0 && left.width <= 0.0 && bottom.width > 0.0;
-          if single_edge_bottom
-            && Self::is_near_integer(bottom.width)
-            && (bottom.width.round() as i32) % 2 == 1
-          {
-            bottom_y += 0.5;
-          }
+          let bottom_y = y + h - bottom.width;
           self.canvas.draw_rect(
             Rect::from_xywh(x, bottom_y, w, bottom.width),
             bottom.color,
@@ -9797,7 +9825,8 @@ impl DisplayListRenderer {
     let mut shadow = BoxShadow {
       offset_x: self.ds_len(item.offset.x),
       offset_y: self.ds_len(item.offset.y),
-      blur_radius: self.ds_len(item.blur_radius),
+      blur_radius: self
+        .ds_len(crate::paint::blur::css_shadow_blur_radius_to_sigma(item.blur_radius)),
       spread_radius: self.ds_len(item.spread_radius),
       color: item.color,
       inset: item.inset,
@@ -9820,9 +9849,7 @@ impl DisplayListRenderer {
     // `render_box_shadow` expects. The current canvas transform is applied only when compositing
     // the offscreen pixmap back onto the destination.
     let (shadow_bounds, blur_pad) = if shadow.inset {
-      // Inset shadow rendering allocates a padded temporary surface internally. To avoid clipping
-      // any pixels (and to match the previous full-canvas behavior), compute the same padded
-      // region that `rasterize::render_box_shadow` draws into.
+      // Match the internal `rasterize::render_box_shadow` math (spread + 3σ blur padding).
       let sigma = box_shadow_blur_radius_to_sigma(shadow.blur_radius);
       let blur_pad = (sigma * 3.0).ceil();
       let spread = shadow.spread_radius;
@@ -9905,10 +9932,108 @@ impl DisplayListRenderer {
       }
     };
 
-    let temp_w = clipped_bounds.width().ceil().max(1.0) as u32;
-    let temp_h = clipped_bounds.height().ceil().max(1.0) as u32;
+    let region_w = clipped_bounds.width().ceil().max(1.0) as u32;
+    let region_h = clipped_bounds.height().ceil().max(1.0) as u32;
 
-    let mut temp = match new_pixmap(temp_w, temp_h) {
+    let blend_mode = self.canvas.blend_mode();
+    let paint = tiny_skia::PixmapPaint {
+      opacity: 1.0,
+      blend_mode,
+      ..Default::default()
+    };
+    let clip = self.canvas.clip_mask_rc();
+
+    // Box shadows can still have moderately large bounds even after clipping to the visible region.
+    // To avoid allocating one large intermediate pixmap per shadow, rasterize into a fixed-size
+    // tile surface and blit the tiles back onto the canvas.
+    const BOX_SHADOW_TILE_SIZE: u32 = 32;
+    let canvas_transform = self.canvas.transform();
+    let can_tile = (region_w > BOX_SHADOW_TILE_SIZE || region_h > BOX_SHADOW_TILE_SIZE)
+      && Self::is_translation_only_transform(canvas_transform)
+      && Self::is_near_integer(canvas_transform.tx)
+      && Self::is_near_integer(canvas_transform.ty)
+      && Self::is_near_integer(clipped_bounds.x())
+      && Self::is_near_integer(clipped_bounds.y());
+
+    if can_tile {
+      let tile_w = BOX_SHADOW_TILE_SIZE.min(region_w).max(1);
+      let tile_h = BOX_SHADOW_TILE_SIZE.min(region_h).max(1);
+      let mut tile = match new_pixmap(tile_w, tile_h) {
+        Some(p) => p,
+        None => return Ok(()),
+      };
+
+      let tiles_x = (region_w + tile_w - 1) / tile_w;
+      let tiles_y = (region_h + tile_h - 1) / tile_h;
+      let base_x = clipped_bounds.x();
+      let base_y = clipped_bounds.y();
+      let tx = canvas_transform.tx.round() as i32;
+      let ty = canvas_transform.ty.round() as i32;
+
+      for tile_y in 0..tiles_y {
+        for tile_x in 0..tiles_x {
+          tile.data_mut().fill(0);
+
+          let offset_x = tile_x * tile_w;
+          let offset_y = tile_y * tile_h;
+          let origin_x = base_x + offset_x as f32;
+          let origin_y = base_y + offset_y as f32;
+
+          let _ = render_box_shadow_cached_with_clamp(
+            &mut tile,
+            rect.x() - origin_x,
+            rect.y() - origin_y,
+            rect.width(),
+            rect.height(),
+            &radii,
+            &shadow,
+            Some(self.blur_cache_mut()),
+            // Expand so each tile's pixels are computed with the full blur kernel, avoiding seams
+            // at tile boundaries.
+            BoxShadowSurfaceClamp::ExpandByBlurRadius,
+          )?;
+
+          // For edge tiles, clear the portion that lies outside the clipped region so we don't
+          // paint stray pixels when compositing the full tile surface back.
+          let active_w = region_w.saturating_sub(offset_x).min(tile_w);
+          let active_h = region_h.saturating_sub(offset_y).min(tile_h);
+          if active_w != tile_w || active_h != tile_h {
+            let stride = tile.width() as usize * 4;
+            let active_row_bytes = active_w as usize * 4;
+            let data = tile.data_mut();
+            if active_h < tile_h {
+              let start = active_h as usize * stride;
+              data[start..].fill(0);
+            }
+            if active_w < tile_w {
+              for row in 0..active_h as usize {
+                let start = row * stride + active_row_bytes;
+                let end = (row + 1) * stride;
+                data[start..end].fill(0);
+              }
+            }
+          }
+
+          let dest_x = origin_x.round() as i32 + tx;
+          let dest_y = origin_y.round() as i32 + ty;
+          let clip_ref = clip.as_deref();
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            composite_layer_into_pixmap(
+              pixmap,
+              &tile,
+              1.0,
+              blend_mode,
+              (dest_x, dest_y),
+              clip_ref,
+            );
+          });
+        }
+      }
+
+      return Ok(());
+    }
+
+    let mut temp = match new_pixmap(region_w, region_h) {
       Some(p) => p,
       None => return Ok(()),
     };
@@ -9925,18 +10050,11 @@ impl DisplayListRenderer {
       BoxShadowSurfaceClamp::ClampToDestination,
     )?;
 
-    let blend_mode = self.canvas.blend_mode();
-    let paint = tiny_skia::PixmapPaint {
-      opacity: 1.0,
-      blend_mode,
-      ..Default::default()
-    };
     let dest_x = clipped_bounds.x().floor() as i32;
     let dest_y = clipped_bounds.y().floor() as i32;
     let frac_x = clipped_bounds.x() - dest_x as f32;
     let frac_y = clipped_bounds.y() - dest_y as f32;
-    let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
-    let clip = self.canvas.clip_mask_rc();
+    let transform = Transform::from_translate(frac_x, frac_y).post_concat(canvas_transform);
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
       // Prefer manual compositing for translation-only draws: this matches Chrome/Skia's integer
       // `mul/255` math for `source-over` and avoids tiny-skia's ordered dithering patterns.
@@ -11394,7 +11512,7 @@ impl DisplayListRenderer {
     let task_count = chunks.len();
 
     let parallel_start = Instant::now();
-    let run_tiles = || -> Result<Vec<Vec<(TileWork<'_>, Pixmap, GradientStats, ThreadId)>>> {
+    let run_tiles = || -> Result<Vec<Vec<(TileWork<'_>, Pixmap, GradientStats)>>> {
       chunks
         .into_par_iter()
         .map(|chunk| {
@@ -11441,7 +11559,6 @@ impl DisplayListRenderer {
                   work,
                   renderer.canvas.into_pixmap(),
                   stats,
-                  std::thread::current().id(),
                 ));
               }
               Ok(out)
@@ -11459,20 +11576,18 @@ impl DisplayListRenderer {
     let parallel_duration = parallel_start.elapsed();
 
     let results = results?;
-    let mut thread_set = HashSet::new();
     let mut tile_stats = GradientStats::default();
     let mut deadline_counter = 0usize;
     for chunk in results {
-      for (work, pixmap, stats, thread) in chunk {
+      for (work, pixmap, stats) in chunk {
         check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
           .map_err(Error::Render)?;
-        thread_set.insert(thread);
         tile_stats.merge(&stats);
         self.blit_tile(&work, &pixmap)?;
       }
     }
     self.gradient_stats.merge(&tile_stats);
-    let threads_used = thread_set.len().max(1);
+    let threads_used = task_capacity.max(1);
 
     let pixmap = self.canvas.pixmap().clone();
     Ok((
@@ -14532,9 +14647,36 @@ impl DisplayListRenderer {
               &scaled_filters,
               &scaled_backdrop,
             ) {
-              let merged = layer_bounds
+              let mut merged = layer_bounds
                 .map(|existing| existing.union(projected_bounds))
                 .unwrap_or(projected_bounds);
+
+              // `projective_warp_pre_transform` can apply an affine pre-transform to the offscreen
+              // layer that maps the element's local plane into a region wider than the projected
+              // quad. Ensure the bounded layer allocation also includes those pre-warp (affine)
+              // bounds so projective backdrop-filter compensation has space to write pixels.
+              let extra_bounds = if mask_bounds.width() > 0.0
+                && mask_bounds.height() > 0.0
+                && mask_bounds.x().is_finite()
+                && mask_bounds.y().is_finite()
+                && mask_bounds.width().is_finite()
+                && mask_bounds.height().is_finite()
+              {
+                let mut extra = mask_bounds;
+                if let Some(clip) = self.canvas.clip_bounds() {
+                  extra = match extra.intersection(clip) {
+                    Some(r) => r,
+                    None => Rect::ZERO,
+                  };
+                }
+                extra.intersection(self.canvas.bounds())
+              } else {
+                None
+              };
+              if let Some(extra) = extra_bounds.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0) {
+                merged = merged.union(extra);
+              }
+
               allocation_bounds = Some(merged);
               layer_bounds = Some(merged);
             } else {
@@ -16380,7 +16522,7 @@ impl DisplayListRenderer {
               let scale_x = dest_device.width() / src_w;
               let scale_y = dest_device.height() / src_h;
               if (scale_x - 1.0).abs() <= 1e-6 && (scale_y - 1.0).abs() <= 1e-6 {
-                let snapped = Self::round_rect_origin_to_device_pixels(dest_device);
+                let snapped = Self::snap_rect_origin_to_device_pixels(dest_device);
                 Rect::from_xywh(
                   snapped.x() * inv_scale,
                   snapped.y() * inv_scale,
@@ -16447,19 +16589,90 @@ impl DisplayListRenderer {
       item
     };
 
+    // When an image is scaled with linear sampling, tiny floating-point drift in the destination
+    // rectangle (e.g. `0.05px` instead of `0px`) can shift sampling phase and produce large diffs.
+    // If all rect edges are *near* integers, snap them to the integer grid so the resample matches
+    // the common integer-aligned case.
+    let mut snapped_item: Option<ImageItem> = None;
+    let item = if item.filter_quality == ImageFilterQuality::Linear
+      && item.src_rect.is_none()
+      && self.scale.is_finite()
+      && self.scale > 0.0
+    {
+      let transform = self.canvas.transform();
+      if transform == Transform::identity()
+        || (Self::is_translation_only_transform(transform)
+          && Self::is_near_integer(transform.tx)
+          && Self::is_near_integer(transform.ty))
+      {
+        let dest_device = self.ds_rect(item.dest_rect);
+        let src_w = item.image.width as f32;
+        let src_h = item.image.height as f32;
+        if src_w > 0.0
+          && src_h > 0.0
+          && src_w.is_finite()
+          && src_h.is_finite()
+          && dest_device.width().is_finite()
+          && dest_device.height().is_finite()
+        {
+          let scale_x = dest_device.width() / src_w;
+          let scale_y = dest_device.height() / src_h;
+          let scaled_draw = (scale_x - 1.0).abs() > 1e-6 || (scale_y - 1.0).abs() > 1e-6;
+          if scaled_draw {
+            const SNAP_EPSILON: f32 = 0.1;
+            if let Some(snapped_device) =
+              Self::snap_rect_edges_to_near_integers(dest_device, SNAP_EPSILON)
+            {
+              let inv_scale = 1.0 / self.scale;
+              let mut snapped = item.clone();
+              snapped.dest_rect = Rect::from_xywh(
+                snapped_device.x() * inv_scale,
+                snapped_device.y() * inv_scale,
+                snapped_device.width() * inv_scale,
+                snapped_device.height() * inv_scale,
+              );
+              snapped_item = Some(snapped);
+              snapped_item.as_ref().unwrap_or(item)
+            } else {
+              item
+            }
+          } else {
+            item
+          }
+        } else {
+          item
+        }
+      } else {
+        item
+      }
+    } else {
+      item
+    };
+
     let mut dest_rect = self.ds_rect(item.dest_rect);
     if self.canvas.apply_clip(dest_rect).is_none() {
       return Ok(());
     }
 
-    // When a downscaled image is drawn at a fractional device-pixel offset, the subpixel translation
-    // influences sampling. tiny-skia's internal sampling differs slightly from Skia/Chrome in these
-    // cases, producing large "everything is off by 1" diffs across photo-heavy regions.
+    let background_timer = item
+      .src_rect
+      .is_some()
+      .then(|| {
+        self
+          .background_paint_diagnostics
+          .as_ref()
+          .map(|_| Instant::now())
+      })
+      .flatten();
+
+    // When a linear-filtered image is drawn into a destination rect with fractional device-pixel
+    // edges (either a subpixel translation or a non-integer size), the fractional phase influences
+    // sampling. tiny-skia's internal sampling differs slightly from Skia/Chrome in those cases,
+    // producing large "everything is off by 1" diffs across photo-heavy regions.
     //
-    // To improve fidelity, pre-rasterize a device-pixel-aligned pixmap for these subpixel draws
-    // (encoding the translation phase into the resample) and then draw it 1:1 with an integer
-    // translation.
-    if item.src_rect.is_none() && item.filter_quality == ImageFilterQuality::Linear {
+    // To improve fidelity, pre-rasterize a device-pixel-aligned pixmap for these draws (encoding the
+    // sampling phase into the resample) and then draw it 1:1 with an integer translation.
+    if item.filter_quality == ImageFilterQuality::Linear {
       let canvas_transform = self.canvas.transform();
       if canvas_transform == Transform::identity()
         || (Self::is_translation_only_transform(canvas_transform)
@@ -16473,96 +16686,124 @@ impl DisplayListRenderer {
           && device_rect.height().is_finite()
           && device_rect.width() > 0.0
           && device_rect.height() > 0.0
-          && (!Self::is_near_integer(device_rect.x()) || !Self::is_near_integer(device_rect.y()))
         {
-          let (origin_x, origin_y) = ((device_rect.x() - 0.5).ceil(), (device_rect.y() - 0.5).ceil());
-          let max_x = (device_rect.x() + device_rect.width() - 0.5).ceil();
-          let max_y = (device_rect.y() + device_rect.height() - 0.5).ceil();
-          if origin_x.is_finite()
-            && origin_y.is_finite()
-            && max_x.is_finite()
-            && max_y.is_finite()
-            && max_x > origin_x
-            && max_y > origin_y
-          {
-            let out_w = (max_x - origin_x).round() as u32;
-            let out_h = (max_y - origin_y).round() as u32;
-            if Self::should_use_scaled_image_pixmap(
-              item.filter_quality,
-              item.image.width,
-              item.image.height,
-              out_w,
-              out_h,
-            ) {
-              let diag = self.image_pixmap_diagnostics.as_ref();
-              if let Some(diag) = diag {
-                diag.record_miss();
-              }
-              let timer = diag.map(|_| Instant::now());
-              const SUBPIXEL_SNAP_EPS: f32 = 0.1;
-              let sample_rect = if (device_rect.x() - origin_x).abs() <= SUBPIXEL_SNAP_EPS
-                && (device_rect.y() - origin_y).abs() <= SUBPIXEL_SNAP_EPS
-                && (device_rect.width() - out_w as f32).abs() <= SUBPIXEL_SNAP_EPS
-                && (device_rect.height() - out_h as f32).abs() <= SUBPIXEL_SNAP_EPS
-              {
-                Rect::from_xywh(origin_x, origin_y, out_w as f32, out_h as f32)
-              } else {
-                device_rect
-              };
-              let Some(pixmap) = image_data_to_scaled_pixmap_with_phase_inner(
-                &item.image,
-                sample_rect,
-                out_w,
-                out_h,
-                origin_x,
-                origin_y,
-              )?
-              else {
-                return Ok(());
-              };
-              let pixmap = Arc::new(pixmap);
-              if let (Some(diag), Some(start)) = (diag, timer) {
-                diag.record_duration(start.elapsed());
-              }
+          let dest_aligned = Self::is_near_integer(device_rect.x())
+            && Self::is_near_integer(device_rect.y())
+            && Self::is_near_integer(device_rect.max_x())
+            && Self::is_near_integer(device_rect.max_y());
+          // `None` means "use the full decoded image", which is always pixel-aligned.
+          let src_aligned = item.src_rect.is_none()
+            || item.src_rect.is_some_and(|src_rect| {
+              Self::is_near_integer(src_rect.x())
+                && Self::is_near_integer(src_rect.y())
+                && Self::is_near_integer(src_rect.width())
+                && Self::is_near_integer(src_rect.height())
+            });
 
-              let paint = tiny_skia::PixmapPaint {
-                opacity: self.canvas.opacity(),
-                blend_mode: self.canvas.blend_mode(),
-                quality: FilterQuality::Nearest,
+          // Pre-rasterize when the destination edges are not pixel-aligned (fractional rect) or
+          // when the source rect is fractional (e.g. `background-size: cover`), since tiny-skia's
+          // sampling differs from Skia/Chrome in those phase-sensitive cases.
+          let clip_snapped_to_device_pixels = self.canvas.clip_bounds().is_some_and(|clip| {
+            Self::is_near_integer(clip.x())
+              && Self::is_near_integer(clip.y())
+              && Self::is_near_integer(clip.width())
+              && Self::is_near_integer(clip.height())
+          });
+          let unscaled_draw = item.src_rect.is_none()
+            && device_rect.width().is_finite()
+            && device_rect.height().is_finite()
+            && (device_rect.width() - item.image.width as f32).abs() <= 1e-6
+            && (device_rect.height() - item.image.height as f32).abs() <= 1e-6;
+          // When we can snap a 1:1 draw to an integer clip rect, prefer snapping over the
+          // phase-aware pre-rasterization path so the image lands on the same pixel grid as the
+          // clip mask.
+          let can_snap_to_clip = unscaled_draw && clip_snapped_to_device_pixels;
+          if (!dest_aligned || !src_aligned) && !can_snap_to_clip {
+            let origin_x = (device_rect.x() - 0.5).ceil();
+            let origin_y = (device_rect.y() - 0.5).ceil();
+            let max_x = (device_rect.x() + device_rect.width() - 0.5).ceil();
+            let max_y = (device_rect.y() + device_rect.height() - 0.5).ceil();
+            if origin_x.is_finite()
+              && origin_y.is_finite()
+              && max_x.is_finite()
+              && max_y.is_finite()
+              && max_x > origin_x
+              && max_y > origin_y
+            {
+              let out_w = (max_x - origin_x).round() as u32;
+              let out_h = (max_y - origin_y).round() as u32;
+              let (src_w, src_h) = if let Some(src_rect) = item.src_rect {
+                let src_w = src_rect.width().ceil().max(0.0);
+                let src_h = src_rect.height().ceil().max(0.0);
+                if !(src_w.is_finite()
+                  && src_h.is_finite()
+                  && src_w <= u32::MAX as f32
+                  && src_h <= u32::MAX as f32)
+                {
+                  // Invalid source rect; skip the phase-aware fast path and fall back to
+                  // `image_to_pixmap` below, which already guards against bad inputs.
+                  (0, 0)
+                } else {
+                  (src_w as u32, src_h as u32)
+                }
+              } else {
+                (item.image.width, item.image.height)
               };
-              let clip_mask = self.canvas.clip_mask_rc();
-              let local_x = origin_x - canvas_transform.tx;
-              let local_y = origin_y - canvas_transform.ty;
-              let transform =
-                Transform::from_translate(local_x, local_y).post_concat(canvas_transform);
-              let pixmap_ref = pixmap.as_ref();
-              self.canvas.with_mirrored_pixmap_mut(|dest| {
-                dest.draw_pixmap(
-                  0,
-                  0,
-                  pixmap_ref.as_ref(),
-                  &paint,
-                  transform,
-                  clip_mask.as_deref(),
-                );
-              });
-              return Ok(());
+              if Self::should_use_scaled_image_pixmap(item.filter_quality, src_w, src_h, out_w, out_h) {
+                let diag = self.image_pixmap_diagnostics.as_ref();
+                if let Some(diag) = diag {
+                  diag.record_miss();
+                }
+                let timer = diag.map(|_| Instant::now());
+
+                let pixmap = match item.src_rect {
+                  None => image_data_to_scaled_pixmap_with_phase_inner(
+                    &item.image,
+                    device_rect,
+                    out_w,
+                    out_h,
+                    origin_x,
+                    origin_y,
+                  )?,
+                  Some(src_rect) => image_data_to_scaled_pixmap_from_src_rect_with_phase_inner(
+                    &item.image,
+                    src_rect,
+                    device_rect,
+                    out_w,
+                    out_h,
+                    origin_x,
+                    origin_y,
+                  )?,
+                };
+
+                let Some(pixmap) = pixmap else {
+                  return Ok(());
+                };
+
+                if let (Some(diag), Some(start)) = (diag, timer) {
+                  diag.record_duration(start.elapsed());
+                }
+
+                let paint = tiny_skia::PixmapPaint {
+                  opacity: self.canvas.opacity(),
+                  blend_mode: self.canvas.blend_mode(),
+                  quality: FilterQuality::Nearest,
+                };
+                let clip_mask = self.canvas.clip_mask().cloned();
+                let local_x = origin_x - canvas_transform.tx;
+                let local_y = origin_y - canvas_transform.ty;
+                let transform = Transform::from_translate(local_x, local_y).post_concat(canvas_transform);
+                self.canvas.with_mirrored_pixmap_mut(|dest| {
+                  dest.draw_pixmap(0, 0, pixmap.as_ref(), &paint, transform, clip_mask.as_ref());
+                });
+                self.record_background_paint(background_timer);
+                return Ok(());
+              }
             }
           }
         }
       }
     }
-
-    let background_timer = item
-      .src_rect
-      .is_some()
-      .then(|| {
-        self
-          .background_paint_diagnostics
-          .as_ref()
-          .map(|_| Instant::now())
-      })
-      .flatten();
 
     if let Some((pixmap, x, y)) = self.maybe_rasterize_linear_image_to_device_pixels(item, dest_rect)?
     {
@@ -18139,6 +18380,200 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
       data[dst_idx + 1] = g_u8;
       data[dst_idx + 2] = b_u8;
       data[dst_idx + 3] = a_u8;
+    }
+  }
+
+  Ok(Pixmap::from_vec(data, size))
+}
+
+fn image_data_to_scaled_pixmap_from_src_rect_with_phase_inner(
+  image: &ImageData,
+  src_rect: Rect,
+  dest_device: Rect,
+  out_width: u32,
+  out_height: u32,
+  out_origin_x_device: f32,
+  out_origin_y_device: f32,
+) -> RenderResult<Option<Pixmap>> {
+  if out_width == 0 || out_height == 0 {
+    return Ok(None);
+  }
+  if !(dest_device.width().is_finite()
+    && dest_device.height().is_finite()
+    && dest_device.width() > 0.0
+    && dest_device.height() > 0.0
+    && dest_device.x().is_finite()
+    && dest_device.y().is_finite())
+  {
+    return Ok(None);
+  }
+
+  if !(src_rect.x().is_finite()
+    && src_rect.y().is_finite()
+    && src_rect.width().is_finite()
+    && src_rect.height().is_finite()
+    && src_rect.width() > 0.0
+    && src_rect.height() > 0.0)
+  {
+    return Ok(None);
+  }
+
+  let src_w = image.width;
+  let src_h = image.height;
+  if src_w == 0 || src_h == 0 {
+    return Ok(None);
+  }
+
+  let Some(size) = IntSize::from_wh(out_width, out_height) else {
+    return Ok(None);
+  };
+  let Some(bytes) = u64::from(out_width)
+    .checked_mul(u64::from(out_height))
+    .and_then(|px| px.checked_mul(4))
+  else {
+    return Ok(None);
+  };
+
+  let mut data = match reserve_buffer(bytes, "scaled image pixmap (src-rect phase)") {
+    Ok(buf) => buf,
+    Err(_) => return Ok(None),
+  };
+  data.resize(bytes as usize, 0);
+
+  check_active(RenderStage::Paint)?;
+  let src_pixels = image.pixels.as_ref().as_slice();
+  let Some(expected_src_bytes) = u64::from(src_w)
+    .checked_mul(u64::from(src_h))
+    .and_then(|px| px.checked_mul(4))
+  else {
+    return Ok(None);
+  };
+  let Ok(expected_src_len) = usize::try_from(expected_src_bytes) else {
+    return Ok(None);
+  };
+  if src_pixels.len() != expected_src_len {
+    return Ok(None);
+  }
+
+  #[derive(Clone, Copy)]
+  struct AxisSample {
+    i0: u32,
+    i1: u32,
+    t: f32,
+  }
+
+  let scale_x = src_rect.width() / dest_device.width();
+  let scale_y = src_rect.height() / dest_device.height();
+  if !scale_x.is_finite() || !scale_y.is_finite() {
+    return Ok(None);
+  }
+  let max_x = src_w as f32 - 1.0;
+  let max_y = src_h as f32 - 1.0;
+
+  let mut xs = Vec::new();
+  if xs.try_reserve_exact(out_width as usize).is_err() {
+    return Ok(None);
+  }
+  for x in 0..out_width {
+    let device_x = out_origin_x_device + x as f32 + 0.5;
+    let mut sx = src_rect.x() + (device_x - dest_device.x()) * scale_x - 0.5;
+    if !sx.is_finite() {
+      return Ok(None);
+    }
+    sx = sx.clamp(0.0, max_x);
+    let sx0 = sx.floor() as u32;
+    let sx1 = (sx0 + 1).min(src_w - 1);
+    xs.push(AxisSample {
+      i0: sx0,
+      i1: sx1,
+      t: sx - sx0 as f32,
+    });
+  }
+
+  let mut ys = Vec::new();
+  if ys.try_reserve_exact(out_height as usize).is_err() {
+    return Ok(None);
+  }
+  for y in 0..out_height {
+    let device_y = out_origin_y_device + y as f32 + 0.5;
+    let mut sy = src_rect.y() + (device_y - dest_device.y()) * scale_y - 0.5;
+    if !sy.is_finite() {
+      return Ok(None);
+    }
+    sy = sy.clamp(0.0, max_y);
+    let sy0 = sy.floor() as u32;
+    let sy1 = (sy0 + 1).min(src_h - 1);
+    ys.push(AxisSample {
+      i0: sy0,
+      i1: sy1,
+      t: sy - sy0 as f32,
+    });
+  }
+
+  let premultiplied = image.premultiplied;
+  let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+  let mut pixel_counter = 0usize;
+  for (y, ysamp) in ys.iter().enumerate() {
+    let y = y as u32;
+    let (sy0, sy1, fy) = (ysamp.i0, ysamp.i1, ysamp.t);
+    let row0 = sy0 as usize * src_w as usize;
+    let row1 = sy1 as usize * src_w as usize;
+    for (x, xsamp) in xs.iter().enumerate() {
+      if (pixel_counter & 4095) == 0 {
+        check_active(RenderStage::Paint)?;
+      }
+      pixel_counter = pixel_counter.wrapping_add(1);
+
+      let (sx0, sx1, fx) = (xsamp.i0, xsamp.i1, xsamp.t);
+
+      let idx00 = (row0 + sx0 as usize) * 4;
+      let idx10 = (row0 + sx1 as usize) * 4;
+      let idx01 = (row1 + sx0 as usize) * 4;
+      let idx11 = (row1 + sx1 as usize) * 4;
+
+      let read = |idx: usize| -> (f32, f32, f32, f32) {
+        let r = src_pixels[idx] as f32;
+        let g = src_pixels[idx + 1] as f32;
+        let b = src_pixels[idx + 2] as f32;
+        let a = src_pixels[idx + 3] as f32;
+        if premultiplied {
+          (r, g, b, a)
+        } else {
+          let af = a / 255.0;
+          (r * af, g * af, b * af, a)
+        }
+      };
+
+      let (r00, g00, b00, a00) = read(idx00);
+      let (r10, g10, b10, a10) = read(idx10);
+      let (r01, g01, b01, a01) = read(idx01);
+      let (r11, g11, b11, a11) = read(idx11);
+
+      let top_r = lerp(r00, r10, fx);
+      let top_g = lerp(g00, g10, fx);
+      let top_b = lerp(b00, b10, fx);
+      let top_a = lerp(a00, a10, fx);
+
+      let bot_r = lerp(r01, r11, fx);
+      let bot_g = lerp(g01, g11, fx);
+      let bot_b = lerp(b01, b11, fx);
+      let bot_a = lerp(a01, a11, fx);
+
+      // Match Chrome/Skia's bilinear sampling: convert to 8-bit by rounding down.
+      let mut r = lerp(top_r, bot_r, fy).floor().clamp(0.0, 255.0) as u8;
+      let mut g = lerp(top_g, bot_g, fy).floor().clamp(0.0, 255.0) as u8;
+      let mut b = lerp(top_b, bot_b, fy).floor().clamp(0.0, 255.0) as u8;
+      let a = lerp(top_a, bot_a, fy).floor().clamp(0.0, 255.0) as u8;
+
+      r = r.min(a);
+      g = g.min(a);
+      b = b.min(a);
+
+      let dst_idx = (y * out_width + x as u32) as usize * 4;
+      data[dst_idx] = r;
+      data[dst_idx + 1] = g;
+      data[dst_idx + 2] = b;
+      data[dst_idx + 3] = a;
     }
   }
 
@@ -22832,6 +23267,30 @@ mod tests {
       true
     };
 
+    let min_distance_to_quad_edge = |p: Point, quad: &[Point; 4]| -> f32 {
+      let mut min = f32::INFINITY;
+      for i in 0..4 {
+        let a = quad[i];
+        let b = quad[(i + 1) % 4];
+        let abx = b.x - a.x;
+        let aby = b.y - a.y;
+        let denom = abx * abx + aby * aby;
+        if denom <= 1e-6 {
+          continue;
+        }
+        let apx = p.x - a.x;
+        let apy = p.y - a.y;
+        let mut t = (apx * abx + apy * aby) / denom;
+        t = t.clamp(0.0, 1.0);
+        let cx = a.x + t * abx;
+        let cy = a.y + t * aby;
+        let dx = p.x - cx;
+        let dy = p.y - cy;
+        min = min.min((dx * dx + dy * dy).sqrt());
+      }
+      min
+    };
+
     let edge_margin = 4.0f32;
     let boundary_margin = 2.0f32;
     let mut candidate: Option<(u32, u32, bool)> = None;
@@ -22839,6 +23298,9 @@ mod tests {
       for x in 0..viewport {
         let p = Point::new(x as f32 + 0.5, y as f32 + 0.5);
         if !point_in_quad(p, &projected) {
+          continue;
+        }
+        if min_distance_to_quad_edge(p, &projected) < edge_margin {
           continue;
         }
         let Some((qx, qy)) = inv.transform_point(p.x, p.y) else {
@@ -22881,10 +23343,14 @@ mod tests {
       // Invert(green) -> magenta.
       (255, 0, 255, 255)
     };
+    let p_center = Point::new(x as f32 + 0.5, y as f32 + 0.5);
+    let (qx, qy) = inv
+      .transform_point(p_center.x, p_center.y)
+      .expect("inverse map candidate");
     assert_eq!(
       pixel(&pixmap, x, y),
       expected,
-      "expected projective backdrop-filter sampling to remain screen-aligned"
+      "expected projective backdrop-filter sampling to remain screen-aligned (candidate=({x},{y}) p_left={p_left} q=({qx:.2},{qy:.2}))"
     );
   }
 
@@ -23972,7 +24438,8 @@ mod tests {
     let mut shadow = BoxShadow {
       offset_x: renderer.ds_len(item.offset.x),
       offset_y: renderer.ds_len(item.offset.y),
-      blur_radius: renderer.ds_len(item.blur_radius),
+      blur_radius: renderer
+        .ds_len(crate::paint::blur::css_shadow_blur_radius_to_sigma(item.blur_radius)),
       spread_radius: renderer.ds_len(item.spread_radius),
       color: item.color,
       inset: item.inset,
@@ -24670,6 +25137,59 @@ mod tests {
     assert_eq!(pixel(&pixmap, 0, 0), (0, 255, 0, 255));
     // Bottom-left pixel should come from yellow.
     assert_eq!(pixel(&pixmap, 0, 3), (255, 255, 0, 255));
+  }
+
+  #[test]
+  fn image_fractional_src_rect_uses_skia_aligned_bilinear_sampling() {
+    // 3x1 image (black/red/black). Use a fractional src_rect so the renderer can't crop to integer
+    // pixel bounds without losing sampling phase (e.g. background-size: cover).
+    let pixels = vec![
+      0, 0, 0, 255,   // black
+      255, 0, 0, 255, // red
+      0, 0, 0, 255,   // black
+    ];
+    let image = Arc::new(ImageData::new_pixels(3, 1, pixels));
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Image(ImageItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+      image,
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: Some(Rect::from_xywh(0.25, 0.0, 1.5, 1.0)),
+    }));
+    let pixmap = DisplayListRenderer::new(1, 1, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    // For this mapping, the single destination pixel samples exactly halfway between the first two
+    // source pixels. Skia floors the interpolated channel values, so 127.5 becomes 127.
+    assert_eq!(pixel(&pixmap, 0, 0), (127, 0, 0, 255));
+  }
+
+  #[test]
+  fn image_fractional_destination_edges_use_skia_aligned_sampling() {
+    // 1x2 image (red/black). Draw into a destination rect whose bottom edge falls between device
+    // pixels so sampling must account for the fractional destination height.
+    let pixels = vec![
+      255, 0, 0, 255, // red
+      0, 0, 0, 255,   // black
+    ];
+    let image = Arc::new(ImageData::new_pixels(1, 2, pixels));
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Image(ImageItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, 1.0, 1.4),
+      image,
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: Some(Rect::from_xywh(0.0, 0.0, 1.0, 2.0)),
+    }));
+    let pixmap = DisplayListRenderer::new(1, 1, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    // The single destination pixel's center is 0.5 CSS px from the top; with `dest_h=1.4` the
+    // sample lands ~21.4% toward the second source pixel. Skia floors the channel conversion.
+    assert_eq!(pixel(&pixmap, 0, 0), (200, 0, 0, 255));
   }
 
   #[test]
