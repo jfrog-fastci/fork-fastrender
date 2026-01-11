@@ -42,23 +42,82 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
       };
       let prop = ident_name(lowered, prop)?;
 
+      // globalThis.fetch(...) / window.fetch(...)
+      if prop == "fetch" {
+        let obj = expr(lowered, body, member.object)?;
+        if let ExprKind::Ident(obj_name) = &obj.kind {
+          if matches!(
+            ident_name(lowered, *obj_name),
+            Some("globalThis" | "window" | "self" | "global")
+          ) {
+            return Some(ApiId::Fetch);
+          }
+        }
+      }
+
       // Promise.all(...)
       if prop == "all" {
         let obj = expr(lowered, body, member.object)?;
-        if let ExprKind::Ident(obj_name) = obj.kind {
-          if ident_name(lowered, obj_name) == Some("Promise") {
-            return Some(ApiId::PromiseAll);
+        match &obj.kind {
+          ExprKind::Ident(obj_name) => {
+            if ident_name(lowered, *obj_name) == Some("Promise") {
+              return Some(ApiId::PromiseAll);
+            }
           }
+          ExprKind::Member(inner) => {
+            if inner.optional {
+              return None;
+            }
+            let ObjectKey::Ident(obj_name) = &inner.property else {
+              return None;
+            };
+            if ident_name(lowered, *obj_name) != Some("Promise") {
+              return None;
+            }
+            let base = expr(lowered, body, inner.object)?;
+            if let ExprKind::Ident(base_name) = &base.kind {
+              if matches!(
+                ident_name(lowered, *base_name),
+                Some("globalThis" | "window" | "self" | "global")
+              ) {
+                return Some(ApiId::PromiseAll);
+              }
+            }
+          }
+          _ => {}
         }
       }
 
       // JSON.parse(...)
       if prop == "parse" {
         let obj = expr(lowered, body, member.object)?;
-        if let ExprKind::Ident(obj_name) = obj.kind {
-          if ident_name(lowered, obj_name) == Some("JSON") {
-            return Some(ApiId::JsonParse);
+        match &obj.kind {
+          ExprKind::Ident(obj_name) => {
+            if ident_name(lowered, *obj_name) == Some("JSON") {
+              return Some(ApiId::JsonParse);
+            }
           }
+          ExprKind::Member(inner) => {
+            if inner.optional {
+              return None;
+            }
+            let ObjectKey::Ident(obj_name) = &inner.property else {
+              return None;
+            };
+            if ident_name(lowered, *obj_name) != Some("JSON") {
+              return None;
+            }
+            let base = expr(lowered, body, inner.object)?;
+            if let ExprKind::Ident(base_name) = &base.kind {
+              if matches!(
+                ident_name(lowered, *base_name),
+                Some("globalThis" | "window" | "self" | "global")
+              ) {
+                return Some(ApiId::JsonParse);
+              }
+            }
+          }
+          _ => {}
         }
       }
     }
@@ -824,5 +883,38 @@ mod tests {
     let resolved = resolve_call(&lowered, body_id, body, call_expr, &db, None).expect("resolved");
     assert_eq!(resolved.api, "fetch");
     assert_eq!(resolved.api_id, Some(ApiId::Fetch));
+  }
+
+  #[test]
+  fn resolves_global_this_fetch_call_untyped() {
+    let lowered =
+      hir_js::lower_from_source_with_kind(FileKind::Js, r#"globalThis.fetch("x");"#).unwrap();
+    let (body_id, call_expr) = first_stmt_expr(&lowered);
+    assert_eq!(
+      resolve_api_call_untyped(&lowered, body_id, call_expr),
+      Some(ApiId::Fetch)
+    );
+  }
+
+  #[test]
+  fn resolves_global_this_promise_all_call_untyped() {
+    let lowered =
+      hir_js::lower_from_source_with_kind(FileKind::Js, r#"globalThis.Promise.all([]);"#).unwrap();
+    let (body_id, call_expr) = first_stmt_expr(&lowered);
+    assert_eq!(
+      resolve_api_call_untyped(&lowered, body_id, call_expr),
+      Some(ApiId::PromiseAll)
+    );
+  }
+
+  #[test]
+  fn resolves_window_json_parse_call_untyped() {
+    let lowered =
+      hir_js::lower_from_source_with_kind(FileKind::Js, r#"window.JSON.parse("x");"#).unwrap();
+    let (body_id, call_expr) = first_stmt_expr(&lowered);
+    assert_eq!(
+      resolve_api_call_untyped(&lowered, body_id, call_expr),
+      Some(ApiId::JsonParse)
+    );
   }
 }
