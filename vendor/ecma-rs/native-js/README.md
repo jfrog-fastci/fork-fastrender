@@ -479,6 +479,11 @@ matching the validator’s checks):
   - `async` / generator functions, `await`, `yield`
   - object literals, array literals, and destructuring patterns
   - property access (`obj.prop`, `obj["prop"]`)
+  - conditional expressions (`cond ? a : b`)
+  - function/arrow expressions
+  - some operators are not supported yet (non-exhaustive):
+    - unary: `typeof`, `void`, `delete`
+    - binary: `**`, `>>>`, `&&`, `||`, `??`, `in`, `instanceof`, comma operator
   - `switch`, `for..in`, and `for..of`
   - variable declarations without an initializer
   - calls:
