@@ -1064,6 +1064,7 @@ impl CallbackAnalyzer<'_> {
                   Some("0") => {}
                   Some("1") => self.uses_index = true,
                   Some("2") => self.uses_array = true,
+                  Some("length") => {}
                   _ => {
                     // Unknown index; conservatively assume it may access either.
                     self.uses_index = true;
@@ -1074,6 +1075,9 @@ impl CallbackAnalyzer<'_> {
               // Property accesses like `arguments.length` don't directly depend on
               // `index` or `array`, but we don't attempt to model them precisely
               // here.
+              ObjectKey::Ident(prop)
+                if self.lowered.names.resolve(*prop) == Some("length") => {}
+              ObjectKey::String(prop) if prop == "length" => {}
               _ => {
                 self.uses_index = true;
                 self.uses_array = true;
@@ -1602,6 +1606,36 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
       "arr.map(function (x) { return arguments[0]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_length_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments.length; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_length_computed_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[\"length\"]; });",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
