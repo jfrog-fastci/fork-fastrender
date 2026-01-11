@@ -175,7 +175,7 @@ fn background_position_shorthand_resets_positions() {
 
 #[test]
 fn background_position_logical_maps_inline_and_block_sideways_lr() {
-  // In sideways-lr, inline maps to the physical y-axis (top→bottom) and block maps to the physical x-axis (left→right).
+  // In sideways-lr (LTR), inline maps to the physical y-axis (bottom→top) and block maps to the physical x-axis (left→right).
   let dom = dom::parse_html(
         r#"<div style="writing-mode: sideways-lr; background-position-inline: 12%; background-position-block: 4px"></div>"#,
     )
@@ -187,12 +187,12 @@ fn background_position_logical_maps_inline_and_block_sideways_lr() {
   let (x, y) = bg_pos(&node);
   // Block axis applies to the physical x-axis; inline axis applies to y in sideways-lr.
   assert_component(&x, 0.0, 4.0, LengthUnit::Px);
-  assert_component(&y, 0.0, 12.0, LengthUnit::Percent);
+  assert_component(&y, 1.0, -12.0, LengthUnit::Percent);
 }
 
 #[test]
 fn background_position_logical_maps_inline_and_block_sideways_rl() {
-  // In sideways-rl, inline maps to the physical y-axis (top→bottom) and block maps to the physical x-axis (left→right).
+  // In sideways-rl (LTR), inline maps to the physical y-axis (top→bottom) and block maps to the physical x-axis (right→left).
   let dom = dom::parse_html(
         r#"<div style="writing-mode: sideways-rl; background-position-inline: 7%; background-position-block: 5px"></div>"#,
     )
@@ -203,7 +203,7 @@ fn background_position_logical_maps_inline_and_block_sideways_rl() {
   let node = first_div(&styled);
   let (x, y) = bg_pos(&node);
   // Block axis applies to the physical x-axis; inline axis applies to y.
-  assert_component(&x, 0.0, 5.0, LengthUnit::Px);
+  assert_component(&x, 1.0, -5.0, LengthUnit::Px);
   assert_component(&y, 0.0, 7.0, LengthUnit::Percent);
 }
 
@@ -237,7 +237,7 @@ fn background_position_logical_maps_inline_and_block_vertical_rl() {
   let node = all_divs(&styled)[0];
   let (x, y) = bg_pos(node);
   // Block axis applies to the physical x-axis; inline axis applies to y.
-  assert_component(&x, 0.0, 0.0, LengthUnit::Percent);
+  assert_component(&x, 1.0, 0.0, LengthUnit::Percent);
   assert_component(&y, 0.0, 25.0, LengthUnit::Percent);
 }
 
@@ -390,4 +390,61 @@ fn background_position_y_sets_y_components() {
   let (x, y) = bg_pos(&node);
   assert_component(&x, 0.0, 0.0, LengthUnit::Percent);
   assert_component(&y, 0.0, 15.0, LengthUnit::Px);
+}
+
+#[test]
+fn background_position_logical_inline_start_end_keywords_respect_direction() {
+  let dom = dom::parse_html(
+    r#"<div style="background-position-inline: start 10%"></div>
+       <div style="background-position-inline: end 10%"></div>
+       <div style="direction: rtl; background-position-inline: start 10%"></div>
+       <div style="direction: rtl; background-position-inline: end 10%"></div>
+       <div style="direction: rtl; background-position-inline: 10%"></div>"#,
+  )
+  .unwrap();
+  let stylesheet = parse_stylesheet("").unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let divs = all_divs(&styled);
+
+  let (x, y) = bg_pos(divs[0]);
+  assert_component(&x, 0.0, 10.0, LengthUnit::Percent);
+  assert_component(&y, 0.0, 0.0, LengthUnit::Percent);
+
+  let (x, _) = bg_pos(divs[1]);
+  assert_component(&x, 1.0, -10.0, LengthUnit::Percent);
+
+  let (x, _) = bg_pos(divs[2]);
+  assert_component(&x, 1.0, -10.0, LengthUnit::Percent);
+
+  let (x, _) = bg_pos(divs[3]);
+  assert_component(&x, 0.0, 10.0, LengthUnit::Percent);
+
+  // Omitted origin keyword defaults to `start`.
+  let (x, _) = bg_pos(divs[4]);
+  assert_component(&x, 1.0, -10.0, LengthUnit::Percent);
+}
+
+#[test]
+fn background_position_logical_block_start_end_keywords_respect_writing_mode() {
+  let dom = dom::parse_html(
+    r#"<div style="writing-mode: vertical-rl; background-position-block: start 10%"></div>
+       <div style="writing-mode: vertical-rl; background-position-block: end 10%"></div>
+       <div style="writing-mode: vertical-rl; background-position-block: 10%"></div>"#,
+  )
+  .unwrap();
+  let stylesheet = parse_stylesheet("").unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let divs = all_divs(&styled);
+
+  // In vertical-rl, block-start is the right edge, so `start` positions map to `alignment=1`.
+  let (x, y) = bg_pos(divs[0]);
+  assert_component(&x, 1.0, -10.0, LengthUnit::Percent);
+  assert_component(&y, 0.0, 0.0, LengthUnit::Percent);
+
+  let (x, _) = bg_pos(divs[1]);
+  assert_component(&x, 0.0, 10.0, LengthUnit::Percent);
+
+  // Omitted origin keyword defaults to `start`.
+  let (x, _) = bg_pos(divs[2]);
+  assert_component(&x, 1.0, -10.0, LengthUnit::Percent);
 }

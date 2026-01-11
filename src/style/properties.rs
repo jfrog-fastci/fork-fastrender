@@ -16027,7 +16027,9 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "background-position-inline" => {
-      if let Some(values) = parse_layer_list(resolved_value, parse_background_position_component_x)
+      let positive = inline_axis_positive(styles.writing_mode, styles.direction);
+      if let Some(values) =
+        parse_layer_list(resolved_value, |v| parse_background_position_component_logical(v, positive))
       {
         styles.ensure_background_lists();
         let horizontal_inline = inline_axis_is_horizontal(styles.writing_mode);
@@ -16061,7 +16063,9 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "background-position-block" => {
-      if let Some(values) = parse_layer_list(resolved_value, parse_background_position_component_y)
+      let positive = block_axis_positive(styles.writing_mode);
+      if let Some(values) =
+        parse_layer_list(resolved_value, |v| parse_background_position_component_logical(v, positive))
       {
         styles.ensure_background_lists();
         let horizontal_block = block_axis_is_horizontal(styles.writing_mode);
@@ -21683,6 +21687,72 @@ fn parse_background_position_component_y(
       alignment: 0.0,
       offset: Length::px(0.0),
     }),
+    _ => None,
+  }
+}
+
+fn parse_background_position_component_logical(
+  value: &PropertyValue,
+  positive: bool,
+) -> Option<BackgroundPositionComponent> {
+  let start_align = if positive { 0.0 } else { 1.0 };
+  let end_align = if positive { 1.0 } else { 0.0 };
+
+  let component_from_align =
+    |align: f32, offset: Option<Length>| -> BackgroundPositionComponent {
+      // Use percent-zero so the default offset participates in percentage resolution.
+      let mut off = offset.unwrap_or_else(|| Length::percent(0.0));
+      if (align - 1.0).abs() < 1e-6 {
+        off.value = -off.value;
+      }
+      BackgroundPositionComponent {
+        alignment: align,
+        offset: off,
+      }
+    };
+
+  let parse_offset = |value: &PropertyValue| -> Option<Length> {
+    match value {
+      PropertyValue::Length(len) => Some(*len),
+      PropertyValue::Percentage(p) => Some(Length::percent(*p)),
+      PropertyValue::Number(n) if *n == 0.0 => Some(Length::px(0.0)),
+      _ => None,
+    }
+  };
+
+  let parse_keyword = |kw: &str| -> Option<f32> {
+    if kw.eq_ignore_ascii_case("start") {
+      Some(start_align)
+    } else if kw.eq_ignore_ascii_case("end") {
+      Some(end_align)
+    } else if kw.eq_ignore_ascii_case("center") {
+      Some(0.5)
+    } else {
+      None
+    }
+  };
+
+  match value {
+    PropertyValue::Multiple(parts) => match parts.as_slice() {
+      [] => None,
+      [single] => parse_background_position_component_logical(single, positive),
+      [first, second] => {
+        let PropertyValue::Keyword(kw) = first else {
+          return None;
+        };
+        let align = parse_keyword(kw.as_str())?;
+        let offset = parse_offset(second)?;
+        Some(component_from_align(align, Some(offset)))
+      }
+      _ => None,
+    },
+    PropertyValue::Keyword(kw) => {
+      let align = parse_keyword(kw)?;
+      Some(component_from_align(align, None))
+    }
+    PropertyValue::Length(len) => Some(component_from_align(start_align, Some(*len))),
+    PropertyValue::Percentage(p) => Some(component_from_align(start_align, Some(Length::percent(*p)))),
+    PropertyValue::Number(n) if *n == 0.0 => Some(component_from_align(start_align, Some(Length::px(0.0)))),
     _ => None,
   }
 }
