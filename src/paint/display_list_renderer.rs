@@ -5757,10 +5757,10 @@ impl DisplayListRenderer {
 
     if axis_aligned && can_invert {
       let bounds = transform_rect(dest_rect, &canvas_transform);
-      let mut x0 = bounds.min_x().floor();
-      let mut y0 = bounds.min_y().floor();
-      let mut x1 = bounds.max_x().ceil();
-      let mut y1 = bounds.max_y().ceil();
+      let mut x0 = (bounds.min_x() - 0.5).ceil();
+      let mut y0 = (bounds.min_y() - 0.5).ceil();
+      let mut x1 = (bounds.max_x() - 0.5).ceil();
+      let mut y1 = (bounds.max_y() - 0.5).ceil();
 
       x0 = x0.clamp(0.0, self.canvas.width() as f32);
       y0 = y0.clamp(0.0, self.canvas.height() as f32);
@@ -6247,10 +6247,10 @@ impl DisplayListRenderer {
       bounds = intersection;
     }
 
-    let mut x0 = bounds.min_x().floor();
-    let mut y0 = bounds.min_y().floor();
-    let mut x1 = bounds.max_x().ceil();
-    let mut y1 = bounds.max_y().ceil();
+    let mut x0 = (bounds.min_x() - 0.5).ceil();
+    let mut y0 = (bounds.min_y() - 0.5).ceil();
+    let mut x1 = (bounds.max_x() - 0.5).ceil();
+    let mut y1 = (bounds.max_y() - 0.5).ceil();
 
     x0 = x0.clamp(0.0, self.canvas.width() as f32);
     y0 = y0.clamp(0.0, self.canvas.height() as f32);
@@ -16421,10 +16421,10 @@ impl DisplayListRenderer {
 
     if axis_aligned && can_invert {
       let bounds = transform_rect(dest_rect, &canvas_transform);
-      let mut x0 = bounds.min_x().floor();
-      let mut y0 = bounds.min_y().floor();
-      let mut x1 = bounds.max_x().ceil();
-      let mut y1 = bounds.max_y().ceil();
+      let mut x0 = (bounds.min_x() - 0.5).ceil();
+      let mut y0 = (bounds.min_y() - 0.5).ceil();
+      let mut x1 = (bounds.max_x() - 0.5).ceil();
+      let mut y1 = (bounds.max_y() - 0.5).ceil();
 
       x0 = x0.clamp(0.0, self.canvas.width() as f32);
       y0 = y0.clamp(0.0, self.canvas.height() as f32);
@@ -24777,6 +24777,37 @@ mod tests {
         "pattern-based gradient rendering should match explicit tiling; first mismatch at ({x},{y}): explicit={a:?} pattern={b:?}"
       );
     }
+  }
+
+  #[test]
+  fn linear_gradient_pattern_does_not_overpaint_fractional_edges() {
+    let renderer = DisplayListRenderer::new(3, 3, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::LinearGradientPattern(
+      LinearGradientPatternItem {
+        dest_rect: Rect::from_xywh(0.0, 0.99, 3.0, 1.0),
+        tile_size: Size::new(3.0, 1.0),
+        origin: Point::new(0.0, 0.99),
+        start: Point::new(0.0, 0.5),
+        end: Point::new(3.0, 0.5),
+        stops: vec![
+          GradientStop {
+            position: 0.0,
+            color: Rgba::rgb(255, 0, 0),
+          },
+          GradientStop {
+            position: 1.0,
+            color: Rgba::rgb(255, 0, 0),
+          },
+        ],
+        spread: GradientSpread::Pad,
+      },
+    ));
+
+    let pixmap = renderer.render(&list).unwrap();
+    assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 0, 1), (255, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 0, 2), (255, 255, 255, 255));
   }
 
   #[test]
