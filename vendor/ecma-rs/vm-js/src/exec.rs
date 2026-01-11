@@ -4499,6 +4499,19 @@ impl<'a> Evaluator<'a> {
           NumericValue::BigInt(b) => Value::BigInt(b.negate()),
         })
       }
+      OperatorName::BitwiseNot => {
+        let argument = self.eval_expr(scope, &expr.argument)?;
+        let num = self.to_numeric(scope, argument)?;
+        Ok(match num {
+          NumericValue::Number(n) => Value::Number((!to_int32(n)) as f64),
+          NumericValue::BigInt(b) => {
+            let Some(i) = b.try_to_i128() else {
+              return Err(VmError::Unimplemented("BigInt bitwise not out of range"));
+            };
+            Value::BigInt(JsBigInt::from_i128(!i))
+          }
+        })
+      }
       OperatorName::Typeof => {
         let argument = match &*expr.argument.stx {
           Expr::Id(id) => {
@@ -5043,6 +5056,147 @@ impl<'a> Evaluator<'a> {
           )?),
         }
       }
+      OperatorName::BitwiseAnd | OperatorName::BitwiseOr | OperatorName::BitwiseXor => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope.push_root(left)?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        rhs_scope.push_root(right)?;
+
+        let left_num = self.to_numeric(&mut rhs_scope, left)?;
+        let right_num = self.to_numeric(&mut rhs_scope, right)?;
+        match (left_num, right_num) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let a = to_int32(a);
+            let b = to_int32(b);
+            let out = match expr.operator {
+              OperatorName::BitwiseAnd => a & b,
+              OperatorName::BitwiseOr => a | b,
+              OperatorName::BitwiseXor => a ^ b,
+              _ => unreachable!(),
+            };
+            Ok(Value::Number(out as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let Some(a) = a.try_to_i128() else {
+              return Err(VmError::Unimplemented("BigInt bitwise out of range"));
+            };
+            let Some(b) = b.try_to_i128() else {
+              return Err(VmError::Unimplemented("BigInt bitwise out of range"));
+            };
+            let out = match expr.operator {
+              OperatorName::BitwiseAnd => a & b,
+              OperatorName::BitwiseOr => a | b,
+              OperatorName::BitwiseXor => a ^ b,
+              _ => unreachable!(),
+            };
+            Ok(Value::BigInt(JsBigInt::from_i128(out)))
+          }
+          _ => Err(throw_type_error(
+            self.vm,
+            &mut rhs_scope,
+            "Cannot mix BigInt and other types",
+          )?),
+        }
+      }
+      OperatorName::BitwiseLeftShift
+      | OperatorName::BitwiseRightShift
+      | OperatorName::BitwiseUnsignedRightShift => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope.push_root(left)?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        rhs_scope.push_root(right)?;
+
+        let left_num = self.to_numeric(&mut rhs_scope, left)?;
+        let right_num = self.to_numeric(&mut rhs_scope, right)?;
+        match (left_num, right_num) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = (to_uint32(b) & 0x1f) as u32;
+            match expr.operator {
+              OperatorName::BitwiseLeftShift => {
+                let a = to_int32(a);
+                Ok(Value::Number(a.wrapping_shl(shift) as f64))
+              }
+              OperatorName::BitwiseRightShift => {
+                let a = to_int32(a);
+                Ok(Value::Number(a.wrapping_shr(shift) as f64))
+              }
+              OperatorName::BitwiseUnsignedRightShift => {
+                let a = to_uint32(a);
+                Ok(Value::Number((a >> shift) as f64))
+              }
+              _ => unreachable!(),
+            }
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            if matches!(expr.operator, OperatorName::BitwiseUnsignedRightShift) {
+              return Err(throw_type_error(
+                self.vm,
+                &mut rhs_scope,
+                "BigInt does not support unsigned right shift",
+              )?);
+            }
+
+            let Some(a) = a.try_to_i128() else {
+              return Err(VmError::Unimplemented("BigInt shift out of range"));
+            };
+            let Some(b) = b.try_to_i128() else {
+              return Err(VmError::Unimplemented("BigInt shift out of range"));
+            };
+            // BigInt shift operators treat negative shift counts as shifting in the opposite
+            // direction (e.g. `x << -1n` is `x >> 1n`), matching the ECMAScript semantics.
+            let shift_mag = if b == i128::MIN {
+              1u128 << 127
+            } else if b < 0 {
+              (-b) as u128
+            } else {
+              b as u128
+            };
+            let shift = u32::try_from(shift_mag).unwrap_or(u32::MAX);
+
+            let shr = |value: i128, shift: u32| match value.checked_shr(shift) {
+              Some(v) => v,
+              None => {
+                // Shifting right by >= bit width yields `-1` for negative values, else `0`.
+                if value < 0 { -1 } else { 0 }
+              }
+            };
+
+            match expr.operator {
+              OperatorName::BitwiseLeftShift => {
+                if b < 0 {
+                  Ok(Value::BigInt(JsBigInt::from_i128(shr(a, shift))))
+                } else {
+                  let Some(out) = a.checked_shl(shift) else {
+                    return Err(VmError::Unimplemented("BigInt left shift overflow"));
+                  };
+                  Ok(Value::BigInt(JsBigInt::from_i128(out)))
+                }
+              }
+              OperatorName::BitwiseRightShift => {
+                if b < 0 {
+                  let Some(out) = a.checked_shl(shift) else {
+                    return Err(VmError::Unimplemented("BigInt left shift overflow"));
+                  };
+                  Ok(Value::BigInt(JsBigInt::from_i128(out)))
+                } else {
+                  Ok(Value::BigInt(JsBigInt::from_i128(shr(a, shift))))
+                }
+              }
+              OperatorName::BitwiseUnsignedRightShift => unreachable!(),
+              _ => unreachable!(),
+            }
+          }
+          _ => Err(throw_type_error(
+            self.vm,
+            &mut rhs_scope,
+            "Cannot mix BigInt and other types",
+          )?),
+        }
+      }
       OperatorName::Subtraction
       | OperatorName::Division
       | OperatorName::Remainder
@@ -5076,6 +5230,10 @@ impl<'a> Evaluator<'a> {
             ))
           }
         }
+      }
+      OperatorName::Comma => {
+        let _ = self.eval_expr(scope, &expr.left)?;
+        self.eval_expr(scope, &expr.right)
       }
       _ => Err(VmError::Unimplemented("binary operator")),
     }
@@ -5683,6 +5841,40 @@ fn to_boolean(heap: &Heap, value: Value) -> Result<bool, VmError> {
     Value::String(s) => !heap.get_string(s)?.as_code_units().is_empty(),
     Value::Symbol(_) | Value::Object(_) => true,
   })
+}
+
+fn to_int32(n: f64) -> i32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  // ECMA-262 `ToInt32`: truncate then compute modulo 2^32.
+  let int = n.trunc();
+  const TWO_32: f64 = 4_294_967_296.0;
+  const TWO_31: f64 = 2_147_483_648.0;
+
+  let mut int = int % TWO_32;
+  if int < 0.0 {
+    int += TWO_32;
+  }
+  if int >= TWO_31 {
+    (int - TWO_32) as i32
+  } else {
+    int as i32
+  }
+}
+
+fn to_uint32(n: f64) -> u32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  // ECMA-262 `ToUint32`: truncate then compute modulo 2^32.
+  let int = n.trunc();
+  const TWO_32: f64 = 4_294_967_296.0;
+  let mut int = int % TWO_32;
+  if int < 0.0 {
+    int += TWO_32;
+  }
+  int as u32
 }
 
 fn typeof_name(heap: &Heap, value: Value) -> Result<&'static str, VmError> {

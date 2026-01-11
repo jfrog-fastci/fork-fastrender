@@ -19,6 +19,29 @@ impl JsBigInt {
     }
   }
 
+  pub fn from_i128(value: i128) -> Self {
+    if value == 0 {
+      return Self::zero();
+    }
+    if value < 0 {
+      // `-i128::MIN` overflows, so handle it explicitly.
+      let magnitude = if value == i128::MIN {
+        1u128 << 127
+      } else {
+        (-value) as u128
+      };
+      Self {
+        negative: true,
+        magnitude,
+      }
+    } else {
+      Self {
+        negative: false,
+        magnitude: value as u128,
+      }
+    }
+  }
+
   pub fn from_u128(value: u128) -> Self {
     Self {
       negative: false,
@@ -87,6 +110,31 @@ impl JsBigInt {
       negative: self.is_negative() ^ other.is_negative(),
       magnitude: mag,
     })
+  }
+
+  /// Converts this BigInt to `i128` if it fits.
+  ///
+  /// This is used by `vm-js` for integer operations like `~`/`&`/`<<` while its BigInt
+  /// implementation remains intentionally bounded to 128 bits.
+  pub fn try_to_i128(self) -> Option<i128> {
+    if self.is_zero() {
+      return Some(0);
+    }
+    if self.is_negative() {
+      let min_mag = 1u128 << 127;
+      if self.magnitude > min_mag {
+        return None;
+      }
+      if self.magnitude == min_mag {
+        return Some(i128::MIN);
+      }
+      Some(-(self.magnitude as i128))
+    } else {
+      if self.magnitude > i128::MAX as u128 {
+        return None;
+      }
+      Some(self.magnitude as i128)
+    }
   }
 
   pub fn to_decimal_string(self) -> String {

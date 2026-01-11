@@ -386,6 +386,42 @@ fn arithmetic_precedence() {
 }
 
 #[test]
+fn bitwise_and_shift_and_comma_operators_work() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var ok = (5 & 3) === 1
+        && (5 | 2) === 7
+        && (5 ^ 1) === 4
+        && (~1) === -2
+        && (1 << 3) === 8
+        && (-1 >> 1) === -1
+        && (-1 >>> 1) === 2147483647
+        && (1 << -1) === -2147483648;
+      var x = 0;
+      ok = ok && ((x = 1, x + 1) === 2);
+      ok = ok
+        && ((5n & 3n) === 1n)
+        && ((5n | 2n) === 7n)
+       && ((5n ^ 1n) === 4n)
+       && ((~1n) === -2n)
+       && ((1n << 3n) === 8n)
+        && ((5n << -1n) === 2n)
+        && ((-5n << -1n) === -3n)
+        && ((5n >> -1n) === 10n)
+        && ((-8n >> 1n) === -4n);
+       var mix = false;
+       try { 1n & 1; } catch(e) { mix = e.name === "TypeError"; }
+       ok = ok && mix;
+       var bad = false;
+       try { 1n >>> 1n; } catch(e) { bad = e.name === "TypeError"; }
+       ok && bad"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn logical_ops() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"true && false"#).unwrap();
