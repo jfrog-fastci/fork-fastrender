@@ -297,6 +297,26 @@ impl WindowRealmUserData {
   }
 }
 
+/// Minimal host context used when executing scripts/microtasks directly via [`WindowRealm`] without
+/// the higher-level `WindowHost`/`BrowserTab` host plumbing.
+///
+/// `vm-js`'s [`vm_js::VmHost`] trait is intentionally lightweight (it is essentially a type-erased
+/// handle for embedder state). Most FastRender integrations use `DocumentHostState` or
+/// `BrowserDocumentDom2` as the `VmHost` so that DOM bindings can access `document.currentScript`
+/// bookkeeping. When `WindowRealm` is used standalone we still want to preserve the ability to
+/// thread a current-script handle through VM callbacks when available, while keeping the host
+/// context otherwise empty.
+#[derive(Debug, Default)]
+struct VmJsHostContext {
+  current_script: Option<CurrentScriptStateHandle>,
+}
+
+impl VmJsHostContext {
+  fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
+    self.current_script.as_ref()
+  }
+}
+
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
     let mut vm_options = config.vm_options.clone();

@@ -112,6 +112,7 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
       <script type="importmap">{"imports":{}}</script>
       <script>queueMicrotask</script>
       <script type="module">queueTask</script>
+      <script type="module" src="https://example.com/mod.js"></script>
       <script async src="https://example.com/ext.js"></script>
     </head>
   </html>"#;
@@ -158,6 +159,7 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
   )
   .expect("create tab");
   tab.register_script_source("https://example.com/ext.js", "queueTask");
+  tab.register_script_source("https://example.com/mod.js", "queueTask");
   let _ = tab
     .run_event_loop_until_idle(RunLimits::unbounded())
     .expect("run event loop");
@@ -172,12 +174,18 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
 
   let mut names: Vec<&str> = Vec::new();
   let mut script_execute_types: HashSet<String> = HashSet::new();
-  let mut script_fetch_type = None;
-  let mut script_fetch_destination = None;
-  let mut script_fetch_credentials_mode = None;
-  let mut script_fetch_async_attr = None;
-  let mut script_fetch_defer_attr = None;
-  let mut script_fetch_parser_inserted = None;
+  #[derive(Debug)]
+  struct ScriptFetchSummary {
+    script_type: Option<String>,
+    destination: Option<String>,
+    cors_mode: Option<String>,
+    credentials_mode: Option<String>,
+    async_attr: Option<bool>,
+    defer_attr: Option<bool>,
+    parser_inserted: Option<bool>,
+  }
+  let mut ext_fetch: Option<ScriptFetchSummary> = None;
+  let mut module_fetch: Option<ScriptFetchSummary> = None;
   for event in events {
     if let Some(name) = event.get("name").and_then(|v| v.as_str()) {
       names.push(name);
@@ -191,36 +199,29 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
         }
       }
       if name == "js.script.fetch" {
-        script_fetch_destination = event
-          .get("args")
-          .and_then(|args| args.get("destination"))
-          .and_then(|v| v.as_str())
-          .or(script_fetch_destination);
-        script_fetch_credentials_mode = event
-          .get("args")
-          .and_then(|args| args.get("credentials_mode"))
-          .and_then(|v| v.as_str())
-          .or(script_fetch_credentials_mode);
-        script_fetch_async_attr = event
-          .get("args")
-          .and_then(|args| args.get("async_attr"))
-          .and_then(|v| v.as_bool())
-          .or(script_fetch_async_attr);
-        script_fetch_defer_attr = event
-          .get("args")
-          .and_then(|args| args.get("defer_attr"))
-          .and_then(|v| v.as_bool())
-          .or(script_fetch_defer_attr);
-        script_fetch_parser_inserted = event
-          .get("args")
-          .and_then(|args| args.get("parser_inserted"))
-          .and_then(|v| v.as_bool())
-          .or(script_fetch_parser_inserted);
-        script_fetch_type = event
-          .get("args")
-          .and_then(|args| args.get("script_type"))
-          .and_then(|v| v.as_str())
-          .or(script_fetch_type);
+        let Some(args) = event.get("args").and_then(|v| v.as_object()) else {
+          continue;
+        };
+        let Some(url) = args.get("url").and_then(|v| v.as_str()) else {
+          continue;
+        };
+        let summary = ScriptFetchSummary {
+          script_type: args.get("script_type").and_then(|v| v.as_str()).map(|v| v.to_string()),
+          destination: args.get("destination").and_then(|v| v.as_str()).map(|v| v.to_string()),
+          cors_mode: args.get("cors_mode").and_then(|v| v.as_str()).map(|v| v.to_string()),
+          credentials_mode: args
+            .get("credentials_mode")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string()),
+          async_attr: args.get("async_attr").and_then(|v| v.as_bool()),
+          defer_attr: args.get("defer_attr").and_then(|v| v.as_bool()),
+          parser_inserted: args.get("parser_inserted").and_then(|v| v.as_bool()),
+        };
+        match url {
+          "https://example.com/ext.js" => ext_fetch = Some(summary),
+          "https://example.com/mod.js" => module_fetch = Some(summary),
+          _ => {}
+        }
       }
     }
   }
@@ -242,35 +243,79 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     "expected js.microtask_checkpoint span; got names={names:?}"
   );
 
+  let ext_fetch = ext_fetch.expect("expected js.script.fetch span for https://example.com/ext.js");
   assert_eq!(
-    script_fetch_type,
+    ext_fetch.script_type.as_deref(),
     Some("classic"),
-    "expected js.script.fetch span to include args.script_type=classic"
+    "expected ext.js js.script.fetch span to include args.script_type=classic; got {ext_fetch:?}"
   );
   assert_eq!(
-    script_fetch_destination,
+    ext_fetch.destination.as_deref(),
     Some("script"),
-    "expected js.script.fetch span to include args.destination=script"
+    "expected ext.js js.script.fetch span to include args.destination=script; got {ext_fetch:?}"
   );
   assert_eq!(
-    script_fetch_credentials_mode,
+    ext_fetch.cors_mode.as_deref(),
+    Some("none"),
+    "expected ext.js js.script.fetch span to include args.cors_mode=none; got {ext_fetch:?}"
+  );
+  assert_eq!(
+    ext_fetch.credentials_mode.as_deref(),
     Some("include"),
-    "expected js.script.fetch span to include args.credentials_mode=include"
+    "expected ext.js js.script.fetch span to include args.credentials_mode=include; got {ext_fetch:?}"
   );
   assert_eq!(
-    script_fetch_async_attr,
+    ext_fetch.async_attr,
     Some(true),
-    "expected js.script.fetch span to include args.async_attr=true"
+    "expected ext.js js.script.fetch span to include args.async_attr=true; got {ext_fetch:?}"
   );
   assert_eq!(
-    script_fetch_defer_attr,
+    ext_fetch.defer_attr,
     Some(false),
-    "expected js.script.fetch span to include args.defer_attr=false"
+    "expected ext.js js.script.fetch span to include args.defer_attr=false; got {ext_fetch:?}"
   );
   assert_eq!(
-    script_fetch_parser_inserted,
+    ext_fetch.parser_inserted,
     Some(true),
-    "expected js.script.fetch span to include args.parser_inserted=true"
+    "expected ext.js js.script.fetch span to include args.parser_inserted=true; got {ext_fetch:?}"
+  );
+
+  let module_fetch =
+    module_fetch.expect("expected js.script.fetch span for https://example.com/mod.js");
+  assert_eq!(
+    module_fetch.script_type.as_deref(),
+    Some("module"),
+    "expected mod.js js.script.fetch span to include args.script_type=module; got {module_fetch:?}"
+  );
+  assert_eq!(
+    module_fetch.destination.as_deref(),
+    Some("script_cors"),
+    "expected mod.js js.script.fetch span to include args.destination=script_cors; got {module_fetch:?}"
+  );
+  assert_eq!(
+    module_fetch.cors_mode.as_deref(),
+    Some("anonymous"),
+    "expected mod.js js.script.fetch span to include args.cors_mode=anonymous; got {module_fetch:?}"
+  );
+  assert_eq!(
+    module_fetch.credentials_mode.as_deref(),
+    Some("same-origin"),
+    "expected mod.js js.script.fetch span to include args.credentials_mode=same-origin; got {module_fetch:?}"
+  );
+  assert_eq!(
+    module_fetch.async_attr,
+    Some(false),
+    "expected mod.js js.script.fetch span to include args.async_attr=false; got {module_fetch:?}"
+  );
+  assert_eq!(
+    module_fetch.defer_attr,
+    Some(false),
+    "expected mod.js js.script.fetch span to include args.defer_attr=false; got {module_fetch:?}"
+  );
+  assert_eq!(
+    module_fetch.parser_inserted,
+    Some(true),
+    "expected mod.js js.script.fetch span to include args.parser_inserted=true; got {module_fetch:?}"
   );
   assert!(
     script_execute_types.contains("classic"),
