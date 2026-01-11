@@ -70,9 +70,9 @@ To enforce this:
   - `--fixup-allow-gcptr-in-csr=false` (preferred)
   - `--fixup-max-csr-statepoints=0` (defense-in-depth)
 - When codegen happens out-of-process (e.g. `llc-18` or `clang-18 -flto`), pass the equivalent
-  backend flag:
-  - `llc-18 --fixup-max-csr-statepoints=0`
-  - `clang-18 -mllvm --fixup-max-csr-statepoints=0`
+  backend flags:
+  - `llc-18 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0`
+  - `clang-18 -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0`
 - `runtime-native` has a verifier (`runtime-native/src/statepoint_verify.rs`) that rejects any
   statepoint record whose GC roots are not SP-relative `Indirect` stack slots.
 
