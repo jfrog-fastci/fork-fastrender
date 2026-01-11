@@ -9499,9 +9499,10 @@ impl DisplayListRenderer {
       BoxShadowSurfaceClamp::ClampToDestination,
     )?;
 
+    let blend_mode = self.canvas.blend_mode();
     let paint = tiny_skia::PixmapPaint {
       opacity: 1.0,
-      blend_mode: self.canvas.blend_mode(),
+      blend_mode,
       ..Default::default()
     };
     let dest_x = clipped_bounds.x().floor() as i32;
@@ -9511,14 +9512,28 @@ impl DisplayListRenderer {
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask_rc();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.draw_pixmap(
-        dest_x,
-        dest_y,
-        temp.as_ref(),
-        &paint,
-        transform,
-        clip.as_deref(),
-      );
+      // Prefer manual compositing for translation-only draws: this matches Chrome/Skia's integer
+      // `mul/255` math for `source-over` and avoids tiny-skia's ordered dithering patterns.
+      //
+      // For non-translation transforms (rotation/scale/projective), fall back to tiny-skia so the
+      // shadow pixmap is sampled correctly.
+      if Self::is_translation_only_transform(transform) {
+        let tx = transform.tx.round();
+        let ty = transform.ty.round();
+        if (transform.tx - tx).abs() <= 1e-6 && (transform.ty - ty).abs() <= 1e-6 {
+          composite_layer_into_pixmap(
+            pixmap,
+            &temp,
+            1.0,
+            blend_mode,
+            (dest_x + tx as i32, dest_y + ty as i32),
+            clip.as_deref(),
+          );
+          return;
+        }
+      }
+
+      pixmap.draw_pixmap(dest_x, dest_y, temp.as_ref(), &paint, transform, clip.as_deref());
     });
     Ok(())
   }
