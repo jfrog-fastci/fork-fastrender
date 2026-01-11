@@ -14,11 +14,8 @@ fn find_direct_fn_call<'a>(program: &'a optimize_js::Program, fn_id: usize) -> &
     .bblocks
     .all()
     .flat_map(|(_, block)| block.iter())
-    .find(|inst| {
-      inst.t == InstTyp::Call
-        && matches!(inst.as_call().1, Arg::Fn(id) if *id == fn_id)
-    })
-    .expect("expected direct Arg::Fn call in top-level")
+    .find(|inst| inst.t == InstTyp::Call && matches!(inst.as_call().1, Arg::Fn(id) if *id == fn_id))
+    .expect("expected direct Arg::Fn call in analyzed top-level CFG")
 }
 
 fn find_top_level_object_alloc(program: &optimize_js::Program) -> u32 {
@@ -39,7 +36,7 @@ fn find_top_level_object_alloc(program: &optimize_js::Program) -> u32 {
         None
       }
     })
-    .expect("expected object literal allocation in top-level")
+    .expect("expected object literal allocation in analyzed top-level CFG")
 }
 
 #[test]
