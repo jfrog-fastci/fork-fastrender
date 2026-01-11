@@ -10378,12 +10378,14 @@ fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
 //
 // FastRender's `vm-js` DOM shims are invoked with `host: &mut dyn vm_js::VmHost` pointing at the
 // document (`BrowserDocumentDom2`), not the owning `BrowserTabHost`. This means we cannot directly
-// call the host script scheduler synchronously from the binding layer.
+// call the tab's script scheduler synchronously from the binding layer.
 //
-// For spec-visible ordering, we execute **inline classic** dynamic scripts synchronously in the
-// insertion call stack. For **external** scripts, we attempt to queue a BrowserTabHost task when
-// available; otherwise we leave the element eligible for another integration layer to discover and
-// schedule later (e.g. the JS harness scan).
+// HTML requires that dynamically inserted scripts do not execute synchronously inside the DOM
+// mutation call stack (they run as tasks on the "script" task source). We therefore try to enqueue
+// script work onto the currently-installed event loop:
+// - When running inside `BrowserTabHost`, forward to the tab so it can schedule via its pipeline.
+// - When running inside `WindowHostState` (unit tests), queue a task that fetches/executes the
+//   classic script.
 struct CurrentScriptOverrideGuard {
   handle: Option<CurrentScriptStateHandle>,
   previous: Option<NodeId>,
@@ -10517,10 +10519,10 @@ fn schedule_dynamic_script_via_browser_tab_host(script: NodeId, spec: crate::js:
 
 fn prepare_dynamic_script_element(
   vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  document_obj: GcObject,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _document_obj: GcObject,
   mut dom_ptr: NonNull<dom2::Document>,
   script: NodeId,
 ) -> Result<(), VmError> {
@@ -10562,43 +10564,71 @@ fn prepare_dynamic_script_element(
     return Ok(());
   }
 
-  // Only classic scripts are executed/scheduled by this binding-layer helper for now.
+  // Only participate in HTML script processing for recognized script types. Unknown types are
+  // ignored and should remain eligible if later mutated into a runnable classic/module/import map
+  // script.
+  if !matches!(
+    spec.script_type,
+    ScriptType::Classic | ScriptType::Module | ScriptType::ImportMap
+  ) {
+    return Ok(());
+  }
+
+  // Prefer scheduling via the BrowserTabHost pipeline when available.
+  if runtime::current_event_loop_mut::<crate::api::BrowserTabHost>().is_some() {
+    if schedule_dynamic_script_via_browser_tab_host(script, spec) {
+      // Mark started only if we successfully queued the scheduling task.
+      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+      // lifetime of the associated host document.
+      let dom = unsafe { dom_ptr.as_mut() };
+      let _ = dom.set_script_already_started(script, true);
+    }
+    return Ok(());
+  }
+
+  // When running inside the standalone `WindowHostState` harness, queue classic scripts as tasks.
+  // Module scripts/import maps are currently ignored by this path.
+  if runtime::current_event_loop_mut::<WindowHostState>().is_none() {
+    return Ok(());
+  }
   if spec.script_type != ScriptType::Classic {
     return Ok(());
   }
 
-  if !spec.src_attr_present {
-    // Inline classic script: execute synchronously as part of insertion steps.
-    {
-      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-      // lifetime of the associated host document.
-      let dom = unsafe { dom_ptr.as_mut() };
-      if dom.set_script_already_started(script, true).is_err() {
-        return Ok(());
-      }
-    }
-    return execute_dynamic_inline_script(
-      vm,
-      scope,
-      host,
-      hooks,
-      document_obj,
-      dom_ptr,
-      script,
-      spec.inline_text,
-    );
+  // Invalid integrity metadata: do not execute, and keep the script eligible for later mutations.
+  if spec.integrity_attr_present && spec.integrity.is_none() {
+    return Ok(());
   }
 
-  // External classic script: async-by-default. Queue scheduling via `BrowserTabHost` when available.
-  // If there is no BrowserTabHost event loop installed (e.g. some unit test harnesses), do nothing
-  // and leave the element eligible for later discovery.
-  if schedule_dynamic_script_via_browser_tab_host(script, spec) {
-    // Mark started only if we successfully queued the scheduling task.
-    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-    // lifetime of the associated host document.
-    let dom = unsafe { dom_ptr.as_mut() };
-    let _ = dom.set_script_already_started(script, true);
+  if spec.src_attr_present {
+    let Some(url) = spec.src else {
+      return Ok(());
+    };
+    let destination = if spec.crossorigin.is_some() {
+      FetchDestination::ScriptCors
+    } else {
+      FetchDestination::Script
+    };
+    queue_dynamic_script_task_external(
+      script,
+      url,
+      destination,
+      spec.nomodule_attr,
+      spec.crossorigin,
+      spec.referrer_policy,
+      spec.integrity_attr_present,
+      spec.integrity,
+    )?;
+  } else {
+    let source_name = format!("<script {}>", script.index());
+    queue_dynamic_script_task_inline(script, source_name, spec.inline_text, spec.nomodule_attr)?;
   }
+
+  // Mark started only if we successfully queued the script task.
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let _ = dom.set_script_already_started(script, true);
   Ok(())
 }
 
