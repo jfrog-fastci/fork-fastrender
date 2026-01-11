@@ -34,6 +34,14 @@ pub const RT_THREAD_KIND_IO: u32 = 2;
 pub const RT_THREAD_KIND_EXTERNAL: u32 = 3;
 
 /// Raw pointer to a GC-managed object.
+///
+/// **Important:** `GcPtr` values are **object base pointers**: they point to the start of the
+/// allocation's GC header (the `ObjHeader` prefix in the `runtime-native` crate), not to the start
+/// of the payload after the header.
+///
+/// This matches the stable ABI contract for `rt_alloc` / `rt_alloc_pinned` in
+/// `runtime-native/include/runtime_native.h` and is relied on by GC tracing (`RtShapeDescriptor`
+/// pointer offsets are from the object base pointer).
 pub type GcPtr = *mut u8;
 
 /// GC handle (pointer-to-slot) used for passing GC-managed pointers across `may_gc` runtime calls.

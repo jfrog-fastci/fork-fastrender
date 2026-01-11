@@ -6,7 +6,10 @@
 //! - long-lived "handles" created by host code / FFI
 //! - temporary roots created by runtime-native Rust code (without stackmaps)
 
-/// Raw pointer to a GC-managed object.
+/// Raw pointer to a GC-managed object (object base pointer).
+///
+/// A `GcPtr` points to the start of an object's [`crate::gc::ObjHeader`] prefix, not to the payload
+/// after the header.
 pub type GcPtr = runtime_native_abi::GcPtr;
 
 /// A GC handle (pointer-to-slot).

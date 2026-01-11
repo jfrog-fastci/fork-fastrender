@@ -66,7 +66,8 @@ rules to be obvious from the exported signatures.
 
 Pass GC-managed pointer arguments as **handles**:
 
-- `GcHandle = *mut *mut u8`
+- `GcPtr = *mut u8` — object base pointer (points at the start of the GC header / `ObjHeader`)
+- `GcHandle = *mut GcPtr` — pointer to a *caller-owned* root slot containing a `GcPtr`
 - i.e. a pointer to a *caller-owned* stack/root slot that contains a GC pointer
 
 Properties:

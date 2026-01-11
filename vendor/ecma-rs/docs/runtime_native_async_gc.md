@@ -163,7 +163,7 @@ or discard**.
 
 ```text
 // Types (conceptual):
-//   GcPtr<T>     - movable pointer to a GC object (invalid after a GC unless reloaded)
+//   GcPtr<T>     - movable pointer to a GC object **base** (points at `ObjHeader`, not payload; invalid after a GC unless reloaded)
 //   HandleId     - stable ID for a handle table entry (safe to store in OS userdata)
 //   Frame        - heap coroutine frame holding locals + state machine PC
 
@@ -276,4 +276,3 @@ These APIs are the boundary where *stable* identifiers cross into the OS or othe
   * [`vendor/ecma-rs/vm-js/src/microtasks.rs`](../vm-js/src/microtasks.rs)
 * FastRender queue integrity / deadline-before-pop:
   * [`src/js/event_loop.rs`](../../../src/js/event_loop.rs)
-
