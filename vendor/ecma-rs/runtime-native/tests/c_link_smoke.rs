@@ -145,12 +145,15 @@ int main(void) {
   // Smoke test: resolve a promise from a blocking worker and run its continuation on the
   // event loop thread.
   int timer_fired = 0;
-  TimerId t = rt_set_timeout(set_int, (uint8_t*)&timer_fired, 200);
- 
+  // Use a generous timeout: the intent is to keep `rt_async_poll_legacy` blocked in
+  // `epoll_wait` while the blocking worker resolves the promise (and wakes the
+  // event loop). On heavily loaded CI, spawning the blocking pool can take longer
+  // than a few hundred milliseconds.
+  TimerId t = rt_set_timeout(set_int, (uint8_t*)&timer_fired, 2000);
+
   int settled = 0;
   LegacyPromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
   rt_promise_then_legacy(p, set_int, (uint8_t*)&settled);
-
   // Drive the event loop until the promise settles.
   //
   // Under heavy CI load, the blocking worker may not run immediately, so the timer can fire
