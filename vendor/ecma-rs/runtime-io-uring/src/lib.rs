@@ -81,7 +81,8 @@ pub use driver::{IoOp, IoUringDriver, OpCompletion, OpId};
 pub use gc::{GcHooks, GcPinGuard, GcRoot};
 pub use legacy::{
     is_accept_supported, is_async_cancel_supported, is_connect_supported, is_link_timeout_supported,
-    is_provide_buffers_supported, Completion, Driver, OpWithTimeout, PreparedOp, WeakDriver,
+    is_provide_buffers_supported, is_remove_buffers_supported, Completion, Driver, OpWithTimeout,
+    PreparedOp, WeakDriver,
 };
 pub use multishot::{
     MultiShotEnd, MultiShotHandle, MultiShotId, MultiShotRecvMsgErr, MultiShotRecvMsgEvent,

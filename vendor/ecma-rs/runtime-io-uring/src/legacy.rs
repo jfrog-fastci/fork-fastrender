@@ -409,6 +409,10 @@ mod linux {
             op: PreparedOp,
             stability: debug_stability::OpStability,
         },
+        /// Internal op: remove a provided-buffer group so the kernel no longer holds user pointers.
+        ///
+        /// This op is not surfaced to callers via [`Completion`].
+        InternalRemoveBuffers { pool: ProvidedBufPool },
         Timeout {
             target: OpId,
             _ts: Box<types::Timespec>,
@@ -439,9 +443,15 @@ mod linux {
 
     impl Inner {
         /// Process all currently-ready CQEs without blocking.
-        fn poll_completions(&mut self) {
+        ///
+        /// Returns any internal keepalive pools that became eligible for drop as a result of
+        /// draining internal CQEs. Callers should drop the returned pools *after* releasing the
+        /// driver's mutex, since dropping a pool may submit further internal ops (e.g.
+        /// `IORING_OP_REMOVE_BUFFERS`).
+        fn poll_completions(&mut self) -> Vec<ProvidedBufPool> {
+            let mut keepalive_to_drop = Vec::new();
             let Some(ring) = self.ring.as_mut() else {
-                return;
+                return keepalive_to_drop;
             };
 
             let cq = ring.completion();
@@ -460,7 +470,7 @@ mod linux {
                     }
                     self.internal_in_flight = self.internal_in_flight.saturating_sub(1);
                     if self.internal_in_flight == 0 {
-                        self.internal_keepalive_pools.clear();
+                        keepalive_to_drop.append(&mut self.internal_keepalive_pools);
                     }
                     continue;
                 }
@@ -522,6 +532,19 @@ mod linux {
                             _ => self.ready.push_back(Completion::Op { id, res, op }),
                         }
                     }
+                    OpState::InternalRemoveBuffers { pool } => {
+                        if res < 0 {
+                            // If we failed to remove provided buffers, the kernel may still hold the
+                            // user pointers. Leak the pool slab to preserve memory safety.
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "runtime-io-uring: internal REMOVE_BUFFERS failed: {}; leaking pool slab",
+                                io::Error::from_raw_os_error(-res)
+                            );
+                            mem::forget(pool);
+                        }
+                        // Success path: drop the pool, freeing the slab.
+                    }
                     OpState::Timeout {
                         target,
                         _ts,
@@ -541,13 +564,14 @@ mod linux {
                     }
                 }
             }
+            keepalive_to_drop
         }
     }
 
     impl Drop for Inner {
         fn drop(&mut self) {
             // Best-effort: process any already-ready CQEs so completed ops don't force a leak.
-            self.poll_completions();
+            let _ = self.poll_completions();
 
             if self.ops.is_empty() && self.multishots.is_empty() && self.internal_in_flight == 0 {
                 return;
@@ -690,6 +714,51 @@ mod linux {
                     .as_mut()
                     .expect("io_uring used after drop (ring already taken)"),
             )?;
+            Ok(())
+        }
+
+        pub(crate) fn submit_remove_buffers(
+            &self,
+            nbufs: u16,
+            buf_group: u16,
+            keepalive_pool: ProvidedBufPool,
+        ) -> io::Result<()> {
+            let mut inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let inner = &mut *inner_guard;
+            let op_id = Self::alloc_id(inner);
+
+            let entry = opcode::RemoveBuffers::new(nbufs, buf_group)
+                .build()
+                .user_data(op_id.as_u64());
+
+            {
+                let ring = inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)");
+                let ops = &mut inner.ops;
+
+                let mut sq = ring.submission();
+                let available = sq.capacity() - sq.len();
+                if available < 1 {
+                    return Err(Self::submission_queue_full());
+                }
+
+                ops.insert(op_id, OpState::InternalRemoveBuffers { pool: keepalive_pool });
+
+                unsafe {
+                    sq.push(&entry).unwrap();
+                }
+            }
+
+            inner
+                .ring
+                .as_mut()
+                .expect("io_uring used after drop (ring already taken)")
+                .submit()?;
             Ok(())
         }
 
@@ -999,123 +1068,135 @@ mod linux {
         }
 
         pub fn wait(&mut self) -> io::Result<Completion> {
-            let mut inner_guard = self
-                .inner
-                .lock()
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
-            let inner = &mut *inner_guard;
+            // Dropping a pool may submit additional internal ops. Ensure we don't drop any internal
+            // keepalive pools while holding the driver's mutex.
+            let mut keepalive_to_drop: Vec<ProvidedBufPool> = Vec::new();
 
-            loop {
-                if let Some(c) = inner.ready.pop_front() {
-                    return Ok(c);
-                }
+            let res = {
+                let mut inner_guard = self
+                    .inner
+                    .lock()
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+                let inner = &mut *inner_guard;
 
-                ring_submit_and_wait(
-                    inner
+                loop {
+                    if let Some(c) = inner.ready.pop_front() {
+                        break Ok(c);
+                    }
+
+                    ring_submit_and_wait(
+                        inner
+                            .ring
+                            .as_mut()
+                            .expect("io_uring used after drop (ring already taken)"),
+                        1,
+                    )?;
+
+                    let cq = inner
                         .ring
                         .as_mut()
-                        .expect("io_uring used after drop (ring already taken)"),
-                    1,
-                )?;
+                        .expect("io_uring used after drop (ring already taken)")
+                        .completion();
+                    for cqe in cq {
+                        let id = OpId::from_u64(cqe.user_data());
+                        let res = cqe.result();
+                        let flags = cqe.flags();
 
-                let cq = inner
-                    .ring
-                    .as_mut()
-                    .expect("io_uring used after drop (ring already taken)")
-                    .completion();
-                for cqe in cq {
-                    let id = OpId::from_u64(cqe.user_data());
-                    let res = cqe.result();
-                    let flags = cqe.flags();
-
-                    if id.as_u64() == INTERNAL_USER_DATA {
-                        #[cfg(debug_assertions)]
-                        if res < 0 {
-                            eprintln!(
-                                "runtime-io-uring: internal CQE error: {}",
-                                io::Error::from_raw_os_error(-res)
-                            );
-                        }
-                        inner.internal_in_flight = inner.internal_in_flight.saturating_sub(1);
-                        if inner.internal_in_flight == 0 {
-                            inner.internal_keepalive_pools.clear();
-                        }
-                        continue;
-                    }
-
-                    if inner.multishots.contains_key(&id) {
-                        let event = inner
-                            .multishots
-                            .get(&id)
-                            .expect("checked contains_key")
-                            .handle_cqe(res, flags);
-                        let more = event.more();
-                        inner.ready.push_back(Completion::MultiShotRecvMsg {
-                            id: MultiShotId::from_op_id(id),
-                            event,
-                        });
-                        if !more {
-                            inner.multishots.remove(&id);
-                        }
-                        continue;
-                    }
-
-                    let state = match inner.ops.remove(&id) {
-                        Some(state) => state,
-                        None => continue,
-                    };
-
-                    match state {
-                        OpState::Target { mut op, stability } => {
-                            debug_stability::assert_stable(&stability, |rec| {
-                                op.record_stability_pointers(rec);
-                            });
-                            match &mut op {
-                                PreparedOp::RecvWithBufSelect { pool, .. }
-                                | PreparedOp::ReadWithBufSelect { pool, .. } => {
-                                    if res < 0 {
-                                        inner.ready.push_back(Completion::Op { id, res, op });
-                                        continue;
-                                    }
-
-                                    if flags & IORING_CQE_F_BUFFER == 0 {
-                                        return Err(io::Error::new(
-                                            io::ErrorKind::Other,
-                                            "missing buffer id in CQE for buf-select op",
-                                        ));
-                                    }
-                                    let buf_id = (flags >> IORING_CQE_BUFFER_SHIFT) as u16;
-                                    let lease = pool.lease(buf_id, res as usize)?;
-                                    inner
-                                        .ready
-                                        .push_back(Completion::ProvidedBuf { id, buf: lease });
-                                }
-                                _ => inner.ready.push_back(Completion::Op { id, res, op }),
-                            }
-                        },
-                        OpState::Timeout {
-                            target,
-                            _ts,
-                            stability,
-                        } => {
-                            debug_stability::assert_stable(&stability, |rec| {
-                                rec.ptr(
-                                    debug_stability::PtrKind::Timespec,
-                                    (&*_ts as *const types::Timespec) as *const u8,
+                        if id.as_u64() == INTERNAL_USER_DATA {
+                            #[cfg(debug_assertions)]
+                            if res < 0 {
+                                eprintln!(
+                                    "runtime-io-uring: internal CQE error: {}",
+                                    io::Error::from_raw_os_error(-res)
                                 );
+                            }
+                            inner.internal_in_flight = inner.internal_in_flight.saturating_sub(1);
+                            if inner.internal_in_flight == 0 {
+                                keepalive_to_drop.append(&mut inner.internal_keepalive_pools);
+                            }
+                            continue;
+                        }
+
+                        if inner.multishots.contains_key(&id) {
+                            let event = inner
+                                .multishots
+                                .get(&id)
+                                .expect("checked contains_key")
+                                .handle_cqe(res, flags);
+                            let more = event.more();
+                            inner.ready.push_back(Completion::MultiShotRecvMsg {
+                                id: MultiShotId::from_op_id(id),
+                                event,
                             });
-                            inner
-                                .ready
-                                .push_back(Completion::Timeout { id, target, res });
-                        },
-                        OpState::Cancel { target } => {
-                            inner
-                                .ready
-                                .push_back(Completion::Cancel { id, target, res });
-                        },
+                            if !more {
+                                inner.multishots.remove(&id);
+                            }
+                            continue;
+                        }
+
+                        let state = match inner.ops.remove(&id) {
+                            Some(state) => state,
+                            None => continue,
+                        };
+
+                        match state {
+                            OpState::Target { mut op, stability } => {
+                                debug_stability::assert_stable(&stability, |rec| {
+                                    op.record_stability_pointers(rec);
+                                });
+                                match &mut op {
+                                    PreparedOp::RecvWithBufSelect { pool, .. }
+                                    | PreparedOp::ReadWithBufSelect { pool, .. } => {
+                                        if res < 0 {
+                                            inner.ready.push_back(Completion::Op { id, res, op });
+                                            continue;
+                                        }
+
+                                        if flags & IORING_CQE_F_BUFFER == 0 {
+                                            return Err(io::Error::new(
+                                                io::ErrorKind::Other,
+                                                "missing buffer id in CQE for buf-select op",
+                                            ));
+                                        }
+                                        let buf_id = (flags >> IORING_CQE_BUFFER_SHIFT) as u16;
+                                        let lease = pool.lease(buf_id, res as usize)?;
+                                        inner.ready.push_back(Completion::ProvidedBuf { id, buf: lease });
+                                    }
+                                    _ => inner.ready.push_back(Completion::Op { id, res, op }),
+                                }
+                            }
+                            OpState::InternalRemoveBuffers { pool } => {
+                                if res < 0 {
+                                    #[cfg(debug_assertions)]
+                                    eprintln!(
+                                        "runtime-io-uring: internal REMOVE_BUFFERS failed: {}; leaking pool slab",
+                                        io::Error::from_raw_os_error(-res)
+                                    );
+                                    mem::forget(pool);
+                                }
+                            }
+                            OpState::Timeout {
+                                target,
+                                _ts,
+                                stability,
+                            } => {
+                                debug_stability::assert_stable(&stability, |rec| {
+                                    rec.ptr(
+                                        debug_stability::PtrKind::Timespec,
+                                        (&*_ts as *const types::Timespec) as *const u8,
+                                    );
+                                });
+                                inner.ready.push_back(Completion::Timeout { id, target, res });
+                            }
+                            OpState::Cancel { target } => {
+                                inner.ready.push_back(Completion::Cancel { id, target, res });
+                            }
+                        }
                     }
                 }
-            }
+            };
+            drop(keepalive_to_drop);
+            res
         }
     }
 
@@ -1127,14 +1208,20 @@ mod linux {
             }
 
             // Best-effort: process any already-ready CQEs so completed ops don't force a leak/panic.
-            let (ops_len, multishots_len, internal_in_flight) = {
+            let (ops_len, multishots_len, internal_in_flight, keepalive_to_drop) = {
                 let mut guard = match self.inner.lock() {
                     Ok(g) => g,
                     Err(e) => e.into_inner(),
                 };
-                guard.poll_completions();
-                (guard.ops.len(), guard.multishots.len(), guard.internal_in_flight)
+                let keepalive_to_drop = guard.poll_completions();
+                (
+                    guard.ops.len(),
+                    guard.multishots.len(),
+                    guard.internal_in_flight,
+                    keepalive_to_drop,
+                )
             };
+            drop(keepalive_to_drop);
 
             if ops_len == 0 && multishots_len == 0 && internal_in_flight == 0 {
                 return;
@@ -1229,6 +1316,21 @@ mod linux {
             .submitter()
             .register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::ProvideBuffers::CODE))
+    }
+
+    pub fn is_remove_buffers_supported(driver: &Driver) -> io::Result<bool> {
+        let mut probe = io_uring::Probe::new();
+        let inner = driver
+            .inner
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+        inner
+            .ring
+            .as_ref()
+            .expect("io_uring used after drop (ring already taken)")
+            .submitter()
+            .register_probe(&mut probe)?;
+        Ok(probe.is_supported(opcode::RemoveBuffers::CODE))
     }
 
     #[cfg(test)]

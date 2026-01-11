@@ -1,6 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use std::io;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -31,6 +32,7 @@ mod linux {
         leased: AtomicUsize,
         reprovided: AtomicUsize,
         slab_drop_counter: Arc<AtomicUsize>,
+        remove_submitted: AtomicBool,
     }
 
     impl Drop for Inner {
@@ -100,6 +102,7 @@ mod linux {
                     leased: AtomicUsize::new(0),
                     reprovided: AtomicUsize::new(0),
                     slab_drop_counter: Arc::new(AtomicUsize::new(0)),
+                    remove_submitted: AtomicBool::new(false),
                 }),
             };
 
@@ -234,6 +237,46 @@ mod linux {
                 self.inner.reprovided.fetch_add(1, Ordering::Relaxed);
             }
             res
+        }
+    }
+
+    impl Drop for ProvidedBufPool {
+        fn drop(&mut self) {
+            // Only the last handle can initiate buffer removal. This avoids redundant submissions
+            // and ensures the pool's slab remains alive until the kernel acknowledges removal.
+            if Arc::strong_count(&self.inner) != 1 {
+                return;
+            }
+            if self
+                .inner
+                .remove_submitted
+                .swap(true, Ordering::AcqRel)
+            {
+                return;
+            }
+
+            let Some(driver) = self.inner.driver.upgrade() else {
+                // Driver already dropped (or leaked and not reachable via WeakDriver); the ring is
+                // gone, so the kernel cannot reference the provided buffers anymore.
+                return;
+            };
+
+            // `IORING_OP_PROVIDE_BUFFERS` registers raw user pointers inside the kernel. If we were
+            // to free the backing slab while the ring is still alive, later buf-select ops could
+            // cause the kernel to write into freed memory. Submit `IORING_OP_REMOVE_BUFFERS` so the
+            // kernel forgets the pointers, keeping the slab alive until the internal CQE is drained.
+            let keepalive = self.clone();
+            if let Err(_err) = driver.submit_remove_buffers(self.inner.nbufs, self.inner.buf_group, keepalive) {
+                // Best-effort fallback: if we cannot submit the removal request (unsupported kernel,
+                // SQ full, etc), leak the pool slab to preserve memory safety.
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "runtime-io-uring: failed to submit REMOVE_BUFFERS for group {}; leaking pool slab",
+                    self.inner.buf_group
+                );
+                // Leak a clone so the underlying slab remains valid for the rest of the process.
+                std::mem::forget(self.clone());
+            }
         }
     }
 
