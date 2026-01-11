@@ -69,6 +69,15 @@ fn legacy_bindings_do_not_duplicate_url_origin_getter_wrapper() {
 
   let src = std::fs::read_to_string(&out).expect("read generated legacy bindings");
 
+  // The generated `window`/`worker` modules import `binding_value_to_js` from their parent module
+  // (`use super::{binding_value_to_js, ...}`), so the legacy prelude must re-export it from
+  // `super::host`. If we ever drop this import again, fresh codegen output will not compile.
+  let prelude = module_slice(&src, "use super::host::{", Some("pub mod window {"));
+  assert!(
+    prelude.contains("binding_value_to_js"),
+    "expected legacy bindings prelude to re-export `binding_value_to_js` from `super::host`"
+  );
+
   let window_src = module_slice(&src, "pub mod window {", Some("pub mod worker {"));
   let worker_src = module_slice(&src, "pub mod worker {", None);
 
@@ -86,4 +95,3 @@ fn legacy_bindings_do_not_duplicate_url_origin_getter_wrapper() {
   assert_no_duplicate_fn_defs("window", window_src);
   assert_no_duplicate_fn_defs("worker", worker_src);
 }
-
