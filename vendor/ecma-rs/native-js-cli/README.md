@@ -44,6 +44,9 @@ The CLI takes a single positional input file plus flags:
 native-js-cli [--no-builtins] [--emit-llvm <PATH>] <INPUT.ts>
 ```
 
+The input file is read as UTF-8 text; invalid UTF-8 will cause the CLI to exit
+with an error before parsing.
+
 ### Run a TypeScript file
 
 Create a small program:
