@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC4008",
+      "file": "/proxy_revocable.ts",
+      "start": 89,
+      "end": 104,
+      "severity": "error",
+      "message": "`Proxy` is forbidden when `native_strict` is enabled"
+    }
+  ]
+}

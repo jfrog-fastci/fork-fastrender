@@ -21,7 +21,7 @@
     },
     {
       "engine": "rust",
-      "code": "TN0001",
+      "code": "TC4000",
       "file": "/as_assertion.ts",
       "start": 6,
       "end": 11,
@@ -39,7 +39,7 @@
     },
     {
       "engine": "rust",
-      "code": "TN0001",
+      "code": "TC4000",
       "file": "/as_assertion.ts",
       "start": 40,
       "end": 45,
@@ -48,7 +48,7 @@
     },
     {
       "engine": "rust",
-      "code": "TN0001",
+      "code": "TC4000",
       "file": "/as_assertion.ts",
       "start": 40,
       "end": 55,

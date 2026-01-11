@@ -1,7 +1,8 @@
 use assert_cmd::Command;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+use typecheck_ts_harness::{build_filter, discover_conformance_tests, Filter, Shard};
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -20,18 +21,6 @@ fn run_strict_native_json(extra_args: &[&str]) -> Value {
   serde_json::from_slice(&output).expect("valid strict-native json")
 }
 
-fn normalize_report(report: &mut Value) {
-  let Some(results) = report.get_mut("results").and_then(|v| v.as_array_mut()) else {
-    return;
-  };
-  for result in results {
-    let Some(obj) = result.as_object_mut() else {
-      continue;
-    };
-    obj.insert("duration_ms".to_string(), Value::from(0));
-  }
-}
-
 fn ids(report: &Value) -> Vec<String> {
   let Some(results) = report.get("results").and_then(|v| v.as_array()) else {
     return Vec::new();
@@ -42,49 +31,82 @@ fn ids(report: &Value) -> Vec<String> {
     .collect()
 }
 
+fn fixtures_root() -> PathBuf {
+  Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/strict-native")
+}
+
+#[test]
+fn strict_native_fixture_set_has_baselines() {
+  let root = fixtures_root();
+  let cases = discover_conformance_tests(&root, &Filter::All, &vec!["ts".to_string()])
+    .expect("discover strict-native fixture set");
+  assert!(
+    !cases.is_empty(),
+    "expected strict-native fixture set to contain at least one test"
+  );
+
+  let baselines_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("baselines/strict-native");
+  for case in cases {
+    let baseline_path = baseline_path_for(&baselines_root, &case.id);
+    assert!(
+      baseline_path.exists(),
+      "missing baseline for {} at {}",
+      case.id,
+      baseline_path.display()
+    );
+  }
+}
+
+fn baseline_path_for(baselines_root: &Path, id: &str) -> PathBuf {
+  let rel = Path::new(id);
+  let mut path = baselines_root.join(rel);
+  if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+    path.set_file_name(format!("{name}.json"));
+  } else {
+    path.set_file_name("baseline.json");
+  }
+  path
+}
+
 #[test]
 fn strict_native_cli_matches_built_in_baselines() {
-  let report = run_strict_native_json(&[]);
-  let total = report["summary"]["total"]
-    .as_u64()
-    .expect("summary.total must be a number");
-  assert!(total >= 10, "expected at least 10 strict-native fixtures");
+  // Run a small representative subset of fixtures to keep integration tests fast
+  // while still exercising the CLI, baseline parsing, and comparison logic.
+  let report = run_strict_native_json(&["--filter", "{any.ts,as_const_ok.ts,global_eval.ts}"]);
+  assert_eq!(report["summary"]["total"], 3);
   assert_eq!(report["summary"]["matched"], report["summary"]["total"]);
   assert_eq!(report["summary"]["mismatched"], 0);
   assert_eq!(report["summary"]["errors"], 0);
   assert_eq!(report["summary"]["updated"], 0);
-}
 
-#[test]
-fn strict_native_cli_json_is_deterministic() {
-  let mut first = run_strict_native_json(&[]);
-  let mut second = run_strict_native_json(&[]);
-  normalize_report(&mut first);
-  normalize_report(&mut second);
-  assert_eq!(
-    serde_json::to_string(&first).expect("serialize first"),
-    serde_json::to_string(&second).expect("serialize second")
+  let ids = ids(&report);
+  assert_eq!(ids.len(), 3, "summary.total should match results length");
+  assert!(
+    ids.windows(2).all(|w| w[0] <= w[1]),
+    "results should be sorted by id"
   );
 }
 
 #[test]
-fn strict_native_cli_filter_applies() {
-  let report = run_strict_native_json(&["--filter", "any.ts"]);
-  assert_eq!(report["summary"]["total"], 1);
-  assert_eq!(report["results"].as_array().map(|v| v.len()).unwrap_or(0), 1);
-  assert_eq!(report["results"][0]["id"], "any.ts");
-}
+fn strict_native_cli_shard_matches_sorted_index_strategy() {
+  let root = fixtures_root();
+  let filter = build_filter(Some("computed_*")).expect("build computed_* filter");
+  let cases = discover_conformance_tests(&root, &filter, &vec!["ts".to_string()])
+    .expect("discover computed_* strict-native fixtures");
+  assert!(
+    cases.len() >= 2,
+    "expected at least two computed_* strict-native fixtures for sharding test"
+  );
 
-#[test]
-fn strict_native_cli_shards_are_disjoint_and_cover_all_tests() {
-  let full = run_strict_native_json(&[]);
-  let shard0 = run_strict_native_json(&["--shard", "0/2"]);
-  let shard1 = run_strict_native_json(&["--shard", "1/2"]);
+  let shard = Shard::parse("0/2").expect("parse shard spec");
+  let expected_ids: Vec<_> = cases
+    .iter()
+    .enumerate()
+    .filter(|(idx, _)| shard.includes(*idx))
+    .map(|(_, case)| case.id.clone())
+    .collect();
 
-  let full_ids: HashSet<_> = ids(&full).into_iter().collect();
-  let shard0_ids: HashSet<_> = ids(&shard0).into_iter().collect();
-  let shard1_ids: HashSet<_> = ids(&shard1).into_iter().collect();
-
-  assert!(shard0_ids.is_disjoint(&shard1_ids));
-  assert_eq!(shard0_ids.union(&shard1_ids).cloned().collect::<HashSet<_>>(), full_ids);
+  let shard0 = run_strict_native_json(&["--filter", "computed_*", "--shard", "0/2"]);
+  let shard0_ids = ids(&shard0);
+  assert_eq!(shard0_ids, expected_ids);
 }

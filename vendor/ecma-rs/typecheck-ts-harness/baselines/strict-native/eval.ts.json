@@ -21,7 +21,7 @@
     },
     {
       "engine": "rust",
-      "code": "TN0001",
+      "code": "TC4000",
       "file": "/eval.ts",
       "start": 0,
       "end": 13,

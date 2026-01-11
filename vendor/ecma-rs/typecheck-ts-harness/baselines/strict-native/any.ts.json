@@ -12,7 +12,7 @@
     },
     {
       "engine": "rust",
-      "code": "TN0001",
+      "code": "TC4000",
       "file": "/any.ts",
       "start": 6,
       "end": 7,
@@ -21,7 +21,7 @@
     },
     {
       "engine": "rust",
-      "code": "TN0001",
+      "code": "TC4000",
       "file": "/any.ts",
       "start": 9,
       "end": 12,

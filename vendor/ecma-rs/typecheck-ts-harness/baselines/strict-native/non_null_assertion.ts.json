@@ -8,16 +8,16 @@
       "start": 51,
       "end": 55,
       "severity": "error",
-      "message": "non-null assertion on a maybe-nullish value is forbidden when `native_strict` is enabled"
+      "message": "non-null assertion discards `null` or `undefined`"
     },
     {
       "engine": "rust",
-      "code": "TN0003",
+      "code": "TC4006",
       "file": "/non_null_assertion.ts",
       "start": 51,
       "end": 55,
       "severity": "error",
-      "message": "non-null assertion discards `null` or `undefined`"
+      "message": "non-null assertion on a maybe-nullish value is forbidden when `native_strict` is enabled"
     }
   ]
 }
