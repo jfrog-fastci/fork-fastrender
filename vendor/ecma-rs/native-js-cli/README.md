@@ -456,7 +456,7 @@ Cyclic runtime module dependencies are not supported (they are rejected with
 `NJS0146`).
 
 - The entry file must export `main()`:
-  - defined in the entry file (re-exported `main` is not supported)
+  - may be defined in the entry file or re-exported (e.g. `export { main } from "./impl"`)
   - no parameters
   - not `async` / not a generator
   - signature must be compatible with the current native ABI/codegen (`NJS0011`):
