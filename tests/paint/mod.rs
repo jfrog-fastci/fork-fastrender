@@ -8,6 +8,7 @@ mod backface_culling_test;
 mod backface_culling_non_stacking_context;
 mod backface_visibility_does_not_create_stacking_context;
 mod abspos_containing_block_rebase_test;
+mod abspos_inset_padding_translation_test;
 mod border_dotted;
 mod border_solid_device_snapping;
 mod border_solid_pixel_snapping;
