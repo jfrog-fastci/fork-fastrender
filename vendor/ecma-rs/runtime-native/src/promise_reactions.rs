@@ -114,6 +114,14 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
   if head.is_null() {
     return;
   }
+
+  // Fast path: if there is only one reaction, reuse the single-node enqueue helper.
+  let next = unsafe { (*head).next };
+  if next.is_null() {
+    enqueue_reaction_job(promise, head);
+    return;
+  }
+
   if promise.is_null() {
     // Treat null as "never settles": discard the whole list so it doesn't leak.
     while !head.is_null() {

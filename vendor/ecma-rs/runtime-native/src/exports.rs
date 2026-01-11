@@ -138,14 +138,7 @@ fn drain_reactions(promise: *mut PromiseHeader) {
   // Preserve FIFO registration order.
   head = unsafe { crate::promise_reactions::reverse_list(head) };
 
-  while !head.is_null() {
-    let next = unsafe { (*head).next };
-    unsafe {
-      (*head).next = core::ptr::null_mut();
-    }
-    crate::promise_reactions::enqueue_reaction_job(promise, head);
-    head = next;
-  }
+  crate::promise_reactions::enqueue_reaction_jobs(promise, head);
 }
 
 fn register_block_on_waker(p: PromiseRef) {
