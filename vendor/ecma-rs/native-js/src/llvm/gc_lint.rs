@@ -40,6 +40,13 @@ pub enum LintRule {
   IntToPtrToGcPointer,
   /// Rule A: forbid obvious stores of addrspace(1) pointers into non-pointer-typed slots.
   StoreGcPointerToNonPointerSlot,
+  /// Rule A: forbid storing `ptr addrspace(1)` into a pointer slot that is not itself typed as
+  /// `ptr addrspace(1)`.
+  ///
+  /// Even with opaque pointers, the pointee type of `alloca`/GEP slots still conveys intent. Storing
+  /// GC pointers into `ptr` (addrspace(0)) slots is an easy way to accidentally reload them as
+  /// addrspace(0) aliases, which LLVM will not relocate.
+  StoreGcPointerToNonGcPointerSlot,
   /// Rule A: forbid returning `ptr` (addrspace(0)) derived from `ptr addrspace(1)`.
   ReturnAddrSpace0PointerDerivedFromGcPointer,
   /// Rule A: forbid passing `ptr` (addrspace(0)) derived from `ptr addrspace(1)` as call args.
@@ -134,11 +141,15 @@ unsafe fn is_gc_managed_function(func: LLVMValueRef) -> bool {
 
 /// Identify internal runtime ABI wrapper functions.
 ///
-/// These wrappers intentionally contain `addrspacecast` between AS0 (raw pointers used by the Rust
-/// runtime ABI) and AS1 (GC pointers tracked by LLVM statepoints).
+/// These wrappers form the boundary between:
+/// - `runtime-native`'s exported C ABI (raw pointers in AS0), and
+/// - `native-js`'s internal discipline (GC pointers always in AS1).
+///
+/// Any `addrspacecast` involving AS1 is forbidden outside these wrappers. (Within wrappers we still
+/// forbid AS1->AS0 casts entirely; see `WrapperAddrSpaceCastAs1ToAs0InvalidUse`.)
 ///
 /// We centralize the naming convention here so codegen cannot accidentally (or intentionally)
-/// bypass the wrapper-only allowances in this lint: if a function wants to use AS0⇄AS1 casts, it
+/// bypass the wrapper-only allowances in this lint: if a function wants to cast from AS0 to AS1, it
 /// **must** be named like `rt_*_gc`.
 fn is_runtime_abi_wrapper_function_name(name: &str) -> bool {
   name.starts_with("rt_") && name.ends_with("_gc")
@@ -484,6 +495,16 @@ unsafe fn lint_store(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<L
         rule: LintRule::StoreGcPointerToNonPointerSlot,
         message: format!(
           "in `{}`: disallowed store of GC pointer into non-pointer slot `{}`: {}",
+          func_name,
+          type_to_string(slot_ty),
+          value_to_string(inst)
+        ),
+      });
+    } else if !is_gc_pointer_type(slot_ty) {
+      violations.push(LintViolation {
+        rule: LintRule::StoreGcPointerToNonGcPointerSlot,
+        message: format!(
+          "in `{}`: disallowed store of GC pointer into non-GC pointer slot `{}`: {}",
           func_name,
           type_to_string(slot_ty),
           value_to_string(inst)
