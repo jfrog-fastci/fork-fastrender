@@ -636,7 +636,10 @@ fn build_state_machine(cfg: &Cfg) -> ControlTree {
     let (insts, term) = build_terminator(block, cfg.graph.children(label));
     blocks.push(StateBlock { label, insts, term });
   }
-  ControlTree::StateMachine { entry: 0, blocks }
+  ControlTree::StateMachine {
+    entry: cfg.entry,
+    blocks,
+  }
 }
 
 fn build_terminator(
@@ -675,7 +678,11 @@ fn build_terminator(
 mod tests {
   use super::*;
 
-  fn cfg_from_parts(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
+  fn cfg_from_parts_with_entry(
+    entry: u32,
+    blocks: &[(u32, Vec<Inst>)],
+    edges: &[(u32, u32)],
+  ) -> Cfg {
     let mut graph = CfgGraph::default();
     for (p, c) in edges {
       graph.connect(*p, *c);
@@ -687,8 +694,12 @@ mod tests {
     Cfg {
       graph,
       bblocks,
-      entry: 0,
+      entry,
     }
+  }
+
+  fn cfg_from_parts(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
+    cfg_from_parts_with_entry(0, blocks, edges)
   }
 
   fn simple_inst(val: u32) -> Inst {
@@ -925,6 +936,23 @@ mod tests {
     Inst { t: VarAssign, tgts: [2], args: [false], spreads: [], labels: [], bin_op: _DUMMY, un_op: _DUMMY, foreign: SymbolId(4294967295), unknown: "" }
     term Goto(1)
 "#
+    );
+  }
+
+  #[test]
+  fn state_machine_entry_tracks_cfg_entry() {
+    // Force the structurer to fall back to a state machine by making the entry have more than two
+    // successors without an explicit `CondGoto` instruction.
+    let cfg = cfg_from_parts_with_entry(
+      1,
+      &[(1, vec![]), (2, vec![]), (3, vec![]), (4, vec![])],
+      &[(1, 2), (1, 3), (1, 4)],
+    );
+    let tree = structure_cfg(&cfg);
+    assert!(
+      matches!(tree, ControlTree::StateMachine { entry: 1, .. }),
+      "unexpected control tree: {}",
+      tree.to_debug_string()
     );
   }
 }

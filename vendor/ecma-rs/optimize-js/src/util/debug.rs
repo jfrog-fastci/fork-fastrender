@@ -31,7 +31,7 @@ impl OptimizerDebug {
     self.steps.push(OptimizerDebugStep {
       name: name.as_ref().to_string(),
       // We always recalculate as some steps may prune or add bblocks.
-      bblock_order: cfg.graph.calculate_postorder(0).0,
+      bblock_order: cfg.graph.calculate_postorder(cfg.entry).0,
       bblocks: cfg.bblocks.all().map(|(k, v)| (k, v.clone())).collect(),
       cfg_children: cfg
         .graph
@@ -40,5 +40,39 @@ impl OptimizerDebug {
         .map(|k| (k, cfg.graph.children_sorted(k)))
         .collect(),
     });
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cfg::cfg::{CfgBBlocks, CfgGraph};
+
+  #[test]
+  fn add_step_uses_cfg_entry_for_bblock_order() {
+    let mut graph = CfgGraph::default();
+    // Insert two disconnected nodes (0 and 1) so we can verify we start traversal from `cfg.entry`.
+    graph.connect(0, 0);
+    graph.disconnect(0, 0);
+    graph.connect(1, 1);
+    graph.disconnect(1, 1);
+
+    let mut bblocks = CfgBBlocks::default();
+    bblocks.add(0, vec![]);
+    bblocks.add(1, vec![]);
+
+    let cfg = Cfg {
+      graph,
+      bblocks,
+      entry: 1,
+    };
+
+    let mut debug = OptimizerDebug::new();
+    debug.add_step("test", &cfg);
+    let step = debug.steps().last().unwrap();
+
+    assert_eq!(step.bblock_order, vec![1]);
+    assert_eq!(step.bblock_order[0], 1);
+    assert!(!step.bblock_order.contains(&0));
   }
 }

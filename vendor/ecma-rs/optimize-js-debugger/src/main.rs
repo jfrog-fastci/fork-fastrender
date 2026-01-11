@@ -293,7 +293,7 @@ where
 
 fn stable_cfg(cfg: &Cfg) -> StableCfg {
   StableCfg {
-    bblock_order: cfg.graph.calculate_postorder(0).0,
+    bblock_order: cfg.graph.calculate_postorder(cfg.entry).0,
     bblocks: stable_bblocks(cfg.bblocks.all()),
     cfg_children: cfg
       .graph
@@ -307,7 +307,7 @@ fn stable_cfg(cfg: &Cfg) -> StableCfg {
 fn stable_step(name: impl Into<String>, cfg: &Cfg) -> StableDebugStep {
   StableDebugStep {
     name: name.into(),
-    bblock_order: cfg.graph.calculate_postorder(0).0,
+    bblock_order: cfg.graph.calculate_postorder(cfg.entry).0,
     bblocks: stable_bblocks(cfg.bblocks.all()),
     cfg_children: cfg
       .graph
