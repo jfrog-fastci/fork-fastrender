@@ -17,7 +17,8 @@ emitter in `native-js`), invokes `clang` to produce a temporary executable, and
 then runs it.
 
 > Note: this path does **not** run the TypeScript checker; it parses the input
-> and lowers a small expression-only subset directly to LLVM IR.
+> and lowers a small subset of statements/expressions (and simple user-defined
+> functions) directly to LLVM IR.
 >
 > The input is parsed as a TypeScript **module** (`Dialect::Ts` +
 > `SourceType::Module`).
@@ -139,8 +140,18 @@ future typechecked/HIR-based backend yet). Supported today:
 
 - Top-level statements:
   - empty statements (`;`)
+  - block statements (`{ ... }`)
   - expression statements (`expr;`)
   - variable declarations (`const`/`let`/`var`) with simple identifier bindings
+    - initializer is optional; missing initializers default to `undefined`
+  - `if (cond) { ... } else { ... }` (boolean conditions only)
+  - `while (cond) { ... }` (boolean conditions only)
+  - function declarations (top-level only; no nesting):
+    - cannot be named `main` (reserved for the native entrypoint)
+    - no `async` / generators
+    - no optional/rest parameters
+    - parameter patterns must be identifiers
+    - `return` statements are supported inside function bodies
 - Expressions:
   - number / boolean / string / null literals
   - identifiers:
@@ -157,7 +168,18 @@ future typechecked/HIR-based backend yet). Supported today:
     - `x += expr` (number variables only)
   - `===` (numbers / booleans / strings / `null` / `undefined`; both sides must be the same type)
   - `!==` (same types as `===`; additionally, different types return `true` like JS)
-  - builtin calls listed above (unless `--no-builtins`)
+  - calls:
+    - builtin calls listed above (unless `--no-builtins`)
+    - direct calls to user-defined functions by identifier:
+      - exact arity (no varargs)
+      - no optional chaining / spread arguments
+      - arguments are checked against the callee’s declared parameter types
+
+Type annotations in function declarations (current):
+
+- Supported: `number`, `boolean`, `string`, `void`, `null`, `undefined`
+- If omitted, parameters and return types default to `number`
+  (this is a convenience for the minimal emitter; it is not TypeScript semantics)
 
 All other statements/expressions/operators currently fail compilation with a
 simple error (e.g. `unsupported statement`, `unsupported expression`, or
