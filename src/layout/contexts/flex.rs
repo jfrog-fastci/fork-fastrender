@@ -8264,15 +8264,18 @@ impl FlexFormattingContext {
         .map(f32_to_canonical_bits)
         .unwrap_or(0);
 
-      // For a vertical main axis, the content size suggestion can depend on the used cross size.
+      // For a vertical main axis, the flex item's content-based minimum block size can depend on
+      // its used cross size (width).
       //
-      // This is most obvious for stretched items (align-self:stretch with `width:auto`), but it
-      // also applies to percentage widths: the item’s used width is resolved against the flex
-      // container’s content box, and the item's content-based minimum block size (e.g. wrapping
-      // text, percentage padding used for aspect-ratio shims) depends on that resolved width.
+      // This is most obvious for stretched items (`align-self: stretch` with `width:auto`), but it
+      // also applies to:
+      // - percentage widths (which resolve against the container's inner width), and
+      // - `width:auto` on non-replaced flex items (flex items are blockified, so auto width behaves
+      //   like a normal block box and fills the available width).
       //
-      // When we have a definite container cross size, probe intrinsic block sizes under that
-      // definite width and key the auto-min-size cache on it.
+      // If we fall back to generic intrinsic block-size probes without a definite width, responsive
+      // content (e.g. images constrained by `max-width: 100%`) is treated as unconstrained and can
+      // massively inflate the computed auto min-height.
       let effective_align_self = style.align_self.unwrap_or(container.align_items);
       let cross_margins_auto = style.margin_left.is_none() || style.margin_right.is_none();
       let stretch_cross_size = if effective_align_self == AlignItems::Stretch
@@ -8283,7 +8286,11 @@ impl FlexFormattingContext {
       } else {
         None
       };
-      let width_depends_on_container = style.width.as_ref().is_some_and(Length::has_percentage)
+      let auto_width_fills_container = crate::style::inline_axis_is_horizontal(style.writing_mode)
+        && physical_width_is_auto(style)
+        && !box_node.is_replaced();
+      let width_depends_on_container = auto_width_fills_container
+        || style.width.as_ref().is_some_and(Length::has_percentage)
         || style
           .width_keyword
           .is_some_and(|keyword| keyword.has_percentage());
@@ -14665,6 +14672,101 @@ mod tests {
       "expected flex auto min-height {:.2} to match layout height {:.2}",
       min_height.value(),
       expected_height
+    );
+  }
+
+  #[test]
+  fn flex_auto_min_height_respects_container_width_for_auto_width_items_in_column_flex_container() {
+    // Regresses: when a column flex container uses `align-items: flex-start`, flex items are no
+    // longer stretched and the flex auto min-height path can fall back to intrinsic block-size
+    // probes. Those probes treat percentage-based constraints as unresolved, so responsive content
+    // like `max-width: 100%` replaced descendants can inflate the computed auto min-height to the
+    // replaced element's intrinsic size.
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.align_items = AlignItems::FlexStart;
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Block;
+    replaced_style.max_width = Some(Length::percent(100.0));
+    replaced_style.max_width_keyword = None;
+    let mut replaced = BoxNode::new_replaced(
+      Arc::new(replaced_style),
+      ReplacedType::Canvas,
+      Some(Size::new(1000.0, 1000.0)),
+      Some(1.0),
+    );
+    replaced.id = 3;
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    item_style.overflow_y = Overflow::Visible;
+
+    let mut item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Block,
+      vec![replaced],
+    );
+    item.id = 2;
+
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item],
+    );
+    container.id = 1;
+
+    let fc = FlexFormattingContext::new();
+    let constraints = LayoutConstraints::definite(200.0, 500.0);
+    let mut taffy_tree: TaffyTree<*const BoxNode> = TaffyTree::new();
+    let mut node_map: FxHashMap<*const BoxNode, NodeId> = FxHashMap::default();
+    let root_children: Vec<&BoxNode> = container.children.iter().collect();
+    fc.build_taffy_tree_children(
+      &mut taffy_tree,
+      &container,
+      container.style.as_ref(),
+      &root_children,
+      &constraints,
+      &mut node_map,
+    )
+    .expect("build taffy tree");
+
+    let item_ptr: *const BoxNode = &container.children[0];
+    let child_node = node_map
+      .get(&item_ptr)
+      .copied()
+      .expect("item should exist in node_map");
+    let style = taffy_tree
+      .style(child_node)
+      .expect("taffy item style should be available");
+    let min_height = style.min_size.height;
+    assert!(
+      !min_height.is_auto(),
+      "expected flex auto min-height to resolve to a length"
+    );
+    assert_eq!(
+      min_height.tag(),
+      Dimension::length(0.0).tag(),
+      "expected flex auto min-height to resolve to a length, got {min_height:?}"
+    );
+
+    let item_fc = fc.factory.get(FormattingContextType::Block);
+    let expected_height = item_fc
+      .layout(&container.children[0], &LayoutConstraints::definite_width(200.0))
+      .expect("block layout should succeed")
+      .bounds
+      .height();
+    assert!(
+      (min_height.value() - expected_height).abs() < 0.5,
+      "expected flex auto min-height {:.2} to match layout height {:.2}",
+      min_height.value(),
+      expected_height
+    );
+    assert!(
+      min_height.value() < 500.0,
+      "expected flex auto min-height ({:.2}) to avoid intrinsic-size inflation",
+      min_height.value()
     );
   }
 
