@@ -85,6 +85,7 @@ fn cascade_with_container_inline_size(inline_size: f32) -> StyledNode {
   )]);
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
 
@@ -139,6 +140,7 @@ fn cascade_marker_with_container_inline_size(inline_size: f32) -> StyledNode {
   )]);
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
 
@@ -193,6 +195,7 @@ fn cascade_first_line_with_container_inline_size(inline_size: f32) -> StyledNode
   )]);
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
 

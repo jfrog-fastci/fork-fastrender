@@ -442,6 +442,7 @@ fn part_container_query_is_evaluated_against_the_part_element() {
   let cascade = |inline_size: f32| {
     let ctx = ContainerQueryContext {
       base_media: media.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         container_id,
         ContainerQueryInfo {
@@ -528,6 +529,7 @@ fn part_container_query_uses_flat_tree_ancestors_when_host_is_slotted() {
     let block_size = 300.0;
     let ctx = ContainerQueryContext {
       base_media: media.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         container_id,
         ContainerQueryInfo {

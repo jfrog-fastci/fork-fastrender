@@ -78,6 +78,7 @@ fn cascade_with_optional_container(css: &str, inline_size: f32, use_container_ct
     );
     Some(ContainerQueryContext {
       base_media: base_media.clone(),
+      root_font_metrics: None,
       containers,
     })
   } else {

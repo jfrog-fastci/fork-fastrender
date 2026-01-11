@@ -101,6 +101,7 @@ fn cascade_with_container_styles(
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
@@ -166,6 +167,7 @@ fn cascade_with_custom_container(
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
@@ -200,6 +202,7 @@ fn cascade_with_containers(
   }
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers: container_map,
   };
   let stylesheet = parse_stylesheet(css).unwrap();

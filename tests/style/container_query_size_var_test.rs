@@ -124,6 +124,7 @@ fn container_size_query_var_resolves_per_container() {
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
@@ -179,6 +180,7 @@ fn container_size_query_var_fallback_used_when_missing() {
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
@@ -233,6 +235,7 @@ fn container_size_query_var_missing_without_fallback_is_false() {
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
@@ -297,6 +300,7 @@ fn container_size_query_var_rem_uses_root_font_size() {
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
@@ -355,6 +359,7 @@ fn container_size_query_var_orientation_parses_and_matches() {
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
@@ -412,6 +417,7 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
@@ -466,6 +472,7 @@ fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
   );
   let ctx = ContainerQueryContext {
     base_media: base_media.clone(),
+    root_font_metrics: None,
     containers,
   };
   let stylesheet = parse_stylesheet(css).unwrap();
