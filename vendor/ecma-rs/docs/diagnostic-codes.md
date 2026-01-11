@@ -45,19 +45,18 @@ prefixes for planned crates) and where they come from.
 | `LOWER####` | `hir-js` | AST→HIR lowering warnings. |
 | `TC####` | `typecheck-ts` | Repo-owned type checker diagnostics (see `typecheck-ts/src/codes.rs`). |
 | `TN####` | `typecheck-ts` | Strict-native diagnostics (see `typecheck-ts/src/codes.rs`). |
+| `EFF####` | `effect-js` | Effect inference diagnostics. |
+| `NJS####` | `native-js` | Native compiler / strict-subset validation diagnostics (see `native-js/src/codes.rs`). |
+| `RTN####` | `runtime-native` | Native runtime (GC, scheduler, stdlib) diagnostics. |
+| `KB####` | `knowledge-base` | Knowledge base schema/consistency validation diagnostics. |
 | `TS####` / `TS#####` | TypeScript | Upstream `tsc` diagnostic codes used for parity. |
-| `EFFECT####` | `effect-js` | Effect inference diagnostics (analysis + semantic knowledge). |
 | `OPT####` | `optimize-js` | Optimizer diagnostics. |
-| `NATIVE####` | `native-js` | Reserved for native codegen diagnostics (LLVM IR generation + lowering). Prefer `NJS####` for new codes unless/until this prefix is needed. |
-| `NJS####` | `native-js` | Native compiler diagnostics (currently used by `native_js::strict` and other native pipeline checks). |
-| `RTNATIVE####` | `runtime-native` | Native runtime library diagnostics (GC/runtime integration). |
 | `EMIT####` | `emit-js` | Emitter/printer diagnostics. |
+| `VMJS####` | `vm-js` | JavaScript interpreter diagnostics (kept for other projects; not used by the native toolchain). |
 | `MINIFYTS####` | `minify-js` | TypeScript erasure/minification diagnostics. |
 | `MINIFY####` | `minify-js` tooling | Currently used by the benchmark harness (`bench/minify-js`). |
-| `KB####` | `knowledge-base` tooling | Knowledge base schema/consistency validation diagnostics. |
 | `CONF####` | `parse-js` tooling | Parser conformance runner diagnostics. |
 | `T262####` | `test262` tooling | test262 runner diagnostics. |
-| `VMJS####` | `vm-js` | VM runtime diagnostics (syntax + module loading). |
 | `HOST####` | `diagnostics` | Host/environment failures (`diagnostics::host_error`). Shared across crates. |
 | `ICE####` | `diagnostics` | Internal compiler errors (`diagnostics::ice`). Shared across crates. |
 | `CANCEL####` | `typecheck-ts` | Cancellation diagnostics (currently typechecker-specific). |

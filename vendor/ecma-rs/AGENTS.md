@@ -826,3 +826,7 @@ Assume a “one-shot” rebuild with unlimited resources. The phases below are *
   - memoization
   - a termination story documented in code comments
 - Tests are first-class: every bug fix should come with a regression test.
+- If you introduce new user-facing diagnostics (especially from a new crate/layer), keep the diagnostic code registry in sync:
+  - update `docs/diagnostic-codes.md`
+  - update `scripts/check_diagnostic_codes.sh`
+  - run `just diagnostic-codes` (CI runs the same check)

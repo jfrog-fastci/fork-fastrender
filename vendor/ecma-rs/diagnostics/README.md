@@ -31,19 +31,19 @@ repo-wide policy and registry):
 - `BIND####`: `semantic-js` binder
 - `LOWER####`: `hir-js` lowering
 - `TC####`: `typecheck-ts` type checker
+- `TN####`: `typecheck-ts` strict-native diagnostics
 - `TS####` / `TS#####`: upstream TypeScript compiler codes (used for parity)
-- `EFFECT####`: `effect-js` effect inference
 - `OPT####`: `optimize-js`
-- `NATIVE####`: `native-js` native codegen
-- `NJS####`: `native-js` native compilation / LLVM backend (short form)
-- `RTNATIVE####`: `runtime-native` native runtime library
 - `MINIFYTS####`: `minify-js` TypeScript erasure/minification
 - `MINIFY####`: minify tooling (e.g. benchmarks)
 - `EMIT####`: `emit-js` emitter
+- `EFF####`: `effect-js` effect inference
+- `NJS####`: `native-js` native compilation backend (LLVM)
+- `RTN####`: `runtime-native` native runtime
 - `KB####`: `knowledge-base` tooling
+- `VMJS####`: `vm-js` JavaScript interpreter
 - `CONF####`: parser conformance tooling
 - `T262####`: test262 tooling
-- `VMJS####`: `vm-js` runtime
 - `HOST####`: Host/environment failures
 - `ICE####`: Internal compiler errors
 - `CANCEL####`: Cancellation
