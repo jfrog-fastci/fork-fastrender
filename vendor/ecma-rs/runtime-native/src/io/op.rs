@@ -1,3 +1,4 @@
+use super::iovec::PinnedIoVec;
 use super::limits::{IoLimitError, IoLimiter, IoPermit};
 use std::ops::Range;
 use std::sync::Arc;
@@ -24,12 +25,15 @@ impl IoBuf {
 /// An in-flight I/O operation.
 ///
 /// This type owns:
-/// - the pinned backing stores (to keep the pointers alive), and
+/// - pinned backing stores (to keep the pointers alive),
+/// - optional `iovec[]` descriptor memory for vectored syscalls/io_uring, and
 /// - an accounting permit that is released on drop (completion/cancellation).
 #[derive(Debug)]
 pub struct IoOp {
   bufs: Vec<IoBuf>,
   _backings: Vec<Arc<[u8]>>,
+  #[allow(dead_code)]
+  pinned_iovecs: Option<PinnedIoVec>,
   _permit: IoPermit,
 }
 
@@ -74,9 +78,7 @@ impl IoOp {
     let mut io_bufs: Vec<IoBuf> = Vec::with_capacity(bufs.len());
     let mut backings: Vec<Arc<[u8]>> = Vec::with_capacity(bufs.len());
     for (backing, range) in bufs {
-      let slice = backing
-        .get(range)
-        .ok_or(IoLimitError::InvalidRange)?;
+      let slice = backing.get(range).ok_or(IoLimitError::InvalidRange)?;
       io_bufs.push(IoBuf {
         ptr: slice.as_ptr(),
         len: slice.len(),
@@ -87,8 +89,21 @@ impl IoOp {
     Ok(Self {
       bufs: io_bufs,
       _backings: backings,
+      pinned_iovecs: None,
       _permit: permit,
     })
+  }
+
+  /// Attaches a pinned `iovec[]` descriptor list to this op.
+  ///
+  /// This is intended for io_uring and other async APIs that require the `iovec[]` array itself to
+  /// remain valid until completion.
+  pub fn set_pinned_iovecs(&mut self, pinned_iovecs: PinnedIoVec) {
+    self.pinned_iovecs = Some(pinned_iovecs);
+  }
+
+  pub fn pinned_iovecs(&self) -> Option<&PinnedIoVec> {
+    self.pinned_iovecs.as_ref()
   }
 
   #[inline]
@@ -96,3 +111,4 @@ impl IoOp {
     self.bufs.as_slice()
   }
 }
+
