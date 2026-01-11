@@ -14,6 +14,7 @@ graph TD
     emit_js["emit-js"]
     hir_js["hir-js"]
     knowledge_base["knowledge-base"]
+    llvm_stackmaps["llvm-stackmaps"]
     minify_js["minify-js"]
     minify_js_bench["minify-js-bench"]
     minify_js_cli["minify-js-cli"]
