@@ -738,7 +738,10 @@ unsafe fn verify_no_stray_calls_in_gc_functions_raw(
       let mut inst = LLVMGetFirstInstruction(bb);
       while !inst.is_null() {
         let opcode = LLVMGetInstructionOpcode(inst);
-        if opcode == LLVMOpcode::LLVMCall || opcode == LLVMOpcode::LLVMInvoke {
+        if opcode == LLVMOpcode::LLVMCall
+          || opcode == LLVMOpcode::LLVMInvoke
+          || opcode == LLVMOpcode::LLVMCallBr
+        {
           let callee = strip_callee_pointer_casts(get_call_callee_operand(inst));
 
           // RS4GC should not leave indirect calls behind. The only safe plain calls are to
@@ -1024,5 +1027,60 @@ mod tests {
     // Leaf calls should remain valid after the full RS4GC pipeline too.
     rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
     debug_verify_no_stray_calls_in_gc_functions(&module).expect("verifier should pass after rewrite");
+  }
+
+  #[test]
+  fn ts_callsite_invariant_allows_leaf_calls_after_rewrite() {
+    let context = Context::create();
+    let module = context.create_module("passes_ts_callsite_leaf");
+    let builder = context.create_builder();
+
+    let void_ty = context.void_type();
+    let i8_ty = context.i8_type();
+    let gc_ptr_ty = gc::gc_ptr_type(&context);
+
+    let callee_ty = void_ty.fn_type(&[], false);
+    let callee = module.add_function("callee", callee_ty, None);
+
+    let leaf_ty = void_ty.fn_type(&[], false);
+    let leaf = module.add_function("leaf", leaf_ty, None);
+    let leaf_attr = context.create_string_attribute("gc-leaf-function", "");
+    leaf.add_attribute(AttributeLoc::Function, leaf_attr);
+
+    // Name must match `is_ts_generated_function_name` so `verify_no_stray_calls_in_ts_generated_functions`
+    // runs on it.
+    let test_ty = void_ty.fn_type(&[gc_ptr_ty.into()], false);
+    let test_fn = module.add_function("__nativejs_def_deadbeef", test_ty, None);
+    gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+    let obj = test_fn
+      .get_first_param()
+      .expect("missing obj param")
+      .into_pointer_value();
+
+    let entry = context.append_basic_block(test_fn, "entry");
+    builder.position_at_end(entry);
+    builder.build_load(i8_ty, obj, "pre").expect("load");
+    builder.build_call(leaf, &[], "leaf").expect("call");
+    builder.build_call(callee, &[], "call").expect("call");
+    builder.build_load(i8_ty, obj, "post").expect("load");
+    builder.build_return(None).expect("ret void");
+
+    if let Err(err) = module.verify() {
+      panic!("input module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+    }
+
+    let tm = host_target_machine();
+    module.set_triple(&tm.get_triple());
+    module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+    // The call to `callee` should be rewritten into a statepoint intrinsic, while the call to
+    // `leaf` remains a plain call. Both should satisfy the verifier.
+    rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
+    let ir = module.print_to_string().to_string();
+    assert!(
+      ir.contains("call void @leaf"),
+      "expected leaf call to remain a plain call, IR:\n{ir}"
+    );
   }
 }
