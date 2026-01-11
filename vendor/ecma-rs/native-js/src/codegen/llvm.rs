@@ -479,10 +479,82 @@ impl Codegen {
       },
 
       Expr::Binary(bin) => {
-        let left = self.compile_expr(&bin.stx.left)?;
-        let right = self.compile_expr(&bin.stx.right)?;
         match bin.stx.operator {
+          OperatorName::Assignment => {
+            let target = match bin.stx.left.stx.as_ref() {
+              Expr::IdPat(id) => id.stx.name.as_str(),
+              _ => return Err(CodegenError::TypeError("invalid assignment target".to_string())),
+            };
+
+            let rhs = self.compile_expr(&bin.stx.right)?;
+            if rhs.ty == Ty::Void {
+              return Err(CodegenError::TypeError(
+                "cannot assign a void expression".to_string(),
+              ));
+            }
+
+            if let Some((existing_ty, existing_slot)) = self.vars.get(target).cloned() {
+              if existing_ty == rhs.ty {
+                let store_val = match rhs.ty {
+                  Ty::Null | Ty::Undefined => "0",
+                  _ => rhs.ir.as_str(),
+                };
+                self.emit_store(rhs.ty, store_val, &existing_slot)?;
+              } else {
+                // The minimal `parse-js`-driven emitter doesn't typecheck; allow the binding's
+                // type to change by allocating a fresh slot and updating the map.
+                let new_slot = self.emit_alloca(rhs.ty)?;
+                let store_val = match rhs.ty {
+                  Ty::Null | Ty::Undefined => "0",
+                  _ => rhs.ir.as_str(),
+                };
+                self.emit_store(rhs.ty, store_val, &new_slot)?;
+                self.vars.insert(target.to_string(), (rhs.ty, new_slot));
+              }
+            } else {
+              return Err(CodegenError::TypeError(format!(
+                "assignment to undeclared variable `{target}`"
+              )));
+            }
+
+            Ok(rhs)
+          }
+          OperatorName::AssignmentAddition => {
+            let target = match bin.stx.left.stx.as_ref() {
+              Expr::IdPat(id) => id.stx.name.as_str(),
+              _ => return Err(CodegenError::TypeError("invalid assignment target".to_string())),
+            };
+
+            let (lhs_ty, lhs_slot) = self.vars.get(target).cloned().ok_or_else(|| {
+              CodegenError::TypeError(format!("assignment to undeclared variable `{target}`"))
+            })?;
+
+            if lhs_ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "operator `+=` currently only supports number variables".to_string(),
+              ));
+            }
+
+            let rhs = self.compile_expr(&bin.stx.right)?;
+            if rhs.ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "operator `+=` currently only supports number RHS".to_string(),
+              ));
+            }
+
+            let lhs_val = self.emit_load(Ty::Number, &lhs_slot)?;
+            let out = self.tmp();
+            self.emit(format!("  {out} = fadd double {lhs_val}, {}", rhs.ir));
+            self.emit_store(Ty::Number, &out, &lhs_slot)?;
+
+            Ok(Value {
+              ty: Ty::Number,
+              ir: out,
+            })
+          }
           OperatorName::Addition => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
             if left.ty != Ty::Number || right.ty != Ty::Number {
               return Err(CodegenError::TypeError(
                 "binary `+` currently only supports numbers".to_string(),
@@ -499,6 +571,8 @@ impl Codegen {
             })
           }
           OperatorName::StrictEquality => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
             if left.ty != right.ty {
               return Err(CodegenError::TypeError(
                 "`===` currently requires both sides to have the same type".to_string(),

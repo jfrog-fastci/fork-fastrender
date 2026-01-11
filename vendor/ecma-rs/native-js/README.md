@@ -211,6 +211,9 @@ fields are reserved for the eventual LLVM-backed backend.
     - `-` / `+` (numbers only)
     - `!` (booleans only)
   - numeric `+` (numbers only)
+  - assignment:
+    - `x = expr` (identifier targets only; allows changing the binding type in the minimal emitter)
+    - `x += expr` (number variables only)
   - `===` (numbers / booleans / `null` / `undefined`; both sides must be the same type)
   - builtin calls (when `CompileOptions { builtins: true, .. }`):
     - `console.log(...)` / `print(...)`

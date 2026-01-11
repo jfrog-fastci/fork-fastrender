@@ -53,6 +53,36 @@ fn let_binding_without_initializer_defaults_to_undefined() {
 }
 
 #[test]
+fn assignment_updates_variable_value() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "let x = 1;\nx = 2;\nconsole.log(x);\n").unwrap();
+
+  let assert = native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success();
+
+  assert.stdout(predicate::eq("2\n"));
+}
+
+#[test]
+fn assignment_addition_updates_number_variable() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "let x = 1;\nx += 2;\nconsole.log(x);\n").unwrap();
+
+  let assert = native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success();
+
+  assert.stdout(predicate::eq("3\n"));
+}
+
+#[test]
 fn console_log_supports_multiple_args() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");
