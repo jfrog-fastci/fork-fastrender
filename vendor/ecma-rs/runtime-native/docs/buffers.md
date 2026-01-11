@@ -44,8 +44,10 @@ When a buffer is detached:
 
 ### 2) Backing store memory is freed on detach
 
-Detaching drops the backing-store allocation. Detached buffers do not retain or expose the old
-bytes.
+Detaching drops the `ArrayBuffer` header's `BackingStore` handle. The backing store allocation is
+freed when the last strong `BackingStore` handle is dropped (including any in-flight pin guards).
+
+Detached buffers do not retain or expose the old bytes at the JS/typed-array API level.
 
 ### 3) Pin-count rule (critical)
 
