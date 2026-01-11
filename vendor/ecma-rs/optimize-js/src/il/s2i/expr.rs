@@ -1,6 +1,7 @@
 use super::stmt::key_arg;
 use super::{Chain, HirSourceToInst, VarType, DUMMY_LABEL};
-use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
+use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp, ValueTypeSummary};
+use crate::symbol::semantics::SymbolId;
 use crate::unsupported_syntax;
 use crate::unsupported_syntax_range;
 use crate::OptimizeResult;
@@ -850,7 +851,131 @@ impl<'p> HirSourceToInst<'p> {
       UpdateOp::Decrement => BinOp::Sub,
       UpdateOp::Increment => BinOp::Add,
     };
-    let rhs_one = Arg::Const(Const::Num(JsNumber(1.0)));
+
+    let operand_summary = self
+      .program
+      .types
+      .expr_value_type_summary(self.body_id, argument);
+    let numeric_mode = if operand_summary == ValueTypeSummary::BIGINT {
+      // Statically-known BigInt updates can use BigInt arithmetic directly.
+      ValueTypeSummary::BIGINT
+    } else if operand_summary == ValueTypeSummary::NUMBER {
+      // Statically-known number updates can use the lightweight lowering.
+      ValueTypeSummary::NUMBER
+    } else {
+      ValueTypeSummary::UNKNOWN
+    };
+
+    let one_num = Arg::Const(Const::Num(JsNumber(1.0)));
+    let one_bigint = Arg::Const(Const::BigInt(BigInt::from(1)));
+
+    #[derive(Clone, Debug)]
+    enum UpdateStore {
+      Local { tgt: u32 },
+      Foreign { foreign: SymbolId },
+      Unknown { name: String },
+      Member { obj: Arg, prop: Arg },
+    }
+
+    fn emit_store(
+      compiler: &mut HirSourceToInst<'_>,
+      expr_id: ExprId,
+      store: &UpdateStore,
+      new_var: u32,
+    ) {
+      match store {
+        UpdateStore::Local { tgt } => compiler.push_value_inst(
+          expr_id,
+          Inst::var_assign(*tgt, Arg::Var(new_var)),
+        ),
+        UpdateStore::Foreign { foreign } => {
+          compiler
+            .out
+            .push(Inst::foreign_store(*foreign, Arg::Var(new_var)));
+        }
+        UpdateStore::Unknown { name } => {
+          compiler
+            .out
+            .push(Inst::unknown_store(name.clone(), Arg::Var(new_var)));
+        }
+        UpdateStore::Member { obj, prop } => {
+          compiler.out.push(Inst::prop_assign(
+            obj.clone(),
+            prop.clone(),
+            Arg::Var(new_var),
+          ));
+        }
+      }
+    }
+
+    fn compile_dynamic_update(
+      compiler: &mut HirSourceToInst<'_>,
+      expr_id: ExprId,
+      rhs: BinOp,
+      prefix: bool,
+      raw_var: u32,
+      store: &UpdateStore,
+      one_num: &Arg,
+      one_bigint: &Arg,
+    ) -> OptimizeResult<Arg> {
+      let bigint_label = compiler.c_label.bump();
+      let after_label = compiler.c_label.bump();
+      let result_var = compiler.c_temp.bump();
+
+      let typeof_tmp = compiler.c_temp.bump();
+      compiler
+        .out
+        .push(Inst::un(typeof_tmp, UnOp::Typeof, Arg::Var(raw_var)));
+      let is_bigint_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        is_bigint_tmp,
+        Arg::Var(typeof_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Str("bigint".to_string())),
+      ));
+      compiler
+        .out
+        .push(Inst::cond_goto(Arg::Var(is_bigint_tmp), bigint_label, DUMMY_LABEL));
+
+      // Number path (fallthrough): old = +raw; new = old (+|-) 1
+      let old_num_tmp = compiler.c_temp.bump();
+      compiler
+        .out
+        .push(Inst::un(old_num_tmp, UnOp::Plus, Arg::Var(raw_var)));
+      let new_num_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        new_num_tmp,
+        Arg::Var(old_num_tmp),
+        rhs,
+        one_num.clone(),
+      ));
+      if prefix {
+        compiler.push_value_inst(expr_id, Inst::var_assign(result_var, Arg::Var(new_num_tmp)));
+      } else {
+        compiler.push_value_inst(expr_id, Inst::var_assign(result_var, Arg::Var(old_num_tmp)));
+      }
+      emit_store(compiler, expr_id, store, new_num_tmp);
+      compiler.out.push(Inst::goto(after_label));
+
+      // BigInt path: old = raw; new = old (+|-) 1n
+      compiler.out.push(Inst::label(bigint_label));
+      let new_big_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        new_big_tmp,
+        Arg::Var(raw_var),
+        rhs,
+        one_bigint.clone(),
+      ));
+      if prefix {
+        compiler.push_value_inst(expr_id, Inst::var_assign(result_var, Arg::Var(new_big_tmp)));
+      } else {
+        compiler.push_value_inst(expr_id, Inst::var_assign(result_var, Arg::Var(raw_var)));
+      }
+      emit_store(compiler, expr_id, store, new_big_tmp);
+
+      compiler.out.push(Inst::label(after_label));
+      Ok(Arg::Var(result_var))
+    }
 
     match &self.body.exprs[argument.0 as usize].kind {
       ExprKind::Ident(name) => {
@@ -868,46 +993,123 @@ impl<'p> HirSourceToInst<'p> {
             // is also the assignment target, so we must ensure we mutate the original variable
             // rather than the typed identifier-read temporary.
             let update_tgt = self.symbol_to_temp(local);
-            if prefix {
-              self.push_value_inst(expr_id, Inst::bin(update_tgt, arg, rhs, rhs_one.clone()));
-              Ok(Arg::Var(update_tgt))
-            } else {
-              let tmp_var = self.c_temp.bump();
-              self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
-              self.push_value_inst(expr_id, Inst::bin(update_tgt, arg, rhs, rhs_one.clone()));
-              Ok(Arg::Var(tmp_var))
+            match numeric_mode {
+              ValueTypeSummary::NUMBER => {
+                let rhs_one = one_num.clone();
+                if prefix {
+                  self.push_value_inst(expr_id, Inst::bin(update_tgt, arg, rhs, rhs_one));
+                  Ok(Arg::Var(update_tgt))
+                } else {
+                  let tmp_var = self.c_temp.bump();
+                  self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
+                  self.push_value_inst(expr_id, Inst::bin(update_tgt, arg, rhs, rhs_one));
+                  Ok(Arg::Var(tmp_var))
+                }
+              }
+              ValueTypeSummary::BIGINT => {
+                let rhs_one = one_bigint.clone();
+                if prefix {
+                  self.push_value_inst(expr_id, Inst::bin(update_tgt, arg, rhs, rhs_one));
+                  Ok(Arg::Var(update_tgt))
+                } else {
+                  let tmp_var = self.c_temp.bump();
+                  self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
+                  self.push_value_inst(expr_id, Inst::bin(update_tgt, arg, rhs, rhs_one));
+                  Ok(Arg::Var(tmp_var))
+                }
+              }
+              _ => {
+                let raw_var = arg.to_var();
+                let store = UpdateStore::Local { tgt: update_tgt };
+                compile_dynamic_update(
+                  self,
+                  expr_id,
+                  rhs,
+                  prefix,
+                  raw_var,
+                  &store,
+                  &one_num,
+                  &one_bigint,
+                )
+              }
             }
           }
           VarType::Foreign(foreign) => {
             let arg = self.compile_expr(argument)?;
-            if prefix {
-              let new_var = self.c_temp.bump();
-              self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one.clone()));
-              self.out.push(Inst::foreign_store(foreign, Arg::Var(new_var)));
-              Ok(Arg::Var(new_var))
-            } else {
-              let tmp_var = self.c_temp.bump();
-              self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
-              let new_var = self.c_temp.bump();
-              self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one.clone()));
-              self.out.push(Inst::foreign_store(foreign, Arg::Var(new_var)));
-              Ok(Arg::Var(tmp_var))
+            match numeric_mode {
+              ValueTypeSummary::NUMBER | ValueTypeSummary::BIGINT => {
+                let rhs_one = if numeric_mode == ValueTypeSummary::BIGINT {
+                  one_bigint.clone()
+                } else {
+                  one_num.clone()
+                };
+                if prefix {
+                  let new_var = self.c_temp.bump();
+                  self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one));
+                  self.out.push(Inst::foreign_store(foreign, Arg::Var(new_var)));
+                  Ok(Arg::Var(new_var))
+                } else {
+                  let tmp_var = self.c_temp.bump();
+                  self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
+                  let new_var = self.c_temp.bump();
+                  self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one));
+                  self.out.push(Inst::foreign_store(foreign, Arg::Var(new_var)));
+                  Ok(Arg::Var(tmp_var))
+                }
+              }
+              _ => {
+                let raw_var = arg.to_var();
+                let store = UpdateStore::Foreign { foreign };
+                compile_dynamic_update(
+                  self,
+                  expr_id,
+                  rhs,
+                  prefix,
+                  raw_var,
+                  &store,
+                  &one_num,
+                  &one_bigint,
+                )
+              }
             }
           }
           VarType::Unknown(name) => {
             let arg = self.compile_expr(argument)?;
-            if prefix {
-              let new_var = self.c_temp.bump();
-              self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one.clone()));
-              self.out.push(Inst::unknown_store(name, Arg::Var(new_var)));
-              Ok(Arg::Var(new_var))
-            } else {
-              let tmp_var = self.c_temp.bump();
-              self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
-              let new_var = self.c_temp.bump();
-              self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one.clone()));
-              self.out.push(Inst::unknown_store(name, Arg::Var(new_var)));
-              Ok(Arg::Var(tmp_var))
+            match numeric_mode {
+              ValueTypeSummary::NUMBER | ValueTypeSummary::BIGINT => {
+                let rhs_one = if numeric_mode == ValueTypeSummary::BIGINT {
+                  one_bigint.clone()
+                } else {
+                  one_num.clone()
+                };
+                if prefix {
+                  let new_var = self.c_temp.bump();
+                  self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one));
+                  self.out.push(Inst::unknown_store(name, Arg::Var(new_var)));
+                  Ok(Arg::Var(new_var))
+                } else {
+                  let tmp_var = self.c_temp.bump();
+                  self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
+                  let new_var = self.c_temp.bump();
+                  self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one));
+                  self.out.push(Inst::unknown_store(name, Arg::Var(new_var)));
+                  Ok(Arg::Var(tmp_var))
+                }
+              }
+              _ => {
+                let raw_var = arg.to_var();
+                let store = UpdateStore::Unknown { name };
+                compile_dynamic_update(
+                  self,
+                  expr_id,
+                  rhs,
+                  prefix,
+                  raw_var,
+                  &store,
+                  &one_num,
+                  &one_bigint,
+                )
+              }
             }
           }
         }
@@ -930,28 +1132,53 @@ impl<'p> HirSourceToInst<'p> {
           Inst::bin(old_var, obj_arg.clone(), BinOp::GetProp, prop_arg.clone()),
         );
 
-        if prefix {
-          let new_var = self.c_temp.bump();
-          self.push_value_inst(
-            expr_id,
-            Inst::bin(new_var, Arg::Var(old_var), rhs, rhs_one.clone()),
-          );
-          self
-            .out
-            .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
-          Ok(Arg::Var(new_var))
-        } else {
-          let tmp_var = self.c_temp.bump();
-          self.push_value_inst(expr_id, Inst::var_assign(tmp_var, Arg::Var(old_var)));
-          let new_var = self.c_temp.bump();
-          self.push_value_inst(
-            expr_id,
-            Inst::bin(new_var, Arg::Var(old_var), rhs, rhs_one.clone()),
-          );
-          self
-            .out
-            .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
-          Ok(Arg::Var(tmp_var))
+        match numeric_mode {
+          ValueTypeSummary::NUMBER | ValueTypeSummary::BIGINT => {
+            let rhs_one = if numeric_mode == ValueTypeSummary::BIGINT {
+              one_bigint.clone()
+            } else {
+              one_num.clone()
+            };
+            if prefix {
+              let new_var = self.c_temp.bump();
+              self.push_value_inst(
+                expr_id,
+                Inst::bin(new_var, Arg::Var(old_var), rhs, rhs_one),
+              );
+              self
+                .out
+                .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
+              Ok(Arg::Var(new_var))
+            } else {
+              let tmp_var = self.c_temp.bump();
+              self.push_value_inst(expr_id, Inst::var_assign(tmp_var, Arg::Var(old_var)));
+              let new_var = self.c_temp.bump();
+              self.push_value_inst(
+                expr_id,
+                Inst::bin(new_var, Arg::Var(old_var), rhs, rhs_one),
+              );
+              self
+                .out
+                .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
+              Ok(Arg::Var(tmp_var))
+            }
+          }
+          _ => {
+            let store = UpdateStore::Member {
+              obj: obj_arg,
+              prop: prop_arg,
+            };
+            compile_dynamic_update(
+              self,
+              expr_id,
+              rhs,
+              prefix,
+              old_var,
+              &store,
+              &one_num,
+              &one_bigint,
+            )
+          }
         }
       }
       _ => Err(unsupported_syntax(

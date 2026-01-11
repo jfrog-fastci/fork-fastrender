@@ -1,15 +1,31 @@
 use super::super::inst::InstTyp;
-use crate::il::inst::{Arg, Const};
 use crate::compile_source;
+use crate::compile_source_with_cfg_options;
+use crate::il::inst::{Arg, Const, UnOp};
+use crate::CompileCfgOptions;
 #[cfg(feature = "typed")]
-use crate::{compile_source_typed_cfg_options, CompileCfgOptions};
+use crate::compile_source_typed_cfg_options;
 use crate::Program;
 use crate::ProgramFunction;
 use crate::TopLevelMode;
+use num_bigint::BigInt;
 use parse_js::num::JsNumber;
 
 fn compile(source: &str) -> Program {
   compile_source(source, TopLevelMode::Module, false).expect("compile input")
+}
+
+fn compile_ssa_no_opt(source: &str) -> Program {
+  compile_source_with_cfg_options(
+    source,
+    TopLevelMode::Module,
+    false,
+    CompileCfgOptions {
+      keep_ssa: true,
+      run_opt_passes: false,
+    },
+  )
+  .expect("compile input")
 }
 
 fn inst_types(func: &ProgramFunction) -> Vec<InstTyp> {
@@ -276,6 +292,52 @@ fn update_expr_on_member_emits_prop_assign() {
   assert!(
     insts.iter().any(|t| matches!(t, InstTyp::PropAssign)),
     "expected obj.x++ to emit PropAssign, got {insts:?}"
+  );
+}
+
+#[test]
+fn update_expr_increments_use_numeric_coercion() {
+  // In JavaScript, `x++` always performs `ToNumeric(x)` (number or bigint) before adding 1.
+  // In particular, `"1"++` must produce `2`, not `"11"`.
+  let program = compile_ssa_no_opt(
+    r#"
+      let x = "1";
+      x++;
+    "#,
+  );
+  let has_unary_plus = program
+    .top_level
+    .body
+    .bblocks
+    .all()
+    .flat_map(|(_, b)| b.iter())
+    .any(|inst| inst.t == InstTyp::Un && inst.un_op == UnOp::Plus);
+  assert!(
+    has_unary_plus,
+    "expected update lowering to include unary plus ToNumber coercion"
+  );
+}
+
+#[test]
+fn update_expr_supports_bigint_by_using_bigint_one() {
+  // Use `2n` for initialization so we can specifically assert that `1n` is used for the update.
+  let program = compile_ssa_no_opt(
+    r#"
+      let x = 2n;
+      x++;
+    "#,
+  );
+  let has_bigint_one = program
+    .top_level
+    .body
+    .bblocks
+    .all()
+    .flat_map(|(_, b)| b.iter())
+    .flat_map(|inst| inst.args.iter())
+    .any(|arg| matches!(arg, Arg::Const(Const::BigInt(v)) if v == &BigInt::from(1)));
+  assert!(
+    has_bigint_one,
+    "expected update lowering to include BigInt(1) constant for BigInt increments"
   );
 }
 
