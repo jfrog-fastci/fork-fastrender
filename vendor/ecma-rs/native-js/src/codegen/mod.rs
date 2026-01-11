@@ -480,13 +480,15 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
     for file in init_order {
       if let Some(init) = self.file_inits.get(file).copied() {
-        let _ = builder.build_call(init, &[], "init");
+        let call = builder.build_call(init, &[], "init").expect("failed to build init call");
+        crate::stack_walking::mark_call_notail(call);
       }
     }
 
     let call = builder
       .build_call(ts_main, &[], "ret")
       .expect("failed to build call");
+    crate::stack_walking::mark_call_notail(call);
     let ret_val = call
       .try_as_basic_value()
       .left()
@@ -945,7 +947,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .builder
       .build_global_string_ptr("%d\n", "native_js_print_fmt")
       .expect("failed to create printf format string");
-    self
+    let call = self
       .builder
       .build_call(
         printf,
@@ -953,6 +955,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         "native_js_print",
       )
       .expect("failed to build printf call");
+    crate::stack_walking::mark_call_notail(call);
   }
 
   fn codegen_break(&mut self, label: Option<NameId>, span: Span) -> Result<bool, Vec<Diagnostic>> {
@@ -1719,6 +1722,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .builder
           .build_call(target, &args, "call")
           .expect("failed to build call");
+        crate::stack_walking::mark_call_notail(call);
         let ret = call
           .try_as_basic_value()
           .left()
