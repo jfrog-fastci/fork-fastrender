@@ -198,6 +198,18 @@ fn rejects_member_eval() {
 }
 
 #[test]
+fn rejects_computed_member_eval() {
+  let diags = validate(
+    r#"
+      const obj = { eval };
+      obj["eval"]("1 + 1");
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0004");
+}
+
+#[test]
 fn rejects_new_function() {
   let diags = validate(
     r#"
@@ -215,6 +227,18 @@ fn rejects_member_new_function() {
     r#"
       const obj = { Function };
       new obj.Function("return 1;");
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0005");
+}
+
+#[test]
+fn rejects_computed_member_new_function() {
+  let diags = validate(
+    r#"
+      const obj = { Function };
+      new obj["Function"]("return 1;");
     "#,
     FileKind::Ts,
   );
