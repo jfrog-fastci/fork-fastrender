@@ -293,7 +293,7 @@
   since: "baseline"
   effects:
     depends_on_args:
-      base: 0
+      base: MAY_THROW
       args: [0]
   purity: Impure
 

@@ -36,21 +36,24 @@ impl Default for ThrowBehavior {
 /// A coarse purity classification useful for both API semantics and program
 /// analyses.
 ///
-/// This is intentionally a small taxonomy; it can be joined conservatively.
+/// This intentionally ignores *throwing*: whether an operation may throw is
+/// tracked separately via [`EffectSet::MAY_THROW`].
+///
+/// The taxonomy is small by design and can be joined conservatively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum Purity {
-  /// No observable effects (including no throws).
+  /// No observable effects.
   #[cfg_attr(feature = "serde", serde(alias = "Pure"))]
   Pure,
   /// May read observable state, but performs no writes/allocations/IO.
   #[cfg_attr(feature = "serde", serde(rename = "readonly", alias = "ReadOnly", alias = "read_only"))]
   ReadOnly,
-  /// Only allocates (and does not throw).
+  /// Allocates, but performs no writes/IO.
   #[cfg_attr(feature = "serde", serde(alias = "Allocating"))]
   Allocating,
-  /// Performs some observable effect (writes/IO/throws/etc).
+  /// Performs some observable effect (writes/IO/etc), or could not be analyzed.
   #[cfg_attr(feature = "serde", serde(alias = "Impure"))]
   Impure,
 }

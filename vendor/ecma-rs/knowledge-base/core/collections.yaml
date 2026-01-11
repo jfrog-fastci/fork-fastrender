@@ -45,7 +45,7 @@
 - name: Map.prototype.forEach
   effects:
     depends_on_args:
-      base: 0
+      base: MAY_THROW
       args: [0]
   purity: Impure
 - name: Set.prototype.add
@@ -91,7 +91,7 @@
 - name: Set.prototype.forEach
   effects:
     depends_on_args:
-      base: 0
+      base: MAY_THROW
       args: [0]
   purity: Impure
 - name: WeakMap.prototype.get

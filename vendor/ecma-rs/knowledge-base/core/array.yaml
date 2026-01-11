@@ -2,7 +2,7 @@
   semantics: Map
   effects:
     depends_on_args:
-      base: ALLOCATES
+      base: ALLOCATES | MAY_THROW
       args: [0]
   purity:
     depends_on_args:
@@ -16,7 +16,7 @@
   semantics: Filter
   effects:
     depends_on_args:
-      base: ALLOCATES
+      base: ALLOCATES | MAY_THROW
       args: [0]
   purity:
     depends_on_args:
@@ -30,7 +30,7 @@
   semantics: Reduce
   effects:
     depends_on_args:
-      base: 0
+      base: MAY_THROW
       args: [0]
   purity:
     depends_on_args:
@@ -41,7 +41,7 @@
   semantics: ForEach
   effects:
     depends_on_args:
-      base: 0
+      base: MAY_THROW
       args: [0]
   purity: Impure
 
@@ -49,7 +49,7 @@
   semantics: Every
   effects:
     depends_on_args:
-      base: 0
+      base: MAY_THROW
       args: [0]
   purity:
     depends_on_args:
@@ -60,7 +60,7 @@
   semantics: Some
   effects:
     depends_on_args:
-      base: 0
+      base: MAY_THROW
       args: [0]
   purity:
     depends_on_args:
@@ -71,7 +71,7 @@
   semantics: Find
   effects:
     depends_on_args:
-      base: 0
+      base: MAY_THROW
       args: [0]
   purity:
     depends_on_args:
