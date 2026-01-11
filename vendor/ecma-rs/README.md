@@ -20,7 +20,7 @@ Today the repo contains:
 - **Current crate boundaries**: [`docs/architecture.md`](./docs/architecture.md) — what exists today and how the crates connect.
 - **Local setup for conformance + difftsc**: [`docs/quickstart.md`](./docs/quickstart.md) (also links into [`typecheck-ts-harness/README.md`](./typecheck-ts-harness/README.md)).
 - **Runnable examples**: [`docs/examples.md`](./docs/examples.md) — copy/paste `cargo run` examples for the core crate APIs.
-- **Native TS→LLVM docs**: [`native-js/README.md`](./native-js/README.md) (crate API + LLVM setup) and [`native-js-cli/README.md`](./native-js-cli/README.md) (intended CLI surface).
+- **Native TS→LLVM docs**: [`native-js/README.md`](./native-js/README.md) (crate API + LLVM setup) and [`native-js-cli/README.md`](./native-js-cli/README.md) (CLI usage + current supported subset).
 - **Native runtime ABI**: [`docs/runtime-native.md`](./docs/runtime-native.md) and [`runtime-native/README.md`](./runtime-native/README.md).
 
 The workspace dependency graph in [`docs/deps.md`](./docs/deps.md) is generated; run `just docs` to refresh it.
