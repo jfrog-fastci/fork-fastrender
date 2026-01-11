@@ -31,6 +31,15 @@ fn dead_threads_are_pruned_and_do_not_block_stop_the_world() {
     .join()
     .unwrap();
 
+    // A stale thread entry with an unobserved epoch would deadlock/timeout here. This call must be
+    // robust even if no other API has had a chance to "prune" dead threads from the registry yet.
+    runtime_native::rt_gc_request_stop_the_world();
+    let _resume = ResumeWorldOnDrop;
+    assert!(
+      runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200)),
+      "stop-the-world should not wait on threads that have already exited"
+    );
+
     let total = threading::thread_counts().total;
     if let Some(prev) = prev_total {
       if total <= prev {
@@ -38,14 +47,6 @@ fn dead_threads_are_pruned_and_do_not_block_stop_the_world() {
       }
     }
     prev_total = Some(total);
-
-    // A stale thread entry with an unobserved epoch would deadlock/timeout here.
-    runtime_native::rt_gc_request_stop_the_world();
-    let _resume = ResumeWorldOnDrop;
-    assert!(
-      runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200)),
-      "stop-the-world should not wait on threads that have already exited"
-    );
   }
 
   assert!(
