@@ -87,6 +87,7 @@ use lru::LruCache;
 use rustc_hash::{FxHashMap, FxHasher};
 use selectors::parser::SelectorList;
 use selectors::parser::SelectorParseErrorKind;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hasher;
@@ -6213,9 +6214,134 @@ fn skip_nested_block_contents<'i, 't>(parser: &mut Parser<'i, 't>) {
   });
 }
 
+fn repair_unterminated_url_functions(declarations_str: &str) -> Cow<'_, str> {
+  // Some pages ship malformed inline styles like `background-image:url(foo.webp` (missing the
+  // closing `)`). Browsers recover by treating EOF (or a trailing `;`) as the end of the `url()`
+  // token. `cssparser` treats this as a parse error, dropping the entire declaration.
+  //
+  // Heuristic recovery: count unclosed `url(` functions (outside strings/comments) and append the
+  // missing `)` before any trailing semicolons/whitespace.
+  fn is_css_ascii_whitespace_byte(b: u8) -> bool {
+    matches!(b, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
+  }
+
+  fn is_ident_continue_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')
+  }
+
+  let bytes = declarations_str.as_bytes();
+
+  // Fast path: no "url" substring at all.
+  // (Case-insensitive check.)
+  if !bytes
+    .windows(3)
+    .any(|w| w[0].to_ascii_lowercase() == b'u' && w[1].to_ascii_lowercase() == b'r' && w[2].to_ascii_lowercase() == b'l')
+  {
+    return Cow::Borrowed(declarations_str);
+  }
+
+  let mut open_urls = 0usize;
+  let mut i = 0usize;
+  let mut in_comment = false;
+  let mut in_string: Option<u8> = None;
+  let mut string_escape = false;
+
+  while i < bytes.len() {
+    let b = bytes[i];
+
+    if in_comment {
+      if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+        in_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+
+    if let Some(quote) = in_string {
+      if string_escape {
+        string_escape = false;
+        i += 1;
+        continue;
+      }
+      if b == b'\\' {
+        string_escape = true;
+        i += 1;
+        continue;
+      }
+      if b == quote {
+        in_string = None;
+        i += 1;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+
+    if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+      in_comment = true;
+      i += 2;
+      continue;
+    }
+
+    if b == b'\'' || b == b'"' {
+      in_string = Some(b);
+      i += 1;
+      continue;
+    }
+
+    // Detect `url(` case-insensitively, allowing whitespace between `url` and `(`.
+    if b.to_ascii_lowercase() == b'u'
+      && bytes.get(i + 1).is_some_and(|b| b.to_ascii_lowercase() == b'r')
+      && bytes.get(i + 2).is_some_and(|b| b.to_ascii_lowercase() == b'l')
+      && (i == 0 || !is_ident_continue_byte(bytes[i - 1]))
+    {
+      let mut j = i + 3;
+      while j < bytes.len() && is_css_ascii_whitespace_byte(bytes[j]) {
+        j += 1;
+      }
+      if bytes.get(j) == Some(&b'(') {
+        open_urls += 1;
+        i = j + 1;
+        continue;
+      }
+    }
+
+    if b == b')' && open_urls > 0 {
+      open_urls -= 1;
+      i += 1;
+      continue;
+    }
+
+    i += 1;
+  }
+
+  if open_urls == 0 {
+    return Cow::Borrowed(declarations_str);
+  }
+
+  let mut end = declarations_str.len();
+  while end > 0 && is_css_ascii_whitespace_byte(bytes[end - 1]) {
+    end -= 1;
+  }
+  while end > 0 && bytes[end - 1] == b';' {
+    end -= 1;
+  }
+
+  let mut out = String::with_capacity(declarations_str.len() + open_urls);
+  out.push_str(&declarations_str[..end]);
+  for _ in 0..open_urls {
+    out.push(')');
+  }
+  out.push_str(&declarations_str[end..]);
+  Cow::Owned(out)
+}
+
 /// Parse declarations from an inline style attribute
 pub fn parse_declarations(declarations_str: &str) -> Vec<Declaration> {
-  let mut input = ParserInput::new(declarations_str);
+  let repaired = repair_unterminated_url_functions(declarations_str);
+  let mut input = ParserInput::new(repaired.as_ref());
   let mut parser = Parser::new(&mut input);
   parse_declaration_list(&mut parser, DeclarationContext::Style).unwrap_or_default()
 }
@@ -7492,6 +7618,28 @@ mod tests {
     let decls = parse_declarations("totally-unknown: whatever; color: red;");
     assert_eq!(decls.len(), 1);
     assert_eq!(decls[0].property.as_str(), "color");
+  }
+
+  #[test]
+  fn inline_style_unterminated_url_is_recovered_at_eof() {
+    let decls = parse_declarations("background-image:url(foo");
+    assert_eq!(decls.len(), 1);
+    assert_eq!(decls[0].property.as_str(), "background-image");
+    match &decls[0].value {
+      PropertyValue::Url(url) => assert_eq!(url, "foo"),
+      other => panic!("expected url value, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn inline_style_unterminated_url_is_recovered_before_trailing_semicolon() {
+    let decls = parse_declarations("background-image:url(foo;");
+    assert_eq!(decls.len(), 1);
+    assert_eq!(decls[0].property.as_str(), "background-image");
+    match &decls[0].value {
+      PropertyValue::Url(url) => assert_eq!(url, "foo"),
+      other => panic!("expected url value, got {:?}", other),
+    }
   }
 
   #[test]
