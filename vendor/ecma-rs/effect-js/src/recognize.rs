@@ -1,6 +1,6 @@
 use hir_js::{
-  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind, StmtId,
-  StmtKind, UnaryOp, VarDeclKind,
+  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectKey, ObjectProperty, PatId, PatKind,
+  StmtId, StmtKind, UnaryOp, VarDeclKind,
 };
 
 #[cfg(feature = "typed")]

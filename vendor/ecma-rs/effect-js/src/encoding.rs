@@ -43,6 +43,7 @@ fn analyze_string_encodings_impl<O: TypeOracle + Copy>(
   for (body_id, idx) in result.body_index.iter() {
     let body = &result.bodies[*idx];
     let mut analyzer = BodyAnalyzer {
+      lowered: result,
       file: &result.hir,
       body_id: *body_id,
       body,
@@ -74,6 +75,11 @@ struct UntypedOracle;
 trait TypeOracle {
   fn receiver_is_string(&self, body: BodyId, expr: ExprId) -> bool;
   fn expr_is_string(&self, body: BodyId, expr: ExprId) -> bool;
+
+  #[cfg(feature = "typed")]
+  fn type_provider(&self) -> Option<&dyn crate::types::TypeProvider> {
+    None
+  }
 }
 
 impl TypeOracle for UntypedOracle {
@@ -101,6 +107,10 @@ impl TypeOracle for TypedOracle<'_> {
   fn expr_is_string(&self, body: BodyId, expr: ExprId) -> bool {
     type_is_string(self.types, body, expr)
   }
+
+  fn type_provider(&self) -> Option<&dyn crate::types::TypeProvider> {
+    Some(self.types)
+  }
 }
 
 #[cfg(feature = "typed")]
@@ -109,6 +119,7 @@ fn type_is_string(types: &dyn crate::types::TypeProvider, body: BodyId, expr: Ex
 }
 
 struct BodyAnalyzer<'a, O> {
+  lowered: &'a hir_js::LowerResult,
   file: &'a hir_js::HirFile,
   body_id: BodyId,
   body: &'a hir_js::Body,
@@ -267,17 +278,30 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
   }
 
   fn encoding_of_member(&mut self, expr_id: ExprId) -> StringEncoding {
-    let Some(resolved) = resolve_api_use(self.file, self.body, expr_id, self.names, self.kb) else {
-      return StringEncoding::Unknown;
-    };
+    if let Some(resolved) = resolve_api_use(self.file, self.body, expr_id, self.names, self.kb) {
+      if resolved.kind != ApiUseKind::Get {
+        return StringEncoding::Unknown;
+      }
 
-    if resolved.kind != ApiUseKind::Get {
-      return StringEncoding::Unknown;
+      return self
+        .encoding_via_kb_id(resolved.api, StringEncoding::Unknown)
+        .unwrap_or(StringEncoding::Unknown);
     }
 
-    self
-      .encoding_via_kb_id(resolved.api, StringEncoding::Unknown)
-      .unwrap_or(StringEncoding::Unknown)
+    // Typed-only fallback: resolve well-known member reads like `url.pathname`
+    // using type information (e.g. proving the receiver is a `URL`).
+    #[cfg(feature = "typed")]
+    {
+      if let Some(types) = self.oracle.type_provider() {
+        if let Some(resolved) = crate::resolve::resolve_member(self.lowered, self.body_id, expr_id, types) {
+          return self
+            .encoding_via_kb(resolved.api.as_str(), StringEncoding::Unknown)
+            .unwrap_or(StringEncoding::Unknown);
+        }
+      }
+    }
+
+    StringEncoding::Unknown
   }
 
   fn encoding_via_entry(&self, entry: &Api, input: StringEncoding) -> Option<StringEncoding> {

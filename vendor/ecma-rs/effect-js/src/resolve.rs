@@ -113,18 +113,18 @@ pub fn resolve_api_call_best_effort_untyped(
 }
 
 #[cfg(feature = "typed")]
-fn receiver_is_array(types: &impl crate::types::TypeProvider, body: BodyId, recv: ExprId) -> bool {
+fn receiver_is_array(types: &dyn crate::types::TypeProvider, body: BodyId, recv: ExprId) -> bool {
   types.expr_is_array(body, recv)
 }
 
 #[cfg(feature = "typed")]
-fn receiver_is_string(types: &impl crate::types::TypeProvider, body: BodyId, recv: ExprId) -> bool {
+fn receiver_is_string(types: &dyn crate::types::TypeProvider, body: BodyId, recv: ExprId) -> bool {
   types.expr_is_string(body, recv)
 }
 
 #[cfg(feature = "typed")]
 fn receiver_is_named_ref(
-  types: &impl crate::types::TypeProvider,
+  types: &dyn crate::types::TypeProvider,
   body: BodyId,
   recv: ExprId,
   expected: &str,
@@ -718,7 +718,7 @@ pub fn resolve_member(
   lowered: &LowerResult,
   body: BodyId,
   member_expr_id: ExprId,
-  types: &impl crate::types::TypeProvider,
+  types: &dyn crate::types::TypeProvider,
 ) -> Option<ResolvedMember> {
   let body_ref = lowered.body(body)?;
   let member_expr = body_ref.exprs.get(member_expr_id.0 as usize)?;
