@@ -46,6 +46,7 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_keep_alive_gc_ref(",
     "rt_parallel_spawn_rooted(",
     "rt_queue_microtask_rooted(",
+    "rt_async_sleep(",
     "rt_queue_microtask(",
     "rt_drain_microtasks(",
     "rt_set_timeout_rooted(",
