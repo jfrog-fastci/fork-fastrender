@@ -1,6 +1,21 @@
 use super::*;
 
 impl Program {
+  /// Shared interned `types-ts-interned` store used by this program.
+  ///
+  /// Downstream tooling (e.g. `effect-js`) may need direct access to the store
+  /// to inspect `TypeKind` values returned by `BodyCheckResult` queries.
+  pub fn interned_type_store(&self) -> Arc<tti::TypeStore> {
+    match self.with_interned_state(|state| Ok(Arc::clone(&state.store))) {
+      Ok(store) => store,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        let state = self.lock_state();
+        Arc::clone(&state.store)
+      }
+    }
+  }
+
   /// Interned type of a definition, using the `types-ts-interned` store.
   pub fn type_of_def_interned(&self, def: DefId) -> TypeId {
     match self.type_of_def_interned_fallible(def) {

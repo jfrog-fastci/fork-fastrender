@@ -5,7 +5,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
+
 [dependencies]
 effect-model = { workspace = true }
 knowledge-base = { workspace = true }
+hir-js = { workspace = true }
 
+typecheck-ts = { workspace = true, optional = true }
+types-ts-interned = { workspace = true, optional = true }

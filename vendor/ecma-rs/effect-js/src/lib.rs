@@ -1,4 +1,19 @@
+#![deny(missing_debug_implementations)]
+
+mod api;
+mod recognize;
+mod resolve;
+
+#[cfg(feature = "typed")]
+pub mod typed;
+
 use effect_model::{EffectFlags, EffectSummary, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
+
+pub use api::ApiId;
+pub use recognize::{recognize_patterns_untyped, RecognizedPattern};
+
+#[cfg(feature = "typed")]
+pub use recognize::recognize_patterns_typed;
 
 pub use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase, ApiSemantics};
 
@@ -69,4 +84,3 @@ mod tests {
     );
   }
 }
-
