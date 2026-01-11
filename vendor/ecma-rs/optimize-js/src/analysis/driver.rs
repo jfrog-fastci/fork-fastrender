@@ -6,7 +6,7 @@
 //! the IR) or [`analyze_program`] (to only collect results in a side table).
 
 use crate::cfg::cfg::Cfg;
-use crate::il::inst::{Arg, BinOp, Const, EffectSet, Inst, InstMeta, InstTyp, Nullability};
+use crate::il::inst::{Arg, BinOp, Const, EffectSet, Inst, InstMeta, InstTyp, Nullability, UnOp};
 use crate::il::inst::NullabilityNarrowing;
 use crate::{FnId, Program};
 use ahash::HashMap;
@@ -91,33 +91,99 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
   }
 }
 
-fn extract_nullish_test(inst: &Inst) -> Option<(u32, bool)> {
+#[derive(Clone, Copy, Debug)]
+struct NullishComparison {
+  tested_var: u32,
+  op: BinOp,
+}
+
+fn extract_nullish_comparison(inst: &Inst) -> Option<NullishComparison> {
   if inst.t != InstTyp::Bin {
     return None;
   }
-  let op = inst.bin_op;
-  let is_eq = match op {
-    BinOp::LooseEq => true,
-    BinOp::NotLooseEq => false,
+
+  let op = match inst.bin_op {
+    BinOp::LooseEq | BinOp::NotLooseEq | BinOp::StrictEq | BinOp::NotStrictEq => inst.bin_op,
     _ => return None,
   };
 
-  let (left, right) = (&inst.args[0], &inst.args[1]);
-  match (left, right) {
-    (Arg::Var(v), Arg::Const(Const::Null)) | (Arg::Const(Const::Null), Arg::Var(v)) => {
-      Some((*v, is_eq))
-    }
-    _ => None,
+  let left = inst.args.get(0)?;
+  let right = inst.args.get(1)?;
+  let tested_var = match (left, right) {
+    (Arg::Var(v), Arg::Const(Const::Null | Const::Undefined))
+    | (Arg::Const(Const::Null | Const::Undefined), Arg::Var(v)) => *v,
+    _ => return None,
+  };
+
+  Some(NullishComparison { tested_var, op })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NullishTest {
+  tested_var: u32,
+  op: BinOp,
+  negated: bool,
+}
+
+fn nullability_from_test(test: NullishTest) -> Option<NullabilityNarrowing> {
+  let (mut when_true, mut when_false) = match test.op {
+    BinOp::LooseEq => (Nullability::Nullish, Nullability::NonNullish),
+    BinOp::NotLooseEq => (Nullability::NonNullish, Nullability::Nullish),
+    BinOp::StrictEq => (Nullability::Nullish, Nullability::Unknown),
+    BinOp::NotStrictEq => (Nullability::Unknown, Nullability::Nullish),
+    _ => return None,
+  };
+
+  if test.negated {
+    std::mem::swap(&mut when_true, &mut when_false);
   }
+
+  Some(NullabilityNarrowing {
+    var: test.tested_var,
+    when_true,
+    when_false,
+  })
 }
 
 fn annotate_cfg_nullability_narrowings(cfg: &mut Cfg) {
   for label in cfg_block_labels_sorted(cfg) {
     let block = cfg.bblocks.get_mut(label);
-    let mut cond_to_test: HashMap<u32, (u32, bool)> = HashMap::new();
+    let mut cond_to_test: HashMap<u32, NullishTest> = HashMap::new();
     for inst in block.iter_mut() {
-      if let Some((tested_var, is_eq)) = extract_nullish_test(inst) {
-        cond_to_test.insert(inst.tgts[0], (tested_var, is_eq));
+      if let Some(NullishComparison { tested_var, op }) = extract_nullish_comparison(inst) {
+        if let Some(&tgt) = inst.tgts.get(0) {
+          cond_to_test.insert(
+            tgt,
+            NullishTest {
+              tested_var,
+              op,
+              negated: false,
+            },
+          );
+        }
+      }
+
+      // Propagate through simple boolean negation.
+      if inst.t == InstTyp::Un {
+        let (tgt, op, arg) = inst.as_un();
+        if op == UnOp::Not {
+          if let Arg::Var(src) = arg {
+            if let Some(mut test) = cond_to_test.get(src).copied() {
+              test.negated = !test.negated;
+              cond_to_test.insert(tgt, test);
+            }
+          }
+        }
+      }
+
+      // Propagate through direct var assignments (`tgt = src`).
+      if inst.t == InstTyp::VarAssign {
+        let (tgt, arg) = inst.as_var_assign();
+        if let Arg::Var(src) = arg {
+          if let Some(test) = cond_to_test.get(src).copied() {
+            cond_to_test.insert(tgt, test);
+          }
+        }
       }
 
       if inst.t != InstTyp::CondGoto {
@@ -126,20 +192,13 @@ fn annotate_cfg_nullability_narrowings(cfg: &mut Cfg) {
       let Arg::Var(cond_var) = inst.args[0] else {
         continue;
       };
-      let Some(&(tested_var, is_eq)) = cond_to_test.get(&cond_var) else {
+      let Some(test) = cond_to_test.get(&cond_var).copied() else {
         continue;
       };
-      let (when_true, when_false) = if is_eq {
-        (Nullability::Nullish, Nullability::NonNullish)
-      } else {
-        (Nullability::NonNullish, Nullability::Nullish)
-      };
-      let narrowing = NullabilityNarrowing {
-        var: tested_var,
-        when_true,
-        when_false,
-      };
-      inst.meta.nullability_narrowing = Some(narrowing);
+
+      if let Some(narrowing) = nullability_from_test(test) {
+        inst.meta.nullability_narrowing = Some(narrowing);
+      }
     }
   }
 }
@@ -317,7 +376,7 @@ mod tests {
   use super::*;
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
   use crate::compile_source;
-  use crate::il::inst::{Arg, Const, Inst, InstTyp, OwnershipState, StringEncoding};
+  use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, Nullability, OwnershipState, StringEncoding, UnOp};
   use crate::{OptimizationStats, Program, ProgramFunction};
   use crate::TopLevelMode;
 
@@ -503,5 +562,47 @@ mod tests {
       Some(StringEncoding::Utf8),
       "expected non-ASCII string literal to be annotated as Utf8"
     );
+  }
+
+  #[test]
+  fn annotate_program_records_nullability_narrowing_through_not() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::unknown_load(0, "x".to_string()),
+            Inst::bin(1, Arg::Var(0), BinOp::LooseEq, Arg::Const(Const::Null)),
+            Inst::un(2, UnOp::Not, Arg::Var(1)),
+            Inst::cond_goto(Arg::Var(2), 1, 2),
+          ],
+        ),
+        (1, vec![]),
+        (2, vec![]),
+      ],
+      &[(0, 1), (0, 2)],
+    );
+    let mut program = Program {
+      functions: Vec::new(),
+      top_level: ProgramFunction {
+        debug: None,
+        body: cfg,
+        params: Vec::new(),
+        stats: OptimizationStats::default(),
+      },
+      top_level_mode: TopLevelMode::Module,
+      symbols: None,
+    };
+
+    let _analyses = annotate_program(&mut program);
+
+    let insts = program.top_level.body.bblocks.get(0);
+    let narrowing = insts
+      .last()
+      .and_then(|inst| inst.meta.nullability_narrowing)
+      .expect("expected CondGoto to record nullability narrowing");
+    assert_eq!(narrowing.var, 0);
+    assert_eq!(narrowing.when_true, Nullability::NonNullish);
+    assert_eq!(narrowing.when_false, Nullability::Nullish);
   }
 }
