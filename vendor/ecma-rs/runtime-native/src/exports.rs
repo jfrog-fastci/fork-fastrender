@@ -109,6 +109,7 @@ fn ensure_current_thread_registered() {
 }
 
 #[no_mangle]
+#[inline(never)]
 pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc(size);
@@ -147,6 +148,7 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
 /// codegen/FFI can request a stable address today and so future GC-backed allocation can route
 /// pinned objects to a non-moving space.
 #[no_mangle]
+#[inline(never)]
 pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   // Don't let panics unwind across the extern "C" boundary.
   let res = catch_unwind(AssertUnwindSafe(|| {
@@ -179,6 +181,7 @@ pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots
 }
 
 #[no_mangle]
+#[inline(never)]
 pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::GcPtr {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc_array(len, elem_size);
@@ -259,6 +262,7 @@ pub extern "C" fn rt_thread_set_parked(parked: bool) {
 
 /// GC safepoint.
 #[no_mangle]
+#[inline(never)]
 pub extern "C" fn rt_gc_safepoint() {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_safepoint();
@@ -288,6 +292,7 @@ pub extern "C" fn rt_gc_safepoint() {
 /// # Safety
 /// `slot` must be a valid writable pointer to a `*mut u8` slot.
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
   slot: crate::roots::GcHandle,
 ) -> crate::roots::GcPtr {
@@ -613,6 +618,7 @@ mod write_barrier_tests {
 /// - Invokes the stackmap-based root enumeration hook (if stackmaps are available).
 /// - Does *not* yet run a full GC algorithm (mark/copy/etc).
 #[no_mangle]
+#[inline(never)]
 pub extern "C" fn rt_gc_collect() {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_gc_collect();
