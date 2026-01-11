@@ -227,6 +227,20 @@ fn assert_failure_prints_message_and_exits_non_zero() {
 }
 
 #[test]
+fn assert_failure_without_message_prints_default_message() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "assert(false);\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .failure()
+    .stdout(predicate::str::contains("assertion failed"));
+}
+
+#[test]
 fn numeric_literal_precision_is_preserved_for_strict_equality() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");

@@ -842,6 +842,9 @@ impl Codegen {
               if let Some(msg) = msg {
                 let msg_v = self.compile_expr(msg)?;
                 self.emit_print_value(msg_v)?;
+              } else {
+                let default_msg = self.emit_string_ptr(b"assertion failed");
+                self.emit(format!("  call i32 @puts(ptr {default_msg})"));
               }
               self.emit("  call i32 @fflush(ptr null)".to_string());
               self.emit("  call void @abort()".to_string());
