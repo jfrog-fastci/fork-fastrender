@@ -39,13 +39,14 @@ The **current** minimal pipeline (used by `native-js-cli`) is:
 
 ```
 TypeScript source
-  → parse-js (parser)
-  → native-js `compile_typescript_to_llvm_ir` (minimal parse-js-only emitter)
+  → typecheck-ts (module graph discovery only; diagnostics are ignored)
+  → native-js `compile_project_to_llvm_ir` (minimal parse-js-driven emitter)
   → clang (compile IR to native executable)
 ```
 
-> Note: `compile_typescript_to_llvm_ir` is **parse-js-only** and does not perform
-> type checking.
+> Note: this pipeline is still **parse-js-driven** and does not use TypeScript's
+> type system for code generation yet. It only uses `typecheck-ts` for module
+> resolution/export maps so it can compile small multi-file ES module projects.
 
 ## Build prerequisites
 
@@ -133,7 +134,7 @@ print!("{}", String::from_utf8_lossy(&output.stdout));
 See `native-js-cli` for the CLI front-ends:
 
 ```bash
-# Minimal parse-js-driven emitter (single file, no typecheck):
+# Minimal parse-js-driven emitter (entry module + small ES module subset; no typechecked codegen):
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- path/to/file.ts
 
 # Typechecked AOT pipeline (expects entry file to export `main()`):

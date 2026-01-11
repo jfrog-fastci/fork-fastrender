@@ -139,9 +139,10 @@ bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck fixtur
 
 The `native-js-cli` package currently builds **two experimental** tools:
 
-- `native-js-cli`: compiles a **single TypeScript file** to textual LLVM IR and runs it
-  (TS → LLVM IR → `clang` → native executable). This uses a small `parse-js`-driven
-  IR emitter (**no TypeScript typechecking**).
+- `native-js-cli`: compiles a TypeScript **entry module** (plus a small subset of ES module imports)
+  to textual LLVM IR and runs it (TS → LLVM IR → `clang` → native executable).
+  This uses a small `parse-js`-driven IR emitter; it does not use TypeScript’s type system for
+  code generation yet (it only uses `typecheck-ts` for module graph discovery).
 - `native-js`: proof-of-concept **typechecked AOT** pipeline (very small subset today):
   `typecheck-ts` + `native-js` strict validation + HIR → LLVM + object emission + `clang` link.
 
