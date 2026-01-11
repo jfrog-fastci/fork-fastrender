@@ -764,5 +764,14 @@ pub fn debug_with_reactor_watchers_lock<R>(f: impl FnOnce() -> R) -> R {
   global().loop_.debug_with_reactor_watchers_lock(f)
 }
 
+/// Test-only hook: execute `f` while holding the promise pending-reactions tracking lock.
+///
+/// This exists to deterministically reproduce contention scenarios for stop-the-world safepoint
+/// coordination where a mutator thread is blocked trying to attach a promise reaction.
+#[doc(hidden)]
+pub fn debug_with_pending_reactions_lock<R>(f: impl FnOnce() -> R) -> R {
+  promise::debug_with_pending_reactions_lock(f)
+}
+
 #[cfg(test)]
 mod tests;

@@ -688,6 +688,16 @@ pub(crate) fn promise_header(p: PromiseRef) -> crate::async_abi::PromiseRef {
 // Test hooks / debug helpers (not stable API)
 // -----------------------------------------------------------------------------
 
+/// Test-only hook: execute `f` while holding the pending-reactions tracking set lock.
+///
+/// This exists so integration tests can deterministically force contention on the
+/// `PROMISES_WITH_PENDING_REACTIONS` lock while exercising stop-the-world coordination.
+#[doc(hidden)]
+pub(crate) fn debug_with_pending_reactions_lock<R>(f: impl FnOnce() -> R) -> R {
+  let _guard = PROMISES_WITH_PENDING_REACTIONS.lock();
+  f()
+}
+
 /// Test-only helper: destroy a legacy `RtPromise` allocated by this module.
 ///
 /// # Safety
