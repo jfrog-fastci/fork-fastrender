@@ -681,6 +681,38 @@ mod tests {
   }
 
   #[test]
+  fn dynamic_script_crossorigin_vertical_tab_is_not_ascii_whitespace() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    dom
+      .set_attribute(script, "crossorigin", "\u{000B}use-credentials\u{000B}")
+      .expect("set_attribute should succeed");
+
+    let spec = build_non_parser_inserted_script_spec(&dom, script);
+    assert_eq!(spec.crossorigin, Some(crate::resource::CorsMode::Anonymous));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_crossorigin_nbsp_is_not_ascii_whitespace() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    dom
+      .set_attribute(script, "crossorigin", "\u{00A0}use-credentials\u{00A0}")
+      .expect("set_attribute should succeed");
+
+    let spec = build_non_parser_inserted_script_spec(&dom, script);
+    assert_eq!(spec.crossorigin, Some(crate::resource::CorsMode::Anonymous));
+    Ok(())
+  }
+
+  #[test]
   fn dynamic_script_spec_exposes_force_async_internal_slot() {
     let mut doc = Document::new(QuirksMode::NoQuirks);
     let script = doc.create_element("script", "");
