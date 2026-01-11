@@ -15,7 +15,21 @@ repo_root="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pattern_bytes='pub(?:\s*\([^)]*\))?(?:\s+(?:async|const|unsafe))*\s+fn\s+(?!fuzz_)[^(]+\([^)]*&\[u8\]'
 pattern_vec='pub(?:\s*\([^)]*\))?(?:\s+(?:async|const|unsafe))*\s+fn\s+(?!fuzz_)[^(]+\((?![^)]*&mut\s*Vec<u8>)[^)]*Vec<u8>'
 
-if rg --pcre2 --multiline -n "$pattern_bytes" "$repo_root" --glob '*.rs'; then
+# Only scan toolchain/source-text crates. Several workspace crates (and vendored
+# third-party code) legitimately expose byte-oriented APIs for non-source-text
+# data (e.g. stack maps, sockets).
+#
+# The goal here is to prevent accidentally introducing byte-oriented public APIs
+# for *source text*, which must be validated UTF-8 (`&str` / `Arc<str>`).
+RG_GLOBS=(
+  --glob '*.rs'
+  --glob '!native-js/**'
+  --glob '!runtime-native/**'
+  --glob '!vm-js/**'
+  --glob '!third_party/**'
+)
+
+if rg --pcre2 --multiline -n "$pattern_bytes" "${RG_GLOBS[@]}" "$repo_root"; then
   echo "error: UTF-8 source-text API policy violation: public API taking \`&[u8]\` found" >&2
   echo "help: accept source text as \`&str\` or \`Arc<str>\` and validate/convert bytes at IO boundaries" >&2
   echo "note: \`pub fn fuzz_*\` entrypoints are allowed to accept bytes" >&2
@@ -29,7 +43,7 @@ else
   fi
 fi
 
-if rg --pcre2 --multiline -n "$pattern_vec" "$repo_root" --glob '*.rs'; then
+if rg --pcre2 --multiline -n "$pattern_vec" "${RG_GLOBS[@]}" "$repo_root"; then
   echo "error: UTF-8 source-text API policy violation: public API taking \`Vec<u8>\` found" >&2
   echo "help: accept source text as \`&str\` or \`Arc<str>\` and validate/convert bytes at IO boundaries" >&2
   echo "note: \`pub fn fuzz_*\` entrypoints are allowed to accept bytes" >&2
