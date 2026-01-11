@@ -19,6 +19,7 @@ mod content_visibility_vertical_writing_mode;
 mod content_visibility_writing_mode;
 mod fixed_cb_propagation;
 mod image_alpha_metadata;
+mod avif_decode_pixels;
 mod inline_abspos_padding_edge;
 mod pageset_filter_url_matching;
 mod pages;

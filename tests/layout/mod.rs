@@ -211,6 +211,7 @@ mod grid_baseline_column_sizing;
 mod grid_baseline_row_sizing;
 mod grid_calc_percentage_padding;
 mod grid_calc_percentage_width;
+mod grid_fit_content_height_definite_inline_size;
 mod grid_item_padding_calc_percentage;
 mod grid_item_margin_calc_percentage;
 mod grid_item_padding_calc_percent;
