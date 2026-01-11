@@ -289,6 +289,8 @@ fn decode_user_data_id(user_data: u64) -> u64 {
 enum Command {
   SubmitRead { op: Arc<IoOp>, fd: RawFd },
   Cancel { id: u64 },
+  #[cfg(test)]
+  Barrier(mpsc::Sender<()>),
   Shutdown,
 }
 
@@ -511,6 +513,8 @@ fn drain_eventfd(fd: RawFd) {
 
 #[cfg(target_os = "linux")]
 fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
+  use std::mem;
+
   threading::register_current_thread(ThreadKind::Io);
   struct Unregister;
   impl Drop for Unregister {
@@ -527,6 +531,8 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
   let ring_fd = ring.as_raw_fd();
 
   let mut ops: HashMap<u64, Arc<IoOp>> = HashMap::new();
+  let mut cancel_in_flight: usize = 0;
+  let mut shutdown = false;
 
   loop {
     while let Ok(cmd) = cmd_rx.try_recv() {
@@ -550,16 +556,18 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
           let target = user_data(id, UserDataKind::Read);
           let ud = user_data(id, UserDataKind::Cancel);
           let sqe = opcode::AsyncCancel::new(target).build().user_data(ud);
-          let _ = push_sqe_with_backpressure(&mut ring, &sqe);
+          if push_sqe_with_backpressure(&mut ring, &sqe).is_ok() {
+            cancel_in_flight = cancel_in_flight.saturating_add(1);
+          }
+        }
+        #[cfg(test)]
+        Command::Barrier(done) => {
+          // Ensure any previously enqueued SQEs are flushed to the kernel before signaling.
+          let _ = submit_with_retry(&mut ring);
+          let _ = done.send(());
         }
         Command::Shutdown => {
-          for (_, op) in ops.drain() {
-            op.complete(Err(IoError::Cancelled));
-          }
-          unsafe {
-            libc::close(wake_fd);
-          }
-          return;
+          shutdown = true;
         }
       }
     }
@@ -569,6 +577,49 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
       for (_, op) in ops.drain() {
         op.complete(Err(IoError::Uring(code)));
       }
+      unsafe {
+        libc::close(wake_fd);
+      }
+      return;
+    }
+
+    if shutdown {
+      // Drain any already-ready CQEs so completed ops don't force a leak.
+      {
+        let mut cq = ring.completion();
+        for cqe in &mut cq {
+          let ud = cqe.user_data();
+          let id = decode_user_data_id(ud);
+          match decode_user_data_kind(ud) {
+            UserDataKind::Read => {
+              if let Some(op) = ops.remove(&id) {
+                let res = cqe.result();
+                if res >= 0 {
+                  op.complete(Ok(res as usize));
+                } else if res == -libc::ECANCELED {
+                  op.complete(Err(IoError::Cancelled));
+                } else {
+                  op.complete(Err(IoError::Uring(res)));
+                }
+              }
+            }
+            UserDataKind::Cancel => {
+              cancel_in_flight = cancel_in_flight.saturating_sub(1);
+            }
+          }
+        }
+      }
+
+      if ops.is_empty() && cancel_in_flight == 0 {
+        unsafe {
+          libc::close(wake_fd);
+        }
+        return;
+      }
+
+      // Leak the ring and in-flight op state to avoid dropping kernel-referenced pointers early.
+      mem::forget(ring);
+      mem::forget(ops);
       unsafe {
         libc::close(wake_fd);
       }
@@ -628,7 +679,9 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
             }
           }
         }
-        UserDataKind::Cancel => {}
+        UserDataKind::Cancel => {
+          cancel_in_flight = cancel_in_flight.saturating_sub(1);
+        }
       }
     }
   }
@@ -636,9 +689,10 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
   use super::*;
-  use crate::gc::TypeDescriptor;
+  use crate::gc::{ObjHeader, TypeDescriptor};
   use crate::test_util::TestRuntimeGuard;
-  use crate::ArrayBuffer;
+  use crate::{ArrayBuffer, BackingStoreAllocator, GlobalBackingStoreAllocator};
+  use std::io;
   use std::os::fd::{FromRawFd, OwnedFd};
   use std::task::Wake;
   use std::time::{Duration, Instant};
@@ -857,5 +911,86 @@ mod tests {
       assert_eq!(pin_count(buffer_obj), 0);
       finalize_array_buffer(buffer_obj);
     }
+  }
+
+  fn is_uring_unavailable(err: &io::Error) -> bool {
+    matches!(
+      err.raw_os_error(),
+      Some(libc::ENOSYS) | Some(libc::EPERM) | Some(libc::EINVAL) | Some(libc::EOPNOTSUPP)
+    )
+  }
+
+  #[repr(C)]
+  struct FakeUint8ArrayObj {
+    _header: ObjHeader,
+    view: Uint8Array,
+  }
+
+  #[repr(C)]
+  struct FakePromiseObj {
+    _header: ObjHeader,
+    _payload: u8,
+  }
+
+  #[test]
+  fn drop_driver_with_inflight_read_keeps_backing_store_alive() {
+    let _rt = TestRuntimeGuard::new();
+
+    // Skip if the kernel doesn't support io_uring in this environment.
+    match io_uring::IoUring::new(2) {
+      Ok(r) => drop(r),
+      Err(e) if is_uring_unavailable(&e) => return,
+      Err(e) => return Err(e).unwrap(),
+    }
+
+    let (rfd, _wfd) = pipe().unwrap();
+
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 1).unwrap();
+    let view = Uint8Array::view(&buf, 0, 1).unwrap();
+
+    let array_obj = Box::into_raw(Box::new(FakeUint8ArrayObj {
+      _header: unsafe { std::mem::zeroed() },
+      view,
+    })) as *mut u8;
+    let promise_obj = Box::into_raw(Box::new(FakePromiseObj {
+      _header: unsafe { std::mem::zeroed() },
+      _payload: 0,
+    })) as *mut u8;
+
+    let heap = Arc::new(Mutex::new(GcHeap::with_nursery_size(1024 * 1024)));
+    let driver = UringDriver::new(8).unwrap();
+    let fut = driver
+      .read_into_uint8_array(heap, rfd.as_raw_fd(), array_obj, promise_obj, None)
+      .unwrap();
+
+    // Ensure the driver thread has processed the submission before we drop the future (so the op is
+    // only owned by the driver state).
+    let (tx, rx) = mpsc::channel();
+    driver.inner.cmd_tx.send(Command::Barrier(tx)).unwrap();
+    driver.signal();
+    rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    // Drop the header to simulate GC finalization / detachment. The in-flight op must keep the
+    // backing store alive.
+    drop(buf);
+    assert_eq!(alloc.external_bytes(), 1);
+
+    drop(fut);
+    drop(driver);
+
+    let deadline = Instant::now() + Duration::from_millis(100);
+    while Instant::now() < deadline {
+      if alloc.external_bytes() == 0 {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(1));
+    }
+
+    assert_eq!(
+      alloc.external_bytes(),
+      1,
+      "backing store was freed while an io_uring op could still reference its pointer"
+    );
   }
 }
