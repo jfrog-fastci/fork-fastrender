@@ -54,17 +54,20 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
     let stackmaps = StackMaps::parse(&minimal_stackmap_section(return_address as u32)).unwrap();
     let roots = StackRootEnumerator::new(&stackmaps);
 
-     let mut seen = vec![];
-     let bounds =
-      StackBounds::new(base as u64, (base + stack.0.len() * std::mem::size_of::<usize>()) as u64).unwrap();
-     roots
-       .visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
-       seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
-     })
-       .unwrap();
+    let mut seen = vec![];
+    let bounds = StackBounds::new(
+      base as u64,
+      (base + stack.0.len() * std::mem::size_of::<usize>()) as u64,
+    )
+    .unwrap();
+    roots
+      .visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
+        seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
+      })
+      .unwrap();
 
-     assert_eq!(seen, vec![(base_slot_addr as usize, derived_slot_addr as usize)]);
-   }
+    assert_eq!(seen, vec![(base_slot_addr as usize, derived_slot_addr as usize)]);
+  }
 }
 
 #[test]
@@ -81,14 +84,17 @@ fn stack_root_enumerator_stops_on_corrupt_fp_chain() {
 
     let stackmaps = StackMaps::parse(&minimal_stackmap_section(return_address as u32)).unwrap();
     let roots = StackRootEnumerator::new(&stackmaps);
-    let bounds =
-      StackBounds::new(base as u64, (base + stack.0.len() * std::mem::size_of::<usize>()) as u64).unwrap();
+    let bounds = StackBounds::new(
+      base as u64,
+      (base + stack.0.len() * std::mem::size_of::<usize>()) as u64,
+    )
+    .unwrap();
 
     let mut seen = vec![];
     let err = roots
       .visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
-      seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
-    })
+        seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
+      })
       .unwrap_err();
     assert!(seen.is_empty());
     assert!(matches!(
@@ -114,8 +120,8 @@ fn stack_root_enumerator_stops_on_out_of_bounds_fp() {
   let mut seen = vec![];
   let err = roots
     .visit_reloc_pairs(bogus_fp, Some(bounds), |pair| {
-    seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
-  })
+      seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
+    })
     .unwrap_err();
   assert!(seen.is_empty());
   assert!(matches!(
@@ -143,8 +149,11 @@ fn stack_root_enumerator_stops_on_out_of_bounds_slot() {
     (caller_fp as *mut usize).add(1).write(0);
   }
 
-  let bounds =
-    StackBounds::new(base as u64, (base + stack.0.len() * std::mem::size_of::<usize>()) as u64).unwrap();
+  let bounds = StackBounds::new(
+    base as u64,
+    (base + stack.0.len() * std::mem::size_of::<usize>()) as u64,
+  )
+  .unwrap();
   // Make the stackmap describe slots far outside the synthetic stack buffer.
   let stackmaps = StackMaps::parse(&minimal_stackmap_section_with_offsets(
     return_address as u32,
@@ -162,8 +171,8 @@ fn stack_root_enumerator_stops_on_out_of_bounds_slot() {
   let mut seen = vec![];
   roots
     .visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
-    seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
-  })
+      seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
+    })
     .unwrap();
   assert!(seen.is_empty());
 }
