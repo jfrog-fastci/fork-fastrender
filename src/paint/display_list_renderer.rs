@@ -20649,6 +20649,51 @@ mod tests {
   }
 
   #[test]
+  fn backdrop_filter_clamps_write_region_to_filtered_bounds() {
+    // Regression test for an out-of-bounds panic in `apply_backdrop_filters_with_region_filler`.
+    //
+    // `write_rect` is computed using float intersections and then rounded with floor/ceil. When a
+    // clip starts partway through the filtered region (so `src_start_y > 0`), rounding could produce
+    // `write_h` that extends 1px past the filtered region's height, causing mask indexing to panic.
+    //
+    // Repro: region_h=35, src_start_y=1, write_h=35 => mask_idx == len.
+    let mut dest = Pixmap::new(40, 40).expect("dest pixmap");
+    dest.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+
+    let bounds_in_src = Rect::from_xywh(0.0, 0.0, 35.0, 35.0);
+    let clip_bounds = Rect::from_xywh(0.0, 1.0, 35.0, 34.0001);
+    let filters = [ResolvedFilter::Blur(1.0)];
+
+    let result = apply_backdrop_filters_with_region_filler(
+      &mut dest,
+      (40, 40),
+      (0, 0),
+      bounds_in_src,
+      bounds_in_src,
+      &filters,
+      BorderRadii::uniform(4.0),
+      1.0,
+      None,
+      Some(clip_bounds),
+      (0, 0),
+      bounds_in_src,
+      Transform::identity(),
+      None,
+      None,
+      |region, _clamped_x, _clamped_y| {
+        for px in region.data_mut().chunks_exact_mut(4) {
+          px.copy_from_slice(&[255, 0, 0, 255]);
+        }
+        Ok(())
+      },
+      None,
+      None,
+    );
+
+    assert!(result.is_ok(), "expected no panic/error, got: {result:?}");
+  }
+
+  #[test]
   fn estimate_expensive_raster_pixels_counts_opacity_groups() {
     let mut list = DisplayList::new();
     list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 0.5 }));
