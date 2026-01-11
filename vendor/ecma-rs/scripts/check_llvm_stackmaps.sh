@@ -117,6 +117,12 @@ cat >"${tmp}/callee.c" <<'EOF'
 void callee(void) {}
 EOF
 
+"${CLANG}" -c -O0 -o "${tmp}/faultmaps.o" -x assembler - <<'EOF'
+.section .llvm_faultmaps,"a",@progbits
+  .quad 0xfeedfacefeedface
+.section .note.GNU-stack,"",@progbits
+EOF
+
 "${CLANG}" -c -O0 -o "${tmp}/mod_a.o" "${tmp}/mod_a.ll" \
   -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0
 "${CLANG}" -c -O0 -o "${tmp}/mod_b.o" "${tmp}/mod_b.ll" \
@@ -125,7 +131,7 @@ EOF
   -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0
 "${CLANG}" -c -O0 -o "${tmp}/callee.o" "${tmp}/callee.c"
 
-objs=("${tmp}/main.o" "${tmp}/mod_a.o" "${tmp}/mod_b.o" "${tmp}/callee.o")
+objs=("${tmp}/main.o" "${tmp}/mod_a.o" "${tmp}/mod_b.o" "${tmp}/callee.o" "${tmp}/faultmaps.o")
 
 must_have_stackmaps() {
   local bin="$1"
@@ -136,6 +142,31 @@ must_have_stackmaps() {
   )"
   if [[ -z "${line}" ]]; then
     echo "expected stackmaps section (.data.rel.ro.llvm_stackmaps or .llvm_stackmaps) in: ${bin}" >&2
+    "${READELF}" -W -S "${bin}" >&2 || true
+    exit 1
+  fi
+
+  # readelf columns: [Nr] Name Type Address Off Size ES Flags Link Info Align
+  local sec_name sec_size_hex
+  sec_name="$(awk '{print $2}' <<<"${line}")"
+  sec_size_hex="$(awk '{print $6}' <<<"${line}")"
+  local sec_size_dec=$((16#${sec_size_hex}))
+  if [[ "${sec_size_dec}" -le 0 ]]; then
+    echo "expected non-empty ${sec_name} in: ${bin} (size=0x${sec_size_hex})" >&2
+    "${READELF}" -W -S "${bin}" >&2 || true
+    exit 1
+  fi
+}
+
+must_have_faultmaps() {
+  local bin="$1"
+  local line
+  line="$(
+    "${READELF}" -W -S "${bin}" \
+      | awk '$2==".data.rel.ro.llvm_faultmaps" || $2==".llvm_faultmaps" { if (!found) { print $0; found = 1 } }'
+  )"
+  if [[ -z "${line}" ]]; then
+    echo "expected faultmaps section (.data.rel.ro.llvm_faultmaps or .llvm_faultmaps) in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
   fi
@@ -209,10 +240,74 @@ must_have_stackmaps_symbols() {
   fi
 }
 
+must_have_faultmaps_symbols() {
+  local bin="$1"
+
+  local start_hex stop_hex
+  start_hex="$(
+    "${READELF}" -W -s "${bin}" \
+      | awk '$8=="__llvm_faultmaps_start" { if (!found) { print $2; found = 1 } }'
+  )"
+  stop_hex="$(
+    "${READELF}" -W -s "${bin}" \
+      | awk '$8=="__llvm_faultmaps_end" { if (!found) { print $2; found = 1 } }'
+  )"
+  if [[ -z "${start_hex}" || -z "${stop_hex}" ]]; then
+    echo "expected __llvm_faultmaps_start/__llvm_faultmaps_end in: ${bin}" >&2
+    "${READELF}" -W -s "${bin}" >&2 || true
+    exit 1
+  fi
+
+  local line
+  line="$(
+    "${READELF}" -W -S "${bin}" \
+      | awk '$2==".data.rel.ro.llvm_faultmaps" || $2==".llvm_faultmaps" { if (!found) { print $0; found = 1 } }'
+  )"
+  if [[ -z "${line}" ]]; then
+    echo "expected faultmaps section for symbol range check in: ${bin}" >&2
+    "${READELF}" -W -S "${bin}" >&2 || true
+    exit 1
+  fi
+
+  # readelf columns: [Nr] Name Type Address Off Size ES Flags Link Info Align
+  local sec_addr_hex sec_size_hex
+  sec_addr_hex="$(awk '{print $4}' <<<"${line}")"
+  sec_size_hex="$(awk '{print $6}' <<<"${line}")"
+
+  local start_dec=$((16#${start_hex}))
+  local stop_dec=$((16#${stop_hex}))
+  local sec_addr_dec=$((16#${sec_addr_hex}))
+  local sec_size_dec=$((16#${sec_size_hex}))
+
+  if [[ "${stop_dec}" -le "${start_dec}" ]]; then
+    echo "invalid faultmaps symbol range in: ${bin} (start=0x${start_hex} stop=0x${stop_hex})" >&2
+    exit 1
+  fi
+
+  local expected_stop=$((sec_addr_dec + sec_size_dec))
+  if [[ "${start_dec}" -ne "${sec_addr_dec}" || "${stop_dec}" -ne "${expected_stop}" ]]; then
+    echo "faultmaps symbol range mismatch in: ${bin}" >&2
+    echo "  section_addr=0x${sec_addr_hex} section_size=0x${sec_size_hex}" >&2
+    echo "  __llvm_faultmaps_start=0x${start_hex} __llvm_faultmaps_end=0x${stop_hex}" >&2
+    "${READELF}" -W -S "${bin}" >&2 || true
+    "${READELF}" -W -s "${bin}" >&2 || true
+    exit 1
+  fi
+}
+
 must_not_have_stackmaps() {
   local bin="$1"
   if "${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" {found=1} END {exit !found}'; then
     echo "expected no stackmaps section in: ${bin}" >&2
+    "${READELF}" -W -S "${bin}" >&2 || true
+    exit 1
+  fi
+}
+
+must_not_have_faultmaps() {
+  local bin="$1"
+  if "${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro.llvm_faultmaps" || $2==".llvm_faultmaps" {found=1} END {exit !found}'; then
+    echo "expected no faultmaps section in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
   fi
@@ -248,6 +343,7 @@ must_not_have_rwx_segment() {
 echo "[stackmaps] link: ld (no-pie, no gc-sections)"
 "${CLANG}" -no-pie -o "${tmp}/a_ld_nogc" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_ld_nogc"
+must_have_faultmaps "${tmp}/a_ld_nogc"
 
 echo "[stackmaps] link: ld (pie) => EXPECTED DT_TEXTREL"
 if "${CLANG}" -pie -o "${tmp}/a_ld_pie_textrel" "${objs[@]}" 2>"${tmp}/a_ld_pie_textrel.stderr"; then
@@ -274,26 +370,36 @@ fi
 echo "[stackmaps] link: ld (no-pie, --gc-sections) => EXPECTED DROP"
 "${CLANG}" -no-pie -Wl,--gc-sections -o "${tmp}/a_ld_gc" "${objs[@]}"
 must_not_have_stackmaps "${tmp}/a_ld_gc"
+must_not_have_faultmaps "${tmp}/a_ld_gc"
 
 echo "[stackmaps] link: ld (no-pie, --gc-sections + stackmaps.ld KEEP)"
 "${CLANG}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
   -o "${tmp}/a_ld_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_ld_policy"
 must_have_stackmaps_symbols "${tmp}/a_ld_policy"
+must_have_faultmaps "${tmp}/a_ld_policy"
+must_have_faultmaps_symbols "${tmp}/a_ld_policy"
 
 echo "[stackmaps] link: native_link.sh (no-pie, --gc-sections + KEEP)"
 "${script_dir}/native_link.sh" -o "${tmp}/a_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy"
 must_have_stackmaps_symbols "${tmp}/a_policy"
+must_have_faultmaps "${tmp}/a_policy"
+must_have_faultmaps_symbols "${tmp}/a_policy"
 
 echo "[stackmaps] link: native_link.sh (ld explicit)"
 ECMA_RS_NATIVE_LINKER=ld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy_ld"
 must_have_stackmaps_symbols "${tmp}/a_policy_ld"
+must_have_faultmaps "${tmp}/a_policy_ld"
+must_have_faultmaps_symbols "${tmp}/a_policy_ld"
 
 echo "[stackmaps] link: native_link.sh (ld + PIE; stackmaps patched via objcopy)"
 ECMA_RS_NATIVE_LINKER=ld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld_pie" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy_ld_pie"
+must_have_stackmaps_symbols "${tmp}/a_policy_ld_pie"
+must_have_faultmaps "${tmp}/a_policy_ld_pie"
+must_have_faultmaps_symbols "${tmp}/a_policy_ld_pie"
 must_not_have_textrel "${tmp}/a_policy_ld_pie"
 must_not_have_rwx_segment "${tmp}/a_policy_ld_pie"
 
@@ -301,6 +407,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
   echo "[stackmaps] link: lld (no-pie, no gc-sections)"
   "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -o "${tmp}/a_lld_nogc" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_lld_nogc"
+  must_have_faultmaps "${tmp}/a_lld_nogc"
 
   echo "[stackmaps] link: lld (pie, unpatched) => EXPECTED FAIL"
   if "${CLANG}" -fuse-ld="${LLD_FUSE}" -pie -o "${tmp}/a_lld_pie_unpatched" "${objs[@]}" 2>"${tmp}/a_lld_pie_unpatched.stderr"; then
@@ -317,23 +424,30 @@ if [[ -n "${LLD_FUSE}" ]]; then
   echo "[stackmaps] link: lld (no-pie, --gc-sections) => EXPECTED DROP"
   "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -o "${tmp}/a_lld_gc" "${objs[@]}"
   must_not_have_stackmaps "${tmp}/a_lld_gc"
+  must_not_have_faultmaps "${tmp}/a_lld_gc"
 
   echo "[stackmaps] link: lld (no-pie, --gc-sections + stackmaps.ld KEEP)"
   "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
     -o "${tmp}/a_lld_policy" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_lld_policy"
   must_have_stackmaps_symbols "${tmp}/a_lld_policy"
+  must_have_faultmaps "${tmp}/a_lld_policy"
+  must_have_faultmaps_symbols "${tmp}/a_lld_policy"
 
   echo "[stackmaps] link: native_link.sh (lld explicit)"
   ECMA_RS_NATIVE_LINKER=lld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_policy_lld"
   must_have_stackmaps_symbols "${tmp}/a_policy_lld"
+  must_have_faultmaps "${tmp}/a_policy_lld"
+  must_have_faultmaps_symbols "${tmp}/a_policy_lld"
 
   if [[ -n "${LLVM_OBJCOPY}" ]]; then
     echo "[stackmaps] link: native_link.sh (lld + PIE; stackmaps patched via llvm-objcopy)"
     ECMA_RS_NATIVE_LINKER=lld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld_pie" "${objs[@]}"
     must_have_stackmaps "${tmp}/a_policy_lld_pie"
     must_have_stackmaps_symbols "${tmp}/a_policy_lld_pie"
+    must_have_faultmaps "${tmp}/a_policy_lld_pie"
+    must_have_faultmaps_symbols "${tmp}/a_policy_lld_pie"
     must_not_have_textrel "${tmp}/a_policy_lld_pie"
   else
     echo "[stackmaps] note: llvm-objcopy not found; skipping PIE+lld policy link"
@@ -346,22 +460,26 @@ echo "[stackmaps] strip: GNU strip"
 cp "${tmp}/a_policy" "${tmp}/a_policy.strip"
 "${STRIP}" "${tmp}/a_policy.strip"
 must_have_stackmaps "${tmp}/a_policy.strip"
+must_have_faultmaps "${tmp}/a_policy.strip"
 
 echo "[stackmaps] strip: objcopy --strip-unneeded"
 cp "${tmp}/a_policy" "${tmp}/a_policy.objcopy_strip_unneeded"
 "${OBJCOPY}" --strip-unneeded "${tmp}/a_policy.objcopy_strip_unneeded"
 must_have_stackmaps "${tmp}/a_policy.objcopy_strip_unneeded"
+must_have_faultmaps "${tmp}/a_policy.objcopy_strip_unneeded"
 
 echo "[stackmaps] strip: native_strip.sh"
 cp "${tmp}/a_policy" "${tmp}/a_policy.native_strip"
 "${script_dir}/native_strip.sh" "${tmp}/a_policy.native_strip"
 must_have_stackmaps "${tmp}/a_policy.native_strip"
+must_have_faultmaps "${tmp}/a_policy.native_strip"
 
 if [[ -n "${LLVM_STRIP}" ]]; then
   echo "[stackmaps] strip: llvm-strip"
   cp "${tmp}/a_policy" "${tmp}/a_policy.llvm_strip"
   "${LLVM_STRIP}" "${tmp}/a_policy.llvm_strip"
   must_have_stackmaps "${tmp}/a_policy.llvm_strip"
+  must_have_faultmaps "${tmp}/a_policy.llvm_strip"
 else
   echo "[stackmaps] note: llvm-strip not found; skipping llvm-strip check"
 fi
