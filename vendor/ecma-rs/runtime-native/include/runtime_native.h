@@ -286,6 +286,13 @@ size_t rt_backing_store_external_bytes(void);
 void rt_root_push(GcHandle slot);
 void rt_root_pop(GcHandle slot);
 
+// Register a global/static root slot (word-sized `usize` in Rust / `size_t` in C).
+//
+// This is intended for GC pointers stored in statics or long-lived runtime state. The GC will
+// update `*slot` in place if it relocates the referenced object.
+void rt_global_root_register(size_t* slot);
+void rt_global_root_unregister(size_t* slot);
+
 // Register an addressable root slot. `slot` must remain valid and writable
 // until unregistered.
 uint32_t rt_gc_register_root_slot(GcHandle slot);

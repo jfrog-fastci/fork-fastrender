@@ -170,6 +170,39 @@ pub use runtime::{AttachError, DetachError, Runtime, StopTheWorldGuard, ThreadGu
 pub use thread::{
   current_thread, current_thread_mut, current_thread_ptr, current_thread_state, Thread, ThreadState,
 };
+pub use roots::{
+  enumerate_root_slots, enumerate_root_slots_world_stopped, register_global_root_slot, unregister_global_root_slot,
+  GlobalRoots,
+};
+
+/// Convenience helper for registering `static mut` globals as GC root slots.
+///
+/// This returns the address of a word-sized slot (`usize`) without creating an intermediate
+/// reference, which is important for `static mut` (forming `&mut` aliases is immediately UB).
+///
+/// ## Example
+/// ```no_run
+/// use runtime_native::{global_root_slot, register_global_root_slot};
+///
+/// static mut ROOT: usize = 0;
+///
+/// fn init_runtime() {
+///   register_global_root_slot(global_root_slot!(ROOT));
+/// }
+/// ```
+///
+/// ## Safety notes
+/// `static mut` is inherently unsafe to access concurrently. When using a `static mut` as a GC root
+/// slot:
+/// - treat the slot as runtime-owned memory that may be mutated by the GC while the world is stopped.
+/// - do not read/write the slot concurrently with a GC cycle unless your runtime guarantees
+///   synchronization.
+#[macro_export]
+macro_rules! global_root_slot {
+  ($slot:expr) => {
+    ::core::ptr::addr_of_mut!($slot)
+  };
+}
 
 use std::sync::OnceLock;
 

@@ -775,6 +775,22 @@ pub unsafe extern "C" fn rt_root_pop(slot: crate::roots::GcHandle) {
 // Global roots / handles (non-stack roots)
 // -----------------------------------------------------------------------------
 
+/// Register a global/static root slot.
+///
+/// This is a convenience wrapper for codegen/FFI that stores GC pointers in raw word slots
+/// (`usize`). The slot address is added to the always-scanned global root set, allowing a moving GC
+/// to update the slot in-place.
+#[no_mangle]
+pub extern "C" fn rt_global_root_register(slot: *mut usize) {
+  crate::roots::register_global_root_slot(slot);
+}
+
+/// Unregister a global/static root slot previously registered via [`rt_global_root_register`].
+#[no_mangle]
+pub extern "C" fn rt_global_root_unregister(slot: *mut usize) {
+  crate::roots::unregister_global_root_slot(slot);
+}
+
 /// Register an addressable root slot with the runtime.
 ///
 /// `slot` must point to a writable `*mut u8` and must remain valid until the

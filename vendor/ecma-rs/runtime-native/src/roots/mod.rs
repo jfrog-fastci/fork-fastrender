@@ -53,8 +53,71 @@ pub mod persistent_handle_table;
 pub use registry::{global_root_registry, RootRegistry, RootScope};
 pub use persistent_handle_table::{global_persistent_handle_table, PersistentHandleTable};
 
+/// Process-wide global/static GC roots.
+///
+/// This is a thin alias for [`RootRegistry`]. See [`register_global_root_slot`].
+pub type GlobalRoots = RootRegistry;
+
 pub mod conservative;
 pub use conservative::conservative_scan_words;
+
+// -----------------------------------------------------------------------------
+// Global/static roots (always-scanned)
+// -----------------------------------------------------------------------------
+
+/// Register a *global* GC root slot.
+///
+/// This is intended for GC-managed pointers stored outside LLVM stackmaps:
+/// - Rust `static`/singleton state
+/// - long-lived runtime state structs
+/// - TypeScript module/global variables stored in static memory
+///
+/// The registry stores **addresses of slots** (pointer-to-pointer). A relocating GC can update the
+/// slot in place.
+///
+/// `slot` points to a `usize` containing a GC pointer value. The GC assumes the slot remains valid
+/// and writable until it is unregistered.
+pub fn register_global_root_slot(slot: *mut usize) {
+  if slot.is_null() {
+    std::process::abort();
+  }
+  // Reinterpret the `usize` slot as a `GcPtr` slot.
+  let slot = slot as *mut GcPtr;
+  let _handle = global_root_registry().register_root_slot(slot);
+}
+
+/// Unregister a *global* GC root slot previously registered via [`register_global_root_slot`].
+pub fn unregister_global_root_slot(slot: *mut usize) {
+  if slot.is_null() {
+    std::process::abort();
+  }
+  let slot = slot as *mut GcPtr;
+  global_root_registry().unregister_root_slot_ptr(slot);
+}
+
+/// Enumerate all GC root slots while the world is stopped.
+///
+/// This is a compatibility wrapper around
+/// [`crate::threading::safepoint::for_each_root_slot_world_stopped`] that exposes root slots as
+/// `*mut usize` so the visitor can update them in-place.
+pub fn enumerate_root_slots_world_stopped(
+  stop_epoch: u64,
+  visit_root_slot: &mut dyn FnMut(*mut usize),
+) -> Result<(), crate::WalkError> {
+  crate::threading::safepoint::for_each_root_slot_world_stopped(stop_epoch, |slot| {
+    visit_root_slot(slot as *mut usize);
+  })
+}
+
+/// Stop the world, enumerate all GC root slots, then resume.
+///
+/// The GC typically calls [`enumerate_root_slots_world_stopped`] once it already holds a
+/// stop-the-world pause; this helper is primarily intended for tests/debug tooling.
+pub fn enumerate_root_slots(mut visit_root_slot: impl FnMut(*mut usize)) -> Result<(), crate::WalkError> {
+  crate::threading::safepoint::with_world_stopped(|stop_epoch| {
+    enumerate_root_slots_world_stopped(stop_epoch, &mut visit_root_slot)
+  })
+}
 
 // -----------------------------------------------------------------------------
 // Per-thread shadow stack roots (for Rust runtime code)

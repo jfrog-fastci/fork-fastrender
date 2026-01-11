@@ -70,6 +70,22 @@ impl RootRegistry {
     let _ = inner.remove(handle);
   }
 
+  /// Unregister a previously registered *borrowed* root slot by its address.
+  ///
+  /// This is useful for APIs that want to register global/static root slots without managing
+  /// handle IDs. If the same slot address was registered multiple times, all matching entries are
+  /// removed.
+  ///
+  /// # Panics
+  /// Panics if `slot` is null.
+  pub fn unregister_root_slot_ptr(&self, slot: *mut *mut u8) {
+    if slot.is_null() {
+      std::process::abort();
+    }
+    let mut inner = self.inner.lock();
+    inner.remove_borrowed_slot_ptr(slot);
+  }
+
   /// Returns the current pointer value for a registered root handle.
   ///
   /// This can be used by host/async code to re-load a GC pointer after a GC cycle may have
@@ -203,6 +219,23 @@ impl Inner {
     slot.generation = slot.generation.wrapping_add(1);
     self.free_list.push(index);
     Some(entry)
+  }
+
+  fn remove_borrowed_slot_ptr(&mut self, slot_ptr: *mut *mut u8) {
+    for (idx, slot) in self.slots.iter_mut().enumerate() {
+      let Some(entry) = slot.entry.as_ref() else {
+        continue;
+      };
+      let Entry::Borrowed(ptr) = entry else {
+        continue;
+      };
+      if *ptr != slot_ptr {
+        continue;
+      }
+      let _ = slot.entry.take();
+      slot.generation = slot.generation.wrapping_add(1);
+      self.free_list.push(idx as u32);
+    }
   }
 }
 
