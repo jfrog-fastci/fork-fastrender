@@ -3925,7 +3925,9 @@ pub fn rt_async_poll() -> bool;
 ```
 
 See [`docs/runtime-native/buffers-and-io.md`](docs/runtime-native/buffers-and-io.md) for the
-non-moving backing store + pinning invariants required to make async I/O safe under a moving GC.
+non-moving backing store + pinning invariants required to make async I/O safe under a moving GC,
+and [`runtime-native/docs/buffers.md`](runtime-native/docs/buffers.md) for the detach/transfer +
+pin-count ADR.
 
 ### vm-js/ and emit-js/ (unchanged)
 

@@ -64,7 +64,7 @@ An I/O operation that submits a buffer to the OS must:
 Pinning exists to prevent:
 
 - freeing the backing store while the kernel still uses it,
-- (future) resize/detach/transfer semantics from changing the data pointer.
+- resize/detach/transfer semantics from invalidating the OS-visible data pointer.
 
 ### 3) Host code stores only handles/roots (no raw GC pointers)
 
@@ -210,13 +210,18 @@ above, the MVP explicitly does **not** implement:
 
 - **Resizable ArrayBuffer** (would require pointer-stability rules during growth
   and interaction with pins),
-- **ArrayBuffer detach/transfer** (would require detaching to block or fail
-  while pinned, plus careful promise/I/O interactions),
 - **SharedArrayBuffer** (requires thread-safe memory model, atomics, and
   cross-thread lifetime; see [Future work](#future-work)).
 
-If/when these features are added later, they must be designed to preserve the
-pinning invariants (e.g. “detach fails while pinned”).
+**Note:** `runtime-native` *does* implement **ArrayBuffer detach/transfer** today
+as internal/runtime APIs, and they preserve the pin-count invariant: detaching or
+transferring while pinned deterministically fails with `*Error::Pinned` rather
+than invalidating an in-flight I/O pointer. See
+[`runtime-native/docs/buffers.md`](../../runtime-native/docs/buffers.md) for the
+detailed ADR (detach/transfer behavior + pin-count semantics).
+
+If/when resizable ArrayBuffers are added later, they must be designed to
+preserve the same pinning invariants (e.g. “resize fails while pinned”).
 
 ## Future work
 

@@ -1,5 +1,10 @@
 # Buffers and I/O (stable pointers under a moving GC)
 
+For the canonical buffer/I/O invariants (pin-count protocol, cancellation rules,
+etc.), see:
+- [`docs/runtime-native/buffers-and-io.md`](../../docs/runtime-native/buffers-and-io.md)
+- [`docs/buffers.md`](./buffers.md) (ADR: detach/transfer + pin-count semantics)
+
 JavaScript `ArrayBuffer` / `TypedArray` objects are frequently used as I/O buffers (filesystem,
 sockets, async runtimes like `io_uring`, etc.). Many OS APIs require the buffer memory to remain
 valid at a **stable virtual address** until the kernel has finished using it.
@@ -47,15 +52,22 @@ should call.
 
 ## Using buffers for I/O
 
-To obtain a `(ptr, len)` pair suitable for kernel I/O:
+To obtain a `(ptr, len)` pair for kernel I/O:
 
 - Create an `ArrayBuffer` (`ArrayBuffer::new_zeroed`, `ArrayBuffer::from_bytes`, etc.).
 - Create a typed view (`Uint8Array::view`).
-- Call `Uint8Array::as_ptr_range()` to get `(ptr, len)` with bounds checking **for synchronous use**.
-- For async I/O (where the kernel may retain the pointer after the current call returns), use
-  `Uint8Array::pin()` instead. While pinned, `ArrayBuffer::detach`/`transfer`/`resize` must
-  deterministically fail with `*Error::Pinned` so in-flight I/O buffers cannot be invalidated.
+- Use either:
+  - `Uint8Array::as_ptr_range()` for **immediate** / synchronous I/O (not pinned), or
+  - `Uint8Array::pin()` / `ArrayBuffer::pin()` for async I/O (pinned).
 
-The returned pointer is stable for as long as the backing store remains alive (i.e. until the
-buffer is finalized/freed) and is not detached/transferred/resized. Pinning additionally enforces
-the "no invalidation while in-flight" rule.
+`Uint8Array::as_ptr_range()` is *not* sufficient for async I/O: it does not pin
+the backing store, so the byte pointer can be invalidated by detach/transfer/resize
+or GC finalization while an operation is in flight.
+
+Pinned guards (`PinnedUint8Array`, `PinnedArrayBuffer`) increment the backing
+store pin count, keeping the bytes alive and forcing detach/transfer/resize to
+fail deterministically with `*Error::Pinned` until the guard is dropped.
+
+The byte pointer itself comes from the non-moving backing store, so it is stable
+for as long as the backing store remains alive and is not detached/transferred/resized;
+pinning is what makes that lifetime explicit for async I/O.
