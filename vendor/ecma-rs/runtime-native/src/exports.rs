@@ -2068,7 +2068,7 @@ pub extern "C" fn rt_io_register_handle_with_drop(
       ensure_current_thread_registered();
       let ptr = rt_handle_load(data);
       if !ptr.is_null() {
-        drop_data(ptr);
+        crate::ffi::invoke_cb1(drop_data, ptr);
       }
       rt_handle_free(data);
       return 0;
