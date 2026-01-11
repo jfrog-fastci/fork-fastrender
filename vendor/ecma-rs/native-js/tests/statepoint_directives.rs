@@ -1,6 +1,8 @@
 use inkwell::context::Context;
+use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::values::AsValueRef;
+use inkwell::values::InstructionOpcode;
 use inkwell::OptimizationLevel;
 use native_js::llvm::{gc, passes, statepoint_directives};
 use object::{Object, ObjectSection};
@@ -332,5 +334,74 @@ fn statepoint_num_patch_bytes_reserves_nop_sled_x86_64() {
   assert!(
     insts.iter().all(|(_addr, m)| !m.starts_with("call")),
     "expected patch_bytes>0 to suppress direct call emission (should be a NOP sled), got:\n{disasm}"
+  );
+}
+
+#[test]
+fn rewrite_statepoints_honors_callsite_directives_on_invoke() {
+  if !cfg!(unix) {
+    eprintln!("skipping: invoke + landingpad IR is only exercised on unix-like targets");
+    return;
+  }
+
+  let input_ir = r#"
+    ; ModuleID = 'statepoint_invoke'
+    source_filename = "statepoint_invoke.ll"
+
+    declare void @bar()
+
+    define i32 @dummy_personality(...) { ret i32 0 }
+
+    define void @foo() gc "statepoint-example" personality ptr @dummy_personality {
+    entry:
+      invoke void @bar()
+              to label %cont unwind label %lpad
+
+    cont:
+      ret void
+
+    lpad:
+      %lp = landingpad { ptr, i32 } cleanup
+      resume { ptr, i32 } %lp
+    }
+  "#;
+
+  let context = Context::create();
+  let buffer = MemoryBuffer::create_from_memory_range_copy(input_ir.as_bytes(), "statepoint_invoke.ll");
+  let module = context
+    .create_module_from_ir(buffer)
+    .unwrap_or_else(|err| panic!("failed to parse LLVM IR: {err}\n\nIR:\n{input_ir}"));
+
+  // Find the `invoke` instruction and attach directives through our helper API.
+  let foo = module.get_function("foo").expect("missing @foo");
+  let mut invoke_inst = None;
+  for bb in foo.get_basic_blocks() {
+    let mut inst = bb.get_first_instruction();
+    while let Some(i) = inst {
+      if i.get_opcode() == InstructionOpcode::Invoke {
+        invoke_inst = Some(i);
+        break;
+      }
+      inst = i.get_next_instruction();
+    }
+    if invoke_inst.is_some() {
+      break;
+    }
+  }
+
+  let invoke_inst = invoke_inst.expect("missing invoke instruction in @foo");
+  statepoint_directives::set_callsite_statepoint_id(invoke_inst.as_value_ref(), 42);
+  statepoint_directives::set_callsite_statepoint_num_patch_bytes(invoke_inst.as_value_ref(), 16);
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  passes::rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
+  let ir = module.print_to_string().to_string();
+
+  assert!(
+    ir.contains("invoke token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 42, i32 16"),
+    "expected invoke statepoint with directive id/patch-bytes, got:\n{ir}"
   );
 }
