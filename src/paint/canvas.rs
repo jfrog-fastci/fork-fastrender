@@ -1382,6 +1382,17 @@ impl Canvas {
   /// ```
   pub fn set_transform(&mut self, transform: Transform) {
     self.current_state.transform = transform;
+    // `overflow: hidden` and other rectangular clips may be tracked only as a bounds rect for
+    // performance (see `set_clip_with_radii_impl`). That representation is sufficient for
+    // axis-aligned drawing, but once a non-identity transform is applied we can no longer rely on
+    // bounds-only scissoring: many tiny-skia operations (paths, pixmap draws, etc.) need a real
+    // per-pixel mask to clip transformed output.
+    //
+    // Materialize a mask lazily when a transform is introduced so transformed descendants are
+    // correctly clipped without forcing every `overflow:hidden` wrapper to allocate a mask.
+    if transform != Transform::identity() {
+      self.materialize_rect_clip_mask_if_needed();
+    }
   }
 
   /// Returns the current transform
@@ -1401,11 +1412,86 @@ impl Canvas {
   /// ```
   pub fn translate(&mut self, dx: f32, dy: f32) {
     self.current_state.transform = self.current_state.transform.pre_translate(dx, dy);
+    if self.current_state.transform != Transform::identity() {
+      self.materialize_rect_clip_mask_if_needed();
+    }
   }
 
   /// Applies a scale to the current transform
   pub fn scale(&mut self, sx: f32, sy: f32) {
     self.current_state.transform = self.current_state.transform.pre_scale(sx, sy);
+    if self.current_state.transform != Transform::identity() {
+      self.materialize_rect_clip_mask_if_needed();
+    }
+  }
+
+  fn materialize_rect_clip_mask_if_needed(&mut self) {
+    if self.current_state.clip_mask.is_some() {
+      return;
+    }
+    let Some(clip_rect) = self.current_state.clip_rect else {
+      return;
+    };
+    if clip_rect.width() <= 0.0
+      || clip_rect.height() <= 0.0
+      || self.width() == 0
+      || self.height() == 0
+      || !clip_rect.x().is_finite()
+      || !clip_rect.y().is_finite()
+      || !clip_rect.width().is_finite()
+      || !clip_rect.height().is_finite()
+    {
+      return;
+    }
+
+    // `clip_rect` is stored in device space, so build a mask directly in device pixels (ignoring
+    // the current transform). Use the same pixel-center inclusion rule as
+    // `build_clip_mask_fast_rect` so the resulting mask matches tiny-skia's non-AA `clipRect`.
+    let Some(mut mask) = Mask::new(self.width(), self.height()) else {
+      return;
+    };
+    mask.data_mut().fill(0);
+
+    let w_i64 = self.width() as i64;
+    let h_i64 = self.height() as i64;
+
+    let min_x = clip_rect.min_x();
+    let max_x = clip_rect.max_x();
+    let min_y = clip_rect.min_y();
+    let max_y = clip_rect.max_y();
+    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
+      return;
+    }
+
+    let x0 = (min_x - 0.5).ceil() as i64;
+    let y0 = (min_y - 0.5).ceil() as i64;
+    let x1 = (max_x - 0.5).floor() as i64 + 1;
+    let y1 = (max_y - 0.5).floor() as i64 + 1;
+
+    let x0 = x0.clamp(0, w_i64) as usize;
+    let y0 = y0.clamp(0, h_i64) as usize;
+    let x1 = x1.clamp(0, w_i64) as usize;
+    let y1 = y1.clamp(0, h_i64) as usize;
+
+    if x1 > x0 && y1 > y0 {
+      let stride = self.width() as usize;
+      let data = mask.data_mut();
+      for y in y0..y1 {
+        let start = y * stride + x0;
+        data[start..start + (x1 - x0)].fill(255);
+      }
+    }
+
+    let mask_rc = Rc::new(mask);
+    self.current_state.clip_mask = Some(mask_rc.clone());
+    // If we're inside a `save()/restore()` scope (e.g. `PushTransform`), propagate the materialized
+    // mask into any saved state that has the same rectangular clip. This keeps the mask available
+    // after `restore()`, avoiding repeated full-canvas mask allocations for sibling transforms.
+    for state in self.state_stack.iter_mut() {
+      if state.clip_mask.is_none() && state.clip_rect == Some(clip_rect) {
+        state.clip_mask = Some(mask_rc.clone());
+      }
+    }
   }
 
   /// Sets the blend mode for subsequent drawing operations

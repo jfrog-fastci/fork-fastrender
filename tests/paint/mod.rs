@@ -125,6 +125,7 @@ mod transform_overflow_clip;
 mod overflow_clip_test;
 mod overflow_clip_margin_test;
 mod overflow_hidden_does_not_create_stacking_context;
+mod overflow_hidden_clips_transformed_descendant;
 mod overflow_hidden_zero_size_clips_text;
 mod font_size_zero_text;
 mod paged_media_margin_boxes;
