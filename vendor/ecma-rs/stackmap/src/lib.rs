@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -182,6 +183,7 @@ where
   A: LocationValueAccess,
 {
   let mut updates = Vec::with_capacity(record.gc_root_count());
+  let mut relocated_by_value: HashMap<usize, usize> = HashMap::new();
 
   for (base_loc, derived_loc) in record.gc_roots() {
     let base = access.read_usize(base_loc)?;
@@ -196,7 +198,13 @@ where
       continue;
     }
 
-    let new_base = relocate_base(base);
+    let new_base = if let Some(&cached) = relocated_by_value.get(&base) {
+      cached
+    } else {
+      let new_base = relocate_base(base);
+      relocated_by_value.insert(base, new_base);
+      new_base
+    };
     let new_derived = if new_base == 0 {
       0
     } else {

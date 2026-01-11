@@ -141,10 +141,26 @@ pub fn relocate_reloc_pairs_in_place(
     pairs_vec.push(pair);
   }
 
-  // Phase 2: relocate each unique base slot once.
+  // Phase 2: relocate each unique base value once.
+  //
+  // Even though stackmaps can contain repeated *base slots*, they can also contain duplicated
+  // *values* across distinct slots (e.g. if LLVM spills the same pointer into multiple stack slots).
+  // Cache by value to avoid redundant relocation work.
+  let mut new_base_by_value: HashMap<usize, usize> = HashMap::new();
   let mut new_base_by_slot: HashMap<RootSlot, usize> = HashMap::with_capacity(old_base_by_slot.len());
   for (&slot, &old_base) in &old_base_by_slot {
-    let new_base = if old_base == 0 { 0 } else { relocate(old_base) };
+    let new_base = if old_base == 0 {
+      0
+    } else {
+      match new_base_by_value.entry(old_base) {
+        Entry::Occupied(e) => *e.get(),
+        Entry::Vacant(e) => {
+          let new_base = relocate(old_base);
+          e.insert(new_base);
+          new_base
+        }
+      }
+    };
     new_base_by_slot.insert(slot, new_base);
   }
 
@@ -197,7 +213,7 @@ pub fn relocate_reloc_pairs_in_place(
 /// ## Safety
 /// The caller must ensure `base_slot` and `derived_slot` pointers are valid and writable for the
 /// duration of the call.
-  pub fn relocate_derived_pairs(
+pub fn relocate_derived_pairs(
   pairs: &[(
     /* base_slot */ *mut usize,
     /* derived_slot */ *mut usize,
@@ -221,6 +237,7 @@ pub fn relocate_reloc_pairs_in_place(
   // Phase 1: snapshot all old values without mutating any slots.
   let mut pair_snapshots: Vec<PairSnapshot> = Vec::with_capacity(pairs.len());
   let mut base_map: HashMap<*mut usize, BaseInfo> = HashMap::new();
+  let mut relocated_by_value: HashMap<usize, usize> = HashMap::new();
 
   for &(base_slot, derived_slot) in pairs {
     debug_assert!(
@@ -243,7 +260,18 @@ pub fn relocate_reloc_pairs_in_place(
 
     match base_map.entry(base_slot) {
       Entry::Vacant(e) => {
-        let base_new = if base_old == 0 { 0 } else { relocate_base(base_old) };
+        let base_new = if base_old == 0 {
+          0
+        } else {
+          match relocated_by_value.entry(base_old) {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
+              let base_new = relocate_base(base_old);
+              e.insert(base_new);
+              base_new
+            }
+          }
+        };
         e.insert(BaseInfo { base_old, base_new });
       }
       Entry::Occupied(e) => {
