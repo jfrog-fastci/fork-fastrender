@@ -4,6 +4,22 @@
 //! module exists for compatibility and provides:
 //! - Re-exports of the canonical parser/types.
 //! - A lazy global accessor ([`stackmaps`]) used by runtime stack walking / GC.
+//!
+//! ## Statepoint root enumeration
+//! LLVM statepoints encode GC roots in the StackMap record's `locations` as:
+//!
+//! - 3 leading constant "header" locations (not roots), followed by
+//! - `(base, derived)` pairs for each GC-live pointer at the safepoint.
+//!
+//! The runtime must treat **all** post-header locations as base/derived pairs.
+//! Note that the `"gc-live"(...)` operand bundle in IR is *not* necessarily the
+//! full root set: LLVM's `rewrite-statepoints-for-gc` pass expands it based on
+//! liveness.
+//!
+//! ## Record identity / lookup key
+//! A StackMap record's `patchpoint_id` is **not unique** across callsites (it can
+//! repeat). Runtime lookup/indexing must therefore be keyed by the callsite PC
+//! (return address), i.e. `function_address + instruction_offset`.
 
 use std::sync::OnceLock;
 
