@@ -100,12 +100,49 @@ fn assert_has_fp_prologue(disasm: &str, symbol: &str) {
 #[test]
 #[cfg(target_arch = "x86_64")]
 fn runtime_native_release_has_frame_pointers() {
-  let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+  let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let workspace_root = crate_dir
     .parent()
     .expect("runtime-native should live under the vendor/ecma-rs workspace");
 
   let tmp = tempfile::tempdir().unwrap();
-  let target_dir = tmp.path().join("target");
+  let project_dir = tmp.path().join("project");
+  fs::create_dir_all(project_dir.join("src")).unwrap();
+
+  fs::write(
+    project_dir.join("Cargo.toml"),
+    format!(
+      r#"[package]
+name = "fp_test_bin"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+runtime-native = {{ path = "{}", features = ["fp_regression"] }}
+"#,
+      crate_dir.display()
+    ),
+  )
+  .expect("write Cargo.toml");
+  fs::write(
+    project_dir.join("src/main.rs"),
+    r#"fn main() {
+  // Force a reference so the dependency is not pruned by any link-time tooling.
+  let _ = runtime_native::rt_fp_test_entry(123);
+}
+"#,
+  )
+  .expect("write main.rs");
+
+  let mut target_dir = env::var_os("CARGO_TARGET_DIR")
+    .map(PathBuf::from)
+    .unwrap_or_else(|| workspace_root.join("target"));
+  if target_dir.is_relative() {
+    target_dir = workspace_root.join(target_dir);
+  }
+  // Avoid deadlocking on Cargo's target-dir lock: use a separate target dir from the outer
+  // `cargo test` process, but keep it stable so repeat runs can reuse release artifacts.
+  let target_dir = target_dir.join("runtime_native_fp_regression_test_target");
 
   let mut rustflags = env::var("RUSTFLAGS").unwrap_or_default();
   if !rustflags.is_empty() {
@@ -113,27 +150,27 @@ fn runtime_native_release_has_frame_pointers() {
   }
   rustflags.push_str("-C force-frame-pointers=yes");
 
-  // Keep symbols so the disassembly can find `rt_fp_test_*` by name.
+  // Build a tiny crate that depends on `runtime-native` with `fp_regression` enabled.
+  //
+  // IMPORTANT: build `runtime-native` as a dependency so Cargo only produces an `rlib` (building the
+  // `runtime-native` package directly would also build its `staticlib` + `cdylib`, which is much
+  // slower and unnecessary for this regression test).
   let cargo_agent = workspace_root.join("scripts").join("cargo_agent.sh");
+  let manifest_path = project_dir.join("Cargo.toml");
   let mut cmd = Command::new("bash");
   cmd
     .arg(cargo_agent)
     .current_dir(workspace_root)
     .env("CARGO_TARGET_DIR", &target_dir)
-    // `lto = true` in the workspace release profile produces LLVM bitcode
-    // objects inside the `.rlib`, which are not disassemblable. Disable LTO
-    // for this regression check so we can inspect the actual machine code.
+    // Ensure the `.rlib` contains disassemblable object files (not LLVM bitcode).
     .env("CARGO_PROFILE_RELEASE_LTO", "false")
     .env("CARGO_PROFILE_RELEASE_STRIP", "none")
     .env("RUSTFLAGS", rustflags)
-    .args([
-      "build",
-      "-p",
-      "runtime-native",
-      "--release",
-      "--features",
-      "fp_regression",
-    ]);
+    .arg("build")
+    .arg("--manifest-path")
+    .arg(&manifest_path)
+    .arg("--release")
+    .arg("--quiet");
   cmd_output(cmd);
 
   let deps_dir = target_dir.join("release").join("deps");
