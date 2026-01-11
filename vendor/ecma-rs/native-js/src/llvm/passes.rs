@@ -704,12 +704,17 @@ fn verify_no_stray_calls_in_ts_generated_functions(
   Ok(())
 }
 
+/// Run the post-RS4GC "no stray calls in GC-managed functions" verifier in debug builds/tests.
+///
+/// In release builds this is a no-op unless the `gc-callsite-verify` feature is enabled.
+#[cfg(any(debug_assertions, feature = "gc-callsite-verify"))]
 fn debug_verify_no_stray_calls_in_gc_functions(module: &Module<'_>) -> Result<(), PassError> {
-  if !cfg!(debug_assertions) {
-    return Ok(());
-  }
-
   unsafe { verify_no_stray_calls_in_gc_functions_raw(module.as_mut_ptr()) }
+}
+
+#[cfg(not(any(debug_assertions, feature = "gc-callsite-verify")))]
+fn debug_verify_no_stray_calls_in_gc_functions(_module: &Module<'_>) -> Result<(), PassError> {
+  Ok(())
 }
 
 unsafe fn verify_no_stray_calls_in_gc_functions_raw(

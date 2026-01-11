@@ -13,6 +13,9 @@ default = []
 statepoint-directives = []
 # Enable the GC IR lint in non-debug builds. Debug builds/tests always run it.
 gc-lint = []
+# Enable post-`rewrite-statepoints-for-gc` callsite verification in non-debug builds.
+# Debug builds/tests always run it.
+gc-callsite-verify = []
 
 [dependencies]
 anyhow = { workspace = true }
