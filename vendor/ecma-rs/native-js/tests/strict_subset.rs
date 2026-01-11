@@ -313,6 +313,51 @@ fn rejects_print_used_as_expression() {
 }
 
 #[test]
+fn rejects_optional_parameter() {
+  let err = validate(
+    r#"
+      function f(x?: number): number {
+        return 0;
+      }
+      f(1);
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_default_parameter() {
+  let err = validate(
+    r#"
+      function f(x: number = 1): number {
+        return x;
+      }
+      f(1);
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_rest_parameter() {
+  let err = validate(
+    r#"
+      function f(...xs: number[]): number {
+        return 0;
+      }
+      f(1);
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
 fn accepts_direct_function_call() {
   let ok = validate(
     r#"

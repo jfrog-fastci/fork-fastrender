@@ -132,6 +132,28 @@ fn validate_body_syntax(
         "generator functions are not supported by native-js yet",
       );
     }
+
+    for param in func.params.iter() {
+      let span = body
+        .pats
+        .get(param.pat.0 as usize)
+        .map(|pat| Span::new(file, pat.span))
+        .unwrap_or_else(|| Span::new(file, body.span));
+
+      if param.optional {
+        push_unsupported_syntax(out, span, "optional parameters are not supported by native-js yet");
+      }
+      if param.rest {
+        push_unsupported_syntax(out, span, "rest parameters are not supported by native-js yet");
+      }
+      if param.default.is_some() {
+        push_unsupported_syntax(
+          out,
+          span,
+          "default parameter values are not supported by native-js yet",
+        );
+      }
+    }
   }
 
   // Statement-driven checks that depend on source order (intrinsic call allowance, loop/label validation, scoping).
@@ -176,7 +198,6 @@ fn validate_body_syntax(
         {
           continue;
         }
-
         if call.optional {
           push_unsupported_syntax(
             out,
@@ -208,7 +229,6 @@ fn validate_body_syntax(
             "only direct identifier calls are supported by native-js yet",
           );
         }
-
         // Detect `eval(...)` and `Function(...)` / `new Function(...)` by callee identifier.
         if callee_is_ident(body, lowered, call.callee, "eval") {
           push_unsupported_syntax(out, Span::new(file, expr.span), "`eval()` is not supported");
@@ -235,16 +255,35 @@ fn validate_body_syntax(
             "the `print` intrinsic is only supported as a statement (`print(x)` with one argument and no spread)",
           );
         } else if !call.optional && !call.is_new && !call.args.iter().any(|arg| arg.spread) && callee_is_ident_expr {
-          let ok = (|| {
+          let resolved = (|| {
             let BindingId::Def(def) = file_resolver.resolve_expr_ident(body, call.callee)? else {
               return None;
             };
             let resolved = resolve_import_def(program, def)?;
-            is_codegen_callable_function_def(program, resolved).then_some(())
-          })()
-          .is_some();
+            let expected = codegen_callable_function_param_count(program, resolved)?;
+            Some((resolved, expected))
+          })();
 
-          if !ok {
+          if let Some((_resolved, expected)) = resolved {
+            if expected != call.args.len() {
+              let callee_name = body
+                .exprs
+                .get(call.callee.0 as usize)
+                .and_then(|e| match &e.kind {
+                  ExprKind::Ident(name) => lowered.names.resolve(*name),
+                  _ => None,
+                })
+                .unwrap_or("<callee>");
+              push_unsupported_syntax(
+                out,
+                Span::new(file, expr.span),
+                format!(
+                  "call to `{callee_name}` must pass exactly {expected} arguments (got {got}) in native-js strict subset",
+                  got = call.args.len(),
+                ),
+              );
+            }
+          } else {
             push_unsupported_syntax(
               out,
               Span::new(file, expr.span),
@@ -502,7 +541,7 @@ fn validate_body_types(
         return None;
       };
       let resolved = resolve_import_def(program, def)?;
-      is_codegen_callable_function_def(program, resolved).then_some(())
+      codegen_callable_function_param_count(program, resolved).map(|_| ())
     })()
     .is_some();
 
@@ -623,25 +662,24 @@ fn resolve_import_def(program: &Program, def: typecheck_ts::DefId) -> Option<typ
   }
 }
 
-fn is_codegen_callable_function_def(program: &Program, def: typecheck_ts::DefId) -> bool {
+fn codegen_callable_function_param_count(program: &Program, def: typecheck_ts::DefId) -> Option<usize> {
   // Match `native-js` codegen: only top-level function definitions in non-`.d.ts` files are
   // compiled and callable via the direct-call lowering path.
-  let Some(lowered) = program.hir_lowered(def.file()) else {
-    return false;
-  };
+  let lowered = program.hir_lowered(def.file())?;
   if matches!(lowered.hir.file_kind, FileKind::Dts) {
-    return false;
+    return None;
   }
-  let Some(def_data) = lowered.def(def) else {
-    return false;
-  };
+  let def_data = lowered.def(def)?;
   if def_data.parent.is_some() {
-    return false;
+    return None;
   }
   if def_data.path.kind != hir_js::DefKind::Function {
-    return false;
+    return None;
   }
-  def_data.body.is_some()
+  let body_id = def_data.body?;
+  let body = lowered.body(body_id)?;
+  let meta = body.function.as_ref()?;
+  Some(meta.params.len())
 }
 
 fn numeric_literal_is_i32(raw: &str) -> bool {
