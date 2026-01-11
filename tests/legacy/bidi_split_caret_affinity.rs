@@ -88,10 +88,6 @@ fn legacy_bidi_split_caret_uses_affinity() {
   };
 
   let upstream = render_with_affinity(&mut doc, CaretAffinity::Upstream);
-  // BrowserDocument caches layout/paint artifacts; interaction state only participates in the
-  // style/layout pipeline. Mark the document dirty so the second render re-runs the pipeline with
-  // the new caret affinity.
-  let _ = doc.dom_mut();
   let downstream = render_with_affinity(&mut doc, CaretAffinity::Downstream);
 
   let (up_min_x, up_max_x, up_count) =
@@ -117,4 +113,3 @@ fn legacy_bidi_split_caret_uses_affinity() {
     "expected split caret affinities to paint at different x positions (up={up_center}, down={down_center}, delta={delta})"
   );
 }
-

@@ -84,11 +84,6 @@ fn display_list_form_control_rtl_caret_maps_logical_start_to_visual_right() {
     .pixmap;
   let caret_x_start = caret_center_x(&pixmap_start);
 
-  // BrowserDocument caches layout/paint artifacts; interaction state only participates in the
-  // style/layout pipeline. Mark the document dirty so the second render re-runs the pipeline with
-  // the new caret position.
-  let _ = doc.dom_mut();
-
   let interaction_end = InteractionState {
     focused: Some(node_id),
     text_edit: Some(TextEditPaintState {
