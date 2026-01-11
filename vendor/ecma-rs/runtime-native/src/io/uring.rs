@@ -1,4 +1,5 @@
 use crate::platform::linux_epoll::EventFd;
+use crate::sync::GcAwareMutex;
 use crate::threading;
 use io_uring::opcode;
 use io_uring::types;
@@ -6,7 +7,6 @@ use std::io;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 
@@ -18,14 +18,16 @@ pub fn debug_in_uring_wait() -> bool {
 }
 
 static SAFEPOINT_WAKER_ONCE: Once = Once::new();
-static SAFEPOINT_WAKERS: OnceLock<Mutex<Vec<Arc<EventFd>>>> = OnceLock::new();
+static SAFEPOINT_WAKERS: OnceLock<GcAwareMutex<Vec<Arc<EventFd>>>> = OnceLock::new();
 
-fn safepoint_wakers() -> &'static Mutex<Vec<Arc<EventFd>>> {
-  SAFEPOINT_WAKERS.get_or_init(|| Mutex::new(Vec::new()))
+fn safepoint_wakers() -> &'static GcAwareMutex<Vec<Arc<EventFd>>> {
+  SAFEPOINT_WAKERS.get_or_init(|| GcAwareMutex::new(Vec::new()))
 }
 
 fn wake_all_safepoint_wakers() {
-  let wakers = { safepoint_wakers().lock().unwrap().clone() };
+  // Called from the safepoint coordinator while the global GC epoch may be odd; use the GC-safe
+  // locking path to avoid spinning on epoch checks.
+  let wakers = { safepoint_wakers().lock_for_gc().clone() };
   for w in wakers {
     w.wake();
   }
@@ -37,7 +39,7 @@ struct SafepointWakeRegistration {
 
 impl Drop for SafepointWakeRegistration {
   fn drop(&mut self) {
-    let mut wakers = safepoint_wakers().lock().unwrap();
+    let mut wakers = safepoint_wakers().lock();
     wakers.retain(|w| !Arc::ptr_eq(w, &self.wake));
   }
 }
@@ -69,7 +71,7 @@ impl IoUringCqeWaiter {
 
     let wake = Arc::new(EventFd::new()?);
     {
-      let mut wakers = safepoint_wakers().lock().unwrap();
+      let mut wakers = safepoint_wakers().lock();
       wakers.push(wake.clone());
     }
     let reg = SafepointWakeRegistration { wake: wake.clone() };
