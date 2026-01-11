@@ -2,6 +2,7 @@
 
 use runtime_native::stackmaps::StackMaps;
 use runtime_native::{build_global_stackmap_index, load_all_llvm_stackmaps};
+use object::{Object, ObjectSegment};
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -143,6 +144,17 @@ fn link_shared(clang: &str, out_dir: &Path, objs: &[PathBuf], linker_script: &Pa
   so_path
 }
 
+fn has_wx_segment(elf: &object::File<'_>) -> bool {
+  // PF_X (execute) is bit 0, PF_W (write) is bit 1 on ELF.
+  const PF_X: u32 = 1;
+  const PF_W: u32 = 2;
+
+  elf.segments().any(|seg| match seg.flags() {
+    object::SegmentFlags::Elf { p_flags } => (p_flags & (PF_W | PF_X)) == (PF_W | PF_X),
+    _ => false,
+  })
+}
+
 unsafe fn dlopen(path: &Path) -> *mut libc::c_void {
   let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
   let handle = libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW);
@@ -203,13 +215,24 @@ fn discovers_stackmaps_in_dlopened_shared_library() {
   rename_stackmaps_section_to_data_rel_ro(objcopy, readobj, &obj_b);
 
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  let linker_script = manifest_dir.join("link/stackmaps.ld");
+  // Shared libraries are PIE-like; when using GNU ld, inserting the stackmaps
+  // section "after .text" can produce an RWX LOAD segment. Use the GNU ld
+  // fragment that inserts into the RELRO/data region instead.
+  let linker_script = manifest_dir.join("link/stackmaps_gnuld.ld");
   assert!(
     linker_script.exists(),
     "missing linker script at {linker_script:?}"
   );
 
   let so = link_shared(clang, td.path(), &[obj_a, obj_b], &linker_script);
+
+  // Ensure we didn't accidentally introduce an RWX segment (hardening regression).
+  let so_bytes = fs::read(&so).expect("read shared library");
+  let elf = object::File::parse(&*so_bytes).expect("parse shared library");
+  assert!(
+    !has_wx_segment(&elf),
+    "expected shared library to have no W+X segments (stackmaps_gnuld.ld should avoid RWX)"
+  );
 
   // Load the shared library so it appears in `dl_iterate_phdr` output.
   let _handle = unsafe { dlopen(&so) };
