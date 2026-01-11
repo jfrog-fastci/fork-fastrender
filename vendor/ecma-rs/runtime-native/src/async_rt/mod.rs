@@ -448,10 +448,12 @@ pub fn reset_clock_for_tests() {
 // Queueing helpers used by the promise/coroutine lowering.
 // -----------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub(crate) fn queue_microtask(func: TaskFn, data: *mut u8) {
   global().enqueue_microtask(Task::new(func, data));
 }
 
+#[allow(dead_code)]
 pub(crate) fn queue_macrotask(func: TaskFn, data: *mut u8) {
   global().enqueue_macrotask(Task::new(func, data));
 }
