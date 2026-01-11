@@ -9367,6 +9367,66 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn import_maps_do_not_override_already_resolved_url_like_specifiers() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      "<!doctype html><html></html>",
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+
+    let doc_url = "https://example.com/doc.html";
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><body>
+        <script type="module" src="https://example.com/entry.js"></script>
+      </body>"#,
+    );
+
+    // Entry module:
+    // - imports a URL-like specifier (`/direct.js`) so it becomes part of the resolved module set,
+    // - then dynamically inserts an import map attempting to remap that URL-like specifier,
+    // - then inserts a second module script that re-imports `/direct.js`.
+    //
+    // The second import should still resolve to `direct.js`, not `changed.js`.
+    tab.register_script_source(
+      "https://example.com/entry.js",
+      r#"import "/direct.js";
+const importMap = document.createElement("script");
+importMap.setAttribute("type", "importmap");
+importMap.textContent = JSON.stringify({ imports: { "/direct.js": "/changed.js" } });
+document.body.appendChild(importMap);
+
+const second = document.createElement("script");
+second.setAttribute("type", "module");
+second.textContent = `import { marker } from "/direct.js";
+document.body.setAttribute("data-marker", marker);`;
+document.body.appendChild(second);"#,
+    );
+    tab.register_script_source("https://example.com/direct.js", r#"export const marker = "direct";"#);
+    tab.register_script_source(
+      "https://example.com/changed.js",
+      r#"export const marker = "changed";"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-marker")
+        .expect("get_attribute should succeed"),
+      Some("direct")
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn module_imports_can_load_from_registered_script_sources() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;
