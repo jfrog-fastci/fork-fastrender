@@ -121,14 +121,26 @@ pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
 }
 
 pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
+  if p.is_null() {
     return core::ptr::null_mut();
   }
-  let flags = unsafe { &(*ptr).header.flags }.load(Ordering::Acquire);
+
+  // `rt_promise_payload_ptr` is part of the stable C ABI and accepts a generic `PromiseRef` (which
+  // may refer to a native async-ABI promise that is only a `PromiseHeader` prefix). Avoid casting to
+  // `RtPromise` unless we know this handle refers to one of our payload promises.
+  let header = promise_header_ref(p);
+  if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+
+  let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
   if flags & FLAG_HAS_PAYLOAD == 0 {
     return core::ptr::null_mut();
   }
+
+  // Safety: `FLAG_HAS_PAYLOAD` is only set by `promise_new_with_payload`, which allocates an
+  // `RtPromise` (header prefix + out-of-line payload pointer stored in `value`).
+  let ptr = promise_ptr(p);
   unsafe { &(*ptr).value }.load(Ordering::Acquire) as *mut u8
 }
 

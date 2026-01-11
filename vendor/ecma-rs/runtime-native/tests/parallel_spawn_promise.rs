@@ -1,10 +1,11 @@
 use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::async_abi::PromiseHeader;
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseLayout;
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Once};
 use std::time::{Duration, Instant};
 
@@ -224,6 +225,28 @@ extern "C" fn await_all_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
       other => panic!("unexpected coroutine state: {other}"),
     }
   }
+}
+
+#[test]
+fn promise_payload_ptr_returns_null_for_non_payload_promises() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut promise_header = Box::new(PromiseHeader {
+    state: AtomicU8::new(PromiseHeader::PENDING),
+    waiters: AtomicUsize::new(0),
+    flags: AtomicU8::new(0),
+  });
+  let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
+
+  // Initialize as a native async-ABI promise (header-only + inline payload owned by codegen).
+  unsafe {
+    runtime_native::rt_promise_init(p);
+  }
+
+  // `rt_promise_payload_ptr` is only defined for `rt_parallel_spawn_promise` payload promises. For
+  // any other promise layout (including native `Promise<T>` allocations), it must return null.
+  let payload = runtime_native::rt_promise_payload_ptr(p);
+  assert!(payload.is_null());
 }
 
 #[test]
