@@ -141,9 +141,10 @@ fn collect_module_info(
 
       let (dep, export_name, local_name) = match import_def.and_then(|def| program.def_kind(def)) {
         Some(DefKind::Import(data)) => {
-          let ImportTarget::File(dep) = data.target else {
+          let ImportTarget::File(mut dep) = data.target else {
             continue;
           };
+          let export_name = data.original.clone();
           let local_name = program
             .def_name(import_def.expect("def exists"))
             .unwrap_or_else(|| {
@@ -153,21 +154,50 @@ fn collect_module_info(
                 .unwrap_or("_")
                 .to_string()
             });
-          (dep, data.original.clone(), local_name)
+
+          // If this import points at a module that only re-exports a symbol,
+          // `typecheck-ts` leaves `ExportEntry::def` empty. Follow the symbol to
+          // its original defining file so we can reference the correct LLVM
+          // function symbol.
+          if let Some(entry) = program.exports_of(dep).get(&export_name) {
+            let resolved_file = entry
+              .def
+              .map(|def| def.file())
+              .or_else(|| program.symbol_info(entry.symbol).and_then(|i| i.file));
+            if let Some(file) = resolved_file {
+              dep = file;
+            }
+          }
+
+          (dep, export_name, local_name)
         }
         _ => {
-          // Conservative fallback: rely on the HIR names + resolved module file.
-          let local = lowered
+          // Conservative fallback: rely on the HIR names, but try to resolve
+          // through the target module's export map (covers re-exports where
+          // `ExportEntry::def` is `None`).
+          let local_name = lowered
             .names
             .resolve(named.local)
             .unwrap_or("_")
             .to_string();
-          let imported = lowered
+          let export_name = lowered
             .names
             .resolve(named.imported)
             .unwrap_or("_")
             .to_string();
-          (resolved_id, imported, local)
+
+          let mut dep = resolved_id;
+          if let Some(entry) = program.exports_of(resolved_id).get(&export_name) {
+            let resolved_file = entry
+              .def
+              .map(|def| def.file())
+              .or_else(|| program.symbol_info(entry.symbol).and_then(|i| i.file));
+            if let Some(file) = resolved_file {
+              dep = file;
+            }
+          }
+
+          (dep, export_name, local_name)
         }
       };
 
@@ -176,6 +206,64 @@ fn collect_module_info(
         export_name,
         local_name,
       });
+    }
+  }
+
+  // Re-exports like `export { foo } from "./dep"` and `export * from "./dep"`
+  // must also be treated as runtime dependencies so the referenced module's
+  // initializer runs.
+  //
+  // Type-only re-exports are erased from JS output and therefore must *not*
+  // trigger module evaluation.
+  for export in &lowered.hir.exports {
+    match &export.kind {
+      hir_js::ExportKind::Named(named) => {
+        let Some(source) = named.source.as_ref() else {
+          continue;
+        };
+        if named.is_type_only {
+          continue;
+        }
+        let has_value_specifiers = named.specifiers.iter().any(|s| !s.is_type_only);
+        let is_side_effect_export = named.specifiers.is_empty();
+        if !has_value_specifiers && !is_side_effect_export {
+          continue;
+        }
+
+        let resolved = host
+          .resolve(&from_key, &source.value)
+          .ok_or_else(|| NativeJsError::UnresolvedImport {
+            from: from_key.to_string(),
+            specifier: source.value.clone(),
+          })?;
+        let resolved_id =
+          program
+            .file_id(&resolved)
+            .ok_or_else(|| NativeJsError::UnresolvedImport {
+              from: from_key.to_string(),
+              specifier: source.value.clone(),
+            })?;
+        info.deps.insert(resolved_id);
+      }
+      hir_js::ExportKind::ExportAll(all) => {
+        if all.is_type_only {
+          continue;
+        }
+        let resolved = host
+          .resolve(&from_key, &all.source.value)
+          .ok_or_else(|| NativeJsError::UnresolvedImport {
+            from: from_key.to_string(),
+            specifier: all.source.value.clone(),
+          })?;
+        let resolved_id = program
+          .file_id(&resolved)
+          .ok_or_else(|| NativeJsError::UnresolvedImport {
+            from: from_key.to_string(),
+            specifier: all.source.value.clone(),
+          })?;
+        info.deps.insert(resolved_id);
+      }
+      _ => {}
     }
   }
 

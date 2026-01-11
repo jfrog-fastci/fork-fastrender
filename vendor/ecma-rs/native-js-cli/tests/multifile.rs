@@ -4,6 +4,11 @@ use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
 
+// These tests spawn `native-js-cli`, which performs LLVM object emission and system linking.
+// Under heavy CI/agent contention this can take tens of seconds per invocation, so keep the
+// timeout generous to avoid flaky `<interrupted>` failures.
+const CLI_TIMEOUT: Duration = Duration::from_secs(180);
+
 fn native_js_cli() -> Command {
   assert_cmd::cargo::cargo_bin_cmd!("native-js-cli")
 }
@@ -26,7 +31,7 @@ fn compiles_and_runs_two_file_project() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(main)
     .assert()
     .success()
@@ -51,7 +56,7 @@ fn supports_import_aliases() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg("--entry-fn")
     .arg("main")
     .arg(main)
@@ -74,7 +79,7 @@ fn runs_module_initializers_in_dependency_order() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg("--entry-fn")
     .arg("main")
     .arg(main)
@@ -101,7 +106,7 @@ fn supports_non_number_function_signatures_across_modules() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg("--entry-fn")
     .arg("main")
     .arg(main)
@@ -129,7 +134,7 @@ fn errors_on_unsupported_import_syntax() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg("--entry-fn")
     .arg("main")
     .arg(main)
@@ -163,7 +168,7 @@ fn resolves_node_modules_package_exports() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg("--entry-fn")
     .arg("main")
     .arg(main)
@@ -182,9 +187,63 @@ fn errors_on_cycles_deterministically() {
   fs::write(&b, "import {a} from './a';\nexport function b(){return a()}\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&a)
     .assert()
     .failure()
     .stderr(predicate::str::contains("cyclic module dependency"));
+}
+
+#[test]
+fn reexports_create_runtime_module_dependencies() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let reexport = dir.path().join("reexport.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&dep, "console.log(\"dep\");\n").unwrap();
+  fs::write(&reexport, "export * from './dep';\n").unwrap();
+  fs::write(
+    &main,
+    "import './reexport';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nmain\n"));
+}
+
+#[test]
+fn supports_importing_from_reexport_modules() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let reexport = dir.path().join("reexport.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(
+    &dep,
+    "console.log(\"dep\");\nexport function value(a:number,b:number){return a+b}\n",
+  )
+  .unwrap();
+  fs::write(&reexport, "export { value } from './dep';\n").unwrap();
+  fs::write(
+    &main,
+    "import {value} from './reexport';\nexport function main(){console.log(value(20,22));}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\n42\n"));
 }
