@@ -10,12 +10,17 @@
 ## Usage
 
 ```sh
+# NOTE: If you're running this from the FastRender repo root where `ecma-rs` is vendored under
+# `vendor/ecma-rs/`, use:
+#   bash vendor/ecma-rs/scripts/cargo_agent.sh ...
+# instead of:
+#   bash scripts/cargo_agent.sh ...
+#
 # Parse a file (dialect inferred from extension)
 bash scripts/cargo_agent.sh run -p parse-js-cli -- path/to/file.tsx
 
 # Parse stdin (defaults to TypeScript + module)
 echo 'const x: number = 1' | bash scripts/cargo_agent.sh run -p parse-js-cli
-
 # Force parsing as a script (rejects top-level import/export)
 bash scripts/cargo_agent.sh run -p parse-js-cli -- --source-type script path/to/file.js
 

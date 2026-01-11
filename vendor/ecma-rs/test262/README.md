@@ -23,6 +23,11 @@ Module vs. script mode is inferred from filenames containing `.module.` (e.g.
 ## Running locally
 
 ```bash
+# NOTE: If you're running this from the FastRender repo root where `ecma-rs` is vendored under
+# `vendor/ecma-rs/`, use:
+#   bash vendor/ecma-rs/scripts/cargo_agent.sh ...
+# instead of:
+#   bash scripts/cargo_agent.sh ...
 bash scripts/cargo_agent.sh run -p test262 --release -- \
   --data-dir test262/data \
   --manifest test262/manifest.toml \

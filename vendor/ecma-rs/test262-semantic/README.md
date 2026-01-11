@@ -49,6 +49,7 @@ Quick sanity check (from `vendor/ecma-rs/`):
 ```bash
 bash scripts/cargo_agent.sh run -p test262-semantic -- list
 # (or: bash scripts/cargo_agent.sh run -p test262-semantic -- --list)
+# (FastRender repo root: bash vendor/ecma-rs/scripts/cargo_agent.sh run -p test262-semantic -- list)
 ```
 
 Alternatively, you can clone `test262` anywhere and pass `--test262-dir`:
