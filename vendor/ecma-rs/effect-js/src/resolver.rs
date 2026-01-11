@@ -391,7 +391,7 @@ fn collect_require_bindings_seeded(
           };
           let mut collected = Vec::new();
           for prop in obj.props.iter() {
-            let Some(key) = object_key_to_static_string(lower, &prop.key) else {
+            let Some(key) = object_key_to_static_string(lower, body, &prop.key) else {
               collected.clear();
               break;
             };
@@ -468,11 +468,21 @@ fn extract_require_module(lower: &LowerResult, body: &Body, expr: ExprId) -> Opt
   Some(lit.lossy.clone())
 }
 
-fn object_key_to_static_string(lower: &LowerResult, key: &ObjectKey) -> Option<String> {
+fn object_key_to_static_string(lower: &LowerResult, body: &Body, key: &ObjectKey) -> Option<String> {
   match key {
     ObjectKey::Ident(id) => lower.names.resolve(*id).map(|s| s.to_string()),
     ObjectKey::String(s) => Some(s.clone()),
-    _ => None,
+    ObjectKey::Number(n) => Some(n.clone()),
+    ObjectKey::Computed(expr) => {
+      let expr = strip_transparent_wrappers(body, *expr);
+      let expr = body.exprs.get(expr.0 as usize)?;
+      match &expr.kind {
+        ExprKind::Literal(Literal::String(lit)) => Some(lit.lossy.clone()),
+        ExprKind::Literal(Literal::Number(n)) => Some(n.clone()),
+        ExprKind::Literal(Literal::BigInt(n)) => Some(n.clone()),
+        _ => None,
+      }
+    }
   }
 }
 
@@ -492,7 +502,7 @@ fn extract_require_member_path(
   if mem.optional {
     return None;
   }
-  let prop = object_key_to_static_string(lower, &mem.property)?;
+  let prop = object_key_to_static_string(lower, body, &mem.property)?;
   let (module, mut path) = extract_require_member_path(lower, body, mem.object)?;
   path.push(prop);
   Some((module, path))
@@ -514,7 +524,7 @@ fn flatten_member_chain(
     if mem.optional {
       return None;
     }
-    let prop = object_key_to_static_string(lower, &mem.property)?;
+    let prop = object_key_to_static_string(lower, body, &mem.property)?;
     path.push(prop);
     base = mem.object;
   }
@@ -746,6 +756,17 @@ mod tests {
   }
 
   #[test]
+  fn resolves_namespace_require_via_computed_key() {
+    let calls = resolved_calls(
+      r#"
+        const fs = require('node:fs');
+        fs['readFile']('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
   fn resolves_namespace_require_with_var_decl() {
     let calls = resolved_calls(
       r#"
@@ -902,6 +923,17 @@ mod tests {
       r#"
         import * as fs from 'node:fs';
         fs.readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_namespace_import_via_computed_key() {
+    let calls = resolved_calls(
+      r#"
+        import * as fs from 'node:fs';
+        fs['readFile']('x', () => {});
       "#,
     );
     assert_eq!(calls, vec!["node:fs.readFile"]);

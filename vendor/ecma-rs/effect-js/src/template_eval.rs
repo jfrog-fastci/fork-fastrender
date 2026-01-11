@@ -186,6 +186,20 @@ fn strip_global_prefixes<'a>(mut path: &'a str) -> Option<&'a str> {
   changed.then_some(path)
 }
 
+fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
+}
+
 fn static_callee_path(lowered: &LowerResult, body: &Body, expr_id: ExprId) -> Option<String> {
   let expr = body.exprs.get(expr_id.0 as usize)?;
   match &expr.kind {
@@ -199,7 +213,16 @@ fn static_callee_path(lowered: &LowerResult, body: &Body, expr_id: ExprId) -> Op
         ObjectKey::Ident(name) => lowered.names.resolve(*name)?.to_string(),
         ObjectKey::String(s) => s.clone(),
         ObjectKey::Number(n) => n.clone(),
-        ObjectKey::Computed(_) => return None,
+        ObjectKey::Computed(expr) => {
+          let expr = strip_transparent_wrappers(body, *expr);
+          let expr = body.exprs.get(expr.0 as usize)?;
+          match &expr.kind {
+            ExprKind::Literal(hir_js::Literal::String(lit)) => lit.lossy.clone(),
+            ExprKind::Literal(hir_js::Literal::Number(n)) => n.clone(),
+            ExprKind::Literal(hir_js::Literal::BigInt(n)) => n.clone(),
+            _ => return None,
+          }
+        }
       };
       Some(format!("{base}.{prop}"))
     }
@@ -305,5 +328,20 @@ mod tests {
     let sem = eval_call_expr(&kb, &lowered, body, call_expr);
     assert!(sem.effects.contains(EffectSet::ALLOCATES));
     assert!(sem.effects.contains(EffectSet::MAY_THROW));
+  }
+
+  #[test]
+  fn global_this_fetch_resolves_via_computed_key() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      FileKind::Js,
+      r#"globalThis["fetch"]("https://example.com");"#,
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let sem = eval_call_expr(&kb, &lowered, body, call_expr);
+    assert!(sem.effects.contains(EffectSet::IO));
+    assert!(sem.effects.contains(EffectSet::NETWORK));
   }
 }
