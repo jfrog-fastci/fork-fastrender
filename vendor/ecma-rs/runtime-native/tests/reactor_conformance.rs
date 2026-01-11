@@ -97,6 +97,54 @@ fn timeout_no_events() {
 }
 
 #[test]
+fn edge_trigger_requires_drain() {
+  let (read, write) = pipe().unwrap();
+  set_nonblocking(read.as_raw_fd()).unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  reactor
+    .register(read.as_fd(), Token(10), Interest::READABLE)
+    .unwrap();
+
+  // Make it readable.
+  let b = [0x1u8];
+  let rc = unsafe { libc::write(write.as_raw_fd(), b.as_ptr() as *const libc::c_void, 1) };
+  assert_eq!(rc, 1);
+
+  let mut events = Vec::new();
+  reactor
+    .poll(&mut events, Some(Duration::from_secs(1)))
+    .unwrap();
+  assert!(
+    events.iter().any(|e| e.token == Token(10) && e.readable),
+    "expected first readable event, got {events:?}"
+  );
+
+  // If the reactor is edge-triggered, polling again without draining should *not* produce another
+  // readable event (the fd is still readable, but there was no new edge).
+  reactor
+    .poll(&mut events, Some(Duration::from_millis(50)))
+    .unwrap();
+  assert!(
+    events.is_empty(),
+    "expected no events without draining (edge-triggered), got {events:?}"
+  );
+
+  // Drain until WouldBlock, then write again to produce a new edge.
+  drain_read_nonblocking(read.as_raw_fd()).unwrap();
+  let rc = unsafe { libc::write(write.as_raw_fd(), b.as_ptr() as *const libc::c_void, 1) };
+  assert_eq!(rc, 1);
+
+  reactor
+    .poll(&mut events, Some(Duration::from_secs(1)))
+    .unwrap();
+  assert!(
+    events.iter().any(|e| e.token == Token(10) && e.readable),
+    "expected readable event after draining + new write, got {events:?}"
+  );
+}
+
+#[test]
 fn read_ready_pipe() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
