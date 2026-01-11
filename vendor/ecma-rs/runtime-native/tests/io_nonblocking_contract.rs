@@ -751,6 +751,61 @@ fn rt_io_register_handle_with_drop_drops_data_on_unregister_and_frees_handle() {
 }
 
 #[test]
+fn rt_io_register_handle_with_drop_drops_data_on_reset_runtime_state() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *const AtomicUsize = &*dropped;
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&HANDLE_DROP_COUNTER_DESC);
+  unsafe {
+    (*(obj as *mut HandleDropCounterObj)).drop_counter = dropped_ptr;
+  }
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
+  assert_ne!(id, 0, "expected rt_io_register_handle_with_drop to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    0,
+    "drop_data must not run before teardown"
+  );
+
+  // Simulate runtime teardown without explicitly unregistering.
+  reset_runtime_state();
+
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    1,
+    "drop_data must run when the runtime clears watchers during teardown"
+  );
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "consumed handle must be freed/cleared during teardown"
+  );
+
+  // The watcher id should now be invalid and must not re-run the drop hook.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after runtime teardown"
+  );
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    1,
+    "drop_data must not be invoked twice"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after teardown");
+}
+
+#[test]
 fn rt_io_register_handle_callback_receives_relocated_ptr_after_gc() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::External);
