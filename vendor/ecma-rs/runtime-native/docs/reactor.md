@@ -97,6 +97,10 @@ The reactor surfaces stream closure as readiness, plus an explicit direction fla
 - OS-reported error conditions are reported as:
   - `Event.error == true`
 
+Note: on a full hangup, some platforms may report both read-side and write-side closure. In that
+case the reactor may set both `read_closed` and `write_closed` (and therefore both `readable` and
+`writable`) in the same [`Event`].
+
 This mapping ensures that a consumer waiting for readability will be woken up to observe EOF.
 
 ## Timeout semantics

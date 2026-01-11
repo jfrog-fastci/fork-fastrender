@@ -395,6 +395,36 @@ fn hup_eof_semantics() {
 }
 
 #[test]
+fn hup_eof_implies_ready_invariants_socketpair() {
+  let (a, b) = socketpair().unwrap();
+  set_nonblocking(a.as_raw_fd()).unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  reactor
+    .register(a.as_fd(), Token(5), Interest::WRITABLE)
+    .unwrap();
+
+  drop(b); // close peer => should surface as a HUP/EOF-style event.
+
+  let mut events = Vec::new();
+  reactor
+    .poll(&mut events, Some(Duration::from_secs(1)))
+    .unwrap();
+
+  let ev = events
+    .iter()
+    .find(|e| e.token == Token(5))
+    .expect("missing event for token 5");
+
+  if ev.read_closed {
+    assert!(ev.readable, "read_closed must imply readable, got {ev:?}");
+  }
+  if ev.write_closed {
+    assert!(ev.writable, "write_closed must imply writable, got {ev:?}");
+  }
+}
+
+#[test]
 fn waker_interrupts_poll() {
   let mut reactor = Reactor::new().unwrap();
   let waker = reactor.waker();

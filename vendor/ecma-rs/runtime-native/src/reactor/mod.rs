@@ -503,7 +503,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     Event {
       token,
       readable: (events & (libc::EPOLLIN as u32)) != 0 || read_closed,
-      writable: (events & (libc::EPOLLOUT as u32)) != 0,
+      writable: (events & (libc::EPOLLOUT as u32)) != 0 || write_closed,
       read_closed,
       write_closed,
       error,
