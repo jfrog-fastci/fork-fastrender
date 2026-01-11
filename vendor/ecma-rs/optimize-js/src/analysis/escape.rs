@@ -18,8 +18,9 @@ pub enum EscapeState {
   /// The payload is currently the SSA/temp variable representing that parameter object.
   ArgEscape(u32),
   /// Escapes by being returned from the current function.
-  /// (Or thrown from the current function, since the current IR does not model
-  /// try/catch and a throw value is observable by callers.)
+  ///
+  /// This includes values returned via [`InstTyp::Return`] or thrown via [`InstTyp::Throw`]. We do
+  /// not model `try`/`catch` explicitly in the CFG, so both are treated as escaping to the caller.
   ReturnEscape,
   /// Escapes to global/outer scope storage (e.g. `ForeignStore`/`UnknownStore`).
   GlobalEscape,
@@ -512,6 +513,29 @@ mod tests {
             vec![],
           ),
           Inst::ret(Arg::Var(0)),
+        ],
+      )],
+      &[],
+    );
+
+    let escape = analyze_cfg_escapes(&cfg);
+    assert_eq!(escape_of(&escape, 0), EscapeState::ReturnEscape);
+  }
+
+  #[test]
+  fn allocation_thrown_is_return_escape() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::throw(Arg::Var(0)),
         ],
       )],
       &[],

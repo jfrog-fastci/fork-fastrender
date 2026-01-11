@@ -110,13 +110,9 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
         }
       }
     }
-    InstTyp::Throw => {
-      effects.summary.throws = ThrowBehavior::Always;
-    }
     InstTyp::CondGoto | InstTyp::Un | InstTyp::VarAssign | InstTyp::Phi | InstTyp::_Label => {}
     // These should not exist after CFG construction but are treated as no-ops for analysis.
     InstTyp::_Goto | InstTyp::_Dummy => {}
-    InstTyp::Return => {}
   }
 
   effects
@@ -260,6 +256,7 @@ mod tests {
     ProgramFunction {
       debug: None,
       body: cfg,
+      params: Vec::new(),
       stats: OptimizationStats::default(),
     }
   }

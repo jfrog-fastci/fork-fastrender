@@ -790,6 +790,7 @@ mod tests {
         bblocks,
         entry: 0,
       },
+      params: Vec::new(),
       stats: Default::default(),
     };
 

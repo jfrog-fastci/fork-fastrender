@@ -426,6 +426,7 @@ mod tests {
       top_level: ProgramFunction {
         debug: None,
         body: cfg,
+        params: Vec::new(),
         stats: OptimizationStats::default(),
       },
       top_level_mode: TopLevelMode::Module,
@@ -467,6 +468,7 @@ mod tests {
       top_level: ProgramFunction {
         debug: None,
         body: cfg,
+        params: Vec::new(),
         stats: OptimizationStats::default(),
       },
       top_level_mode: TopLevelMode::Module,
