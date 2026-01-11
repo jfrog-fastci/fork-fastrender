@@ -360,4 +360,33 @@ impl Program {
       Ok(Some(ty))
     })
   }
+
+  /// Resolved signature for the innermost call/construct expression covering an offset.
+  pub fn call_signature_at(&self, file: FileId, offset: u32) -> Option<tti::SignatureId> {
+    match self.call_signature_at_fallible(file, offset) {
+      Ok(sig) => sig,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        None
+      }
+    }
+  }
+
+  pub fn call_signature_at_fallible(
+    &self,
+    file: FileId,
+    offset: u32,
+  ) -> Result<Option<tti::SignatureId>, FatalError> {
+    self.with_interned_state(|state| {
+      let Some((body, expr)) = state.expr_at(file, offset) else {
+        return Ok(None);
+      };
+      let result = state.check_body(body)?;
+      let expr = result
+        .expr_at(offset)
+        .map(|(expr_id, _)| expr_id)
+        .unwrap_or(expr);
+      Ok(result.call_signature(expr))
+    })
+  }
 }

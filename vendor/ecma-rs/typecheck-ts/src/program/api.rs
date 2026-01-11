@@ -63,6 +63,8 @@ pub trait Host: Send + Sync + 'static {
 pub struct BodyCheckResult {
   pub(crate) body: BodyId,
   pub(crate) expr_types: Vec<TypeId>,
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+  pub(crate) call_signatures: Vec<Option<tti::SignatureId>>,
   pub(crate) expr_spans: Vec<TextRange>,
   pub(crate) pat_types: Vec<TypeId>,
   pub(crate) pat_spans: Vec<TextRange>,
@@ -75,6 +77,7 @@ impl BodyCheckResult {
     Arc::new(Self {
       body,
       expr_types: Vec::new(),
+      call_signatures: Vec::new(),
       expr_spans: Vec::new(),
       pat_types: Vec::new(),
       pat_spans: Vec::new(),
@@ -106,6 +109,15 @@ impl BodyCheckResult {
   /// Type for a specific expression, if known.
   pub fn expr_type(&self, expr: ExprId) -> Option<TypeId> {
     self.expr_types.get(expr.0 as usize).copied()
+  }
+
+  /// Selected signature for a call or construct expression, if recorded.
+  pub fn call_signature(&self, expr: ExprId) -> Option<tti::SignatureId> {
+    self
+      .call_signatures
+      .get(expr.0 as usize)
+      .copied()
+      .flatten()
   }
 
   /// Type for a specific pattern, if known.

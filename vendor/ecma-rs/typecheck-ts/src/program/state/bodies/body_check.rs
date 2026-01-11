@@ -74,6 +74,7 @@ impl ProgramState {
       let res = Arc::new(BodyCheckResult {
         body: body_id,
         expr_types: Vec::new(),
+        call_signatures: Vec::new(),
         expr_spans: Vec::new(),
         pat_types: Vec::new(),
         pat_spans: Vec::new(),
@@ -100,6 +101,7 @@ impl ProgramState {
       let res = Arc::new(BodyCheckResult {
         body: body_id,
         expr_types: Vec::new(),
+        call_signatures: Vec::new(),
         expr_spans: Vec::new(),
         pat_types: Vec::new(),
         pat_spans: Vec::new(),
@@ -121,6 +123,7 @@ impl ProgramState {
       let res = Arc::new(BodyCheckResult {
         body: body_id,
         expr_types: Vec::new(),
+        call_signatures: Vec::new(),
         expr_spans: Vec::new(),
         pat_types: Vec::new(),
         pat_spans: Vec::new(),
@@ -165,6 +168,7 @@ impl ProgramState {
       let res = Arc::new(BodyCheckResult {
         body: body_id,
         expr_types: Vec::new(),
+        call_signatures: Vec::new(),
         expr_spans: Vec::new(),
         pat_types: Vec::new(),
         pat_spans: Vec::new(),

@@ -994,6 +994,7 @@ pub fn check_body_with_expander(
   }
   let prim = store.primitive_ids();
   let expr_types = vec![prim.unknown; body.exprs.len()];
+  let call_signatures = vec![None; body.exprs.len()];
   let pat_types = vec![prim.unknown; body.pats.len()];
   let expr_spans: Vec<TextRange> = body.exprs.iter().map(|e| e.span).collect();
   let pat_spans: Vec<TextRange> = body.pats.iter().map(|p| p.span).collect();
@@ -1053,6 +1054,7 @@ pub fn check_body_with_expander(
     jsx_children_prop_name: None,
     jsx_namespace_missing_reported: false,
     expr_types,
+    call_signatures,
     pat_types,
     expr_spans,
     pat_spans,
@@ -1135,6 +1137,7 @@ pub fn check_body_with_expander(
   BodyCheckResult {
     body: body_id,
     expr_types: checker.expr_types,
+    call_signatures: checker.call_signatures,
     expr_spans: checker.expr_spans,
     pat_types: checker.pat_types,
     pat_spans: checker.pat_spans,
@@ -1181,6 +1184,7 @@ struct Checker<'a> {
   jsx_children_prop_name: Option<TsNameId>,
   jsx_namespace_missing_reported: bool,
   expr_types: Vec<TypeId>,
+  call_signatures: Vec<Option<SignatureId>>,
   pat_types: Vec<TypeId>,
   expr_spans: Vec<TextRange>,
   pat_spans: Vec<TextRange>,
@@ -2967,6 +2971,7 @@ impl<'a> Checker<'a> {
     };
 
     let mut ty = if call_optional && callee_base == prim.never {
+      self.record_call_signature(call.loc, None);
       prim.undefined
     } else {
       let mut resolution = resolve_call(
@@ -3226,6 +3231,7 @@ impl<'a> Checker<'a> {
         }
       }
 
+      self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
       resolution.return_type
     };
 
@@ -3624,9 +3630,9 @@ impl<'a> Checker<'a> {
       .signature
       .or(resolution.contextual_signature)
       .or_else(|| candidate_sigs.first().copied());
-    if let Some(sig_id) = contextual_sig {
-      let sig = self.store.signature(sig_id);
-      for (idx, arg) in arg_exprs.iter().enumerate() {
+      if let Some(sig_id) = contextual_sig {
+        let sig = self.store.signature(sig_id);
+        for (idx, arg) in arg_exprs.iter().enumerate() {
         let Some(param_index) = param_index_map.get(idx).and_then(|idx| *idx) else {
           continue;
         };
@@ -3645,6 +3651,7 @@ impl<'a> Checker<'a> {
         self.record_expr_type(arg.stx.value.loc, contextual);
       }
     }
+    self.record_call_signature(expr_loc, resolution.signature.or(resolution.contextual_signature));
     resolution.return_type
   }
 
@@ -6494,6 +6501,15 @@ impl<'a> Checker<'a> {
     }
   }
 
+  fn record_call_signature(&mut self, loc: Loc, signature: Option<SignatureId>) {
+    let range = loc_to_range(self.file, loc);
+    if let Some(id) = self.expr_map.get(&range) {
+      if let Some(slot) = self.call_signatures.get_mut(id.0 as usize) {
+        *slot = signature;
+      }
+    }
+  }
+
   fn record_pat_type(&mut self, loc: Loc, ty: TypeId) {
     let range = loc_to_range(self.file, loc);
     if let Some(id) = self.pat_map.get(&range) {
@@ -8235,9 +8251,11 @@ impl<'a> FlowBodyChecker<'a> {
   }
 
   fn into_result(self) -> BodyCheckResult {
+    let call_signatures = vec![None; self.expr_types.len()];
     BodyCheckResult {
       body: self.body_id,
       expr_types: self.expr_types,
+      call_signatures,
       pat_types: self.pat_types,
       expr_spans: self.expr_spans,
       pat_spans: self.pat_spans,

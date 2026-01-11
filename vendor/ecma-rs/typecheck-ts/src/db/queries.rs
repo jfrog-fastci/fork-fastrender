@@ -818,6 +818,7 @@ pub mod body_check {
     BodyCheckResult {
       body,
       expr_types: Vec::new(),
+      call_signatures: Vec::new(),
       expr_spans: Vec::new(),
       pat_types: Vec::new(),
       pat_spans: Vec::new(),
@@ -833,6 +834,7 @@ pub mod body_check {
     BodyCheckResult {
       body,
       expr_types: Vec::new(),
+      call_signatures: Vec::new(),
       expr_spans: Vec::new(),
       pat_types: Vec::new(),
       pat_spans: Vec::new(),
@@ -848,6 +850,7 @@ pub mod body_check {
     BodyCheckResult {
       body,
       expr_types: Vec::new(),
+      call_signatures: Vec::new(),
       expr_spans: Vec::new(),
       pat_types: Vec::new(),
       pat_spans: Vec::new(),

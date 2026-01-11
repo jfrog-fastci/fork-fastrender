@@ -25,6 +25,7 @@ impl Program {
         Arc::new(BodyCheckResult {
           body,
           expr_types: Vec::new(),
+          call_signatures: Vec::new(),
           expr_spans: Vec::new(),
           pat_types: Vec::new(),
           pat_spans: Vec::new(),
