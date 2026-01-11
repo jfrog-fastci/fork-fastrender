@@ -38,6 +38,11 @@
 //! let len = unsafe { (&__fastr_stackmaps_end as *const u8).offset_from(ptr) as usize };
 //! let stackmaps = unsafe { std::slice::from_raw_parts(ptr, len) };
 //! ```
+//!
+//! Note: when linking multiple compilation units, `.llvm_stackmaps` is not guaranteed to contain a
+//! single StackMap table. Object-file linking typically concatenates multiple StackMap v3 blobs
+//! back-to-back, while full LTO (`clang -flto`) tends to emit one merged blob. Runtime parsers must
+//! iterate `stackmaps[..]` and parse blobs until the end of the range. See `docs/stackmaps.md`.
 
 pub mod compiler;
 pub mod codegen;

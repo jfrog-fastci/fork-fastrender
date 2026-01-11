@@ -26,6 +26,14 @@ pub struct LinkOpts {
   /// (`KEEP(*(.llvm_stackmaps ...))`).
   pub gc_sections: bool,
   pub linker: LinkerFlavor,
+  /// Whether to produce a PIE executable.
+  ///
+  /// Ubuntu toolchains default to PIE, but LLVM stackmaps contain absolute relocations against
+  /// function symbols. Preserving `.llvm_stackmaps` in a read-only segment (so the runtime can read
+  /// it directly) is incompatible with PIE unless the linker is allowed to emit text relocations.
+  ///
+  /// We therefore default to `pie: false` and use `-no-pie` unless the caller explicitly opts into
+  /// PIE (and, when using LLD, also pass `-z notext`).
   pub pie: bool,
 }
 
@@ -242,3 +250,74 @@ pub fn link_bitcode_to_exe(_bitcode: &[u8], _opts: LinkOpts) -> anyhow::Result<V
   anyhow::bail!("link_bitcode_to_exe is only supported on Linux for now")
 }
 
+/// Link one or more LLVM bitcode modules (`.bc`) into an ELF executable using LTO.
+///
+/// This is useful for testing the behavior of LLVM's stackmap emission when multiple bitcode
+/// modules are linked under `-flto` (LLVM tends to emit a single merged StackMaps blob in this
+/// mode, rather than concatenated per-object blobs).
+///
+/// The resulting binary will export [`FASTR_STACKMAPS_START_SYM`] and [`FASTR_STACKMAPS_END_SYM`]
+/// that delimit the `.llvm_stackmaps` section in memory.
+pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) -> anyhow::Result<()> {
+  let opts = LinkOpts::default();
+  let clang = find_clang_18().context("unable to locate clang-18 (required for LLVM 18 LTO bitcode)")?;
+  let out_dir = output_path
+    .parent()
+    .context("output_path must have a parent directory")?;
+
+  fs::create_dir_all(out_dir)
+    .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
+
+  let script_path = out_dir.join("fastr_stackmaps.ld");
+  write_stackmaps_linker_script(&script_path)?;
+
+  let mut cmd = Command::new(clang);
+  cmd.arg("-flto=full");
+
+  if opts.pie {
+    if matches!(opts.linker, LinkerFlavor::Lld) {
+      cmd.arg("-Wl,-z,notext");
+    }
+  } else {
+    cmd.arg("-no-pie");
+  }
+
+  match opts.linker {
+    LinkerFlavor::System => {}
+    LinkerFlavor::Lld => {
+      cmd.arg("-fuse-ld=lld");
+    }
+  }
+
+  if opts.gc_sections {
+    cmd.arg("-Wl,--gc-sections");
+  }
+
+  cmd.arg(format!("-Wl,-T,{}", script_path.display()));
+  cmd.arg("-o").arg(output_path);
+
+  for bc in bitcode_files {
+    cmd.arg(bc);
+  }
+
+  let out = cmd
+    .output()
+    .with_context(|| format!("failed to spawn {clang} for LTO linking"))?;
+  if !out.status.success() {
+    anyhow::bail!(
+      "{clang} -flto failed with status {status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+      status = out.status,
+      stdout = String::from_utf8_lossy(&out.stdout),
+      stderr = String::from_utf8_lossy(&out.stderr),
+    );
+  }
+
+  if !exe_exists(output_path) {
+    anyhow::bail!(
+      "linker reported success but output file does not exist: {}",
+      output_path.display()
+    );
+  }
+
+  Ok(())
+}

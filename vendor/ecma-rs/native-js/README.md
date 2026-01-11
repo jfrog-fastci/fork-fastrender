@@ -221,6 +221,10 @@ See `native-js/tests/statepoint_stackmap.rs` for a minimal end-to-end example
 that asserts statepoint/relocate rewriting and that the emitted object contains a
 `.llvm_stackmaps` section.
 
+The `.llvm_stackmaps` section can be composed differently depending on link mode
+(object-file concatenation vs LTO merging). See [`docs/stackmaps.md`](./docs/stackmaps.md)
+for the runtime parsing requirements.
+
 For the broader runtime ABI + GC/statepoints integration plan, see:
 
 - [`docs/runtime-native.md`](../docs/runtime-native.md)
