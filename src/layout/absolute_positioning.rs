@@ -281,7 +281,7 @@ impl AbsoluteLayout {
       .or_else(|| cb_height.is_finite().then_some(cb_height));
 
     // Resolve horizontal position and width
-    let (mut x, mut width, margin_left, margin_right, min_width, max_width) = self.compute_horizontal(
+    let (mut x, mut width, mut margin_left, mut margin_right, min_width, max_width) = self.compute_horizontal(
       style,
       cb_width,
       inline_base,
@@ -294,7 +294,7 @@ impl AbsoluteLayout {
     )?;
 
     // Resolve vertical position and height
-    let (mut y, mut height, margin_top, margin_bottom, min_height, max_height) = self
+    let (mut y, mut height, mut margin_top, mut margin_bottom, min_height, max_height) = self
       .compute_vertical(
         style,
         cb_height,
@@ -350,9 +350,15 @@ impl AbsoluteLayout {
     let height_auto = matches!(style.height, LengthOrAuto::Auto) && style.height_keyword.is_none();
 
     // When both insets are specified, the constraint equation determines the used size even if the
-    // corresponding dimension is `auto`. Avoid overriding that with ratio-derived sizing.
-    let width_auto_for_ratio = width_auto && !(left.is_some() && right.is_some());
-    let height_auto_for_ratio = height_auto && !(top.is_some() && bottom.is_some());
+    // corresponding dimension is `auto` (CSS 2.1 §10.3.7/§10.6.4). Avoid overriding that with
+    // ratio-derived sizing.
+    //
+    // Absolutely positioned *replaced* elements are special-cased in CSS 2.1 §10.3.8/§10.6.5:
+    // their used `width/height` are resolved like inline replaced elements (intrinsic sizes /
+    // ratios) even when both insets are specified. Allow ratio-derived sizing for replaced elements
+    // so `top:0; bottom:0; height:auto` does not stretch images.
+    let width_auto_for_ratio = width_auto && (input.is_replaced || !(left.is_some() && right.is_some()));
+    let height_auto_for_ratio = height_auto && (input.is_replaced || !(top.is_some() && bottom.is_some()));
 
     let natural_ratio = if input.is_replaced
       && input.intrinsic_size.width.is_finite()
@@ -413,6 +419,72 @@ impl AbsoluteLayout {
           width = crate::layout::utils::clamp_with_order(width, min_width, max_width);
         }
       }
+    }
+
+    // CSS 2.1 §10.6.5 / §10.3.8: Absolutely positioned replaced elements resolve used sizes like
+    // inline replaced elements, then resolve auto margins/offsets against the constraint equation.
+    //
+    // Our `compute_horizontal/compute_vertical` helpers only resolve auto margins when `width/height`
+    // are non-auto. After ratio-derived sizing, treat the used sizes as specified so auto margins
+    // participate in the constraint equation (e.g. `top:0; bottom:0; height:auto; margin-top:auto`
+    // should bottom-align a replaced element instead of stretching it).
+    if input.is_replaced && (width_auto || height_auto) {
+      let mut used_style = style.clone();
+
+      let horizontal_edges = used_style.padding.left
+        + used_style.padding.right
+        + used_style.border_width.left
+        + used_style.border_width.right;
+      let vertical_edges = used_style.padding.top
+        + used_style.padding.bottom
+        + used_style.border_width.top
+        + used_style.border_width.bottom;
+
+      let specified_width = match used_style.box_sizing {
+        crate::style::types::BoxSizing::ContentBox => width,
+        crate::style::types::BoxSizing::BorderBox => width + horizontal_edges,
+      };
+      let specified_height = match used_style.box_sizing {
+        crate::style::types::BoxSizing::ContentBox => height,
+        crate::style::types::BoxSizing::BorderBox => height + vertical_edges,
+      };
+
+      used_style.width = LengthOrAuto::Length(Length::px(specified_width));
+      used_style.width_keyword = None;
+      used_style.height = LengthOrAuto::Length(Length::px(specified_height));
+      used_style.height_keyword = None;
+
+      let (new_x, new_width, new_margin_left, new_margin_right, _, _) = self.compute_horizontal(
+        &used_style,
+        cb_width,
+        inline_base,
+        viewport,
+        input.is_replaced,
+        input.preferred_min_inline_size,
+        input.preferred_inline_size,
+        input.intrinsic_size.width,
+        input.static_position.x,
+      )?;
+      let (new_y, new_height, new_margin_top, new_margin_bottom, _, _) = self.compute_vertical(
+        &used_style,
+        cb_height,
+        block_base,
+        viewport,
+        input.is_replaced,
+        input.preferred_min_block_size,
+        input.preferred_block_size,
+        input.intrinsic_size.height,
+        input.static_position.y,
+      )?;
+
+      x = new_x;
+      width = new_width;
+      margin_left = new_margin_left;
+      margin_right = new_margin_right;
+      y = new_y;
+      height = new_height;
+      margin_top = new_margin_top;
+      margin_bottom = new_margin_bottom;
     }
 
     // Keep the authored trailing inset satisfied for the "leading inset is auto" cases after
@@ -1080,7 +1152,7 @@ impl AbsoluteLayout {
         (y, h, false)
       }
 
-      // top and bottom specified, height is auto.
+      // top and bottom specified, height is auto
       //
       // CSS 2.1 distinguishes between replaced and non-replaced abspos boxes:
       // - §10.6.4 (non-replaced): auto height fills the available space.
@@ -1599,6 +1671,66 @@ impl AbsoluteLayout {
       "auto height should fill the space between top and bottom"
     );
     assert_eq!(result.position.y, 25.0);
+  }
+
+  #[test]
+  fn layout_absolute_replaced_top_bottom_auto_height_resolves_auto_margin() {
+    let layout = AbsoluteLayout::new();
+
+    // Regression for CSS 2.1 §10.6.5: absolutely positioned replaced elements resolve
+    // `height:auto` like inline replaced elements even when both insets are specified, then solve
+    // auto margins against the constraint equation.
+    //
+    // Real-world example: `top:0; bottom:0; height:auto; margin-top:auto` should bottom-align
+    // a replaced element (e.g. a small hero image), not stretch it to fill the containing block.
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.top = LengthOrAuto::px(0.0);
+    style.bottom = LengthOrAuto::px(0.0);
+    style.left = LengthOrAuto::px(0.0);
+    style.width = LengthOrAuto::Auto;
+    style.height = LengthOrAuto::Auto;
+    style.max_width = Length::px(114.0);
+    style.margin_top_auto = true;
+    style.box_sizing = crate::style::types::BoxSizing::BorderBox;
+    style.padding.top = 10.0;
+    style.padding.bottom = 10.0;
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(323.0, 430.0), Point::ZERO);
+    input.is_replaced = true;
+
+    let cb = create_containing_block(600.0, 401.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+
+    // Intrinsic ratio = 323/430, width clamped to 114px.
+    // Height is derived from the intrinsic ratio (CSS 2.1 inline replaced sizing).
+    let expected_height = 114.0 * 430.0 / 323.0;
+    assert!((result.size.width - 114.0).abs() < 0.01);
+    assert!(
+      (result.size.height - expected_height).abs() < 0.01,
+      "height mismatch: got {} expected {}",
+      result.size.height,
+      expected_height
+    );
+
+    // Total vertical border-box size = padding-top + height + padding-bottom.
+    // With top/bottom 0 and margin-top auto, the element is bottom-aligned:
+    // margin-top = cb_height - border_box_height.
+    let border_box_height = 10.0 + expected_height + 10.0;
+    let expected_margin_top = 401.0 - border_box_height;
+    let expected_position_y = expected_margin_top + 10.0;
+    assert!(
+      (result.margins.top - expected_margin_top).abs() < 0.01,
+      "margin-top mismatch: got {} expected {}",
+      result.margins.top,
+      expected_margin_top
+    );
+    assert!(
+      (result.position.y - expected_position_y).abs() < 0.01,
+      "position.y mismatch: got {} expected {}",
+      result.position.y,
+      expected_position_y
+    );
   }
 
   #[test]
