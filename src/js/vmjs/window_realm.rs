@@ -483,7 +483,6 @@ impl WindowRealm {
   }
 
   /// Execute a classic script in this window realm.
-  #[cfg(test)]
   pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
     self.exec_script_with_name("<inline>", source)
   }
@@ -511,7 +510,6 @@ impl WindowRealm {
   /// This routes Promise jobs through `VmHostHooks::host_enqueue_promise_job` instead of the
   /// VM-owned microtask queue used by [`WindowRealm::exec_script`]. Embeddings can use this to
   /// integrate ECMAScript jobs into an HTML-shaped microtask queue.
-  #[cfg(test)]
   pub fn exec_script_with_hooks(
     &mut self,
     hooks: &mut dyn VmHostHooks,
@@ -531,7 +529,6 @@ impl WindowRealm {
     self.with_vm_budget(|rt| rt.exec_script_source_with_host_and_hooks(host, hooks, source))
   }
 
-  #[cfg(test)]
   pub(crate) fn exec_script_source_with_hooks(
     &mut self,
     hooks: &mut dyn VmHostHooks,
@@ -542,7 +539,6 @@ impl WindowRealm {
   }
 
   /// Execute a classic script with an explicit source name for stack traces.
-  #[cfg(test)]
   pub fn exec_script_with_name(
     &mut self,
     source_name: impl Into<Arc<str>>,
@@ -676,7 +672,6 @@ impl WindowRealm {
     result
   }
 
-  #[cfg(test)]
   pub fn perform_microtask_checkpoint(&mut self) -> Result<(), VmError> {
     self.with_vm_budget(|rt| rt.vm.perform_microtask_checkpoint(&mut rt.heap))
   }
