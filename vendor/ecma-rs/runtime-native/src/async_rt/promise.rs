@@ -151,7 +151,7 @@ pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
 }
 
 pub(crate) fn promise_new() -> PromiseRef {
-  PromiseRef(Box::into_raw(Box::new(RtPromise::new_pending())) as *mut core::ffi::c_void)
+  PromiseRef(Box::into_raw(Box::new(RtPromise::new_pending())) as *mut runtime_native_abi::PromiseHeader)
 }
 
 pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
@@ -175,7 +175,7 @@ pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
     // Publish the payload pointer before setting the "has payload" flag so that a thread reading
     // `flags` with `Acquire` will also observe the `value` store.
     .store(FLAG_HAS_PAYLOAD, Ordering::Release);
-  PromiseRef(Box::into_raw(promise) as *mut core::ffi::c_void)
+  PromiseRef(Box::into_raw(promise) as *mut runtime_native_abi::PromiseHeader)
 }
 
 pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
@@ -718,7 +718,7 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
   }
 
   // Self-resolution check (thenable refers to the same object as the promise).
-  if thenable.ptr.cast::<core::ffi::c_void>() == dst.0 {
+  if thenable.ptr == dst.0.cast::<u8>() {
     promise_reject(dst, self_resolution_error());
     return;
   }

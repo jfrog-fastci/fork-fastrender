@@ -276,10 +276,22 @@ pub struct Thread {
   _private: [u8; 0],
 }
 
-/// Opaque handle to a promise/coroutine managed by the runtime.
+/// Opaque promise header prefix.
+///
+/// In the native async ABI, every `Promise<T>` allocation begins with a `PromiseHeader` at offset 0.
+/// The concrete layout of this header is owned by the runtime (`runtime-native/src/async_abi.rs`).
+///
+/// This definition exists only so `PromiseRef` can be represented as a pointer to an opaque C
+/// struct, matching `runtime_native.h`.
+#[repr(C)]
+pub struct PromiseHeader {
+  _private: [u8; 0],
+}
+
+/// Opaque handle to a runtime-managed promise.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PromiseRef(pub *mut c_void);
+pub struct PromiseRef(pub *mut PromiseHeader);
 
 impl PromiseRef {
   #[inline]
@@ -928,6 +940,10 @@ mod tests {
     assert!(
       header.contains("typedef struct RtPromise RtPromise;") || header.contains("struct RtPromise;"),
       "missing RtPromise forward declaration"
+    );
+    assert!(
+      header.contains("typedef struct PromiseHeader PromiseHeader;") || header.contains("struct PromiseHeader;"),
+      "missing PromiseHeader forward declaration"
     );
 
     // Functions (key entrypoints).
