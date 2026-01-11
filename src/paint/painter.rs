@@ -166,7 +166,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tiny_skia::BlendMode as SkiaBlendMode;
 use tiny_skia::FilterQuality;
 use tiny_skia::IntSize;
@@ -490,6 +490,27 @@ mod diagnostics_tests {
     with_paint_diagnostics(|diag| diag.blur_calls = 2);
     let stats = take_paint_diagnostics().expect("diagnostics enabled");
     assert_eq!(stats.blur_calls, 2);
+  }
+
+  #[test]
+  fn display_list_build_budget_scales_with_remaining_deadline() {
+    // When rendering under a long overall deadline (e.g. fixture/page-loop renders with ~minutes of
+    // budget), we still want the display-list pipeline to run rather than immediately falling back
+    // to the legacy painter. Historically the builder budget was capped at 1s, which was too
+    // aggressive for real pages and caused large fidelity regressions (notably dropping fixed
+    // chrome on fandom.com). Keep the cap generous and deterministic.
+    assert_eq!(
+      display_list_build_budget_from_remaining(Duration::from_secs(120)),
+      DISPLAY_LIST_BUILD_BUDGET_CAP
+    );
+    assert_eq!(
+      display_list_build_budget_from_remaining(Duration::from_secs(6)),
+      Duration::from_secs(3)
+    );
+    assert_eq!(
+      display_list_optimize_budget_from_remaining(Duration::from_secs(120)),
+      DISPLAY_LIST_OPTIMIZE_BUDGET_CAP
+    );
   }
 }
 
@@ -18169,6 +18190,30 @@ pub enum PaintBackend {
   DisplayList,
 }
 
+/// Maximum amount of time the display-list builder is allowed to run before we fall back to the
+/// legacy painter when operating under an overall render deadline.
+///
+/// The display-list pipeline is the default paint backend and is required for correctness on many
+/// pages (e.g. stacking contexts for `position: fixed`). The legacy painter is maintained only as a
+/// best-effort fallback when a render is about to time out, so the budget must be generous enough
+/// that typical pages do not silently fall back and lose fidelity.
+const DISPLAY_LIST_BUILD_BUDGET_CAP: Duration = Duration::from_secs(10);
+
+/// Maximum amount of time to spend optimizing the display list under a render deadline.
+///
+/// Optimization is optional; when the budget is exceeded we rasterize the unoptimized list.
+const DISPLAY_LIST_OPTIMIZE_BUDGET_CAP: Duration = Duration::from_millis(200);
+
+#[inline]
+fn display_list_build_budget_from_remaining(remaining: Duration) -> Duration {
+  (remaining / 2).min(DISPLAY_LIST_BUILD_BUDGET_CAP)
+}
+
+#[inline]
+fn display_list_optimize_budget_from_remaining(remaining: Duration) -> Duration {
+  (remaining / 4).min(DISPLAY_LIST_OPTIMIZE_BUDGET_CAP)
+}
+
 pub(crate) fn paint_backend_from_env() -> PaintBackend {
   // Prefer the active runtime toggles so library users (and tests) can override env-derived
   // behavior without mutating the process environment.
@@ -18291,7 +18336,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
   let culling_viewport = Size::new(width as f32, height as f32);
   let build_budget = active_deadline()
     .and_then(|deadline| deadline.remaining_timeout())
-    .map(|remaining| (remaining / 2).min(std::time::Duration::from_millis(1000)));
+    .map(display_list_build_budget_from_remaining);
   let build_display_list_for_root =
     |root: &FragmentNode| -> Result<crate::paint::display_list::DisplayList> {
       DisplayListBuilder::with_image_cache(image_cache.clone())
@@ -18373,7 +18418,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
   let optimize_start = diagnostics_enabled.then(Instant::now);
   let optimize_budget = active_deadline()
     .and_then(|deadline| deadline.remaining_timeout())
-    .map(|remaining| (remaining / 4).min(std::time::Duration::from_millis(200)));
+    .map(display_list_optimize_budget_from_remaining);
   let original_items = display_list.len();
   let optimize_result = match optimize_budget {
     Some(budget) => {
