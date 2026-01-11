@@ -14804,6 +14804,23 @@ mod tests {
     })
   }
 
+  fn test_cjk_font() -> Arc<crate::text::font_db::LoadedFont> {
+    let font_path =
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/NotoSansSC-subset.ttf");
+    let data = Arc::new(std::fs::read(font_path).expect("read test CJK font"));
+    Arc::new(crate::text::font_db::LoadedFont {
+      id: None,
+      data,
+      index: 0,
+      face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
+      family: "Noto Sans SC Subset".to_string(),
+      weight: crate::text::font_db::FontWeight::NORMAL,
+      style: FontStyle::Normal,
+      stretch: FontStretch::Normal,
+    })
+  }
+
   fn shaped_run_for_char(
     font: Arc<crate::text::font_db::LoadedFont>,
     ch: char,
@@ -15097,6 +15114,65 @@ mod tests {
     assert!(builder
       .resolve_text_decoration_thickness_override(TextDecorationThickness::FromFont, &style)
       .is_none());
+  }
+
+  #[test]
+  fn underline_skip_ink_does_not_carve_ideographic_runs() {
+    let font = test_cjk_font();
+    let cached_face = face_cache::get_ttf_face(font.as_ref()).expect("parse test CJK font");
+    let face = cached_face.face();
+    let ch = ['中', '你', '好', '国', '流', '浪', '地', '球']
+      .iter()
+      .copied()
+      .find(|ch| face.glyph_index(*ch).is_some())
+      .expect("expected test CJK font to contain at least one common CJK glyph");
+    let run = shaped_run_for_char(Arc::clone(&font), ch, 12.0);
+    let runs: Arc<Vec<ShapedRun>> = Arc::new(vec![run]);
+
+    let mut style = ComputedStyle::default();
+    style.font_size = 12.0;
+    style.text_decoration.lines = TextDecorationLine::UNDERLINE;
+    style.text_decoration.color = Some(Rgba::BLACK);
+    style.text_decoration_skip_ink = TextDecorationSkipInk::Auto;
+    let style = Arc::new(style);
+
+    let text_contents = ch.to_string();
+    let text_width = runs[0].advance;
+    let text = FragmentNode::new_text_shaped(
+      Rect::from_xywh(0.0, 0.0, text_width, 20.0),
+      text_contents,
+      12.0,
+      runs,
+      Arc::clone(&style),
+    );
+    let fragment = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 60.0), vec![text]);
+
+    let list = DisplayListBuilder::new().build(&fragment);
+    let deco = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::TextDecoration(dec) => Some(dec),
+        _ => None,
+      })
+      .expect("expected a TextDecoration display item");
+    let underline = deco
+      .decorations
+      .first()
+      .and_then(|d| d.underline.as_ref())
+      .expect("expected underline decoration");
+    let segments = underline
+      .segments
+      .as_ref()
+      .expect("skip-ink should produce underline segments");
+    assert_eq!(
+      segments.len(),
+      1,
+      "expected ideographic underline to avoid skip-ink carving"
+    );
+    let (start, end) = segments[0];
+    assert!(start.abs() < 0.001);
+    assert!((end - deco.line_width).abs() < 0.001);
   }
 
   fn create_image_fragment(x: f32, y: f32, width: f32, height: f32, src: &str) -> FragmentNode {

@@ -87,6 +87,50 @@ fn push_interval(intervals: &mut Vec<(f32, f32)>, start: f32, end: f32) {
   }
 }
 
+#[inline]
+fn char_looks_ideographic(ch: char) -> bool {
+  let cp = ch as u32;
+  // `text-decoration-skip-ink: auto` is defined to be UA-dependent and, in practice, browsers
+  // treat underline carving differently across writing systems. In particular, applying
+  // descender-style "ink skipping" heuristics to CJK text often produces huge visible gaps.
+  //
+  // To better match browser behaviour and avoid over-carving, treat common East Asian scripts as
+  // ideographic and exempt them from skip-ink exclusions in `auto` mode.
+  (0x3400..=0x4DBF).contains(&cp) // CJK Unified Ideographs Extension A
+    || (0x4E00..=0x9FFF).contains(&cp) // CJK Unified Ideographs
+    || (0x20000..=0x2EBEF).contains(&cp) // CJK Unified Ideographs Extensions B..F
+    || (0x30000..=0x3134F).contains(&cp) // CJK Unified Ideographs Extension G
+    || (0xF900..=0xFAFF).contains(&cp) // CJK Compatibility Ideographs
+    || (0x2F800..=0x2FA1F).contains(&cp) // CJK Compatibility Ideographs Supplement
+    || (0x3000..=0x303F).contains(&cp) // CJK Symbols and Punctuation
+    || (0x3040..=0x30FF).contains(&cp) // Hiragana + Katakana
+    || (0x31F0..=0x31FF).contains(&cp) // Katakana Phonetic Extensions
+    || (0x3100..=0x312F).contains(&cp) // Bopomofo
+    || (0x31A0..=0x31BF).contains(&cp) // Bopomofo Extended
+    || (0x1100..=0x11FF).contains(&cp) // Hangul Jamo
+    || (0x3130..=0x318F).contains(&cp) // Hangul Compatibility Jamo
+    || (0xA960..=0xA97F).contains(&cp) // Hangul Jamo Extended-A
+    || (0xAC00..=0xD7AF).contains(&cp) // Hangul Syllables
+    || (0xD7B0..=0xD7FF).contains(&cp) // Hangul Jamo Extended-B
+    || (0xFF01..=0xFFEF).contains(&cp) // Halfwidth and Fullwidth Forms
+}
+
+#[inline]
+fn cluster_looks_ideographic(run: &ShapedRun, cluster: u32) -> bool {
+  let idx = cluster as usize;
+  if idx >= run.text.len() {
+    return false;
+  }
+  if !run.text.is_char_boundary(idx) {
+    return false;
+  }
+  run
+    .text
+    .get(idx..)
+    .and_then(|tail| tail.chars().next())
+    .is_some_and(char_looks_ideographic)
+}
+
 fn glyph_aabb(
   instance: &FontInstance<'_>,
   font: &LoadedFont,
@@ -186,6 +230,11 @@ pub(crate) fn collect_underline_exclusions(
 
     let mut cursor_x = origin_x;
     for glyph in &run.glyphs {
+      if !skip_all && cluster_looks_ideographic(run, glyph.cluster) {
+        cursor_x += glyph.x_advance * coord_scale;
+        continue;
+      }
+
       // Match `TextRasterizer::render_glyph_run` positioning (with y-axis inversion).
       let glyph_x = cursor_x + glyph.x_offset * coord_scale;
       let glyph_y = origin_y - glyph.y_offset * coord_scale;
@@ -261,6 +310,12 @@ pub(crate) fn collect_underline_exclusions_vertical(
     let mut cursor_x = origin_x;
     let mut cursor_y = 0.0_f32;
     for glyph in &run.glyphs {
+      if !skip_all && cluster_looks_ideographic(run, glyph.cluster) {
+        cursor_x += glyph.x_advance * coord_scale;
+        cursor_y += glyph.y_advance * coord_scale;
+        continue;
+      }
+
       // Match `TextRasterizer::render_glyph_run` positioning (with y-axis inversion).
       let glyph_x = cursor_x + glyph.x_offset * coord_scale;
       let glyph_y = origin_y + cursor_y - glyph.y_offset * coord_scale;
