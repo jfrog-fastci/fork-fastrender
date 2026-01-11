@@ -1995,9 +1995,12 @@ impl Canvas {
   /// Fast path for axis-aligned `source-over` rounded-rectangle fills.
   ///
   /// Like [`Canvas::try_fill_rect_source_over_trunc`], tiny-skia's `fill_path` compositing differs
-  /// subtly from Chrome/Skia for semi-transparent colors (often by ±1 in each channel). Rounded
-  /// rectangle backgrounds show up frequently in UI-heavy pages, so these off-by-one errors can
-  /// dominate page-loop diffs.
+  /// subtly from Chrome/Skia for semi-transparent colors (often by ±1 in each channel). This
+  /// affects both explicitly translucent fills and the anti-aliased edges of opaque rounded rects
+  /// (which behave like `alpha = coverage`).
+  ///
+  /// Rounded-rectangle backgrounds show up frequently in UI-heavy pages, so these off-by-one
+  /// errors can dominate page-loop diffs.
   ///
   /// When the transform is translation-only and there is no complex clip mask, we can rasterize
   /// the rounded-rect coverage into a temporary `Mask` and composite into the destination buffer
@@ -2041,10 +2044,6 @@ impl Canvas {
     let sa = (combined_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
     if sa == 0 {
       return true;
-    }
-    // Keep existing code paths for opaque fills (they include pixel-snapping logic).
-    if sa == 255 {
-      return false;
     }
 
     let clip_mask = self.current_state.clip_mask.as_deref();
@@ -3571,8 +3570,10 @@ impl Canvas {
 
     let x0 = (min_x - 0.5).ceil() as i64;
     let y0 = (min_y - 0.5).ceil() as i64;
-    let x1 = (max_x - 0.5).ceil() as i64;
-    let y1 = (max_y - 0.5).ceil() as i64;
+    // Match tiny-skia's non-AA rasterizer, which treats pixel centers on the max edge as inside.
+    // (Equivalently, it behaves like a `[min, max]` interval in pixel-center space.)
+    let x1 = (max_x - 0.5).floor() as i64 + 1;
+    let y1 = (max_y - 0.5).floor() as i64 + 1;
 
     let x0 = x0.clamp(0, w_i64);
     let y0 = y0.clamp(0, h_i64);
@@ -3597,14 +3598,12 @@ impl Canvas {
   fn build_clip_mask_slow_path(&self, rect: Rect, radii: BorderRadii) -> Option<Mask> {
     let mut mask = Mask::new(self.width(), self.height())?;
     mask.data_mut().fill(0);
-    let paint = {
-      let mut p = Paint::default();
-      p.set_color_rgba8(255, 255, 255, 255);
-      p
-    };
 
     let path = self.build_rounded_rect_path(rect, radii)?;
     let transform = self.current_state.transform;
+    // Match Skia's hard-edge `clipRect` behaviour for axis-aligned rectangular clips while still
+    // anti-aliasing rounded corners and non-axis-aligned transforms.
+    let anti_alias = !radii.is_zero() || transform.kx.abs() > 1e-6 || transform.ky.abs() > 1e-6;
     let bounds = Self::transform_rect_aabb(rect, transform);
     let needs_scratch = bounds.min_x() < 0.0
       || bounds.min_y() < 0.0
@@ -3612,7 +3611,7 @@ impl Canvas {
       || bounds.max_y() > self.height() as f32;
 
     if !needs_scratch {
-      mask.fill_path(&path, FillRule::Winding, paint.anti_alias, transform);
+      mask.fill_path(&path, FillRule::Winding, anti_alias, transform);
       return Some(mask);
     }
 
@@ -3647,11 +3646,11 @@ impl Canvas {
     let scratch_w_i64 = x1 - x0;
     let scratch_h_i64 = y1 - y0;
     let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
-      mask.fill_path(&path, FillRule::Winding, paint.anti_alias, transform);
+      mask.fill_path(&path, FillRule::Winding, anti_alias, transform);
       return Some(mask);
     };
     let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
-      mask.fill_path(&path, FillRule::Winding, paint.anti_alias, transform);
+      mask.fill_path(&path, FillRule::Winding, anti_alias, transform);
       return Some(mask);
     };
     if scratch_w == 0 || scratch_h == 0 {
@@ -3674,7 +3673,7 @@ impl Canvas {
       _ => match Mask::new(scratch_w, scratch_h) {
         Some(m) => m,
         None => {
-          mask.fill_path(&path, FillRule::Winding, paint.anti_alias, transform);
+          mask.fill_path(&path, FillRule::Winding, anti_alias, transform);
           scratch.mask = None;
           ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
             *cell.borrow_mut() = scratch;
@@ -3687,7 +3686,7 @@ impl Canvas {
     tmp.fill_path(
       &path,
       FillRule::Winding,
-      paint.anti_alias,
+      anti_alias,
       transform.post_translate(-(x0 as f32), -(y0 as f32)),
     );
 
@@ -4521,7 +4520,7 @@ impl BlendModeExt for BlendMode {
 mod tests {
   use super::*;
   use crate::paint::pixmap::{new_pixmap, NewPixmapAllocRecorder};
-  use tiny_skia::MaskType;
+  use tiny_skia::{FillRule, Mask, MaskType, Transform};
 
   fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
     let width = pixmap.width();
@@ -4783,6 +4782,52 @@ mod tests {
       (inside.red(), inside.green(), inside.blue(), inside.alpha()),
       (229, 229, 229, 255)
     );
+  }
+
+  #[test]
+  fn opaque_rounded_rect_edge_composites_with_truncating_mul_div_255() {
+    let background = Rgba::rgb(0, 38, 118);
+    let mut canvas = Canvas::new(40, 40, background).unwrap();
+    let rect = Rect::from_xywh(5.0, 5.0, 30.0, 30.0);
+    let radii = BorderRadii::uniform(15.0);
+    canvas.draw_rounded_rect(rect, radii, Rgba::WHITE);
+
+    let path = canvas
+      .build_rounded_rect_path(rect, radii)
+      .expect("rounded rect path");
+    let mut mask = Mask::new(canvas.width(), canvas.height()).expect("mask");
+    mask.data_mut().fill(0);
+    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+
+    let width = canvas.width() as usize;
+    let data = mask.data();
+    let mut checked = 0usize;
+    for (idx, coverage) in data.iter().enumerate() {
+      let coverage = *coverage;
+      if coverage == 0 || coverage == 255 {
+        continue;
+      }
+      checked += 1;
+
+      let x = (idx % width) as u32;
+      let y = (idx / width) as u32;
+      let pix = canvas.pixmap().pixel(x, y).expect("pixel in bounds");
+
+      let pix_sa = coverage as u16;
+      let inv_sa = 255u16 - pix_sa;
+
+      // Source is solid white (r=g=b=a=255); per-pixel source alpha is the AA coverage.
+      // Use truncating `mul/255` arithmetic to match Chrome/Skia.
+      let expected_r = pix_sa + (background.r as u16 * inv_sa) / 255u16;
+      let expected_g = pix_sa + (background.g as u16 * inv_sa) / 255u16;
+      let expected_b = pix_sa + (background.b as u16 * inv_sa) / 255u16;
+      assert_eq!(
+        (pix.red(), pix.green(), pix.blue(), pix.alpha()),
+        (expected_r as u8, expected_g as u8, expected_b as u8, 255),
+        "pixel ({x}, {y}) coverage={coverage}"
+      );
+    }
+    assert!(checked > 0, "expected some anti-aliased edge pixels");
   }
 
   #[test]
