@@ -1195,21 +1195,18 @@ fn normalize_effects(
       let io_default = template == "io";
 
       let mut flags = EffectSet::empty();
-      if details
-        .allocates
-        .unwrap_or(unknown_default || base_allocates)
-      {
+      if details.allocates.unwrap_or(base_allocates) {
         flags |= EffectSet::ALLOCATES;
       }
-      if details.io.unwrap_or(io_default || unknown_default || base_io) {
+      if details.io.unwrap_or(io_default || base_io) {
         flags |= EffectSet::IO;
       }
-      if details.network.unwrap_or(unknown_default || base_network) {
+      if details.network.unwrap_or(base_network) {
         flags |= EffectSet::NETWORK;
       }
       if details
         .nondeterministic
-        .unwrap_or(unknown_default || base_nondeterministic)
+        .unwrap_or(base_nondeterministic)
       {
         flags |= EffectSet::NONDETERMINISTIC;
       }
@@ -1839,6 +1836,27 @@ purity: Impure
     assert!(api.effect_summary.flags.contains(EffectSet::UNKNOWN));
     assert!(!api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
     assert!(!api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
+  fn unknown_template_does_not_imply_other_effect_flags() {
+    let yaml = r#"
+name: x
+effects:
+  template: unknown
+  may_throw: true
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert_eq!(api.effects, EffectTemplate::Unknown);
+    assert!(api.effect_summary.flags.contains(EffectSet::UNKNOWN));
+    assert!(!api.effect_summary.flags.contains(EffectSet::ALLOCATES));
+    assert!(!api.effect_summary.flags.contains(EffectSet::IO));
+    assert!(!api.effect_summary.flags.contains(EffectSet::NETWORK));
+    assert!(!api.effect_summary.flags.contains(EffectSet::NONDETERMINISTIC));
     assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
   }
 
