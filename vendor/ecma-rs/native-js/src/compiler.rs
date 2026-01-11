@@ -21,7 +21,7 @@ use crate::{
   NativeJsError, OptLevel,
 };
 use diagnostics::{Diagnostic, Severity, Span, TextRange};
-use hir_js::{Body, BodyId, DefId, DefKind, ExprId, ExprKind, FileKind, FunctionData, NameId, PatKind};
+use hir_js::{Body, BodyId, DefId, DefKind, ExprKind, FileKind, FunctionData, NameId, PatKind};
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::module::Module;
@@ -652,16 +652,6 @@ impl<'a> Compiler<'a> {
       return Ok(());
     }
 
-    fn callee_is_ident(body: &Body, lowered: &hir_js::LowerResult, expr: ExprId, target: &str) -> bool {
-      let Some(expr) = body.exprs.get(expr.0 as usize) else {
-        return false;
-      };
-      match &expr.kind {
-        ExprKind::Ident(name) => lowered.names.resolve(*name) == Some(target),
-        _ => false,
-      }
-    }
-
     let mut diagnostics = Vec::new();
     for file in self.program.reachable_files() {
       let Some(lowered) = self.program.hir_lowered(file) else {
@@ -679,16 +669,30 @@ impl<'a> Compiler<'a> {
           let ExprKind::Call(call) = &expr.kind else {
             continue;
           };
-          if callee_is_ident(body, lowered.as_ref(), call.callee, "print") {
-            diagnostics.push(
-              codes::BUILTINS_DISABLED
-                .error(
-                  "`print(...)` intrinsic is disabled because builtin intrinsics are disabled",
-                  Span::new(file, expr.span),
-                )
-                .with_note("re-enable builtin intrinsics by setting `CompilerOptions.builtins = true`"),
-            );
-          }
+          let Some(callee) = body.exprs.get(call.callee.0 as usize) else {
+            continue;
+          };
+          let ExprKind::Ident(ident) = &callee.kind else {
+            continue;
+          };
+          let Some(name) = lowered.names.resolve(*ident) else {
+            continue;
+          };
+          let Some(intrinsic) = crate::builtins::intrinsic_by_name(name) else {
+            continue;
+          };
+
+          diagnostics.push(
+            codes::BUILTINS_DISABLED
+              .error(
+                format!(
+                  "`{}(...)` intrinsic is disabled because builtin intrinsics are disabled",
+                  intrinsic.name()
+                ),
+                Span::new(file, expr.span),
+              )
+              .with_note("re-enable builtin intrinsics by setting `CompilerOptions.builtins = true`"),
+          );
         }
       }
     }
