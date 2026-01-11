@@ -870,6 +870,39 @@ TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*dr
 void rt_clear_timer(TimerId id);
 
 // -----------------------------------------------------------------------------
+// GC-rooted scheduling APIs (HandleId-based)
+// -----------------------------------------------------------------------------
+//
+// These variants are safe for GC-managed userdata under a moving GC.
+//
+// Ownership:
+// - The runtime consumes `HandleId data` and treats it as a strong root while the
+//   work item is queued/registered.
+// - The runtime will free the handle exactly once when the work item is torn
+//   down (after execution, or on cancellation/unregister).
+//
+// If `data` is stale (freed), the callback is treated as a no-op.
+void rt_queue_microtask_handle(void (*cb)(GcPtr), HandleId data);
+void rt_queue_microtask_handle_with_drop(void (*cb)(GcPtr), HandleId data, void (*drop_data)(GcPtr));
+TimerId rt_set_timeout_handle(void (*cb)(GcPtr), HandleId data, uint64_t delay_ms);
+TimerId rt_set_timeout_handle_with_drop(void (*cb)(GcPtr), HandleId data, void (*drop_data)(GcPtr), uint64_t delay_ms);
+TimerId rt_set_interval_handle(void (*cb)(GcPtr), HandleId data, uint64_t interval_ms);
+TimerId rt_set_interval_handle_with_drop(void (*cb)(GcPtr), HandleId data, void (*drop_data)(GcPtr), uint64_t interval_ms);
+IoWatcherId rt_io_register_handle(
+  RtFd fd,
+  uint32_t interests,
+  void (*cb)(uint32_t events, GcPtr data),
+  HandleId data
+);
+IoWatcherId rt_io_register_handle_with_drop(
+  RtFd fd,
+  uint32_t interests,
+  void (*cb)(uint32_t events, GcPtr data),
+  HandleId data,
+  void (*drop_data)(GcPtr)
+);
+
+// -----------------------------------------------------------------------------
 // I/O watchers (reactor-backed readiness notifications)
 // -----------------------------------------------------------------------------
 //

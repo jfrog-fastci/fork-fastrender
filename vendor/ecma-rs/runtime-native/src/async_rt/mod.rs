@@ -456,7 +456,7 @@ pub fn reset_clock_for_tests() {
 }
 
 // -----------------------------------------------------------------------------
-// Queueing helpers used by the promise/coroutine lowering.
+// Core driver helpers (polling / microtask checkpoints).
 // -----------------------------------------------------------------------------
 
 #[inline]
@@ -623,6 +623,12 @@ pub fn debug_timer_count() -> usize {
 #[doc(hidden)]
 pub fn debug_with_microtasks_lock<R>(f: impl FnOnce() -> R) -> R {
   global().loop_.debug_with_microtasks_lock(f)
+}
+
+/// Test-only hook: execute `f` while holding the global timers lock.
+#[doc(hidden)]
+pub fn debug_with_timers_lock<R>(f: impl FnOnce() -> R) -> R {
+  global().loop_.debug_with_timers_lock(f)
 }
 
 /// Test-only hook: execute `f` while holding the reactor's watcher-map lock.

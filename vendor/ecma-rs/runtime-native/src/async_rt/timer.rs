@@ -45,6 +45,10 @@ impl Timers {
     }
   }
 
+  pub(crate) fn debug_lock_for_tests(&self) -> impl Drop + '_ {
+    self.inner.lock()
+  }
+
   pub fn has_timers(&self) -> bool {
     !self.inner.lock().keys.is_empty()
   }

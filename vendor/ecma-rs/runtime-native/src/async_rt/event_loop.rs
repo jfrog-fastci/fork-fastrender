@@ -575,6 +575,11 @@ impl EventLoop {
     f()
   }
 
+  pub(crate) fn debug_with_timers_lock<R>(&self, f: impl FnOnce() -> R) -> R {
+    let _guard = self.timers.debug_lock_for_tests();
+    f()
+  }
+
   pub(crate) fn debug_with_reactor_watchers_lock<R>(&self, f: impl FnOnce() -> R) -> R {
     self.reactor.debug_with_watchers_lock(f)
   }

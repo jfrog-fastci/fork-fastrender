@@ -1621,6 +1621,34 @@ extern "C" fn drop_rooted_io_watcher_data(data: *mut u8) {
   }
 }
 
+#[repr(C)]
+struct HandleIoWatcherData {
+  cb: extern "C" fn(u32, *mut u8),
+  handle: u64,
+  drop_data: Option<extern "C" fn(*mut u8)>,
+}
+
+extern "C" fn handle_io_watcher_cb(events: u32, data: *mut u8) {
+  let ctx = unsafe { &*(data as *const HandleIoWatcherData) };
+  let ptr = rt_handle_load(ctx.handle);
+  if ptr.is_null() {
+    return;
+  }
+  (ctx.cb)(events, ptr);
+}
+
+extern "C" fn drop_handle_io_watcher_data(data: *mut u8) {
+  // Safety: allocated by `Box::into_raw` in `rt_io_register_handle*`.
+  let ctx = unsafe { Box::from_raw(data as *mut HandleIoWatcherData) };
+  let ptr = rt_handle_load(ctx.handle);
+  if !ptr.is_null() {
+    if let Some(drop_data) = ctx.drop_data {
+      drop_data(ptr);
+    }
+  }
+  rt_handle_free(ctx.handle);
+}
+
 /// Register an fd with the runtime's readiness reactor.
 ///
 /// ## Nonblocking / edge-triggered contract
@@ -1830,6 +1858,165 @@ pub extern "C" fn rt_io_register_rooted(
         } else {
           maybe_log_rt_io_failure(
             "rt_io_register_rooted",
+            format_args!("fd={fd} interests=0x{interests:x}: {err}"),
+          );
+        }
+        0
+      }
+    }
+  })
+}
+
+/// Like [`rt_io_register`], but the callback userdata is a GC-rooted persistent handle.
+///
+/// Ownership:
+/// - The runtime consumes `data` and treats it as a strong GC root while the watcher is registered.
+/// - The runtime frees the handle exactly once when the watcher is unregistered (or if registration
+///   fails).
+///
+/// If `data` is stale (freed), readiness callbacks are treated as no-ops.
+#[no_mangle]
+pub extern "C" fn rt_io_register_handle(
+  fd: i32,
+  interests: u32,
+  cb: extern "C" fn(u32, *mut u8),
+  data: u64,
+) -> IoWatcherId {
+  abort_on_panic(|| {
+    rt_io_set_last_error(rt_io_debug::OK);
+    if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      rt_io_set_last_error(rt_io_debug::ERR_INVALID_INTERESTS);
+      maybe_log_rt_io_failure(
+        "rt_io_register_handle",
+        format_args!(
+          "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
+        ),
+      );
+      ensure_current_thread_registered();
+      rt_handle_free(data);
+      return 0;
+    }
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+
+    let ctx = Box::new(HandleIoWatcherData {
+      cb,
+      handle: data,
+      drop_data: None,
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    match async_rt::global().register_io_with_drop(
+      fd,
+      interests,
+      handle_io_watcher_cb,
+      ctx_ptr,
+      drop_handle_io_watcher_data,
+    ) {
+      Ok(id) => id.as_raw(),
+      Err(err) => {
+        let is_nonblocking_contract_violation =
+          err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
+        let code = if is_nonblocking_contract_violation {
+          rt_io_debug::ERR_FD_NOT_NONBLOCKING
+        } else if err.kind() == io::ErrorKind::AlreadyExists {
+          rt_io_debug::ERR_ALREADY_REGISTERED
+        } else {
+          rt_io_debug::ERR_OTHER
+        };
+        rt_io_set_last_error(code);
+
+        drop_handle_io_watcher_data(ctx_ptr);
+        if is_nonblocking_contract_violation {
+          maybe_log_rt_io_failure(
+            "rt_io_register_handle",
+            format_args!(
+              "fd={fd} interests=0x{interests:x}: {err} (did you forget to set O_NONBLOCK?)"
+            ),
+          );
+        } else {
+          maybe_log_rt_io_failure(
+            "rt_io_register_handle",
+            format_args!("fd={fd} interests=0x{interests:x}: {err}"),
+          );
+        }
+        0
+      }
+    }
+  })
+}
+
+/// Like [`rt_io_register_handle`], but provides a teardown hook for the GC-rooted userdata.
+///
+/// `drop_data` is invoked exactly once when the watcher is unregistered or torn down (including on
+/// registration failure), and runs before the runtime frees the handle.
+#[no_mangle]
+pub extern "C" fn rt_io_register_handle_with_drop(
+  fd: i32,
+  interests: u32,
+  cb: extern "C" fn(u32, *mut u8),
+  data: u64,
+  drop_data: extern "C" fn(*mut u8),
+) -> IoWatcherId {
+  abort_on_panic(|| {
+    rt_io_set_last_error(rt_io_debug::OK);
+    if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      rt_io_set_last_error(rt_io_debug::ERR_INVALID_INTERESTS);
+      maybe_log_rt_io_failure(
+        "rt_io_register_handle_with_drop",
+        format_args!(
+          "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
+        ),
+      );
+      ensure_current_thread_registered();
+      let ptr = rt_handle_load(data);
+      if !ptr.is_null() {
+        drop_data(ptr);
+      }
+      rt_handle_free(data);
+      return 0;
+    }
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+
+    let ctx = Box::new(HandleIoWatcherData {
+      cb,
+      handle: data,
+      drop_data: Some(drop_data),
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    match async_rt::global().register_io_with_drop(
+      fd,
+      interests,
+      handle_io_watcher_cb,
+      ctx_ptr,
+      drop_handle_io_watcher_data,
+    ) {
+      Ok(id) => id.as_raw(),
+      Err(err) => {
+        let is_nonblocking_contract_violation =
+          err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
+        let code = if is_nonblocking_contract_violation {
+          rt_io_debug::ERR_FD_NOT_NONBLOCKING
+        } else if err.kind() == io::ErrorKind::AlreadyExists {
+          rt_io_debug::ERR_ALREADY_REGISTERED
+        } else {
+          rt_io_debug::ERR_OTHER
+        };
+        rt_io_set_last_error(code);
+
+        drop_handle_io_watcher_data(ctx_ptr);
+        if is_nonblocking_contract_violation {
+          maybe_log_rt_io_failure(
+            "rt_io_register_handle_with_drop",
+            format_args!(
+              "fd={fd} interests=0x{interests:x}: {err} (did you forget to set O_NONBLOCK?)"
+            ),
+          );
+        } else {
+          maybe_log_rt_io_failure(
+            "rt_io_register_handle_with_drop",
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
@@ -2081,6 +2268,81 @@ pub extern "C" fn rt_queue_microtask_with_drop(
 }
 
 #[repr(C)]
+struct HandleMicrotaskData {
+  cb: extern "C" fn(*mut u8),
+  handle: u64,
+  drop_data: Option<extern "C" fn(*mut u8)>,
+}
+
+extern "C" fn handle_microtask_run(data: *mut u8) {
+  // Safety: `data` is allocated by `Box::into_raw` in `rt_queue_microtask_handle*` and freed by the
+  // task drop hook.
+  let task = unsafe { &*(data as *const HandleMicrotaskData) };
+  let ptr = rt_handle_load(task.handle);
+  if ptr.is_null() {
+    return;
+  }
+  (task.cb)(ptr);
+}
+
+extern "C" fn handle_microtask_drop(data: *mut u8) {
+  // Safety: allocated by `Box::into_raw` in `rt_queue_microtask_handle*`.
+  let task = unsafe { Box::from_raw(data as *mut HandleMicrotaskData) };
+  let ptr = rt_handle_load(task.handle);
+  if !ptr.is_null() {
+    if let Some(drop_data) = task.drop_data {
+      drop_data(ptr);
+    }
+  }
+  rt_handle_free(task.handle);
+}
+
+/// Enqueue a microtask whose userdata is a GC-rooted persistent handle.
+///
+/// Ownership: the runtime consumes `data` and will free the handle when the microtask runs (or is
+/// discarded).
+#[no_mangle]
+pub extern "C" fn rt_queue_microtask_handle(cb: extern "C" fn(*mut u8), data: u64) {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+    let task = Box::new(HandleMicrotaskData {
+      cb,
+      handle: data,
+      drop_data: None,
+    });
+    async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(
+      handle_microtask_run,
+      Box::into_raw(task) as *mut u8,
+      handle_microtask_drop,
+    ));
+  })
+}
+
+/// Like [`rt_queue_microtask_handle`], but provides a teardown hook for the userdata.
+#[no_mangle]
+pub extern "C" fn rt_queue_microtask_handle_with_drop(
+  cb: extern "C" fn(*mut u8),
+  data: u64,
+  drop_data: extern "C" fn(*mut u8),
+) {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+    let task = Box::new(HandleMicrotaskData {
+      cb,
+      handle: data,
+      drop_data: Some(drop_data),
+    });
+    async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(
+      handle_microtask_run,
+      Box::into_raw(task) as *mut u8,
+      handle_microtask_drop,
+    ));
+  })
+}
+
+#[repr(C)]
 struct RootedWebTimerData {
   cb: extern "C" fn(*mut u8),
   root: async_rt::gc::Root,
@@ -2095,6 +2357,34 @@ extern "C" fn drop_rooted_web_timer_data(data: *mut u8) {
   unsafe {
     drop(Box::from_raw(data as *mut RootedWebTimerData));
   }
+}
+
+#[repr(C)]
+struct HandleWebTimerData {
+  cb: extern "C" fn(*mut u8),
+  handle: u64,
+  drop_data: Option<extern "C" fn(*mut u8)>,
+}
+
+extern "C" fn handle_web_timer_cb(data: *mut u8) {
+  let ctx = unsafe { &*(data as *const HandleWebTimerData) };
+  let ptr = rt_handle_load(ctx.handle);
+  if ptr.is_null() {
+    return;
+  }
+  (ctx.cb)(ptr);
+}
+
+extern "C" fn drop_handle_web_timer_data(data: *mut u8) {
+  // Safety: allocated by `Box::into_raw` in `rt_set_*_handle*`.
+  let ctx = unsafe { Box::from_raw(data as *mut HandleWebTimerData) };
+  let ptr = rt_handle_load(ctx.handle);
+  if !ptr.is_null() {
+    if let Some(drop_data) = ctx.drop_data {
+      drop_data(ptr);
+    }
+  }
+  rt_handle_free(ctx.handle);
 }
 
 #[no_mangle]
@@ -2193,6 +2483,81 @@ pub extern "C" fn rt_set_timeout_with_drop(
         cb,
         data,
         drop_data: Some(drop_data),
+        interval: Duration::ZERO,
+        internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_set_timeout_handle(cb: extern "C" fn(*mut u8), data: u64, delay_ms: u64) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let delay = Duration::from_millis(delay_ms);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(delay).unwrap_or(now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    let ctx = Box::new(HandleWebTimerData {
+      cb,
+      handle: data,
+      drop_data: None,
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Timeout,
+        cb: handle_web_timer_cb,
+        data: ctx_ptr,
+        drop_data: Some(drop_handle_web_timer_data),
+        interval: Duration::ZERO,
+        internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_set_timeout_handle_with_drop(
+  cb: extern "C" fn(*mut u8),
+  data: u64,
+  drop_data: extern "C" fn(*mut u8),
+  delay_ms: u64,
+) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let delay = Duration::from_millis(delay_ms);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(delay).unwrap_or(now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    let ctx = Box::new(HandleWebTimerData {
+      cb,
+      handle: data,
+      drop_data: Some(drop_data),
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Timeout,
+        cb: handle_web_timer_cb,
+        data: ctx_ptr,
+        drop_data: Some(drop_handle_web_timer_data),
         interval: Duration::ZERO,
         internal_id,
         firing: false,
@@ -2303,6 +2668,81 @@ pub extern "C" fn rt_set_interval_with_drop(
         cb,
         data,
         drop_data: Some(drop_data),
+        interval,
+        internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_set_interval_handle(cb: extern "C" fn(*mut u8), data: u64, interval_ms: u64) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let interval = Duration::from_millis(interval_ms);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(interval).unwrap_or(now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    let ctx = Box::new(HandleWebTimerData {
+      cb,
+      handle: data,
+      drop_data: None,
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Interval,
+        cb: handle_web_timer_cb,
+        data: ctx_ptr,
+        drop_data: Some(drop_handle_web_timer_data),
+        interval,
+        internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_set_interval_handle_with_drop(
+  cb: extern "C" fn(*mut u8),
+  data: u64,
+  drop_data: extern "C" fn(*mut u8),
+  interval_ms: u64,
+) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let interval = Duration::from_millis(interval_ms);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(interval).unwrap_or(now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    let ctx = Box::new(HandleWebTimerData {
+      cb,
+      handle: data,
+      drop_data: Some(drop_data),
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Interval,
+        cb: handle_web_timer_cb,
+        data: ctx_ptr,
+        drop_data: Some(drop_handle_web_timer_data),
         interval,
         internal_id,
         firing: false,

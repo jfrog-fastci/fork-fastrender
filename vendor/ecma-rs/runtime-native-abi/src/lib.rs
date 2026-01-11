@@ -628,12 +628,25 @@ extern "C" {
   );
   pub fn rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: GcPtr);
   pub fn rt_drain_microtasks() -> bool;
+  pub fn rt_queue_microtask_handle(cb: extern "C" fn(GcPtr), data: HandleId);
+  pub fn rt_queue_microtask_handle_with_drop(
+    cb: extern "C" fn(GcPtr),
+    data: HandleId,
+    drop_data: extern "C" fn(GcPtr),
+  );
   pub fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId;
   pub fn rt_set_timeout_rooted(cb: extern "C" fn(*mut u8), data: GcPtr, delay_ms: u64) -> TimerId;
   pub fn rt_set_timeout_with_drop(
     cb: extern "C" fn(*mut u8),
     data: *mut u8,
     drop_data: extern "C" fn(*mut u8),
+    delay_ms: u64,
+  ) -> TimerId;
+  pub fn rt_set_timeout_handle(cb: extern "C" fn(GcPtr), data: HandleId, delay_ms: u64) -> TimerId;
+  pub fn rt_set_timeout_handle_with_drop(
+    cb: extern "C" fn(GcPtr),
+    data: HandleId,
+    drop_data: extern "C" fn(GcPtr),
     delay_ms: u64,
   ) -> TimerId;
   pub fn rt_set_interval(
@@ -650,6 +663,13 @@ extern "C" {
     cb: extern "C" fn(*mut u8),
     data: *mut u8,
     drop_data: extern "C" fn(*mut u8),
+    interval_ms: u64,
+  ) -> TimerId;
+  pub fn rt_set_interval_handle(cb: extern "C" fn(GcPtr), data: HandleId, interval_ms: u64) -> TimerId;
+  pub fn rt_set_interval_handle_with_drop(
+    cb: extern "C" fn(GcPtr),
+    data: HandleId,
+    drop_data: extern "C" fn(GcPtr),
     interval_ms: u64,
   ) -> TimerId;
   pub fn rt_clear_timer(id: TimerId);
@@ -673,6 +693,19 @@ extern "C" {
     interests: u32,
     cb: extern "C" fn(u32, *mut u8),
     data: GcPtr,
+  ) -> IoWatcherId;
+  pub fn rt_io_register_handle(
+    fd: RtFd,
+    interests: u32,
+    cb: extern "C" fn(u32, GcPtr),
+    data: HandleId,
+  ) -> IoWatcherId;
+  pub fn rt_io_register_handle_with_drop(
+    fd: RtFd,
+    interests: u32,
+    cb: extern "C" fn(u32, GcPtr),
+    data: HandleId,
+    drop_data: extern "C" fn(GcPtr),
   ) -> IoWatcherId;
   pub fn rt_io_update(id: IoWatcherId, interests: u32);
   pub fn rt_io_unregister(id: IoWatcherId);
@@ -1043,16 +1076,24 @@ mod tests {
       "rt_queue_microtask_rooted(",
       "rt_queue_microtask_with_drop(",
       "rt_drain_microtasks(",
+      "rt_queue_microtask_handle(",
+      "rt_queue_microtask_handle_with_drop(",
       "rt_set_timeout(",
       "rt_set_timeout_rooted(",
       "rt_set_timeout_with_drop(",
+      "rt_set_timeout_handle(",
+      "rt_set_timeout_handle_with_drop(",
       "rt_set_interval(",
       "rt_set_interval_rooted(",
       "rt_set_interval_with_drop(",
+      "rt_set_interval_handle(",
+      "rt_set_interval_handle_with_drop(",
       "rt_clear_timer(",
       "rt_io_register(",
       "rt_io_register_with_drop(",
       "rt_io_register_rooted(",
+      "rt_io_register_handle(",
+      "rt_io_register_handle_with_drop(",
       "rt_io_update(",
       "rt_io_unregister(",
       "rt_async_set_limits(",
