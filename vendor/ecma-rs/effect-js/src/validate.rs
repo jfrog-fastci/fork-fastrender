@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use effect_model::{EffectFlags, EffectSet, EffectTemplate, PurityTemplate};
+use effect_model::{EffectSet, EffectTemplate, PurityTemplate};
 use knowledge_base::{ApiDatabase, ApiSemantics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,12 +192,16 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       }
     }
 
-    // Validate callback-dependent templates (encoded as `depends_on_args`).
-    let mut validate_depends = |args: &[usize]| {
+    // Validate callback-dependence templates when present.
+    //
+    // The templates encode the indices directly, so we validate those rather than
+    // any ad-hoc `properties.depends_on_args` metadata.
+    let mut validate_args = |args: &[usize]| {
       if args.is_empty() {
         errors.push(ValidationError::EmptyDependsOnArgs {
           api: api.name.clone(),
         });
+        return;
       }
       for &index in args {
         if index > MAX_DEPENDS_ON_ARG_INDEX {
@@ -210,18 +214,15 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
     };
 
     if let EffectTemplate::DependsOnArgs { args, .. } = &api.effects {
-      validate_depends(args);
+      validate_args(args);
     }
     if let PurityTemplate::DependsOnArgs { args, .. } = &api.purity {
-      validate_depends(args);
+      validate_args(args);
     }
 
     // Catch obvious semantic contradictions.
     if matches!(api.purity, PurityTemplate::Pure) {
-      if api
-        .effect_summary
-        .intersects(EffectFlags::IO | EffectFlags::NETWORK)
-      {
+      if api.effect_summary.intersects(EffectSet::IO | EffectSet::NETWORK) {
         errors.push(ValidationError::InconsistentPurityEffects {
           api: api.name.clone(),
           purity: api.purity.clone(),

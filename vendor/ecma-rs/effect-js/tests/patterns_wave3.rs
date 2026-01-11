@@ -19,7 +19,7 @@ fn detects_async_iterator_pattern_once() {
       continue;
     };
     for pat in recognize_patterns_best_effort_untyped(&lowered, body_id) {
-      let RecognizedPattern::AsyncIterator { iterable } = pat else {
+      let RecognizedPattern::AsyncIterator { iterable, .. } = pat else {
         continue;
       };
       matches.push((body_id, iterable));
@@ -33,4 +33,3 @@ fn detects_async_iterator_pattern_once() {
 
   assert_eq!(matches.len(), 1, "expected exactly one AsyncIterator pattern");
 }
-
