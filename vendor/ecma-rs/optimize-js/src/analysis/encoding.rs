@@ -293,6 +293,25 @@ mod tests {
   }
 
   #[test]
+  fn detects_latin1_literals() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![Inst::var_assign(
+            0,
+            Arg::Const(Const::Str("ÿ".to_string())),
+          )],
+        ),
+        (1, vec![]),
+      ],
+      &[(0, 1)],
+    );
+    let result = analyze_cfg_encoding(&cfg);
+    assert_eq!(result.encoding_at_entry(1, 0), StringEncoding::Latin1);
+  }
+
+  #[test]
   fn concatenation_of_ascii_literals_is_ascii() {
     let cfg = cfg_with_blocks(
       &[
@@ -314,6 +333,27 @@ mod tests {
   }
 
   #[test]
+  fn concatenation_with_latin1_literal_is_latin1() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::var_assign(0, Arg::Const(Const::Str("a".to_string()))),
+            Inst::var_assign(1, Arg::Const(Const::Str("ÿ".to_string()))),
+            Inst::bin(2, Arg::Var(0), BinOp::Add, Arg::Var(1)),
+          ],
+        ),
+        (1, vec![]),
+      ],
+      &[(0, 1)],
+    );
+
+    let result = analyze_cfg_encoding(&cfg);
+    assert_eq!(result.encoding_at_entry(1, 2), StringEncoding::Latin1);
+  }
+
+  #[test]
   fn concatenation_with_non_ascii_literal_is_utf8() {
     let cfg = cfg_with_blocks(
       &[
@@ -332,6 +372,29 @@ mod tests {
 
     let result = analyze_cfg_encoding(&cfg);
     assert_eq!(result.encoding_at_entry(1, 2), StringEncoding::Utf8);
+  }
+
+  #[test]
+  fn annotate_cfg_encoding_sets_inst_meta() {
+    let mut cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![Inst::var_assign(
+          0,
+          Arg::Const(Const::Str("hello".to_string())),
+        )],
+      )],
+      &[],
+    );
+
+    let result = analyze_cfg_encoding(&cfg);
+    annotate_cfg_encoding(&mut cfg, &result);
+
+    let inst = &cfg.bblocks.get(0)[0];
+    assert_eq!(
+      inst.meta.result_type.string_encoding,
+      Some(StringEncoding::Ascii)
+    );
   }
 
   #[test]
