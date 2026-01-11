@@ -304,6 +304,10 @@ reachable imports.
 However, it does **not** load `tsconfig.json`, so project settings like
 `baseUrl`/`paths` are not applied.
 
+This is true for both `--pipeline project` and `--pipeline checked`: the
+`native-js-cli` binary always uses a small filesystem host with default compiler
+options (it does not read project settings from disk).
+
 For a typechecked pipeline that loads `tsconfig.json` (including
 `baseUrl`/`paths`),
 use the `native-js` binary.

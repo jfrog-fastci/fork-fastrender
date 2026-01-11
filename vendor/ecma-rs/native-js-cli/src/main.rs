@@ -41,6 +41,8 @@ struct Cli {
   ///
   /// If omitted and the entry module exports `main()`, it is invoked automatically. Otherwise,
   /// only top-level module initializers are executed.
+  ///
+  /// This flag is only supported with `--pipeline project`.
   #[arg(long, value_name = "NAME", global = true)]
   entry_fn: Option<String>,
 
