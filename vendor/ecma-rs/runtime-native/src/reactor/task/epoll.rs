@@ -466,31 +466,50 @@ fn epoll_ctl_add(epoll_fd: RawFd, fd: RawFd, events: u32, token: u64) -> io::Res
   let mut event = libc::epoll_event { events, u64: token };
 
   // SAFETY: syscall, `event` is valid for `ADD`.
-  let res = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut event) };
-  if res < 0 {
-    return Err(io::Error::last_os_error());
+  loop {
+    let res = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut event) };
+    if res == 0 {
+      return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EINTR) {
+      continue;
+    }
+    return Err(err);
   }
-  Ok(())
 }
 
 fn epoll_ctl_mod(epoll_fd: RawFd, fd: RawFd, events: u32, token: u64) -> io::Result<()> {
   let mut event = libc::epoll_event { events, u64: token };
 
   // SAFETY: syscall, `event` is valid for `MOD`.
-  let res = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_MOD, fd, &mut event) };
-  if res < 0 {
-    return Err(io::Error::last_os_error());
+  loop {
+    let res = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_MOD, fd, &mut event) };
+    if res == 0 {
+      return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EINTR) {
+      continue;
+    }
+    return Err(err);
   }
-  Ok(())
 }
 
 fn epoll_ctl_del(epoll_fd: RawFd, fd: RawFd) -> io::Result<()> {
   // SAFETY: syscall; `DEL` ignores the event pointer.
-  let res = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
-  if res < 0 {
-    return Err(io::Error::last_os_error());
+  loop {
+    let res =
+      unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+    if res == 0 {
+      return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EINTR) {
+      continue;
+    }
+    return Err(err);
   }
-  Ok(())
 }
 
 #[cfg(test)]

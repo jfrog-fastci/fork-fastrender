@@ -384,11 +384,24 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 
     pub(super) fn deregister(&self, fd: RawFd) -> io::Result<()> {
-      let rc = unsafe { libc::epoll_ctl(self.epoll.as_raw_fd(), libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
-      if rc == -1 {
-        return Err(io::Error::last_os_error());
+      loop {
+        let rc = unsafe {
+          libc::epoll_ctl(
+            self.epoll.as_raw_fd(),
+            libc::EPOLL_CTL_DEL,
+            fd,
+            std::ptr::null_mut(),
+          )
+        };
+        if rc == 0 {
+          return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err);
       }
-      Ok(())
     }
 
     fn register_raw(&self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
@@ -401,11 +414,18 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
         events: interest_to_epoll(interest),
         u64: token.0 as u64,
       };
-      let rc = unsafe { libc::epoll_ctl(self.epoll.as_raw_fd(), op, fd, &mut ev as *mut libc::epoll_event) };
-      if rc == -1 {
-        return Err(io::Error::last_os_error());
+      loop {
+        let rc =
+          unsafe { libc::epoll_ctl(self.epoll.as_raw_fd(), op, fd, &mut ev as *mut libc::epoll_event) };
+        if rc == 0 {
+          return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err);
       }
-      Ok(())
     }
 
     pub(super) fn poll_raw(&self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {

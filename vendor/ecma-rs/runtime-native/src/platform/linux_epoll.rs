@@ -31,22 +31,41 @@ impl Epoll {
 
   pub fn ctl_del(&self, fd: RawFd) -> io::Result<()> {
     // Per `epoll_ctl(2)`, the `event` argument can be null for DEL.
-    let rc = unsafe { libc::epoll_ctl(self.fd.as_raw_fd(), libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
-    if rc < 0 {
-      return Err(io::Error::last_os_error());
+    loop {
+      let rc = unsafe {
+        libc::epoll_ctl(
+          self.fd.as_raw_fd(),
+          libc::EPOLL_CTL_DEL,
+          fd,
+          std::ptr::null_mut(),
+        )
+      };
+      if rc == 0 {
+        return Ok(());
+      }
+      let err = io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      return Err(err);
     }
-    Ok(())
   }
 
   fn ctl(&self, op: libc::c_int, fd: RawFd, events: u32, token: u64) -> io::Result<()> {
     let mut ev: libc::epoll_event = unsafe { mem::zeroed() };
     ev.events = events;
     ev.u64 = token;
-    let rc = unsafe { libc::epoll_ctl(self.fd.as_raw_fd(), op, fd, &mut ev) };
-    if rc < 0 {
-      return Err(io::Error::last_os_error());
+    loop {
+      let rc = unsafe { libc::epoll_ctl(self.fd.as_raw_fd(), op, fd, &mut ev) };
+      if rc == 0 {
+        return Ok(());
+      }
+      let err = io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      return Err(err);
     }
-    Ok(())
   }
 
   pub fn wait(&self, events: &mut [libc::epoll_event], timeout_ms: i32) -> io::Result<usize> {
