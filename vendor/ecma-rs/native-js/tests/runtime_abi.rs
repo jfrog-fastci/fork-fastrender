@@ -185,6 +185,14 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     !wbr.contains("addrspacecast"),
     "rt_write_barrier_range_gc must not addrspacecast GC pointers out of addrspace(1):\n{wbr}"
   );
+  assert!(
+    wbr.contains("notail call void %") && wbr.contains("ptr addrspace(1)"),
+    "expected rt_write_barrier_range_gc to emit a notail indirect call (prevent TCO):\n{wbr}"
+  );
+  assert!(
+    has_gc_leaf_attr(fns.rt_write_barrier_range_gc),
+    "expected rt_write_barrier_range_gc to be marked as a gc-leaf-function:\n{ir}"
+  );
 
   assert!(
     ir.contains("define internal void @rt_keep_alive_gc_ref_gc"),
