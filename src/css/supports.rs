@@ -345,6 +345,13 @@ mod tests {
   }
 
   #[test]
+  fn supports_overflow_overlay_legacy_alias() {
+    assert!(supports_declaration("overflow", "overlay"));
+    assert!(supports_declaration("overflow-x", "overlay"));
+    assert!(supports_declaration("overflow-y", "overlay"));
+  }
+
+  #[test]
   fn supports_alignment_auto_keywords_only_where_computed_style_accepts_them() {
     // `auto` is valid for self-alignment, and FastRender also accepts it for `justify-items` as a
     // compatibility alias (mapped to `stretch` during computed style resolution).

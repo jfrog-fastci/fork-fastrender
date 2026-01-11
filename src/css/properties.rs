@@ -3043,11 +3043,11 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "float" => return keyword_parse(parsed, |kw| Float::parse(kw).ok()),
     "clear" => return keyword_parse(parsed, |kw| Clear::parse(kw).ok()),
     "overflow-x" | "overflow-y" => {
-      return keyword_in_list(parsed, &["visible", "hidden", "scroll", "auto", "clip"])
+      return keyword_in_list(parsed, &["visible", "hidden", "scroll", "auto", "overlay", "clip"])
     }
     "overflow" => {
       fn is_overflow_keyword(value: &PropertyValue) -> bool {
-        keyword_in_list(value, &["visible", "hidden", "scroll", "auto", "clip"])
+        keyword_in_list(value, &["visible", "hidden", "scroll", "auto", "overlay", "clip"])
       }
 
       return match parsed {

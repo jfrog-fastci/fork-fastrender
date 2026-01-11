@@ -60,6 +60,8 @@ impl Overflow {
       Some(Self::Scroll)
     } else if keyword.eq_ignore_ascii_case("auto") {
       Some(Self::Auto)
+    } else if keyword.eq_ignore_ascii_case("overlay") {
+      Some(Self::Auto)
     } else if keyword.eq_ignore_ascii_case("clip") {
       Some(Self::Clip)
     } else {

@@ -28,6 +28,7 @@ fn overflow_axes_are_normalized_after_cascade() {
     <div id="ox-visible-oy-hidden"></div>
     <div id="ox-visible-oy-scroll"></div>
     <div id="ox-visible-oy-auto"></div>
+    <div id="ox-visible-oy-overlay"></div>
     <div id="ox-visible-oy-clip"></div>
     <div id="ox-clip-oy-visible"></div>
     <div id="ox-hidden-oy-visible"></div>
@@ -39,6 +40,7 @@ fn overflow_axes_are_normalized_after_cascade() {
     #ox-visible-oy-hidden { overflow-x: visible; overflow-y: hidden; }
     #ox-visible-oy-scroll { overflow-x: visible; overflow-y: scroll; }
     #ox-visible-oy-auto { overflow-x: visible; overflow-y: auto; }
+    #ox-visible-oy-overlay { overflow-x: visible; overflow-y: overlay; }
     #ox-visible-oy-clip { overflow-x: visible; overflow-y: clip; }
     #ox-clip-oy-visible { overflow-x: clip; overflow-y: visible; }
     #ox-hidden-oy-visible { overflow-x: hidden; overflow-y: visible; }
@@ -68,6 +70,10 @@ fn overflow_axes_are_normalized_after_cascade() {
   assert_eq!(vis_auto.styles.overflow_x, Overflow::Auto);
   assert_eq!(vis_auto.styles.overflow_y, Overflow::Auto);
 
+  let vis_overlay = find_by_id(&styled, "ox-visible-oy-overlay").expect("ox-visible-oy-overlay");
+  assert_eq!(vis_overlay.styles.overflow_x, Overflow::Auto);
+  assert_eq!(vis_overlay.styles.overflow_y, Overflow::Auto);
+
   let vis_clip = find_by_id(&styled, "ox-visible-oy-clip").expect("ox-visible-oy-clip");
   assert_eq!(vis_clip.styles.overflow_x, Overflow::Visible);
   assert_eq!(vis_clip.styles.overflow_y, Overflow::Clip);
@@ -80,4 +86,3 @@ fn overflow_axes_are_normalized_after_cascade() {
   assert_eq!(hidden_vis.styles.overflow_x, Overflow::Hidden);
   assert_eq!(hidden_vis.styles.overflow_y, Overflow::Auto);
 }
-
