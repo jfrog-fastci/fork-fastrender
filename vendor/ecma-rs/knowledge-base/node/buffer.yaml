@@ -1,4 +1,7 @@
 - name: node:buffer.Buffer.from
+  aliases:
+    - buffer.Buffer.from
+    - Buffer.from
   since: "v5.10.0"
   effects:
     Custom:
@@ -7,6 +10,9 @@
   purity: Impure
 
 - name: node:buffer.Buffer.alloc
+  aliases:
+    - buffer.Buffer.alloc
+    - Buffer.alloc
   since: "v5.10.0"
   effects:
     Custom:

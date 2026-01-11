@@ -1,4 +1,6 @@
 - name: node:fs.readFile
+  aliases:
+    - fs.readFile
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
@@ -7,6 +9,8 @@
   deterministic: false
 
 - name: node:fs.readFileSync
+  aliases:
+    - fs.readFileSync
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
@@ -15,6 +19,8 @@
   deterministic: false
 
 - name: node:fs.writeFile
+  aliases:
+    - fs.writeFile
   since: "v0.1.0"
   effects: Io
   purity: Impure
@@ -22,6 +28,8 @@
   idempotent: false
 
 - name: node:fs.writeFileSync
+  aliases:
+    - fs.writeFileSync
   since: "v0.1.0"
   effects: Io
   purity: Impure
@@ -29,26 +37,36 @@
   idempotent: false
 
 - name: node:fs.stat
+  aliases:
+    - fs.stat
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
 
 - name: node:fs.statSync
+  aliases:
+    - fs.statSync
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
 
 - name: node:fs.readdir
+  aliases:
+    - fs.readdir
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
 
 - name: node:fs.readdirSync
+  aliases:
+    - fs.readdirSync
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
 
 - name: node:fs.existsSync
+  aliases:
+    - fs.existsSync
   since: "v0.1.0"
   effects:
     Custom:
@@ -57,6 +75,8 @@
   purity: ReadOnly
 
 - name: node:fs.promises.readFile
+  aliases:
+    - fs.promises.readFile
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
@@ -65,6 +85,8 @@
   deterministic: false
 
 - name: node:fs.promises.writeFile
+  aliases:
+    - fs.promises.writeFile
   since: "v10.0.0"
   effects: Io
   purity: Impure
@@ -72,11 +94,15 @@
   idempotent: false
 
 - name: node:fs.promises.stat
+  aliases:
+    - fs.promises.stat
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
 
 - name: node:fs.promises.readdir
+  aliases:
+    - fs.promises.readdir
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly

@@ -1,4 +1,6 @@
 - name: node:crypto.randomBytes
+  aliases:
+    - crypto.randomBytes
   since: "v0.1.0"
   effects:
     Custom:
@@ -7,6 +9,8 @@
   purity: Impure
 
 - name: node:crypto.createHash
+  aliases:
+    - crypto.createHash
   since: "v0.1.0"
   effects:
     Custom:
@@ -23,3 +27,5 @@
       flags: ALLOCATES | NONDETERMINISTIC
       throws: Maybe
   purity: Impure
+  properties:
+    encoding.output: ascii

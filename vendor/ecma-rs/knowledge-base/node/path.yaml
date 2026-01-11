@@ -1,49 +1,77 @@
 - name: node:path.join
+  aliases:
+    - path.join
   since: "v0.1.0"
   effects: Pure
   purity: Pure
 
 - name: node:path.resolve
+  aliases:
+    - path.resolve
   since: "v0.1.0"
   effects: Pure
   purity: Pure
 
 - name: node:path.basename
+  aliases:
+    - path.basename
   since: "v0.1.0"
   effects: Pure
   purity: Pure
+  properties:
+    encoding.output: same_as_input
 
 - name: node:path.dirname
+  aliases:
+    - path.dirname
   since: "v0.1.0"
   effects: Pure
   purity: Pure
+  properties:
+    encoding.output: same_as_input
 
 - name: node:path.extname
+  aliases:
+    - path.extname
   since: "v0.1.0"
   effects: Pure
   purity: Pure
+  properties:
+    encoding.output: same_as_input
 
 - name: node:path.normalize
+  aliases:
+    - path.normalize
   since: "v0.1.0"
   effects: Pure
   purity: Pure
+  properties:
+    encoding.output: same_as_input
 
 - name: node:path.isAbsolute
+  aliases:
+    - path.isAbsolute
   since: "v0.1.0"
   effects: Pure
   purity: Pure
 
 - name: node:path.relative
+  aliases:
+    - path.relative
   since: "v0.1.0"
   effects: Pure
   purity: Pure
 
 - name: node:path.parse
+  aliases:
+    - path.parse
   since: "v0.1.0"
   effects: Pure
   purity: Pure
 
 - name: node:path.format
+  aliases:
+    - path.format
   since: "v0.1.0"
   effects: Pure
   purity: Pure
