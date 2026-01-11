@@ -124,6 +124,11 @@ static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
  int main(void) {
    rt_thread_init(0);
 
+   // Global root registration (word-sized slot).
+   static size_t global_root = 0;
+   rt_global_root_register(&global_root);
+   rt_global_root_unregister(&global_root);
+ 
    // Warm up the blocking pool: the first `rt_spawn_blocking` call may need to
    // spawn many worker threads, which can take longer than our wake-up timer on
    // constrained/oversubscribed test hosts.
