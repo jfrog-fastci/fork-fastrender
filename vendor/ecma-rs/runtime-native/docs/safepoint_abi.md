@@ -59,6 +59,57 @@ the stop epoch.
 Because unparking can block on an in-progress STW, callers should avoid holding runtime locks
 while calling `rt_thread_set_parked(false)`.
 
+## Safepoint poll ABI (stop-the-world protocol)
+
+The runtime coordinates stop-the-world GC using an exported global epoch:
+
+```c
+// Declared in `runtime-native/include/runtime_native.h`.
+extern _Atomic uint64_t RT_GC_EPOCH;
+```
+
+Epoch semantics:
+
+* **even**: no stop-the-world GC requested
+* **odd**: stop-the-world GC requested
+
+### Recommended poll pattern for compiler-generated code
+
+The recommended safepoint poll pattern for compiler-generated code is:
+
+1. Inline poll: load `RT_GC_EPOCH` with **Acquire** ordering.
+2. If the observed epoch is odd, call `rt_gc_safepoint_slow(epoch)` (passing the observed odd epoch).
+
+In pseudocode:
+
+```c
+uint64_t epoch = RT_GC_EPOCH; // load (Acquire)
+if (epoch & 1) {
+  rt_gc_safepoint_slow(epoch);
+}
+```
+
+This ensures that:
+
+* the fast path is a load+branch, and
+* the slow-path call can be rewritten into an LLVM statepoint at the *managed* callsite so stackmaps
+  and published safepoint context line up.
+
+`rt_gc_safepoint()` is a convenience wrapper that performs the same inline poll + slow-path call. It
+is useful for runtime/embedding code, but compiler-generated code should prefer the inline poll.
+
+### `gc.safepoint_poll` (LLVM `place-safepoints`)
+
+LLVM’s `place-safepoints` pass inserts calls to a symbol named:
+
+```llvm
+declare void @gc.safepoint_poll()
+```
+
+`runtime-native` provides this symbol. It is implemented in per-architecture assembly so it can
+inline the `RT_GC_EPOCH` load on the fast path and capture the managed caller context on the slow
+path (so stackmap return PCs match).
+
 ## Stack walking invariants (statepoint stackmaps)
 
 The stop-the-world GC needs to enumerate GC roots precisely. `runtime-native` uses LLVM **statepoint**
