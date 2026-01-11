@@ -1257,6 +1257,80 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
   }
 
+  fn codegen_logical_and(&mut self, left: ExprId, right: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    let lhs = self.codegen_expr(left)?;
+    let lhs_bb = self
+      .builder
+      .get_insert_block()
+      .expect("logical operator must have an insertion block");
+    let rhs_bb = self.cg.context.append_basic_block(self.func, "land.rhs");
+    let end_bb = self.cg.context.append_basic_block(self.func, "land.end");
+
+    let cond = self.is_truthy_i1(lhs);
+    self
+      .builder
+      .build_conditional_branch(cond, rhs_bb, end_bb)
+      .expect("failed to build logical-and branch");
+
+    self.builder.position_at_end(rhs_bb);
+    let rhs = self.codegen_expr(right)?;
+    let rhs_end_bb = self
+      .builder
+      .get_insert_block()
+      .expect("rhs codegen must leave an insertion block");
+    self
+      .builder
+      .build_unconditional_branch(end_bb)
+      .expect("failed to build logical-and rhs branch");
+
+    self.builder.position_at_end(end_bb);
+    let phi = self
+      .builder
+      .build_phi(self.cg.i32_ty, "land")
+      .expect("failed to build phi");
+    phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
+    Ok(phi.as_basic_value().into_int_value())
+  }
+
+  fn codegen_logical_or(&mut self, left: ExprId, right: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    let lhs = self.codegen_expr(left)?;
+    let lhs_bb = self
+      .builder
+      .get_insert_block()
+      .expect("logical operator must have an insertion block");
+    let rhs_bb = self.cg.context.append_basic_block(self.func, "lor.rhs");
+    let end_bb = self.cg.context.append_basic_block(self.func, "lor.end");
+
+    let cond = self.is_truthy_i1(lhs);
+    self
+      .builder
+      .build_conditional_branch(cond, end_bb, rhs_bb)
+      .expect("failed to build logical-or branch");
+
+    self.builder.position_at_end(rhs_bb);
+    let rhs = self.codegen_expr(right)?;
+    let rhs_end_bb = self
+      .builder
+      .get_insert_block()
+      .expect("rhs codegen must leave an insertion block");
+    self
+      .builder
+      .build_unconditional_branch(end_bb)
+      .expect("failed to build logical-or rhs branch");
+
+    self.builder.position_at_end(end_bb);
+    let phi = self
+      .builder
+      .build_phi(self.cg.i32_ty, "lor")
+      .expect("failed to build phi");
+    phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
+    Ok(phi.as_basic_value().into_int_value())
+  }
+
+  fn codegen_comma(&mut self, left: ExprId, right: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    let _ = self.codegen_expr(left)?;
+    self.codegen_expr(right)
+  }
   fn codegen_if(
     &mut self,
     test: ExprId,
@@ -1663,6 +1737,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         }
       }
       ExprKind::Binary { op, left, right } => {
+        match op {
+          BinaryOp::LogicalAnd => return self.codegen_logical_and(left, right),
+          BinaryOp::LogicalOr => return self.codegen_logical_or(left, right),
+          BinaryOp::Comma => return self.codegen_comma(left, right),
+          _ => {}
+        }
+
         let lhs = self.codegen_expr(left)?;
         let rhs = self.codegen_expr(right)?;
         let v = match op {
@@ -1697,6 +1778,10 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .builder
             .build_right_shift(lhs, rhs, true, "shr")
             .expect("failed to build shr"),
+          BinaryOp::ShiftRightUnsigned => self
+            .builder
+            .build_right_shift(lhs, rhs, false, "shr_u")
+            .expect("failed to build shr_u"),
           BinaryOp::LessThan
           | BinaryOp::LessEqual
           | BinaryOp::GreaterThan

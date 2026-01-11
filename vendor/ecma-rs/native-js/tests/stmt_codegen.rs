@@ -248,6 +248,63 @@ fn shadowing_in_nested_blocks() {
 }
 
 #[test]
+fn logical_and_or_short_circuit() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      let x = 0;
+      let y = 0;
+
+      if (0 && (x = x + 1)) {
+        y = 1000;
+      }
+
+      if (1 && (x = x + 2)) {
+        y = y + 10;
+      }
+
+      if (1 || (y = y + 999)) {
+        y = y + 1;
+      }
+
+      if (0 || (y = y + 3)) {
+        y = y + 1;
+      }
+
+      return x * 100 + y;
+    }
+    "#,
+  );
+  assert_eq!(value, 215);
+}
+
+#[test]
+fn comma_operator_evaluates_left_then_returns_right() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      let x = 0;
+      let y = (x = 5, x + 1);
+      return y * 10 + x;
+    }
+    "#,
+  );
+  assert_eq!(value, 65);
+}
+
+#[test]
+fn unsigned_shift_right() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      return (-1) >>> 1;
+    }
+    "#,
+  );
+  assert_eq!(value, 2147483647);
+}
+
+#[test]
 fn break_exits_while_loop() {
   let value = run_main(
     r#"
