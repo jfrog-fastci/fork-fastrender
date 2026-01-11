@@ -1181,6 +1181,17 @@ purity:
   }
 
   #[test]
+  fn bundled_kb_has_no_legacy_depends_on_callback_templates() {
+    for file in bundled_kb::BUNDLED_KB_FILES {
+      assert!(
+        !file.contents.contains("DependsOnCallback"),
+        "legacy template `DependsOnCallback` found in bundled knowledge base file `{}`",
+        file.path
+      );
+    }
+  }
+
+  #[test]
   fn alias_lookup_resolves_node_prefix() {
     let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
     kb.validate().expect("validate knowledge base");

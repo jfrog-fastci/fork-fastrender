@@ -326,7 +326,7 @@
       base: 0
       args: [0]
   purity: Impure
- 
+
 - name: URLSearchParams.prototype.toString
   kind: function
   aliases:
