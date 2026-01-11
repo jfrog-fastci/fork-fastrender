@@ -1461,6 +1461,44 @@ pub(crate) fn render_box_shadow_cached_with_clamp_masked(
   }
 }
 
+#[inline]
+fn outset_adjusted_radius_dimension(coverage: f32, radius: f32, outset: f32) -> f32 {
+  // Implements https://drafts.csswg.org/css-backgrounds-3/#border-radius-outset.
+  if !radius.is_finite() || !outset.is_finite() || !coverage.is_finite() {
+    return radius + outset;
+  }
+  if outset <= 0.0 {
+    return radius + outset;
+  }
+  if radius > outset || coverage > 1.0 {
+    return radius + outset;
+  }
+  let ratio = (radius / outset).clamp(0.0, 1.0);
+  let one_minus_ratio = 1.0 - ratio;
+  let coverage3 = coverage * coverage * coverage;
+  radius + outset * (1.0 - one_minus_ratio * one_minus_ratio * one_minus_ratio * (1.0 - coverage3))
+}
+
+#[inline]
+fn outset_adjusted_border_radius(
+  edge_w: f32,
+  edge_h: f32,
+  radius: BorderRadius,
+  outset: f32,
+) -> BorderRadius {
+  if !edge_w.is_finite() || !edge_h.is_finite() || edge_w <= 0.0 || edge_h <= 0.0 {
+    return BorderRadius {
+      x: (radius.x + outset).max(0.0),
+      y: (radius.y + outset).max(0.0),
+    };
+  }
+  let coverage = 2.0 * (radius.x / edge_w).min(radius.y / edge_h);
+  BorderRadius {
+    x: outset_adjusted_radius_dimension(coverage, radius.x, outset).max(0.0),
+    y: outset_adjusted_radius_dimension(coverage, radius.y, outset).max(0.0),
+  }
+}
+
 /// Renders an outset (regular) box shadow
 fn render_outset_shadow(
   pixmap: &mut Pixmap,
@@ -1494,23 +1532,32 @@ fn render_outset_shadow(
     width + spread * 2.0,
     height + spread * 2.0,
   );
-  let shadow_radii = BorderRadii {
-    top_left: BorderRadius {
-      x: (box_radii.top_left.x + spread).max(0.0),
-      y: (box_radii.top_left.y + spread).max(0.0),
-    },
-    top_right: BorderRadius {
-      x: (box_radii.top_right.x + spread).max(0.0),
-      y: (box_radii.top_right.y + spread).max(0.0),
-    },
-    bottom_right: BorderRadius {
-      x: (box_radii.bottom_right.x + spread).max(0.0),
-      y: (box_radii.bottom_right.y + spread).max(0.0),
-    },
-    bottom_left: BorderRadius {
-      x: (box_radii.bottom_left.x + spread).max(0.0),
-      y: (box_radii.bottom_left.y + spread).max(0.0),
-    },
+  let shadow_radii = if spread > 0.0 {
+    BorderRadii {
+      top_left: outset_adjusted_border_radius(width, height, box_radii.top_left, spread),
+      top_right: outset_adjusted_border_radius(width, height, box_radii.top_right, spread),
+      bottom_right: outset_adjusted_border_radius(width, height, box_radii.bottom_right, spread),
+      bottom_left: outset_adjusted_border_radius(width, height, box_radii.bottom_left, spread),
+    }
+  } else {
+    BorderRadii {
+      top_left: BorderRadius {
+        x: (box_radii.top_left.x + spread).max(0.0),
+        y: (box_radii.top_left.y + spread).max(0.0),
+      },
+      top_right: BorderRadius {
+        x: (box_radii.top_right.x + spread).max(0.0),
+        y: (box_radii.top_right.y + spread).max(0.0),
+      },
+      bottom_right: BorderRadius {
+        x: (box_radii.bottom_right.x + spread).max(0.0),
+        y: (box_radii.bottom_right.y + spread).max(0.0),
+      },
+      bottom_left: BorderRadius {
+        x: (box_radii.bottom_left.x + spread).max(0.0),
+        y: (box_radii.bottom_left.y + spread).max(0.0),
+      },
+    }
   };
 
   let blur_pad = (sigma * 3.0).ceil();

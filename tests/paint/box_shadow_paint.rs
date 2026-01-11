@@ -35,6 +35,8 @@ fn box_shadow_spread_only_paints_ring() {
   assert_eq!(rgba_at(&pixmap, 30, 30), (255, 255, 255, 255));
   // Inside the spread ring (well away from anti-aliased edges).
   assert_eq!(rgba_at(&pixmap, 15, 30), (255, 0, 0, 255));
+  // Square-cornered boxes should not gain rounded outer corners just because spread is non-zero.
+  assert_eq!(rgba_at(&pixmap, 13, 13), (255, 0, 0, 255));
   // Outside the ring.
   assert_eq!(rgba_at(&pixmap, 11, 30), (255, 255, 255, 255));
 }
