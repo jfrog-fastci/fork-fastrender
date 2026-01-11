@@ -328,9 +328,6 @@ fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternL
     for pat in recognize_patterns_best_effort_untyped(lowered, *body_id) {
       match pat {
         RecognizedPattern::CanonicalCall { .. } => {}
-        // Typed-only pattern; best-effort untyped recognition should not emit it,
-        // but keep the CLI resilient to new pattern variants.
-        RecognizedPattern::ArrayChain { .. } => {}
         RecognizedPattern::MapFilterReduce {
           base,
           map_call,

@@ -43,7 +43,6 @@ fn analyze_string_encodings_impl<O: TypeOracle + Copy>(
   for (body_id, idx) in result.body_index.iter() {
     let body = &result.bodies[*idx];
     let mut analyzer = BodyAnalyzer {
-      lowered: result,
       file: &result.hir,
       body_id: *body_id,
       body,
@@ -119,7 +118,6 @@ fn type_is_string(types: &dyn crate::types::TypeProvider, body: BodyId, expr: Ex
 }
 
 struct BodyAnalyzer<'a, O> {
-  lowered: &'a hir_js::LowerResult,
   file: &'a hir_js::HirFile,
   body_id: BodyId,
   body: &'a hir_js::Body,
