@@ -121,3 +121,67 @@
   parallelizable: true
   idempotent: true
   deterministic: true
+
+- name: node:crypto.pbkdf2
+  kind: function
+  aliases:
+    - crypto.pbkdf2
+  since: "v0.1.0"
+  effects:
+    base: [alloc, async, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:crypto.pbkdf2Sync
+  kind: function
+  aliases:
+    - crypto.pbkdf2Sync
+  since: "v0.1.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:crypto.scrypt
+  kind: function
+  aliases:
+    - crypto.scrypt
+  since: "v10.5.0"
+  effects:
+    base: [alloc, async, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:crypto.scryptSync
+  kind: function
+  aliases:
+    - crypto.scryptSync
+  since: "v10.5.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
