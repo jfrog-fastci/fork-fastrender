@@ -22,7 +22,6 @@ fn page_content<'a>(page: &'a FragmentNode) -> &'a FragmentNode {
 fn page_content_start_y(page: &FragmentNode) -> f32 {
   page.bounds.y() + page_document_wrapper(page).bounds.y() + page_content(page).bounds.y()
 }
-
 fn find_text<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
   if let FragmentContent::Text { text, .. } = &node.content {
     if text.contains(needle) {
@@ -100,6 +99,48 @@ fn multicol_break_before_page_promotes_to_next_column_set() {
 }
 
 #[test]
+fn multicol_break_before_left_on_first_child_sets_first_page_side_ltr() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .first { break-before: left; height: 80px; margin: 0; }
+          .second { height: 80px; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <div class="multi"><div class="first">A</div><div class="second">B</div></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    1,
+    "forced start-side constraints should not insert leading blank pages"
+  );
+  let page = page_roots[0];
+  assert!(find_text(page, "LEFT").is_some());
+  assert!(find_text(page, "RIGHT").is_none());
+  let content = page_content(page);
+  assert!(find_text(content, "A").is_some());
+  assert!(find_text(content, "B").is_some());
+}
+
+#[test]
 fn multicol_break_after_recto_inserts_blank_page_rtl_progression() {
   let html = r#"
     <html>
@@ -152,3 +193,45 @@ fn multicol_break_after_recto_inserts_blank_page_rtl_progression() {
   );
 }
 
+#[test]
+fn multicol_break_before_right_on_first_child_sets_first_page_side_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .first { break-before: right; height: 80px; margin: 0; }
+          .second { height: 80px; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <div class="multi"><div class="first">A</div><div class="second">B</div></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    1,
+    "forced start-side constraints should not insert leading blank pages"
+  );
+  let page = page_roots[0];
+  assert!(find_text(page, "RIGHT").is_some());
+  assert!(find_text(page, "LEFT").is_none());
+  let content = page_content(page);
+  assert!(find_text(content, "A").is_some());
+  assert!(find_text(content, "B").is_some());
+}
