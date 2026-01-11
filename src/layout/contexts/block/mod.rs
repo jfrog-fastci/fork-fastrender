@@ -79,6 +79,7 @@ use crate::style::float::Clear;
 use crate::style::inline_axis_is_horizontal;
 use crate::style::inline_axis_positive;
 use crate::style::position::Position;
+use crate::style::types::BreakBetween;
 use crate::style::types::BorderStyle;
 use crate::style::types::ColumnFill;
 use crate::style::types::ColumnSpan;
@@ -8061,6 +8062,41 @@ impl BlockFormattingContext {
             fragments.push(rule_fragment);
           }
         }
+      }
+    }
+
+    // In paged contexts, `break-before/after: always` forces a break in the *immediately
+    // containing* fragmentation context (CSS Break 4). Inside multicol pagination that context is
+    // the column fragmentation, and the break has already been applied when we computed the
+    // column boundaries. Leave `always` on descendant fragments and the outer paginator can
+    // misinterpret it as a forced *page* break, splitting the page mid column-set.
+    if fragmentainer_hint.is_some() {
+      fn strip_always_breaks(fragment: &mut FragmentNode) {
+        if fragment
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.break_before, BreakBetween::Always))
+        {
+          if let Some(style) = fragment.style.as_mut() {
+            Arc::make_mut(style).break_before = BreakBetween::Auto;
+          }
+        }
+        if fragment
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.break_after, BreakBetween::Always))
+        {
+          if let Some(style) = fragment.style.as_mut() {
+            Arc::make_mut(style).break_after = BreakBetween::Auto;
+          }
+        }
+        for child in fragment.children_mut() {
+          strip_always_breaks(child);
+        }
+      }
+
+      for fragment in &mut fragments {
+        strip_always_breaks(fragment);
       }
     }
 
