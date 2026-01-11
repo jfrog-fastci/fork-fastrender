@@ -114,6 +114,10 @@ For stackmaps created from `gc.statepoint` (including `rewrite-statepoints-for-g
 | next `n` | The deopt operands themselves (`"deopt"(... )`) | one `Location` per operand |
 | remaining | GC roots (`"gc-live"`) | encoded as base/derived pairs |
 
+Meta location `#2` is usually `0`, but can be non-zero. For example, adding a
+`"gc-transition"` bundle sets it to `1` in LLVM 18:
+`investigation/llvm_stackmaps/statepoint_gc_transition_flags.ll`.
+
 ### Parsing GC roots from the record
 
 After consuming the 3 meta locations and `n` deopt locations, the remaining
@@ -185,7 +189,9 @@ Runtime consequences:
   - `Direct`: root value is an address computed from a register + offset (rare for heap roots; commonly used for *stack addresses* in deopt info).
 - For **deopt operands**:
   - `Constant` / `ConstantIndex` are immediate values.
-  - `Indirect` reads the value from a spill slot.
+  - `Indirect` reads the value from a spill slot. Note that `Size` can be != 8
+    (e.g. `i32` = 4 bytes, vectors = 16 bytes); see
+    `investigation/llvm_stackmaps/statepoint_deopt_mixed.ll`.
   - `Direct` is commonly used to record a stack address.
 
 ## Concrete LLVM 18 examples and `.llvm_stackmaps` bytes
@@ -206,6 +212,10 @@ llc-18 -O2 -filetype=obj \
   -max-registers-for-gc-values=1 \
   <file>.sp.bc -o <file>.o
 ```
+
+If there are multiple statepoints in a function, `-fixup-max-csr-statepoints`
+can affect whether LLVM chooses to keep GC roots in registers; see
+`investigation/llvm_stackmaps/statepoint_two_statepoints.ll`.
 
 `llvm-readobj-18 --stackmap`:
 
