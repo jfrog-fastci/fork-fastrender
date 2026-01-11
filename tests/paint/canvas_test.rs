@@ -75,6 +75,35 @@ fn pixmap_to_rgba_image(pixmap: &Pixmap) -> RgbaImage {
   rgba
 }
 
+fn source_over_trunc(dst: Rgba, src: Rgba) -> (u8, u8, u8, u8) {
+  let sa = (src.a * 255.0).round().clamp(0.0, 255.0) as u16;
+  let inv_sa = 255u16 - sa;
+
+  let sr = (src.r as u16 * sa) / 255u16;
+  let sg = (src.g as u16 * sa) / 255u16;
+  let sb = (src.b as u16 * sa) / 255u16;
+
+  let dr = dst.r as u16;
+  let dg = dst.g as u16;
+  let db = dst.b as u16;
+  let da = dst.alpha_u8() as u16;
+
+  let out_a = sa + (da * inv_sa) / 255u16;
+  let out_r = sr + (dr * inv_sa) / 255u16;
+  let out_g = sg + (dg * inv_sa) / 255u16;
+  let out_b = sb + (db * inv_sa) / 255u16;
+
+  // Clamp channels to the resulting alpha to preserve premultiplied invariants.
+  let out_a_u8 = out_a.min(255) as u8;
+  let clamp = out_a_u8 as u16;
+  (
+    out_r.min(clamp).min(255) as u8,
+    out_g.min(clamp).min(255) as u8,
+    out_b.min(clamp).min(255) as u8,
+    out_a_u8,
+  )
+}
+
 // ============================================================================
 // Canvas Creation Tests
 // ============================================================================
@@ -316,6 +345,74 @@ fn semi_transparent_source_over_rect_fills_match_chrome_blending() {
 
   let p = canvas.pixmap().pixel(0, 0).unwrap();
   assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (178, 178, 178, 255));
+}
+
+#[test]
+fn source_over_trunc_fast_path_accepts_near_integer_translation_and_bounds() {
+  let bg = Rgba::BLACK;
+  let src = Rgba::rgb(5, 0, 0).with_alpha(0.5);
+  let expected = source_over_trunc(bg, src);
+
+  let rect = Rect::from_xywh(0.0004, 0.0004, 5.0, 5.0);
+  let (tx, ty) = (10.0004, 20.0004);
+
+  // Near-integer translations + near-integer device bounds should still take the truncating
+  // source-over fast path, matching Chrome/Skia arithmetic.
+  let mut canvas = Canvas::new(64, 64, bg).unwrap();
+  canvas.translate(tx, ty);
+  canvas.draw_rect(rect, src);
+  let p = canvas.pixmap().pixel(12, 22).unwrap();
+  assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), expected);
+
+  // Force the tiny-skia path by installing a clip mask (full-coverage so output isn't clipped).
+  let mut fallback = Canvas::new(64, 64, bg).unwrap();
+  fallback
+    .set_clip(Rect::from_xywh(0.0, 0.0, 64.0, 64.0))
+    .unwrap();
+  fallback.translate(tx, ty);
+  fallback.draw_rect(rect, src);
+  let p = fallback.pixmap().pixel(12, 22).unwrap();
+  assert_ne!(
+    (p.red(), p.green(), p.blue(), p.alpha()),
+    expected,
+    "expected tiny-skia blending to differ from the truncating fast path"
+  );
+}
+
+#[test]
+fn source_over_trunc_fast_path_rejects_fractional_translation() {
+  let bg = Rgba::BLACK;
+  let src = Rgba::rgb(5, 0, 0).with_alpha(0.5);
+  let expected_trunc = source_over_trunc(bg, src);
+
+  // Even though the *resulting* device bounds are integers here (rect.x compensates for tx),
+  // a meaningfully fractional translation should not be quantized into the fast path.
+  let rect = Rect::from_xywh(-0.25, -0.25, 5.0, 5.0);
+  let (tx, ty) = (10.25, 20.25);
+
+  let mut canvas = Canvas::new(64, 64, bg).unwrap();
+  canvas.translate(tx, ty);
+  canvas.draw_rect(rect, src);
+  let p = canvas.pixmap().pixel(12, 22).unwrap();
+  let out = (p.red(), p.green(), p.blue(), p.alpha());
+
+  let mut fallback = Canvas::new(64, 64, bg).unwrap();
+  fallback
+    .set_clip(Rect::from_xywh(0.0, 0.0, 64.0, 64.0))
+    .unwrap();
+  fallback.translate(tx, ty);
+  fallback.draw_rect(rect, src);
+  let p = fallback.pixmap().pixel(12, 22).unwrap();
+  let out_fallback = (p.red(), p.green(), p.blue(), p.alpha());
+
+  assert_eq!(
+    out, out_fallback,
+    "expected fractional translations to fall back to tiny-skia"
+  );
+  assert_ne!(
+    out, expected_trunc,
+    "expected tiny-skia output to differ from the truncating fast path"
+  );
 }
 
 #[test]
