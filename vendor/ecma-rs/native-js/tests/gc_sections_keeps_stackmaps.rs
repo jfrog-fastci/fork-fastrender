@@ -2,68 +2,72 @@
 mod linux {
   use anyhow::{bail, Context, Result};
   use native_js::link::{link_elf_executable_with_options, LinkOpts};
+  use object::{Object as _, ObjectSection as _};
   use std::fs;
   use std::path::{Path, PathBuf};
-  use std::process::Command;
+  use std::process::{Command, Stdio};
   use tempfile::tempdir;
 
   const STACKMAP_SECTION_CANDIDATES: [&str; 2] = [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps"];
 
-  fn read_elf_section_size(path: &Path, name: &str) -> Result<u64> {
-    let out = Command::new("readelf")
-      .arg("-W")
-      .arg("-S")
-      .arg(path)
-      .output()
-      .with_context(|| format!("readelf -W -S {}", path.display()))?;
-    if !out.status.success() {
-      bail!(
-        "readelf failed: {}\nstdout:\n{}\nstderr:\n{}",
-        out.status,
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-      );
-    }
+  fn cmd_works(cmd: &str) -> bool {
+    Command::new(cmd)
+      .arg("--version")
+      .stdin(Stdio::null())
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .status()
+      .is_ok_and(|s| s.success())
+  }
 
-    let stdout = String::from_utf8(out.stdout).context("readelf output is not utf-8")?;
-    for line in stdout.lines() {
-      let fields: Vec<&str> = line.split_whitespace().collect();
-      if fields.len() >= 6 && fields[1] == name {
-        let size_hex = fields[5];
-        return u64::from_str_radix(size_hex, 16)
-          .with_context(|| format!("parse section size hex: {size_hex}"));
+  fn find_clang() -> Option<&'static str> {
+    for cand in ["clang-18", "clang"] {
+      if cmd_works(cand) {
+        return Some(cand);
       }
     }
-    bail!("ELF {} does not contain section {name}", path.display());
+    None
   }
 
   fn read_elf_section_size_any(path: &Path, names: &[&str]) -> Result<(String, u64)> {
-    let mut last_err: Option<anyhow::Error> = None;
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let file = object::File::parse(&*bytes).context("parse linked ELF")?;
     for name in names {
-      match read_elf_section_size(path, name) {
-        Ok(size) => return Ok(((*name).to_string(), size)),
-        Err(err) => last_err = Some(err),
+      if let Some(section) = file.section_by_name(name) {
+        return Ok(((*name).to_string(), section.size()));
       }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no section candidates were provided")))
+    bail!(
+      "ELF {} does not contain any of the candidate stackmaps sections: {names:?}",
+      path.display()
+    );
   }
 
-  fn clang_compile_ll_to_object(ll: &Path, obj: &Path) -> Result<()> {
-    let status = Command::new("clang-18")
+  fn clang_compile_ll_to_object(clang: &str, ll: &Path, obj: &Path) -> Result<()> {
+    let status = Command::new(clang)
       .arg("-c")
       .arg(ll)
       .arg("-o")
       .arg(obj)
       .status()
-      .with_context(|| format!("clang-18 -c {} -o {}", ll.display(), obj.display()))?;
+      .with_context(|| format!("{clang} -c {} -o {}", ll.display(), obj.display()))?;
     if !status.success() {
-      bail!("clang-18 failed with status {status}");
+      bail!("{clang} failed with status {status}");
     }
     Ok(())
   }
 
   #[test]
   fn keeps_llvm_stackmaps_under_gc_sections() -> Result<()> {
+    let Some(clang) = find_clang() else {
+      eprintln!("skipping: clang not found in PATH");
+      return Ok(());
+    };
+    if !cmd_works("ld.lld-18") && !cmd_works("ld.lld") {
+      eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
+      return Ok(());
+    }
+
     let td = tempdir().context("create temp dir")?;
 
     let ll = td.path().join("stackmap.ll");
@@ -92,7 +96,7 @@ entry:
     .context("write stackmap.ll")?;
 
     let obj = td.path().join("stackmap.o");
-    clang_compile_ll_to_object(&ll, &obj)?;
+    clang_compile_ll_to_object(clang, &ll, &obj)?;
 
     let exe = td.path().join("stackmap_gc");
     link_elf_executable_with_options(
@@ -116,20 +120,24 @@ entry:
       bail!("linked binary failed with status {status}");
     }
 
-    let exe_stripped: PathBuf = td.path().join("stackmap_gc.stripped");
-    fs::copy(&exe, &exe_stripped).context("copy binary for strip")?;
-    let strip_status = Command::new("strip")
-      .arg(&exe_stripped)
-      .status()
-      .context("run strip")?;
-    if !strip_status.success() {
-      bail!("strip failed with status {strip_status}");
-    }
- 
-    let (stripped_section, stripped_stackmaps_size) =
-      read_elf_section_size_any(&exe_stripped, &STACKMAP_SECTION_CANDIDATES)?;
-    if stripped_stackmaps_size == 0 {
-      bail!("stripped ELF contains empty {stripped_section} section");
+    if cmd_works("strip") {
+      let exe_stripped: PathBuf = td.path().join("stackmap_gc.stripped");
+      fs::copy(&exe, &exe_stripped).context("copy binary for strip")?;
+      let strip_status = Command::new("strip")
+        .arg(&exe_stripped)
+        .status()
+        .context("run strip")?;
+      if !strip_status.success() {
+        bail!("strip failed with status {strip_status}");
+      }
+
+      let (stripped_section, stripped_stackmaps_size) =
+        read_elf_section_size_any(&exe_stripped, &STACKMAP_SECTION_CANDIDATES)?;
+      if stripped_stackmaps_size == 0 {
+        bail!("stripped ELF contains empty {stripped_section} section");
+      }
+    } else {
+      eprintln!("skipping strip check: strip not found in PATH");
     }
 
     Ok(())
