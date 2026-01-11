@@ -10409,6 +10409,25 @@ struct CurrentScriptOverrideGuard {
   previous: Option<NodeId>,
 }
 
+/// Lightweight `VmHost` context used by `WindowRealm::perform_microtask_checkpoint`.
+///
+/// Unlike the higher-level `WindowHost`/`EventLoop` integration, the `WindowRealm` API can be used
+/// directly without an embedding host state (like [`DocumentHostState`]). We still need a concrete
+/// `VmHost` value so:
+/// - the `vm-js` job runner has something to pass to native handlers, and
+/// - host-side helpers (e.g. dynamic script execution) can recover `Document.currentScript` state
+///   via `Any::downcast_mut`.
+#[derive(Debug, Default)]
+struct VmJsHostContext {
+  current_script: CurrentScriptStateHandle,
+}
+
+impl VmJsHostContext {
+  fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
+    Some(&self.current_script)
+  }
+}
+
 impl CurrentScriptOverrideGuard {
   fn new(handle: Option<CurrentScriptStateHandle>, new_current: Option<NodeId>) -> Self {
     let previous = handle.as_ref().map(|handle| {
