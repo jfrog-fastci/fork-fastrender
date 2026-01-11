@@ -10,18 +10,18 @@
 //! **not** considered stable API.
 
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::abi::{PromiseRef, ValueRef};
 use crate::async_abi::PromiseHeader;
 use crate::async_rt;
+use crate::sync::GcAwareMutex;
 use crate::gc::YOUNG_SPACE;
 use crate::gc::GcHeap;
 use crate::time;
 
-static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static TEST_MUTEX: Lazy<GcAwareMutex<()>> = Lazy::new(|| GcAwareMutex::new(()));
 
 pub use crate::unhandled_rejection::PromiseRejectionEvent;
 
@@ -120,7 +120,7 @@ pub fn debug_hold_blocking_pool_queue_lock() -> impl Drop {
 
 // --- GC testing helpers -------------------------------------------------------------------------
 
-static GC_TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static GC_TEST_MUTEX: Lazy<GcAwareMutex<()>> = Lazy::new(|| GcAwareMutex::new(()));
 
 /// A per-test guard that serializes access to global GC state used by the write barrier.
 ///

@@ -285,10 +285,11 @@ fn maybe_enable_stackmaps_linker_symbols() {
   // `cargo:rustc-link-arg` applies to *all* targets (including tests), so also emitting
   // `cargo:rustc-link-arg-tests` would result in duplicate `-T stackmaps.ld` arguments.
   //
-  // lld will accept the duplicate `-T`, but the linker script fragment uses `INSERT` and defines
-  // `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`. If the fragment runs twice, the second
-  // invocation can override the symbols (often to an empty range after the first fragment consumed
-  // the `.llvm_stackmaps` input sections), breaking runtime discovery.
+  // lld will accept duplicate `-T`, but the linker script fragment uses `INSERT` and defines
+  // `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`. If it runs twice, the second invocation
+  // will typically see no remaining `.llvm_stackmaps` / `.data.rel.ro.llvm_stackmaps` inputs
+  // (consumed by the first) and can redefine the boundary symbols to an empty range, breaking
+  // runtime discovery.
   let feature_enabled = std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_some();
 
   // Prefer LLD when available: some linkers (notably `mold`) do not support the

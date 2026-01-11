@@ -22,7 +22,7 @@ struct AlignedStackMap([u8; 128]);
 // Note: the function address does not correspond to real code in the test
 // process; we use it only as a lookup key.
 #[used]
-#[cfg_attr(target_os = "linux", link_section = ".llvm_stackmaps")]
+#[cfg_attr(target_os = "linux", link_section = ".data.rel.ro.llvm_stackmaps")]
 #[cfg_attr(target_os = "macos", link_section = "__LLVM_STACKMAPS,__llvm_stackmaps")]
 static TEST_STACKMAP_BLOB: AlignedStackMap = AlignedStackMap(build_stackmap_blob(
   runtime_native::stackwalk::DWARF_SP_REG,

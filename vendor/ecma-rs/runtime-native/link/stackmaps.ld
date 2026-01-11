@@ -29,7 +29,6 @@
  * lld's RELRO contiguity errors, we insert these sections after `.data` (outside
  * the RELRO range) instead of before `.dynamic`.
  *
- *
  * Notes:
  * - `.data` must exist for this fragment to be usable: lld omits empty output
  *   sections and will error if the `INSERT` anchor does not exist.
@@ -39,7 +38,7 @@
  * - This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  *   small section definition without replacing the entire default linker script.
  *   If your linker does not support `INSERT`, switch to GNU ld or lld.
-  */
+ */
 
 SECTIONS {
   .data.rel.ro.llvm_stackmaps : ALIGN(8) {

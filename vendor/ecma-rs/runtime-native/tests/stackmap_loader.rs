@@ -4,7 +4,7 @@ use runtime_native::load_llvm_stackmaps;
 
 // Ensure the section isn't GC'd by the linker.
 #[used]
-#[link_section = ".llvm_stackmaps"]
+#[link_section = ".data.rel.ro.llvm_stackmaps"]
 static TEST_SECTION_BYTES: [u8; 8] = *b"STACKMAP";
 
 #[test]

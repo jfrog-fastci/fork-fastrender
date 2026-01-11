@@ -8,7 +8,7 @@ struct Aligned<const N: usize>([u8; N]);
 // Ensure the test binary contains a minimal, valid StackMap v3 blob so
 // `StackMaps::load_self()` can locate and parse it.
 #[used]
-#[link_section = ".llvm_stackmaps"]
+#[link_section = ".data.rel.ro.llvm_stackmaps"]
 static TEST_STACKMAP_BLOB: Aligned<16> = Aligned([
   3, 0, 0, 0, // version + reserved
   0, 0, 0, 0, // num_functions

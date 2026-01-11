@@ -792,24 +792,26 @@ struct ElfSectionVaddr {
 fn find_stackmap_section_vaddr_and_size(
   obj: &object::File<'_>,
 ) -> Result<Option<ElfSectionVaddr>, object::Error> {
-  for name in STACKMAP_SECTION_NAMES {
-    if let Some(section) = obj.section_by_name(name) {
-      return Ok(Some(ElfSectionVaddr {
-        vaddr: section.address(),
-        size: section.size(),
-      }));
-    }
-  }
-
+  // Prefer linker-script boundary symbols when present:
+  // - section headers may be stripped, and
+  // - `runtime-native/link/stackmaps.ld` can place the stackmaps payload *inside* another output
+  //   section (e.g. appended into `.data.rel.ro`) and expose it only via symbols.
+  //
+  // Note: the lld-friendly script defines the canonical `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
+  // as **absolute symbols** so they can alias either the legacy `.llvm_stackmaps` output section or the
+  // RELRO-covered payload range. Absolute symbols do not have an associated section index, so we must
+  // tolerate `section_index == None` here.
   for (start_sym, stop_sym) in STACKMAP_SYMBOL_RANGES {
-    let Some((start_addr, start_sec)) = find_symbol_addr_and_section(obj, start_sym)? else {
+    let Some((start_addr, start_sec)) = find_symbol_addr_and_optional_section(obj, start_sym)? else {
       continue;
     };
-    let Some((stop_addr, stop_sec)) = find_symbol_addr_and_section(obj, stop_sym)? else {
+    let Some((stop_addr, stop_sec)) = find_symbol_addr_and_optional_section(obj, stop_sym)? else {
       continue;
     };
-    if start_sec != stop_sec {
-      continue;
+    if let (Some(a), Some(b)) = (start_sec, stop_sec) {
+      if a != b {
+        continue;
+      }
     }
     let Some(size) = stop_addr.checked_sub(start_addr) else {
       continue;
@@ -820,6 +822,33 @@ fn find_stackmap_section_vaddr_and_size(
     }));
   }
 
+  for name in STACKMAP_SECTION_NAMES {
+    if let Some(section) = obj.section_by_name(name) {
+      // Some linker scripts always emit an output section header even when no stackmaps were linked.
+      // Ignore empty sections so we still get a chance to find a non-empty range via symbols.
+      if section.size() == 0 {
+        continue;
+      }
+      return Ok(Some(ElfSectionVaddr {
+        vaddr: section.address(),
+        size: section.size(),
+      }));
+    }
+  }
+
+  Ok(None)
+}
+
+fn find_symbol_addr_and_optional_section(
+  obj: &object::File<'_>,
+  name: &str,
+) -> Result<Option<(u64, Option<object::SectionIndex>)>, object::Error> {
+  for sym in obj.symbols().chain(obj.dynamic_symbols()) {
+    if sym.name()? != name {
+      continue;
+    }
+    return Ok(Some((sym.address(), sym.section_index())));
+  }
   Ok(None)
 }
 
