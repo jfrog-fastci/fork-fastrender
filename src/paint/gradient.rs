@@ -49,6 +49,163 @@ pub(crate) const BAYER_4X4_XY: [u8; 16] = [
   10, 6, 9, 5, //
 ];
 
+// Chrome/Skia switches to an 8×8 ordered dither pattern for large gradients. Empirically, the
+// *exact* 8×8 matrix depends on how many device pixels correspond to a single 8-bit step within the
+// gradient (i.e. how banding-prone the slope is). We model this by selecting between a few
+// observed 8×8 matrices.
+//
+// Values are in the range 0-63 and were extracted from Chrome output.
+//
+// Indexing is `idx = (y & 7) * 8 + (x & 7)` and the floating dither offset is:
+// `dither = (m + 0.5) / 64.0`.
+pub(crate) static BAYER_8X8_XY: [u8; 64] = [
+  15, 48, 0, 60, 12, 51, 3, 63, //
+  44, 19, 35, 31, 47, 16, 32, 28, //
+  7, 56, 8, 52, 4, 59, 11, 55, //
+  36, 27, 43, 23, 39, 24, 40, 20, //
+  13, 50, 2, 62, 14, 49, 1, 61, //
+  46, 17, 33, 29, 45, 18, 34, 30, //
+  5, 58, 10, 54, 6, 57, 9, 53, //
+  38, 25, 41, 21, 37, 26, 42, 22, //
+];
+
+// 8×8 dither matrix used when the gradient is steeper (fewer pixels per 8-bit step). Extracted
+// from Chrome output for a 0→1 ramp over 512px (`tests/pages/fixtures/gradient_dither_ramp_small_delta_width_512`).
+pub(crate) static BAYER_8X8_MEDIUM_XY: [u8; 64] = [
+  12, 48, 3, 60, 15, 51, 0, 63, //
+  32, 28, 44, 19, 35, 31, 47, 16, //
+  4, 56, 11, 52, 7, 59, 8, 55, //
+  40, 20, 36, 27, 43, 23, 39, 24, //
+  14, 50, 1, 62, 13, 49, 2, 61, //
+  34, 30, 46, 17, 33, 29, 45, 18, //
+  6, 58, 9, 54, 5, 57, 10, 53, //
+  42, 22, 38, 25, 41, 21, 37, 26, //
+];
+
+// Classic 8×8 Bayer matrix, used by Chrome for even steeper ramps (e.g. 0→1 over 128px).
+pub(crate) static BAYER_8X8_CLASSIC_XY: [u8; 64] = [
+  0, 48, 12, 60, 3, 51, 15, 63, //
+  32, 16, 44, 28, 35, 19, 47, 31, //
+  8, 56, 4, 52, 11, 59, 7, 55, //
+  40, 24, 36, 20, 43, 27, 39, 23, //
+  2, 50, 14, 62, 1, 49, 13, 61, //
+  34, 18, 46, 30, 33, 17, 45, 29, //
+  10, 58, 6, 54, 9, 57, 5, 53, //
+  42, 26, 38, 22, 41, 25, 37, 21, //
+];
+
+#[inline(always)]
+fn linear_gradient_use_8x8_dither(bucket: u16) -> bool {
+  // `gradient_bucket` returns at least 64. Empirically, Chrome sticks to a 4×4 matrix for small
+  // gradients (bucket == 64) but switches to an 8×8 matrix once the rasterized gradient is larger.
+  bucket > 64
+}
+
+#[inline(always)]
+fn linear_gradient_select_8x8_dither_table(lut: &GradientLut, gradient_len: f32) -> &'static [u8; 64] {
+  // Heuristic based on observed Chrome output:
+  //
+  // - Very gentle ramps (e.g. 0→1 over ~1024px) use `BAYER_8X8_XY`
+  // - Medium ramps (e.g. 0→1 over ~512px, or 0→2 over ~1024px) use `BAYER_8X8_MEDIUM_XY`
+  // - Steeper ramps use the classic Bayer 8×8 matrix.
+  //
+  // We estimate the maximum number of device pixels per 8-bit step by inspecting each stop
+  // segment's span and its maximum per-channel delta (in premultiplied space).
+  let mut max_pixels_per_step = 0.0f32;
+  if gradient_len.is_finite() && gradient_len > 0.0 {
+    let stop_count = lut.stop_positions.len().min(lut.stop_colors.len());
+    if stop_count >= 2 {
+      for i in 0..stop_count - 1 {
+        let span = (lut.stop_positions[i + 1] - lut.stop_positions[i]).abs();
+        if !span.is_finite() || span <= 0.0 {
+          continue;
+        }
+        let seg_len = gradient_len * span;
+        if !seg_len.is_finite() || seg_len <= 0.0 {
+          continue;
+        }
+        let c0 = lut.stop_colors[i];
+        let c1 = lut.stop_colors[i + 1];
+        let delta = (c1[0] - c0[0])
+          .abs()
+          .max((c1[1] - c0[1]).abs())
+          .max((c1[2] - c0[2]).abs());
+        if !delta.is_finite() || delta <= 1e-6 {
+          continue;
+        }
+        let pixels_per_step = seg_len / delta;
+        if pixels_per_step.is_finite() {
+          max_pixels_per_step = max_pixels_per_step.max(pixels_per_step);
+        }
+      }
+    }
+  }
+
+  if !(max_pixels_per_step.is_finite() && max_pixels_per_step > 0.0) {
+    // Degenerate/flat gradients (or missing metadata) don't have a meaningful slope; fall back to
+    // the most conservative pattern.
+    return &BAYER_8X8_XY;
+  }
+
+  let pps_bucket =
+    gradient_bucket(max_pixels_per_step.ceil().clamp(0.0, u32::MAX as f32) as u32);
+
+  if pps_bucket >= 1024 {
+    &BAYER_8X8_XY
+  } else if pps_bucket >= 512 {
+    &BAYER_8X8_MEDIUM_XY
+  } else {
+    &BAYER_8X8_CLASSIC_XY
+  }
+}
+
+#[inline(always)]
+fn linear_gradient_dither_band_and_dom_delta(src: [f32; 4], start: [f32; 4]) -> (i32, f32) {
+  let dr = src[0] - start[0];
+  let dg = src[1] - start[1];
+  let db = src[2] - start[2];
+
+  let mut max_abs = dr.abs();
+  let mut dom_delta = dr;
+  let abs_g = dg.abs();
+  if abs_g >= max_abs {
+    max_abs = abs_g;
+    dom_delta = dg;
+  }
+  let abs_b = db.abs();
+  if abs_b >= max_abs {
+    max_abs = abs_b;
+    dom_delta = db;
+  }
+  (max_abs as i32, dom_delta)
+}
+
+#[inline(always)]
+fn linear_gradient_8x8_dither_shift_x(
+  dither_table: &[u8; 64],
+  band: i32,
+  seg: i32,
+  dom_delta: f32,
+  multi_stop: bool,
+) -> (usize, bool) {
+  if std::ptr::eq(dither_table, &BAYER_8X8_CLASSIC_XY) {
+    if multi_stop {
+      let shift = if dom_delta >= 0.0 {
+        (((band + 5) >> 4) * 2) as usize
+      } else {
+        (4 + ((band >> 3) * 2)) as usize
+      };
+      (shift, false)
+    } else {
+      let step = if dom_delta >= 0.0 { 2 } else { 6 };
+      (((band >> 3) * step) as usize, false)
+    }
+  } else {
+    let shifted = ((band + seg) & 1) != 0;
+    (if shifted { 4usize } else { 0usize }, shifted)
+  }
+}
+
 #[inline]
 fn f32_to_canonical_bits(value: f32) -> u32 {
   if value == 0.0 {
@@ -595,6 +752,130 @@ impl GradientLut {
     ]
   }
 
+  #[inline(always)]
+  fn sample_mapped_f32_with_segment(&self, t: f32) -> ([f32; 4], u16) {
+    debug_assert!(t.is_finite());
+    debug_assert!(t >= 0.0);
+    debug_assert!(self.last_idx > 0);
+
+    let scaled = t * self.scale;
+    let idx = scaled as usize;
+    if idx >= self.last_idx {
+      let seg = unsafe { *self.segments.get_unchecked(self.last_idx) };
+      // SAFETY: idx >= last_idx implies the last entry exists because last_idx > 0.
+      return (unsafe { *self.colors.get_unchecked(self.last_idx) }, seg);
+    }
+    let seg0 = unsafe { *self.segments.get_unchecked(idx) };
+    let frac = scaled - idx as f32;
+    if frac <= 0.0 {
+      // SAFETY: idx < last_idx implies idx is within the LUT.
+      return (unsafe { *self.colors.get_unchecked(idx) }, seg0);
+    }
+    // SAFETY: idx < last_idx implies idx+1 is within the LUT.
+    let c0 = unsafe { *self.colors.get_unchecked(idx) };
+    let c1 = unsafe { *self.colors.get_unchecked(idx + 1) };
+
+    let seg1 = unsafe { *self.segments.get_unchecked(idx + 1) };
+    if seg0 != seg1 {
+      let seg0_usize = seg0 as usize;
+      let seg1_usize = seg1 as usize;
+      if seg1_usize == seg0_usize + 1
+        && seg1_usize < self.stop_positions.len()
+        && seg1_usize < self.stop_colors.len()
+      {
+        let stop_pos = unsafe { *self.stop_positions.get_unchecked(seg1_usize) };
+        let stop_color = unsafe { *self.stop_colors.get_unchecked(seg1_usize) };
+        let stop_scaled = stop_pos * self.scale;
+        let boundary = (stop_scaled - idx as f32).clamp(0.0, 1.0);
+        if boundary <= 0.0 {
+          let inv = 1.0 - frac;
+          return (
+            [
+              stop_color[0] * inv + c1[0] * frac,
+              stop_color[1] * inv + c1[1] * frac,
+              stop_color[2] * inv + c1[2] * frac,
+              stop_color[3] * inv + c1[3] * frac,
+            ],
+            seg1,
+          );
+        }
+        if boundary >= 1.0 {
+          let inv = 1.0 - frac;
+          return (
+            [
+              c0[0] * inv + stop_color[0] * frac,
+              c0[1] * inv + stop_color[1] * frac,
+              c0[2] * inv + stop_color[2] * frac,
+              c0[3] * inv + stop_color[3] * frac,
+            ],
+            seg0,
+          );
+        }
+        if frac < boundary {
+          let local = (frac / boundary).clamp(0.0, 1.0);
+          let inv = 1.0 - local;
+          return (
+            [
+              c0[0] * inv + stop_color[0] * local,
+              c0[1] * inv + stop_color[1] * local,
+              c0[2] * inv + stop_color[2] * local,
+              c0[3] * inv + stop_color[3] * local,
+            ],
+            seg0,
+          );
+        }
+        let local = ((frac - boundary) / (1.0 - boundary)).clamp(0.0, 1.0);
+        let inv = 1.0 - local;
+        return (
+          [
+            stop_color[0] * inv + c1[0] * local,
+            stop_color[1] * inv + c1[1] * local,
+            stop_color[2] * inv + c1[2] * local,
+            stop_color[3] * inv + c1[3] * local,
+          ],
+          seg1,
+        );
+      }
+
+      // Rare fallback: multiple stop boundaries within one LUT interval (or missing metadata).
+      // `sample_exact_f32` already handles this correctly; we also need the segment index for `t`.
+      let color = self.sample_exact_f32(t);
+      if self.stop_positions.len() < 2 {
+        return (color, seg0);
+      }
+      let last = self.stop_positions.len().saturating_sub(1);
+      let t = t.clamp(self.stop_positions[0], self.stop_positions[last]);
+      if t <= self.stop_positions[0] {
+        return (color, 0);
+      }
+      if t >= self.stop_positions[last] {
+        return (color, last as u16);
+      }
+      let mut lo = 0usize;
+      let mut hi = last;
+      while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if t < self.stop_positions[mid] {
+          hi = mid;
+        } else {
+          lo = mid;
+        }
+      }
+      return (color, lo as u16);
+    }
+
+    let inv = 1.0 - frac;
+    (
+      [
+        c0[0] * inv + c1[0] * frac,
+        c0[1] * inv + c1[1] * frac,
+        c0[2] * inv + c1[2] * frac,
+        c0[3] * inv + c1[3] * frac,
+      ],
+      seg0,
+    )
+  }
+
   #[inline]
   fn sample_exact_f32(&self, t: f32) -> [f32; 4] {
     if self.stop_positions.is_empty() || self.stop_colors.is_empty() {
@@ -665,6 +946,22 @@ impl GradientLut {
   }
 
   #[inline(always)]
+  fn sample_pad_f32_with_segment(&self, t: f32) -> ([f32; 4], u16) {
+    if self.last_idx == 0 || !t.is_finite() {
+      return (Self::pm_u8_to_f32(self.first), 0);
+    }
+    let t = t - self.offset;
+    if t < 0.0 {
+      return (Self::pm_u8_to_f32(self.first), 0);
+    }
+    if t >= self.span {
+      let last = self.stop_colors.len().saturating_sub(1) as u16;
+      return (Self::pm_u8_to_f32(self.last), last);
+    }
+    self.sample_mapped_f32_with_segment(t)
+  }
+
+  #[inline(always)]
   fn sample_repeat_f32(&self, mut t: f32) -> [f32; 4] {
     if self.last_idx == 0 || !t.is_finite() {
       return Self::pm_u8_to_f32(self.first);
@@ -679,6 +976,23 @@ impl GradientLut {
       t += p;
     }
     self.sample_mapped_f32(t)
+  }
+
+  #[inline(always)]
+  fn sample_repeat_f32_with_segment(&self, mut t: f32) -> ([f32; 4], u16) {
+    if self.last_idx == 0 || !t.is_finite() {
+      return (Self::pm_u8_to_f32(self.first), 0);
+    }
+    t -= self.offset;
+    let p = self.span;
+    if p <= 0.0 {
+      return (Self::pm_u8_to_f32(self.first), 0);
+    }
+    t = t % p;
+    if t < 0.0 {
+      t += p;
+    }
+    self.sample_mapped_f32_with_segment(t)
   }
 
   #[inline(always)]
@@ -700,6 +1014,27 @@ impl GradientLut {
       t = two_p - t;
     }
     self.sample_mapped_f32(t)
+  }
+
+  #[inline(always)]
+  fn sample_reflect_f32_with_segment(&self, mut t: f32) -> ([f32; 4], u16) {
+    if self.last_idx == 0 || !t.is_finite() {
+      return (Self::pm_u8_to_f32(self.first), 0);
+    }
+    t -= self.offset;
+    let p = self.span;
+    if p <= 0.0 {
+      return (Self::pm_u8_to_f32(self.first), 0);
+    }
+    let two_p = p * 2.0;
+    t = t % two_p;
+    if t < 0.0 {
+      t += two_p;
+    }
+    if t > p {
+      t = two_p - t;
+    }
+    self.sample_mapped_f32_with_segment(t)
   }
 
   #[inline(always)]
@@ -1111,29 +1446,72 @@ fn rasterize_linear_gradient_with_phase(
   let stride = width as usize;
   let pixels = pixmap.pixels_mut();
   let spread_key: SpreadModeKey = spread.into();
-  let phase_x = (dither_phase & 3) as usize;
-  let phase_y = ((dither_phase >> 2) & 3) as usize;
+  let use_8x8_dither = linear_gradient_use_8x8_dither(bucket);
+  let multi_stop = stops.len() > 2;
+  let phase_x = (dither_phase & 7) as usize;
+  let phase_y = ((dither_phase >> 3) & 7) as usize;
 
   let key = GradientCacheKey::new(stops, spread, period, bucket);
   let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
+  let gradient_len = denom.sqrt();
+  let dither_table_8x8 = if use_8x8_dither {
+    Some(linear_gradient_select_8x8_dither_table(lut.as_ref(), gradient_len))
+  } else {
+    None
+  };
+  let (dither_mask, dither_row_stride, dither_scale, dither_bias, phase_x, phase_y) = if use_8x8_dither {
+    (
+      7usize,
+      8usize,
+      0.015625f32,  // 1/64
+      0.0078125f32, // 0.5/64
+      phase_x,
+      phase_y,
+    )
+  } else {
+    (
+      3usize,
+      4usize,
+      0.0625f32,  // 1/16
+      0.03125f32, // 0.5/16
+      phase_x & 3,
+      phase_y & 3,
+    )
+  };
   let sample_row = |y: usize, row: &mut [PremultipliedColorU8]| -> Result<(), RenderError> {
     let mut t = row_start0 + y as f32 * step_y;
-    let y_mod = (y + phase_y) & 3;
+    let y_mod = (y + phase_y) & dither_mask;
     let mut deadline_counter = 0usize;
     match spread_key {
       SpreadModeKey::Pad => {
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          let mut x_mod = (x + phase_x) & 3;
+          let mut x_mod = (x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           for pixel in chunk.iter_mut() {
-            let idx = y_mod * 4 + x_mod;
-            let m = BAYER_4X4_XY[idx] as f32;
-            let dither = m * 0.0625 + 0.03125;
-            *pixel = lut.sample_pad_dither(t, dither);
+            if let Some(dither_table) = dither_table_8x8 {
+               let (src, seg) = lut.sample_pad_f32_with_segment(t);
+               let seg = seg as usize;
+               let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+               let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+               let (shift, m0_fix) =
+                 linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+               let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+               let mut m = unsafe { *dither_table.get_unchecked(idx) };
+               if m0_fix && m == 0 {
+                 m = 1;
+              }
+              let dither = m as f32 * dither_scale + dither_bias;
+              *pixel = GradientLut::quantize_dither(src, dither);
+            } else {
+              let idx = y_mod * dither_row_stride + x_mod;
+              let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+              let dither = m * dither_scale + dither_bias;
+              *pixel = lut.sample_pad_dither(t, dither);
+            }
             t += step_x;
-            x_mod = (x_mod + 1) & 3;
+            x_mod = (x_mod + 1) & dither_mask;
           }
           x += chunk_len;
         }
@@ -1142,15 +1520,31 @@ fn rasterize_linear_gradient_with_phase(
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          let mut x_mod = (x + phase_x) & 3;
+          let mut x_mod = (x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           for pixel in chunk.iter_mut() {
-            let idx = y_mod * 4 + x_mod;
-            let m = BAYER_4X4_XY[idx] as f32;
-            let dither = m * 0.0625 + 0.03125;
-            *pixel = lut.sample_repeat_dither(t, dither);
+            if let Some(dither_table) = dither_table_8x8 {
+               let (src, seg) = lut.sample_repeat_f32_with_segment(t);
+               let seg = seg as usize;
+               let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+               let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+               let (shift, m0_fix) =
+                 linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+               let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+               let mut m = unsafe { *dither_table.get_unchecked(idx) };
+               if m0_fix && m == 0 {
+                 m = 1;
+              }
+              let dither = m as f32 * dither_scale + dither_bias;
+              *pixel = GradientLut::quantize_dither(src, dither);
+            } else {
+              let idx = y_mod * dither_row_stride + x_mod;
+              let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+              let dither = m * dither_scale + dither_bias;
+              *pixel = lut.sample_repeat_dither(t, dither);
+            }
             t += step_x;
-            x_mod = (x_mod + 1) & 3;
+            x_mod = (x_mod + 1) & dither_mask;
           }
           x += chunk_len;
         }
@@ -1159,15 +1553,31 @@ fn rasterize_linear_gradient_with_phase(
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          let mut x_mod = (x + phase_x) & 3;
+          let mut x_mod = (x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           for pixel in chunk.iter_mut() {
-            let idx = y_mod * 4 + x_mod;
-            let m = BAYER_4X4_XY[idx] as f32;
-            let dither = m * 0.0625 + 0.03125;
-            *pixel = lut.sample_reflect_dither(t, dither);
+            if let Some(dither_table) = dither_table_8x8 {
+               let (src, seg) = lut.sample_reflect_f32_with_segment(t);
+               let seg = seg as usize;
+               let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+               let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+               let (shift, m0_fix) =
+                 linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+               let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+               let mut m = unsafe { *dither_table.get_unchecked(idx) };
+               if m0_fix && m == 0 {
+                 m = 1;
+              }
+              let dither = m as f32 * dither_scale + dither_bias;
+              *pixel = GradientLut::quantize_dither(src, dither);
+            } else {
+              let idx = y_mod * dither_row_stride + x_mod;
+              let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+              let dither = m * dither_scale + dither_bias;
+              *pixel = lut.sample_reflect_dither(t, dither);
+            }
             t += step_x;
-            x_mod = (x_mod + 1) & 3;
+            x_mod = (x_mod + 1) & dither_mask;
           }
           x += chunk_len;
         }
@@ -1240,11 +1650,41 @@ pub fn paint_linear_gradient_src_over(
   let span_y = (y1 - y0) as usize;
 
   let period = gradient_period(stops);
+  let dx = end.x - start.x;
+  let dy = end.y - start.y;
+  let denom = dx * dx + dy * dy;
   let spread_key: SpreadModeKey = spread.into();
-  let phase_x = (dither_phase & 3) as usize;
-  let phase_y = ((dither_phase >> 2) & 3) as usize;
+  let use_8x8_dither = linear_gradient_use_8x8_dither(bucket);
+  let multi_stop = stops.len() > 2;
+  let phase_x = (dither_phase & 7) as usize;
+  let phase_y = ((dither_phase >> 3) & 7) as usize;
   let key = GradientCacheKey::new(stops, spread, period, bucket);
   let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
+  let gradient_len = denom.sqrt();
+  let dither_table_8x8 = if use_8x8_dither {
+    Some(linear_gradient_select_8x8_dither_table(lut.as_ref(), gradient_len))
+  } else {
+    None
+  };
+  let (dither_mask, dither_row_stride, dither_scale, dither_bias, phase_x, phase_y) = if use_8x8_dither {
+    (
+      7usize,
+      8usize,
+      0.015625f32,  // 1/64
+      0.0078125f32, // 0.5/64
+      phase_x,
+      phase_y,
+    )
+  } else {
+    (
+      3usize,
+      4usize,
+      0.0625f32,  // 1/16
+      0.03125f32, // 0.5/16
+      phase_x & 3,
+      phase_y & 3,
+    )
+  };
 
   #[inline(always)]
   fn blend_src_over(dst: PremultipliedColorU8, src: [f32; 4]) -> [f32; 4] {
@@ -1282,9 +1722,6 @@ pub fn paint_linear_gradient_src_over(
   let row_end = y1 as usize * stride;
   let pixels = &mut pixels[row_start..row_end];
 
-  let dx = end.x - start.x;
-  let dy = end.y - start.y;
-  let denom = dx * dx + dy * dy;
   if denom.abs() <= f32::EPSILON {
     let solid = premultiply_rgba(stops[0].1);
     let src = [
@@ -1298,19 +1735,19 @@ pub fn paint_linear_gradient_src_over(
                      row: &mut [PremultipliedColorU8],
                      mask_row: Option<&[u8]>|
      -> Result<(), RenderError> {
-      let y_mod = (local_y + phase_y) & 3;
+      let y_mod = (local_y + phase_y) & dither_mask;
       let mut x = 0usize;
       let mut deadline_counter = 0usize;
       let inv_255 = 1.0 / 255.0;
       for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
         check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-        let mut x_mod = (local_x0 + x + phase_x) & 3;
+        let mut x_mod = (local_x0 + x + phase_x) & dither_mask;
         let chunk_len = chunk.len();
         if let Some(mask_row) = mask_row {
           let mask_chunk = &mask_row[x..x + chunk_len];
           for (pixel, &mask) in chunk.iter_mut().zip(mask_chunk.iter()) {
             if mask == 0 {
-              x_mod = (x_mod + 1) & 3;
+              x_mod = (x_mod + 1) & dither_mask;
               continue;
             }
             let out = if mask == 255 {
@@ -1319,20 +1756,28 @@ pub fn paint_linear_gradient_src_over(
               let mf = mask as f32 * inv_255;
               blend_src_over(*pixel, [src[0] * mf, src[1] * mf, src[2] * mf, src[3] * mf])
             };
-            let idx = y_mod * 4 + x_mod;
-            let m = BAYER_4X4_XY[idx] as f32;
-            let dither = m * 0.0625 + 0.03125;
+            let idx = y_mod * dither_row_stride + x_mod;
+            let m = if let Some(dither_table) = dither_table_8x8 {
+              (unsafe { *dither_table.get_unchecked(idx) }) as f32
+            } else {
+              (unsafe { *BAYER_4X4_XY.get_unchecked(idx) }) as f32
+            };
+            let dither = m * dither_scale + dither_bias;
             *pixel = GradientLut::quantize_dither(out, dither);
-            x_mod = (x_mod + 1) & 3;
+            x_mod = (x_mod + 1) & dither_mask;
           }
         } else {
           for pixel in chunk.iter_mut() {
             let out = blend_src_over(*pixel, src);
-            let idx = y_mod * 4 + x_mod;
-            let m = BAYER_4X4_XY[idx] as f32;
-            let dither = m * 0.0625 + 0.03125;
+            let idx = y_mod * dither_row_stride + x_mod;
+            let m = if let Some(dither_table) = dither_table_8x8 {
+              (unsafe { *dither_table.get_unchecked(idx) }) as f32
+            } else {
+              (unsafe { *BAYER_4X4_XY.get_unchecked(idx) }) as f32
+            };
+            let dither = m * dither_scale + dither_bias;
             *pixel = GradientLut::quantize_dither(out, dither);
-            x_mod = (x_mod + 1) & 3;
+            x_mod = (x_mod + 1) & dither_mask;
           }
         }
         x += chunk_len;
@@ -1383,7 +1828,7 @@ pub fn paint_linear_gradient_src_over(
                    row: &mut [PremultipliedColorU8],
                    mask_row: Option<&[u8]>|
    -> Result<(), RenderError> {
-    let y_mod = (local_y + phase_y) & 3;
+    let y_mod = (local_y + phase_y) & dither_mask;
     let mut deadline_counter = 0usize;
     let mut t = row_start0 + local_y as f32 * step_y + local_x0 as f32 * step_x;
     let inv_255 = 1.0 / 255.0;
@@ -1393,42 +1838,83 @@ pub fn paint_linear_gradient_src_over(
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          let mut x_mod = (local_x0 + x + phase_x) & 3;
+          let mut x_mod = (local_x0 + x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           if let Some(mask_row) = mask_row {
             let mask_chunk = &mask_row[x..x + chunk_len];
             for (pixel, &mask) in chunk.iter_mut().zip(mask_chunk.iter()) {
               if mask == 0 {
                 t += step_x;
-                x_mod = (x_mod + 1) & 3;
+                x_mod = (x_mod + 1) & dither_mask;
                 continue;
               }
-              let mut src = lut.sample_pad_f32(t);
-              if mask != 255 {
-                let mf = mask as f32 * inv_255;
-                src[0] *= mf;
-                src[1] *= mf;
-                src[2] *= mf;
-                src[3] *= mf;
+              if let Some(dither_table) = dither_table_8x8 {
+                 let (mut src, seg) = lut.sample_pad_f32_with_segment(t);
+                 let seg = seg as usize;
+                 let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+                 let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+                 let (shift, m0_fix) =
+                   linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+                 if mask != 255 {
+                   let mf = mask as f32 * inv_255;
+                   src[0] *= mf;
+                  src[1] *= mf;
+                  src[2] *= mf;
+                  src[3] *= mf;
+                }
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+                let mut m = unsafe { *dither_table.get_unchecked(idx) };
+                if m0_fix && m == 0 {
+                  m = 1;
+                }
+                let dither = m as f32 * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              } else {
+                let mut src = lut.sample_pad_f32(t);
+                if mask != 255 {
+                  let mf = mask as f32 * inv_255;
+                  src[0] *= mf;
+                  src[1] *= mf;
+                  src[2] *= mf;
+                  src[3] *= mf;
+                }
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + x_mod;
+                let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+                let dither = m * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
               }
-              let out = blend_src_over(*pixel, src);
-              let idx = y_mod * 4 + x_mod;
-              let m = BAYER_4X4_XY[idx] as f32;
-              let dither = m * 0.0625 + 0.03125;
-              *pixel = GradientLut::quantize_dither(out, dither);
               t += step_x;
-              x_mod = (x_mod + 1) & 3;
+              x_mod = (x_mod + 1) & dither_mask;
             }
           } else {
             for pixel in chunk.iter_mut() {
-              let src = lut.sample_pad_f32(t);
-              let out = blend_src_over(*pixel, src);
-              let idx = y_mod * 4 + x_mod;
-              let m = BAYER_4X4_XY[idx] as f32;
-              let dither = m * 0.0625 + 0.03125;
-              *pixel = GradientLut::quantize_dither(out, dither);
+              if let Some(dither_table) = dither_table_8x8 {
+                 let (src, seg) = lut.sample_pad_f32_with_segment(t);
+                 let seg = seg as usize;
+                 let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+                 let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+                 let (shift, m0_fix) =
+                   linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+                 let out = blend_src_over(*pixel, src);
+                 let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+                 let mut m = unsafe { *dither_table.get_unchecked(idx) };
+                if m0_fix && m == 0 {
+                  m = 1;
+                }
+                let dither = m as f32 * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              } else {
+                let src = lut.sample_pad_f32(t);
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + x_mod;
+                let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+                let dither = m * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              }
               t += step_x;
-              x_mod = (x_mod + 1) & 3;
+              x_mod = (x_mod + 1) & dither_mask;
             }
           }
           x += chunk_len;
@@ -1438,42 +1924,83 @@ pub fn paint_linear_gradient_src_over(
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          let mut x_mod = (local_x0 + x + phase_x) & 3;
+          let mut x_mod = (local_x0 + x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           if let Some(mask_row) = mask_row {
             let mask_chunk = &mask_row[x..x + chunk_len];
             for (pixel, &mask) in chunk.iter_mut().zip(mask_chunk.iter()) {
               if mask == 0 {
                 t += step_x;
-                x_mod = (x_mod + 1) & 3;
+                x_mod = (x_mod + 1) & dither_mask;
                 continue;
               }
-              let mut src = lut.sample_repeat_f32(t);
-              if mask != 255 {
-                let mf = mask as f32 * inv_255;
-                src[0] *= mf;
-                src[1] *= mf;
-                src[2] *= mf;
-                src[3] *= mf;
+              if let Some(dither_table) = dither_table_8x8 {
+                 let (mut src, seg) = lut.sample_repeat_f32_with_segment(t);
+                 let seg = seg as usize;
+                 let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+                 let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+                 let (shift, m0_fix) =
+                   linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+                 if mask != 255 {
+                   let mf = mask as f32 * inv_255;
+                   src[0] *= mf;
+                  src[1] *= mf;
+                  src[2] *= mf;
+                  src[3] *= mf;
+                }
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+                let mut m = unsafe { *dither_table.get_unchecked(idx) };
+                if m0_fix && m == 0 {
+                  m = 1;
+                }
+                let dither = m as f32 * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              } else {
+                let mut src = lut.sample_repeat_f32(t);
+                if mask != 255 {
+                  let mf = mask as f32 * inv_255;
+                  src[0] *= mf;
+                  src[1] *= mf;
+                  src[2] *= mf;
+                  src[3] *= mf;
+                }
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + x_mod;
+                let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+                let dither = m * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
               }
-              let out = blend_src_over(*pixel, src);
-              let idx = y_mod * 4 + x_mod;
-              let m = BAYER_4X4_XY[idx] as f32;
-              let dither = m * 0.0625 + 0.03125;
-              *pixel = GradientLut::quantize_dither(out, dither);
               t += step_x;
-              x_mod = (x_mod + 1) & 3;
+              x_mod = (x_mod + 1) & dither_mask;
             }
           } else {
             for pixel in chunk.iter_mut() {
-              let src = lut.sample_repeat_f32(t);
-              let out = blend_src_over(*pixel, src);
-              let idx = y_mod * 4 + x_mod;
-              let m = BAYER_4X4_XY[idx] as f32;
-              let dither = m * 0.0625 + 0.03125;
-              *pixel = GradientLut::quantize_dither(out, dither);
+              if let Some(dither_table) = dither_table_8x8 {
+                 let (src, seg) = lut.sample_repeat_f32_with_segment(t);
+                 let seg = seg as usize;
+                 let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+                 let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+                 let (shift, m0_fix) =
+                   linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+                 let out = blend_src_over(*pixel, src);
+                 let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+                 let mut m = unsafe { *dither_table.get_unchecked(idx) };
+                if m0_fix && m == 0 {
+                  m = 1;
+                }
+                let dither = m as f32 * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              } else {
+                let src = lut.sample_repeat_f32(t);
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + x_mod;
+                let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+                let dither = m * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              }
               t += step_x;
-              x_mod = (x_mod + 1) & 3;
+              x_mod = (x_mod + 1) & dither_mask;
             }
           }
           x += chunk_len;
@@ -1483,42 +2010,83 @@ pub fn paint_linear_gradient_src_over(
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          let mut x_mod = (local_x0 + x + phase_x) & 3;
+          let mut x_mod = (local_x0 + x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           if let Some(mask_row) = mask_row {
             let mask_chunk = &mask_row[x..x + chunk_len];
             for (pixel, &mask) in chunk.iter_mut().zip(mask_chunk.iter()) {
               if mask == 0 {
                 t += step_x;
-                x_mod = (x_mod + 1) & 3;
+                x_mod = (x_mod + 1) & dither_mask;
                 continue;
               }
-              let mut src = lut.sample_reflect_f32(t);
-              if mask != 255 {
-                let mf = mask as f32 * inv_255;
-                src[0] *= mf;
-                src[1] *= mf;
-                src[2] *= mf;
-                src[3] *= mf;
+              if let Some(dither_table) = dither_table_8x8 {
+                 let (mut src, seg) = lut.sample_reflect_f32_with_segment(t);
+                 let seg = seg as usize;
+                 let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+                 let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+                 let (shift, m0_fix) =
+                   linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+                 if mask != 255 {
+                   let mf = mask as f32 * inv_255;
+                   src[0] *= mf;
+                  src[1] *= mf;
+                  src[2] *= mf;
+                  src[3] *= mf;
+                }
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+                let mut m = unsafe { *dither_table.get_unchecked(idx) };
+                if m0_fix && m == 0 {
+                  m = 1;
+                }
+                let dither = m as f32 * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              } else {
+                let mut src = lut.sample_reflect_f32(t);
+                if mask != 255 {
+                  let mf = mask as f32 * inv_255;
+                  src[0] *= mf;
+                  src[1] *= mf;
+                  src[2] *= mf;
+                  src[3] *= mf;
+                }
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + x_mod;
+                let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+                let dither = m * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
               }
-              let out = blend_src_over(*pixel, src);
-              let idx = y_mod * 4 + x_mod;
-              let m = BAYER_4X4_XY[idx] as f32;
-              let dither = m * 0.0625 + 0.03125;
-              *pixel = GradientLut::quantize_dither(out, dither);
               t += step_x;
-              x_mod = (x_mod + 1) & 3;
+              x_mod = (x_mod + 1) & dither_mask;
             }
           } else {
             for pixel in chunk.iter_mut() {
-              let src = lut.sample_reflect_f32(t);
-              let out = blend_src_over(*pixel, src);
-              let idx = y_mod * 4 + x_mod;
-              let m = BAYER_4X4_XY[idx] as f32;
-              let dither = m * 0.0625 + 0.03125;
-              *pixel = GradientLut::quantize_dither(out, dither);
+              if let Some(dither_table) = dither_table_8x8 {
+                 let (src, seg) = lut.sample_reflect_f32_with_segment(t);
+                 let seg = seg as usize;
+                 let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+                 let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+                 let (shift, m0_fix) =
+                   linear_gradient_8x8_dither_shift_x(dither_table, band, seg as i32, dom_delta, multi_stop);
+                 let out = blend_src_over(*pixel, src);
+                 let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+                 let mut m = unsafe { *dither_table.get_unchecked(idx) };
+                if m0_fix && m == 0 {
+                  m = 1;
+                }
+                let dither = m as f32 * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              } else {
+                let src = lut.sample_reflect_f32(t);
+                let out = blend_src_over(*pixel, src);
+                let idx = y_mod * dither_row_stride + x_mod;
+                let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+                let dither = m * dither_scale + dither_bias;
+                *pixel = GradientLut::quantize_dither(out, dither);
+              }
               t += step_x;
-              x_mod = (x_mod + 1) & 3;
+              x_mod = (x_mod + 1) & dither_mask;
             }
           }
           x += chunk_len;
@@ -2118,6 +2686,251 @@ mod tests {
   }
 
   #[test]
+  fn linear_gradient_dither_matrix_matches_expected_large_8x8() {
+    // Guardrail: for very gentle ramps, Chrome uses a specific 8×8 ordered-dither matrix.
+    //
+    // Use a low-contrast 0→1 gradient so each pixel channel is either 0 or 1 and the expected
+    // pattern is easy to compute from the dither table.
+    let stops = vec![
+      (0.0, Rgba::BLACK),
+      (
+        1.0,
+        Rgba {
+          r: 1,
+          g: 1,
+          b: 1,
+          a: 1.0,
+        },
+      ),
+    ];
+    let cache = GradientLutCache::default();
+    let width = 1024;
+    let height = 8;
+    let start = Point::new(0.0, 0.0);
+    let end = Point::new(width as f32, 0.0);
+    let bucket = gradient_bucket(width.max(height));
+    assert!(bucket >= 1024, "test must select the gentle-ramp 8×8 matrix");
+    let pixmap = rasterize_linear_gradient(
+      width,
+      height,
+      start,
+      end,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+    )
+    .expect("rasterize")
+    .expect("pixmap");
+    let stride = width as usize;
+    let pixels = pixmap.pixels();
+
+    for y in 0..height as usize {
+      for x in 0..width as usize {
+        let t = (x as f32 + 0.5) / width as f32;
+        let idx = (y & 7) * 8 + (x & 7);
+        let m = BAYER_8X8_XY[idx] as f32;
+        let dither = m * 0.015625 + 0.0078125;
+        let v = (t + dither) as i32;
+        let v = v.clamp(0, 255) as u8;
+        let expected =
+          PremultipliedColorU8::from_rgba(v, v, v, 255).expect("valid premultiplied color");
+        assert_eq!(pixels[y * stride + x], expected, "pixel {x},{y}");
+      }
+    }
+  }
+
+  #[test]
+  fn linear_gradient_dither_matrix_matches_expected_medium_8x8() {
+    // Chrome uses a different 8×8 matrix for steeper ramps (e.g. 0→1 over 512px).
+    let stops = vec![
+      (0.0, Rgba::BLACK),
+      (
+        1.0,
+        Rgba {
+          r: 1,
+          g: 1,
+          b: 1,
+          a: 1.0,
+        },
+      ),
+    ];
+    let cache = GradientLutCache::default();
+    let width = 512;
+    let height = 8;
+    let start = Point::new(0.0, 0.0);
+    let end = Point::new(width as f32, 0.0);
+    let bucket = gradient_bucket(width.max(height));
+    assert_eq!(bucket, 512);
+    let pixmap = rasterize_linear_gradient(
+      width,
+      height,
+      start,
+      end,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+    )
+    .expect("rasterize")
+    .expect("pixmap");
+    let stride = width as usize;
+    let pixels = pixmap.pixels();
+    for y in 0..height as usize {
+      for x in 0..width as usize {
+        let t = (x as f32 + 0.5) / width as f32;
+        let idx = (y & 7) * 8 + (x & 7);
+        let m = BAYER_8X8_MEDIUM_XY[idx] as f32;
+        let dither = m * 0.015625 + 0.0078125;
+        let v = (t + dither) as i32;
+        let v = v.clamp(0, 255) as u8;
+        let expected =
+          PremultipliedColorU8::from_rgba(v, v, v, 255).expect("valid premultiplied color");
+        assert_eq!(pixels[y * stride + x], expected, "pixel {x},{y}");
+      }
+    }
+  }
+
+  #[test]
+  fn linear_gradient_dither_band_shifts_phase_for_multi_step_ramp() {
+    // Regression: a 0→2 ramp spans multiple 8-bit steps, and Chrome shifts the dither phase (by 4
+    // columns) each time the ramp crosses an integer boundary.
+    let stops = vec![
+      (0.0, Rgba::BLACK),
+      (
+        1.0,
+        Rgba {
+          r: 2,
+          g: 2,
+          b: 2,
+          a: 1.0,
+        },
+      ),
+    ];
+    let cache = GradientLutCache::default();
+    let width = 1024;
+    let height = 8;
+    let start = Point::new(0.0, 0.0);
+    let end = Point::new(width as f32, 0.0);
+    let bucket = gradient_bucket(width.max(height));
+    assert_eq!(bucket, 1024);
+    let pixmap = rasterize_linear_gradient(
+      width,
+      height,
+      start,
+      end,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+    )
+    .expect("rasterize")
+    .expect("pixmap");
+    let stride = width as usize;
+    let pixels = pixmap.pixels();
+    for y in 0..height as usize {
+      for x in 0..width as usize {
+        let t = (x as f32 + 0.5) / width as f32;
+        let val = 2.0 * t;
+        let ip = val as i32;
+        let frac = val - ip as f32;
+        let shifted = ip & 1 == 1;
+        let shift = if shifted { 4usize } else { 0usize };
+        let idx = (y & 7) * 8 + ((x + shift) & 7);
+        let mut m = BAYER_8X8_MEDIUM_XY[idx] as i32;
+        if shifted && m == 0 {
+          m = 1;
+        }
+        let dither = m as f32 * 0.015625 + 0.0078125;
+        let v = (ip as f32 + frac + dither) as i32;
+        let v = v.clamp(0, 255) as u8;
+        let expected =
+          PremultipliedColorU8::from_rgba(v, v, v, 255).expect("valid premultiplied color");
+        assert_eq!(pixels[y * stride + x], expected, "pixel {x},{y}");
+      }
+    }
+  }
+
+  #[test]
+  fn linear_gradient_dither_block_shifts_phase_for_large_range_ramp() {
+    let stops = vec![
+      (0.0, Rgba::BLACK),
+      (
+        1.0,
+        Rgba {
+          r: 32,
+          g: 32,
+          b: 32,
+          a: 1.0,
+        },
+      ),
+    ];
+    let cache = GradientLutCache::default();
+    let width = 1024;
+    let height = 8;
+    let start = Point::new(0.0, 0.0);
+    let end = Point::new(width as f32, 0.0);
+    let bucket = gradient_bucket(width.max(height));
+    assert_eq!(bucket, 1024);
+    let pixmap = rasterize_linear_gradient(
+      width,
+      height,
+      start,
+      end,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+    )
+    .expect("rasterize")
+    .expect("pixmap");
+    let stride = width as usize;
+    let pixels = pixmap.pixels();
+    for y in 0..height as usize {
+      for x in 0..width as usize {
+        let t = (x as f32 + 0.5) / width as f32;
+        let val = 32.0 * t;
+        let ip = val as i32;
+        let frac = val - ip as f32;
+        let shift = ((ip >> 3) * 2) as usize;
+        let idx = (y & 7) * 8 + ((x + shift) & 7);
+        let m = BAYER_8X8_CLASSIC_XY[idx] as f32;
+        let dither = m * 0.015625 + 0.0078125;
+        let v = (ip as f32 + frac + dither) as i32;
+        let v = v.clamp(0, 255) as u8;
+        let expected =
+          PremultipliedColorU8::from_rgba(v, v, v, 255).expect("valid premultiplied color");
+        assert_eq!(pixels[y * stride + x], expected, "pixel {x},{y}");
+      }
+    }
+  }
+
+  #[test]
+  fn linear_gradient_dither_classic_multi_stop_shift_matches_expected() {
+    let dither_table = &BAYER_8X8_CLASSIC_XY;
+
+    // Multi-stop gradients use a different phase-shift schedule in Chrome.
+    let (shift, m0_fix) = linear_gradient_8x8_dither_shift_x(dither_table, 10, 0, 1.0, true);
+    assert_eq!(shift, 0);
+    assert!(!m0_fix);
+
+    let (shift, _) = linear_gradient_8x8_dither_shift_x(dither_table, 11, 0, 1.0, true);
+    assert_eq!(shift, 2);
+
+    let (shift, _) = linear_gradient_8x8_dither_shift_x(dither_table, 27, 0, 1.0, true);
+    assert_eq!(shift, 4);
+
+    let (shift, _) = linear_gradient_8x8_dither_shift_x(dither_table, 0, 0, -1.0, true);
+    assert_eq!(shift, 4);
+
+    let (shift, _) = linear_gradient_8x8_dither_shift_x(dither_table, 8, 0, -1.0, true);
+    assert_eq!(shift, 6);
+
+    let (shift, _) = linear_gradient_8x8_dither_shift_x(dither_table, 16, 0, -1.0, true);
+    assert_eq!(shift, 8);
+  }
+
+  #[test]
   fn gradient_lut_stop_positions_are_relative_to_first_stop() {
     // `GradientLut` stores samples in the coordinate space where `t` is shifted by the first stop.
     // Ensure the stop metadata used for sharp-boundary handling is expressed in that same space.
@@ -2624,7 +3437,7 @@ mod tests {
 
     // Reference output: rasterize the whole tile with the pattern's origin-based dither phase, then
     // copy the relevant sub-rectangle into the destination surface.
-    let tile_dither_phase = (((origin_y & 3) as u8) << 2) | ((origin_x & 3) as u8);
+    let tile_dither_phase = (((origin_y & 7) as u8) << 3) | ((origin_x & 7) as u8);
     let tile = rasterize_linear_gradient_with_phase(
       tile_w,
       tile_h,
@@ -2670,7 +3483,7 @@ mod tests {
     let offset_y = (dest_y - origin_y) as f32;
     let start = Point::new(-offset_x, -offset_y);
     let end = Point::new(-offset_x, tile_h as f32 - offset_y);
-    let sub_dither_phase = (((dest_y & 3) as u8) << 2) | ((dest_x & 3) as u8);
+    let sub_dither_phase = (((dest_y & 7) as u8) << 3) | ((dest_x & 7) as u8);
     paint_linear_gradient_src_over(
       &mut actual,
       dest_x,

@@ -5617,7 +5617,8 @@ impl DisplayListRenderer {
     let timer = self.diagnostics_enabled.then(Instant::now);
     let dest_x = visible_rect.x().floor() as i32;
     let dest_y = visible_rect.y().floor() as i32;
-    let dither_phase = ((((dest_y.wrapping_add(1)) & 3) as u8) << 2) | ((dest_x & 3) as u8);
+    let dither_phase =
+      ((((dest_y.wrapping_add(1)) & 7) as u8) << 3) | ((dest_x & 7) as u8);
 
     // Fast path: paint directly into the destination surface when the gradient is axis-aligned and
     // uses a normal source-over blend. This matches Skia/Chrome's behavior more closely for
@@ -5916,7 +5917,8 @@ impl DisplayListRenderer {
       let offset_y = visible_y - tile_origin_y;
       let start = Point::new(start_tile.x - offset_x, start_tile.y - offset_y);
       let end = Point::new(end_tile.x - offset_x, end_tile.y - offset_y);
-      let dither_phase = ((((dest_y.wrapping_add(1)) & 3) as u8) << 2) | ((dest_x & 3) as u8);
+      let dither_phase =
+        ((((dest_y.wrapping_add(1)) & 7) as u8) << 3) | ((dest_x & 7) as u8);
       self
         .canvas
         .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
@@ -5947,7 +5949,8 @@ impl DisplayListRenderer {
 
     let origin_x = origin.x.floor() as i32;
     let origin_y = origin.y.floor() as i32;
-    let dither_phase = ((((origin_y.wrapping_add(1)) & 3) as u8) << 2) | ((origin_x & 3) as u8);
+    let dither_phase =
+      ((((origin_y.wrapping_add(1)) & 7) as u8) << 3) | ((origin_x & 7) as u8);
 
     let start = Point::new(start_tile.x * raster_scale_x, start_tile.y * raster_scale_y);
     let end = Point::new(end_tile.x * raster_scale_x, end_tile.y * raster_scale_y);
@@ -18908,7 +18911,7 @@ fn render_generated_border_image_subrect(
   let crop_x_i32 = crop_x.floor() as i32;
   let crop_y_i32 = crop_y.floor() as i32;
   let dither_phase =
-    ((((crop_y_i32.wrapping_add(1)) & 3) as u8) << 2) | ((crop_x_i32 & 3) as u8);
+    ((((crop_y_i32.wrapping_add(1)) & 7) as u8) << 3) | ((crop_x_i32 & 7) as u8);
   let rect = Rect::from_xywh(0.0, 0.0, full_width as f32, full_height as f32);
   match bg {
     BackgroundImage::LinearGradient { angle, stops } => {
