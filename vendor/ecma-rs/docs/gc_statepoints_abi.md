@@ -124,7 +124,7 @@ In practice:
 The GC is allowed to start a moving collection **only if**:
 
 - every mutator thread has reached a safepoint and is parked, and
-- each parked thread has published a `(top_ts_fp, top_ts_pc)` anchor (see §4).
+- each parked thread has published a `(top_ts_fp, top_ts_pc, top_ts_sp)` anchor (see §4).
 
 No “signal-the-world” stack capture is assumed in this initial ABI.
 
@@ -306,6 +306,8 @@ thread parks at a safepoint:
 
 - `top_ts_fp`: frame pointer for the topmost TS frame
 - `top_ts_pc`: safepoint PC for that frame (return address back into TS code)
+- `top_ts_sp`: stackmap-semantics stack pointer for that frame at `top_ts_pc`
+  (the caller SP at the stackmap record PC / callsite return address)
 
 How this anchor is captured is specified in §4.
 
@@ -324,22 +326,29 @@ The scan algorithm is:
 ```
 fp = top_ts_fp
 pc = top_ts_pc
+sp = top_ts_sp
 
 loop:
   record = lookup(pc)
   if record == None:
     break  // crossed into non-TS frames; stop scanning
 
-  for loc in record.gc_roots:
-    addr = eval_location(fp, loc)     // address of a slot holding a pointer
-    old  = *addr
-    new  = gc_relocate_or_forward(old)
-    *addr = new
+  // Statepoints encode GC roots as (base, derived) relocation pairs.
+  // For tracing, only the base slots are GC roots; derived slots are interior pointers.
+  pairs = decode_statepoint_pairs(record)  // yields (base_loc, derived_loc) pairs
+
+  // Snapshot old values/deltas for derived pointers first (base slots may repeat).
+  //
+  // Then relocate each unique base slot, then update derived slots relative to the
+  // relocated base (derived_new = base_new + (derived_old - base_old)).
+  relocate_pairs_in_batch(fp, sp, pairs)
 
   next_fp = *(fp + 0x00)
   next_pc = *(fp + 0x08)
+  next_sp = fp + 0x10  // caller SP at the return address is callee_fp + 16 (forced FP ABI)
   fp = next_fp
   pc = next_pc
+  sp = next_sp
 ```
 
 **Stop condition:** the first `pc` that has no stack map record indicates a
@@ -463,7 +472,7 @@ search is sufficient).
 `rt_gc_safepoint` is the runtime entry used for cooperative safepoints. Its
 responsibilities include:
 
-1. Capture the caller’s TS frame anchor `(top_ts_fp, top_ts_pc)`.
+1. Capture the caller’s TS frame anchor `(top_ts_fp, top_ts_pc, top_ts_sp)`.
 2. Publish it into the current thread’s `ThreadState`.
 3. If GC is requested, park until GC completes.
 4. Return back to TS code.
@@ -482,6 +491,9 @@ Therefore, `rt_gc_safepoint` must capture:
 
 - `top_ts_fp = RBP` (caller FP)
 - `top_ts_pc = *(RSP + 0x00)` (return address into TS)
+- `top_ts_sp`:
+  - x86_64: `top_ts_sp = RSP + 8` (post-call SP; stackmap SP base)
+  - (conceptually: the caller SP value at `top_ts_pc`, i.e. the instruction after the call)
 
 If `rt_gc_safepoint` uses a standard `push rbp; mov rbp, rsp` prologue (i.e. it
 has its own frame pointer), the equivalent capture is:
@@ -505,7 +517,8 @@ without a valid anchor.
 Concrete requirement:
 
 - `rt_gc_safepoint` must store `top_ts_fp` and `top_ts_pc` into `ThreadState`
-  **before** marking the thread as parked / safepointed.
+  (and `top_ts_sp` when required for `Indirect [SP + off]` evaluation) **before**
+  marking the thread as parked / safepointed.
 - The GC coordinator must only read anchors from threads that are marked parked.
 
 Use atomics with release/acquire ordering as needed; this is part of the runtime
