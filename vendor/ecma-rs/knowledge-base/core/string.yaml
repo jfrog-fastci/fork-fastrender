@@ -43,6 +43,36 @@
     encoding.preserves_input_if: ascii
     encoding.length_preserving_if: ascii
 
+- name: String.prototype.toUpperCase
+  semantics: ToUpperCase
+  signature: "() => string"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+  properties:
+    encoding.output: same_as_input
+    encoding.preserves_input_if: ascii
+    encoding.length_preserving_if: ascii
+
+- name: String.prototype.toString
+  semantics: ToString
+  signature: "() => string"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+  properties:
+    encoding.output: same_as_input
+
 - name: String.prototype.trim
   effects:
     template: pure

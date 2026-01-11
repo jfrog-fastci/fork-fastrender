@@ -1792,6 +1792,38 @@ console.log:
       Some("ascii")
     );
 
+    let upper = kb.get("String.prototype.toUpperCase").unwrap();
+    assert_eq!(
+      upper
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
+      Some("same_as_input")
+    );
+    assert_eq!(
+      upper
+        .properties
+        .get("encoding.preserves_input_if")
+        .and_then(|v| v.as_str()),
+      Some("ascii")
+    );
+    assert_eq!(
+      upper
+        .properties
+        .get("encoding.length_preserving_if")
+        .and_then(|v| v.as_str()),
+      Some("ascii")
+    );
+
+    let string_to_string = kb.get("String.prototype.toString").unwrap();
+    assert_eq!(
+      string_to_string
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
+      Some("same_as_input")
+    );
+
     let trim = kb.get("String.prototype.trim").unwrap();
     assert_eq!(
       trim
@@ -1823,6 +1855,15 @@ console.log:
     assert_eq!(pathname.kind, ApiKind::Getter);
     assert_eq!(
       pathname
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
+      Some("ascii")
+    );
+
+    let num_to_string = kb.get("Number.prototype.toString").unwrap();
+    assert_eq!(
+      num_to_string
         .properties
         .get("encoding.output")
         .and_then(|v| v.as_str()),
