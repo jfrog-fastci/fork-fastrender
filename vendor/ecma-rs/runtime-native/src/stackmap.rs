@@ -45,6 +45,11 @@ pub struct StackMap {
 
 impl StackMap {
   pub fn parse(section: &[u8]) -> Result<Self, StackMapError> {
+    let (map, _len) = Self::parse_with_len(section)?;
+    Ok(map)
+  }
+
+  fn parse_with_len(section: &[u8]) -> Result<(Self, usize), StackMapError> {
     let mut r = Reader::new(section);
 
     let version = r.read_u8()?;
@@ -122,12 +127,17 @@ impl StackMap {
     }
     record_index_by_safepoint.sort_by_key(|&(addr, _)| addr);
 
-    Ok(Self {
-      version,
-      functions,
-      records,
-      record_index_by_safepoint,
-    })
+    let len = r.pos;
+
+    Ok((
+      Self {
+        version,
+        functions,
+        records,
+        record_index_by_safepoint,
+      },
+      len,
+    ))
   }
 
   /// Find a parsed record by its safepoint address (`FunctionAddress + InstructionOffset`).
@@ -139,6 +149,32 @@ impl StackMap {
       .map(|i| self.record_index_by_safepoint[i].1)?;
     self.records.get(idx)
   }
+}
+
+/// Parse all linker-concatenated StackMap v3 blobs within a `.llvm_stackmaps` section.
+///
+/// ELF linkers concatenate input section payloads and may insert alignment
+/// padding between them. Each input object contributes a complete StackMap v3
+/// blob starting with a `version=3` header.
+pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError> {
+  let mut out = Vec::new();
+  let mut off: usize = 0;
+  while off < bytes.len() {
+    while off < bytes.len() && bytes[off] == 0 {
+      off += 1;
+    }
+    if off >= bytes.len() {
+      break;
+    }
+
+    let (map, len) = StackMap::parse_with_len(&bytes[off..])?;
+    if len == 0 {
+      return Err(StackMapError::UnexpectedEof);
+    }
+    out.push(map);
+    off += len;
+  }
+  Ok(out)
 }
 
 #[derive(Debug, Clone)]

@@ -55,6 +55,9 @@ pub enum StackMapError {
     instruction_offset: u32,
   },
 
+  #[error("duplicate stackmap record for callsite pc=0x{pc:x}")]
+  DuplicateCallSite { pc: u64 },
+
   #[error("gc root base register dwarf_reg={dwarf_reg} is unsupported (expected RSP or RBP)")]
   UnsupportedGcBaseRegister { dwarf_reg: u16 },
 
@@ -78,6 +81,11 @@ pub struct StackMap {
 
 impl StackMap {
   pub fn parse(section: &[u8]) -> Result<Self, StackMapError> {
+    let (map, _len) = Self::parse_with_len(section)?;
+    Ok(map)
+  }
+
+  fn parse_with_len(section: &[u8]) -> Result<(Self, usize), StackMapError> {
     let mut c = Cursor::new(section);
 
     let version = c.read_u8()?;
@@ -183,13 +191,48 @@ impl StackMap {
       });
     }
 
-    Ok(Self {
-      version,
-      functions,
-      constants,
-      records,
-    })
+    let len = c.off;
+
+    Ok((
+      Self {
+        version,
+        functions,
+        constants,
+        records,
+      },
+      len,
+    ))
   }
+}
+
+/// Parse all linker-concatenated StackMap v3 blobs within a `.llvm_stackmaps` section.
+///
+/// ELF linkers (`ld`, `lld`) concatenate input section payloads and may insert
+/// alignment padding between them. Each input object contributes a complete
+/// StackMap v3 blob, starting with the `version=3` header.
+pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError> {
+  let mut out: Vec<StackMap> = Vec::new();
+  let mut off: usize = 0;
+
+  while off < bytes.len() {
+    // Skip alignment/trailing padding (linkers fill with zeros).
+    while off < bytes.len() && bytes[off] == 0 {
+      off += 1;
+    }
+    if off >= bytes.len() {
+      break;
+    }
+
+    let (map, len) = StackMap::parse_with_len(&bytes[off..])?;
+    if len == 0 {
+      return Err(StackMapError::UnexpectedEof);
+    }
+
+    out.push(map);
+    off += len;
+  }
+
+  Ok(out)
 }
 
 #[derive(Debug, Clone)]
@@ -384,12 +427,17 @@ impl<'a> Cursor<'a> {
     Ok(out)
   }
 }
-/// A parsed stackmap section with a callsite-address index.
+/// A parsed `.llvm_stackmaps` section with a callsite-address index.
+///
+/// Note: ELF linkers concatenate `.llvm_stackmaps` sections from multiple input
+/// object files. This means a final binary may contain multiple back-to-back
+/// StackMap v3 blobs. [`StackMaps::parse`] handles this and builds a single
+/// callsite index across all blobs.
 ///
 /// This type is the "runtime-friendly" view for safepoint/GC stack walking.
 #[derive(Debug, Clone)]
 pub struct StackMaps {
-  raw: StackMap,
+  raws: Vec<StackMap>,
   callsites: Vec<CallsiteEntry>,
 }
 
@@ -398,6 +446,7 @@ pub struct StackMaps {
 pub struct CallsiteEntry {
   pub pc: u64,
   pub stack_size: u64,
+  pub stackmap_index: usize,
   pub record_index: usize,
 }
 
@@ -463,20 +512,9 @@ impl<'a> CallSite<'a> {
 
 impl StackMaps {
   pub fn parse(section: &[u8]) -> Result<Self, StackMapError> {
-    let raw = StackMap::parse(section)?;
-
-    let mut expected: u64 = 0;
-    for f in &raw.functions {
-      expected = expected
-        .checked_add(f.record_count)
-        .ok_or(StackMapError::RecordCountOverflow)?;
-    }
-
-    if expected != raw.records.len() as u64 {
-      return Err(StackMapError::RecordCountMismatch {
-        expected,
-        actual: raw.records.len(),
-      });
+    let raws = parse_all_stackmaps(section)?;
+    if raws.is_empty() {
+      return Err(StackMapError::UnexpectedEof);
     }
 
     // Fail fast if LLVM/codegen start emitting statepoint roots in registers or
@@ -494,46 +532,78 @@ impl StackMaps {
       #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
       compile_error!("statepoint stackmap verification only supports x86_64 and aarch64");
 
-      verify_statepoint_stackmap(
-        &raw,
-        VerifyStatepointOptions {
-          arch,
-          mode: VerifyMode::StatepointsOnly,
-        },
-      )?;
+      for raw in &raws {
+        verify_statepoint_stackmap(
+          raw,
+          VerifyStatepointOptions {
+            arch,
+            mode: VerifyMode::StatepointsOnly,
+          },
+        )?;
+      }
     }
 
-    let mut callsites: Vec<CallsiteEntry> = Vec::with_capacity(raw.records.len());
-    let mut record_index: usize = 0;
-    for f in &raw.functions {
-      let record_count =
-        usize::try_from(f.record_count).map_err(|_| StackMapError::RecordCountTooLarge {
-          record_count: f.record_count,
-        })?;
+    let mut callsites: Vec<CallsiteEntry> = Vec::new();
 
-      for _ in 0..record_count {
-        let record = &raw.records[record_index];
-        let pc = f
-          .address
-          .checked_add(record.instruction_offset as u64)
-          .ok_or(StackMapError::CallSiteAddressOverflow {
-            function_address: f.address,
-            instruction_offset: record.instruction_offset,
+    for (stackmap_index, raw) in raws.iter().enumerate() {
+      let mut expected: u64 = 0;
+      for f in &raw.functions {
+        expected = expected
+          .checked_add(f.record_count)
+          .ok_or(StackMapError::RecordCountOverflow)?;
+      }
+
+      if expected != raw.records.len() as u64 {
+        return Err(StackMapError::RecordCountMismatch {
+          expected,
+          actual: raw.records.len(),
+        });
+      }
+
+      callsites.reserve(raw.records.len());
+
+      let mut record_index: usize = 0;
+      for f in &raw.functions {
+        let record_count =
+          usize::try_from(f.record_count).map_err(|_| StackMapError::RecordCountTooLarge {
+            record_count: f.record_count,
           })?;
 
-        callsites.push(CallsiteEntry {
-          pc,
-          stack_size: f.stack_size,
-          record_index,
-        });
+        for _ in 0..record_count {
+          let record = &raw.records[record_index];
+          let pc = f
+            .address
+            .checked_add(record.instruction_offset as u64)
+            .ok_or(StackMapError::CallSiteAddressOverflow {
+              function_address: f.address,
+              instruction_offset: record.instruction_offset,
+            })?;
 
-        record_index += 1;
+          callsites.push(CallsiteEntry {
+            pc,
+            stack_size: f.stack_size,
+            stackmap_index,
+            record_index,
+          });
+
+          record_index += 1;
+        }
       }
     }
 
     callsites.sort_by_key(|e| e.pc);
 
-    Ok(Self { raw, callsites })
+    // A malformed section could contain two records for the same callsite PC.
+    // Reject this to avoid ambiguous GC root enumeration.
+    for window in callsites.windows(2) {
+      if let [a, b] = window {
+        if a.pc == b.pc {
+          return Err(StackMapError::DuplicateCallSite { pc: a.pc });
+        }
+      }
+    }
+
+    Ok(Self { raws, callsites })
   }
 
   #[inline]
@@ -543,9 +613,10 @@ impl StackMaps {
       .binary_search_by_key(&callsite_return_addr, |e| e.pc)
       .ok()?;
     let entry = &self.callsites[idx];
+    let raw = self.raws.get(entry.stackmap_index)?;
     Some(CallSite {
       stack_size: entry.stack_size,
-      record: &self.raw.records[entry.record_index],
+      record: raw.records.get(entry.record_index)?,
     })
   }
 
@@ -570,18 +641,29 @@ impl StackMaps {
 
   pub fn iter(&self) -> impl Iterator<Item = (u64, CallSite<'_>)> + '_ {
     self.callsites.iter().map(|entry| {
+      let raw = &self.raws[entry.stackmap_index];
       (
         entry.pc,
         CallSite {
           stack_size: entry.stack_size,
-          record: &self.raw.records[entry.record_index],
+          record: &raw.records[entry.record_index],
         },
       )
     })
   }
 
+  /// Return the first parsed StackMap blob.
+  ///
+  /// Most callers should prefer [`StackMaps::raws`]. This accessor exists for
+  /// backwards compatibility with older code that assumed `.llvm_stackmaps`
+  /// contained a single blob.
   pub fn raw(&self) -> &StackMap {
-    &self.raw
+    &self.raws[0]
+  }
+
+  /// Return all parsed StackMap blobs from the input section.
+  pub fn raws(&self) -> &[StackMap] {
+    &self.raws
   }
 
   /// Parse the in-memory `.llvm_stackmaps` section using native-js exported
