@@ -26,6 +26,30 @@ fn number_builtin_matches_string_to_number() {
 }
 
 #[test]
+fn math_round_matches_ecmascript_ties_to_plus_infinity() {
+  let eval_round = |n: f64| match maybe_eval_const_builtin_call("Math.round", &[ConstNum(JN(n))]) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result for {n}: {other:?}"),
+  };
+
+  assert_eq!(eval_round(1.5), 2.0);
+  assert_eq!(eval_round(-1.5), -1.0);
+
+  let neg_zero = eval_round(-0.1);
+  assert_eq!(neg_zero, 0.0);
+  assert!(
+    neg_zero.is_sign_negative(),
+    "Math.round(-0.1) should preserve -0"
+  );
+  let neg_zero_half = eval_round(-0.5);
+  assert_eq!(neg_zero_half, 0.0);
+  assert!(
+    neg_zero_half.is_sign_negative(),
+    "Math.round(-0.5) should preserve -0"
+  );
+}
+
+#[test]
 fn bigint_and_string_loose_equality_follows_string_to_bigint() {
   assert!(js_loose_eq(
     &ConstBigInt(BigInt::from(1)),

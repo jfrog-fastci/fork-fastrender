@@ -500,6 +500,19 @@ pub fn js_div(a: f64, b: f64) -> f64 {
   a / b
 }
 
+pub fn js_round(value: f64) -> f64 {
+  // https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-math.round
+  //
+  // Rust's `f64::round` rounds ties away from 0, but ECMAScript `Math.round` rounds ties toward
+  // +∞ (e.g. `Math.round(-1.5) === -1`) and preserves `-0` for negative inputs in (-0.5, 0).
+  let rounded = (value + 0.5).floor();
+  if rounded == 0.0 && value.is_sign_negative() {
+    -0.0
+  } else {
+    rounded
+  }
+}
+
 pub fn js_mod(a: f64, b: f64) -> f64 {
   match (a, b) {
     (_, 0.0) => f64::NAN,
@@ -715,7 +728,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.log10", Num(a)) => Num(JN(a.0.log10())),
       ("Math.log1p", Num(a)) => Num(JN(a.0.ln_1p())),
       ("Math.log2", Num(a)) => Num(JN(a.0.log2())),
-      ("Math.round", Num(a)) => Num(JN(a.0.round())),
+      ("Math.round", Num(a)) => Num(JN(js_round(a.0))),
       ("Math.sin", Num(a)) => Num(JN(a.0.sin())),
       ("Math.sqrt", Num(a)) => Num(JN(a.0.sqrt())),
       ("Math.tan", Num(a)) => Num(JN(a.0.tan())),
