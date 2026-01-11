@@ -2,6 +2,8 @@
 
 This document specifies the exact LLVM IR **shape** that `native-js` must emit for LLVM 18 (opaque pointers) to interoperate with `runtime-native`'s precise, moving GC.
 
+All file paths in this document are relative to the `vendor/ecma-rs/` workspace root unless stated otherwise.
+
 Scope:
 
 - LLVM **18.x**, opaque pointers (`ptr`, `ptr addrspace(N)`).
@@ -494,13 +496,13 @@ When producing a PIE, native-js AOT output must:
    - defines `__fastr_stackmaps_start` / `__fastr_stackmaps_end` symbols
 
    The script lives at:
-   - `vendor/ecma-rs/runtime-native/stackmaps.ld`
+   - `runtime-native/stackmaps.ld`
 
 3. Use `--gc-sections` in release builds (safe because stackmaps are explicitly kept).
 
 We provide a reference PIE link wrapper:
 
-- `vendor/ecma-rs/scripts/native_js_link_linux.sh`
+- `scripts/native_js_link_linux.sh`
 
 ## Example link commands
 
@@ -508,7 +510,7 @@ We provide a reference PIE link wrapper:
 
 ```bash
 clang-18 -fuse-ld=lld -no-pie \
-  -Wl,--script=vendor/ecma-rs/runtime-native/stackmaps.ld \
+  -Wl,--script=runtime-native/stackmaps.ld \
   -o app_debug \
   main.o codegen.o
 ```
@@ -518,7 +520,7 @@ clang-18 -fuse-ld=lld -no-pie \
 ```bash
 clang-18 -fuse-ld=lld -no-pie \
   -Wl,--gc-sections \
-  -Wl,--script=vendor/ecma-rs/runtime-native/stackmaps.ld \
+  -Wl,--script=runtime-native/stackmaps.ld \
   -o app_release \
   main.o codegen.o
 ```
@@ -530,7 +532,7 @@ clang-18 -fuse-ld=lld -no-pie \
 llvm-objcopy-18 --set-section-flags .llvm_stackmaps=alloc,load,contents,data codegen.o
 
 clang-18 -fuse-ld=lld -pie \
-  -Wl,--script=vendor/ecma-rs/runtime-native/stackmaps.ld \
+  -Wl,--script=runtime-native/stackmaps.ld \
   -o app_debug \
   main.o codegen.o
 ```
@@ -542,7 +544,7 @@ llvm-objcopy-18 --set-section-flags .llvm_stackmaps=alloc,load,contents,data cod
 
 clang-18 -fuse-ld=lld -pie \
   -Wl,--gc-sections \
-  -Wl,--script=vendor/ecma-rs/runtime-native/stackmaps.ld \
+  -Wl,--script=runtime-native/stackmaps.ld \
   -o app_release \
   main.o codegen.o
 ```
