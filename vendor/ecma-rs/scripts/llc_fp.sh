@@ -31,13 +31,47 @@ if [[ -z "${llc_bin}" ]]; then
 fi
 
 has_fp=0
-for arg in "$@"; do
+bad_fp_value=""
+bad_fp_arg=""
+argv=("$@")
+for ((i = 0; i < ${#argv[@]}; i++)); do
+  arg="${argv[$i]}"
+  value=""
+
   case "${arg}" in
-    --frame-pointer=*)
+    --frame-pointer=*|-frame-pointer=*)
       has_fp=1
+      value="${arg#*=}"
+      ;;
+    --frame-pointer|-frame-pointer)
+      has_fp=1
+      value="${argv[$((i + 1))]:-}"
+      if [[ -z "${value}" ]]; then
+        echo "error: llc_fp.sh: ${arg} expects a value (use --frame-pointer=all)" >&2
+        exit 1
+      fi
+      i=$((i + 1))
       ;;
   esac
+
+  if [[ -n "${value}" && "${value}" != "all" ]]; then
+    bad_fp_value="${value}"
+    bad_fp_arg="${arg}"
+    break
+  fi
 done
+
+if [[ -n "${bad_fp_value}" ]]; then
+  got="${bad_fp_arg}"
+  if [[ "${got}" != *"="* ]]; then
+    got="${bad_fp_arg} ${bad_fp_value}"
+  fi
+  cat >&2 <<EOF
+error: llc_fp.sh: frame pointers are required for stack-walking, but got ${got}
+hint: use --frame-pointer=all (or remove the flag and let llc_fp.sh inject it)
+EOF
+  exit 1
+fi
 
 extra=()
 if [[ "${has_fp}" -eq 0 ]]; then
