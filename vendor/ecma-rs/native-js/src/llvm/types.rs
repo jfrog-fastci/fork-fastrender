@@ -40,12 +40,16 @@ pub fn classify_type(program: &Program, type_id: TypeId) -> Result<NativeType, D
     TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Ok(NativeType::F64),
     TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Ok(NativeType::I1),
     TypeKindSummary::Void | TypeKindSummary::Undefined => Ok(NativeType::Void),
-    other => Err(codes::UNSUPPORTED_NATIVE_TYPE.error(
-      format!(
-        "unsupported type for native codegen: {} ({other:?})",
-        program.display_type(type_id)
-      ),
-      Span::new(FileId(0), TextRange::new(0, 0)),
-    )),
+    other => Err(
+      codes::UNSUPPORTED_NATIVE_TYPE
+        .error(
+          format!(
+            "unsupported type for native codegen: {} ({other:?})",
+            program.display_type(type_id)
+          ),
+          Span::new(FileId(0), TextRange::new(0, 0)),
+        )
+        .with_note("supported types are currently limited to: number, boolean, void, undefined"),
+    ),
   }
 }
