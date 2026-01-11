@@ -152,6 +152,7 @@ include = [
   "rt_promise_new",
   "rt_promise_resolve",
   "rt_promise_then",
+  "rt_promise_then_rooted",
   "rt_coro_await",
   "rt_promise_new_legacy",
   "rt_promise_resolve_legacy",

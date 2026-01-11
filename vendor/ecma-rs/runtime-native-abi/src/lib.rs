@@ -611,6 +611,11 @@ extern "C" {
   pub fn rt_promise_new() -> LegacyPromiseRef;
   pub fn rt_promise_resolve(p: LegacyPromiseRef, value: ValueRef);
   pub fn rt_promise_then(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8);
+  pub fn rt_promise_then_rooted(
+    p: LegacyPromiseRef,
+    on_settle: extern "C" fn(*mut u8),
+    data: GcPtr,
+  );
   pub fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: LegacyPromiseRef, next_state: u32);
 
   pub fn rt_promise_new_legacy() -> LegacyPromiseRef;
@@ -956,6 +961,7 @@ mod tests {
       "rt_promise_new(",
       "rt_promise_resolve(",
       "rt_promise_then(",
+      "rt_promise_then_rooted(",
       "rt_coro_await(",
       "rt_promise_new_legacy(",
       "rt_promise_resolve_legacy(",
