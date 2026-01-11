@@ -11,11 +11,6 @@ build = "build.rs"
 # Always-on statepoint verification can be enabled by consumers that want a hard failure in
 # release builds too. In debug builds we verify unconditionally.
 verify-statepoints = []
-
-[lib]
-crate-type = ["rlib", "staticlib"]
-
-[features]
 # Enables parsing the in-memory `.llvm_stackmaps` section via GNU ld/lld
 # `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` symbols.
 #
@@ -26,6 +21,9 @@ gc_stats = []
 # Enables expensive GC verification helpers (heap integrity checks, forwarding verification,
 # nursery poisoning) intended for tests and debugging.
 gc_debug = []
+
+[lib]
+crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 ahash = { workspace = true }
