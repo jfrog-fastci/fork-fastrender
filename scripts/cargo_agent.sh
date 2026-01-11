@@ -148,7 +148,16 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # (notably `RUSTC_BOOTSTRAP=1` for `cargo-fuzz` + a few runtime crates). When we
 # auto-scope a command to the nested workspace, run cargo from `vendor/ecma-rs/`
 # so those settings are applied.
+#
+# Some tools (e.g. `vendor/ecma-rs/scripts/gen_deps_graph.sh`) run generic Cargo
+# subcommands like `cargo metadata` without `-p/--package` flags. When invoked
+# from inside the nested workspace, default to running Cargo from
+# `vendor/ecma-rs/` so it discovers the correct workspace root.
 cargo_workdir="${repo_root}"
+caller_pwd="$(pwd -P)"
+if [[ "${caller_pwd}" == "${repo_root}/vendor/ecma-rs" || "${caller_pwd}" == "${repo_root}/vendor/ecma-rs/"* ]]; then
+  cargo_workdir="${repo_root}/vendor/ecma-rs"
+fi
 
 # Compatibility: `vendor/ecma-rs` is a nested workspace (excluded from the
 # top-level Cargo workspace). Some workflows still want to run commands like:
