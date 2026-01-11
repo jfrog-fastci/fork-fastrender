@@ -173,6 +173,10 @@ The API is intentionally small and currently consists of:
 - `compile_typescript_to_llvm_ir(&str, CompileOptions) -> Result<String, NativeJsError>`:
   compile a single TypeScript module to textual LLVM IR (very small subset; used
   by `native-js-cli`).
+- `compile_project_to_llvm_ir(&Program, &dyn Host, FileId, CompileOptions, entry_export)`:
+  compile a small multi-file ES module project (subset) to textual LLVM IR
+  using `typecheck-ts` for module resolution + export maps (used by
+  `native-js-cli`).
 - `compile(&Program, &CompilerOptions) -> Result<CompilationOutput, NativeJsError>`:
   AOT compilation entrypoint for a fully typechecked `typecheck-ts` `Program`.
   (Currently returns `NativeJsError::UnsupportedFeature`.)

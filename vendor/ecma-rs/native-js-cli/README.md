@@ -20,13 +20,14 @@ native-js run input.ts
 ## `native-js-cli` (minimal emitter)
 
 The `native-js-cli` binary is intentionally narrow in scope: it compiles a
-**single TypeScript file** to textual LLVM IR (via a small `parse-js`-driven IR
-emitter in `native-js`), invokes `clang` to produce a temporary executable, and
-then runs it.
+**TypeScript module entry file** (plus a small subset of ES module imports) to
+textual LLVM IR (via a small `parse-js`-driven IR emitter in `native-js`),
+invokes `clang` to produce a temporary executable, and then runs it.
 
-> Note: this path does **not** run the TypeScript checker; it parses the input
-> and lowers a small subset of statements/expressions (and simple user-defined
-> functions) directly to LLVM IR.
+> Note: this path is still **parse-js-driven** and does not perform real
+> TypeScript typechecking for code generation. However, it *does* invoke
+> `typecheck-ts` to discover the module graph and export maps (so it can compile
+> multi-file projects with `import { ... } from "./mod"`).
 >
 > The input is parsed as a TypeScript **module** (`Dialect::Ts` +
 > `SourceType::Module`).
@@ -56,10 +57,13 @@ LLVM 18 `clang` is on `PATH`.
 If you are setting up LLVM locally, see [`native-js/README.md`](../native-js/README.md)
 for required packages and the `LLVM_SYS_180_PREFIX` environment variable.
 
-The CLI takes a single positional input file plus flags:
+The CLI supports a small set of subcommands (`check`/`build`/`run`/`emit-ir`) and
+also a default mode (no subcommand) that compiles + runs a project.
+
+In all modes, the entry file is a TypeScript module path:
 
 ```text
-native-js-cli [--no-builtins] [--emit-llvm <PATH>] <INPUT.ts>
+native-js-cli [--entry-fn <NAME>] [--no-builtins] [--emit-llvm <PATH>] [<ENTRY.ts>]
 ```
 
 The input file is read as UTF-8 text; invalid UTF-8 will cause the CLI to exit
@@ -85,6 +89,23 @@ Expected output:
 
 ```text
 3
+```
+
+### Run a small multi-file ES module project
+
+```bash
+cat > /tmp/math.ts <<'TS'
+export function add(a: number, b: number) { return a + b }
+TS
+
+cat > /tmp/main.ts <<'TS'
+import { add } from './math';
+export function main() { console.log(add(1, 2)); }
+TS
+
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
+  --entry-fn main \
+  /tmp/main.ts
 ```
 
 ## Options
@@ -155,7 +176,7 @@ future typechecked/HIR-based backend yet). Supported today:
   - `if (cond) { ... } else { ... }` (boolean conditions only)
   - `while (cond) { ... }` (boolean conditions only)
   - function declarations (top-level only; no nesting):
-    - cannot be named `main` (reserved for the native entrypoint)
+    - can be named `main` (the minimal multi-file path namespaces user fns in LLVM)
     - no `async` / generators
     - no optional/rest parameters
     - parameter patterns must be identifiers
@@ -182,6 +203,17 @@ future typechecked/HIR-based backend yet). Supported today:
       - exact arity (no varargs)
       - no optional chaining / spread arguments
       - arguments are checked against the callee’s declared parameter types
+
+- ES module subset (multi-file projects):
+  - `export function foo(...) { ... }`
+  - `import { foo } from "./mod"` and `import { foo as bar } from "./mod"`
+  - side-effect imports (`import "./mod"`) for module initialization ordering
+
+Limitations:
+
+- Default exports, namespace imports, and re-exports are not supported.
+- Cross-module user functions are currently assumed to be `number -> number` for
+  signature checking in the minimal emitter.
 
 Type annotations in function declarations (current):
 

@@ -36,6 +36,56 @@ fn compiles_and_runs_two_file_project() {
 }
 
 #[test]
+fn supports_import_aliases() {
+  let dir = tempdir().unwrap();
+  let math = dir.path().join("math.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(
+    &math,
+    "export function add(a:number,b:number){return a+b}\n",
+  )
+  .unwrap();
+  fs::write(
+    &main,
+    "import {add as plus} from './math';\nexport function main(){console.log(plus(2,3));}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("5\n"));
+}
+
+#[test]
+fn runs_module_initializers_in_dependency_order() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&dep, "console.log(\"dep\");\n").unwrap();
+  fs::write(
+    &main,
+    "import './dep';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nmain\n"));
+}
+
+#[test]
 fn errors_on_cycles_deterministically() {
   let dir = tempdir().unwrap();
   let a = dir.path().join("a.ts");
