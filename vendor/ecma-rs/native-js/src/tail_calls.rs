@@ -133,6 +133,43 @@ pub fn assert_function_has_ret(objdump_dr: &str, function: &str) -> Result<()> {
   );
 }
 
+pub fn assert_function_has_call(objdump_dr: &str, function: &str) -> Result<()> {
+  let parsed = parse_objdump_disassembly(objdump_dr);
+  let instrs = parsed
+    .get(function)
+    .ok_or_else(|| anyhow!("function {function:?} not found in objdump output"))?;
+
+  if instrs.iter().any(|i| i.mnemonic.starts_with("call")) {
+    return Ok(());
+  }
+
+  bail!(
+    "expected function {function:?} to contain a call instruction; got:\n{}",
+    pretty_print_instructions(instrs)
+  );
+}
+
+pub fn assert_function_ends_with_ret(objdump_dr: &str, function: &str) -> Result<()> {
+  let parsed = parse_objdump_disassembly(objdump_dr);
+  let instrs = parsed
+    .get(function)
+    .ok_or_else(|| anyhow!("function {function:?} not found in objdump output"))?;
+
+  let Some(last) = instrs.iter().rev().find(|i| !i.mnemonic.starts_with("nop")) else {
+    bail!("expected function {function:?} to contain at least one instruction");
+  };
+
+  if last.mnemonic.starts_with("ret") {
+    return Ok(());
+  }
+
+  bail!(
+    "expected function {function:?} to end with ret, but last instruction was: {text}\n\nFull disasm:\n{}",
+    pretty_print_instructions(instrs),
+    text = last.text
+  );
+}
+
 pub fn assert_function_calls_symbol(objdump_dr: &str, caller: &str, callee: &str) -> Result<()> {
   let parsed = parse_objdump_disassembly(objdump_dr);
   let instrs = parsed
@@ -225,4 +262,3 @@ fn parse_relocation_symbol(line: &str) -> Option<String> {
   let sym = parts.next()?;
   Some(sym.split('-').next().unwrap_or(sym).to_owned())
 }
-

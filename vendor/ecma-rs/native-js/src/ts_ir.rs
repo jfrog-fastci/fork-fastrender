@@ -8,6 +8,7 @@
 
 pub const TAILCALL_TEST_CALLER: &str = "ts_tailcall_caller";
 pub const TAILCALL_TEST_CALLEE: &str = "ts_tailcall_callee";
+pub const TAILCALL_TEST_INDIRECT_CALLER: &str = "ts_tailcall_indirect_caller";
 
 /// Minimal LLVM IR module that would normally be optimized into a tail call:
 /// the caller ends with `call @callee; ret`.
@@ -39,11 +40,17 @@ entry:
   ret i64 %y
 }}
 
+define i64 @{indirect_caller}(ptr %fp, i64 %x) #0 {{
+entry:
+  %y = notail call i64 %fp(i64 %x)
+  ret i64 %y
+}}
+
 attributes #0 = {{ "disable-tail-calls"="true" }}
 "#,
     caller = TAILCALL_TEST_CALLER,
     callee = TAILCALL_TEST_CALLEE,
+    indirect_caller = TAILCALL_TEST_INDIRECT_CALLER,
     target_triple = target_triple,
   )
 }
-
