@@ -1,5 +1,6 @@
 use optimize_js::analysis::call_summary::{summarize_program, ReturnKind};
 use optimize_js::analysis::escape::EscapeState;
+use optimize_js::il::inst::InstTyp;
 use optimize_js::{compile_source_with_cfg_options, CompileCfgOptions, TopLevelMode};
 
 #[test]
@@ -37,6 +38,14 @@ fn call_summary_propagates_param_origin_through_phi() {
   .expect("compile");
 
   assert_eq!(program.functions.len(), 1, "expected exactly one nested function");
+  let func = &program.functions[0];
+  let has_phi = func
+    .cfg_ssa()
+    .expect("expected SSA cfg to be preserved")
+    .bblocks
+    .all()
+    .any(|(_, block)| block.iter().any(|inst| inst.t == InstTyp::Phi));
+  assert!(has_phi, "expected SSA cfg to contain at least one Phi inst");
 
   let summaries = summarize_program(&program);
   assert_eq!(summaries.len(), 1, "summaries should align with program.functions");
@@ -53,4 +62,3 @@ fn call_summary_propagates_param_origin_through_phi() {
     "expected returned parameter to be marked as ReturnEscape"
   );
 }
-
