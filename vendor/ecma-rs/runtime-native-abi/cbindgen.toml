@@ -8,6 +8,8 @@ documentation = true
 include = [
   "RtShapeId",
   "RtShapeDescriptor",
+  "GcPtr",
+  "GcHandle",
   "StringRef",
   "InternedId",
   "TaskId",
@@ -21,6 +23,7 @@ include = [
   "rt_register_shape_table",
   "RT_GC_EPOCH",
   "rt_gc_safepoint",
+  "rt_gc_safepoint_relocate_h",
   "rt_gc_safepoint_slow",
   "rt_gc_poll",
   "rt_write_barrier",
