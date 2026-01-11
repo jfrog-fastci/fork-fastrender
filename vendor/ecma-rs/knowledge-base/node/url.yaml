@@ -113,3 +113,54 @@
   parallelizable: true
   idempotent: true
   deterministic: true
+
+- name: node:url.URL.prototype.toString
+  kind: function
+  aliases:
+    - url.URL.prototype.toString
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: false
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+  properties:
+    encoding.output: ascii
+
+- name: node:url.URL.prototype.href
+  kind: getter
+  aliases:
+    - url.URL.prototype.href
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: false
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+  properties:
+    encoding.output: ascii
+
+- name: node:url.URL.prototype.pathname
+  kind: getter
+  aliases:
+    - url.URL.prototype.pathname
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: false
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+  properties:
+    encoding.output: ascii
