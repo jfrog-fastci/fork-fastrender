@@ -8,6 +8,7 @@ fn statepoint_skips_deopt_bundle_locations() {
   let record = maps.records.first().expect("fixture should contain one record");
 
   let sp = StatepointRecordView::decode(record).expect("record should decode as a statepoint");
+  assert_eq!(sp.call_conv, 8, "fixture uses fastcc (callconv=8)");
   assert_eq!(sp.flags, 0);
   assert_eq!(sp.deopt_args.len(), 2);
 

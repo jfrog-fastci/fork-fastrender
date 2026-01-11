@@ -16,9 +16,11 @@ entry:
   ; After `rewrite-statepoints-for-gc`, LLVM18 encodes this as:
   ;   locations[2] = deopt_count (=2)
   ;   locations[3..5) = deopt operand locations (constants here)
-  call void @safepoint() [ "deopt"(i64 1, i64 2) ]
+  ;
+  ; Also use `fastcc` to ensure the stackmap header `callconv` (locations[0]) is non-zero
+  ; (fastcc => 8).
+  call fastcc void @safepoint() [ "deopt"(i64 1, i64 2) ]
 
   %i = ptrtoint ptr addrspace(1) %v to i64
   ret i64 %i
 }
-
