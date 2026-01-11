@@ -11,34 +11,37 @@ use std::process::{Command, Stdio};
 const PATCHPOINT_ID_A: u64 = 0x1111_2222_3333_4444;
 const PATCHPOINT_ID_B: u64 = 0x2222_3333_4444_5555;
 
-fn find_tool(candidates: &[&'static str]) -> &'static str {
-  for &cand in candidates {
-    if Command::new(cand)
-      .arg("--version")
-      .stdout(Stdio::null())
-      .stderr(Stdio::null())
-      .status()
-      .is_ok()
-    {
-      return cand;
-    }
-  }
-  panic!("unable to locate required tool (tried {candidates:?})");
+fn command_works(cmd: &str) -> bool {
+  Command::new(cmd)
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok()
 }
 
-fn find_clang() -> &'static str {
+fn find_tool(candidates: &[&'static str]) -> Option<&'static str> {
+  for &cand in candidates {
+    if command_works(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
+fn find_clang() -> Option<&'static str> {
   find_tool(&["clang-18", "clang"])
 }
 
-fn find_llc() -> &'static str {
+fn find_llc() -> Option<&'static str> {
   find_tool(&["llc-18", "llc"])
 }
 
-fn find_llvm_objcopy() -> &'static str {
+fn find_llvm_objcopy() -> Option<&'static str> {
   find_tool(&["llvm-objcopy-18", "llvm-objcopy"])
 }
 
-fn find_llvm_readobj() -> &'static str {
+fn find_llvm_readobj() -> Option<&'static str> {
   find_tool(&["llvm-readobj-18", "llvm-readobj"])
 }
 
@@ -72,11 +75,16 @@ entry:
   ll_path
 }
 
-fn compile_ir_to_obj(out_dir: &Path, module_name: &str, patchpoint_id: u64) -> PathBuf {
+fn compile_ir_to_obj(
+  llc: &str,
+  out_dir: &Path,
+  module_name: &str,
+  patchpoint_id: u64,
+) -> PathBuf {
   let ll_path = write_ir(out_dir, module_name, patchpoint_id);
   let obj_path = out_dir.join(format!("{module_name}.o"));
 
-  let mut cmd = Command::new(find_llc());
+  let mut cmd = Command::new(llc);
   cmd.arg("-O0")
     .arg("-filetype=obj")
     .arg("-relocation-model=pic")
@@ -87,18 +95,18 @@ fn compile_ir_to_obj(out_dir: &Path, module_name: &str, patchpoint_id: u64) -> P
   obj_path
 }
 
-fn rename_stackmaps_section_to_data_rel_ro(obj: &Path) {
+fn rename_stackmaps_section_to_data_rel_ro(objcopy: &str, readobj: &str, obj: &Path) {
   // `.llvm_stackmaps` contains absolute code pointers, so it needs relocations under PIE/DSO.
   // Renaming the input section to `.data.rel.ro.llvm_stackmaps` allows relocations to be applied
   // in a writable segment, then protected by RELRO, avoiding DT_TEXTREL.
-  let mut cmd = Command::new(find_llvm_objcopy());
+  let mut cmd = Command::new(objcopy);
   cmd.arg("--rename-section")
     .arg(".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents")
     .arg(obj);
   run(&mut cmd);
 
   // Sanity check the rename so this test actually exercises the `.data.rel.ro.*` discovery path.
-  let mut check = Command::new(find_llvm_readobj());
+  let mut check = Command::new(readobj);
   check.arg("--sections").arg(obj);
   let out = check.output().unwrap();
   assert!(
@@ -115,9 +123,9 @@ fn rename_stackmaps_section_to_data_rel_ro(obj: &Path) {
   );
 }
 
-fn link_shared(out_dir: &Path, objs: &[PathBuf], linker_script: &Path) -> PathBuf {
+fn link_shared(clang: &str, out_dir: &Path, objs: &[PathBuf], linker_script: &Path) -> PathBuf {
   let so_path = out_dir.join("libstackmaps.so");
-  let mut cmd = Command::new(find_clang());
+  let mut cmd = Command::new(clang);
   cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so_path);
   // Force stackmaps into a dedicated output section (`.data.rel.ro.llvm_stackmaps`) with stable
   // boundaries. This mirrors the native-js link pipeline and avoids the default linker script
@@ -167,12 +175,29 @@ fn slice_contains_patchpoint_ids(slice: &[u8], ids: &[u64]) -> bool {
 
 #[test]
 fn discovers_stackmaps_in_dlopened_shared_library() {
-  let td = tempfile::tempdir().unwrap();
-  let obj_a = compile_ir_to_obj(td.path(), "sm_a", PATCHPOINT_ID_A);
-  let obj_b = compile_ir_to_obj(td.path(), "sm_b", PATCHPOINT_ID_B);
+  let Some(llc) = find_llc() else {
+    eprintln!("skipping: llc-18 not found in PATH");
+    return;
+  };
+  let Some(clang) = find_clang() else {
+    eprintln!("skipping: clang-18 not found in PATH");
+    return;
+  };
+  let Some(objcopy) = find_llvm_objcopy() else {
+    eprintln!("skipping: llvm-objcopy-18 not found in PATH");
+    return;
+  };
+  let Some(readobj) = find_llvm_readobj() else {
+    eprintln!("skipping: llvm-readobj-18 not found in PATH");
+    return;
+  };
 
-  rename_stackmaps_section_to_data_rel_ro(&obj_a);
-  rename_stackmaps_section_to_data_rel_ro(&obj_b);
+  let td = tempfile::tempdir().unwrap();
+  let obj_a = compile_ir_to_obj(llc, td.path(), "sm_a", PATCHPOINT_ID_A);
+  let obj_b = compile_ir_to_obj(llc, td.path(), "sm_b", PATCHPOINT_ID_B);
+
+  rename_stackmaps_section_to_data_rel_ro(objcopy, readobj, &obj_a);
+  rename_stackmaps_section_to_data_rel_ro(objcopy, readobj, &obj_b);
 
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let linker_script = manifest_dir.join("link/stackmaps.ld");
@@ -181,7 +206,7 @@ fn discovers_stackmaps_in_dlopened_shared_library() {
     "missing linker script at {linker_script:?}"
   );
 
-  let so = link_shared(td.path(), &[obj_a, obj_b], &linker_script);
+  let so = link_shared(clang, td.path(), &[obj_a, obj_b], &linker_script);
 
   // Load the shared library so it appears in `dl_iterate_phdr` output.
   let _handle = unsafe { dlopen(&so) };
