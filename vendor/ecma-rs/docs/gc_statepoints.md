@@ -492,7 +492,7 @@ When linking from Rust/Cargo:
 This section documents what `runtime-native` expects from `llvm-readobj-18 --stackmap` output after the pipeline runs:
 
 ```bash
-llvm-as-18 | opt-18 -passes=rewrite-statepoints-for-gc | llc-18 -filetype=obj
+llvm-as-18 | opt-18 -passes=rewrite-statepoints-for-gc | llc-18 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 -filetype=obj
 ```
 
 ### Call-site identity: `instruction_offset` is the return address
@@ -590,7 +590,7 @@ llvm-as-18 < input.ll > input.bc
 opt-18 -passes=rewrite-statepoints-for-gc < input.bc > lowered.bc
 
 # 3) Emit an object file containing .llvm_stackmaps
-llc-18 -filetype=obj < lowered.bc > out.o
+llc-18 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 -filetype=obj < lowered.bc > out.o
 
 # 4) Inspect stackmaps
 llvm-readobj-18 --stackmap out.o
