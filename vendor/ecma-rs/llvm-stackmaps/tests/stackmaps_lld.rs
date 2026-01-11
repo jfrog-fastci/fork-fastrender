@@ -113,6 +113,17 @@ fn main() {
         nm_stdout.contains("__stackmaps_end"),
         "missing __stackmaps_end in output binary\n{nm_stdout}"
     );
+
+    // Also ensure the canonical start/stop symbols are exported (used by native-js/runtime-native
+    // documentation and some tooling).
+    assert!(
+        nm_stdout.contains("__start_llvm_stackmaps"),
+        "missing __start_llvm_stackmaps in output binary\n{nm_stdout}"
+    );
+    assert!(
+        nm_stdout.contains("__stop_llvm_stackmaps"),
+        "missing __stop_llvm_stackmaps in output binary\n{nm_stdout}"
+    );
 }
 
 #[cfg(not(target_os = "linux"))]
