@@ -1336,8 +1336,8 @@ pub extern "C" fn rt_async_cancel_all() {
       // Cancel all legacy executor work (microtasks/macrotasks/timers/I/O watchers).
       async_rt::cancel_all_pending_work_under_driver_guard();
 
-      // Drop pending promise reactions stored on unresolved legacy promises (otherwise those
-      // reactions can keep awaiting coroutines alive indefinitely after shutdown).
+      // Drop pending promise reactions stored on unresolved promises (otherwise those reactions can
+      // keep awaiting coroutines alive indefinitely after shutdown).
       async_rt::promise::cancel_all_pending_reactions();
 
       // Clear any outstanding unhandled rejection tracker state so we don't retain promises as

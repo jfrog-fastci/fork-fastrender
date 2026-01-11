@@ -263,7 +263,7 @@ This clears:
 - queued microtasks (promise reaction jobs, `queueMicrotask` callbacks, deferred coroutine resumes),
 - queued macrotasks (timers, I/O callbacks),
 - registered timers and I/O watchers,
-- pending legacy promise reactions stored on unresolved promises,
+- pending promise reactions stored on unresolved promises,
 - and any internal rejection-tracking bookkeeping.
 
 Drop hooks:

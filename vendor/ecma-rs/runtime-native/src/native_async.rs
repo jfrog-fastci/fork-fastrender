@@ -134,8 +134,14 @@ fn drain_reactions(promise: *mut PromiseHeader) {
   let head_val = reactions.swap(0, Ordering::AcqRel);
   let mut head = decode_waiters_ptr(head_val);
   if head.is_null() {
+    // No more reactions; ensure we don't retain the promise in the tracking set.
+    crate::async_rt::promise::untrack_pending_reactions(promise);
     return;
   }
+
+  // The promise no longer owns any pending reactions, so it can be removed from the tracking set
+  // even before we schedule the drained list.
+  crate::async_rt::promise::untrack_pending_reactions(promise);
 
   // The list is pushed in LIFO order; reverse to preserve FIFO registration order.
   head = unsafe { reverse_list(head) };
@@ -178,6 +184,7 @@ fn promise_register_reaction(p: *mut PromiseHeader, node: *mut PromiseReactionNo
   promise_mark_handled(p);
 
   push_reaction(p, node);
+  crate::async_rt::promise::track_pending_reactions(p);
 
   // If the promise is already settled, drain and schedule immediately.
   let state = unsafe { &(*p).state }.load(Ordering::Acquire);
