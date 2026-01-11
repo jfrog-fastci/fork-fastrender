@@ -489,6 +489,13 @@ where
       return (None, false);
     }
 
+    // `integrity` attribute clamping: if present but too large, the metadata is invalid and the
+    // script must not execute. Inline scripts should behave like other "early-out" cases and remain
+    // eligible for later mutations.
+    if spec.integrity_attr_present && spec.integrity.is_none() && !spec.src_attr_present {
+      return (None, false);
+    }
+
     // Only mark the element as started for script types that participate in HTML script processing.
     // Unknown types are ignored and should remain eligible if later mutated into a runnable script.
     if matches!(
@@ -504,6 +511,21 @@ where
   let Some(spec) = spec else {
     return Ok(());
   };
+
+  // Invalid integrity metadata: external scripts should queue an `error` event and must not start a
+  // fetch. (Inline scripts with invalid integrity are handled above and leave the element eligible
+  // for later mutation.)
+  if spec.integrity_attr_present && spec.integrity.is_none() {
+    if matches!(
+      spec.script_type,
+      ScriptType::Classic | ScriptType::Module | ScriptType::ImportMap
+    ) {
+      event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+        host.dispatch_script_element_event(inserted_node, "error")
+      })?;
+    }
+    return Ok(());
+  }
 
   // HTML passes a per-script "base URL at discovery" into classic and module script preparation.
   // Use the document base URL snapshot from spec building so inline module scripts can resolve
@@ -562,7 +584,10 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::{build_dynamic_script_element_spec, prepare_dynamic_script_on_insertion};
+  use super::{
+    build_dynamic_script_element_spec, prepare_dynamic_script_on_insertion,
+    prepare_dynamic_script_on_insertion_html,
+  };
   use crate::dom2::Document;
   use crate::error::Result;
   use crate::js::{
@@ -1181,6 +1206,175 @@ mod tests {
       "nomodule does not suppress external scripts when module scripts are not supported"
     );
     assert!(host.executed.is_empty());
+    Ok(())
+  }
+
+  struct HtmlTestHost {
+    dom: Document,
+    started_classic_fetches: Vec<String>,
+    executed: Vec<String>,
+    element_events: Vec<(usize, String)>,
+    current_script: crate::js::CurrentScriptStateHandle,
+  }
+
+  impl HtmlTestHost {
+    fn new(dom: Document) -> Self {
+      Self {
+        dom,
+        started_classic_fetches: Vec::new(),
+        executed: Vec::new(),
+        element_events: Vec::new(),
+        current_script: crate::js::CurrentScriptStateHandle::default(),
+      }
+    }
+  }
+
+  impl crate::js::CurrentScriptHost for HtmlTestHost {
+    fn current_script_state(&self) -> &crate::js::CurrentScriptStateHandle {
+      &self.current_script
+    }
+  }
+
+  impl DomHost for HtmlTestHost {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Document) -> R,
+    {
+      f(&self.dom)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Document) -> (R, bool),
+    {
+      let (result, _changed) = f(&mut self.dom);
+      result
+    }
+  }
+
+  impl crate::js::html_script_pipeline::ScriptElementEventHost for HtmlTestHost {
+    fn dispatch_script_element_event(
+      &mut self,
+      script: crate::dom2::NodeId,
+      event_name: &'static str,
+    ) -> Result<()> {
+      self
+        .element_events
+        .push((script.index(), event_name.to_string()));
+      Ok(())
+    }
+  }
+
+  impl crate::js::html_script_pipeline::HtmlScriptPipelineHost for HtmlTestHost {
+    fn start_classic_fetch(
+      &mut self,
+      _script_id: crate::js::HtmlScriptId,
+      url: &str,
+    ) -> Result<()> {
+      self.started_classic_fetches.push(url.to_string());
+      Ok(())
+    }
+
+    fn start_module_graph_fetch(
+      &mut self,
+      _script_id: crate::js::HtmlScriptId,
+      _url: &str,
+      _options: crate::js::html_script_pipeline::ModuleGraphFetchOptions,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn start_inline_module_graph_fetch(
+      &mut self,
+      _script_id: crate::js::HtmlScriptId,
+      _source_text: &str,
+      _base_url: Option<&str>,
+      _options: crate::js::html_script_pipeline::ModuleGraphFetchOptions,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn execute_classic_script(
+      &mut self,
+      source_text: Option<&str>,
+      _script_node_id: crate::dom2::NodeId,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      if let Some(text) = source_text {
+        self.executed.push(text.to_string());
+      }
+      Ok(())
+    }
+
+    fn execute_module_script(
+      &mut self,
+      _module_handle: Option<&str>,
+      _script_node_id: crate::dom2::NodeId,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn register_import_map(
+      &mut self,
+      _source_text: &str,
+      _base_url: Option<&str>,
+      _script_node_id: crate::dom2::NodeId,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn dynamic_external_script_oversized_integrity_attribute_queues_error_event_in_html_scheduler_path() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
+    dom
+      .set_attribute(script, "integrity", &integrity)
+      .expect("set_attribute should succeed");
+    dom
+      .set_attribute(script, "src", "https://example.com/a.js")
+      .expect("set_attribute should succeed");
+    let text = dom.create_text("INLINE");
+    dom
+      .append_child(script, text)
+      .expect("append_child should succeed");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+
+    let mut host = HtmlTestHost::new(dom);
+    let mut scheduler = crate::js::HtmlScriptScheduler::<crate::dom2::NodeId>::new();
+    let mut event_loop = EventLoop::<HtmlTestHost>::new();
+
+    prepare_dynamic_script_on_insertion_html(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+      None,
+    )?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.started_classic_fetches.is_empty(),
+      "expected invalid integrity metadata to prevent classic fetch start"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected no execution when integrity metadata is invalid"
+    );
+    assert_eq!(
+      host.element_events,
+      vec![(script.index(), "error".to_string())],
+      "expected an error element task for invalid integrity metadata"
+    );
+    assert!(
+      host.dom.node(script).script_already_started,
+      "expected external scripts with invalid integrity to be marked already started"
+    );
     Ok(())
   }
 }
