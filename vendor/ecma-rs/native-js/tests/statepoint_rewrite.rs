@@ -1,20 +1,14 @@
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
-use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::llvm::passes;
 use object::Object;
 use std::fs;
-use std::sync::Once;
 use tempfile::tempdir;
 
-static LLVM_INIT: Once = Once::new();
-
 fn init_llvm() {
-  LLVM_INIT.call_once(|| {
-    Target::initialize_native(&InitializationConfig::default())
-      .expect("failed to initialize native LLVM target");
-  });
+  native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
 }
 
 fn host_target_machine() -> TargetMachine {
@@ -91,10 +85,7 @@ fn function_block(ir: &str, func_name: &str) -> String {
     }
   }
 
-  assert!(
-    in_func,
-    "function {func_name} not found in IR:\n{ir}"
-  );
+  assert!(in_func, "function {func_name} not found in IR:\n{ir}");
 
   out.join("\n")
 }
@@ -138,7 +129,10 @@ fn parse_relocate_indices(line: &str) -> Option<(u32, u32)> {
     value.parse().ok()
   }
 
-  Some((parse_i32_constant(base_part)?, parse_i32_constant(derived_part)?))
+  Some((
+    parse_i32_constant(base_part)?,
+    parse_i32_constant(derived_part)?,
+  ))
 }
 
 fn parse_gc_live_vars(statepoint_line: &str) -> Vec<String> {
@@ -230,8 +224,8 @@ entry:
     statepoint_line.contains("call token"),
     "expected gc.statepoint callsite to be a `call token`, got:\n{statepoint_line}\n\n{func}"
   );
-  let statepoint_token =
-    assigned_ssa(statepoint_line).unwrap_or_else(|| panic!("unexpected statepoint line: {statepoint_line}"));
+  let statepoint_token = assigned_ssa(statepoint_line)
+    .unwrap_or_else(|| panic!("unexpected statepoint line: {statepoint_line}"));
 
   assert!(
     !func.contains("call i64 @bar"),
@@ -283,8 +277,8 @@ entry:
     statepoint_line.contains("call token"),
     "expected gc.statepoint callsite to be a `call token`, got:\n{statepoint_line}\n\n{func}"
   );
-  let statepoint_token =
-    assigned_ssa(statepoint_line).unwrap_or_else(|| panic!("unexpected statepoint line: {statepoint_line}"));
+  let statepoint_token = assigned_ssa(statepoint_line)
+    .unwrap_or_else(|| panic!("unexpected statepoint line: {statepoint_line}"));
 
   assert!(
     !func.contains("call ptr addrspace(1) @alloc"),
@@ -357,15 +351,15 @@ fn gc_result_for_scalar_return_with_live_gc_pointer() {
     .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
 
   let reloc_line = expect_relocate_line(&func, "%obj", "%obj");
-  let relocated_obj =
-    assigned_ssa(reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
+  let relocated_obj = assigned_ssa(reloc_line)
+    .unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
   assert!(
     reloc_line.contains(&format!("token {statepoint_token}")),
     "expected gc.relocate to reference statepoint token {statepoint_token}, got:\n{reloc_line}\n\n{func}"
   );
 
-  let (base_idx, derived_idx) =
-    parse_relocate_indices(reloc_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
+  let (base_idx, derived_idx) = parse_relocate_indices(reloc_line)
+    .unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
   assert_eq!(
     (base_idx, derived_idx),
     (0, 0),
@@ -431,8 +425,8 @@ fn gc_result_for_gc_pointer_return_with_live_gc_pointer() {
     .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
 
   let reloc_line = expect_relocate_line(&func, "%obj", "%obj");
-  let relocated_obj =
-    assigned_ssa(reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
+  let relocated_obj = assigned_ssa(reloc_line)
+    .unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
   assert!(
     func.contains(&format!("icmp eq ptr addrspace(1) {relocated_obj}, null")),
     "expected %obj use after safepoint to be rewritten to relocated value {relocated_obj}:\n{func}"
@@ -583,10 +577,10 @@ fn gc_result_pointer_used_across_later_safepoint_is_relocated() {
 
   // Relocation indices must reference the gc-live entry.
   let relocate_line = expect_relocate_line(&func, &alloc_obj, &alloc_obj);
-  let relocated_obj =
-    assigned_ssa(relocate_line).unwrap_or_else(|| panic!("expected relocate assignment: {relocate_line}"));
-  let (base_idx, derived_idx) =
-    parse_relocate_indices(relocate_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {relocate_line}"));
+  let relocated_obj = assigned_ssa(relocate_line)
+    .unwrap_or_else(|| panic!("expected relocate assignment: {relocate_line}"));
+  let (base_idx, derived_idx) = parse_relocate_indices(relocate_line)
+    .unwrap_or_else(|| panic!("failed to parse relocate indices: {relocate_line}"));
   let pos = gc_live_vars
     .iter()
     .position(|v| v == &alloc_obj)
@@ -639,8 +633,8 @@ fn derived_pointer_is_rematerialized_from_relocated_base() {
   );
 
   let base_reloc_line = expect_relocate_line(&func, "%base", "%base");
-  let base_relocated =
-    assigned_ssa(base_reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {base_reloc_line}"));
+  let base_relocated = assigned_ssa(base_reloc_line)
+    .unwrap_or_else(|| panic!("expected relocate assignment: {base_reloc_line}"));
 
   let remat_line = func
     .lines()
@@ -650,8 +644,9 @@ fn derived_pointer_is_rematerialized_from_relocated_base() {
         "expected derived pointer to be rematerialized from relocated base {base_relocated}:\n\n{func}"
       )
     });
-  let derived_remat = assigned_ssa(remat_line)
-    .unwrap_or_else(|| panic!("expected rematerialized derived GEP to be an assignment: {remat_line}"));
+  let derived_remat = assigned_ssa(remat_line).unwrap_or_else(|| {
+    panic!("expected rematerialized derived GEP to be an assignment: {remat_line}")
+  });
 
   assert!(
     func.contains(&format!("load i8, ptr addrspace(1) {derived_remat}")),
@@ -696,7 +691,8 @@ join:
     "expected statepoint to have a gc-live bundle:\n{statepoint_line}\n\n{func}"
   );
   assert!(
-    statepoint_line.contains("ptr addrspace(1) %base") && statepoint_line.contains("ptr addrspace(1) %derived"),
+    statepoint_line.contains("ptr addrspace(1) %base")
+      && statepoint_line.contains("ptr addrspace(1) %derived"),
     "expected gc-live bundle to include both %base and %derived:\n{statepoint_line}\n\n{func}"
   );
   let gc_live_vars = parse_gc_live_vars(statepoint_line);
@@ -736,7 +732,9 @@ join:
   let derived_relocated_ssa =
     derived_relocated_ssa.expect("expected derived relocation to be assigned to an SSA value");
   assert!(
-    func.contains(&format!("load i8, ptr addrspace(1) {derived_relocated_ssa}")),
+    func.contains(&format!(
+      "load i8, ptr addrspace(1) {derived_relocated_ssa}"
+    )),
     "expected derived relocated SSA ({derived_relocated_ssa}) to be used after safepoint:\n{func}"
   );
 
@@ -750,7 +748,8 @@ join:
     )
   });
   assert_eq!(
-    derived_var, "%derived",
+    derived_var,
+    "%derived",
     "expected derived relocation to be for %derived, got {derived_var} in:\n{}",
     derived_reloc_line.as_deref().unwrap_or("<missing>")
   );
@@ -758,11 +757,15 @@ join:
   let base_pos = gc_live_vars
     .iter()
     .position(|v| v == &base_var)
-    .unwrap_or_else(|| panic!("base var {base_var} missing from gc-live vars {gc_live_vars:?}\n\n{func}"));
+    .unwrap_or_else(|| {
+      panic!("base var {base_var} missing from gc-live vars {gc_live_vars:?}\n\n{func}")
+    });
   let derived_pos = gc_live_vars
     .iter()
     .position(|v| v == &derived_var)
-    .unwrap_or_else(|| panic!("derived var {derived_var} missing from gc-live vars {gc_live_vars:?}\n\n{func}"));
+    .unwrap_or_else(|| {
+      panic!("derived var {derived_var} missing from gc-live vars {gc_live_vars:?}\n\n{func}")
+    });
   assert_eq!(
     base_idx as usize, base_pos,
     "gc.relocate base index should point at gc-live[{base_pos}]={base_var}, got base_idx={base_idx}\n\n{func}"
@@ -850,8 +853,8 @@ fn relocation_is_chained_across_multiple_statepoints() {
   );
 
   let first_reloc_line = expect_relocate_line(&func, "%obj", "%obj");
-  let obj_after_bar =
-    assigned_ssa(first_reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {first_reloc_line}"));
+  let obj_after_bar = assigned_ssa(first_reloc_line)
+    .unwrap_or_else(|| panic!("expected relocate assignment: {first_reloc_line}"));
 
   let baz_statepoint_line = func
     .lines()
@@ -868,8 +871,8 @@ fn relocation_is_chained_across_multiple_statepoints() {
   );
 
   let second_reloc_line = expect_relocate_line(&func, &obj_after_bar, &obj_after_bar);
-  let obj_after_baz =
-    assigned_ssa(second_reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {second_reloc_line}"));
+  let obj_after_baz = assigned_ssa(second_reloc_line)
+    .unwrap_or_else(|| panic!("expected relocate assignment: {second_reloc_line}"));
 
   assert!(
     func.contains(&format!("load i8, ptr addrspace(1) {obj_after_baz}")),

@@ -1,5 +1,5 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::IntPredicate;
 use inkwell::OptimizationLevel;
 use native_js::codegen::safepoint;
@@ -60,16 +60,12 @@ fn extract_ret_ssa(func_ir: &str) -> String {
     .unwrap_or_else(|| panic!("missing ret in function:\n{func_ir}"));
 
   // `ret ptr addrspace(1) %x`
-  ret_line
-    .split_whitespace()
-    .last()
-    .unwrap_or("")
-    .to_string()
+  ret_line.split_whitespace().last().unwrap_or("").to_string()
 }
 
 #[test]
 fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
-  Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
+  native_js::llvm::init_native_target().expect("failed to init native target");
 
   let context = Context::create();
   let module = context.create_module("gc_backedge_poll_test");
@@ -103,10 +99,7 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
     .build_load(i64_ty, i_slot, "i.val")
     .expect("load i")
     .into_int_value();
-  let n = func
-    .get_nth_param(1)
-    .expect("missing n")
-    .into_int_value();
+  let n = func.get_nth_param(1).expect("missing n").into_int_value();
   let cond = builder
     .build_int_compare(IntPredicate::ULT, i_val, n, "cond")
     .expect("icmp");
@@ -158,7 +151,10 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
 
   passes::rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
   if let Err(err) = module.verify() {
-    panic!("module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+    panic!(
+      "module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
   }
 
   let ir = module.print_to_string().to_string();
@@ -214,7 +210,9 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
 
     let mut inputs = Vec::new();
     for part in line.split('[').skip(1) {
-      let Some(val) = part.split(',').next() else { continue };
+      let Some(val) = part.split(',').next() else {
+        continue;
+      };
       let val = val.trim();
       if !val.is_empty() {
         inputs.push(val.to_string());

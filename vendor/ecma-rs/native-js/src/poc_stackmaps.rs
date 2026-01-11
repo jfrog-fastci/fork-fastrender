@@ -15,9 +15,7 @@ use crate::NativeJsError;
 use inkwell::context::AsContextRef as _;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::targets::{
-  CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
-};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::types::AsTypeRef as _;
 use inkwell::values::AsValueRef as _;
 use inkwell::{AddressSpace, OptimizationLevel};
@@ -41,7 +39,10 @@ pub fn compile_poc_object() -> Result<Vec<u8>, NativeJsError> {
   emit_object(&module)
 }
 
-fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Result<(), NativeJsError> {
+fn build_poc_module<'ctx>(
+  context: &'ctx Context,
+  module: &Module<'ctx>,
+) -> Result<(), NativeJsError> {
   let builder = context.create_builder();
 
   let i64_ty = context.i64_type();
@@ -90,7 +91,11 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
     let a_slot = frame.alloc_slot(builder_ref, a.as_value_ref());
     let b_slot = frame.alloc_slot(builder_ref, b.as_value_ref());
 
-    let mut statepoints = StatepointEmitter::new(context.as_ctx_ref(), module.as_mut_ptr(), gc_ptr_ty.as_type_ref());
+    let mut statepoints = StatepointEmitter::new(
+      context.as_ctx_ref(),
+      module.as_mut_ptr(),
+      gc_ptr_ty.as_type_ref(),
+    );
 
     let alloc_size = i64_ty.const_int(16, false).as_value_ref();
     let shape_id = i32_ty.const_int(1, false).as_value_ref();
@@ -158,11 +163,7 @@ fn emit_object<'ctx>(module: &Module<'ctx>) -> Result<Vec<u8>, NativeJsError> {
 }
 
 fn init_native_target() -> Result<(), NativeJsError> {
-  static INIT: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
-  match INIT.get_or_init(|| Target::initialize_native(&InitializationConfig::default()).map_err(|e| e.to_string())) {
-    Ok(()) => Ok(()),
-    Err(msg) => Err(NativeJsError::Llvm(msg.clone())),
-  }
+  crate::llvm::init_native_target().map_err(NativeJsError::Llvm)
 }
 
 #[cfg(test)]
@@ -180,7 +181,10 @@ mod tests {
       .section_by_name(".llvm_stackmaps")
       .expect("missing .llvm_stackmaps section");
     let data = stackmaps.data().expect("read .llvm_stackmaps section");
-    assert!(!data.is_empty(), ".llvm_stackmaps section exists but is empty");
+    assert!(
+      !data.is_empty(),
+      ".llvm_stackmaps section exists but is empty"
+    );
 
     assert!(
       data.len() >= 16,

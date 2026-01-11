@@ -12,7 +12,8 @@ use std::mem;
 ///
 /// This lets debug verification reject corrupted `type_desc` pointers *without*
 /// dereferencing them (which would be UB if the pointer is invalid).
-static KNOWN_TYPE_DESCRIPTORS: Lazy<Mutex<AHashSet<usize>>> = Lazy::new(|| Mutex::new(AHashSet::new()));
+static KNOWN_TYPE_DESCRIPTORS: Lazy<Mutex<AHashSet<usize>>> =
+  Lazy::new(|| Mutex::new(AHashSet::new()));
 
 pub(crate) fn register_type_descriptor(desc: &'static TypeDescriptor) {
   KNOWN_TYPE_DESCRIPTORS
@@ -147,11 +148,7 @@ impl GcHeap {
     known_desc: &AHashSet<usize>,
   ) {
     let addr = obj as usize;
-    assert_eq!(
-      addr & (align - 1),
-      0,
-      "GC pointer is misaligned: {addr:#x}"
-    );
+    assert_eq!(addr & (align - 1), 0, "GC pointer is misaligned: {addr:#x}");
 
     if self.is_in_nursery(obj) {
       assert!(
@@ -216,7 +213,10 @@ impl GcHeap {
 
     if header.is_forwarded() {
       let fwd = header.forwarding_ptr();
-      assert!(!fwd.is_null(), "forwarded object has null forwarding pointer");
+      assert!(
+        !fwd.is_null(),
+        "forwarded object has null forwarding pointer"
+      );
     }
   }
 }

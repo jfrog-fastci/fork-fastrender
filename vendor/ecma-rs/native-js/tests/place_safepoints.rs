@@ -1,15 +1,10 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::{IntPredicate, OptimizationLevel};
 use native_js::llvm::{gc, passes};
-use std::sync::Once;
-
-static LLVM_INIT: Once = Once::new();
 
 fn host_target_machine() -> TargetMachine {
-  LLVM_INIT.call_once(|| {
-    Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
-  });
+  native_js::llvm::init_native_target().expect("failed to init native target");
 
   let triple = TargetMachine::get_default_triple();
   let target = Target::from_triple(&triple).expect("host target");
@@ -96,7 +91,10 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
   builder.build_return(None).expect("ret void");
 
   if let Err(err) = module.verify() {
-    panic!("input module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
   }
 
   let tm = host_target_machine();
@@ -139,4 +137,3 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
     "expected poll calls to be rewritten (no direct call remains):\n{ir}"
   );
 }
-

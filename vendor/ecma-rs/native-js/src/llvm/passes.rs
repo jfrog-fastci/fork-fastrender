@@ -2,7 +2,8 @@ use inkwell::module::Module;
 use inkwell::targets::TargetMachine;
 use llvm_sys::core::{
   LLVMAddFunction, LLVMCountParamTypes, LLVMFunctionType, LLVMGetModuleContext, LLVMGetNamedFunction,
-  LLVMGetReturnType, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsFunctionVarArg, LLVMVoidTypeInContext,
+  LLVMGetReturnType, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsFunctionVarArg,
+  LLVMVoidTypeInContext,
 };
 use llvm_sys::error::{LLVMDisposeErrorMessage, LLVMGetErrorMessage};
 use llvm_sys::transforms::pass_builder::{
@@ -71,7 +72,10 @@ pub fn ensure_gc_safepoint_poll_decl(module: &Module<'_>) -> Result<(), PassErro
 ///
 /// In debug builds we also run `verify<safepoint-ir>` to catch invalid safepoint
 /// IR early.
-pub fn rewrite_statepoints_for_gc(module: &Module<'_>, target_machine: &TargetMachine) -> Result<(), PassError> {
+pub fn rewrite_statepoints_for_gc(
+  module: &Module<'_>,
+  target_machine: &TargetMachine,
+) -> Result<(), PassError> {
   super::debug_lint_module_gc_pointer_discipline(module)?;
 
   let pipeline = if cfg!(debug_assertions) {

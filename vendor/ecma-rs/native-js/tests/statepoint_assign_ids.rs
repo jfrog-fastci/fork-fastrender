@@ -1,17 +1,12 @@
 #![cfg(feature = "statepoint-directives")]
 
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::llvm::{gc, passes, statepoint_directives};
-use std::sync::Once;
-
-static LLVM_INIT: Once = Once::new();
 
 fn host_target_machine() -> TargetMachine {
-  LLVM_INIT.call_once(|| {
-    Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
-  });
+  native_js::llvm::init_native_target().expect("failed to init native target");
 
   let triple = TargetMachine::get_default_triple();
   let target = Target::from_triple(&triple).expect("host target");
@@ -46,12 +41,17 @@ fn assign_statepoint_ids_emits_sequential_ids() {
 
   let entry = context.append_basic_block(test_fn, "entry");
   builder.position_at_end(entry);
-  builder.build_call(callee, &[], "call0").expect("build call0");
-  builder.build_call(callee, &[], "call1").expect("build call1");
+  builder
+    .build_call(callee, &[], "call0")
+    .expect("build call0");
+  builder
+    .build_call(callee, &[], "call1")
+    .expect("build call1");
   builder.build_return(None).expect("build return");
 
   // Assign deterministic sequential IDs before rewriting.
-  statepoint_directives::assign_statepoint_ids(module.as_mut_ptr(), 100).expect("assign statepoint ids");
+  statepoint_directives::assign_statepoint_ids(module.as_mut_ptr(), 100)
+    .expect("assign statepoint ids");
 
   let tm = host_target_machine();
   module.set_triple(&tm.get_triple());

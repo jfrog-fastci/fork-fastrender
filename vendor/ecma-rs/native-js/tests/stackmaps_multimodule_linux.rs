@@ -2,22 +2,16 @@
 
 use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::llvm::gc;
 use native_js::llvm::passes;
 use object::{Object, ObjectSection};
 use std::fs;
 use std::path::Path;
-use std::sync::Once;
-
-static LLVM_INIT: Once = Once::new();
 
 fn init_llvm() {
-  LLVM_INIT.call_once(|| {
-    Target::initialize_native(&InitializationConfig::default())
-      .expect("failed to initialize native LLVM target");
-  });
+  native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
 }
 
 fn host_target_machine() -> TargetMachine {
@@ -40,7 +34,11 @@ fn host_target_machine() -> TargetMachine {
     .expect("create target machine")
 }
 
-fn define_void_function<'ctx>(ctx: &'ctx Context, module: &inkwell::module::Module<'ctx>, name: &str) {
+fn define_void_function<'ctx>(
+  ctx: &'ctx Context,
+  module: &inkwell::module::Module<'ctx>,
+  name: &str,
+) {
   let builder = ctx.create_builder();
   let void_ty = ctx.void_type();
   let ty = void_ty.fn_type(&[], false);
@@ -65,7 +63,10 @@ fn define_statepoint_function<'ctx>(
   f.set_gc(gc::GC_STRATEGY);
   // Ensure LTO does not inline away the per-module functions; we want one StackMaps entry per
   // compilation unit in the merged table.
-  let noinline = ctx.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"), 0);
+  let noinline = ctx.create_enum_attribute(
+    inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+    0,
+  );
   f.add_attribute(AttributeLoc::Function, noinline);
 
   define_void_function(ctx, module, callee_name);
@@ -99,8 +100,12 @@ fn define_main_calls<'ctx>(
 
   let gc_ptr = gc::gc_ptr_type(ctx);
   let null = gc_ptr.const_null();
-  builder.build_call(callee_a, &[null.into()], "call_a").unwrap();
-  builder.build_call(callee_b, &[null.into()], "call_b").unwrap();
+  builder
+    .build_call(callee_a, &[null.into()], "call_a")
+    .unwrap();
+  builder
+    .build_call(callee_b, &[null.into()], "call_b")
+    .unwrap();
 
   builder
     .build_return(Some(&i32_ty.const_int(0, false)))
@@ -110,10 +115,7 @@ fn define_main_calls<'ctx>(
 fn build_two_modules<'ctx>(
   ctx: &'ctx Context,
   tm: &TargetMachine,
-) -> (
-  inkwell::module::Module<'ctx>,
-  inkwell::module::Module<'ctx>,
-) {
+) -> (inkwell::module::Module<'ctx>, inkwell::module::Module<'ctx>) {
   let gc_ptr = gc::gc_ptr_type(ctx);
   let gc_func_ty = gc_ptr.fn_type(&[gc_ptr.into()], false);
 
@@ -226,7 +228,8 @@ impl<'a> Reader<'a> {
     while self.pos % align != 0 {
       let b = self.read_u8();
       assert_eq!(
-        b, 0,
+        b,
+        0,
         "expected zero padding byte at offset {} (align={align})",
         self.pos - 1
       );
@@ -264,8 +267,7 @@ fn parse_stackmap_blob(bytes: &[u8]) -> (StackMapHeader, usize) {
   }
 
   assert_eq!(
-    record_count_sum,
-    num_records as u64,
+    record_count_sum, num_records as u64,
     "stackmap function RecordCount sum ({record_count_sum}) != header NumRecords ({num_records})"
   );
 
@@ -325,7 +327,11 @@ fn parse_stackmap_blobs(bytes: &[u8]) -> Vec<StackMapBlob> {
 
     let (header, len) = parse_stackmap_blob(&bytes[off..]);
     assert!(len > 0, "parsed stackmap blob length is 0");
-    blobs.push(StackMapBlob { offset: off, len, header });
+    blobs.push(StackMapBlob {
+      offset: off,
+      len,
+      header,
+    });
     off += len;
   }
 
@@ -374,7 +380,12 @@ fn object_link_concatenates_multiple_stackmap_blobs() {
     .iter()
     .enumerate()
   {
-    assert_eq!(*b, 0, "expected padding byte 0 at {}", blobs[0].offset + blobs[0].len + i);
+    assert_eq!(
+      *b,
+      0,
+      "expected padding byte 0 at {}",
+      blobs[0].offset + blobs[0].len + i
+    );
   }
 
   for (idx, blob) in blobs.iter().enumerate() {
@@ -389,10 +400,7 @@ fn object_link_concatenates_multiple_stackmap_blobs() {
       blob.offset
     );
 
-    assert_eq!(
-      blob.header.version, 3,
-      "blob[{idx}] has unexpected version"
-    );
+    assert_eq!(blob.header.version, 3, "blob[{idx}] has unexpected version");
     assert!(
       blob.header.num_functions >= 1,
       "blob[{idx}] should have at least one function"
@@ -434,7 +442,10 @@ fn lto_link_merges_stackmap_blobs_into_one_table() {
   );
 
   let blob = &blobs[0];
-  assert_eq!(blob.offset, 0, "expected merged stackmap blob to start at offset 0");
+  assert_eq!(
+    blob.offset, 0,
+    "expected merged stackmap blob to start at offset 0"
+  );
 
   let header_u32 = u32::from_le_bytes(
     stackmaps[blob.offset..blob.offset + 4]
@@ -456,6 +467,11 @@ fn lto_link_merges_stackmap_blobs_into_one_table() {
 
   // Trailing bytes after the blob should be zero-filled padding.
   for (i, b) in stackmaps[blob.offset + blob.len..].iter().enumerate() {
-    assert_eq!(*b, 0, "expected trailing padding byte 0 at {}", blob.offset + blob.len + i);
+    assert_eq!(
+      *b,
+      0,
+      "expected trailing padding byte 0 at {}",
+      blob.offset + blob.len + i
+    );
   }
 }

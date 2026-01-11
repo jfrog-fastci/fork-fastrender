@@ -1,5 +1,5 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::llvm::{gc, passes, statepoints};
 use tempfile::tempdir;
@@ -11,7 +11,7 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
   //
   // This is especially important for *indirect calls* through a `ptr`-typed function pointer:
   // the call site's signature must be propagated to the statepoint's callee operand.
-  Target::initialize_native(&InitializationConfig::default()).expect("failed to initialize native LLVM target");
+  native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
 
   let context = Context::create();
   let module = context.create_module("statepoints_indirect_call");
@@ -57,7 +57,12 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
 
   // call void %fp(i64 123)  ; indirect call
   builder
-    .build_indirect_call(callee_ty, fp, &[i64_ty.const_int(123, false).into()], "call_callee")
+    .build_indirect_call(
+      callee_ty,
+      fp,
+      &[i64_ty.const_int(123, false).into()],
+      "call_callee",
+    )
     .expect("build indirect call");
 
   // Use %obj after the call so it is live across the safepoint.
@@ -124,7 +129,7 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
 fn llvm18_manual_statepoint_indirect_call_has_elementtype() {
   // Our manual statepoint builder must attach `elementtype(<fn-ty>)` to the callee argument even
   // when the callee is a runtime function pointer (`ptr %fp`).
-  Target::initialize_native(&InitializationConfig::default()).expect("failed to initialize native LLVM target");
+  native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
 
   let context = Context::create();
   let module = context.create_module("manual_statepoints_indirect_call");

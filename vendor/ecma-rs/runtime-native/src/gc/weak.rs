@@ -95,7 +95,11 @@ impl WeakHandles {
     }
 
     let ptr = slot.ptr;
-    if ptr.is_null() { None } else { Some(ptr) }
+    if ptr.is_null() {
+      None
+    } else {
+      Some(ptr)
+    }
   }
 
   pub fn weak_set(&mut self, handle: WeakHandle, ptr: *mut u8) {

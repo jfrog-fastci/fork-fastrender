@@ -32,4 +32,3 @@ impl YoungSpace {
 }
 
 pub(crate) static YOUNG_SPACE: YoungSpace = YoungSpace::new();
-

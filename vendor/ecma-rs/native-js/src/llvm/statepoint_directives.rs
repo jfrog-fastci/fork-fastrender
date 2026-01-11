@@ -1,6 +1,6 @@
 use llvm_sys::core::{
-  LLVMAddCallSiteAttribute, LLVMCreateStringAttribute, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
-  LLVMGetInstructionParent, LLVMGetModuleContext,
+  LLVMAddCallSiteAttribute, LLVMCreateStringAttribute, LLVMGetBasicBlockParent,
+  LLVMGetGlobalParent, LLVMGetInstructionParent, LLVMGetModuleContext,
 };
 use llvm_sys::prelude::{LLVMContextRef, LLVMValueRef};
 use std::ffi::{CStr, CString};
@@ -62,7 +62,8 @@ pub fn set_callsite_statepoint_id(call: LLVMValueRef, id: u64) {
 pub fn set_callsite_statepoint_num_patch_bytes(call: LLVMValueRef, bytes: u32) {
   let key = CString::new("statepoint-num-patch-bytes")
     .expect("statepoint-num-patch-bytes key must not contain NULs");
-  let value = CString::new(bytes.to_string()).expect("statepoint-num-patch-bytes must not contain NULs");
+  let value =
+    CString::new(bytes.to_string()).expect("statepoint-num-patch-bytes must not contain NULs");
   add_callsite_string_attr(call, &key, &value);
 }
 
@@ -72,10 +73,13 @@ pub fn set_callsite_statepoint_num_patch_bytes(call: LLVMValueRef, bytes: u32) {
 /// This is an optional helper intended to run before LLVM's `rewrite-statepoints-for-gc` pass so
 /// the resulting `gc.statepoint` IDs are deterministic and/or unique.
 #[cfg(feature = "statepoint-directives")]
-pub fn assign_statepoint_ids(module: llvm_sys::prelude::LLVMModuleRef, start: u64) -> anyhow::Result<()> {
+pub fn assign_statepoint_ids(
+  module: llvm_sys::prelude::LLVMModuleRef,
+  start: u64,
+) -> anyhow::Result<()> {
   use llvm_sys::core::{
-    LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetGC, LLVMGetNextBasicBlock,
-    LLVMGetNextFunction, LLVMGetNextInstruction, LLVMGetInstructionOpcode,
+    LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetGC,
+    LLVMGetInstructionOpcode, LLVMGetNextBasicBlock, LLVMGetNextFunction, LLVMGetNextInstruction,
   };
   use llvm_sys::LLVMOpcode;
 

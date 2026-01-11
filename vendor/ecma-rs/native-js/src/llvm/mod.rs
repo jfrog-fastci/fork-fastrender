@@ -17,6 +17,7 @@
 
 use std::path::Path;
 use std::sync::OnceLock;
+use std::{ffi::CString, os::raw::c_char};
 
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -28,6 +29,7 @@ use inkwell::targets::{
 };
 use inkwell::values::FunctionValue;
 use inkwell::{module::Linkage, OptimizationLevel};
+use llvm_sys::support::LLVMParseCommandLineOptions;
 use target_lexicon::Triple;
 use typecheck_ts::TypeKindSummary;
 
@@ -36,8 +38,8 @@ pub mod expr;
 pub mod gc;
 pub mod gc_lint;
 pub mod passes;
-pub mod statepoints;
 pub mod statepoint_directives;
+pub mod statepoints;
 pub mod types;
 
 pub use gc_lint::{lint_module_gc_pointer_discipline, LintError, LintRule, LintViolation};
@@ -90,6 +92,25 @@ static LLVM_NATIVE_TARGET_INIT: OnceLock<Result<(), String>> = OnceLock::new();
 pub fn init_native_target() -> Result<(), String> {
   LLVM_NATIVE_TARGET_INIT
     .get_or_init(|| {
+      // LLVM can legally keep `gc.statepoint` roots in callee-saved registers and
+      // describe them as `Register` locations in `.llvm_stackmaps`. Our runtime's
+      // initial stack walking strategy is frame-pointer-only and does not use
+      // unwind-based register reconstruction, so we must force spills.
+      //
+      // Equivalent to:
+      //   llc-18 --fixup-max-csr-statepoints=0
+      //
+      // `LLVMParseCommandLineOptions` configures global codegen flags for this
+      // process; do it once before any TargetMachine emits code.
+      let argv = [
+        CString::new("native-js").expect("argv[0]"),
+        CString::new("--fixup-max-csr-statepoints=0").expect("argv[1]"),
+      ];
+      let argv_ptrs: Vec<*const c_char> = argv.iter().map(|s| s.as_ptr()).collect();
+      unsafe {
+        LLVMParseCommandLineOptions(argv_ptrs.len() as i32, argv_ptrs.as_ptr(), std::ptr::null());
+      }
+
       Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("failed to initialize native LLVM target: {e}"))
     })

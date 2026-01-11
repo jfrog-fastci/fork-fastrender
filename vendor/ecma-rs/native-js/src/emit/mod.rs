@@ -13,15 +13,9 @@
 
 use crate::llvm::passes;
 use inkwell::module::Module;
-use inkwell::targets::{
-  CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
-};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine, TargetTriple};
 use inkwell::OptimizationLevel;
-use llvm_sys::support::LLVMParseCommandLineOptions;
-use std::ffi::CString;
-use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
-use std::sync::Once;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmitError {
@@ -70,34 +64,8 @@ pub fn write_object_file(
   Ok(())
 }
 
-static TARGETS_INITIALIZED: Once = Once::new();
-
 fn ensure_targets_initialized() {
-  TARGETS_INITIALIZED.call_once(|| {
-    // LLVM can legally keep `gc.statepoint` roots in callee-saved registers and
-    // describe them as `Register` locations in `.llvm_stackmaps`. Our runtime's
-    // initial stack walking strategy is frame-pointer-only and does not use
-    // unwind-based register reconstruction, so we must force spills.
-    //
-    // Equivalent to:
-    //   llc-18 --fixup-max-csr-statepoints=0
-    //
-    // `LLVMParseCommandLineOptions` configures global codegen flags for this
-    // process; do it once before any TargetMachine emits code.
-    let argv = [
-      CString::new("native-js").expect("argv[0]"),
-      CString::new("--fixup-max-csr-statepoints=0").expect("argv[1]"),
-    ];
-    let argv_ptrs: Vec<*const c_char> = argv.iter().map(|s| s.as_ptr()).collect();
-    unsafe {
-      LLVMParseCommandLineOptions(argv_ptrs.len() as i32, argv_ptrs.as_ptr(), std::ptr::null());
-    }
-
-    // `initialize_native` registers the host target (Linux x86_64 on the agent
-    // machines) and enables code generation.
-    Target::initialize_native(&InitializationConfig::default())
-      .expect("failed to initialize native LLVM target");
-  });
+  crate::llvm::init_native_target().expect("failed to initialize native LLVM target");
 }
 
 #[derive(Debug)]

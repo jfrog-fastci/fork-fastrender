@@ -4,11 +4,11 @@ use std::slice;
 use crate::array;
 use crate::trap;
 
-mod young;
 pub mod heap;
 pub mod roots;
 pub mod handle_table;
 pub mod weak;
+mod young;
 
 mod evacuate;
 mod mark;

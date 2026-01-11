@@ -1,9 +1,9 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
-use native_js::link::{FASTR_STACKMAPS_END_SYM, FASTR_STACKMAPS_START_SYM, LinkOpts};
+use native_js::link::{LinkOpts, FASTR_STACKMAPS_END_SYM, FASTR_STACKMAPS_START_SYM};
 use native_js::llvm::{gc, passes};
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolScope};
 use std::process::Command;
@@ -103,7 +103,7 @@ fn stackmaps_survive_lto_with_and_without_gc_sections() {
 
   // Build the "statepoint PoC" module (same pattern as `statepoint_stackmap.rs`) and then exercise
   // the `clang-18 -flto` link path.
-  Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
+  native_js::llvm::init_native_target().expect("failed to init native target");
 
   let context = Context::create();
   let module = context.create_module("statepoints_lto");
@@ -175,7 +175,7 @@ fn stackmaps_survive_lto_with_and_without_gc_sections() {
       ..Default::default()
     },
   )
-    .expect("LTO link (no GC sections) failed");
+  .expect("LTO link (no GC sections) failed");
   assert_stackmaps_present(&exe);
 
   // With `--gc-sections` (regression test for `.llvm_stackmaps` being GC'd under LTO).
@@ -186,6 +186,6 @@ fn stackmaps_survive_lto_with_and_without_gc_sections() {
       ..Default::default()
     },
   )
-    .expect("LTO link (--gc-sections) failed");
+  .expect("LTO link (--gc-sections) failed");
   assert_stackmaps_present(&exe_gc);
 }

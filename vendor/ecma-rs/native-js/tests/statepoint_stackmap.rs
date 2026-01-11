@@ -1,5 +1,5 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::{emit, llvm::gc};
 use object::Object;
@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 #[test]
 fn rewrite_statepoints_emits_stackmaps() {
-  Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
+  native_js::llvm::init_native_target().expect("failed to init native target");
 
   let context = Context::create();
   let module = context.create_module("statepoints");
@@ -55,7 +55,8 @@ fn rewrite_statepoints_emits_stackmaps() {
   let tmp = tempdir().expect("failed to create tempdir");
   let obj = tmp.path().join("statepoints.o");
 
-  emit::write_object_file(&module, &tm, &obj).expect("failed to run statepoint rewrite + emit object file");
+  emit::write_object_file(&module, &tm, &obj)
+    .expect("failed to run statepoint rewrite + emit object file");
 
   let ir = module.print_to_string().to_string();
   assert!(

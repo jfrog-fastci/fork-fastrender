@@ -1,6 +1,6 @@
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
-use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::values::AsValueRef;
 use inkwell::values::InstructionOpcode;
 use inkwell::OptimizationLevel;
@@ -8,15 +8,10 @@ use native_js::llvm::{gc, passes, statepoint_directives};
 use object::{Object, ObjectSection};
 use runtime_native::stackmap::StackMap;
 use std::process::{Command, Stdio};
-use std::sync::Once;
 use tempfile::tempdir;
 
-static LLVM_INIT: Once = Once::new();
-
 fn host_target_machine() -> TargetMachine {
-  LLVM_INIT.call_once(|| {
-    Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
-  });
+  native_js::llvm::init_native_target().expect("failed to init native target");
 
   let triple = TargetMachine::get_default_triple();
   let target = Target::from_triple(&triple).expect("host target");
@@ -111,7 +106,9 @@ fn rewrite_statepoints_honors_callsite_directives() {
   let entry = context.append_basic_block(foo, "entry");
   builder.position_at_end(entry);
 
-  let call = builder.build_call(bar, &[], "call_bar").expect("build call");
+  let call = builder
+    .build_call(bar, &[], "call_bar")
+    .expect("build call");
   statepoint_directives::set_callsite_statepoint_id(call.as_value_ref(), 42);
   statepoint_directives::set_callsite_statepoint_num_patch_bytes(call.as_value_ref(), 16);
   builder.build_return(None).expect("build return");
@@ -171,7 +168,9 @@ fn rewrite_statepoints_uses_default_statepoint_id_when_unset() {
 
   let entry = context.append_basic_block(foo, "entry");
   builder.position_at_end(entry);
-  builder.build_call(bar, &[], "call_bar").expect("build call");
+  builder
+    .build_call(bar, &[], "call_bar")
+    .expect("build call");
   builder.build_return(None).expect("build return");
 
   let tm = host_target_machine();

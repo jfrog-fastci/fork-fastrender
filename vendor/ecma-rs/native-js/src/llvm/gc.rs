@@ -37,7 +37,10 @@ pub fn gc_ptr_type<'ctx>(ctx: &'ctx Context) -> PointerType<'ctx> {
 ///
 /// This is required for `rewrite-statepoints-for-gc` to rewrite calls in the
 /// function into statepoints.
-pub fn set_gc_strategy(function: &FunctionValue<'_>, strategy: &str) -> Result<(), std::ffi::NulError> {
+pub fn set_gc_strategy(
+  function: &FunctionValue<'_>,
+  strategy: &str,
+) -> Result<(), std::ffi::NulError> {
   let strategy = CString::new(strategy)?;
   unsafe {
     LLVMSetGC(function.as_value_ref(), strategy.as_ptr());

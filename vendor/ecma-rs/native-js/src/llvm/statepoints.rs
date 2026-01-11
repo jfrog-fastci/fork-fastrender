@@ -39,9 +39,11 @@ use inkwell::types::{AsTypeRef, FunctionType};
 use inkwell::values::{AsValueRef, BasicMetadataValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 use llvm_sys::core::{
-  LLVMAddAttributeAtIndex, LLVMAddCallSiteAttribute, LLVMAddFunction, LLVMBuildCallWithOperandBundles,
-  LLVMCreateEnumAttribute, LLVMCreateOperandBundle, LLVMCreateTypeAttribute, LLVMDisposeOperandBundle,
-  LLVMFunctionType, LLVMGetEnumAttributeKindForName, LLVMGetModuleContext, LLVMGetNamedFunction, LLVMTokenTypeInContext,
+  LLVMAddAttributeAtIndex, LLVMAddCallSiteAttribute, LLVMAddFunction,
+  LLVMBuildCallWithOperandBundles, LLVMCreateEnumAttribute, LLVMCreateOperandBundle,
+  LLVMCreateTypeAttribute, LLVMDisposeOperandBundle, LLVMFunctionType,
+  LLVMGetEnumAttributeKindForName, LLVMGetModuleContext, LLVMGetNamedFunction,
+  LLVMTokenTypeInContext,
 };
 use llvm_sys::prelude::{LLVMTypeRef, LLVMValueRef};
 use std::ffi::CString;
@@ -106,7 +108,8 @@ fn statepoint_p0_decl<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>) -> Statep
   ];
   let fn_ty = unsafe { LLVMFunctionType(token_ty, params.as_mut_ptr(), params.len() as c_uint, 1) };
 
-  let name = CString::new("llvm.experimental.gc.statepoint.p0").expect("statepoint intrinsic name contains NUL");
+  let name = CString::new("llvm.experimental.gc.statepoint.p0")
+    .expect("statepoint intrinsic name contains NUL");
   let mut f = unsafe { LLVMGetNamedFunction(module_ref, name.as_ptr()) };
   if f.is_null() {
     f = unsafe { LLVMAddFunction(module_ref, name.as_ptr(), fn_ty) };
@@ -114,7 +117,8 @@ fn statepoint_p0_decl<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>) -> Statep
     // Add the `immarg` attribute on the non-variadic immediate parameters so our IR matches the
     // intrinsic declaration and the verifier can enforce immediates.
     let immarg_c = CString::new(IMMARG_ATTR).expect("immarg contains NUL");
-    let immarg_kind = unsafe { LLVMGetEnumAttributeKindForName(immarg_c.as_ptr(), immarg_c.as_bytes().len()) };
+    let immarg_kind =
+      unsafe { LLVMGetEnumAttributeKindForName(immarg_c.as_ptr(), immarg_c.as_bytes().len()) };
     if immarg_kind != 0 {
       let immarg_attr = unsafe { LLVMCreateEnumAttribute(llvm_ctx, immarg_kind, 0) };
       unsafe {
@@ -126,7 +130,10 @@ fn statepoint_p0_decl<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>) -> Statep
     }
   }
 
-  StatepointDecl { func: f, func_ty: fn_ty }
+  StatepointDecl {
+    func: f,
+    func_ty: fn_ty,
+  }
 }
 
 fn attach_elementtype_to_statepoint_callee<'ctx>(
@@ -139,7 +146,10 @@ fn attach_elementtype_to_statepoint_callee<'ctx>(
   let kind = unsafe {
     LLVMGetEnumAttributeKindForName(elementtype_c.as_ptr(), elementtype_c.as_bytes().len())
   };
-  assert!(kind != 0, "LLVM did not recognize `{ELEMENTTYPE_ATTR}` attribute kind");
+  assert!(
+    kind != 0,
+    "LLVM did not recognize `{ELEMENTTYPE_ATTR}` attribute kind"
+  );
 
   let attr = unsafe { LLVMCreateTypeAttribute(llvm_ctx, kind, callee_sig.as_type_ref()) };
   unsafe {

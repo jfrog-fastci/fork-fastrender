@@ -43,10 +43,12 @@ This only works if **all code that can run on GC-managed threads keeps frame poi
 
 - **Generated LLVM code** must be compiled with frame pointers:
   - `llc -frame-pointer=all` (or equivalent target options/attributes).
+- **Generated LLVM code** must also keep statepoint GC roots in *addressable stack slots* (not registers):
+  - `llc -fixup-max-csr-statepoints=0`
+  - See `docs/stackmaps.md` for the full “no Register roots” contract and regression tests.
 - **Rust runtime code** must be compiled with frame pointers:
   - `RUSTFLAGS="-C force-frame-pointers=yes"`  
     The repo's LLVM wrapper script (`scripts/cargo_llvm.sh`) sets this automatically.
 
 Future work may add a DWARF/`libunwind` fallback, but precise GC currently assumes frame pointers
 are enabled.
-

@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use super::roots::RootHandle;
 use super::roots::RootHandles;
-use super::ObjHeader;
-use super::TypeDescriptor;
 use super::weak::WeakHandle;
 use super::weak::WeakHandles;
+use super::ObjHeader;
+use super::TypeDescriptor;
 use crate::array;
 use crate::array::RtArrayHeader;
 use crate::trap;
