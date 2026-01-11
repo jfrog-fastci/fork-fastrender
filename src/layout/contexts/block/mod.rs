@@ -279,7 +279,7 @@ fn has_abspos_descendant_needing_used_cb_height(root: &BoxNode) -> bool {
     {
       // Block-level abspos children are collected by the block formatting context and laid out
       // after the containing block's used height is known, so they do not require relayout here.
-      let is_direct_block_level_child = depth == 1 && !style.display.is_inline_level();
+      let is_direct_block_level_child = depth == 1 && !node.original_display.is_inline_level();
       if !is_direct_block_level_child {
         return true;
       }
@@ -5514,20 +5514,20 @@ impl BlockFormattingContext {
       // A run of inline-level siblings can contain only out-of-flow positioned boxes (e.g.
       // `<div><span style="position:absolute"></span></div>`). These must not generate line boxes
       // or consume pending collapsible margins, but still need a float-aware static position.
-       if buffer.iter().all(is_out_of_flow) {
-         let pending_margin = margin_ctx.pending_collapsible_margin().resolve();
-         let static_y = *current_y + pending_margin;
+      if buffer.iter().all(is_out_of_flow) {
+        let pending_margin = margin_ctx.pending_collapsible_margin().resolve();
+        let static_y = *current_y + pending_margin;
         let (left_edge, _) = float_ctx_ref.available_width_at_y_in_containing_block(
           float_base_y + static_y,
           float_base_x,
           containing_width,
         );
         let left_offset = (left_edge - float_base_x).max(0.0);
-         for child in buffer.drain(..) {
-           let static_position = Some(Point::new(left_offset, static_y));
-           let source = match child.style.position {
-             Position::Fixed => {
-               if establishes_fixed_cb {
+        for child in buffer.drain(..) {
+          let static_position = Some(Point::new(left_offset, static_y));
+          let source = match child.style.position {
+            Position::Fixed => {
+              if establishes_fixed_cb {
                 ContainingBlockSource::ParentPadding
               } else {
                 ContainingBlockSource::Explicit(*nearest_fixed_cb)
@@ -5554,12 +5554,16 @@ impl BlockFormattingContext {
         return Ok(None);
       }
 
-      // If the buffer contains any block-level boxes (or only collapsible whitespace),
-      // lay each out separately to avoid creating an inline formatting context that spans
-      // mixed block content or empty lines.
-      let has_block = buffer
-        .iter()
-        .any(|b| b.is_block_level() && !b.style.float.is_floating());
+      // If the buffer contains any *in-flow* block-level boxes (or only whitespace), lay each out
+      // separately to avoid creating an inline formatting context that spans mixed block content.
+      //
+      // Out-of-flow positioned boxes can be blockified (CSS2.1 §9.7) even when their original
+      // display type is inline-level. We still defer those to the inline formatting context for
+      // float-aware static-position anchoring, so they must not trigger this "block content in the
+      // inline buffer" fallback.
+      let has_block = buffer.iter().any(|b| {
+        !is_out_of_flow(b) && b.is_block_level() && !b.style.float.is_floating()
+      });
       let all_whitespace = buffer.iter().all(|b| match &b.box_type {
         BoxType::Text(text) => trim_ascii_whitespace(&text.text).is_empty(),
         _ => false,
@@ -5577,25 +5581,25 @@ impl BlockFormattingContext {
               BoxType::Replaced(_) if !child.style.display.is_inline_level()
             );
 
-           let (fragment, next_y) = if treated_as_block {
-             layout_in_flow_block_child(&child, margin_ctx, *current_y, float_ctx_ref)?
-           } else {
-             let pending_margin = margin_ctx.consume_pending();
-             *current_y += pending_margin;
-             let box_y = *current_y;
+          let (fragment, next_y) = if treated_as_block {
+            layout_in_flow_block_child(&child, margin_ctx, *current_y, float_ctx_ref)?
+          } else {
+            let pending_margin = margin_ctx.consume_pending();
+            *current_y += pending_margin;
+            let box_y = *current_y;
             let fragment = child_layout_ctx.layout_block_child(
               parent,
               &child,
               containing_width,
               constraints,
               box_y,
-             nearest_positioned_cb,
-             nearest_fixed_cb,
-             Some(&mut *float_ctx_ref),
-             float_base_x,
-             float_base_y,
-             paint_viewport,
-           )?;
+              nearest_positioned_cb,
+              nearest_fixed_cb,
+              Some(&mut *float_ctx_ref),
+              float_base_x,
+              float_base_y,
+              paint_viewport,
+            )?;
             let block_extent = fragment.bounds.height();
             let next_y = box_y + block_extent;
             (fragment, next_y)
@@ -6109,7 +6113,7 @@ impl BlockFormattingContext {
         //
         // Defer these to the inline formatting context, which will insert a zero-sized
         // `StaticPositionAnchor` at the correct inline cursor.
-        if child.style.display.is_inline_level() {
+        if child.original_display.is_inline_level() {
           inline_buffer.push(child.clone());
           continue;
         }
@@ -7085,6 +7089,7 @@ impl BlockFormattingContext {
   fn clone_with_children(parent: &BoxNode, children: Vec<BoxNode>) -> BoxNode {
     BoxNode {
       style: parent.style.clone(),
+      original_display: parent.original_display,
       starting_style: parent.starting_style.clone(),
       box_type: parent.box_type.clone(),
       children,

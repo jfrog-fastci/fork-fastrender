@@ -1841,7 +1841,7 @@ impl FontDatabase {
     // Prefer Roboto Flex first: its metrics are closer to typical Linux browser sans-serif
     // fallbacks, reducing wrap-driven layout drift when system fonts are disabled.
     const SANS: &[&str] = &["Roboto Flex", "Noto Sans"];
-    const SERIF: &[&str] = &["Noto Serif"];
+    const SERIF: &[&str] = &["STIX Two Math", "FastRender Serif", "Noto Serif"];
     const MONO: &[&str] = &["Noto Sans Mono"];
 
     if family.eq_ignore_ascii_case("helvetica")
@@ -3109,7 +3109,7 @@ mod tests {
       .query("Times New Roman", FontWeight::NORMAL, FontStyle::Normal)
       .expect("expected Times New Roman to alias to a bundled serif");
     let font = db.load_font(id).expect("expected aliased font to load");
-    assert_eq!(font.family, "Noto Serif");
+    assert_eq!(font.family, "STIX Two Math");
 
     let id = db
       .query("Courier New", FontWeight::NORMAL, FontStyle::Normal)

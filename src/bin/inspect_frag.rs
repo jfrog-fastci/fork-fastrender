@@ -642,6 +642,7 @@ fn filter_box_subtree(node: &BoxNode, allowed_styled_ids: &HashSet<usize>) -> Op
   }
   Some(BoxNode {
     style: node.style.clone(),
+    original_display: node.original_display,
     starting_style: node.starting_style.clone(),
     box_type: node.box_type.clone(),
     children,

@@ -575,6 +575,7 @@ impl AnonymousBoxCreator {
     let fragment = match box_type {
       BoxType::Inline(inline) => BoxNode {
         style: style.clone(),
+        original_display: style.display,
         starting_style: starting_style.clone(),
         box_type: BoxType::Inline(InlineBox {
           formatting_context: inline.formatting_context,
@@ -593,6 +594,7 @@ impl AnonymousBoxCreator {
       },
       BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => BoxNode {
         style: style.clone(),
+        original_display: style.display,
         starting_style: starting_style.clone(),
         box_type: BoxType::Anonymous(anon.clone()),
         children,
@@ -850,8 +852,10 @@ impl AnonymousBoxCreator {
       anonymous_type: AnonymousType::Inline,
     });
 
+    let wrapper_original_display = wrapper_style.display;
     let text_node = BoxNode {
       style: std::mem::replace(&mut node.style, wrapper_style),
+      original_display: std::mem::replace(&mut node.original_display, wrapper_original_display),
       starting_style: node.starting_style.take(),
       box_type: std::mem::replace(&mut node.box_type, wrapper_box_type),
       children: std::mem::take(&mut node.children),
@@ -889,8 +893,10 @@ impl AnonymousBoxCreator {
       style.display = Display::Block;
       Arc::new(style)
     };
+    let original_display = style.display;
     BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::Block,
@@ -924,8 +930,10 @@ impl AnonymousBoxCreator {
       style.display = Display::Inline;
       Arc::new(style)
     };
+    let original_display = style.display;
     BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::Inline,
@@ -948,8 +956,10 @@ impl AnonymousBoxCreator {
   ///
   /// Used when table cells appear outside of table rows.
   pub fn create_anonymous_table_row(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> BoxNode {
+    let original_display = style.display;
     BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::TableRow,
@@ -972,8 +982,10 @@ impl AnonymousBoxCreator {
   ///
   /// Used when non-table content appears inside table rows.
   pub fn create_anonymous_table_cell(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> BoxNode {
+    let original_display = style.display;
     BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::TableCell,

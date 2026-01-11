@@ -1855,6 +1855,7 @@ pub trait FormattingContext: Send + Sync {
         .collect();
       BoxNode {
         style: box_node.style.clone(),
+        original_display: box_node.original_display,
         starting_style: box_node.starting_style.clone(),
         box_type: box_node.box_type.clone(),
         children,

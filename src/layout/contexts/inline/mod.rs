@@ -3821,8 +3821,10 @@ impl InlineFormattingContext {
     abs_cb_stack: &mut Vec<usize>,
     fixed_cb_stack: &mut Vec<usize>,
   ) -> Result<Vec<InlineItem>, LayoutError> {
+    let original_display = style.display;
     let container = BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Inline(InlineBox {
         formatting_context: None,

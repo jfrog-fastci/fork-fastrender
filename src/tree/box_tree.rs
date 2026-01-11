@@ -25,6 +25,7 @@ use crate::geometry::Size;
 use crate::math::MathLayout;
 use crate::resource::ReferrerPolicy;
 use crate::style::color::Rgba;
+use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
 use crate::style::media::MediaQuery;
 use crate::style::types::Appearance;
@@ -1196,6 +1197,8 @@ pub struct BoxNode {
   /// - Immutable after computation
   /// - Reduces memory usage for cloned trees
   pub style: Arc<ComputedStyle>,
+  /// The computed `display` value before box-generation transformations (e.g. blockification).
+  pub original_display: Display,
   /// Optional starting style snapshot for transitions.
   pub starting_style: Option<Arc<ComputedStyle>>,
 
@@ -1259,6 +1262,7 @@ impl Clone for BoxNode {
     fn clone_shallow(node: &BoxNode) -> BoxNode {
       BoxNode {
         style: Arc::clone(&node.style),
+        original_display: node.original_display,
         starting_style: node.starting_style.clone(),
         box_type: node.box_type.clone(),
         children: Vec::with_capacity(node.children.len()),
@@ -1398,8 +1402,10 @@ impl BoxNode {
     fc: FormattingContextType,
     children: Vec<BoxNode>,
   ) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Block(BlockBox {
         formatting_context: fc,
@@ -1420,8 +1426,10 @@ impl BoxNode {
 
   /// Creates a new inline box
   pub fn new_inline(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Inline(InlineBox {
         formatting_context: None,
@@ -1442,8 +1450,10 @@ impl BoxNode {
 
   /// Creates a new forced line break box (`<br>`)
   pub fn new_line_break(style: Arc<ComputedStyle>) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::LineBreak(LineBreakBox),
       children: Vec::new(),
@@ -1466,8 +1476,10 @@ impl BoxNode {
     fc: FormattingContextType,
     children: Vec<BoxNode>,
   ) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Inline(InlineBox {
         formatting_context: Some(fc),
@@ -1488,8 +1500,10 @@ impl BoxNode {
 
   /// Creates a new text box
   pub fn new_text(style: Arc<ComputedStyle>, text: String) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Text(TextBox { text }),
       children: Vec::new(),
@@ -1508,8 +1522,10 @@ impl BoxNode {
 
   /// Creates a new list marker box
   pub fn new_marker(style: Arc<ComputedStyle>, content: MarkerContent) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Marker(MarkerBox { content }),
       children: Vec::new(),
@@ -1533,8 +1549,10 @@ impl BoxNode {
     intrinsic_size: Option<Size>,
     aspect_ratio: Option<f32>,
   ) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Replaced(ReplacedBox {
         replaced_type,
@@ -1558,8 +1576,10 @@ impl BoxNode {
 
   /// Creates an anonymous block box
   pub fn new_anonymous_block(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::Block,
@@ -1580,8 +1600,10 @@ impl BoxNode {
 
   /// Creates an anonymous fieldset content box.
   pub fn new_anonymous_fieldset_content(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::FieldsetContent,
@@ -1602,8 +1624,10 @@ impl BoxNode {
 
   /// Creates an anonymous inline box
   pub fn new_anonymous_inline(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> Self {
+    let original_display = style.display;
     Self {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::Inline,

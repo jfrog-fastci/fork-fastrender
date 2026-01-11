@@ -304,8 +304,10 @@ impl TableStructureFixer {
   }
 
   fn create_anonymous_row_with_style(cells: Vec<BoxNode>, style: Arc<ComputedStyle>) -> BoxNode {
+    let original_display = style.display;
     BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::TableRow,
@@ -335,8 +337,10 @@ impl TableStructureFixer {
     rows: Vec<BoxNode>,
     style: Arc<ComputedStyle>,
   ) -> BoxNode {
+    let original_display = style.display;
     BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::TableRowGroup,
@@ -366,8 +370,10 @@ impl TableStructureFixer {
     children: Vec<BoxNode>,
     style: Arc<ComputedStyle>,
   ) -> BoxNode {
+    let original_display = style.display;
     BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::TableCell,
@@ -389,9 +395,11 @@ impl TableStructureFixer {
   /// Creates an anonymous table wrapper
   fn create_anonymous_wrapper(children: Vec<BoxNode>, parent_style: &ComputedStyle) -> BoxNode {
     let style = Self::inherited_table_style(parent_style, Display::Block);
+    let original_display = style.display;
 
     BoxNode {
       style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::TableWrapper,
@@ -1194,8 +1202,11 @@ mod tests {
 
   // Helper to create a row box with explicit display
   fn row_box(cells: Vec<BoxNode>) -> BoxNode {
+    let style = table_row_style();
+    let original_display = style.display;
     BoxNode {
-      style: table_row_style(),
+      style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Block(BlockBox {
         formatting_context: FormattingContextType::Block,
@@ -1216,8 +1227,11 @@ mod tests {
 
   // Helper to create a cell box with explicit display
   fn cell_box(content: Vec<BoxNode>) -> BoxNode {
+    let style = table_cell_style();
+    let original_display = style.display;
     BoxNode {
-      style: table_cell_style(),
+      style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Block(BlockBox {
         formatting_context: FormattingContextType::Block,
@@ -1238,8 +1252,11 @@ mod tests {
 
   // Helper to create a row group box
   fn row_group_box(rows: Vec<BoxNode>) -> BoxNode {
+    let style = table_row_group_style();
+    let original_display = style.display;
     BoxNode {
-      style: table_row_group_style(),
+      style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Block(BlockBox {
         formatting_context: FormattingContextType::Block,
@@ -1260,8 +1277,11 @@ mod tests {
 
   // Helper to create a caption box
   fn caption_box(content: Vec<BoxNode>) -> BoxNode {
+    let style = table_caption_style();
+    let original_display = style.display;
     BoxNode {
-      style: table_caption_style(),
+      style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Block(BlockBox {
         formatting_context: FormattingContextType::Block,
@@ -1503,8 +1523,11 @@ mod tests {
 
     let mut block_style = ComputedStyle::default();
     block_style.display = Display::Block;
+    let block_style = Arc::new(block_style);
+    let original_display = block_style.display;
     let whitespace_block = BoxNode {
-      style: Arc::new(block_style),
+      style: block_style,
+      original_display,
       starting_style: None,
       box_type: BoxType::Anonymous(AnonymousBox {
         anonymous_type: AnonymousType::Block,

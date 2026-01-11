@@ -4641,6 +4641,7 @@ fn generate_boxes_for_styled_into(
               None,
             );
             let mut box_node = box_node;
+            box_node.original_display = styled.styles.display;
             box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
             let box_node = attach_debug_info(box_node, styled);
             if let Some(parent) = stack.last_mut() {
@@ -4708,6 +4709,7 @@ fn generate_boxes_for_styled_into(
             let style = transform_style_for_box_generation_if_needed(&styled.styles, &stack);
             let mut box_node =
               BoxNode::new_replaced(style, ReplacedType::FormControl(form_control), None, None);
+            box_node.original_display = styled.styles.display;
             box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
             box_node.children = pseudo_children;
             let box_node = attach_debug_info(box_node, styled);
@@ -4764,6 +4766,7 @@ fn generate_boxes_for_styled_into(
               debug_assert!(popped.is_some(), "frame exists");
               counters.leave_scope();
               let mut box_node = box_node;
+              box_node.original_display = styled.styles.display;
               box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
               let box_node = attach_debug_info(box_node, styled);
               if let Some(parent) = stack.last_mut() {
@@ -5036,6 +5039,7 @@ fn generate_boxes_for_styled_into(
           }
         }
 
+        let original_display = base_style.display;
         let style = transform_style_for_box_generation_if_needed(&base_style, &stack);
         let display = style.display;
         let fc_type = display
@@ -5082,6 +5086,7 @@ fn generate_boxes_for_styled_into(
           }
         };
 
+        box_node.original_display = original_display;
         box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
         box_node.first_line_style = styled.first_line_styles.as_ref().map(Arc::clone);
         box_node.first_letter_style = styled.first_letter_styles.as_ref().map(Arc::clone);
@@ -5378,6 +5383,7 @@ fn create_pseudo_element_box(
     return None;
   }
 
+  let original_display = styles.display;
   counters.enter_scope();
   styles.counters.apply_to(counters);
 
@@ -5645,6 +5651,7 @@ fn create_pseudo_element_box(
     }
   };
 
+  pseudo_box.original_display = original_display;
   // Add debug info to mark this as a pseudo-element
   pseudo_box.debug_info = Some(DebugInfo::new(
     Some(pseudo_name.to_string()),
@@ -7608,9 +7615,11 @@ fn create_replaced_box_from_styled(
     no_intrinsic_ratio,
   };
 
+  let original_display = style.display;
   Some(BoxNode {
     box_type: BoxType::Replaced(replaced_box),
     style,
+    original_display,
     starting_style: None,
     children: vec![],
     footnote_body: None,
