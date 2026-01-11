@@ -1012,6 +1012,31 @@ llvm-as /tmp/statepoint.ll -o /dev/null  # prints nothing on success; verifier e
 
 LLVM generates native code + stack maps (metadata describing where GC refs are at each safepoint).
 
+**LLVM 18 stackmap invariant (important):**
+On both **x86_64 SysV** and **aarch64 SysV**, across `-O0` and `-O2` (and with/without
+`-frame-pointer=all`), LLVM’s `rewrite-statepoints-for-gc` currently spills all `gc-live` values
+into stack slots. The emitted StackMap v3 root locations are always of the form:
+`Indirect [SP + off]` (spill slot), not `Register`/`Direct`.
+
+This is good news: a moving GC can update the spill slot in memory, and the code after the
+statepoint reloads relocated values from those slots.
+
+If LLVM ever starts emitting register roots for `gc-live`, our runtime must grow full
+register-context capture + restore support; until then we should assert/fail loudly if a non-stack
+GC root location kind is observed.
+
+Repro (LLVM 18):
+```bash
+# out.ll contains `gc.statepoint` + `gc.relocate` after rewriting
+opt-18 -passes=rewrite-statepoints-for-gc -S in.ll -o out.ll
+llc-18 -O2 -filetype=obj out.ll -o out.o
+llvm-readobj-18 --stackmap out.o
+
+# Cross-check AArch64:
+llc-18 -mtriple=aarch64-unknown-linux-gnu -O2 -filetype=obj out.ll -o out_aarch64.o
+llvm-readobj-18 --stackmap out_aarch64.o
+```
+
 Runtime reads stack maps. When GC runs:
 
 ```c
