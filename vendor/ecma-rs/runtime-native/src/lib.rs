@@ -597,6 +597,7 @@ mod tests {
       "void rt_promise_reject(PromiseRef p);",
       "uint8_t* rt_promise_payload_ptr(PromiseRef p);",
       "PromiseRef rt_async_spawn(CoroutineRef coro);",
+      "PromiseRef rt_async_spawn_deferred(CoroutineRef coro);",
       "void rt_async_cancel_all(void);",
       "bool rt_async_poll(void);",
       "void rt_async_wait(void);",
@@ -608,6 +609,7 @@ mod tests {
       "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",
       "void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
       "LegacyPromiseRef rt_async_spawn_legacy(RtCoroutineHeader* coro);",
+      "LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);",
       "bool rt_async_poll_legacy(void);",
       "LegacyPromiseRef rt_async_sleep_legacy(uint64_t delay_ms);",
       "void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);",
@@ -677,6 +679,7 @@ mod tests {
     let _promise_reject: unsafe extern "C" fn(PromiseRef) = rt_promise_reject;
     let _promise_payload_ptr: extern "C" fn(PromiseRef) -> *mut u8 = rt_promise_payload_ptr;
     let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
+    let _async_spawn_deferred: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn_deferred;
     let _async_cancel_all: extern "C" fn() = rt_async_cancel_all;
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
     let _async_wait: extern "C" fn() = rt_async_wait;
@@ -688,6 +691,8 @@ mod tests {
     let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
     let _promise_then_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then_legacy;
     let _async_spawn_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn_legacy;
+    let _async_spawn_deferred_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef =
+      rt_async_spawn_deferred_legacy;
     let _async_poll_legacy: extern "C" fn() -> bool = rt_async_poll_legacy;
     let _async_sleep_legacy: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep_legacy;
     let _queue_microtask: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = rt_queue_microtask;
