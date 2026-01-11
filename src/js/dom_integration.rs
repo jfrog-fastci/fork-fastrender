@@ -201,7 +201,13 @@ where
 
     // `integrity` attribute clamping: if present but too large, the metadata is invalid and the
     // script must not execute.
-    if spec.integrity_attr_present && spec.integrity.is_none() {
+    //
+    // Inline scripts should behave like other "early-out" cases (e.g. empty inline text): do not
+    // mark the element as already started so later mutations can still trigger preparation.
+    //
+    // External scripts (`src` attribute present) must still participate in script processing so we
+    // can queue an `error` event task and suppress inline fallback execution.
+    if spec.integrity_attr_present && spec.integrity.is_none() && !spec.src_attr_present {
       return (None, false);
     }
 
@@ -226,6 +232,41 @@ where
   // its computed script type is `classic` (and the user agent supports module scripts), the
   // algorithm returns early (the script is not fetched/executed).
   if spec.is_suppressed_by_nomodule(&scheduler.options()) {
+    return Ok(());
+  }
+
+  // Invalid integrity metadata: external scripts should queue an `error` event and must not start a
+  // fetch. Inline scripts with invalid integrity are handled above (returning `None` and leaving the
+  // element eligible for later mutations).
+  if spec.integrity_attr_present && spec.integrity.is_none() {
+    match spec.script_type {
+      ScriptType::Classic => {
+        event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+          host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+        })?;
+      }
+      ScriptType::Module => {
+        if supports_module_scripts {
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+          })?;
+        } else if spec.src_attr_present && spec.src.is_none() {
+          // Preserve the existing "src present but invalid/empty" behavior for unsupported module
+          // scripts: queue an error event task and suppress inline fallback.
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+          })?;
+        }
+      }
+      ScriptType::ImportMap => {
+        if supports_module_scripts {
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+          })?;
+        }
+      }
+      ScriptType::Unknown => {}
+    }
     return Ok(());
   }
 
@@ -856,6 +897,48 @@ mod tests {
     assert!(
       !host.dom.node(script).script_already_started,
       "expected invalid integrity metadata not to mark scripts as already started"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_external_script_oversized_integrity_attribute_queues_error_event_and_does_not_start_fetch() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
+    dom
+      .set_attribute(script, "integrity", &integrity)
+      .expect("set_attribute should succeed");
+    dom
+      .set_attribute(script, "src", "https://example.com/a.js")
+      .expect("set_attribute should succeed");
+    let text = dom.create_text("INLINE");
+    dom.append_child(script, text).expect("append_child");
+    dom.append_child(dom.root(), script).expect("append_child");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.started_loads.is_empty(),
+      "expected invalid integrity metadata to prevent fetch start"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected no script execution when integrity metadata is invalid"
+    );
+    assert_eq!(
+      host.events,
+      vec![ScriptElementEvent::Error],
+      "expected an error event task for external scripts with invalid integrity metadata"
+    );
+    assert!(
+      host.dom.node(script).script_already_started,
+      "expected external scripts with invalid integrity metadata to be marked as already started"
     );
     Ok(())
   }
