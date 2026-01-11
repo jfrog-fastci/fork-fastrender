@@ -13,7 +13,8 @@ use native_js::{emit, llvm::gc};
 
 /// End-to-end test: generate an object file that contains `.llvm_stackmaps`,
 /// link it into an executable, and ensure the final binary keeps the stackmaps
-/// section without keeping a relocation section for it.
+/// section (relocated to `.data.rel.ro.llvm_stackmaps`) without keeping a
+/// relocation section for it.
 ///
 /// This is a regression test for PIE linking: when building a PIE, `.llvm_stackmaps`
 /// can require runtime relocations which often triggers `DT_TEXTREL` warnings.
@@ -46,15 +47,15 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
   let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
   assert_eq!(elf_type, 2, "expected non-PIE ET_EXEC (e_type={elf_type})");
 
-  assert_section_present_non_empty(&exe_bytes, ".llvm_stackmaps")?;
+  assert_section_present_non_empty(&exe_bytes, ".data.rel.ro.llvm_stackmaps")?;
   assert_section_absent(&exe_bytes, ".rela.llvm_stackmaps")?;
   assert_section_absent(&exe_bytes, ".rel.llvm_stackmaps")?;
 
-  // Optional: stripping should not remove the allocated `.llvm_stackmaps` section.
+  // Optional: stripping should not remove the allocated stackmaps section.
   if command_works("strip") {
     run(Command::new("strip").arg(&exe_path)).context("strip")?;
     let stripped = fs::read(&exe_path).context("read stripped executable")?;
-    assert_section_present_non_empty(&stripped, ".llvm_stackmaps")?;
+    assert_section_present_non_empty(&stripped, ".data.rel.ro.llvm_stackmaps")?;
     assert_section_absent(&stripped, ".rela.llvm_stackmaps")?;
   }
 
@@ -99,7 +100,7 @@ fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
   let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
   assert_eq!(elf_type, 3, "expected PIE ET_DYN (e_type={elf_type})");
 
-  assert_section_present_non_empty(&exe_bytes, ".llvm_stackmaps")?;
+  assert_section_present_non_empty(&exe_bytes, ".data.rel.ro.llvm_stackmaps")?;
   assert_section_absent(&exe_bytes, ".rela.llvm_stackmaps")?;
   assert_section_absent(&exe_bytes, ".rel.llvm_stackmaps")?;
   assert_no_textrel_dynamic_tags(&exe_bytes)?;
@@ -133,7 +134,7 @@ fn link_object_to_executable_keeps_stackmaps_under_gc_sections() -> Result<()> {
         .map_err(|err| anyhow!("link_object_to_executable failed: {err}"))?;
 
     let exe_bytes = fs::read(&exe_path).context("read linked executable")?;
-    assert_section_present_non_empty(&exe_bytes, ".llvm_stackmaps")?;
+    assert_section_present_non_empty(&exe_bytes, ".data.rel.ro.llvm_stackmaps")?;
 
     Ok(())
 }

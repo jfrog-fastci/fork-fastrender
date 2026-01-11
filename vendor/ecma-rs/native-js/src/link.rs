@@ -13,9 +13,13 @@
 //! absolute addresses.
 //!
 //! ## Supporting PIE safely
-//! PIE can be enabled via [`LinkOpts::pie`] **without** `DT_TEXTREL` by making the input
-//! `.llvm_stackmaps` section writable before linking. This allows lld to emit normal dynamic
-//! relocations against the writable section instead of requiring text relocations.
+//! PIE can be enabled via [`LinkOpts::pie`] **without** `DT_TEXTREL` by relocating LLVM stackmaps
+//! into a RELRO-friendly data section before the final link.
+//!
+//! Concretely, we rewrite input objects to rename `.llvm_stackmaps` →
+//! `.data.rel.ro.llvm_stackmaps` using `llvm-objcopy --rename-section ...`. This ensures the
+//! required relocations are applied to RW memory (as normal dynamic relocations) and avoids text
+//! relocations.
 //!
 //! The dynamic loader applies these relocations at startup, so the stackmap records contain the
 //! final relocated absolute PCs at runtime, and stackmap lookup continues to work by comparing
@@ -31,9 +35,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 
-/// Symbol exported by the final ELF that points at the first byte of `.llvm_stackmaps`.
+/// Symbol exported by the final ELF that points at the first byte of stackmaps.
 pub const LLVM_STACKMAPS_START_SYM: &str = "__start_llvm_stackmaps";
-/// Symbol exported by the final ELF that points one byte past the end of `.llvm_stackmaps`.
+/// Symbol exported by the final ELF that points one byte past the end of stackmaps.
 pub const LLVM_STACKMAPS_STOP_SYM: &str = "__stop_llvm_stackmaps";
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -50,17 +54,17 @@ pub enum LinkerFlavor {
 pub struct LinkOpts {
   /// If true, pass `-Wl,--gc-sections` to the linker.
   ///
-  /// Note: `.llvm_stackmaps` is still retained via our linker script fragment
-  /// (`KEEP(*(.llvm_stackmaps ...))`).
+  /// Note: stackmaps are still retained via our linker script fragment (`KEEP(*(...))`).
   pub gc_sections: bool,
   pub linker: LinkerFlavor,
   /// Whether to produce a PIE executable.
   ///
   /// Ubuntu toolchains default to PIE, but LLVM stackmaps contain absolute relocations against
-  /// function symbols. Preserving `.llvm_stackmaps` in a read-only segment (so the runtime can read
-  /// it directly) is incompatible with PIE unless we either:
-  /// - allow text relocations (`-Wl,-z,notext`), or
-  /// - rewrite `.llvm_stackmaps` to be writable before linking so lld can relocate it normally.
+  /// function symbols.
+  ///
+  /// When producing PIE, we avoid `DT_TEXTREL` by rewriting input objects to rename
+  /// `.llvm_stackmaps` → `.data.rel.ro.llvm_stackmaps` before linking. This allows the dynamic
+  /// loader to apply relocations to RW memory and then protect it via RELRO.
   ///
   /// We therefore default to `pie: false` and use `-no-pie` unless the caller explicitly opts into
   /// PIE. On Linux, `pie: true` passes `-pie` explicitly so the link mode is reproducible across
@@ -91,6 +95,7 @@ impl Default for LinkOpts {
 /// We insert after `.text` (instead of the more intuitive `.rodata`) because lld does not create an
 /// empty `.rodata` output section, and will error if an `INSERT AFTER .rodata` fragment is used
 /// when the input objects don't contribute any `.rodata` (common in minimal binaries/tests).
+///
 /// Keep this in sync with `runtime-native/link/stackmaps.ld`.
 const LLVM_STACKMAPS_LD_FRAGMENT: &str = include_str!("../../runtime-native/link/stackmaps.ld");
 
@@ -178,8 +183,8 @@ pub fn link_elf_executable_with_options(
   let script_path = out_dir.join("llvm_stackmaps.ld");
   write_stackmaps_linker_script(&script_path)?;
 
-  // If producing a PIE, ensure `.llvm_stackmaps` is writable in the input objects so lld can apply
-  // the required relocations without emitting DT_TEXTREL.
+  // If producing a PIE, relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps` in the input
+  // objects so lld can apply the required relocations without emitting DT_TEXTREL.
   //
   // We copy objects into a tempdir to avoid mutating the caller's build artifacts in-place.
   let mut patched_obj_dir: Option<tempfile::TempDir> = None;
@@ -194,11 +199,12 @@ pub fn link_elf_executable_with_options(
       fs::copy(src, &dst)
         .with_context(|| format!("failed to copy object {} to {}", src.display(), dst.display()))?;
 
-      // `llvm-objcopy` is a no-op if the section doesn't exist, so we can apply this unconditionally.
+      // `llvm-objcopy` is a no-op if the section doesn't exist, so we can apply this
+      // unconditionally.
       let status = Command::new(objcopy)
         .args([
-          "--set-section-flags",
-          ".llvm_stackmaps=alloc,load,contents,data",
+          "--rename-section",
+          ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
         ])
         .arg(&dst)
         .status()
@@ -432,8 +438,8 @@ pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) ->
 /// Minimal system linker wrapper used by the early AOT pipeline.
 ///
 /// This is used by the "emit executable" helper for quick smoke tests / debugging. It still wires
-/// in the stackmaps linker fragment so `--gc-sections` doesn't discard `.llvm_stackmaps` if the
-/// generated object happens to include them.
+/// in the stackmaps linker fragment so `--gc-sections` doesn't discard stackmaps if the generated
+/// object happens to include them.
 pub fn link_object_to_executable(obj_path: &Path, exe_path: &Path) -> Result<(), crate::NativeJsError> {
   if !cfg!(target_os = "linux") {
     return Err(crate::NativeJsError::UnsupportedPlatform {

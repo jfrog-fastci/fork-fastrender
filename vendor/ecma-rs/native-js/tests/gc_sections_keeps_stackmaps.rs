@@ -91,9 +91,9 @@ entry:
       },
     )?;
 
-    let stackmaps_size = read_elf_section_size(&exe, ".llvm_stackmaps")?;
+    let stackmaps_size = read_elf_section_size(&exe, ".data.rel.ro.llvm_stackmaps")?;
     if stackmaps_size == 0 {
-      bail!("linked ELF contains empty .llvm_stackmaps section");
+      bail!("linked ELF contains empty .data.rel.ro.llvm_stackmaps section");
     }
 
     let status = Command::new(&exe)
@@ -113,9 +113,9 @@ entry:
       bail!("strip failed with status {strip_status}");
     }
 
-    let stripped_stackmaps_size = read_elf_section_size(&exe_stripped, ".llvm_stackmaps")?;
+    let stripped_stackmaps_size = read_elf_section_size(&exe_stripped, ".data.rel.ro.llvm_stackmaps")?;
     if stripped_stackmaps_size == 0 {
-      bail!("stripped ELF contains empty .llvm_stackmaps section");
+      bail!("stripped ELF contains empty .data.rel.ro.llvm_stackmaps section");
     }
 
     Ok(())
