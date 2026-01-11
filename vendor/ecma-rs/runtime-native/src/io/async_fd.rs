@@ -13,6 +13,11 @@ use std::task::{Context, Poll, Waker};
 static NEXT_REGISTRY_KEY: AtomicUsize = AtomicUsize::new(1);
 static REGISTRY: Lazy<Mutex<HashMap<usize, Arc<State>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+extern "C" fn drop_registry_entry(data: *mut u8) {
+  let key = data as usize;
+  REGISTRY.lock().unwrap().remove(&key);
+}
+
 /// A small, runtime-native reactor-backed wrapper for awaiting fd readiness.
 ///
 /// This is a minimal `AsyncFd`-style API intended for internal use by `runtime-native`.
@@ -275,7 +280,7 @@ impl State {
       desired,
       on_io_ready,
       key as *mut u8,
-      drop_watcher_key,
+      drop_registry_entry,
     ) {
       Ok(id) => id,
       Err(e) => {
@@ -329,11 +334,6 @@ extern "C" fn on_io_ready(events: u32, data: *mut u8) {
   for waker in wake {
     waker.wake();
   }
-}
-
-extern "C" fn drop_watcher_key(data: *mut u8) {
-  let key = data as usize;
-  REGISTRY.lock().unwrap().remove(&key);
 }
 
 impl StateInner {

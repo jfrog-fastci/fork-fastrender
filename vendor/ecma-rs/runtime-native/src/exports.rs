@@ -1425,6 +1425,7 @@ pub extern "C" fn rt_io_register(
       return 0;
     }
     let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
     match async_rt::global().register_io(fd, interests, cb, data) {
       Ok(id) => id.as_raw(),
       Err(err) => {
@@ -1438,6 +1439,48 @@ pub extern "C" fn rt_io_register(
         } else {
           maybe_log_rt_io_failure(
             "rt_io_register",
+            format_args!("fd={fd} interests=0x{interests:x}: {err}"),
+          );
+        }
+        0
+      }
+    }
+  })
+}
+
+/// Register an fd with the runtime's readiness reactor, with an explicit drop hook for `data`.
+///
+/// `drop_data(data)` is invoked exactly once when the watcher is unregistered or cleared by runtime
+/// teardown (`async_rt::clear_state_for_tests`). This ensures callback state can be freed even when
+/// queued work is discarded.
+///
+/// On registration failure (return value `0`), `drop_data(data)` is still invoked and the runtime
+/// does not retain the pointer.
+#[no_mangle]
+pub extern "C" fn rt_io_register_with_drop(
+  fd: i32,
+  interests: u32,
+  cb: extern "C" fn(u32, *mut u8),
+  data: *mut u8,
+  drop_data: extern "C" fn(*mut u8),
+) -> IoWatcherId {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+    match async_rt::global().register_io_with_drop(fd, interests, cb, data, drop_data) {
+      Ok(id) => id.as_raw(),
+      Err(err) => {
+        drop_data(data);
+        if err.kind() == io::ErrorKind::InvalidInput {
+          maybe_log_rt_io_failure(
+            "rt_io_register_with_drop",
+            format_args!(
+              "fd={fd} interests=0x{interests:x}: {err} (did you forget to set O_NONBLOCK?)"
+            ),
+          );
+        } else {
+          maybe_log_rt_io_failure(
+            "rt_io_register_with_drop",
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
@@ -1468,6 +1511,7 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
       return;
     }
     let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
     if !async_rt::global().update_io(WatcherId::from_raw(id), interests) {
       maybe_log_rt_io_failure(
         "rt_io_update",
@@ -1487,6 +1531,7 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
 pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
     if !async_rt::global().deregister_fd(WatcherId::from_raw(id)) {
       maybe_log_rt_io_failure(
         "rt_io_unregister",

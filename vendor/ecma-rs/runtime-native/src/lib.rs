@@ -815,6 +815,10 @@ mod tests {
       "TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
       "TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t interval_ms);",
       "void rt_clear_timer(TimerId id);",
+      "IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);",
+      "IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));",
+      "void rt_io_update(IoWatcherId id, uint32_t interests);",
+      "void rt_io_unregister(IoWatcherId id);",
       "void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
     ];
 
@@ -921,6 +925,16 @@ mod tests {
     let _set_interval_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8), u64) -> abi::TimerId =
       rt_set_interval_with_drop;
     let _clear_timer: extern "C" fn(abi::TimerId) = rt_clear_timer;
+    let _io_register: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> abi::IoWatcherId = rt_io_register;
+    let _io_register_with_drop: extern "C" fn(
+      i32,
+      u32,
+      extern "C" fn(u32, *mut u8),
+      *mut u8,
+      extern "C" fn(*mut u8),
+    ) -> abi::IoWatcherId = rt_io_register_with_drop;
+    let _io_update: extern "C" fn(abi::IoWatcherId, u32) = rt_io_update;
+    let _io_unregister: extern "C" fn(abi::IoWatcherId) = rt_io_unregister;
     let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await_legacy;
 
     #[cfg(feature = "gc_stats")]
@@ -1003,6 +1017,10 @@ mod tests {
       _set_interval,
       _set_interval_with_drop,
       _clear_timer,
+      _io_register,
+      _io_register_with_drop,
+      _io_update,
+      _io_unregister,
       _coro_await_legacy,
     );
   }

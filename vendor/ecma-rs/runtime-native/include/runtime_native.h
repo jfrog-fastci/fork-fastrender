@@ -762,12 +762,8 @@ void rt_clear_timer(TimerId id);
 // - Readiness notifications are edge-triggered; consumers must drain reads/writes
 //   until they return `EAGAIN`/`WouldBlock`.
 // - `rt_io_register` returns 0 on failure.
-IoWatcherId rt_io_register(
-  int32_t fd,
-  uint32_t interests,
-  void (*cb)(uint32_t events, uint8_t* data),
-  uint8_t* data
-);
+IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
+IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
 void rt_io_update(IoWatcherId id, uint32_t interests);
 void rt_io_unregister(IoWatcherId id);
 

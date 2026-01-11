@@ -318,7 +318,29 @@ impl Reactor {
     if let WatcherKind::Io(io) = watcher.kind {
       io.active.store(false, Ordering::Release);
       if let Some(drop) = io.drop {
-        drop(io.data);
+        // Defer dropping callback state until the event loop observes the deregistration. This
+        // avoids freeing `data` while an already-queued readiness task is still executing.
+        struct DropCtx {
+          drop: TaskDropFn,
+          data: *mut u8,
+        }
+
+        extern "C" fn noop_drop_task(_data: *mut u8) {}
+
+        extern "C" fn drop_drop_task(data: *mut u8) {
+          // Safety: allocated by `Box::into_raw` in `deregister`.
+          unsafe {
+            let ctx = Box::from_raw(data as *mut DropCtx);
+            (ctx.drop)(ctx.data);
+          }
+        }
+
+        let ctx = Box::new(DropCtx { drop, data: io.data });
+        super::global().enqueue_microtask(Task::new_with_drop(
+          noop_drop_task,
+          Box::into_raw(ctx) as *mut u8,
+          drop_drop_task,
+        ));
       }
     }
     self.wake();
