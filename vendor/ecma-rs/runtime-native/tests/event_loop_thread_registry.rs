@@ -162,8 +162,8 @@ fn event_loop_registers_main_thread_and_participates_in_stop_the_world() {
 
   let _ = runtime_native::async_rt::global().cancel_timer(dummy_timer);
 
-  // Calling `rt_async_poll` from another thread should be serialized and the
-  // thread should be tracked as `External` (not a second `Main`).
+  // Calling `rt_async_poll` from another thread (when not driving concurrently)
+  // should register that thread as `External` (not a second `Main`).
   let (external_tid_tx, external_tid_rx) = mpsc::channel::<u64>();
   let (external_ready_tx, external_ready_rx) = mpsc::channel::<()>();
   let (external_exit_tx, external_exit_rx) = mpsc::channel::<()>();

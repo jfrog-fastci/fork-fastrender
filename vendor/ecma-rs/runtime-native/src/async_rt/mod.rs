@@ -239,13 +239,13 @@ pub type TaskDropFn = extern "C" fn(*mut u8);
 // Thread registry integration
 // -----------------------------------------------------------------------------
 //
-// The async runtime is conceptually single-threaded (JS ordering). The first
-// thread to call `rt_async_poll_legacy` / `rt_async_spawn_legacy` becomes the
-// event-loop thread and is registered as `ThreadKind::Main` so the GC can
-// stop/scan it.
+// The async runtime is conceptually single-threaded (JS ordering). The first thread to drive the
+// event loop (e.g. via `rt_async_poll` / `rt_async_wait`) becomes the event-loop thread and is
+// registered as `ThreadKind::Main` so the GC can stop/scan it.
 //
-// Other threads may call these entrypoints too (the call is serialized by an
-// internal mutex); those threads are registered as `ThreadKind::External`.
+// Other threads may still enter the async runtime (multi-producer). They are registered as
+// `ThreadKind::External`. Driving entrypoints are single-driver: concurrent driving from another
+// thread aborts (fail-fast) rather than blocking.
 
 static EVENT_LOOP_OS_THREAD_ID: AtomicU64 = AtomicU64::new(0);
 
