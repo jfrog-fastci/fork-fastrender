@@ -1036,6 +1036,31 @@ fn parse_attr_function<'a, 'i, 't>(
 where
   'a: 'i,
 {
+  fn serialize_css_string_token(value: &str) -> String {
+    // Prefer a quote character that avoids introducing CSS escape sequences. Most downstream
+    // property parsers in FastRender treat string contents as raw and do not interpret escapes, so
+    // only fall back to escaping when the value contains both quote characters.
+    if !value.contains('\'') {
+      return format!("'{value}'");
+    }
+    if !value.contains('"') {
+      return format!("\"{value}\"");
+    }
+
+    // Fall back to a double-quoted string with minimal escaping for embedded quotes/backslashes so
+    // the output remains a single valid CSS string token.
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+      if ch == '"' || ch == '\\' {
+        out.push('\\');
+      }
+      out.push(ch);
+    }
+    out.push('"');
+    out
+  }
+
   let (name, ty, fallback_value) = parse_attr_function_arguments(parser)
     .map_err(|_| VarResolutionResult::InvalidSyntax("attr".into()))?;
 
@@ -1085,10 +1110,10 @@ where
     }
   }
 
-  let resolved = if let Some(ty) = ty.as_deref() {
-    resolve_typed_attr_value(&attr_value, ty)
-  } else {
-    Some(attr_value.clone())
+  let resolved = match ty.as_deref().map(trim_css_whitespace) {
+    None | Some("") => Some(serialize_css_string_token(&attr_value)),
+    Some(raw_ty) if raw_ty.eq_ignore_ascii_case("string") => Some(serialize_css_string_token(&attr_value)),
+    Some(raw_ty) => resolve_typed_attr_value(&attr_value, raw_ty),
   };
 
   if let Some(resolved) = resolved {

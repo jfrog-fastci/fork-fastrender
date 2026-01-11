@@ -26959,6 +26959,30 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn pseudo_element_content_attr_allows_whitespace_values() {
+    // Regression: `attr()` substitution happens during computed-value-time resolution. When the
+    // attribute value contains whitespace, it must still round-trip through the property parsers as
+    // a single string token so generated content isn't dropped.
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![(
+          "data-text".to_string(),
+          "Our business".to_string(),
+        )],
+      },
+      children: vec![],
+    };
+
+    let stylesheet =
+      parse_stylesheet("div::after { content: attr(data-text); }").expect("stylesheet");
+    let styled = apply_styles(&dom, &stylesheet);
+    let after = styled.after_styles.as_ref().expect("generated ::after");
+    assert_eq!(after.content_value, ContentValue::from_string("Our business"));
+  }
+
+  #[test]
   fn important_overrides_more_specific_normal_declarations() {
     let dom = element_with_id_and_class("target", "item", None);
     let stylesheet = parse_stylesheet(
