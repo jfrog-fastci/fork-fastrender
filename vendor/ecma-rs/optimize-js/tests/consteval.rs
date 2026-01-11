@@ -128,6 +128,39 @@ fn bitwise_and_shift_ops_follow_to_int32_semantics() {
 }
 
 #[test]
+fn string_concatenation_uses_js_to_string_for_numbers() {
+  let empty = ConstStr(String::new());
+
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &ConstNum(JN(f64::INFINITY)), &empty),
+    Some(ConstStr("Infinity".into()))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &empty, &ConstNum(JN(f64::INFINITY))),
+    Some(ConstStr("Infinity".into()))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &ConstNum(JN(f64::NEG_INFINITY)), &empty),
+    Some(ConstStr("-Infinity".into()))
+  );
+
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &ConstNum(JN(-0.0)), &ConstStr("x".into())),
+    Some(ConstStr("0x".into()))
+  );
+
+  // Exponent form always includes an explicit `+` sign.
+  let large = 1e30_f64;
+  match maybe_eval_const_bin_expr(BinOp::Add, &ConstNum(JN(large)), &empty) {
+    Some(ConstStr(s)) => assert!(
+      s.contains("e+"),
+      "expected exponent to include `+`, got {s:?}"
+    ),
+    other => panic!("unexpected eval result for {large}: {other:?}"),
+  }
+}
+
+#[test]
 fn builtin_infinity_and_undefined_are_constant_folded() {
   assert_eq!(
     maybe_eval_const_builtin_val("Infinity"),

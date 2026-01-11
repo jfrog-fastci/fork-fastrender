@@ -291,6 +291,46 @@ pub fn coerce_to_bool(v: &Const) -> bool {
   }
 }
 
+fn number_to_js_string(value: f64) -> String {
+  if value.is_nan() {
+    return "NaN".into();
+  }
+  // `ToString(-0)` is `"0"`.
+  if value == 0.0 {
+    return "0".into();
+  }
+  if value.is_infinite() {
+    if value.is_sign_negative() {
+      return "-Infinity".into();
+    }
+    return "Infinity".into();
+  }
+
+  let formatted = JN(value).to_string();
+  // `Number.prototype.toString` always includes an exponent sign (`e+10`, `e-10`).
+  if let Some((mantissa, exp)) = formatted.split_once('e') {
+    if exp.starts_with('-') {
+      formatted
+    } else {
+      format!("{mantissa}e+{exp}")
+    }
+  } else {
+    formatted
+  }
+}
+
+fn const_to_js_string(value: &Const) -> String {
+  match value {
+    BigInt(v) => v.to_string(),
+    Bool(true) => "true".into(),
+    Bool(false) => "false".into(),
+    Null => "null".into(),
+    Num(v) => number_to_js_string(v.0),
+    Str(v) => v.clone(),
+    Undefined => "undefined".into(),
+  }
+}
+
 // If return value is None, then all comparison operators between `a` and `b` result in false.
 // https://tc39.es/ecma262/multipage/abstract-operations.html#sec-islessthan
 pub fn js_cmp(a: &Const, b: &Const) -> Option<Ordering> {
@@ -358,9 +398,20 @@ pub fn maybe_eval_const_bin_expr(op: BinOp, a: &Const, b: &Const) -> Option<Cons
   #[rustfmt::skip]
   let res = match (op, a, b) {
     (Add, Num(l), Num(r)) => Num(JN(l.0 + r.0)),
-    (Add, Num(l), Str(r)) => Str(format!("{l}{r}")),
-    (Add, Str(l), Num(r)) => Str(format!("{l}{r}")),
-    (Add, Str(l), Str(r)) => Str(format!("{l}{r}")),
+    (Add, Str(l), r) => {
+      let rhs = const_to_js_string(r);
+      let mut out = String::with_capacity(l.len() + rhs.len());
+      out.push_str(l);
+      out.push_str(&rhs);
+      Str(out)
+    },
+    (Add, l, Str(r)) => {
+      let lhs = const_to_js_string(l);
+      let mut out = String::with_capacity(lhs.len() + r.len());
+      out.push_str(&lhs);
+      out.push_str(r);
+      Str(out)
+    },
     (Div, Num(l), Num(r)) => Num(JN(js_div(l.0, r.0))),
     (Div, Num(l), Str(r)) => Num(JN(js_div(l.0, coerce_str_to_num(r)))),
     (Div, Str(l), Num(r)) => Num(JN(js_div(coerce_str_to_num(l), r.0))),
