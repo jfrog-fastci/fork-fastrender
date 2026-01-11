@@ -121,6 +121,9 @@ Type-check a file:
 
 ```bash
 cargo run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts
+
+# Enforce additional strict-native checks (repo-specific; see EXEC.plan):
+cargo run -p typecheck-ts-cli --locked -- typecheck --strict-native fixtures/basic.ts
 ```
 
 Query types/symbols by **byte offset** (UTF-8):
