@@ -323,7 +323,7 @@ struct DiskState {
 }
 
 impl DiskHost {
-  fn new(entry: &Path) -> Result<(Self, FileKey), String> {
+  fn new(entry: &Path, compiler_options: CompilerOptions) -> Result<(Self, FileKey), String> {
     let canonical = canonicalize_path(entry)
       .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
 
@@ -331,8 +331,6 @@ impl DiskHost {
       node_modules: true,
       package_imports: true,
     });
-
-    let compiler_options = CompilerOptions::default();
 
     let libs = vec![LibFile {
       key: FileKey::new("native-js://builtins.d.ts"),
@@ -452,8 +450,27 @@ fn ensure_checked_pipeline_supported(cli: &Cli) {
   }
 }
 
-fn load_program(input: &Path) -> Result<(DiskHost, Program, FileId), String> {
-  let (host, entry_key) = DiskHost::new(input)?;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadMode {
+  Project,
+  Checked,
+}
+
+fn load_program(input: &Path, mode: LoadMode) -> Result<(DiskHost, Program, FileId), String> {
+  let compiler_options = match mode {
+    // For the legacy `project` pipeline, `typecheck-ts` is only used for module graph discovery and
+    // export maps. Avoid loading TypeScript's bundled standard library (`lib.dom.d.ts`, etc), which
+    // is large and makes the CLI (and its integration tests) extremely slow.
+    LoadMode::Project => CompilerOptions {
+      no_default_lib: true,
+      ..Default::default()
+    },
+    // The checked pipeline runs real typechecking and strict-subset validation, so it needs the
+    // normal library set.
+    LoadMode::Checked => CompilerOptions::default(),
+  };
+
+  let (host, entry_key) = DiskHost::new(input, compiler_options)?;
   let program = Program::new(host.clone(), vec![entry_key.clone()]);
   let entry_id: FileId = program
     .file_id(&entry_key)
@@ -496,7 +513,7 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
     }
   }
 
-  let (host, program, entry_id) = load_program(input).unwrap_or_else(|err| {
+  let (host, program, entry_id) = load_program(input, LoadMode::Project).unwrap_or_else(|err| {
     eprintln!("{err}");
     exit(1);
   });
@@ -525,7 +542,7 @@ fn compile_file_checked(
   emit: EmitKind,
   output: Option<PathBuf>,
 ) -> Result<native_js::Artifact, ()> {
-  let (_host, program, entry_id) = load_program(input).map_err(|err| {
+  let (_host, program, entry_id) = load_program(input, LoadMode::Checked).map_err(|err| {
     eprintln!("{err}");
   })?;
 
