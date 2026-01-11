@@ -5130,6 +5130,7 @@ pub fn array_prototype_push(
 
     let mut iter_scope = scope.reborrow();
     let idx_s = iter_scope.alloc_string(&len.to_string())?;
+    iter_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
     let ok = iter_scope.ordinary_set_with_host_and_hooks(
       vm,

@@ -24,15 +24,9 @@ pub mod vmjs;
 
 /// Hooks for integrating a JS realm with FastRender's browser host environment.
 ///
-/// Today the runner uses JS shims for `window`/`document` and the event loop. The long-term
-/// direction is to wire `vm-js` to real FastRender host objects and an HTML event loop.
-///
-/// HTML Standard terminology to keep in mind:
-/// - **Task queues**: most Web APIs (including timers) enqueue *tasks*.
-/// - **Microtask queue**: Promises/`queueMicrotask` enqueue microtasks; after running a task the
-///   UA performs a **microtask checkpoint**.
-///
-/// These hooks are placeholders for that integration.
+/// The default `vm-js` backend is wired to FastRender's real `WindowHostState` + `EventLoop`
+/// integration (including deterministic virtual time for timers). This trait remains as a
+/// lightweight extension point for future runner experiments.
 #[allow(dead_code)]
 pub trait HostEnvironment {
   /// Queue a task into the HTML event loop.
