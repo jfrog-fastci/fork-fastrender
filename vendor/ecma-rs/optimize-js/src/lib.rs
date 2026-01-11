@@ -686,14 +686,20 @@ fn annotate_ssa_cfg_escape_and_ownership(
   cfg: &mut Cfg,
   params: &[u32],
   summaries: &analysis::interproc_escape::ProgramEscapeSummaries,
+  call_summaries: &[analysis::call_summary::FnSummary],
 ) {
   let escapes = analysis::escape::analyze_cfg_escapes_with_params_and_summaries(
     cfg,
     params,
     Some(summaries),
+    Some(call_summaries),
   );
-  let ownership =
-    analysis::ownership::analyze_cfg_ownership_with_escapes_and_params(cfg, params, &escapes);
+  let ownership = analysis::ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
+    cfg,
+    params,
+    &escapes,
+    Some(call_summaries),
+  );
   analysis::ownership::annotate_cfg_ownership(cfg, &ownership);
   analysis::consume::annotate_cfg_consumption(cfg, &ownership);
   for (_label, insts) in cfg.bblocks.all_mut() {
@@ -707,14 +713,20 @@ fn annotate_ssa_cfg_escape_and_ownership(
 }
 
 fn annotate_program_ssa_metadata(program: &mut Program) {
+  let call_summaries = analysis::call_summary::summarize_program(program);
   let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
 
   if let Some(cfg) = program.top_level.ssa_body.as_mut() {
-    annotate_ssa_cfg_escape_and_ownership(cfg, &program.top_level.params, &summaries);
+    annotate_ssa_cfg_escape_and_ownership(
+      cfg,
+      &program.top_level.params,
+      &summaries,
+      &call_summaries,
+    );
   }
   for func in program.functions.iter_mut() {
     if let Some(cfg) = func.ssa_body.as_mut() {
-      annotate_ssa_cfg_escape_and_ownership(cfg, &func.params, &summaries);
+      annotate_ssa_cfg_escape_and_ownership(cfg, &func.params, &summaries, &call_summaries);
     }
   }
 }
