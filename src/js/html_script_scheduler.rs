@@ -229,6 +229,10 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
     let id = self.alloc_script_id();
     let mut actions: Vec<HtmlScriptSchedulerAction<NodeId>> = Vec::new();
 
+    if !element.src_attr_present && element.inline_text.is_empty() {
+      return Ok(HtmlDiscoveredScript { id, actions });
+    }
+
     // If the host does not support module scripts, ignore both module scripts and import maps.
     //
     // This mirrors browser behavior on engines without module support:
@@ -1347,6 +1351,53 @@ mod state_machine_tests {
       h.host.log,
       vec!["module:M".to_string(), "microtask:module:M".to_string()]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn empty_inline_classic_script_is_noop() -> Result<()> {
+    let mut h = Harness::new();
+    let discovered = h.scheduler.discovered_script(
+      classic_inline("", /* nomodule */ false),
+      /* node_id */ 1,
+      /* base_url_at_discovery */ None,
+    )?;
+    assert!(discovered.actions.is_empty());
+    h.apply_actions(discovered.actions)?;
+    h.run_event_loop()?;
+    assert!(h.host.log.is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn empty_inline_module_script_is_noop() -> Result<()> {
+    let mut h = Harness::new();
+    let discovered = h.scheduler.discovered_script(
+      module_inline("", /* async */ false, /* parser_inserted */ true),
+      /* node_id */ 1,
+      /* base_url_at_discovery */ None,
+    )?;
+    assert!(discovered.actions.is_empty());
+    h.apply_actions(discovered.actions)?;
+    h.run_event_loop()?;
+    assert!(h.started_inline_module_fetches.is_empty());
+    assert!(h.host.log.is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn empty_inline_importmap_script_is_noop() -> Result<()> {
+    let mut h = Harness::new();
+    let discovered = h.scheduler.discovered_script(
+      import_map_inline(""),
+      /* node_id */ 1,
+      /* base_url_at_discovery */ None,
+    )?;
+    assert!(discovered.actions.is_empty());
+    h.apply_actions(discovered.actions)?;
+    h.run_event_loop()?;
+    assert_eq!(h.import_map_version, 0);
+    assert!(h.host.log.is_empty());
     Ok(())
   }
 }

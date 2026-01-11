@@ -1054,4 +1054,28 @@ mod tests {
     );
     Ok(())
   }
+
+  #[test]
+  fn empty_inline_classic_script_is_noop_and_does_not_affect_later_scripts() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = HtmlScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(r#"<script></script><script>RUN</script>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(host.log, vec!["classic:RUN".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn empty_inline_module_script_does_not_start_graph_fetch() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = HtmlScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(r#"<script type=module></script>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(host.started_module_fetches.is_empty());
+    assert!(host.started_inline_module_fetches.is_empty());
+    assert!(host.log.is_empty());
+    Ok(())
+  }
 }
