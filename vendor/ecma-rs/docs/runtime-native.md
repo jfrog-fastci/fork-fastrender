@@ -940,6 +940,30 @@ GC object pointer and keep it alive while queued:
 These APIs are additive: the existing unrooted scheduling entrypoints keep their
 original contract (“`data` is opaque; the caller owns the lifetime”).
 
+### 6.5 Handle-based scheduling entrypoints (persistent handles)
+For async/OS/thread boundaries, `runtime-native` also exposes “handle-based”
+variants that accept a `HandleId` (`u64`) created by `rt_handle_alloc`.
+
+- The runtime treats the handle as a strong GC root while the task/watcher is
+  live, and reloads the current pointer from the handle each time the callback
+  runs (so relocation is observed).
+- **Ownership:** the runtime **consumes** the handle and frees it exactly once
+  when the task is dropped (or the watcher is unregistered, including on
+  registration failure).
+- If the handle is stale (freed), callbacks are treated as no-ops.
+
+Entry points:
+
+- Microtasks:
+  - `rt_queue_microtask_handle(cb, data)` / `rt_queue_microtask_handle_with_drop(cb, data, drop_data)`
+- Timers:
+  - `rt_set_timeout_handle(cb, data, delay_ms)` / `rt_set_timeout_handle_with_drop(cb, data, delay_ms, drop_data)`
+  - `rt_set_interval_handle(cb, data, interval_ms)` / `rt_set_interval_handle_with_drop(cb, data, interval_ms, drop_data)`
+- I/O watchers:
+  - `rt_io_register_handle(fd, interests, cb, data)` / `rt_io_register_handle_with_drop(fd, interests, cb, data, drop_data)`
+    - `fd` must be set to `O_NONBLOCK` before registration (edge-triggered reactor contract).
+    - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
+
 ---
 
 ## 7. Async runtime
