@@ -6,6 +6,10 @@ sources.
 ## Usage
 
 ```bash
+# From the FastRender repo root (vendored workspace):
+bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck fixtures/basic.ts
+
+# Or, from within vendor/ecma-rs/:
 cargo run -p typecheck-ts-cli -- typecheck fixtures/basic.ts
 
 # Enforce the repo's strict-native TypeScript subset (see EXEC.plan):
