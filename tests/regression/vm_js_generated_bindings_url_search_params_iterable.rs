@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use fastrender::js::bindings::{install_window_bindings, BindingValue, WebHostBindings};
-use fastrender::js::{UrlLimits, UrlSearchParams};
+use fastrender::js::{Url, UrlLimits, UrlSearchParams};
 use vm_js::{GcObject, PropertyKey, Value, VmError};
 use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlBindingsRuntime, WebIdlJsRuntime as _};
 
@@ -34,6 +34,7 @@ fn expect_ok<T>(rt: &mut VmJsRuntime, ctx: &str, res: Result<T, VmError>) -> T {
 struct UrlSearchParamsHost {
   limits: UrlLimits,
   params: HashMap<GcObject, UrlSearchParams>,
+  urls: HashMap<GcObject, Url>,
 }
 
 impl UrlSearchParamsHost {
@@ -55,6 +56,16 @@ impl UrlSearchParamsHost {
     };
     self
       .params
+      .get(&obj)
+      .ok_or_else(|| rt.throw_type_error("Illegal invocation"))
+  }
+
+  fn require_url(&self, rt: &mut VmJsRuntime, receiver: Option<Value>) -> Result<&Url, VmError> {
+    let Some(Value::Object(obj)) = receiver else {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    };
+    self
+      .urls
       .get(&obj)
       .ok_or_else(|| rt.throw_type_error("Illegal invocation"))
   }
@@ -352,6 +363,22 @@ impl WebHostBindings<VmJsRuntime> for UrlSearchParamsHost {
       _ => Err(rt.throw_type_error("unimplemented host operation")),
     }
   }
+
+  fn get_attribute(
+    &mut self,
+    rt: &mut VmJsRuntime,
+    receiver: Option<Value>,
+    interface: &'static str,
+    name: &'static str,
+  ) -> Result<BindingValue<Value>, VmError> {
+    match (interface, name) {
+      ("URL", "origin") => {
+        let url = self.require_url(rt, receiver)?;
+        Ok(BindingValue::String(url.origin()))
+      }
+      _ => Err(rt.throw_type_error("unimplemented host attribute getter")),
+    }
+  }
 }
 
 fn get(rt: &mut VmJsRuntime, obj: Value, name: &str) -> Result<Value, VmError> {
@@ -502,6 +529,77 @@ fn generated_webidl_bindings_install_iterable_url_search_params() -> Result<(), 
     pairs,
     vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
   );
+
+  Ok(())
+}
+
+#[test]
+fn generated_webidl_bindings_url_origin_getter_returns_tuple_origin_and_null_for_opaque() -> Result<(), VmError> {
+  let mut rt = VmJsRuntime::new();
+  let mut host = UrlSearchParamsHost::default();
+
+  let res = install_window_bindings(&mut rt, &mut host);
+  expect_ok(&mut rt, "install_window_bindings", res);
+
+  let res =
+    <VmJsRuntime as WebIdlBindingsRuntime<UrlSearchParamsHost>>::global_object(&mut rt);
+  let global = expect_ok(&mut rt, "global_object", res);
+
+  let res = get_method(&mut rt, global, "URL");
+  let ctor = expect_ok(&mut rt, "get URL ctor", res);
+
+  // Calling URL() without `new` should throw "Illegal constructor".
+  let err = rt
+    .with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[]))
+    .expect_err("expected calling URL() without new to throw");
+  assert_type_error_message(&mut rt, err, "Illegal constructor");
+
+  // `webidl_js_runtime::VmJsRuntime` does not implement `[[Construct]]`, so create a wrapper object
+  // manually and attach host-side URL state.
+  let res = get(&mut rt, ctor, "prototype");
+  let proto = expect_ok(&mut rt, "get URL.prototype", res);
+
+  let res = rt.alloc_object_value();
+  let url_obj = expect_ok(&mut rt, "alloc URL wrapper", res);
+
+  let res = rt.set_prototype(url_obj, Some(proto));
+  expect_ok(&mut rt, "set URL wrapper prototype", res);
+
+  let Value::Object(handle) = url_obj else {
+    return Err(rt.throw_type_error("URL wrapper is not an object"));
+  };
+  let res = rt.heap_mut().add_root(url_obj);
+  let _ = expect_ok(&mut rt, "root URL wrapper", res);
+
+  let url = Url::parse("https://example.com/path?x=1#y", None, &host.limits)
+    .map_err(|e| rt.throw_type_error(&format!("URL parse failed: {e}")))?;
+  host.urls.insert(handle, url);
+
+  let origin_key: PropertyKey = rt.property_key_from_str("origin")?;
+  let origin_val =
+    rt.with_host_context(&mut host, |rt| rt.get(url_obj, origin_key))?;
+  let origin_s = UrlSearchParamsHost::value_to_rust_string(&mut rt, origin_val)?;
+  assert_eq!(origin_s, "https://example.com");
+
+  // Opaque origins (e.g. file URLs) serialize as "null".
+  let res = rt.alloc_object_value();
+  let file_obj = expect_ok(&mut rt, "alloc file URL wrapper", res);
+
+  let res = rt.set_prototype(file_obj, Some(proto));
+  expect_ok(&mut rt, "set file URL prototype", res);
+  let Value::Object(file_handle) = file_obj else {
+    return Err(rt.throw_type_error("file URL wrapper is not an object"));
+  };
+  let res = rt.heap_mut().add_root(file_obj);
+  let _ = expect_ok(&mut rt, "root file URL wrapper", res);
+  let file_url = Url::parse("file:///tmp/", None, &host.limits)
+    .map_err(|e| rt.throw_type_error(&format!("file URL parse failed: {e}")))?;
+  host.urls.insert(file_handle, file_url);
+
+  let origin_val =
+    rt.with_host_context(&mut host, |rt| rt.get(file_obj, origin_key))?;
+  let origin_s = UrlSearchParamsHost::value_to_rust_string(&mut rt, origin_val)?;
+  assert_eq!(origin_s, "null");
 
   Ok(())
 }
