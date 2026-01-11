@@ -7,6 +7,29 @@ use serde_json::Value as JsonValue;
 
 mod ids;
 pub use ids::ApiId;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKind {
+  Function,
+  Constructor,
+  Getter,
+  Setter,
+  Value,
+}
+
+impl Default for ApiKind {
+  fn default() -> Self {
+    Self::Function
+  }
+}
+
+impl ApiKind {
+  fn is_function(&self) -> bool {
+    matches!(self, Self::Function)
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApiSemantics {
   #[serde(skip)]
@@ -55,9 +78,9 @@ pub struct ApiSemantics {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub until: Option<String>,
 
-  /// Function / constructor / getter / setter / value (free-form).
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub kind: Option<String>,
+  /// Function / constructor / getter / setter / value.
+  #[serde(default, skip_serializing_if = "ApiKind::is_function")]
+  pub kind: ApiKind,
 
   /// Arbitrary key/value metadata for downstream analyses.
   ///
@@ -113,7 +136,7 @@ struct ApiSemanticsDeserialize {
   until: Option<String>,
 
   #[serde(default)]
-  kind: Option<String>,
+  kind: ApiKind,
 
   #[serde(default)]
   properties: BTreeMap<String, JsonValue>,
@@ -391,7 +414,7 @@ struct ApiRaw {
   until: Option<String>,
 
   #[serde(default)]
-  kind: Option<String>,
+  kind: ApiKind,
 
   #[serde(default)]
   effects: EffectsRaw,
@@ -436,7 +459,7 @@ struct ApiBodyRaw {
   until: Option<String>,
 
   #[serde(default)]
-  kind: Option<String>,
+  kind: ApiKind,
 
   #[serde(default)]
   effects: EffectsRaw,
@@ -909,12 +932,14 @@ purity: DependsOnCallback
     let parsed = parse_api_semantics_yaml_str(one).unwrap();
     assert_eq!(parsed.len(), 1);
     assert_eq!(parsed[0].name, "Array.prototype.map");
+    assert_eq!(parsed[0].kind, ApiKind::Function);
 
     let many = r#"
 - name: fs.readFileSync
   effects: Io
   purity: Impure
 - name: maybe_throw
+  kind: getter
   effects:
     Custom:
       flags: ALLOCATES
@@ -933,6 +958,7 @@ purity: DependsOnCallback
         throws: ThrowBehavior::Maybe,
       })
     );
+    assert_eq!(parsed[1].kind, ApiKind::Getter);
   }
 
   #[test]
@@ -952,7 +978,7 @@ purity: DependsOnCallback
       signature: None,
       since: None,
       until: None,
-      kind: None,
+      kind: ApiKind::Function,
       properties: BTreeMap::new(),
     }]);
 
@@ -1041,6 +1067,9 @@ purity: DependsOnCallback
   fn encoding_contracts_minimum_set() {
     let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
 
+    let url = kb.get("URL").unwrap();
+    assert_eq!(url.kind, ApiKind::Constructor);
+
     let slice = kb.get("String.prototype.slice").unwrap();
     assert_eq!(
       slice
@@ -1110,6 +1139,7 @@ purity: DependsOnCallback
     );
 
     let pathname = kb.get("URL.prototype.pathname").unwrap();
+    assert_eq!(pathname.kind, ApiKind::Getter);
     assert_eq!(
       pathname
         .properties

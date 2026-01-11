@@ -2,6 +2,7 @@
   kind: constructor
   aliases:
     - URL
+  kind: constructor
   since: "baseline"
   effects:
     base: [alloc, may_throw]
@@ -88,6 +89,7 @@
   kind: property
   aliases:
     - URL.prototype.href
+  kind: getter
   since: "baseline"
   effects:
     base: [alloc]
@@ -103,6 +105,7 @@
   kind: property
   aliases:
     - URL.prototype.pathname
+  kind: getter
   since: "baseline"
   effects:
     base: [alloc]
@@ -202,6 +205,7 @@
   kind: property
   aliases:
     - URL.prototype.searchParams
+  kind: getter
   since: "baseline"
   effects:
     base: [alloc]

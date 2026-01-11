@@ -1,6 +1,8 @@
 use hir_js::{BinaryOp, BodyId, ExprId, ExprKind, Literal, ObjectKey};
-use knowledge_base::KnowledgeBase;
+use knowledge_base::{Api, ApiId, KnowledgeBase};
 use std::collections::HashMap;
+
+use crate::{resolve_api_use, ApiUseKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringEncoding {
@@ -41,6 +43,7 @@ fn analyze_string_encodings_impl<O: TypeOracle + Copy>(
   for (body_id, idx) in result.body_index.iter() {
     let body = &result.bodies[*idx];
     let mut analyzer = BodyAnalyzer {
+      file: &result.hir,
       body_id: *body_id,
       body,
       names: &result.names,
@@ -106,6 +109,7 @@ fn type_is_string(types: &dyn crate::types::TypeProvider, body: BodyId, expr: Ex
 }
 
 struct BodyAnalyzer<'a, O> {
+  file: &'a hir_js::HirFile,
   body_id: BodyId,
   body: &'a hir_js::Body,
   names: &'a hir_js::NameInterner,
@@ -151,7 +155,8 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
         _ => StringEncoding::Unknown,
       },
 
-      ExprKind::Call(call) => self.encoding_of_call(call),
+      ExprKind::Call(call) => self.encoding_of_call(expr_id, call),
+      ExprKind::Member(_) => self.encoding_of_member(expr_id),
 
       // Everything else is either not a string or requires more context to
       // reason about.
@@ -183,9 +188,24 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
     }
   }
 
-  fn encoding_of_call(&mut self, call: &hir_js::CallExpr) -> StringEncoding {
+  fn encoding_of_call(&mut self, expr_id: ExprId, call: &hir_js::CallExpr) -> StringEncoding {
     // We only model a subset of string-returning APIs. Everything else defaults
     // to Unknown.
+
+    if let Some(resolved) =
+      resolve_api_use(self.file, self.body, expr_id, self.names, self.kb)
+    {
+      if matches!(resolved.kind, ApiUseKind::Call | ApiUseKind::Construct) {
+        let input = call
+          .args
+          .first()
+          .map(|arg| self.encoding_of(arg.expr))
+          .unwrap_or(StringEncoding::Unknown);
+        if let Some(enc) = self.encoding_via_kb_id(resolved.api, input) {
+          return enc;
+        }
+      }
+    }
 
     let callee = call.callee;
     let Some(callee_expr) = self.body.exprs.get(callee.0 as usize) else {
@@ -246,8 +266,21 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
       .unwrap_or(StringEncoding::Unknown)
   }
 
-  fn encoding_via_kb(&self, api: &str, input: StringEncoding) -> Option<StringEncoding> {
-    let entry = self.kb.get(api)?;
+  fn encoding_of_member(&mut self, expr_id: ExprId) -> StringEncoding {
+    let Some(resolved) = resolve_api_use(self.file, self.body, expr_id, self.names, self.kb) else {
+      return StringEncoding::Unknown;
+    };
+
+    if resolved.kind != ApiUseKind::Get {
+      return StringEncoding::Unknown;
+    }
+
+    self
+      .encoding_via_kb_id(resolved.api, StringEncoding::Unknown)
+      .unwrap_or(StringEncoding::Unknown)
+  }
+
+  fn encoding_via_entry(&self, entry: &Api, input: StringEncoding) -> Option<StringEncoding> {
     let output = entry.properties.get("encoding.output")?.as_str()?;
 
     if let Some(preserves) = entry
@@ -267,6 +300,16 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
       "same_as_input" => Some(input),
       _ => None,
     }
+  }
+
+  fn encoding_via_kb_id(&self, api: ApiId, input: StringEncoding) -> Option<StringEncoding> {
+    let entry = self.kb.get_by_id(api)?;
+    self.encoding_via_entry(entry, input)
+  }
+
+  fn encoding_via_kb(&self, api: &str, input: StringEncoding) -> Option<StringEncoding> {
+    let entry = self.kb.get(api)?;
+    self.encoding_via_entry(entry, input)
   }
 }
 
@@ -451,15 +494,16 @@ mod tests {
   #[cfg(feature = "typed")]
   #[test]
   fn trim_preserves_ascii_via_kb() {
-    use crate::typed::TypecheckProgram;
+    use crate::typed::TypedProgram;
     use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase};
     use typecheck_ts::{FileKey, MemoryHost, Program};
+    use std::sync::Arc;
 
     let key = FileKey::new("index.ts");
     let mut host = MemoryHost::new();
     host.insert(key.clone(), "\"ABC\".trim();");
 
-    let program = Program::new(host, vec![key.clone()]);
+    let program = Arc::new(Program::new(host, vec![key.clone()]));
     let diagnostics = program.check();
     assert!(
       diagnostics.is_empty(),
@@ -473,7 +517,7 @@ mod tests {
 
     let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
 
-    let types = TypecheckProgram::new(&program);
+    let types = TypedProgram::from_program(Arc::clone(&program), file);
     let entries = parse_api_semantics_yaml_str(
       r#"
 - name: String.prototype.trim
