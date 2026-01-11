@@ -67,6 +67,15 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     "unexpected rt_gc_collect_gc wrapper function in IR:\n{ir}"
   );
 
+  assert!(
+    ir.contains("declare ptr @rt_gc_safepoint_relocate_h"),
+    "missing rt_gc_safepoint_relocate_h:\n{ir}"
+  );
+  assert!(
+    !ir.contains("rt_gc_safepoint_relocate_h_gc"),
+    "unexpected rt_gc_safepoint_relocate_h_gc wrapper function in IR:\n{ir}"
+  );
+
   // NoGC calls with GC pointer parameters use leaf wrappers (`*_gc`).
   assert!(
     ir.contains("define internal void @rt_write_barrier_gc"),

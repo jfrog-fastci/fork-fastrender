@@ -148,8 +148,8 @@ fn link_object_to_executable_keeps_stackmaps_under_gc_sections() -> Result<()> {
     let exe_bytes = fs::read(&exe_path).context("read linked executable")?;
     assert_any_section_present_non_empty(&exe_bytes, &STACKMAP_SECTION_CANDIDATES)?;
 
-    Ok(())
-}
+     Ok(())
+ }
 
 fn command_works(cmd: &str) -> bool {
   Command::new(cmd)

@@ -4,7 +4,7 @@ use native_js::runtime_abi::{emit_runtime_call, ArgRootingPolicy, RuntimeCallErr
 
 #[test]
 fn runtime_call_registry_has_gc_safety_metadata() {
-  // MayGC functions with no GC pointer args.
+  // MayGC functions with no raw GC pointer args.
   for f in [
     RuntimeFn::Alloc,
     RuntimeFn::AllocPinned,
@@ -13,15 +13,22 @@ fn runtime_call_registry_has_gc_safety_metadata() {
     RuntimeFn::GcCollect,
   ] {
     let spec = f.spec();
-    assert!(
-      spec.may_gc,
-      "expected {f:?} to be may_gc=true, got {spec:?}"
-    );
+    assert!(spec.may_gc, "expected {f:?} to be may_gc=true, got {spec:?}");
     assert_eq!(
       spec.gc_ptr_args, 0,
       "expected {f:?} to have 0 GC pointer args, got {spec:?}"
     );
+    assert_eq!(
+      spec.gc_handle_args, 0,
+      "expected {f:?} to have 0 GC handle args, got {spec:?}"
+    );
   }
+
+  // `may_gc` + handle ABI: handle args are allowed even though the runtime may GC.
+  let relocate = RuntimeFn::GcSafepointRelocateH.spec();
+  assert!(relocate.may_gc, "expected relocate helper to be may_gc=true");
+  assert_eq!(relocate.gc_ptr_args, 0, "handles are not raw GC ptr args");
+  assert_eq!(relocate.gc_handle_args, 1, "expected exactly one handle arg");
 
   // NoGC functions are allowed to take GC pointer args.
   let wb = RuntimeFn::WriteBarrier.spec();
@@ -68,6 +75,7 @@ fn rejects_may_gc_runtime_fn_with_gc_pointer_args() {
     name: "rt_bad_may_gc_with_ptr",
     may_gc: true,
     gc_ptr_args: 1,
+    gc_handle_args: 0,
     arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
   };
 
@@ -109,6 +117,7 @@ fn allows_may_gc_runtime_fn_with_gc_pointer_args_if_runtime_roots() {
     name: "rt_may_gc_with_ptr_but_roots",
     may_gc: true,
     gc_ptr_args: 1,
+    gc_handle_args: 0,
     arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
   };
 
@@ -148,6 +157,7 @@ fn allows_may_gc_runtime_fn_with_handle_args() {
     name: "rt_may_gc_with_handle",
     may_gc: true,
     gc_ptr_args: 0,
+    gc_handle_args: 1,
     arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
   };
 

@@ -75,6 +75,11 @@ Therefore, **MayGC** runtime entrypoints must either:
 
 `native-js` enforces this as a codegen-time invariant for registered runtime calls.
 
+See `runtime-native/docs/gc_handle_abi.md` for the full compiler/runtime contract. In particular,
+new `may_gc` runtime entrypoints that need to accept GC-managed pointer arguments should be exposed
+using the handle ABI (`GcHandle = *mut *mut u8`) and named with a `*_h` suffix (e.g.
+`rt_gc_safepoint_relocate_h`).
+
 ### Safepoint polls and lowering
 
 `rewrite-statepoints-for-gc` rewrites **existing calls** into statepoints; it does not insert loop

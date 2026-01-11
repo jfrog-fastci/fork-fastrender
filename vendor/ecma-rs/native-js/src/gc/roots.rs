@@ -61,9 +61,35 @@ pub struct GcSlot {
 }
 
 impl GcSlot {
-  pub(crate) fn as_alloca(self) -> LLVMValueRef {
+  /// Return the underlying LLVM `alloca` value for this slot.
+  ///
+  /// The returned pointer is a `ptr` in addrspace(0) whose pointee is a GC pointer (`ptr
+  /// addrspace(1)`), i.e. it is an ABI-compatible `GcHandle = *mut *mut u8` for runtime entrypoints
+  /// that use the handle ABI (`*_h`).
+  pub fn as_alloca(self) -> LLVMValueRef {
     self.alloca
   }
+}
+
+/// Emit a statepointed call to a runtime function that expects one or more **handle ABI** (`GcHandle`)
+/// arguments.
+///
+/// Handle arguments are passed as `&mut slot` pointers (i.e. `slot.as_alloca()`), and `frame` ensures
+/// rooted slots remain in the `"gc-live"` bundle and are written back with relocated values.
+pub unsafe fn emit_runtime_call_with_handles(
+  frame: &GcFrame,
+  builder: LLVMBuilderRef,
+  statepoints: &mut StatepointEmitter,
+  callee: LLVMValueRef,
+  call_args: &[LLVMValueRef],
+  handle_args: &[GcSlot],
+) -> Option<LLVMValueRef> {
+  let mut args: Vec<LLVMValueRef> = Vec::with_capacity(call_args.len() + handle_args.len());
+  args.extend_from_slice(call_args);
+  for slot in handle_args {
+    args.push(slot.as_alloca());
+  }
+  frame.safepoint_call(builder, statepoints, callee, &args)
 }
 
 #[derive(Clone, Copy, Debug)]

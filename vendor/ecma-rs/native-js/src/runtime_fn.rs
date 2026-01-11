@@ -6,6 +6,9 @@
 /// - Whether a call may trigger GC (`may_gc`).
 /// - Whether the ABI contains raw GC pointers (`gc_ptr_args`), which is **unsound** for `may_gc`
 ///   runtime functions unless the runtime provides its own argument-rooting mechanism.
+/// - Whether the ABI contains GC **handles** (`gc_handle_args`), i.e. pointer-to-slot arguments
+///   (`GcHandle = *mut *mut u8`). Handle args are allowed for `may_gc` functions because the runtime
+///   can reload `*handle` after a safepoint/GC.
 ///
 /// See `native-js/docs/llvm_gc_strategy.md` for the full rationale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -21,6 +24,8 @@ pub enum RuntimeFn {
   ///
   /// This is used by backedge polling fast paths (see `codegen::safepoint`).
   GcSafepointSlow,
+  /// Enter a GC safepoint and return the relocated pointer stored in a handle slot.
+  GcSafepointRelocateH,
   /// Forces a GC cycle.
   GcCollect,
   /// Poll-only helper (`rt_gc_poll() -> bool`).
@@ -77,6 +82,9 @@ pub struct RuntimeFnSpec {
   pub may_gc: bool,
   /// Number of arguments that are GC-managed pointers (i.e. raw pointers that refer to GC objects).
   pub gc_ptr_args: usize,
+  /// Number of arguments that are GC handle pointers (`*mut *mut u8`) referencing caller-owned GC
+  /// root slots.
+  pub gc_handle_args: usize,
   pub arg_rooting: ArgRootingPolicy,
 }
 
@@ -99,48 +107,63 @@ impl RuntimeFn {
         name: "rt_alloc",
         may_gc: true,
         gc_ptr_args: 0,
+        gc_handle_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
       RuntimeFn::AllocPinned => RuntimeFnSpec {
         name: "rt_alloc_pinned",
         may_gc: true,
         gc_ptr_args: 0,
+        gc_handle_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
       RuntimeFn::GcSafepoint => RuntimeFnSpec {
         name: "rt_gc_safepoint",
         may_gc: true,
         gc_ptr_args: 0,
+        gc_handle_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
       RuntimeFn::GcSafepointSlow => RuntimeFnSpec {
         name: "rt_gc_safepoint_slow",
         may_gc: true,
         gc_ptr_args: 0,
+        gc_handle_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::GcSafepointRelocateH => RuntimeFnSpec {
+        name: "rt_gc_safepoint_relocate_h",
+        may_gc: true,
+        gc_ptr_args: 0,
+        gc_handle_args: 1,
+        arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
       },
       RuntimeFn::GcCollect => RuntimeFnSpec {
         name: "rt_gc_collect",
         may_gc: true,
         gc_ptr_args: 0,
+        gc_handle_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
       RuntimeFn::GcPoll => RuntimeFnSpec {
         name: "rt_gc_poll",
         may_gc: false,
         gc_ptr_args: 0,
+        gc_handle_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
       RuntimeFn::WriteBarrier => RuntimeFnSpec {
         name: "rt_write_barrier",
         may_gc: false,
         gc_ptr_args: 2,
+        gc_handle_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
       RuntimeFn::KeepAliveGcRef => RuntimeFnSpec {
         name: "rt_keep_alive_gc_ref",
         may_gc: false,
         gc_ptr_args: 1,
+        gc_handle_args: 0,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
     }

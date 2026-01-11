@@ -106,6 +106,13 @@ fn runtime_meta(f: RuntimeFn) -> RuntimeFnMeta {
       codegen_ret: AbiTy::Void,
       codegen_params: &[AbiTy::I64],
     },
+    RuntimeFn::GcSafepointRelocateH => RuntimeFnMeta {
+      symbol: "rt_gc_safepoint_relocate_h",
+      runtime_ret: AbiTy::RawPtr,
+      runtime_params: &[AbiTy::RawPtr],
+      codegen_ret: AbiTy::GcPtr,
+      codegen_params: &[AbiTy::RawPtr],
+    },
     RuntimeFn::GcCollect => RuntimeFnMeta {
       symbol: "rt_gc_collect",
       runtime_ret: AbiTy::Void,
@@ -145,6 +152,7 @@ pub struct RuntimeFns<'ctx> {
   pub rt_alloc_pinned: FunctionValue<'ctx>,
   pub rt_gc_safepoint: FunctionValue<'ctx>,
   pub rt_gc_safepoint_slow: FunctionValue<'ctx>,
+  pub rt_gc_safepoint_relocate_h: FunctionValue<'ctx>,
   pub rt_gc_collect: FunctionValue<'ctx>,
   pub rt_gc_poll: FunctionValue<'ctx>,
   pub rt_write_barrier: FunctionValue<'ctx>,
@@ -190,6 +198,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       rt_alloc_pinned: self.get_or_declare_raw(RuntimeFn::AllocPinned),
       rt_gc_safepoint: self.get_or_declare_raw(RuntimeFn::GcSafepoint),
       rt_gc_safepoint_slow: self.get_or_declare_raw(RuntimeFn::GcSafepointSlow),
+      rt_gc_safepoint_relocate_h: self.get_or_declare_raw(RuntimeFn::GcSafepointRelocateH),
       rt_gc_collect: self.get_or_declare_raw(RuntimeFn::GcCollect),
       rt_gc_poll: self.get_or_declare_raw(RuntimeFn::GcPoll),
       rt_write_barrier: self.get_or_declare_raw(RuntimeFn::WriteBarrier),
@@ -560,6 +569,29 @@ fn validate_runtime_call_abi<'ctx>(
     "runtime fn spec mismatch for `{}`: spec.gc_ptr_args={} but call has {} ptr addrspace(1) arg(s)",
     spec.name, spec.gc_ptr_args, actual_gc_ptr_args
   );
+
+  // Similar defensive check for handle ABI (`GcHandle = *mut *mut u8`) arguments.
+  //
+  // We can't reliably validate the pointee type in opaque-pointer mode, so we instead enforce a
+  // simple convention: any handle args appear at the end of the argument list and must be
+  // addrspace(0) pointers (i.e. not `ptr addrspace(1)` GC references).
+  if spec.gc_handle_args > 0 {
+    let handle_slice = &args[args.len().saturating_sub(spec.gc_handle_args)..];
+    let actual_handle_args = handle_slice
+      .iter()
+      .filter(|arg| match arg {
+        BasicMetadataValueEnum::PointerValue(ptr) => {
+          ptr.get_type().get_address_space() == AddressSpace::default()
+        }
+        _ => false,
+      })
+      .count();
+    debug_assert_eq!(
+      actual_handle_args, spec.gc_handle_args,
+      "runtime fn spec mismatch for `{}`: spec.gc_handle_args={} but last {} arg(s) contained {} addrspace(0) pointer(s)",
+      spec.name, spec.gc_handle_args, spec.gc_handle_args, actual_handle_args
+    );
+  }
 
   if spec.may_gc
     && actual_gc_ptr_args > 0
