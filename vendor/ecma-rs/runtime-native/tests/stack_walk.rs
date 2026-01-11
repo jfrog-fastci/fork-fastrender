@@ -24,7 +24,7 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
   // Simulate a small stack region with two frames:
   // [callee_fp] -> saved caller fp
   // [callee_fp+8] -> return address
-  // caller_sp at safepoint is reconstructed from caller_fp and stack_size (not callee_fp + 16 CFA).
+  // caller_sp at the callsite is derived from the callee frame pointer (`callee_fp + 16`).
   let mut stack = AlignedStack([0usize; 64]);
   let base = stack.0.as_mut_ptr() as usize;
 
@@ -41,9 +41,10 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
     (caller_fp as *mut usize).write(0);
     (caller_fp as *mut usize).add(1).write(0);
 
-    // Simulate two pointer slots in caller frame at offsets 0 and 8 from caller_sp_at_safepoint.
-    // With stack_size=24 and x86_64 frame_record_size=8, caller_sp_at_safepoint = caller_fp - 16.
-    let caller_sp = caller_fp - 16;
+    // Simulate two pointer slots in caller frame at offsets 0 and 8 from the caller's callsite SP.
+    // Under the forced-frame-pointer ABI, the caller's SP at the callsite return address is
+    // `callee_fp + 16`.
+    let caller_sp = callee_fp + 16;
     let base_slot_addr = caller_sp as *mut usize;
     let derived_slot_addr = (caller_sp + 8) as *mut usize;
     base_slot_addr.write(0xAAA0);

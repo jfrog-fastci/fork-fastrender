@@ -346,16 +346,18 @@ fn visit_callsite_reloc_pairs(
   bounds: Option<StackBounds>,
   f: &mut dyn FnMut(RelocPair),
 ) -> bool {
-  // LLVM StackMaps `Indirect [SP + off]` locations are based on the caller function's stack pointer
-  // at the safepoint call site. For frame-pointer walking we typically only have FP, so use the
-  // stackmap function record's `stack_size` to reconstruct that SP.
+  // LLVM StackMaps `Indirect [SP + off]` locations are based on the caller's stack pointer at the
+  // callsite return address (the DWARF call-frame address / CFA). Under our forced-frame-pointer
+  // ABI contract this value is always recoverable from the callee frame pointer as `callee_fp + 16`
+  // (exposed by [`FrameView::caller_cfa`]).
+  //
+  // Do *not* try to reconstruct callsite `SP` from the stackmap function record's `stack_size`:
+  // `stack_size` is a fixed frame size and does not reliably account for per-call outgoing argument
+  // pushes/stack adjustments, while `caller_cfa` does.
   let Ok(caller_fp) = u64::try_from(frame.caller_fp) else {
     return false;
   };
-  let Some(stack_size) = callsite.stack_size.as_u64() else {
-    return false;
-  };
-  let Some(caller_sp) = crate::stackwalk::compute_sp(caller_fp, stack_size) else {
+  let Ok(caller_sp) = u64::try_from(frame.caller_cfa) else {
     return false;
   };
 

@@ -7,19 +7,15 @@ use crate::stackwalk::StackBounds;
 pub struct FrameView {
   /// The caller's frame pointer (saved at `[callee_fp + 0]`).
   pub caller_fp: usize,
-  /// The caller's DWARF call-frame address (CFA) at the call site.
+  /// The caller's stack pointer at the callsite return address (the DWARF call-frame address / CFA).
   ///
   /// This is computed as `callee_fp + 16` on both x86_64 SysV and AArch64 when walking via frame
   /// pointers.
   ///
-  /// Note: this is the DWARF call-frame address (CFA), i.e. the caller's stack pointer *at the call
-  /// boundary* that entered the current (callee) frame.
-  ///
-  /// LLVM StackMaps `Indirect [SP + off]` locations for `gc.statepoint` roots are based on the
-  /// caller function's stack pointer at the statepoint callsite. That SP is not generally
-  /// reconstructable from the callee's frame pointer alone; it must be reconstructed from the
-  /// caller frame pointer and the stackmap function record's `stack_size` (see
-  /// [`crate::stackwalk::compute_sp`]).
+  /// LLVM StackMaps `Indirect [SP + off]` locations are based on the caller's stack pointer at the
+  /// callsite return address. Under the forced-frame-pointer ABI contract this matches `caller_cfa`
+  /// and is recoverable without consulting stackmap `stack_size` (which may not include per-call
+  /// stack adjustments like outgoing argument pushes).
   pub caller_cfa: usize,
   /// The return address into the caller (saved at `[callee_fp + 8]`).
   pub return_address: usize,
