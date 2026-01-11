@@ -517,6 +517,15 @@ matching the validator’s checks):
       validator allows the `print(...)` identifier only when it is used as a
       direct call callee
 
+Even if the strict subset validator passes, the current HIR→LLVM backend still
+enforces additional **native ABI/codegen** restrictions and may emit `NJS0011`
+errors, including:
+
+- functions must have exactly one non-generic call signature (no overloads / no `this` parameters)
+- no optional/rest parameters
+- parameters must be `number`/`boolean`
+- return type must be `number`/`boolean`/`void`/`undefined`/`never`
+
 > Note: TypeScript-only, runtime-inert expression wrappers such as `satisfies`,
 > type assertions (`as`), and non-null assertions (`!`) are allowed by this
 > validator, but the wrapped runtime expressions are still validated.
@@ -527,9 +536,10 @@ backend is still minimal; some programs may still fail later during codegen.
 ## HIR codegen diagnostics (`native_js::codegen`)
 
 The experimental HIR-driven backend (used by `native-js-cli --pipeline checked`
-and the `native-js` binary) emits additional `NJS01xx` diagnostics when lowering
-HIR to LLVM fails (e.g. missing/invalid `main` body, unsupported operators or
-syntax in the HIR backend, unknown identifiers, etc.).
+and the `native-js` binary) emits additional `NJS0011` / `NJS01xx` diagnostics
+when lowering HIR to LLVM fails (e.g. unsupported function ABI/types,
+missing/invalid `main` body, unsupported operators or syntax in the HIR backend,
+unknown identifiers, etc.).
 
 For the current list of codes, see the module-level docs in
 [`native-js/src/codegen/mod.rs`](./src/codegen/mod.rs).

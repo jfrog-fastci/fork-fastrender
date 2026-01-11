@@ -425,7 +425,7 @@ error[NJS0009]: property access is not supported by native-js yet
   access, async/await, etc). See [`native-js/README.md`](../native-js/README.md)
   for the current list.
 - Even after `validate_strict_subset` passes, the current HIR→LLVM lowering is
-  still minimal and may fail later during codegen with `NJS01xx` diagnostics
+  still minimal and may fail later during codegen with `NJS0011` / `NJS01xx` diagnostics
   (see [`native-js/src/codegen/mod.rs`](../native-js/src/codegen/mod.rs) for the
   current list).
 
@@ -448,6 +448,9 @@ modules are initialized before the re-exporting module and its importers.
   - defined in the entry file (no re-exports)
   - no parameters
   - not `async` / not a generator
+  - signature must be compatible with the current native ABI/codegen (`NJS0011`):
+    - parameters: `number`/`boolean` (but `main` must have none)
+    - return: `number`/`boolean`/`void`/`undefined`
 - Numeric literals must be **32-bit signed integers** (decimal/hex/binary/octal;
   `_` separators allowed). Floats/`1e3`-style literals are rejected.
 - Supported statements include:
@@ -467,8 +470,8 @@ modules are initialized before the re-exporting module and its importers.
   - updates (`++x`, `x++`, `--x`, `x--`)
   - direct calls to global functions by identifier (`foo(a, b)`), with limitations:
     - no optional calls / `new` / spreads
-    - only non-void calls are supported by this backend
-- For non-void `main`, the returned `i32` value becomes the executable’s exit code (like C `main`).
+    - callee signatures must fit the current native ABI (params: `number|boolean`, ret: `number|boolean|void|undefined`)
+- For `main` returning `number`/`boolean`, the returned `i32` value becomes the executable’s exit code (like C `main`).
 - If `main` returns `void`/`undefined`, `return;` and falling off the end of the function are allowed and
   the process exit code is always `0` (return values are ignored).
 

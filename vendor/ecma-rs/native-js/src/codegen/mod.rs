@@ -9,7 +9,9 @@
 //!
 //! ## Diagnostic codes
 //!
-//! The HIR backend emits stable `NJS01xx` codes for codegen failures:
+//! The HIR backend emits stable codes for codegen failures:
+//! - `NJS0011`: unsupported type for native codegen (e.g. unsupported function ABI/signature)
+//! - `NJS01xx`: HIR-lowering/codegen failures in the current backend subset, including:
 //!
 //! - `NJS0100`: failed to access lowered HIR for entry file / entry file must not be a declaration file
 //! - `NJS0101`: failed to access lowered HIR for a function body / failed to locate `main` for codegen
@@ -23,7 +25,7 @@
 //! - `NJS0113`: unsupported statement / variable declaration kind in the current codegen subset
 //! - `NJS0114`: use of unknown/unbound identifier in the current codegen subset
 //! - `NJS0115`: not all control-flow paths return a value in the current codegen subset
-//! - `NJS0116`: unsupported `return` statement form in this context (`return;` is only allowed when `main` returns `void`/`undefined`)
+//! - `NJS0116`: unsupported `return` statement form in this context (`return;` is only allowed when the function returns `void`/`undefined`/`never`)
 //! - `NJS0118`: variable declarations must have an initializer
 //! - `NJS0119`: unknown loop label for `break`
 //! - `NJS0120`: `break` is only supported inside loops
