@@ -369,8 +369,11 @@ mod sys {
     if interest.contains(Interest::WRITABLE) {
       events |= libc::EPOLLOUT as u32;
     }
+    // `async_rt` readiness watchers follow the runtime-native reactor contract: edge-triggered.
+    // Ensure all registrations include EPOLLET so consumers must drain reads/writes until EAGAIN.
+    //
     // Always report error/hangup conditions to the callback.
-    events | (libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32
+    events | (libc::EPOLLET | libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32
   }
 
   fn epoll_events_to_rt(events: u32) -> u32 {
@@ -431,7 +434,7 @@ mod sys {
           fd,
           libc::EVFILT_READ,
           token,
-          libc::EV_ADD | libc::EV_ENABLE,
+          libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
         ));
       }
       if interest.contains(Interest::WRITABLE) {
@@ -439,7 +442,7 @@ mod sys {
           fd,
           libc::EVFILT_WRITE,
           token,
-          libc::EV_ADD | libc::EV_ENABLE,
+          libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
         ));
       }
       self.kqueue.ctl(&changes)

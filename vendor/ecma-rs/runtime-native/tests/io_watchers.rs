@@ -11,7 +11,6 @@ mod linux {
   use runtime_native::abi::RT_IO_READABLE;
   use runtime_native::abi::RT_IO_WRITABLE;
   use libc::c_void;
-  use std::sync::Mutex;
   use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
   use std::mem;
   use std::os::fd::RawFd;
