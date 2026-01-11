@@ -108,6 +108,22 @@ bash scripts/cargo_agent.sh run -p ts-erase --example ts_erase_basic
 This example parses a small TypeScript module, erases TypeScript-only syntax via
 `ts-erase`, and prints the minified JavaScript output using `emit-js`.
 
+## `native-js` (LLVM)
+
+```bash
+# From the ecma-rs workspace root:
+bash scripts/cargo_llvm.sh run -p native-js --example compile_and_run
+```
+
+This example compiles an in-memory TypeScript snippet to LLVM IR using
+`native-js`'s minimal emitter, invokes `clang` to produce a temporary native
+executable, runs it, and prints stdout.
+
+It requires an LLVM 18 toolchain (including `clang-18`) on `PATH`. See:
+
+- [`native-js/README.md`](../native-js/README.md)
+- [`scripts/check_system.sh`](../scripts/check_system.sh)
+
 ## `optimize-js`
 
 ```bash
