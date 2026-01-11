@@ -262,7 +262,7 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
     #[cfg(any(debug_assertions, feature = "gc_debug"))]
     crate::gc::register_type_descriptor_ptr(type_desc as *const TypeDescriptor);
 
-    let obj = alloc::alloc_bytes_zeroed(size, align, "rt_alloc");
+    let obj = crate::alloc::alloc_bytes_zeroed(size, align, "rt_alloc");
     // SAFETY: `obj` points to `size` bytes of writable, zeroed memory.
     unsafe {
       let header = &mut *(obj as *mut ObjHeader);
@@ -299,7 +299,7 @@ pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots
     #[cfg(any(debug_assertions, feature = "gc_debug"))]
     crate::gc::register_type_descriptor_ptr(type_desc as *const TypeDescriptor);
 
-    let obj = alloc::alloc_bytes_zeroed(size, align, "rt_alloc_pinned");
+    let obj = crate::alloc::alloc_bytes_zeroed(size, align, "rt_alloc_pinned");
     // SAFETY: `obj` points to `size` bytes of writable, zeroed memory.
     unsafe {
       let header = &mut *(obj as *mut ObjHeader);
