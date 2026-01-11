@@ -5091,14 +5091,11 @@ impl DomNode {
   }
 
   pub fn is_template_element(&self) -> bool {
-    matches!(
-      self.tag_name(),
-      Some(tag) if tag.eq_ignore_ascii_case("template")
-    )
+    self.is_html_template_element()
   }
 
   pub(crate) fn traversal_children(&self) -> &[DomNode] {
-    if self.is_template_element() {
+    if self.template_contents_are_inert() {
       &[]
     } else {
       &self.children
@@ -5129,7 +5126,7 @@ impl DomNode {
   /// inert template contents for all post-parse traversals (CSS extraction, prefetch discovery,
   /// selector matching, etc).
   pub fn template_contents_are_inert(&self) -> bool {
-    matches!(self.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("template"))
+    self.is_html_template_element()
   }
 
   pub fn document_quirks_mode(&self) -> QuirksMode {
@@ -11684,6 +11681,78 @@ mod tests {
     assert_eq!(counters.summary_prunes(), 1);
     assert_eq!(counters.filter_prunes, 0);
     assert_eq!(counters.evaluated, 0);
+  }
+
+  #[test]
+  fn bloom_pruning_does_not_ignore_svg_template_contents() {
+    reset_has_counters();
+    set_selector_bloom_enabled(true);
+    let svg_template = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "template".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: SVG_NAMESPACE.to_string(),
+          attributes: vec![("class".to_string(), "hit".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+    let dom = element("div", vec![svg_template]);
+    let id_map = enumerate_dom_ids(&dom);
+    let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
+
+    let host_summary = bloom_store.summary_for_id(1).expect("host summary");
+    let template_summary = bloom_store.summary_for_id(2).expect("template summary");
+    let hit_summary = bloom_store.summary_for_id(3).expect("hit summary");
+
+    let hit_hash = selector_bloom_hash("hit");
+    assert!(
+      hit_summary.contains_hash(hit_hash),
+      "template descendant should include its own selector bloom hashes"
+    );
+    assert!(
+      template_summary.contains_hash(hit_hash),
+      "non-HTML <template> elements should merge their contents in selector bloom summaries"
+    );
+    assert!(
+      host_summary.contains_hash(hit_hash),
+      "ancestor summaries should see non-HTML <template> contents"
+    );
+
+    let mut caches = SelectorCaches::default();
+    caches.set_epoch(next_selector_cache_epoch());
+    let mut context = MatchingContext::new(
+      MatchingMode::Normal,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document().with_selector_blooms(Some(&bloom_store));
+
+    let mut input = ParserInput::new(".hit");
+    let mut parser = Parser::new(&mut input);
+    let list =
+      SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::ForHas).expect("parse");
+    let selectors = build_relative_selectors(list);
+    let anchor = ElementRef::with_ancestors(&dom, &[]).with_node_id(1);
+
+    assert!(
+      matches_has_relative(&anchor, &selectors, &mut context),
+      ":has should traverse into non-HTML <template> contents"
+    );
+
+    let counters = capture_has_counters();
+    assert!(
+      counters.evaluated > 0,
+      "expected :has evaluation to run when the selector bloom indicates a possible match"
+    );
   }
 
   #[test]
