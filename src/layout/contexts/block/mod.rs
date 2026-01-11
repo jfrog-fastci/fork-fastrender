@@ -3219,9 +3219,6 @@ impl BlockFormattingContext {
           child_fragment.translate_root_in_place(content_origin);
         }
         child_fragment.style = Some(original_style);
-        if cb == parent_padding_cb && (content_origin.x != 0.0 || content_origin.y != 0.0) {
-          child_fragment.translate_root_in_place(content_origin);
-        }
         if trace_positioned.contains(&pos_child.id) {
           let (text_count, total) = count_text_fragments(&child_fragment);
           let mut snippets = Vec::new();

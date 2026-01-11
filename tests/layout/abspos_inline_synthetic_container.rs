@@ -136,9 +136,13 @@ fn abspos_descendant_inside_inline_wrapper_uses_positioned_ancestor_containing_b
     "expected abspos child to fill positioned ancestor width (got {})",
     img_fragment.bounds.width()
   );
+  // Absolutely positioned *replaced* elements with `height:auto` do not fill the containing block
+  // when both `top` and `bottom` are specified; instead they shrink-to-fit their intrinsic size
+  // (CSS 2.1 §10.6.5). Still, the sizing must use the *positioned ancestor* containing block, not
+  // the synthetic inline container created for the inline wrapper.
   assert!(
-    (img_fragment.bounds.height() - 100.0).abs() < 0.1,
-    "expected abspos child to fill positioned ancestor height (got {})",
+    (img_fragment.bounds.height() - 80.0).abs() < 0.1,
+    "expected abspos child height to use positioned ancestor containing block (got {})",
     img_fragment.bounds.height()
   );
 }
