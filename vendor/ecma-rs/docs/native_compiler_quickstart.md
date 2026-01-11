@@ -193,7 +193,8 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh run -p native-oracle-harness
 bash scripts/cargo_agent.sh run -p native-oracle-harness
 ```
 
-Expected output is standard test output.
+Expected output is standard `cargo test` output for the test invocations; the binary prints `ok ...` / `FAIL ...`
+lines and exits non-zero on failure.
 Today the harness runs:
 
 - **TypeScript/TSX fixtures**: erase TS→JS and execute them in the oracle runtime, then (for fixtures that declare an
