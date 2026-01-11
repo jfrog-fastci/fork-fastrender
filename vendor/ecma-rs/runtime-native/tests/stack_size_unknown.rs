@@ -55,7 +55,7 @@ target triple = "{triple}"
 declare void @llvm.gcroot(ptr, ptr)
 declare void @safepoint()
 
-define i64 @dyn_statepoint(ptr addrspace(1) %p1, ptr addrspace(1) %p2, i64 %n) gc "statepoint-example" {{
+define i64 @dyn_statepoint(ptr addrspace(1) %p1, ptr addrspace(1) %p2, i64 %n) gc "coreclr" {{
 entry:
   %dyn = alloca i8, i64 %n, align 16
   store i8 0, ptr %dyn, align 1

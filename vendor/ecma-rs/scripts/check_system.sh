@@ -89,7 +89,14 @@ elif check_cmd_optional clang "clang"; then
   :
 fi
 
-if check_cmd_optional lld-18 "lld-18"; then
+# On Linux/ELF, LLD is typically invoked via the `ld.lld` driver. `lld` itself is a generic
+# multi-platform wrapper that may exit non-zero for `--version`, so prefer the platform-specific
+# entrypoint.
+if check_cmd_optional ld.lld-18 "lld-18"; then
+  :
+elif check_cmd_optional ld.lld "lld"; then
+  :
+elif check_cmd_optional lld-18 "lld-18"; then
   :
 elif check_cmd_optional lld "lld"; then
   :
