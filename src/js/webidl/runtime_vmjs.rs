@@ -9,6 +9,7 @@ use vm_js::{
 use webidl::WebIdlHooks;
 use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 use webidl_vm_js::CallbackHandle;
+use webidl_vm_js::VmJsHostHooksPayload;
 
 #[derive(Debug, Clone, Copy)]
 pub struct JsOwnPropertyDescriptor {
@@ -595,13 +596,51 @@ fn read_callee_slots(scope: &Scope<'_>, callee: GcObject) -> Result<HostSlots, V
     ))
 }
 
-fn host_from_vm_host<Host: 'static>(host: &mut dyn VmHost) -> Result<&mut Host, VmError> {
-  host
-    .as_any_mut()
-    .downcast_mut::<Host>()
-    .ok_or(VmError::TypeError(
-      "WebIDL bindings host context type mismatch for native call",
-    ))
+const WEBIDL_BINDINGS_HOST_CONTEXT_TYPE_MISMATCH: &str =
+  "WebIDL bindings host context type mismatch for native call";
+
+fn host_ptr_from_vm_host_or_hooks<Host: 'static>(
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+) -> Result<*mut Host, VmError> {
+  // Prefer the explicit `VmHost` argument when it contains the host. This avoids creating two
+  // aliasing `&mut Host` references if the embedding also stores a pointer to the same host in the
+  // hooks payload.
+  if let Some(host) = host.as_any_mut().downcast_mut::<Host>() {
+    return Ok(host as *mut Host);
+  }
+
+  let Some(any) = hooks.as_any_mut() else {
+    return Err(VmError::TypeError(WEBIDL_BINDINGS_HOST_CONTEXT_TYPE_MISMATCH));
+  };
+
+  // `Any::downcast_mut` returns a mutable borrow of `any`. We want to:
+  // - try multiple recovery strategies, and
+  // - return a raw pointer so the borrow of `hooks` ends before `VmJsWebIdlBindingsCx` stores a
+  //   `&mut dyn VmHostHooks` for nested JS calls.
+  //
+  // Use a raw pointer to avoid borrow checker issues while downcasting.
+  let any_ptr: *mut dyn std::any::Any = any;
+  // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and is only used within this function.
+  unsafe {
+    let Some(payload) = (&mut *any_ptr).downcast_mut::<VmJsHostHooksPayload>() else {
+      return Err(VmError::TypeError(WEBIDL_BINDINGS_HOST_CONTEXT_TYPE_MISMATCH));
+    };
+
+    // FastRender standard: prefer the explicit embedder state pointer.
+    if let Some(host) = payload.embedder_state_mut::<Host>() {
+      return Ok(host as *mut Host);
+    }
+
+    // Fallback: recover the `VmHost` pointer stored in the payload, then downcast.
+    if let Some(vm_host) = payload.vm_host_mut() {
+      if let Some(host) = vm_host.as_any_mut().downcast_mut::<Host>() {
+        return Ok(host as *mut Host);
+      }
+    }
+  }
+
+  Err(VmError::TypeError(WEBIDL_BINDINGS_HOST_CONTEXT_TYPE_MISMATCH))
 }
 
 fn dispatch_native_call<Host: 'static>(
@@ -642,8 +681,12 @@ fn dispatch_native_call<Host: 'static>(
   // methods (`to_number`, `to_string`, `get`, `get_method`) take `&mut Host` explicitly and reborrow
   // it for the duration of the nested JS call. This avoids having two aliasing `&mut` references to
   // the same host object live at once.
-  let host = host_from_vm_host::<Host>(host)?;
+  let host_ptr = host_ptr_from_vm_host_or_hooks::<Host>(host, hooks)?;
   let mut rt = VmJsWebIdlBindingsCx::from_native_call(vm, scope, hooks, state);
+  // SAFETY: `host_ptr` is derived from either the explicit `VmHost` argument or from a
+  // `VmJsHostHooksPayload` stored behind `hooks.as_any_mut()`. The embedding is responsible for
+  // ensuring the recovered pointer is valid for the duration of this native call.
+  let host: &mut Host = unsafe { &mut *host_ptr };
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
@@ -714,8 +757,10 @@ fn dispatch_native_construct<Host: 'static>(
   // methods (`to_number`, `to_string`, `get`, `get_method`) take `&mut Host` explicitly and reborrow
   // it for the duration of the nested JS call. This avoids having two aliasing `&mut` references to
   // the same host object live at once.
-  let host = host_from_vm_host::<Host>(host)?;
+  let host_ptr = host_ptr_from_vm_host_or_hooks::<Host>(host, hooks)?;
   let mut rt = VmJsWebIdlBindingsCx::from_native_call(vm, scope, hooks, state);
+  // SAFETY: see `dispatch_native_call`.
+  let host: &mut Host = unsafe { &mut *host_ptr };
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =

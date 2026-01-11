@@ -49,7 +49,7 @@ mod tests {
     Vm, VmError, VmHost, VmHostHooks, VmOptions, WeakGcObject,
   };
   use webidl_js_runtime::JsRuntime as _;
-  use webidl_vm_js::{IterableKind, WebIdlBindingsHost, WebIdlBindingsHostSlot};
+  use webidl_vm_js::{IterableKind, VmJsHostHooksPayload, WebIdlBindingsHost, WebIdlBindingsHostSlot};
 
   struct HostHooksWithBindingsHost {
     slot: WebIdlBindingsHostSlot,
@@ -68,6 +68,32 @@ mod tests {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
       Some(&mut self.slot)
+    }
+  }
+
+  struct HostHooksWithVmJsPayload {
+    microtasks: MicrotaskQueue,
+    payload: VmJsHostHooksPayload,
+  }
+
+  impl HostHooksWithVmJsPayload {
+    fn new<Host: Any>(host: &mut Host) -> Self {
+      let mut payload = VmJsHostHooksPayload::default();
+      payload.set_embedder_state(host);
+      Self {
+        microtasks: MicrotaskQueue::new(),
+        payload,
+      }
+    }
+  }
+
+  impl VmHostHooks for HostHooksWithVmJsPayload {
+    fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<vm_js::RealmId>) {
+      self.microtasks.enqueue_promise_job(job, realm);
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+      Some(&mut self.payload)
     }
   }
 
@@ -1787,6 +1813,32 @@ mod tests {
   }
 
   #[derive(Default)]
+  struct UrlSearchParamsConstructorHost {
+    calls: usize,
+  }
+
+  impl<'a> WebHostBindings<VmJsWebIdlBindingsCx<'a, UrlSearchParamsConstructorHost>> for UrlSearchParamsConstructorHost {
+    fn call_operation(
+      &mut self,
+      _rt: &mut VmJsWebIdlBindingsCx<'a, UrlSearchParamsConstructorHost>,
+      receiver: Option<Value>,
+      interface: &'static str,
+      operation: &'static str,
+      _overload: usize,
+      _args: Vec<BindingValue<Value>>,
+    ) -> Result<BindingValue<Value>, VmError> {
+      match (interface, operation) {
+        ("URLSearchParams", "constructor") => {
+          self.calls += 1;
+          let _ = receiver;
+          Ok(BindingValue::Undefined)
+        }
+        _ => Err(VmError::TypeError("unimplemented host operation")),
+      }
+    }
+  }
+
+  #[derive(Default)]
   struct AttributeAndConstHost {
     limits: UrlLimits,
     params: HashMap<WeakGcObject, UrlSearchParams>,
@@ -2796,6 +2848,117 @@ mod tests {
         vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[a, b])?;
 
         assert_eq!(host.calls, vec![0, 1, 1]);
+        Ok(())
+      },
+    ));
+
+    realm.teardown(&mut heap);
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
+  }
+
+  #[test]
+  fn generated_bindings_call_with_host_recovers_host_from_hooks_payload() -> Result<(), VmError> {
+    let limits = HeapLimits::new(32 * 1024 * 1024, 32 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    // Keep `state` alive until after `teardown` so native dispatch pointers stored on function
+    // objects remain valid for the lifetime of the realm.
+    let state = Box::new(VmJsWebIdlBindingsState::<AlertHost>::new(
+      realm.global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let mut host = AlertHost::default();
+        {
+          let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
+          install_window_bindings(&mut rt, &mut host)?;
+        }
+
+        let mut hooks = HostHooksWithVmJsPayload::new(&mut host);
+        let mut scope = heap.scope();
+
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+        let alert_key = alloc_key(&mut scope, "alert")?;
+        let alert = scope
+          .heap()
+          .object_get_own_data_property_value(global, &alert_key)?
+          .expect("globalThis.alert should be defined");
+
+        // `Vm::call_with_host` passes a dummy `VmHost` (`()`), so native dispatch must recover the
+        // real embedder host state via `VmHostHooks::as_any_mut`.
+        vm.call_with_host(&mut scope, &mut hooks, alert, Value::Undefined, &[])?;
+        assert_eq!(host.calls, vec![0]);
+        Ok(())
+      },
+    ));
+
+    realm.teardown(&mut heap);
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
+  }
+
+  #[test]
+  fn generated_bindings_construct_with_host_recovers_host_from_hooks_payload() -> Result<(), VmError> {
+    let limits = HeapLimits::new(32 * 1024 * 1024, 32 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    // Keep `state` alive until after `teardown` so native dispatch pointers stored on function
+    // objects remain valid for the lifetime of the realm.
+    let state = Box::new(VmJsWebIdlBindingsState::<UrlSearchParamsConstructorHost>::new(
+      realm.global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let mut host = UrlSearchParamsConstructorHost::default();
+        {
+          let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
+          install_window_bindings(&mut rt, &mut host)?;
+        }
+
+        let mut hooks = HostHooksWithVmJsPayload::new(&mut host);
+        let mut scope = heap.scope();
+
+        // globalThis.URLSearchParams
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+        let ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
+        let ctor = scope
+          .heap()
+          .object_get_own_data_property_value(global, &ctor_key)?
+          .expect("globalThis.URLSearchParams should be defined");
+        scope.push_root(ctor)?;
+
+        let init_str = scope.alloc_string("a=1")?;
+        scope.push_root(Value::String(init_str))?;
+        let init = Value::String(init_str);
+
+        // Like `Vm::call_with_host`, `Vm::construct_with_host` passes a dummy `VmHost` (`()`).
+        let params = vm.construct_with_host(&mut scope, &mut hooks, ctor, &[init], ctor)?;
+        scope.push_root(params)?;
+        let Value::Object(params_obj) = params else {
+          return Err(VmError::TypeError(
+            "URLSearchParams constructor should return an object",
+          ));
+        };
+
+        assert_eq!(host.calls, 1);
+        let _ = params_obj;
         Ok(())
       },
     ));
