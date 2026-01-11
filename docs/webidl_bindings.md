@@ -201,6 +201,24 @@ world:
 DOM bindings are currently implemented directly against `vm-js` realms in `src/js/legacy/vm_dom.rs`
 and are installed with `fastrender::js::install_dom_bindings(vm, heap, realm, ...)`.
 
+### Troubleshooting
+
+- If `src/js/webidl/bindings/generated_legacy.rs` fails to compile (common symptoms are Rust
+  `E0425` missing wrapper functions or `E0428` duplicate wrapper functions), regenerate the legacy
+  bindings from the committed snapshot world:
+
+  ```bash
+  bash scripts/cargo_agent.sh xtask webidl-bindings \
+    --backend legacy \
+    --out src/js/webidl/bindings/generated_legacy.rs
+  ```
+
+- Then verify the build with:
+
+  ```bash
+  bash scripts/cargo_agent.sh check -p fastrender --quiet
+  ```
+
 ## Debugging unsupported/odd IDL
 
 The WebIDL support in `xtask/src/webidl` is intentionally a **small subset** aimed at WHATWG
