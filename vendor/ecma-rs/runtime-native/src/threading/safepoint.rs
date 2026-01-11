@@ -296,6 +296,46 @@ pub fn rt_gc_poll() -> bool {
   (epoch & 1) != 0
 }
 
+fn fixup_safepoint_context_to_nearest_managed(
+  mut ctx: SafepointContext,
+  stackmaps: Option<&crate::stackmaps::StackMaps>,
+) -> SafepointContext {
+  // If the thread entered the safepoint slow path from within runtime-native code (rather than from
+  // a managed `gc.safepoint_poll` callsite), the captured return address (`ctx.ip`) points into
+  // runtime code and will not have an LLVM stackmap record.
+  //
+  // In that situation the top managed frame is suspended at the callsite into the *outermost*
+  // runtime frame. Recover that managed callsite cursor by walking the frame-pointer chain outward
+  // until we find a return address present in stackmaps, and publish that cursor as the thread's
+  // safepoint context so stackmap-based root enumeration can still succeed.
+  let Some(stackmaps) = stackmaps else {
+    return ctx;
+  };
+
+  if stackmaps.lookup(ctx.ip as u64).is_some() {
+    return ctx;
+  }
+
+  let Some(cursor) = crate::stackwalk::find_nearest_managed_cursor(ctx.fp as u64, stackmaps) else {
+    return ctx;
+  };
+
+  let sp_callsite = cursor.sp.unwrap_or(0);
+  #[cfg(target_arch = "x86_64")]
+  let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
+  #[cfg(not(target_arch = "x86_64"))]
+  let sp_entry = sp_callsite;
+
+  ctx = SafepointContext {
+    sp_entry: sp_entry as usize,
+    sp: sp_callsite as usize,
+    fp: cursor.fp as usize,
+    ip: cursor.pc as usize,
+  };
+
+  ctx
+}
+
 /// Rust implementation of the safepoint slow path.
 ///
 /// This is called via the architecture-specific assembly shim `rt_gc_safepoint_slow`, which
@@ -312,33 +352,7 @@ fn runtime_native_gc_safepoint_slow_impl_inner(requested_epoch: u64, ctx: *const
   // Safety: the assembly wrapper passes a valid pointer to an initialized
   // `SafepointContext` on its stack.
   let mut ctx = unsafe { *ctx };
-
-  // If the thread entered the safepoint slow path from within runtime-native code (rather than from
-  // a managed `gc.safepoint_poll` callsite), the captured return address (`ctx.ip`) points into
-  // runtime code and will not have an LLVM stackmap record.
-  //
-  // In that situation the top managed frame is suspended at the callsite into the *outermost*
-  // runtime frame. Recover that managed callsite cursor by walking the frame-pointer chain outward
-  // until we find a return address present in stackmaps, and publish that cursor as the thread's
-  // safepoint context so stackmap-based root enumeration can still succeed.
-  if let Some(stackmaps) = crate::stackmap::try_stackmaps() {
-    if stackmaps.lookup(ctx.ip as u64).is_none() {
-      if let Some(cursor) = crate::stackwalk::find_nearest_managed_cursor(ctx.fp as u64, stackmaps) {
-        let sp_callsite = cursor.sp.unwrap_or(0);
-        #[cfg(target_arch = "x86_64")]
-        let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
-        #[cfg(not(target_arch = "x86_64"))]
-        let sp_entry = sp_callsite;
-
-        ctx = SafepointContext {
-          sp_entry: sp_entry as usize,
-          sp: sp_callsite as usize,
-          fp: cursor.fp as usize,
-          ip: cursor.pc as usize,
-        };
-      }
-    }
-  }
+  ctx = fixup_safepoint_context_to_nearest_managed(ctx, crate::stackmap::try_stackmaps());
 
   registry::set_current_thread_safepoint_context(ctx);
   // Publish that we've observed the stop-the-world request.
@@ -575,6 +589,7 @@ fn rt_gc_safepoint_impl_inner(caller_fp: u64, caller_pc: u64, regs: *mut RegCont
     fp: caller_fp as usize,
     ip: caller_pc as usize,
   };
+  let ctx = fixup_safepoint_context_to_nearest_managed(ctx, crate::stackmap::try_stackmaps());
 
   registry::set_current_thread_safepoint_context(ctx);
   registry::set_current_thread_safepoint_epoch_observed(requested_epoch);
@@ -1166,6 +1181,7 @@ pub fn for_each_root_reloc_pair_world_stopped(
 #[cfg(test)]
 mod tests {
   use crate::alloc;
+  use crate::arch::SafepointContext;
   use crate::gc::ObjHeader;
   use crate::gc::TypeDescriptor;
   use crate::threading;
@@ -1196,7 +1212,59 @@ mod tests {
     }
     obj
   }
- 
+  
+  #[test]
+  fn fixup_safepoint_context_recovers_nearest_managed_callsite() {
+    let stackmaps = crate::StackMaps::parse(include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/tests/fixtures/bin/statepoint_x86_64.bin"
+    )))
+    .expect("parse stackmaps");
+    let (managed_ra, _) = stackmaps.iter().next().expect("fixture should contain at least one callsite");
+
+    // Build a synthetic runtime->managed frame chain in a stack-allocated buffer. `find_nearest_managed_cursor`
+    // bounds-checks against the current thread's *real* stack, so this must live on the stack (not heap).
+    let mut stack = [0u8; 512];
+    let base = stack.as_mut_ptr() as usize;
+
+    // Inner/runtime frame (lower address), outer/managed frame (higher address).
+    let runtime_fp = align_up(base + 64, 16);
+    let managed_fp = align_up(base + 256, 16);
+    assert!(managed_fp > runtime_fp);
+
+    unsafe {
+      // Runtime frame record:
+      //   [FP + 0] = saved FP
+      //   [FP + 8] = saved return address into caller
+      write_u64(runtime_fp + 0, managed_fp as u64);
+      write_u64(runtime_fp + 8, managed_ra);
+
+      // Managed frame record: terminate the chain.
+      write_u64(managed_fp + 0, 0);
+      write_u64(managed_fp + 8, 0);
+    }
+
+    let ctx = SafepointContext {
+      fp: runtime_fp,
+      ip: 0xdead_beef_dead_beefusize,
+      ..Default::default()
+    };
+    let fixed = super::fixup_safepoint_context_to_nearest_managed(ctx, Some(&stackmaps));
+
+    assert_eq!(fixed.fp, managed_fp);
+    assert_eq!(fixed.ip as u64, managed_ra);
+    assert!(stackmaps.lookup(fixed.ip as u64).is_some());
+
+    let expected_sp_callsite = runtime_fp as u64 + 16;
+    #[cfg(target_arch = "x86_64")]
+    let expected_sp_entry = expected_sp_callsite - crate::arch::WORD_SIZE as u64;
+    #[cfg(not(target_arch = "x86_64"))]
+    let expected_sp_entry = expected_sp_callsite;
+
+    assert_eq!(fixed.sp as u64, expected_sp_callsite);
+    assert_eq!(fixed.sp_entry as u64, expected_sp_entry);
+  }
+
   #[test]
   fn stw_safepoint_barrier_is_deadlock_free() {
     const WORKERS: usize = 4;
@@ -1254,5 +1322,13 @@ mod tests {
  
     assert_eq!(completed.load(Ordering::Acquire), WORKERS);
     threading::unregister_current_thread();
+  }
+
+  fn align_up(v: usize, align: usize) -> usize {
+    (v + (align - 1)) & !(align - 1)
+  }
+
+  unsafe fn write_u64(addr: usize, val: u64) {
+    (addr as *mut u64).write_unaligned(val);
   }
 }

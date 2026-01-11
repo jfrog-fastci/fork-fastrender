@@ -406,7 +406,10 @@ pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
     if slot.is_null() {
       crate::trap::rt_trap_invalid_arg("rt_gc_safepoint_relocate_h: slot was null");
     }
-    crate::safepoint::rt_gc_safepoint();
+    // Poll the stop-the-world barrier. Use the threading safepoint poll so the
+    // fast path is a single epoch load and so the slow path can recover the
+    // nearest managed callsite when this helper is invoked from runtime frames.
+    crate::threading::safepoint::rt_gc_safepoint();
     crate::roots::load_handle(slot)
   })
 }
