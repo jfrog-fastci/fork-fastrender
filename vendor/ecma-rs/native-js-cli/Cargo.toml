@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 description = "CLI for compiling TypeScript to native executables via native-js (LLVM)"
 publish = false
+default-run = "native-js-cli"
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
