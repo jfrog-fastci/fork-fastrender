@@ -179,6 +179,9 @@ See:
     `TopLevel`.
   - `emit_top_level_diagnostic` returns a `Diagnostic` with a best-effort span on
     failure.
+- Convenience TS→JS helper (feature `emit-js/ts_erase`, enabled by default):
+  - `emit_ecma_from_ts_top_level` runs `ts-erase` in strict-native mode, then
+    emits runnable ECMAScript JS via the normal emitter.
 - `Emitter`/`EmitOptions` control whitespace, ASI handling, and statement
   separation. Uses `Loc` to point diagnostics at offending syntax.
 
@@ -190,7 +193,8 @@ See:
 - Can also lower some runtime TS constructs (e.g. enums/namespaces) to JS in
   "full" mode. In "strict native" mode, those constructs are rejected
   deterministically (intended for oracle tooling and strict-subset enforcement).
-- Used by `minify-js` (for TS inputs) and `native-oracle-harness`.
+- Used by `minify-js` (for TS inputs), `native-oracle-harness`, and `emit-js`
+  (for the `emit_ecma_from_ts_top_level` convenience helper).
 
 ### minify-js
 - Single-file minifier built on the parser and JS semantics.
