@@ -167,3 +167,64 @@ fn io_watcher_rooted_keeps_gc_object_alive_and_relocates_pointer() {
     std::thread::yield_now();
   }
 }
+
+#[test]
+fn io_watcher_rooted_can_be_unregistered_before_first_event_and_releases_root() {
+  static FIRED: AtomicU64 = AtomicU64::new(0);
+  extern "C" fn mark_fired(_events: u32, _data: *mut u8) {
+    FIRED.fetch_add(1, Ordering::AcqRel);
+  }
+
+  let _rt = TestRuntimeGuard::new();
+
+  let (rfd, wfd) = pipe().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = unsafe { init_test_obj(&mut heap) };
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let watcher = runtime_native::rt_io_register_rooted(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    mark_fired,
+    obj,
+  );
+  assert_ne!(watcher, 0);
+
+  // Move/collect while the watcher is registered but before any readiness is delivered.
+  collect_major(&mut heap);
+  let after_gc = runtime_native::rt_weak_get(weak);
+  assert!(!after_gc.is_null());
+  assert!(!heap.is_in_nursery(after_gc));
+
+  // Unregister before any readiness event occurs.
+  runtime_native::rt_io_unregister(watcher);
+
+  // Trigger readiness after unregistration; callback must not fire.
+  write_byte(wfd.as_raw_fd());
+
+  for _ in 0..10 {
+    runtime_native::rt_async_poll_legacy();
+    std::thread::yield_now();
+  }
+  assert_eq!(
+    FIRED.load(Ordering::Acquire),
+    0,
+    "rooted I/O watcher callback ran even though watcher was unregistered"
+  );
+
+  // After unregistration, the root must be released and the object should become collectible.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after rooted I/O watcher was unregistered (root not released?)"
+    );
+    std::thread::yield_now();
+  }
+}
