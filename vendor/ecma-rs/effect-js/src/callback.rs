@@ -15,34 +15,33 @@ pub struct CallbackInfo {
   pub uses_array: bool,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct CallSiteInfo {
-  pub callback: Option<CallbackInfo>,
-}
-
 pub fn callsite_info_for_args(
   lowered: &hir_js::LowerResult,
   body: BodyId,
   call_expr: ExprId,
   kb: &KnowledgeBase,
-) -> CallSiteInfo {
+) -> crate::db::CallSiteInfo {
   let Some(body_ref) = lowered.body(body) else {
-    return CallSiteInfo::default();
+    return crate::db::CallSiteInfo::default();
   };
   let Some(expr) = body_ref.exprs.get(call_expr.0 as usize) else {
-    return CallSiteInfo::default();
+    return crate::db::CallSiteInfo::default();
   };
   let ExprKind::Call(call) = &expr.kind else {
-    return CallSiteInfo::default();
+    return crate::db::CallSiteInfo::default();
   };
 
-  let callback = call
-    .args
-    .first()
-    .filter(|arg| !arg.spread)
-    .and_then(|arg| analyze_inline_callback(lowered, body, arg.expr, kb));
+  let Some(callback_expr) = call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr) else {
+    return crate::db::CallSiteInfo::default();
+  };
 
-  CallSiteInfo { callback }
+  let callback = analyze_inline_callback(lowered, body, callback_expr, kb);
+
+  crate::db::CallSiteInfo {
+    callback_is_pure: callback.map(|cb| matches!(cb.purity, Purity::Pure | Purity::Allocating)),
+    callback_uses_index: callback.map(|cb| cb.uses_index),
+    ..crate::db::CallSiteInfo::default()
+  }
 }
 
 pub fn analyze_inline_callback(
@@ -529,8 +528,17 @@ mod tests {
     let lowered =
       hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(x => x + 1);").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let callsite = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    let cb = callsite.callback.expect("callback");
+    let call = lowered
+      .body(body)
+      .unwrap()
+      .exprs
+      .get(call_expr.0 as usize)
+      .unwrap();
+    let ExprKind::Call(call) = &call.kind else {
+      panic!("expected call expr");
+    };
+    let cb_expr = call.args[0].expr;
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert_eq!(cb.purity, Purity::Pure);
     assert!(!cb.uses_index);
@@ -542,8 +550,17 @@ mod tests {
     let lowered =
       hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map((x, i) => i);").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let callsite = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    let cb = callsite.callback.expect("callback");
+    let call = lowered
+      .body(body)
+      .unwrap()
+      .exprs
+      .get(call_expr.0 as usize)
+      .unwrap();
+    let ExprKind::Call(call) = &call.kind else {
+      panic!("expected call expr");
+    };
+    let cb_expr = call.args[0].expr;
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.uses_index);
   }
@@ -557,8 +574,17 @@ mod tests {
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let callsite = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    let cb = callsite.callback.expect("callback");
+    let call = lowered
+      .body(body)
+      .unwrap()
+      .exprs
+      .get(call_expr.0 as usize)
+      .unwrap();
+    let ExprKind::Call(call) = &call.kind else {
+      panic!("expected call expr");
+    };
+    let cb_expr = call.args[0].expr;
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert_eq!(cb.purity, Purity::Impure);
     assert!(cb.effects.flags.contains(EffectFlags::IO));
@@ -574,10 +600,18 @@ mod tests {
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let callsite = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    let cb = callsite.callback.expect("callback");
+    let call = lowered
+      .body(body)
+      .unwrap()
+      .exprs
+      .get(call_expr.0 as usize)
+      .unwrap();
+    let ExprKind::Call(call) = &call.kind else {
+      panic!("expected call expr");
+    };
+    let cb_expr = call.args[0].expr;
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert_eq!(cb.effects.throws, ThrowBehavior::Always);
   }
 }
-

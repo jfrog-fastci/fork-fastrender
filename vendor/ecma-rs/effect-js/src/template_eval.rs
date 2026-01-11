@@ -2,7 +2,7 @@ use effect_model::{EffectFlags, EffectSummary, EffectTemplate, Purity, PurityTem
 use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 use knowledge_base::{ApiSemantics, KnowledgeBase};
 
-use crate::callback::callsite_info_for_args;
+use crate::callback::analyze_inline_callback;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CallEval {
@@ -44,14 +44,26 @@ pub(crate) fn eval_call_expr(
 
   let api = resolve_api_semantics(kb, lowered, body, call_expr);
 
+  let callback = match api {
+    Some(api)
+      if matches!(api.effects, EffectTemplate::DependsOnCallback)
+        || matches!(api.purity, PurityTemplate::DependsOnCallback) =>
+    {
+      call
+        .args
+        .first()
+        .filter(|arg| !arg.spread)
+        .and_then(|arg| analyze_inline_callback(lowered, body, arg.expr, kb))
+    }
+    _ => None,
+  };
+
   let mut effects = match api {
     Some(api) => match api.effects {
       EffectTemplate::DependsOnCallback => {
-        let callsite = callsite_info_for_args(lowered, body, call_expr, kb);
-        match callsite.callback {
-          Some(cb) => cb.effects,
-          None => unknown_effects(),
-        }
+        let base = crate::effect_template_to_summary(&api.effects);
+        let cb_effects = callback.map(|cb| cb.effects).unwrap_or_else(unknown_effects);
+        EffectSummary::join(base, cb_effects)
       }
       _ => crate::effect_template_to_summary(&api.effects),
     },
@@ -65,8 +77,7 @@ pub(crate) fn eval_call_expr(
   let mut purity = match api {
     Some(api) => match api.purity {
       PurityTemplate::DependsOnCallback => {
-        let callsite = callsite_info_for_args(lowered, body, call_expr, kb);
-        callsite.callback.map(|cb| cb.purity).unwrap_or(Purity::Unknown)
+        callback.map(|cb| cb.purity).unwrap_or(Purity::Unknown)
       }
       _ => crate::purity_template_to_purity(&api.purity),
     },
