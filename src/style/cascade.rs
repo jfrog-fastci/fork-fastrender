@@ -19042,7 +19042,7 @@ mod tests {
   use crate::style::color::Color;
   use crate::style::color::Rgba;
   use crate::style::computed::Visibility;
-  use crate::style::content::ContentValue;
+  use crate::style::content::{ContentContext, ContentGenerator, ContentItem, ContentValue};
   use crate::style::display::Display;
   use crate::style::float::Float;
   use crate::style::media::MediaContext;
@@ -27662,7 +27662,20 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       .before_styles
       .as_ref()
       .expect("generated [data-icon]:before pseudo-element");
-    assert_eq!(before.content_value, ContentValue::from_string("menu"));
+    assert_eq!(
+      before.content_value,
+      ContentValue::Items(vec![ContentItem::attr("data-icon")])
+    );
+
+    let mut ctx = ContentContext::new();
+    ctx.set_attribute(
+      "data-icon",
+      dom
+        .get_attribute_ref("data-icon")
+        .expect("dom has data-icon attribute"),
+    );
+    let generator = ContentGenerator::new();
+    assert_eq!(generator.generate(&before.content_value, &mut ctx), "menu");
   }
 
   #[test]
@@ -27709,7 +27722,20 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       .before_styles
       .as_ref()
       .expect("expected [data-icon]:before pseudo-element from fixture stylesheet");
-    assert_eq!(before.content_value, ContentValue::from_string("menu"));
+    assert_eq!(
+      before.content_value,
+      ContentValue::Items(vec![ContentItem::attr("data-icon")])
+    );
+
+    let mut ctx = ContentContext::new();
+    ctx.set_attribute(
+      "data-icon",
+      dom
+        .get_attribute_ref("data-icon")
+        .expect("dom has data-icon attribute"),
+    );
+    let generator = ContentGenerator::new();
+    assert_eq!(generator.generate(&before.content_value, &mut ctx), "menu");
   }
 
   #[test]
@@ -27773,7 +27799,22 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       .before_styles
       .as_ref()
       .expect("expected #nav-toggle::before pseudo-element");
-    assert_eq!(before.content_value, ContentValue::from_string("menu"));
+    assert_eq!(
+      before.content_value,
+      ContentValue::Items(vec![ContentItem::attr("data-icon")])
+    );
+
+    let mut ctx = ContentContext::new();
+    ctx.set_attribute(
+      "data-icon",
+      nav_toggle
+        .node
+        .get_attribute_ref("data-icon")
+        .expect("#nav-toggle has data-icon attribute"),
+    );
+    let generator = ContentGenerator::new();
+    let generated_content = generator.generate(&before.content_value, &mut ctx);
+    assert_eq!(generated_content, "menu");
 
     assert_eq!(
       before.font_family.as_ref(),
@@ -27794,7 +27835,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
 
     let pipeline = ShapingPipeline::new();
     let shaped_runs = pipeline
-      .shape("menu", before, &font_ctx)
+      .shape(&generated_content, before, &font_ctx)
       .expect("shape Material Icons ligature");
     let glyphs: usize = shaped_runs.iter().map(|run| run.glyphs.len()).sum();
     assert_eq!(
@@ -27828,9 +27869,9 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
 
   #[test]
   fn pseudo_element_content_attr_allows_whitespace_values() {
-    // Regression: `attr()` substitution happens during computed-value-time resolution. When the
-    // attribute value contains whitespace, it must still round-trip through the property parsers as
-    // a single string token so generated content isn't dropped.
+    // Regression: content values preserve `attr()` references and resolve them during content
+    // generation. When the attribute value contains whitespace, the generated content must preserve
+    // it (rather than truncating at the first token).
     let dom = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -27846,7 +27887,20 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let after = styled.after_styles.as_ref().expect("generated ::after");
     assert_eq!(
       after.content_value,
-      ContentValue::from_string("Our business")
+      ContentValue::Items(vec![ContentItem::attr("data-text")])
+    );
+
+    let mut ctx = ContentContext::new();
+    ctx.set_attribute(
+      "data-text",
+      dom
+        .get_attribute_ref("data-text")
+        .expect("dom has data-text attribute"),
+    );
+    let generator = ContentGenerator::new();
+    assert_eq!(
+      generator.generate(&after.content_value, &mut ctx),
+      "Our business"
     );
   }
 
