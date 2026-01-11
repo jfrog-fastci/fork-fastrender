@@ -6,6 +6,7 @@ use runtime_native::async_abi::{
 };
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
+use runtime_native::CoroutineId;
 use runtime_native::PromiseRef as AbiPromiseRef;
 use runtime_native::RtShapeId;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -89,8 +90,7 @@ fn deferred_spawn_reloads_coroutine_ptr_from_persistent_handle() {
 
   // Enqueue the first resume as a microtask.
   let handle = runtime_native::rt_handle_alloc(coro1_ref.cast::<u8>());
-  let coro_id = runtime_native::CoroutineId(handle);
-  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_id) };
+  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(CoroutineId(handle)) };
 
   // Allocate an alternate coroutine and point it at the same promise so the microtask can fulfill
   // the promise when it runs.
@@ -221,8 +221,7 @@ fn await_reaction_reloads_coroutine_ptr_from_persistent_handle() {
 
   // Enqueue and run once so the coroutine registers its await reaction.
   let handle = runtime_native::rt_handle_alloc(coro1_ref.cast::<u8>());
-  let coro_id = runtime_native::CoroutineId(handle);
-  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_id) };
+  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(CoroutineId(handle)) };
   while runtime_native::rt_async_poll() {}
   assert!(started);
   assert!(!completed);

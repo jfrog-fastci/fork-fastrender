@@ -5,6 +5,7 @@ use runtime_native::async_abi::{
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::CoroutineId;
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
@@ -337,8 +338,7 @@ fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
   let coro_ptr = Box::into_raw(coro);
 
   let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-  let coro_id = runtime_native::CoroutineId(handle);
-  let result_promise = unsafe { runtime_native::rt_async_spawn(coro_id) };
+  let result_promise = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
   assert!(!completed.load(Ordering::SeqCst));
 
   extern "C" fn set_then(data: *mut u8) {

@@ -5,6 +5,7 @@ use runtime_native::async_abi::{
   CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::CoroutineId;
 use runtime_native::PromiseRef as AbiPromiseRef;
 use runtime_native::RtShapeId;
 use std::sync::atomic::{AtomicU8, AtomicUsize};
@@ -100,11 +101,11 @@ fn native_async_promise_waiters_resume_in_fifo_order() {
   // Await registration order is defined by program order: coro1 then coro2.
   let coro1_ref = Box::into_raw(coro1) as CoroutineRef;
   let coro2_ref = Box::into_raw(coro2) as CoroutineRef;
-  let handle1 = runtime_native::rt_handle_alloc(coro1_ref.cast::<u8>());
-  let handle2 = runtime_native::rt_handle_alloc(coro2_ref.cast::<u8>());
+  let handle1 = runtime_native::rt_handle_alloc(coro1_ref.cast());
+  let handle2 = runtime_native::rt_handle_alloc(coro2_ref.cast());
   unsafe {
-    let _p1 = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle1));
-    let _p2 = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle2));
+    let _p1 = runtime_native::rt_async_spawn(CoroutineId(handle1));
+    let _p2 = runtime_native::rt_async_spawn(CoroutineId(handle2));
   }
 
   unsafe {
@@ -191,10 +192,10 @@ fn native_async_strict_await_yields_on_already_settled_promise() {
     awaited: awaited_ptr,
   });
 
-  let coro_ref = Box::into_raw(coro) as CoroutineRef;
-  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
+  let coro_ptr = Box::into_raw(coro) as CoroutineRef;
+  let handle = runtime_native::rt_handle_alloc(coro_ptr.cast());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
   }
 
   assert!(
@@ -243,10 +244,10 @@ fn native_async_non_strict_await_resumes_synchronously_on_already_settled_promis
     awaited: awaited_ptr,
   });
 
-  let coro_ref = Box::into_raw(coro) as CoroutineRef;
-  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
+  let coro_ptr = Box::into_raw(coro) as CoroutineRef;
+  let handle = runtime_native::rt_handle_alloc(coro_ptr.cast());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
   }
 
   assert!(

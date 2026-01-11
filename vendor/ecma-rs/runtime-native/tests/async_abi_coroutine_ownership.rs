@@ -3,6 +3,7 @@ use runtime_native::async_abi::{
   CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::CoroutineId;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -81,9 +82,9 @@ fn heap_owned_coroutine_is_destroyed_exactly_once_on_completion() {
   });
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
-  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
   }
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
@@ -111,9 +112,9 @@ fn stack_owned_coroutine_is_not_destroyed_and_must_complete_synchronously() {
   };
 
   let coro_ptr = &mut coro.header as *mut Coroutine;
-  let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
+  let handle = runtime_native::rt_handle_alloc(coro_ptr.cast());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
   }
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
@@ -141,9 +142,9 @@ fn cancel_all_destroys_deferred_heap_owned_coroutines_once() {
   });
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
-  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn_deferred(runtime_native::CoroutineId(handle));
+    let _promise = runtime_native::rt_async_spawn_deferred(CoroutineId(handle));
   }
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 
@@ -184,9 +185,9 @@ fn cancel_all_prevents_stale_resume_after_awaited_promise_settles() {
   });
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
-  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
   }
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 

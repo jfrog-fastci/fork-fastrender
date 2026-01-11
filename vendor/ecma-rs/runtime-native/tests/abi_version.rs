@@ -4,6 +4,7 @@ use runtime_native::async_abi::{
   Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, RT_ASYNC_ABI_VERSION,
 };
 use runtime_native::RtShapeId;
+use runtime_native::CoroutineId;
 
 unsafe extern "C" fn dummy_resume(_coro: *mut Coroutine) -> CoroutineStep {
   CoroutineStep::complete()
@@ -12,7 +13,7 @@ unsafe extern "C" fn dummy_resume(_coro: *mut Coroutine) -> CoroutineStep {
 unsafe extern "C" fn dummy_destroy(_coro: *mut Coroutine) {}
 
 unsafe fn rt_async_spawn_ptr(coro: *mut Coroutine) {
-  let coro_id = runtime_native::CoroutineId(runtime_native::rt_handle_alloc(coro.cast()));
+  let coro_id = CoroutineId(runtime_native::rt_handle_alloc(coro.cast()));
   let _ = runtime_native::rt_async_spawn(coro_id);
 }
 
