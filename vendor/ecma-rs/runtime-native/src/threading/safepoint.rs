@@ -463,7 +463,8 @@ mod tests {
     const WORKERS: usize = 4;
     const WORKER_ITERS: usize = 2_000;
     const GC_ITERS: usize = 20;
- 
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+  
     // Register the coordinator (main test thread) so it participates in STW accounting.
     threading::register_current_thread(ThreadKind::Main);
  

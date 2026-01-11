@@ -62,6 +62,11 @@ impl Runtime {
       return Err(AttachError::AlreadyAttached);
     }
 
+    // Avoid mutating the thread registry while a stop-the-world safepoint is in
+    // progress. This is a placeholder until the per-runtime registry is wired
+    // into the GC's own coordinator.
+    crate::threading::safepoint::wait_while_stop_the_world();
+
     // Prevent attach/detach while a stop-the-world phase is active.
     let _world = self.world_lock.read();
 
@@ -101,6 +106,10 @@ impl Runtime {
     if thread.is_null() {
       return Err(DetachError::NotAttached);
     }
+
+    // Avoid mutating the thread registry while a stop-the-world safepoint is in
+    // progress. This blocks detach until GC resumes.
+    crate::threading::safepoint::wait_while_stop_the_world();
 
     // Prevent detach while a stop-the-world phase is active.
     let _world = self.world_lock.read();

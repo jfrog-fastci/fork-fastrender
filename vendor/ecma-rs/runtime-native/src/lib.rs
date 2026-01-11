@@ -718,6 +718,7 @@ mod tests {
 
   #[test]
   fn parallel_spawn_and_join_increments_atomic() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     let counter = AtomicUsize::new(0);
     let counter_ptr = (&counter as *const AtomicUsize).cast_mut().cast::<u8>();
 
@@ -770,6 +771,7 @@ mod tests {
 
   #[test]
   fn parallel_spawn_join_can_spawn_from_worker_thread() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     const CHILDREN: usize = 4096;
     let counters: Vec<AtomicUsize> = (0..CHILDREN).map(|_| AtomicUsize::new(0)).collect();
 
@@ -791,6 +793,7 @@ mod tests {
 
   #[test]
   fn parallel_spawn_stress_runs_each_task_exactly_once() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     const TASKS: usize = 50_000;
 
     let counters: Vec<AtomicUsize> = (0..TASKS).map(|_| AtomicUsize::new(0)).collect();
@@ -833,6 +836,7 @@ mod tests {
 
   #[test]
   fn parallel_tasks_write_to_disjoint_slices() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     let mut out = vec![0u8; 1024];
 
     let mut task_ids: Vec<abi::TaskId> = Vec::new();
@@ -879,6 +883,7 @@ mod tests {
 
   #[test]
   fn parallel_join_empty_is_noop() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     rt_parallel_join(std::ptr::null(), 0);
   }
 
@@ -915,6 +920,7 @@ mod tests {
 
   #[test]
   fn parallel_spawn_can_execute_concurrently() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     // This test is a best-effort concurrency probe: if the pool only has 1 worker, we can't
     // reliably assert overlap across OS threads.
     let workers = effective_worker_count();

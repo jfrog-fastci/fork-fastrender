@@ -20,6 +20,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_unregister_current_thread(",
     "rt_register_thread(",
     "rt_unregister_thread(",
+    "rt_thread_attach(",
+    "rt_thread_detach(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -52,6 +54,9 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _unregister_current: extern "C" fn() = runtime_native::rt_unregister_current_thread;
   let _register_thread: extern "C" fn() = runtime_native::rt_register_thread;
   let _unregister_thread: extern "C" fn() = runtime_native::rt_unregister_thread;
+  let _thread_attach: unsafe extern "C" fn(*mut runtime_native::Runtime) -> *mut runtime_native::Thread =
+    runtime_native::rt_thread_attach;
+  let _thread_detach: unsafe extern "C" fn(*mut runtime_native::Thread) = runtime_native::rt_thread_detach;
 
   // GC write barrier entrypoints.
   let _gc_poll: extern "C" fn() -> bool = runtime_native::rt_gc_poll;
@@ -82,6 +87,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _gc_poll,
     _register_thread,
     _unregister_thread,
+    _thread_attach,
+    _thread_detach,
     _write_barrier,
     _write_barrier_range,
     _backing_store_external_bytes,
