@@ -9,7 +9,7 @@
 
 use crate::emit::TargetConfig;
 use crate::{compile_typescript_to_llvm_ir, emit, link, CompileOptions, EmitKind, NativeJsError, OptLevel};
-use diagnostics::Diagnostic;
+use diagnostics::{Diagnostic, Severity};
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::OptimizationLevel;
@@ -31,7 +31,7 @@ pub fn typecheck_and_validate_strict_subset(
 ) -> Result<Program, Vec<Diagnostic>> {
   let program = Program::new(host, roots);
   let diagnostics = program.check();
-  if !diagnostics.is_empty() {
+  if diagnostics.iter().any(|d| d.severity == Severity::Error) {
     return Err(diagnostics);
   }
   validate_strict_subset(&program)?;
@@ -192,4 +192,3 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
   os.push(suffix);
   PathBuf::from(os)
 }
-
