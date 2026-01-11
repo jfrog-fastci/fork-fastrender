@@ -28,6 +28,11 @@ treated as GC references (“gc-live”) and relocated:
   `llvm.experimental.gc.relocate.*` in the rewritten IR.
 - `ptr` (addrspace(0)) values do **not** get tracked/relocated, even if they are live across a call.
 
+Important nuance for **manual** statepoint emission: LLVM does **not** implicitly treat GC pointer
+call arguments as roots. Any `ptr addrspace(1)` value passed as a call argument to a statepoint must
+also be listed in the `"gc-live"` operand bundle (and have corresponding `gc.relocate` users) or it
+may be missing from the emitted stackmap record.
+
 This behavior is the same for both `coreclr` and `statepoint-example`.
 
 ### Runtime ABI safety rule: MayGC calls must not take raw GC pointers
