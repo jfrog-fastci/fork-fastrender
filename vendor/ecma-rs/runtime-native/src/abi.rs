@@ -109,3 +109,14 @@ pub struct RtCoroutineHeader {
   /// Error produced by the last `await` (valid when `await_is_error == 1`).
   pub await_error: ValueRef,
 }
+
+// -----------------------------------------------------------------------------
+// I/O watchers (epoll-backed readiness notifications)
+// -----------------------------------------------------------------------------
+
+pub type IoWatcherId = u64;
+pub type RtFd = i32;
+
+pub const RT_IO_READABLE: u32 = 0x1;
+pub const RT_IO_WRITABLE: u32 = 0x2;
+pub const RT_IO_ERROR: u32 = 0x4;

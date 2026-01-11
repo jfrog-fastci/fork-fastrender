@@ -3,8 +3,10 @@ use crate::abi::RtCoroutineHeader;
 use crate::abi::ShapeId;
 use crate::abi::TaskId;
 use crate::abi::ValueRef;
+use crate::abi::IoWatcherId;
 use crate::alloc;
 use crate::async_rt;
+use crate::async_rt::WatcherId;
 use crate::gc::ObjHeader;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
@@ -278,6 +280,36 @@ pub extern "C" fn rt_async_poll() -> bool {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
   async_rt::poll()
+}
+
+// -----------------------------------------------------------------------------
+// I/O readiness watchers (epoll-backed)
+// -----------------------------------------------------------------------------
+
+#[no_mangle]
+pub extern "C" fn rt_io_register(
+  fd: i32,
+  interests: u32,
+  cb: extern "C" fn(u32, *mut u8),
+  data: *mut u8,
+) -> IoWatcherId {
+  let _ = crate::rt_ensure_init();
+  let Ok(id) = async_rt::global().register_io(fd, interests, cb, data) else {
+    return 0;
+  };
+  id.as_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
+  let _ = crate::rt_ensure_init();
+  let _ = async_rt::global().update_io(WatcherId::from_raw(id), interests);
+}
+
+#[no_mangle]
+pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
+  let _ = crate::rt_ensure_init();
+  let _ = async_rt::global().deregister_fd(WatcherId::from_raw(id));
 }
 
 // -----------------------------------------------------------------------------

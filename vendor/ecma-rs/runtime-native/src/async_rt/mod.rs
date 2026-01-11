@@ -129,6 +129,20 @@ impl AsyncRuntime {
     self.loop_.register_fd(fd, interest, task)
   }
 
+  pub fn register_io(
+    &self,
+    fd: std::os::fd::RawFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+  ) -> std::io::Result<WatcherId> {
+    self.loop_.register_io(fd, interests, cb, data)
+  }
+
+  pub fn update_io(&self, id: WatcherId, interests: u32) -> bool {
+    self.loop_.update_io(id, interests)
+  }
+
   pub fn deregister_fd(&self, id: WatcherId) -> bool {
     self.loop_.deregister_fd(id)
   }

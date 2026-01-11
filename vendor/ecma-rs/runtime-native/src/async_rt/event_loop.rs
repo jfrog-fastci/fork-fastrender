@@ -5,6 +5,7 @@ use crate::async_rt::Task;
 use crate::async_rt::TimerId;
 use crate::async_rt::WatcherId;
 use std::collections::VecDeque;
+use std::io;
 use std::os::fd::RawFd;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -65,6 +66,20 @@ impl EventLoop {
 
   pub fn register_fd(&self, fd: RawFd, interest: Interest, task: Task) -> std::io::Result<WatcherId> {
     self.reactor.register(fd, interest, task)
+  }
+
+  pub fn register_io(
+    &self,
+    fd: RawFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+  ) -> io::Result<WatcherId> {
+    self.reactor.register_io(fd, interests, cb, data)
+  }
+
+  pub fn update_io(&self, id: WatcherId, interests: u32) -> bool {
+    self.reactor.update_io(id, interests)
   }
 
   pub fn deregister_fd(&self, id: WatcherId) -> bool {
@@ -188,7 +203,6 @@ impl EventLoop {
       // Loop to run the newly-ready tasks (or newly-due timers).
     }
   }
-
   pub(crate) fn reset_for_tests(&self) {
     let _guard = self.poll_lock.lock().unwrap();
 

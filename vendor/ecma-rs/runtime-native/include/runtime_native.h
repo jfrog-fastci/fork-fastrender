@@ -10,6 +10,15 @@
 // This header is intended for code generators / native glue code. Keep it small:
 // only entrypoints that are part of the compiler/runtime ABI contract should live here.
 
+typedef uint64_t IoWatcherId;
+typedef int32_t RtFd;
+
+enum {
+  RT_IO_READABLE = 0x1,
+  RT_IO_WRITABLE = 0x2,
+  RT_IO_ERROR = 0x4,
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -174,6 +183,18 @@ bool rt_async_poll(void);
 // Suspend the coroutine on an awaited promise.
 // Registers a continuation and sets `coro->state = next_state`.
 void rt_coro_await(RtCoroutineHeader* coro, PromiseRef awaited, uint32_t next_state);
+
+// -----------------------------------------------------------------------------
+// I/O watchers (epoll-backed readiness notifications)
+// -----------------------------------------------------------------------------
+IoWatcherId rt_io_register(
+  int32_t fd,
+  uint32_t interests,
+  void (*cb)(uint32_t events, uint8_t* data),
+  uint8_t* data
+);
+void rt_io_update(IoWatcherId id, uint32_t interests);
+void rt_io_unregister(IoWatcherId id);
 
 #ifdef __cplusplus
 } // extern "C"
