@@ -5529,26 +5529,29 @@ impl<'a> ElementRef<'a> {
       .any(|ancestor| Self::node_is_inert(ancestor))
   }
 
-  fn user_validity_flag(&self) -> bool {
+  fn user_validity_flag(
+    &self,
+    context: &selectors::matching::MatchingContext<FastRenderSelectorImpl>,
+  ) -> bool {
     // HTML "user validity" is initially false and flips to true after a user interaction /
-    // submission attempt. Since FastRender is a static renderer (no DOM events), we expose an
-    // explicit opt-in hint to treat the control as user-validated:
-    //
-    // - `data-fastr-user-validity="true"` on the control itself, or
-    // - `data-fastr-user-validity="true"` on its form owner.
-    //
-    // Without these hints, `:user-valid` / `:user-invalid` match nothing on a fresh document.
-    if let Some(value) = self.node.get_attribute_ref("data-fastr-user-validity") {
-      return value.eq_ignore_ascii_case("true");
+    // submission attempt. This state is stored in `InteractionState` (not on the DOM) so author
+    // CSS cannot observe it via attribute selectors.
+    let Some(state) = context.extra_data.interaction_state else {
+      return false;
+    };
+    let Some(node_id) = self.resolved_node_id(context) else {
+      return false;
+    };
+    if state.has_user_validity(node_id) {
+      return true;
     }
-
     let Some(form) = self.form_owner() else {
       return false;
     };
-    form
-      .get_attribute_ref("data-fastr-user-validity")
-      .map(|v| v.eq_ignore_ascii_case("true"))
-      .unwrap_or(false)
+    let Some(form_id) = context.extra_data.node_id_for(form) else {
+      return false;
+    };
+    state.has_user_validity(form_id)
   }
 
   fn push_assigned_slot_nodes<'b>(
@@ -7549,13 +7552,13 @@ impl<'a> Element for ElementRef<'a> {
         self.supports_validation() && !self.is_disabled() && !self.is_valid_control()
       }
       PseudoClass::UserValid => {
-        self.user_validity_flag()
+        self.user_validity_flag(_context)
           && self.supports_validation()
           && !self.is_disabled()
           && self.is_valid_control()
       }
       PseudoClass::UserInvalid => {
-        self.user_validity_flag()
+        self.user_validity_flag(_context)
           && self.supports_validation()
           && !self.is_disabled()
           && !self.is_valid_control()
@@ -14167,27 +14170,19 @@ mod tests {
     );
     assert!(!matches(&text_input, &[], &PseudoClass::Invalid));
     assert!(!matches(&text_input, &[], &PseudoClass::UserInvalid));
-
-    let text_input_user_validity = DomNode {
-      node_type: DomNodeType::Element {
-        tag_name: "input".to_string(),
-        namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("type".to_string(), "text".to_string()),
-          ("data-fastr-user-validity".to_string(), "true".to_string()),
-        ],
-      },
-      children: vec![],
-    };
-    assert!(matches(
-      &text_input_user_validity,
+    let mut interaction_state = InteractionState::default();
+    interaction_state.user_validity.insert(1);
+    assert!(matches_with_interaction(
+      &text_input,
       &[],
-      &PseudoClass::UserValid
+      &PseudoClass::UserValid,
+      &interaction_state
     ));
-    assert!(!matches(
-      &text_input_user_validity,
+    assert!(!matches_with_interaction(
+      &text_input,
       &[],
-      &PseudoClass::UserInvalid
+      &PseudoClass::UserInvalid,
+      &interaction_state
     ));
 
     let required_empty = DomNode {
@@ -14249,26 +14244,19 @@ mod tests {
       &PseudoClass::Valid
     ));
 
-    let required_empty_user_validity = DomNode {
-      node_type: DomNodeType::Element {
-        tag_name: "input".to_string(),
-        namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("required".to_string(), "true".to_string()),
-          ("data-fastr-user-validity".to_string(), "true".to_string()),
-        ],
-      },
-      children: vec![],
-    };
-    assert!(matches(
-      &required_empty_user_validity,
+    let mut interaction_state = InteractionState::default();
+    interaction_state.user_validity.insert(1);
+    assert!(matches_with_interaction(
+      &required_empty,
       &[],
-      &PseudoClass::UserInvalid
+      &PseudoClass::UserInvalid,
+      &interaction_state
     ));
-    assert!(!matches(
-      &required_empty_user_validity,
+    assert!(!matches_with_interaction(
+      &required_empty,
       &[],
-      &PseudoClass::UserValid
+      &PseudoClass::UserValid,
+      &interaction_state
     ));
 
     let email_newline_only = DomNode {

@@ -3,6 +3,7 @@ use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{
   fragment_tree_with_scroll, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
+  InteractionState,
 };
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
@@ -85,6 +86,10 @@ impl BrowserTabController {
 
   pub fn document(&self) -> &BrowserDocument {
     &self.document
+  }
+
+  pub fn interaction_state(&self) -> &InteractionState {
+    self.interaction.interaction_state()
   }
 
   pub fn scroll_state(&self) -> &ScrollState {
@@ -638,13 +643,9 @@ impl BrowserTabController {
     let mut out = vec![WorkerToUi::SelectDropdownClosed {
       tab_id: self.tab_id,
     }];
+    let engine = &mut self.interaction;
     let changed = self.document.mutate_dom(|dom| {
-      crate::interaction::dom_mutation::activate_select_option(
-        dom,
-        select_node_id,
-        option_node_id,
-        false,
-      )
+      engine.activate_select_option(dom, select_node_id, option_node_id, false)
     });
     if changed {
       out.extend(self.paint_if_needed()?);

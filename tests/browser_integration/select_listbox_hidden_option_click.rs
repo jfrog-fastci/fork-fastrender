@@ -1,3 +1,4 @@
+use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::interaction::{absolute_bounds_for_box_id, InteractionEngine};
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
 use fastrender::ui::messages::{PointerButton, PointerModifiers};
@@ -45,14 +46,14 @@ fn collect_option_hidden_selected(dom: &fastrender::dom::DomNode) -> Vec<(bool, 
   out
 }
 
-fn select_user_validity(dom: &fastrender::dom::DomNode) -> Option<&str> {
+fn find_select(dom: &DomNode) -> Option<&DomNode> {
   let mut stack = vec![dom];
   while let Some(node) = stack.pop() {
     if node
       .tag_name()
       .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
     {
-      return node.get_attribute_ref("data-fastr-user-validity");
+      return Some(node);
     }
     for child in node.children.iter().rev() {
       stack.push(child);
@@ -137,9 +138,18 @@ fn select_listbox_hidden_option_click_selects_first_visible_option_and_marks_use
     "expected click on first visible row to select the first visible <option> (skipping hidden rows)"
   );
   assert_eq!(
-    select_user_validity(doc.dom()),
-    Some("true"),
-    "expected <select> to be marked data-fastr-user-validity=true after selection change"
+    find_select(doc.dom())
+      .and_then(|node| node.get_attribute_ref("data-fastr-user-validity")),
+    None,
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  let select = find_select(doc.dom()).expect("expected <select> element");
+  let select_id = *enumerate_dom_ids(doc.dom())
+    .get(&(select as *const DomNode))
+    .expect("select node id");
+  assert!(
+    engine.interaction_state().has_user_validity(select_id),
+    "expected <select> to flip internal user validity state after selection change"
   );
 
   Ok(())

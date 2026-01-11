@@ -1667,6 +1667,10 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
     !has_attr(&dom, "txt", "data-fastr-user-validity"),
     "focus should not flip user validity"
   );
+  assert!(
+    !engine.interaction_state().has_user_validity(input_dom_id),
+    "focus should not flip user validity"
+  );
 
   assert!(
     engine.text_input(&mut dom, "abc"),
@@ -1676,10 +1680,11 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
   assert_eq!(engine.interaction_state().focused, Some(input_dom_id));
   assert!(engine.interaction_state().focus_visible);
   assert!(!has_attr(&dom, "txt", "data-fastr-focus-visible"));
-  assert_eq!(
-    attr_value(&dom, "txt", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "txt", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
+  assert!(engine.interaction_state().has_user_validity(input_dom_id));
 }
 
 #[test]
@@ -1761,14 +1766,17 @@ fn submit_click_navigates_and_marks_user_validity() {
     "clicking a submit control should attempt a GET navigation"
   );
 
-  assert_eq!(
-    attr_value(&dom, "f", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "f", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
-  assert_eq!(
-    attr_value(&dom, "submit", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "submit", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
+  let form_dom_id = node_id(&dom, "f");
+  assert!(engine.interaction_state().has_user_validity(form_dom_id));
+  assert!(engine.interaction_state().has_user_validity(submit_dom_id));
 }
 
 #[test]
@@ -1870,14 +1878,17 @@ fn submit_button_click_submits_get_form_with_query_and_submitter() {
       href: "https://example.com/search?q=hello+world&c=yes&sel=b&s=go".to_string()
     }
   );
-  assert_eq!(
-    attr_value(&dom, "form", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "form", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
-  assert_eq!(
-    attr_value(&dom, "submit", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "submit", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
+  let form_dom_id = node_id(&dom, "form");
+  assert!(engine.interaction_state().has_user_validity(form_dom_id));
+  assert!(engine.interaction_state().has_user_validity(submit_dom_id));
 }
 
 #[test]
@@ -2263,7 +2274,17 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
       node_id: Some(submit_dom_id)
     }
   );
-  assert_eq!(attr_value(&dom, "f", "data-fastr-user-validity"), None);
+  assert!(
+    !has_attr(&dom, "f", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  assert!(
+    !has_attr(&dom, "submit", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  let form_dom_id = node_id(&dom, "f");
+  assert!(!engine.interaction_state().has_user_validity(form_dom_id));
+  assert!(engine.interaction_state().has_user_validity(submit_dom_id));
 }
 
 #[test]
@@ -2351,11 +2372,17 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
       node_id: Some(submit_dom_id)
     }
   );
-  assert_eq!(
-    attr_value(&dom, "submit", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "submit", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
-  assert_eq!(attr_value(&dom, "f", "data-fastr-user-validity"), None);
+  assert!(
+    !has_attr(&dom, "f", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  let form_dom_id = node_id(&dom, "f");
+  assert!(!engine.interaction_state().has_user_validity(form_dom_id));
+  assert!(engine.interaction_state().has_user_validity(submit_dom_id));
 }
 
 #[test]
@@ -2774,7 +2801,7 @@ fn select_listbox_click_marks_user_validity() {
 
   assert!(
     !has_attr(&dom, "sel", "data-fastr-user-validity"),
-    "select should not be marked initially"
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
 
   let select_dom_id = node_id(&dom, "sel");
@@ -2877,10 +2904,11 @@ fn select_listbox_click_marks_user_validity() {
     !has_attr(&dom, "o1", "selected"),
     "previously selected option should be cleared"
   );
-  assert_eq!(
-    attr_value(&dom, "sel", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "sel", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
+  assert!(engine.interaction_state().has_user_validity(select_dom_id));
 }
 
 #[test]
@@ -4052,9 +4080,12 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     "single-select listbox should clear previously selected option"
   );
   assert!(has_attr(&dom, "o2", "selected"), "clicked row should be selected");
-  assert_eq!(
-    attr_value(&dom, "s", "data-fastr-user-validity").as_deref(),
-    Some("true"),
+  assert!(
+    !has_attr(&dom, "s", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  assert!(
+    engine.interaction_state().has_user_validity(select_dom_id),
     "user mutation should mark the select for :user-invalid matching"
   );
 
@@ -4213,10 +4244,11 @@ fn listbox_select_click_uses_painted_row_list_not_dom_options() {
     !has_attr(&dom, "o_hidden", "selected"),
     "hidden options must not consume painted rows"
   );
-  assert_eq!(
-    attr_value(&dom, "s", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "s", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
+  assert!(engine.interaction_state().has_user_validity(select_dom_id));
 }
 
 #[test]
@@ -4855,10 +4887,11 @@ fn focused_checkbox_space_toggles_checked() {
   assert!(changed);
   assert_eq!(action, InteractionAction::None);
   assert!(has_attr(&dom, "cb", "checked"));
-  assert_eq!(
-    attr_value(&dom, "cb", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "cb", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
+  assert!(engine.interaction_state().has_user_validity(cb_id));
   assert_eq!(engine.interaction_state().focused, Some(cb_id));
   assert!(engine.interaction_state().focus_visible);
   assert!(!has_attr(&dom, "cb", "data-fastr-focus-visible"));
@@ -4897,10 +4930,11 @@ fn arrow_down_changes_focused_dropdown_select_selection() {
   assert!(!has_attr(&dom, "o1", "selected"));
   assert!(!has_attr(&dom, "o2", "selected"));
   assert!(has_attr(&dom, "o3", "selected"));
-  assert_eq!(
-    attr_value(&dom, "sel", "data-fastr-user-validity").as_deref(),
-    Some("true")
+  assert!(
+    !has_attr(&dom, "sel", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
   );
+  assert!(engine.interaction_state().has_user_validity(select_id));
 }
 
 #[test]
@@ -4947,11 +4981,16 @@ fn enter_on_text_input_submits_get_form() {
       href: "https://example.com/search?q=abc".to_string()
     }
   );
-  assert_eq!(
-    attr_value(&dom, "form", "data-fastr-user-validity").as_deref(),
-    Some("true"),
+  assert!(
+    !has_attr(&dom, "form", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  let form_dom_id = node_id(&dom, "form");
+  assert!(
+    engine.interaction_state().has_user_validity(form_dom_id),
     "Enter submission should mark form user validity"
   );
+  assert!(engine.interaction_state().has_user_validity(input_id));
 }
 
 #[test]
@@ -5048,7 +5087,11 @@ fn range_input_drag_updates_value_and_clamps_to_max() {
   engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(25.0, 10.0));
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("3"));
   assert!(
-    has_attr(&dom, "r", "data-fastr-user-validity"),
+    !has_attr(&dom, "r", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  assert!(
+    engine.interaction_state().has_user_validity(range_dom_id),
     "changing a range value should mark user validity"
   );
 
@@ -5182,7 +5225,11 @@ fn range_arrow_keys_step_value() {
   engine.key_action(&mut dom, KeyAction::ArrowUp);
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("6"));
   assert!(
-    has_attr(&dom, "r", "data-fastr-user-validity"),
+    !has_attr(&dom, "r", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  assert!(
+    engine.interaction_state().has_user_validity(range_dom_id),
     "arrow key range changes should mark user validity"
   );
 
@@ -5477,6 +5524,10 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
   assert_eq!(attr_value(&dom, "disabled", "value").as_deref(), Some("0"));
   assert!(
     !has_attr(&dom, "disabled", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  assert!(
+    !engine.interaction_state().has_user_validity(disabled_dom_id),
     "disabled range must not flip user validity"
   );
 
@@ -5497,6 +5548,10 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
   assert_eq!(attr_value(&dom, "readonly", "value").as_deref(), Some("0"));
   assert!(
     !has_attr(&dom, "readonly", "data-fastr-user-validity"),
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  assert!(
+    !engine.interaction_state().has_user_validity(readonly_dom_id),
     "readonly range must not flip user validity"
   );
 }

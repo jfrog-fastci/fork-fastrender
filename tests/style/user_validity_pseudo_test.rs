@@ -1,6 +1,7 @@
 use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
+use fastrender::dom::{self, enumerate_dom_ids, DomNode};
+use fastrender::interaction::InteractionState;
+use fastrender::style::cascade::apply_styles_with_media_target_and_interaction_state;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 
@@ -24,8 +25,24 @@ fn display(node: &StyledNode) -> String {
   node.styles.display.to_string()
 }
 
+fn node_id_by_id_attr(root: &DomNode, id_attr: &str) -> usize {
+  let ids = enumerate_dom_ids(root);
+  let mut stack: Vec<&DomNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if node.get_attribute_ref("id") == Some(id_attr) {
+      return *ids
+        .get(&(node as *const DomNode))
+        .unwrap_or_else(|| panic!("node id missing for element with id={id_attr:?}"));
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  panic!("no element with id attribute {id_attr:?}");
+}
+
 #[test]
-fn user_invalid_does_not_match_without_user_validity_hint() {
+fn user_invalid_does_not_match_without_user_validity() {
   let html = r#"
     <input id='r' required>
   "#;
@@ -35,19 +52,25 @@ fn user_invalid_does_not_match_without_user_validity_hint() {
   "#;
   let dom = dom::parse_html(html).expect("parse html");
   let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
-  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let styled = apply_styles_with_media_target_and_interaction_state(
+    &dom,
+    &stylesheet,
+    &MediaContext::screen(800.0, 600.0),
+    None,
+    None,
+  );
 
   assert_eq!(
     display(find_by_id(&styled, "r").expect("required input")),
     "inline",
-    ":invalid should match but :user-invalid should not without a hint"
+    ":invalid should match but :user-invalid should not without user-validity"
   );
 }
 
 #[test]
-fn user_invalid_matches_when_control_user_validity_hint_set() {
+fn user_invalid_matches_when_control_user_validity_set() {
   let html = r#"
-    <input id='r' required data-fastr-user-validity='true'>
+    <input id='r' required>
   "#;
   let css = r#"
     input:invalid { display: inline; }
@@ -55,7 +78,15 @@ fn user_invalid_matches_when_control_user_validity_hint_set() {
   "#;
   let dom = dom::parse_html(html).expect("parse html");
   let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
-  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let mut interaction_state = InteractionState::default();
+  interaction_state.user_validity.insert(node_id_by_id_attr(&dom, "r"));
+  let styled = apply_styles_with_media_target_and_interaction_state(
+    &dom,
+    &stylesheet,
+    &MediaContext::screen(800.0, 600.0),
+    None,
+    Some(&interaction_state),
+  );
 
   assert_eq!(
     display(find_by_id(&styled, "r").expect("required input")),
@@ -64,9 +95,9 @@ fn user_invalid_matches_when_control_user_validity_hint_set() {
 }
 
 #[test]
-fn user_invalid_matches_when_form_user_validity_hint_set() {
+fn user_invalid_matches_when_form_user_validity_set() {
   let html = r#"
-    <form data-fastr-user-validity='true'>
+    <form id='f'>
       <input id='in' required>
     </form>
     <input id='out' required>
@@ -77,7 +108,15 @@ fn user_invalid_matches_when_form_user_validity_hint_set() {
   "#;
   let dom = dom::parse_html(html).expect("parse html");
   let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
-  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let mut interaction_state = InteractionState::default();
+  interaction_state.user_validity.insert(node_id_by_id_attr(&dom, "f"));
+  let styled = apply_styles_with_media_target_and_interaction_state(
+    &dom,
+    &stylesheet,
+    &MediaContext::screen(800.0, 600.0),
+    None,
+    Some(&interaction_state),
+  );
 
   assert_eq!(display(find_by_id(&styled, "in").expect("input in form")), "block");
   assert_eq!(
@@ -86,4 +125,3 @@ fn user_invalid_matches_when_form_user_validity_hint_set() {
     "form hint should not apply to unrelated controls"
   );
 }
-

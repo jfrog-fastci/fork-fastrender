@@ -1954,6 +1954,32 @@ impl InteractionEngine {
     &self.state
   }
 
+  fn mark_user_validity(&mut self, node_id: usize) -> bool {
+    self.state.user_validity.insert(node_id)
+  }
+
+  fn mark_form_user_validity(&mut self, index: &DomIndexMut, control_node_id: usize) -> bool {
+    resolve_form_owner(index, control_node_id)
+      .is_some_and(|form_id| self.mark_user_validity(form_id))
+  }
+
+  /// Update `<select>` selection and mark HTML "user validity" when the selection changes.
+  pub fn activate_select_option(
+    &mut self,
+    dom: &mut DomNode,
+    select_node_id: usize,
+    option_node_id: usize,
+    toggle_for_multiple: bool,
+  ) -> bool {
+    let dom_changed =
+      dom_mutation::activate_select_option(dom, select_node_id, option_node_id, toggle_for_multiple);
+    let mut changed = dom_changed;
+    if dom_changed {
+      changed |= self.mark_user_validity(select_node_id);
+    }
+    changed
+  }
+
   pub fn focused_node_id(&self) -> Option<usize> {
     self.state.focused
   }
@@ -2175,13 +2201,17 @@ impl InteractionEngine {
         && page_point.x >= 0.0
         && page_point.y >= 0.0
       {
-        dom_changed |= update_range_value_from_pointer(
+        let changed = update_range_value_from_pointer(
           &mut index,
           fragment_tree,
           state.node_id,
           state.box_id,
           page_point,
         );
+        dom_changed |= changed;
+        if changed {
+          dom_changed |= self.mark_user_validity(state.node_id);
+        }
       }
     }
 
@@ -2271,13 +2301,17 @@ impl InteractionEngine {
           node_id: hit.dom_node_id,
           box_id: hit.box_id,
         });
-        dom_changed |= update_range_value_from_pointer(
+        let changed = update_range_value_from_pointer(
           &mut index,
           fragment_tree,
           hit.dom_node_id,
           hit.box_id,
           page_point,
         );
+        dom_changed |= changed;
+        if changed {
+          dom_changed |= self.mark_user_validity(hit.dom_node_id);
+        }
       }
 
       // Click-to-place caret / begin selection dragging for focused text controls.
@@ -2502,13 +2536,17 @@ impl InteractionEngine {
         && page_point.x >= 0.0
         && page_point.y >= 0.0
       {
-        dom_changed |= update_range_value_from_pointer(
+        let changed = update_range_value_from_pointer(
           &mut index,
           fragment_tree,
           state.node_id,
           state.box_id,
           page_point,
         );
+        dom_changed |= changed;
+        if changed {
+          dom_changed |= self.mark_user_validity(state.node_id);
+        }
       }
     }
     let active_changed = !self.state.active_chain.is_empty();
@@ -2550,7 +2588,7 @@ impl InteractionEngine {
 
           if !disabled {
             if let Some((select_box_id, control, _, style)) = snapshot.as_ref() {
-              dom_changed |= apply_select_listbox_click(
+              let changed = apply_select_listbox_click(
                 dom,
                 fragment_tree,
                 page_point,
@@ -2560,6 +2598,10 @@ impl InteractionEngine {
                 control,
                 style,
               );
+              dom_changed |= changed;
+              if changed {
+                dom_changed |= self.mark_user_validity(target_id);
+              }
             }
           }
 
@@ -2653,22 +2695,28 @@ impl InteractionEngine {
           } else if index.node(target_id).is_some_and(is_checkbox_input) {
             if !node_is_disabled(&index, target_id) {
               if let Some(node_mut) = index.node_mut(target_id) {
-                dom_changed |= dom_mutation::toggle_checkbox(node_mut);
+                let changed = dom_mutation::toggle_checkbox(node_mut);
+                dom_changed |= changed;
+                if changed {
+                  dom_changed |= self.mark_user_validity(target_id);
+                }
               }
             }
           } else if index.node(target_id).is_some_and(is_radio_input) {
             if !node_is_disabled(&index, target_id) {
-              dom_changed |= dom_mutation::activate_radio(dom, target_id);
+              let changed = dom_mutation::activate_radio(dom, target_id);
+              dom_changed |= changed;
+              if changed {
+                dom_changed |= self.mark_user_validity(target_id);
+              }
             }
           } else if index.node(target_id).is_some_and(is_submit_control) {
             if node_is_disabled(&index, target_id) {
               // Disabled submit controls do not submit.
             } else {
               // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
-              if let Some(node_mut) = index.node_mut(target_id) {
-                dom_changed |= dom_mutation::mark_user_validity(node_mut);
-              }
-              dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
+              dom_changed |= self.mark_user_validity(target_id);
+              dom_changed |= self.mark_form_user_validity(&index, target_id);
               if let Some(submission) = form_submission(dom, target_id, document_url, base_url) {
                 self.last_form_submitter = Some(target_id);
                 match submission.method {
@@ -2832,7 +2880,7 @@ impl InteractionEngine {
     };
     changed |= changed_value;
     if changed_value {
-      changed |= dom_mutation::mark_user_validity(node_mut);
+      changed |= self.mark_user_validity(focused);
     }
 
     self.text_edit = Some(TextEditState {
@@ -3142,7 +3190,7 @@ impl InteractionEngine {
     };
     dom_changed |= changed_value;
     if changed_value {
-      dom_changed |= dom_mutation::mark_user_validity(node_mut);
+      dom_changed |= self.mark_user_validity(focused);
     }
 
     edit.caret = start.min(next_len);
@@ -3243,7 +3291,7 @@ impl InteractionEngine {
     };
     changed |= changed_value;
     if changed_value {
-      changed |= dom_mutation::mark_user_validity(node_mut);
+      changed |= self.mark_user_validity(focused);
     }
 
     self.text_edit = Some(TextEditState {
@@ -3389,7 +3437,7 @@ impl InteractionEngine {
             };
             changed |= changed_value;
             if changed_value {
-              changed |= dom_mutation::mark_user_validity(node_mut);
+              changed |= self.mark_user_validity(focused);
             }
           }
         }
@@ -3520,7 +3568,11 @@ impl InteractionEngine {
               KeyAction::ArrowDown => -1,
               _ => 0,
             };
-            changed |= dom_mutation::step_range_value(node_mut, delta);
+            let dom_changed = dom_mutation::step_range_value(node_mut, delta);
+            changed |= dom_changed;
+            if dom_changed {
+              changed |= self.mark_user_validity(focused);
+            }
           }
         } else if index.node(focused).is_some_and(is_select) && !is_disabled_or_inert(&index, focused) {
           if matches!(key, KeyAction::Home | KeyAction::End)
@@ -3623,7 +3675,7 @@ impl InteractionEngine {
           }
 
           let option_node_id = options[next_idx].0;
-          changed |= dom_mutation::activate_select_option(dom, focused, option_node_id, false);
+          changed |= self.activate_select_option(dom, focused, option_node_id, false);
         }
       }
       KeyAction::Tab | KeyAction::ShiftTab => debug_assert!(false, "handled above"),
@@ -3749,22 +3801,28 @@ impl InteractionEngine {
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
             if let Some(node_mut) = index.node_mut(focused) {
-              changed |= dom_mutation::toggle_checkbox(node_mut);
+              let dom_changed = dom_mutation::toggle_checkbox(node_mut);
+              changed |= dom_changed;
+              if dom_changed {
+                changed |= self.mark_user_validity(focused);
+              }
             }
           }
         } else if index.node(focused).is_some_and(is_radio_input) {
           if !node_is_disabled(&index, focused) {
-            changed |= dom_mutation::activate_radio(dom, focused);
+            let dom_changed = dom_mutation::activate_radio(dom, focused);
+            changed |= dom_changed;
+            if dom_changed {
+              changed |= self.mark_user_validity(focused);
+            }
           }
         } else if index.node(focused).is_some_and(is_submit_control) {
           if is_disabled_or_inert(&index, focused) {
             // Disabled submit controls do not submit.
           } else {
             // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
-            if let Some(node_mut) = index.node_mut(focused) {
-              changed |= dom_mutation::mark_user_validity(node_mut);
-            }
-            changed |= dom_mutation::mark_form_user_validity(dom, focused);
+            changed |= self.mark_user_validity(focused);
+            changed |= self.mark_form_user_validity(&index, focused);
             if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
               self.last_form_submitter = Some(focused);
               match submission.method {
@@ -3782,10 +3840,8 @@ impl InteractionEngine {
             // Disabled controls do not submit.
           } else {
             // Pressing Enter in a text field can submit the form; flip user validity as well.
-            if let Some(node_mut) = index.node_mut(focused) {
-              changed |= dom_mutation::mark_user_validity(node_mut);
-            }
-            changed |= dom_mutation::mark_form_user_validity(dom, focused);
+            changed |= self.mark_user_validity(focused);
+            changed |= self.mark_form_user_validity(&index, focused);
             if let Some(form_id) = resolve_form_owner(&index, focused) {
               let submitter_id = find_default_form_submitter(&index, form_id);
               let submission = match submitter_id {
@@ -3815,21 +3871,27 @@ impl InteractionEngine {
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
             if let Some(node_mut) = index.node_mut(focused) {
-              changed |= dom_mutation::toggle_checkbox(node_mut);
+              let dom_changed = dom_mutation::toggle_checkbox(node_mut);
+              changed |= dom_changed;
+              if dom_changed {
+                changed |= self.mark_user_validity(focused);
+              }
             }
           }
         } else if index.node(focused).is_some_and(is_radio_input) {
           if !node_is_disabled(&index, focused) {
-            changed |= dom_mutation::activate_radio(dom, focused);
+            let dom_changed = dom_mutation::activate_radio(dom, focused);
+            changed |= dom_changed;
+            if dom_changed {
+              changed |= self.mark_user_validity(focused);
+            }
           }
         } else if index.node(focused).is_some_and(is_submit_control) {
           if is_disabled_or_inert(&index, focused) {
             // Disabled submit controls do not submit.
           } else {
-            if let Some(node_mut) = index.node_mut(focused) {
-              changed |= dom_mutation::mark_user_validity(node_mut);
-            }
-            changed |= dom_mutation::mark_form_user_validity(dom, focused);
+            changed |= self.mark_user_validity(focused);
+            changed |= self.mark_form_user_validity(&index, focused);
             if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
               self.last_form_submitter = Some(focused);
               match submission.method {

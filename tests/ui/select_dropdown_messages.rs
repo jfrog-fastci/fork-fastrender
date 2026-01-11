@@ -170,8 +170,12 @@ fn select_dropdown_open_and_choose_roundtrip() {
   let select_node = unsafe { &*select_ptr.expect("select node pointer") };
   assert_eq!(
     select_node.get_attribute_ref("data-fastr-user-validity"),
-    Some("true"),
-    "expected select to be marked user-valid after choosing an option"
+    None,
+    "renderer must not inject data-fastr-user-validity onto the DOM"
+  );
+  assert!(
+    controller.interaction_state().has_user_validity(select_node_id),
+    "expected select to flip internal user validity state after choosing an option"
   );
 
   let option_one_node = unsafe { &*option_one_ptr.expect("option node pointer") };

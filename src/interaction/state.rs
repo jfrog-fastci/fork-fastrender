@@ -3,8 +3,9 @@ use rustc_hash::FxHashSet;
 /// Internal, non-DOM-visible interaction state for a single document/tab.
 ///
 /// This replaces the legacy `data-fastr-*` DOM attribute mutations that were previously used to
-/// represent dynamic user interaction state (hover/active/focus/visited/IME preedit). Keeping this
-/// state out of the DOM avoids observable author CSS/DOM side effects and reduces DOM churn.
+/// represent dynamic user interaction state (hover/active/focus/visited/user validity/IME preedit).
+/// Keeping this state out of the DOM avoids observable author CSS/DOM side effects and reduces DOM
+/// churn.
 #[derive(Debug, Clone, Default)]
 pub struct InteractionState {
   /// Currently focused element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
@@ -27,6 +28,11 @@ pub struct InteractionState {
 
   /// Optional IME composition (preedit) state for the focused text control.
   pub ime_preedit: Option<ImePreeditState>,
+
+  /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
+  ///
+  /// This gates `:user-valid` / `:user-invalid` pseudo-classes.
+  pub user_validity: FxHashSet<usize>,
 }
 
 impl InteractionState {
@@ -63,6 +69,11 @@ impl InteractionState {
       .filter(|state| state.node_id == node_id)
       .map(|state| state.text.as_str())
   }
+
+  #[inline]
+  pub fn has_user_validity(&self, node_id: usize) -> bool {
+    self.user_validity.contains(&node_id)
+  }
 }
 
 /// In-progress IME (Input Method Editor) composition state for a focused control.
@@ -72,4 +83,3 @@ pub struct ImePreeditState {
   pub text: String,
   pub cursor: Option<(usize, usize)>,
 }
-

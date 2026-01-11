@@ -137,10 +137,6 @@ pub fn set_bool_attr(node: &mut DomNode, name: &str, enabled: bool) -> bool {
   }
 }
 
-pub fn mark_user_validity(node: &mut DomNode) -> bool {
-  set_attr(node, "data-fastr-user-validity", "true")
-}
-
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
@@ -149,115 +145,6 @@ fn is_form_element(node: &DomNode) -> bool {
   node
     .tag_name()
     .is_some_and(|t| t.eq_ignore_ascii_case("form") && is_html_element(node))
-}
-
-fn tree_root_boundary_id(index: &mut DomIndex, mut node_id: usize) -> Option<usize> {
-  while node_id != 0 {
-    let is_boundary = index
-      .with_node_mut(node_id, |node| {
-        matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. })
-      })
-      .unwrap_or(false);
-    if is_boundary {
-      return Some(node_id);
-    }
-    node_id = *index.parent.get(node_id).unwrap_or(&0);
-  }
-  None
-}
-
-fn node_or_ancestor_is_template(index: &mut DomIndex, mut node_id: usize) -> bool {
-  while node_id != 0 {
-    let is_template = index
-      .with_node_mut(node_id, |node| node.is_template_element())
-      .unwrap_or(false);
-    if is_template {
-      return true;
-    }
-    node_id = *index.parent.get(node_id).unwrap_or(&0);
-  }
-  false
-}
-
-fn find_element_by_id_attr_in_tree(index: &mut DomIndex, tree_root_id: usize, html_id: &str) -> Option<usize> {
-  for node_id in 1..=index.len() {
-    let matches_id = index
-      .with_node_mut(node_id, |node| node.is_element() && node.get_attribute_ref("id") == Some(html_id))
-      .unwrap_or(false);
-    if !matches_id {
-      continue;
-    }
-    if node_or_ancestor_is_template(index, node_id) {
-      continue;
-    }
-    if tree_root_boundary_id(index, node_id) == Some(tree_root_id) {
-      return Some(node_id);
-    }
-  }
-  None
-}
-
-pub fn mark_form_user_validity(root: &mut DomNode, control_node_id: usize) -> bool {
-  let mut index = DomIndex::build(root);
-
-  let form_attr = index
-    .with_node_mut(control_node_id, |control| {
-      control
-        .is_element()
-        .then(|| control.get_attribute_ref("form").map(trim_ascii_whitespace))
-        .flatten()
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-    })
-    .flatten();
-
-  let mut form_owner_id = None;
-
-  if let Some(form_attr) = form_attr.as_deref() {
-    if let Some(tree_root_id) = tree_root_boundary_id(&mut index, control_node_id) {
-      if let Some(id) = find_element_by_id_attr_in_tree(&mut index, tree_root_id, form_attr) {
-        if index
-          .with_node_mut(id, |node| is_form_element(node))
-          .unwrap_or(false)
-        {
-          form_owner_id = Some(id);
-        }
-      }
-    }
-  }
-
-  if form_owner_id.is_none() {
-    let mut current = control_node_id;
-    while current != 0 {
-      current = *index.parent.get(current).unwrap_or(&0);
-      if current == 0 {
-        break;
-      }
-      let reached_boundary = index
-        .with_node_mut(current, |node| {
-          matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. })
-        })
-        .unwrap_or(false);
-      if reached_boundary {
-        break;
-      }
-      if index
-        .with_node_mut(current, |node| is_form_element(node))
-        .unwrap_or(false)
-      {
-        form_owner_id = Some(current);
-        break;
-      }
-    }
-  }
-
-  let Some(form_id) = form_owner_id else {
-    return false;
-  };
-
-  index
-    .with_node_mut(form_id, |form| mark_user_validity(form))
-    .unwrap_or(false)
 }
 
 pub fn toggle_checkbox(node: &mut DomNode) -> bool {
@@ -278,10 +165,6 @@ pub fn toggle_checkbox(node: &mut DomNode) -> bool {
     .is_some_and(|v| v.eq_ignore_ascii_case("mixed"))
   {
     changed |= remove_attr(node, "aria-checked");
-  }
-
-  if changed {
-    changed |= mark_user_validity(node);
   }
 
   changed
@@ -345,12 +228,7 @@ pub fn set_range_value(node: &mut DomNode, value: f64) -> bool {
   };
 
   let value_attr = format_number(sanitized);
-  let changed_value = set_attr(node, "value", &value_attr);
-  let mut changed = changed_value;
-  if changed_value {
-    changed |= mark_user_validity(node);
-  }
-  changed
+  set_attr(node, "value", &value_attr)
 }
 
 pub fn set_range_value_from_ratio(node: &mut DomNode, ratio: f32) -> bool {
@@ -716,12 +594,6 @@ pub fn activate_radio(root: &mut DomNode, radio_node_id: usize) -> bool {
       .unwrap_or(false);
   }
 
-  if changed {
-    changed |= index
-      .with_node_mut(radio_node_id, |node| mark_user_validity(node))
-      .unwrap_or(false);
-  }
-
   changed
 }
 
@@ -753,10 +625,6 @@ pub fn append_text_to_input(node: &mut DomNode, text: &str) -> bool {
     }
   };
 
-  if changed {
-    let _ = mark_user_validity(node);
-  }
-
   changed
 }
 
@@ -777,10 +645,6 @@ pub fn backspace_input(node: &mut DomNode) -> bool {
     .find(|(k, _)| name_matches(k.as_str(), "value", is_html))
     .and_then(|(_, val)| val.pop())
     .is_some();
-
-  if changed {
-    let _ = mark_user_validity(node);
-  }
 
   changed
 }
@@ -818,10 +682,6 @@ pub fn append_text_to_textarea(node: &mut DomNode, text: &str) -> bool {
     true
   };
 
-  if changed {
-    let _ = mark_user_validity(node);
-  }
-
   changed
 }
 
@@ -844,10 +704,6 @@ pub fn backspace_textarea(node: &mut DomNode) -> bool {
         break;
       }
     }
-  }
-
-  if changed {
-    let _ = mark_user_validity(node);
   }
 
   changed
@@ -928,7 +784,7 @@ pub fn activate_select_option(
     return false;
   }
 
-  let mut changed = if select_multiple && toggle_for_multiple {
+  let changed = if select_multiple && toggle_for_multiple {
     // Multiple-select toggle.
     index
       .with_node_mut(option_node_id, |node| set_bool_attr(node, "selected", !option_selected))
@@ -978,12 +834,6 @@ pub fn activate_select_option(
 
     changed
   };
-
-  if changed {
-    changed |= index
-      .with_node_mut(select_node_id, |node| mark_user_validity(node))
-      .unwrap_or(false);
-  }
 
   changed
 }

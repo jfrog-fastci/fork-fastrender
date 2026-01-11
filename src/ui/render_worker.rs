@@ -13,8 +13,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{
-  dom_mutation, fragment_tree_with_scroll, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind,
-  InteractionAction, InteractionEngine,
+  fragment_tree_with_scroll, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind, InteractionAction,
+  InteractionEngine,
 };
 use crate::render_control::{push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
@@ -2123,8 +2123,9 @@ impl BrowserRuntime {
       return;
     };
 
+    let engine = &mut tab.interaction;
     let dom_changed = doc.mutate_dom(|dom| {
-      dom_mutation::activate_select_option(dom, select_node_id, option_node_id, false)
+      engine.activate_select_option(dom, select_node_id, option_node_id, false)
     });
     if dom_changed {
       tab.cancel.bump_paint();
@@ -2146,6 +2147,7 @@ impl BrowserRuntime {
     };
 
     let mut should_close = false;
+    let engine = &mut tab.interaction;
     let dom_changed = doc.mutate_dom(|dom| {
       let index = crate::interaction::dom_index::DomIndex::build(dom);
       let rows = collect_select_rows(&index, select_node_id);
@@ -2153,7 +2155,7 @@ impl BrowserRuntime {
       match row {
         Some(SelectRow::Option { node_id, disabled }) if !disabled => {
           should_close = true;
-          dom_mutation::activate_select_option(dom, select_node_id, node_id, false)
+          engine.activate_select_option(dom, select_node_id, node_id, false)
         }
         _ => false,
       }
