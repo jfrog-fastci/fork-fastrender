@@ -138,10 +138,16 @@ other crates use this for structured errors and spans.
     stack-walking-related LLVM function attributes required for precise GC bring-up.
   - `native_js::strict::validate` rejects unsafe TypeScript constructs (e.g.
     `any`, `eval`, type assertions) even if `typecheck-ts` accepts them.
+  - `native_js::validate::validate_strict_subset` rejects syntax and types that the
+    current HIR-based backend cannot lower yet (`NJS0009` / `NJS0010`).
   - `native_js::strict::entrypoint` locates the exported `main()` entrypoint in a
     typechecked program (used by the early HIR-driven backend).
   - `native_js::emit` provides helpers for emitting LLVM IR/bitcode/object/asm from
-    an `inkwell` module.
+    an `inkwell` module (including `_with_statepoints` helpers that run
+    `rewrite-statepoints-for-gc` before emitting objects/asm).
+  - `native_js::link` provides stackmap-aware ELF linking helpers and exports
+    `__fastr_stackmaps_start`/`__fastr_stackmaps_end` symbols so the runtime can
+    locate `.llvm_stackmaps` in memory.
   - `native_js::compile_typescript_to_llvm_ir` is a small, `parse-js`-driven LLVM IR
     emitter used by the `native-js-cli` binary for end-to-end smoke tests (no TypeScript typechecking).
 - Eventually:
