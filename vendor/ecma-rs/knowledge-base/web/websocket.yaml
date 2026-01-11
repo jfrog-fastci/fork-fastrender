@@ -1,0 +1,40 @@
+# WebSocket API semantics.
+
+- name: WebSocket
+  kind: constructor
+  aliases:
+    - WebSocket
+    - window.WebSocket
+    - globalThis.WebSocket
+  since: "baseline"
+  effects:
+    base: [io, network, alloc, may_throw]
+    io: true
+    network: true
+    allocates: true
+    may_throw: true
+  purity: Impure
+
+- name: WebSocket.prototype.send
+  kind: function
+  aliases:
+    - WebSocket.prototype.send
+  since: "baseline"
+  effects:
+    base: [io, network, may_throw]
+    io: true
+    network: true
+    may_throw: true
+  purity: Impure
+
+- name: WebSocket.prototype.close
+  kind: function
+  aliases:
+    - WebSocket.prototype.close
+  since: "baseline"
+  effects:
+    base: [io, network, may_throw]
+    io: true
+    network: true
+    may_throw: true
+  purity: Impure
