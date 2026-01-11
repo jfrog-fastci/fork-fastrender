@@ -78,7 +78,8 @@ mio-style `EEXIST`/`ENOENT` errors. To make this robust to fd-number reuse, each
 stores an identity snapshot:
 
 - `fstat`: `st_dev`, `st_ino`, and the file-type bits of `st_mode`
-- `fcntl(F_GETFL)`: `O_ACCMODE` (so read/write ends of the same pipe are distinguished)
+- `fcntl(F_GETFL)`: `O_ACCMODE` (so read/write ends of the same pipe are distinguished; other flags
+  like `O_NONBLOCK` are ignored because they are mutable via `F_SETFL`)
 
 This identity is validated on every `register`/`reregister`/`deregister`. If the current fd's
 identity differs (or `fstat` fails with `EBADF`), the entry is treated as stale and removed, and the
