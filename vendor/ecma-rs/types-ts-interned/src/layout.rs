@@ -110,7 +110,7 @@ pub enum FieldKey {
   /// Internal field used by the native layout engine.
   ///
   /// This is stored as an owned string so it can round-trip through serde
-  /// snapshots (borrowed `&'static str` cannot be deserialized).
+  /// snapshots/JSON output (borrowed `&'static str` cannot be deserialized).
   Internal(String),
 }
 

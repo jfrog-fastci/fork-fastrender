@@ -75,13 +75,16 @@ cargo run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
 
 ### Recommended (agent-safe wrapper)
 
-Use the repo’s concurrency/RAM-limiting wrapper and explicitly point Cargo at the vendored workspace:
+Use the repo’s concurrency/RAM-limiting wrapper for the vendored ecma-rs workspace:
 
 ```bash
-bash scripts/cargo_agent.sh run \
-  --manifest-path vendor/ecma-rs/Cargo.toml \
-  -p typecheck-ts-cli -- \
-  typecheck --strict-native vendor/ecma-rs/typecheck-ts-cli/fixtures/basic.ts
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
+  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
+
+# Or, if you're already in vendor/ecma-rs/:
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
+  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
 ```
 
 Expected behavior:
@@ -112,9 +115,7 @@ cargo test -p native-oracle-harness
 Native compilation and codegen are LLVM-heavy; use the LLVM wrapper (higher RAM limit + LLVM env auto-detect):
 
 ```bash
-bash vendor/ecma-rs/scripts/cargo_llvm.sh test \
-  --manifest-path vendor/ecma-rs/Cargo.toml \
-  -p native-oracle-harness
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-oracle-harness
 ```
 
 Expected output is standard `cargo test` output; any mismatch between native output and the `vm-js` oracle should show up as a failing test referencing the fixture name.
@@ -163,4 +164,3 @@ Guidelines for fixtures:
 - If you need multiple files, use relative imports within the fixture directory (the harness treats it as an isolated mini-project).
 
 For the exact discovery rules and result schema, see the `native-oracle-harness` crate sources/tests once you’re modifying fixtures.
-
