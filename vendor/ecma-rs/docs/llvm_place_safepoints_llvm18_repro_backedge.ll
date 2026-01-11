@@ -6,6 +6,9 @@
 ;
 ; Expected: `place-safepoints` inserts a poll safepoint on the loop backedge.
 ; Actual (LLVM 18.1.3): opt segfaults inside `llvm::PlaceSafepointsPass::runImpl`.
+;
+; Workaround: predeclare `declare void @gc.safepoint_poll()` in the module before
+; running `place-safepoints`.
 
 source_filename = "llvm_place_safepoints_llvm18_repro_backedge"
 
@@ -19,4 +22,3 @@ loop:
 exit:
   ret void
 }
-

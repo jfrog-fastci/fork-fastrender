@@ -1,23 +1,38 @@
 # LLVM 18 `place-safepoints` crash + strategy (native-js GC safepoints)
 
-On Ubuntu LLVM **18.1.3** (the default toolchain in this repo), the new-PM pass
-`place-safepoints` segfaults for any function that has a `gc "<strategy>"`
-attribute *when the pass needs to insert safepoint polls* (entry/backedge).
+On Ubuntu LLVM **18.1.3** (the default toolchain in this repo), the LLVM pass
+`place-safepoints` *segfaults* when it needs to insert **poll** safepoints
+(entry/backedge) **and** the module does *not* already declare the poll
+function `@gc.safepoint_poll`.
 
-This blocks relying on `place-safepoints` for loop safepoint polling.
+The crash appears to be triggered by `place-safepoints` trying to materialize
+the `gc.safepoint_poll` declaration itself.
 
 ## Summary / recommendation
 
-- **Do not use `place-safepoints` on LLVM 18.1.3**. It segfaults in both `opt-18`
-  and when invoked via the LLVM C API `LLVMRunPasses`.
-- Use `rewrite-statepoints-for-gc` to turn **calls** into statepoints.
-- Implement **safepoint polling explicitly in IR generation**:
-  - Insert a fast poll at loop backedges (load+branch).
-  - Only the slow path calls a runtime function (e.g. `rt_gc_safepoint()`), which
-    `rewrite-statepoints-for-gc` will rewrite into a statepoint.
+- `place-safepoints` **is usable on LLVM 18.1.3** if you apply the workaround:
+  ensure every `gc` module predeclares:
+  ```llvm
+  declare void @gc.safepoint_poll()
+  ```
+- To run poll insertion + statepoint rewriting together under the new pass
+  manager, use a pipeline that explicitly runs `place-safepoints` as a function
+  pass, e.g.:
+  ```bash
+  opt-18 -S -passes='function(place-safepoints),rewrite-statepoints-for-gc' ...
+  ```
+- **Performance note:** the default `place-safepoints` scheme inserts poll
+  *calls* which become statepoints (stack map emission) after
+  `rewrite-statepoints-for-gc`. If we want the “~1 instruction when GC inactive”
+  behavior from `EXEC.plan.md`, we should still implement an explicit fast poll
+  (load+branch) in IR and only call into the runtime on the slow path.
 
-This yields the desired “~1–2 instructions when GC inactive” behavior without
-depending on `place-safepoints`.
+So the practical strategy for native-js is:
+
+1. **Correctness first / easiest:** predeclare `@gc.safepoint_poll()` and use
+   `place-safepoints` + `rewrite-statepoints-for-gc`.
+2. **Low overhead polling:** implement explicit fast polls in compiler IR and
+   rely on `rewrite-statepoints-for-gc` to statepoint only the slow-path call.
 
 ## `opt-18` repro: entry poll insertion crashes
 
@@ -38,6 +53,9 @@ Actual (LLVM 18.1.3): segfault, with backtrace showing:
 - `llvm::PlaceSafepointsPass::runImpl`
 - `llvm::CallInst::CallInst(...)`
 
+Workaround: add `declare void @gc.safepoint_poll()` to the module before running
+the pass.
+
 ## `opt-18` repro: backedge poll insertion also crashes
 
 Input: `docs/llvm_place_safepoints_llvm18_repro_backedge.ll`
@@ -51,12 +69,20 @@ opt-18 -S -passes=place-safepoints -spp-no-entry \
   -o /tmp/out.ll
 ```
 
-Workaround attempt:
+Workarounds:
 
 ```bash
 # Avoids the crash, but also prevents poll insertion (defeats the purpose).
 opt-18 -S -passes=place-safepoints -spp-no-entry -spp-no-backedge \
   vendor/ecma-rs/docs/llvm_place_safepoints_llvm18_repro_backedge.ll \
+  -o /tmp/out.ll
+```
+
+```bash
+# Real workaround: predeclare the poll function and keep backedge polls enabled.
+#   declare void @gc.safepoint_poll()
+opt-18 -S -passes=place-safepoints -spp-no-entry \
+  /tmp/your_module_with_gc_safepoint_poll_decl.ll \
   -o /tmp/out.ll
 ```
 
@@ -88,7 +114,9 @@ Sanity check (works; prints statepoints):
   > /tmp/out.ll
 ```
 
-This suggests the issue is in the pass itself (not just the `opt` driver).
+If the input module predeclares `@gc.safepoint_poll()` then
+`LLVMRunPasses(..., \"place-safepoints\", ...)` also works, matching the `opt-18`
+workaround.
 
 ## Legacy pass manager routes
 
@@ -135,7 +163,7 @@ opt-18 -S -passes=rewrite-statepoints-for-gc \
 
 ### Why this is preferable
 
-- Works on LLVM 18.1.3 today (no crashing pass).
+- Works on LLVM 18.1.3 today (no dependence on `place-safepoints` quirks).
 - Fast path overhead is a load+branch, not a function call.
 - Statepoint is only executed on the slow path, i.e. only when a GC is actually
   requested.
