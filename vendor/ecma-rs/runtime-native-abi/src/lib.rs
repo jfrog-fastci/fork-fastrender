@@ -256,8 +256,8 @@ pub struct Microtask {
 ///
 /// Note: coroutine IDs are currently backed by the same persistent handle table as `HandleId`.
 ///
-/// - Allocate a new coroutine handle by calling `rt_handle_alloc(coro_ptr)` and wrapping the
-///   returned `HandleId` as `CoroutineId(handle.0)`.
+/// - Allocate a new coroutine handle by calling `rt_handle_alloc(coro_ptr)` and treating the
+///   returned ID as a `CoroutineId` (in Rust: `CoroutineId(handle.0)` where `handle: HandleId`).
 /// - The runtime **consumes** the handle passed to `rt_async_spawn` / `rt_async_spawn_deferred` and
 ///   frees it (via `rt_handle_free`) when the coroutine completes or is cancelled.
 #[repr(transparent)]
