@@ -431,6 +431,13 @@ mod linux {
                 let flags = cqe.flags();
 
                 if id.as_u64() == INTERNAL_USER_DATA {
+                    #[cfg(debug_assertions)]
+                    if res < 0 {
+                        eprintln!(
+                            "runtime-io-uring: internal CQE error: {}",
+                            io::Error::from_raw_os_error(-res)
+                        );
+                    }
                     self.internal_in_flight = self.internal_in_flight.saturating_sub(1);
                     if self.internal_in_flight == 0 {
                         self.internal_keepalive_pools.clear();
@@ -995,6 +1002,13 @@ mod linux {
                     let flags = cqe.flags();
 
                     if id.as_u64() == INTERNAL_USER_DATA {
+                        #[cfg(debug_assertions)]
+                        if res < 0 {
+                            eprintln!(
+                                "runtime-io-uring: internal CQE error: {}",
+                                io::Error::from_raw_os_error(-res)
+                            );
+                        }
                         inner.internal_in_flight = inner.internal_in_flight.saturating_sub(1);
                         if inner.internal_in_flight == 0 {
                             inner.internal_keepalive_pools.clear();

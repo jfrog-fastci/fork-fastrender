@@ -30,6 +30,13 @@ mod linux {
         in_kernel: AtomicUsize,
         leased: AtomicUsize,
         reprovided: AtomicUsize,
+        slab_drop_counter: Arc<AtomicUsize>,
+    }
+
+    impl Drop for Inner {
+        fn drop(&mut self) {
+            self.slab_drop_counter.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// A pool of stable buffers "provided" to the kernel for buffer selection.
@@ -92,6 +99,7 @@ mod linux {
                     in_kernel: AtomicUsize::new(0),
                     leased: AtomicUsize::new(0),
                     reprovided: AtomicUsize::new(0),
+                    slab_drop_counter: Arc::new(AtomicUsize::new(0)),
                 }),
             };
 
@@ -133,6 +141,14 @@ mod linux {
                 leased: self.inner.leased.load(Ordering::Relaxed),
                 reprovided: self.inner.reprovided.load(Ordering::Relaxed),
             }
+        }
+
+        /// Returns a counter that increments when this pool's backing buffer slab is freed.
+        ///
+        /// This is intended for tests/debugging.
+        #[doc(hidden)]
+        pub fn debug_slab_drop_counter(&self) -> Arc<AtomicUsize> {
+            self.inner.slab_drop_counter.clone()
         }
 
         pub(crate) fn lease(&self, buf_id: u16, filled_len: usize) -> io::Result<LeasedBuf> {
