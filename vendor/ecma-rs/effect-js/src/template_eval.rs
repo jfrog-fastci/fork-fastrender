@@ -141,7 +141,11 @@ fn resolve_api_semantics<'a>(
     return None;
   };
   let path = static_callee_path(lowered, body_ref, call.callee)?;
-  let api = kb.get(&path).or_else(|| resolve_api_alias(kb, &path))?;
+  let api = kb
+    .get(&path)
+    .or_else(|| strip_global_prefixes(&path).and_then(|p| kb.get(p)))
+    .or_else(|| resolve_api_alias(kb, &path))
+    .or_else(|| strip_global_prefixes(&path).and_then(|p| resolve_api_alias(kb, p)))?;
 
   // Avoid treating unknown local bindings as trusted *pure* builtins.
   //
@@ -165,6 +169,25 @@ fn resolve_api_alias<'a>(kb: &'a KnowledgeBase, alias: &str) -> Option<&'a ApiSe
       .any(|a| a == alias)
       .then_some(api)
   })
+}
+
+fn strip_global_prefixes<'a>(mut path: &'a str) -> Option<&'a str> {
+  let mut changed = false;
+  loop {
+    let mut did_strip = false;
+    for prefix in ["globalThis.", "window.", "self.", "global."] {
+      if let Some(rest) = path.strip_prefix(prefix) {
+        path = rest;
+        did_strip = true;
+        changed = true;
+        break;
+      }
+    }
+    if !did_strip {
+      break;
+    }
+  }
+  changed.then_some(path)
 }
 
 fn static_callee_path(lowered: &LowerResult, body: &Body, expr_id: ExprId) -> Option<String> {
@@ -271,5 +294,20 @@ mod tests {
       eval.effects.contains(EffectSet::ALLOCATES),
       "expected Promise.prototype.then to allocate (base effects)"
     );
+  }
+
+  #[test]
+  fn global_this_constructor_resolves_via_prefix_stripping() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      FileKind::Js,
+      r#"new globalThis.URL("https://example.com");"#,
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let sem = eval_call_expr(&kb, &lowered, body, call_expr);
+    assert!(sem.effects.contains(EffectSet::ALLOCATES));
+    assert!(sem.effects.contains(EffectSet::MAY_THROW));
   }
 }
