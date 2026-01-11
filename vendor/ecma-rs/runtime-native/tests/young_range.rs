@@ -88,4 +88,7 @@ fn write_barrier_uses_updateable_young_range() {
     runtime_native::rt_write_barrier(young_a_ptr, young_slot_ptr);
   }
   assert!(young_a.header.is_remembered());
+
+  // IMPORTANT: clear global remset before we drop the fake objects (it contains raw pointers).
+  runtime_native::clear_write_barrier_state_for_tests();
 }

@@ -546,6 +546,10 @@ struct ParForChunk {
 extern "C" fn par_for_chunk_task(data: *mut u8) {
   let chunk = unsafe { Box::from_raw(data as *mut ParForChunk) };
   for i in chunk.start..chunk.end {
+    // `parallel_for` owns the iteration loop in the runtime. Poll the GC
+    // safepoint here so stop-the-world requests don't have to rely on the user
+    // callback to hit a safepoint.
+    threading::safepoint_poll();
     (chunk.body)(i);
   }
 }
@@ -574,6 +578,7 @@ where
   };
   if workers <= 1 || !should_parallelize(estimate) {
     for i in range {
+      threading::safepoint_poll();
       body(i);
     }
     return;
@@ -590,6 +595,7 @@ where
 
   if chunk_size >= len {
     for i in range {
+      threading::safepoint_poll();
       body(i);
     }
     return;
