@@ -2267,13 +2267,44 @@ impl BrowserTabHost {
         source.map(|s| s.into_bytes())
       }
 
+      fn http_origin_header_value(origin: &crate::resource::DocumentOrigin) -> Option<String> {
+        // Match the serialization used for request `Origin` headers: omit default ports and use
+        // bracketed IPv6 host literals.
+        //
+        // Note: `DocumentOrigin`'s Display impl always prints an effective port for http(s), which
+        // is fine for internal comparisons but can diverge from the browser's header form.
+        if !origin.is_http_like() {
+          return None;
+        }
+        let host = origin.host()?;
+        let host = match host.parse::<std::net::IpAddr>() {
+          Ok(std::net::IpAddr::V6(_)) => format!("[{host}]"),
+          _ => host.to_string(),
+        };
+
+        let mut origin_str = format!("{}://{}", origin.scheme(), host);
+        if let Some(port) = origin.port() {
+          let default_port = match origin.scheme() {
+            "http" => 80,
+            "https" => 443,
+            _ => port,
+          };
+          if port != default_port {
+            origin_str.push_str(&format!(":{port}"));
+          }
+        }
+        Some(origin_str)
+      }
+
       fn allow_origin_for_request(req: FetchRequest<'_>) -> String {
         // Synthetic script sources are used by tests/fixtures and do not have real response headers.
         // Mirror permissive CORS headers so module graphs can be fetched in CORS mode without
         // introducing test-only branching in the module loader.
         if req.credentials_mode == crate::resource::FetchCredentialsMode::Include {
           match req.client_origin {
-            Some(origin) if origin.is_http_like() => origin.to_string(),
+            Some(origin) if origin.is_http_like() => {
+              Self::http_origin_header_value(origin).unwrap_or_else(|| origin.to_string())
+            }
             // File/non-http origins are represented as "null" for CORS header matching.
             Some(_) => "null".to_string(),
             None => "*".to_string(),
