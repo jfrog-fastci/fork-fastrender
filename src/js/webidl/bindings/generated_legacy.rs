@@ -579,7 +579,7 @@ pub mod window {
   fn u_r_l_can_parse<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -636,7 +636,7 @@ pub mod window {
   fn u_r_l_parse<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -1450,7 +1450,7 @@ pub mod window {
   fn window_alert<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -1522,7 +1522,7 @@ pub mod window {
   fn window_clear_interval<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -1572,7 +1572,7 @@ pub mod window {
   fn window_clear_timeout<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -1622,7 +1622,7 @@ pub mod window {
   fn window_queue_microtask<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -1673,7 +1673,7 @@ pub mod window {
   fn window_set_interval<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -1742,7 +1742,7 @@ pub mod window {
   fn window_set_timeout<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -2654,7 +2654,7 @@ pub mod worker {
   fn u_r_l_can_parse<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -2711,7 +2711,7 @@ pub mod worker {
   fn u_r_l_parse<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: RtJsValue<Host, R>,
+    _this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where

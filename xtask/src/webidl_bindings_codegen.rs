@@ -1547,11 +1547,11 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("use crate::js::webidl::DataPropertyAttributes;\n");
   out.push_str("#[allow(unused_imports)]\n");
   out.push_str(
-    "use webidl_js_runtime::{convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg, OverloadSig, WebIdlJsRuntime};\n",
+    "#[allow(unused_imports)]\nuse webidl_js_runtime::{convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg, OverloadSig, WebIdlJsRuntime};\n",
   );
   out.push_str("#[allow(unused_imports)]\n");
   out.push_str(
-    "use webidl_ir::{DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext};\n\n",
+    "#[allow(unused_imports)]\nuse webidl_ir::{DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext};\n\n",
   );
 
   // The bindings runtime trait (`crate::js::webidl::WebIdlBindingsRuntime`) and the core WebIDL
@@ -4447,15 +4447,17 @@ fn emit_no_matching_overload_expr(
 
 fn write_attribute_getter_wrapper(out: &mut String, interface: &str, attr_name: &str, is_static: bool) {
   let fn_name = attr_getter_fn_name(interface, attr_name, is_static);
-  out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, _args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
-  ));
 
   let receiver_expr = if interface == "Window" || is_static {
     "None"
   } else {
     "Some(this)"
   };
+  let this_ident = if receiver_expr == "None" { "_this" } else { "this" };
+
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, {this_ident}: R::JsValue, _args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+  ));
   if receiver_expr == "Some(this)" {
     out.push_str("  if !rt_is_object::<Host, R>(rt, this) {\n");
     out.push_str("    return Err(rt_throw_type_error::<Host, R>(rt, \"Illegal invocation\"));\n");
@@ -4487,16 +4489,17 @@ fn write_attribute_setter_wrapper(
   )
   .with_context(|| format!("parse attribute type for {interface}.{attr_name}"))?;
 
-  let fn_name = attr_setter_fn_name(interface, attr_name, is_static);
-  out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: RtJsValue<Host, R>, args: &[RtJsValue<Host, R>]) -> Result<RtJsValue<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n  Host: WebHostBindings<R>,\n{{\n",
-  ));
-
   let receiver_expr = if interface == "Window" || is_static {
     "None"
   } else {
     "Some(this)"
   };
+  let this_ident = if receiver_expr == "None" { "_this" } else { "this" };
+
+  let fn_name = attr_setter_fn_name(interface, attr_name, is_static);
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, {this_ident}: RtJsValue<Host, R>, args: &[RtJsValue<Host, R>]) -> Result<RtJsValue<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n  Host: WebHostBindings<R>,\n{{\n",
+  ));
   if receiver_expr == "Some(this)" {
     out.push_str("  if !rt_is_object::<Host, R>(rt, this) {\n");
     out.push_str("    return Err(rt_throw_type_error::<Host, R>(rt, \"Illegal invocation\"));\n");
@@ -4533,7 +4536,7 @@ fn write_operation_wrapper(
   type_ctx: &webidl_ir::TypeContext,
   interface: &str,
   op_name: &str,
-  iterable: Option<&IterableInfo>,
+  _iterable: Option<&IterableInfo>,
   overloads: &[OperationSig],
   is_static: bool,
   is_global: bool,
@@ -4606,15 +4609,18 @@ fn write_operation_wrapper(
   }
 
   let fn_name = op_wrapper_fn_name(interface, op_name);
-  out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: RtJsValue<Host, R>, args: &[RtJsValue<Host, R>]) -> Result<RtJsValue<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n  Host: WebHostBindings<R>,\n{{\n",
-  ));
 
   let receiver_expr = if is_global || is_static {
     "None"
   } else {
     "Some(this)"
   };
+  let this_ident = if receiver_expr == "None" { "_this" } else { "this" };
+
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, {this_ident}: RtJsValue<Host, R>, args: &[RtJsValue<Host, R>]) -> Result<RtJsValue<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n  Host: WebHostBindings<R>,\n{{\n",
+  ));
+
   if receiver_expr == "Some(this)" {
     out.push_str("  if !rt_is_object::<Host, R>(rt, this) {\n");
     out.push_str("    return Err(rt_throw_type_error::<Host, R>(rt, \"Illegal invocation\"));\n");
