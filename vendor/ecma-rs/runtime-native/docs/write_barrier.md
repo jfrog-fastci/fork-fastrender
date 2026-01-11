@@ -2,9 +2,19 @@
 
 This document specifies the **compiler/runtime ABI contract** for the generational GC write barrier used by runtime-native codegen.
 
-It also records the current policy defaults for **per-object card tables** used for large pointer arrays (card size + representation).
+It also records the current policy defaults for **per-object card tables** intended for large pointer arrays (card size + representation).
 
-> Note: the milestone-1 `runtime-native` implementation does not have a GC yet and `rt_write_barrier` is currently a no-op.
+For the authoritative stable C ABI declarations, see `include/runtime_native.h`.
+
+---
+
+## Implementation status (runtime-native today)
+
+`runtime-native` contains a prototype generational GC under `src/gc/*`, and the exported barrier is implemented.
+
+- The exported symbol **`rt_write_barrier`** exists and performs the young-range checks described in this document.
+- On an old→young store, `rt_write_barrier` currently only sets a `REMEMBERED` bit in the object header. It does **not** yet enqueue objects into an exported remembered set / card table.
+- The exported symbol **`rt_gc_collect`** is still a no-op. The GC prototype is not fully wired up to the exported ABI surface yet (e.g. `rt_alloc*` still use the system allocator).
 
 ---
 
@@ -23,6 +33,38 @@ During a minor GC the collector **does not scan all old objects**. Instead, it t
 This means **old→young edges must be tracked**. If an old object gains a pointer to a young object and we fail to record it, the minor GC can miss that young object and free/move it while it is still reachable.
 
 Old-generation marks are **sticky across minor GCs**: a minor GC does not clear/redo the old-generation marking; it relies on the remembered set (and/or cards) to find the old→young edges relevant to the nursery collection.
+
+---
+
+## Young-space range
+
+The runtime’s fast `is_young(ptr)` predicate is implemented as a simple address-range check against the **current nursery (young generation) range**:
+
+```text
+is_young(ptr) = (ptr >= young_start) && (ptr < young_end)
+```
+
+This range is stored in a pair of global atomics (see `src/gc/young.rs`) and is used by the exported write barrier (`rt_write_barrier`).
+
+### ABI: `rt_gc_set_young_range`
+
+The GC/runtime must keep this range up to date by calling the exported symbol **`rt_gc_set_young_range`**:
+
+```c
+// Authoritative declaration: include/runtime_native.h
+void rt_gc_set_young_range(uint8_t* start, uint8_t* end);
+```
+
+This must be called:
+
+- during runtime/GC initialization (before any mutator stores that may hit the barrier), and
+- after each nursery flip/resize that changes the active young-space region.
+
+If the range is not set correctly, `rt_write_barrier` will misclassify pointers and may fail to record old→young edges.
+
+### Debug/test helper: `rt_gc_get_young_range`
+
+If present, `rt_gc_get_young_range(uint8_t** out_start, uint8_t** out_end)` can be used by tests and debug tooling to read the current range. It is not intended for hot-path use.
 
 ---
 
