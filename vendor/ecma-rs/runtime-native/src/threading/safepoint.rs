@@ -771,7 +771,9 @@ fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
 ///    `(slot, slot)`.
 /// 3) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`):
 ///    `(slot, slot)`.
-/// 4) Stack roots described by LLVM statepoint stackmaps for each stopped mutator thread:
+/// 4) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
+///    - has observed `stop_epoch` (published `safepoint_epoch_observed == stop_epoch`), or
+///    - is in a GC-safe ("NativeSafe") region with a published safepoint context:
 ///    `(base_slot, derived_slot)` pairs.
 ///
 /// # Panics
@@ -787,7 +789,7 @@ pub fn for_each_reloc_pair_world_stopped(
   );
 
   // 1) Thread-local handle stacks.
-  for thread in registry::all_threads() {
+  registry::for_each_thread(|thread| {
     thread.for_each_handle_slot(|slot| {
       let slot = slot.cast::<u8>();
       f(crate::gc_roots::RelocPair {
@@ -795,7 +797,7 @@ pub fn for_each_reloc_pair_world_stopped(
         derived_slot: crate::statepoints::RootSlot::StackAddr(slot),
       })
     });
-  }
+  });
 
   // 2) Global roots.
   crate::roots::global_root_registry().for_each_root_slot(|slot| {
@@ -820,21 +822,17 @@ pub fn for_each_reloc_pair_world_stopped(
     return Ok(());
   };
 
-  let coordinator_id = registry::current_thread_id();
-  for thread in registry::all_threads() {
-    if Some(thread.id()) == coordinator_id {
-      continue;
+  registry::try_for_each_thread(|thread| -> Result<(), crate::WalkError> {
+    if thread.is_parked() {
+      return Ok(());
     }
-    if thread.is_parked() || thread.is_native_safe() {
-      continue;
-    }
-    if thread.safepoint_epoch_observed() != stop_epoch {
-      continue;
+    if !thread.is_native_safe() && thread.safepoint_epoch_observed() != stop_epoch {
+      return Ok(());
     }
 
     let ctx = thread
       .safepoint_context()
-      .expect("stopped thread must have a published safepoint context");
+      .expect("thread eligible for stack root enumeration must have a published safepoint context");
 
     let stack_bounds = thread
       .stack_bounds()
@@ -843,14 +841,12 @@ pub fn for_each_reloc_pair_world_stopped(
     // SAFETY: The caller guarantees the world is stopped and the thread's stack
     // is stable to read.
     unsafe {
-      crate::stackwalk_fp::walk_gc_reloc_pairs_from_safepoint_context(
-        &ctx,
-        stack_bounds,
-        stackmaps,
-        |pair| f(pair),
-      )?;
+      crate::stackwalk_fp::walk_gc_reloc_pairs_from_safepoint_context(&ctx, stack_bounds, stackmaps, |pair| {
+        f(pair);
+      })?;
     }
-  }
+    Ok(())
+  })?;
 
   Ok(())
 }
