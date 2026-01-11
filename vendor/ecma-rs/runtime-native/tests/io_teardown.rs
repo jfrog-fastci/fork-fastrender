@@ -189,6 +189,8 @@ fn teardown_keeps_backing_store_pins_until_cancel_ack() {
 
   // Detach/transfer must be rejected while the backing store is pinned.
   assert_eq!(buffer.detach(), Err(ArrayBufferError::Pinned));
+  assert_eq!(buffer.transfer().unwrap_err(), ArrayBufferError::Pinned);
+  assert_eq!(buffer.resize(buffer.byte_len() * 2), Err(ArrayBufferError::Pinned));
 
   io_rt.teardown();
   assert_eq!(io_rt.debug_registry_len(), 0);
@@ -200,6 +202,8 @@ fn teardown_keeps_backing_store_pins_until_cancel_ack() {
   assert_eq!(buffer.pin_count(), 1);
   assert!(buffer.is_io_borrowed());
   assert_eq!(buffer.detach(), Err(ArrayBufferError::Pinned));
+  assert_eq!(buffer.transfer().unwrap_err(), ArrayBufferError::Pinned);
+  assert_eq!(buffer.resize(buffer.byte_len() * 2), Err(ArrayBufferError::Pinned));
 
   debug.release_finish();
   wait_until(start + Duration::from_secs(2), || {
