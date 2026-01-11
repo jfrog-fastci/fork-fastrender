@@ -6072,35 +6072,23 @@ impl<'a> ElementRef<'a> {
       .filter(|name| !name.is_empty())
   }
 
-  fn radio_group_root(&self) -> &'a DomNode {
-    // Radio group membership is scoped to the nearest ancestor <form> within the current tree
-    // root. Shadow roots act as tree-root boundaries, so radios inside shadow trees never group
-    // with light-DOM radios, even if the shadow host is itself inside a <form>.
-    for ancestor in self.all_ancestors.iter().rev().copied() {
-      if ancestor
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
-      {
-        return ancestor;
-      }
-      if matches!(
-        ancestor.node_type,
-        DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }
-      ) {
-        return ancestor;
-      }
-    }
-
-    // Fallback for incomplete ancestor chains (e.g. unit tests constructing partial DOM trees).
-    self.all_ancestors.first().copied().unwrap_or(self.node)
-  }
-
-  fn last_checked_radio_in_group(root: &'a DomNode, group_name: &str) -> Option<&'a DomNode> {
+  fn last_checked_radio_in_group(
+    tree_root: &'a DomNode,
+    group_name: &str,
+    group_form_owner: Option<&'a DomNode>,
+    forms_by_id: &HashMap<&'a str, &'a DomNode>,
+  ) -> Option<&'a DomNode> {
     let mut last: Option<&'a DomNode> = None;
-    let mut stack: Vec<&'a DomNode> = Vec::new();
-    stack.push(root);
+    let mut stack: Vec<(&'a DomNode, Option<&'a DomNode>)> = Vec::new();
+    stack.push((tree_root, None));
 
-    while let Some(node) = stack.pop() {
+    let form_owners_match = |a: Option<&'a DomNode>, b: Option<&'a DomNode>| match (a, b) {
+      (Some(a), Some(b)) => ptr::eq(a, b),
+      (None, None) => true,
+      _ => false,
+    };
+
+    while let Some((node, nearest_form_ancestor)) = stack.pop() {
       if node
         .tag_name()
         .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
@@ -6110,27 +6098,31 @@ impl<'a> ElementRef<'a> {
           && node.get_attribute_ref("checked").is_some()
           && node.get_attribute_ref("name") == Some(group_name)
         {
-          last = Some(node);
+          let candidate_form_owner =
+            Self::resolve_form_owner_for_node(node, nearest_form_ancestor, forms_by_id);
+          if form_owners_match(candidate_form_owner, group_form_owner) {
+            last = Some(node);
+          }
         }
       }
 
-      // Forms and shadow roots are group boundaries:
-      // - Controls in different <form> elements are never in the same group.
-      // - Shadow roots define independent trees; do not traverse into shadow DOM when scanning a
-      //   light DOM radio group (or vice-versa).
-      if node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
-        && !ptr::eq(node, root)
-      {
+      // Shadow roots define independent trees; do not traverse into a nested shadow tree when
+      // scanning a light-DOM radio group (or vice-versa).
+      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) && !ptr::eq(node, tree_root) {
         continue;
       }
 
+      let nearest_form_for_children = if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+      {
+        Some(node)
+      } else {
+        nearest_form_ancestor
+      };
+
       for child in node.traversal_children().iter().rev() {
-        if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
-          continue;
-        }
-        stack.push(child);
+        stack.push((child, nearest_form_for_children));
       }
     }
 
@@ -6160,8 +6152,19 @@ impl<'a> ElementRef<'a> {
           return true;
         };
 
-        let root = self.radio_group_root();
-        let last = Self::last_checked_radio_in_group(root, name);
+        let (tree_root, ancestors_in_tree) = self.tree_root_info();
+        let forms_by_id = Self::collect_forms_by_id(tree_root);
+
+        let nearest_form_ancestor = ancestors_in_tree.iter().rev().copied().find(|node| {
+          node
+            .tag_name()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+        });
+        let self_form_owner =
+          Self::resolve_form_owner_for_node(self.node, nearest_form_ancestor, &forms_by_id);
+
+        let last =
+          Self::last_checked_radio_in_group(tree_root, name, self_form_owner, &forms_by_id);
         return last.is_some_and(|node| ptr::eq(node, self.node));
       }
 
@@ -13920,6 +13923,123 @@ mod tests {
 
     assert!(!matches(first, &ancestors, &PseudoClass::Checked));
     assert!(matches(second, &ancestors, &PseudoClass::Checked));
+  }
+
+  #[test]
+  fn radio_group_external_control_via_form_attr_participates_in_group() {
+    let dom = document(vec![
+      element_with_attrs(
+        "input",
+        vec![
+          ("type", "radio"),
+          ("name", "g"),
+          ("id", "ext"),
+          ("checked", ""),
+          ("form", "f"),
+        ],
+        vec![],
+      ),
+      element_with_attrs(
+        "form",
+        vec![("id", "f")],
+        vec![element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "g"), ("id", "in"), ("checked", "")],
+          vec![],
+        )],
+      ),
+    ]);
+
+    let ext = &dom.children[0];
+    let form = &dom.children[1];
+    let inside = &form.children[0];
+
+    let ext_ancestors: Vec<&DomNode> = vec![&dom];
+    let inside_ancestors: Vec<&DomNode> = vec![&dom, form];
+
+    assert!(!matches(ext, &ext_ancestors, &PseudoClass::Checked));
+    assert!(matches(inside, &inside_ancestors, &PseudoClass::Checked));
+  }
+
+  #[test]
+  fn radio_group_uses_form_owner_not_nearest_form_ancestor() {
+    let dom = document(vec![
+      element_with_attrs(
+        "form",
+        vec![("id", "f1")],
+        vec![element_with_attrs(
+          "input",
+          vec![
+            ("type", "radio"),
+            ("name", "g"),
+            ("id", "r1"),
+            ("checked", ""),
+            ("form", "f2"),
+          ],
+          vec![],
+        )],
+      ),
+      element_with_attrs(
+        "form",
+        vec![("id", "f2")],
+        vec![element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "g"), ("id", "r2"), ("checked", "")],
+          vec![],
+        )],
+      ),
+    ]);
+
+    let form_1 = &dom.children[0];
+    let r1 = &form_1.children[0];
+    let form_2 = &dom.children[1];
+    let r2 = &form_2.children[0];
+
+    let r1_ancestors: Vec<&DomNode> = vec![&dom, form_1];
+    let r2_ancestors: Vec<&DomNode> = vec![&dom, form_2];
+
+    assert!(!matches(r1, &r1_ancestors, &PseudoClass::Checked));
+    assert!(matches(r2, &r2_ancestors, &PseudoClass::Checked));
+  }
+
+  #[test]
+  fn radio_group_does_not_cross_shadow_root_boundary() {
+    let dom = document(vec![element(
+      "form",
+      vec![
+        element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "g"), ("id", "light"), ("checked", "")],
+          vec![],
+        ),
+        element(
+          "div",
+          vec![DomNode {
+            node_type: DomNodeType::ShadowRoot {
+              mode: ShadowRootMode::Open,
+              delegates_focus: false,
+            },
+            children: vec![element_with_attrs(
+              "input",
+              vec![("type", "radio"), ("name", "g"), ("id", "shadow"), ("checked", "")],
+              vec![],
+            )],
+          }],
+        ),
+      ],
+    )]);
+
+    let form = &dom.children[0];
+    let light = &form.children[0];
+    let host = &form.children[1];
+    let shadow_root = &host.children[0];
+    let shadow = &shadow_root.children[0];
+
+    let light_ancestors: Vec<&DomNode> = vec![&dom, form];
+    let shadow_ancestors: Vec<&DomNode> = vec![&dom, form, host, shadow_root];
+
+    assert!(matches(light, &light_ancestors, &PseudoClass::Checked));
+    assert!(matches(shadow, &shadow_ancestors, &PseudoClass::Checked));
   }
 
   #[test]
