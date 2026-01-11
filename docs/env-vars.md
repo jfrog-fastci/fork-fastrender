@@ -41,6 +41,9 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_RENDER_TIMINGS=1` – print per-stage timings during rendering (parse/cascade/box_tree/layout/paint).
 - `FASTR_FULL_PAGE=1` – expand output to the full document content size (instead of the viewport).
 - `FASTR_USE_BUNDLED_FONTS=1` – disable system font discovery and use the bundled fixtures (default in CI).
+- `FASTR_WEB_FONT_WAIT_MS=<ms>` – wait up to `<ms>` for pending `@font-face` web font loads (notably `font-display: swap`) before layout/paint so offline renders use the intended web fonts.
+  - Default: `0` in the core renderer (no extra wait; renders the pre-swap state).
+  - Fixture tooling (`render_fixtures`, `xtask page-loop`) may set a small non-zero default; set this explicitly to override.
 - `FASTR_BUNDLE_EMOJI_FONT=0|1` – explicitly enable/disable the bundled emoji font fixture (on by default in bundled mode/CI).
 - `FASTR_FETCH_LINK_CSS=0` – skip fetching linked stylesheets from `<link>` elements (defaults to on; does not affect `@import` loads).
 - `FASTR_FETCH_PRELOAD_STYLESHEETS=0|1` – control whether `<link rel=preload as=style>` entries are treated as stylesheet candidates (defaults to on).
