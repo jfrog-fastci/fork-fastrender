@@ -1479,6 +1479,37 @@ fn generate_bindings_module_for_target_unformatted(
   }
 
   // Operation shims.
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  enum AttrWrapperKind {
+    Getter,
+    Setter,
+  }
+  let mut emitted_attr_wrappers: BTreeMap<String, (String, String, bool, AttrWrapperKind)> =
+    BTreeMap::new();
+  let mut ensure_unique_attr_wrapper =
+    |wrapper_name: String,
+     origin: (String, String, bool, AttrWrapperKind)|
+     -> Result<bool> {
+      use std::collections::btree_map::Entry;
+      match emitted_attr_wrappers.entry(wrapper_name) {
+        Entry::Vacant(v) => {
+          v.insert(origin);
+          Ok(true)
+        }
+        Entry::Occupied(o) => {
+          if *o.get() == origin {
+            Ok(false)
+          } else {
+            bail!(
+              "WebIDL bindings codegen attempted to emit duplicate attribute wrapper `{}` for {:?} and {:?}",
+              o.key(),
+              o.get(),
+              origin
+            );
+          }
+        }
+      }
+    };
   for iface in selected.values() {
     let global = is_global_iface(&iface.name);
     for (op_name, overloads) in &iface.operations {
@@ -1510,15 +1541,61 @@ fn generate_bindings_module_for_target_unformatted(
       )?;
     }
     for attr in iface.attributes.values() {
-      write_attribute_getter_wrapper(&mut out, &iface.name, &attr.name, false);
+      let origin = (
+        iface.name.clone(),
+        attr.name.clone(),
+        false,
+        AttrWrapperKind::Getter,
+      );
+      if ensure_unique_attr_wrapper(attr_getter_fn_name(&iface.name, &attr.name, false), origin)? {
+        write_attribute_getter_wrapper(&mut out, &iface.name, &attr.name, false);
+      }
       if !attr.readonly {
-        write_attribute_setter_wrapper(&mut out, resolved, &iface.name, &attr.name, &attr.type_, false);
+        let origin = (
+          iface.name.clone(),
+          attr.name.clone(),
+          false,
+          AttrWrapperKind::Setter,
+        );
+        if ensure_unique_attr_wrapper(attr_setter_fn_name(&iface.name, &attr.name, false), origin)? {
+          write_attribute_setter_wrapper(
+            &mut out,
+            resolved,
+            &iface.name,
+            &attr.name,
+            &attr.type_,
+            false,
+          );
+        }
       }
     }
     for attr in iface.static_attributes.values() {
-      write_attribute_getter_wrapper(&mut out, &iface.name, &attr.name, true);
+      let origin = (
+        iface.name.clone(),
+        attr.name.clone(),
+        true,
+        AttrWrapperKind::Getter,
+      );
+      if ensure_unique_attr_wrapper(attr_getter_fn_name(&iface.name, &attr.name, true), origin)? {
+        write_attribute_getter_wrapper(&mut out, &iface.name, &attr.name, true);
+      }
       if !attr.readonly {
-        write_attribute_setter_wrapper(&mut out, resolved, &iface.name, &attr.name, &attr.type_, true);
+        let origin = (
+          iface.name.clone(),
+          attr.name.clone(),
+          true,
+          AttrWrapperKind::Setter,
+        );
+        if ensure_unique_attr_wrapper(attr_setter_fn_name(&iface.name, &attr.name, true), origin)? {
+          write_attribute_setter_wrapper(
+            &mut out,
+            resolved,
+            &iface.name,
+            &attr.name,
+            &attr.type_,
+            true,
+          );
+        }
       }
     }
     if !iface.constructors.is_empty() {

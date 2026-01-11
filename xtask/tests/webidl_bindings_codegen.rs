@@ -188,6 +188,46 @@ fn legacy_overload_dispatch_generates_single_wrapper_for_optional_args() {
 }
 
 #[test]
+fn legacy_attribute_wrappers_do_not_duplicate_rust_symbols() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  // Regression test: the legacy bindings snapshot briefly emitted duplicate attribute wrappers for
+  // `URL.origin` (same Rust fn name emitted twice), which broke downstream compilation.
+  let idl = r#"
+    [Exposed=Window]
+    interface URL {
+      stringifier attribute USVString href;
+      readonly attribute USVString origin;
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["URL".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Legacy,
+  )
+  .unwrap();
+
+  assert_eq!(
+    out.matches("fn u_r_l_get_attribute_origin").count(),
+    1,
+    "expected exactly one legacy wrapper fn for URL.origin"
+  );
+}
+
+#[test]
 fn generated_dictionary_converters_handle_required_defaults_and_inheritance() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
