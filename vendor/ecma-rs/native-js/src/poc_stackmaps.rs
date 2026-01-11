@@ -4,7 +4,14 @@
 //! - We can build a module using inkwell on LLVM 18 (opaque pointers).
 //! - We can emit `gc.statepoint`/`gc.result`/`gc.relocate` in the form LLVM expects.
 //! - The object emitter produces a non-empty `.llvm_stackmaps` section.
+//!
+//! As part of GC bring-up, this PoC also exercises the "root slot" strategy:
+//! GC locals are modeled as `alloca ptr addrspace(1)` slots, and `gc.relocate`
+//! values are written back into those slots at every safepoint.
 
+use crate::gc::roots::GcFrame;
+use crate::gc::statepoint::StatepointEmitter;
+use crate::llvm::gc::GC_STRATEGY;
 use crate::NativeJsError;
 use inkwell::context::AsContextRef as _;
 use inkwell::context::Context;
@@ -15,11 +22,7 @@ use inkwell::targets::{
 use inkwell::types::AsTypeRef as _;
 use inkwell::values::AsValueRef as _;
 use inkwell::{AddressSpace, OptimizationLevel};
-use llvm_sys::core::{
-  LLVMAddCallSiteAttribute, LLVMBuildCall2, LLVMBuildCallWithOperandBundles, LLVMBuildRet,
-  LLVMBuildStore, LLVMBuildStructGEP2, LLVMCreateOperandBundle, LLVMCreateTypeAttribute,
-  LLVMDisposeOperandBundle, LLVMGetEnumAttributeKindForName,
-};
+use llvm_sys::core::{LLVMBuildRet, LLVMBuildStore, LLVMBuildStructGEP2, LLVMGetInsertBlock};
 
 /// Builds the PoC module and returns an ELF object file as bytes.
 pub fn compile_poc_object() -> Result<Vec<u8>, NativeJsError> {
@@ -41,7 +44,6 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
   let builder = context.create_builder();
 
   let i64_ty = context.i64_type();
-  let i32_ty = context.i32_type();
 
   // Use a dedicated address space to mark GC-managed pointers.
   //
@@ -59,7 +61,7 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
   // define ptr addrspace(1) @poc_make_pair(ptr addrspace(1), ptr addrspace(1)) gc "statepoint-example"
   let make_pair_ty = gc_ptr_ty.fn_type(&[gc_ptr_ty.into(), gc_ptr_ty.into()], false);
   let make_pair = module.add_function("poc_make_pair", make_pair_ty, None);
-  make_pair.set_gc("statepoint-example");
+  make_pair.set_gc(GC_STRATEGY);
 
   let entry = context.append_basic_block(make_pair, "entry");
   builder.position_at_end(entry);
@@ -73,10 +75,6 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
     .ok_or_else(|| NativeJsError::Llvm("poc_make_pair missing param 1".to_string()))?
     .into_pointer_value();
 
-  let statepoint = declare_gc_statepoint(module, context)?;
-  let gc_result = declare_gc_result(module, context)?;
-  let gc_relocate = declare_gc_relocate(module, context)?;
-
   // inkwell doesn't currently expose `token` as a `BasicValue`, which is
   // required to build calls to `gc.result`/`gc.relocate`. Drop down to the C
   // API for these few instructions.
@@ -84,95 +82,21 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
     use std::ffi::CString;
 
     let builder_ref = builder.as_mut_ptr();
+    let entry_block = LLVMGetInsertBlock(builder_ref);
+    let frame = GcFrame::new(context.as_ctx_ref(), entry_block);
 
-    // NOTE: LLVM 18 expects the statepoint call to be formatted as:
-    //   statepoint(..., num_call_args, flags, <call args...>, num_transition_args, num_deopt_args)
-    //
-    // Under opaque pointers, the callee operand also needs an `elementtype`
-    // attribute describing the wrapped function type.
-    let statepoint_args = [
-      i64_ty.const_int(0, false).as_value_ref(), // ID
-      i32_ty.const_int(0, false).as_value_ref(), // NumPatchBytes
-      rt_alloc.as_global_value().as_pointer_value().as_value_ref(), // Callee
-      i32_ty.const_int(1, false).as_value_ref(), // NumCallArgs
-      i32_ty.const_int(0, false).as_value_ref(), // Flags (reserved)
-      i64_ty.const_int(16, false).as_value_ref(), // call arg: allocation size
-      i32_ty.const_int(0, false).as_value_ref(), // NumTransitionArgs
-      i32_ty.const_int(0, false).as_value_ref(), // NumDeoptArgs
-    ];
+    let a_slot = frame.alloc_slot(builder_ref, a.as_value_ref());
+    let b_slot = frame.alloc_slot(builder_ref, b.as_value_ref());
 
-    let gc_live_inputs = [a.as_value_ref(), b.as_value_ref()];
-    let gc_live_name = CString::new("gc-live").unwrap();
-    let gc_live_bundle = LLVMCreateOperandBundle(
-      gc_live_name.as_ptr(),
-      gc_live_name.as_bytes().len(),
-      gc_live_inputs.as_ptr() as *mut _,
-      gc_live_inputs.len() as u32,
-    );
-    let bundles = [gc_live_bundle];
+    let mut statepoints = StatepointEmitter::new(context.as_ctx_ref(), module.as_mut_ptr(), gc_ptr_ty.as_type_ref());
 
-    let sp_token = LLVMBuildCallWithOperandBundles(
-      builder_ref,
-      statepoint.get_type().as_type_ref(),
-      statepoint.as_value_ref(),
-      statepoint_args.as_ptr() as *mut _,
-      statepoint_args.len() as u32,
-      bundles.as_ptr() as *mut _,
-      bundles.len() as u32,
-      CString::new("statepoint").unwrap().as_ptr(),
-    );
+    let alloc_size = i64_ty.const_int(16, false).as_value_ref();
+    let pair_ptr = frame
+      .safepoint_call(builder_ref, &mut statepoints, rt_alloc.as_value_ref(), &[alloc_size])
+      .expect("rt_alloc returns a GC pointer so gc.result must exist");
 
-    let elementtype_kind = {
-      let elementtype_name = CString::new("elementtype").unwrap();
-      LLVMGetEnumAttributeKindForName(
-        elementtype_name.as_ptr(),
-        elementtype_name.as_bytes().len(),
-      )
-    };
-    let elementtype_attr =
-      LLVMCreateTypeAttribute(context.as_ctx_ref(), elementtype_kind, rt_alloc_ty.as_type_ref());
-    // The statepoint callee argument is the 3rd parameter.
-    LLVMAddCallSiteAttribute(sp_token, 3, elementtype_attr);
-
-    LLVMDisposeOperandBundle(gc_live_bundle);
-
-    let gc_result_args = [sp_token];
-    let pair_ptr = LLVMBuildCall2(
-      builder_ref,
-      gc_result.get_type().as_type_ref(),
-      gc_result.as_value_ref(),
-      gc_result_args.as_ptr() as *mut _,
-      gc_result_args.len() as u32,
-      CString::new("pair").unwrap().as_ptr(),
-    );
-
-    let a_relocate_args = [
-      sp_token,
-      i32_ty.const_int(0, false).as_value_ref(),
-      i32_ty.const_int(0, false).as_value_ref(),
-    ];
-    let a_relocated = LLVMBuildCall2(
-      builder_ref,
-      gc_relocate.get_type().as_type_ref(),
-      gc_relocate.as_value_ref(),
-      a_relocate_args.as_ptr() as *mut _,
-      a_relocate_args.len() as u32,
-      CString::new("a.relocated").unwrap().as_ptr(),
-    );
-
-    let b_relocate_args = [
-      sp_token,
-      i32_ty.const_int(1, false).as_value_ref(),
-      i32_ty.const_int(1, false).as_value_ref(),
-    ];
-    let b_relocated = LLVMBuildCall2(
-      builder_ref,
-      gc_relocate.get_type().as_type_ref(),
-      gc_relocate.as_value_ref(),
-      b_relocate_args.as_ptr() as *mut _,
-      b_relocate_args.len() as u32,
-      CString::new("b.relocated").unwrap().as_ptr(),
-    );
+    let a_relocated = frame.load(builder_ref, a_slot, "a.relocated");
+    let b_relocated = frame.load(builder_ref, b_slot, "b.relocated");
 
     let field0 = LLVMBuildStructGEP2(
       builder_ref,
@@ -233,45 +157,6 @@ fn init_native_target() -> Result<(), NativeJsError> {
   }
 }
 
-fn declare_gc_statepoint<'ctx>(
-  module: &Module<'ctx>,
-  context: &'ctx Context,
-) -> Result<inkwell::values::FunctionValue<'ctx>, NativeJsError> {
-  // `gc.statepoint` is overloaded on the address space of the *callee* pointer.
-  let ptr_ty = context.ptr_type(AddressSpace::default());
-  let statepoint = inkwell::intrinsics::Intrinsic::find("llvm.experimental.gc.statepoint")
-    .ok_or_else(|| NativeJsError::Llvm("missing intrinsic llvm.experimental.gc.statepoint".to_string()))?;
-  statepoint
-    .get_declaration(module, &[ptr_ty.into()])
-    .ok_or_else(|| NativeJsError::Llvm("failed to get gc.statepoint declaration".to_string()))
-}
-
-fn declare_gc_result<'ctx>(
-  module: &Module<'ctx>,
-  context: &'ctx Context,
-) -> Result<inkwell::values::FunctionValue<'ctx>, NativeJsError> {
-  // `gc.result`/`gc.relocate` are overloaded on the GC pointer type, which this
-  // PoC models as addrspace(1).
-  let ptr_ty = context.ptr_type(AddressSpace::from(1u16));
-  let gc_result = inkwell::intrinsics::Intrinsic::find("llvm.experimental.gc.result")
-    .ok_or_else(|| NativeJsError::Llvm("missing intrinsic llvm.experimental.gc.result".to_string()))?;
-  gc_result
-    .get_declaration(module, &[ptr_ty.into()])
-    .ok_or_else(|| NativeJsError::Llvm("failed to get gc.result declaration".to_string()))
-}
-
-fn declare_gc_relocate<'ctx>(
-  module: &Module<'ctx>,
-  context: &'ctx Context,
-) -> Result<inkwell::values::FunctionValue<'ctx>, NativeJsError> {
-  let ptr_ty = context.ptr_type(AddressSpace::from(1u16));
-  let gc_relocate = inkwell::intrinsics::Intrinsic::find("llvm.experimental.gc.relocate")
-    .ok_or_else(|| NativeJsError::Llvm("missing intrinsic llvm.experimental.gc.relocate".to_string()))?;
-  gc_relocate
-    .get_declaration(module, &[ptr_ty.into()])
-    .ok_or_else(|| NativeJsError::Llvm("failed to get gc.relocate declaration".to_string()))
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -298,4 +183,3 @@ mod tests {
     assert!(num_records > 0, "expected at least one stackmap record");
   }
 }
-
