@@ -76,7 +76,9 @@ pub struct StatepointConfig {
   /// - `>0`: LLVM reserves a patchable region at the callsite (x86_64: a NOP sled) and the
   ///   stackmap record key (`instruction offset`) points to the end of that reserved region.
   ///
-  /// See `docs/llvm_statepoint_stackmap_abi.md` for the project-level ABI assumptions.
+  /// See `vendor/ecma-rs/docs/gc_statepoints.md` for the project-level stackmap ABI and patch-bytes
+  /// semantics, and `vendor/ecma-rs/docs/llvm_statepoint_directives.md` for the
+  /// `"statepoint-num-patch-bytes"` directive when using `rewrite-statepoints-for-gc`.
   pub num_patch_bytes: u32,
   /// Statepoint flags.
   ///
