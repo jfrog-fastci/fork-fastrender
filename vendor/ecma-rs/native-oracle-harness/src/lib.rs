@@ -84,7 +84,7 @@ impl std::fmt::Display for TsToJsError {
       }
       #[cfg(feature = "optimize-js-fallback")]
       TsToJsError::OptimizeEmit(err) => {
-        write!(f, "optimize-js TS→JS fallback emit failed: {err}")
+        write!(f, "optimize-js TS→JS fallback emit failed: {err:?}")
       }
     }
   }
@@ -460,7 +460,9 @@ fn ts_to_js(ts: &str) -> Result<String, Diagnostic> {
     #[cfg(feature = "optimize-js-fallback")]
     TsToJsError::Optimize(diags) => diagnostics_to_one(diags),
     #[cfg(feature = "optimize-js-fallback")]
-    TsToJsError::OptimizeEmit(err) => harness_error(format!("optimize-js TS→JS fallback failed: {err}")),
+    TsToJsError::OptimizeEmit(err) => {
+      harness_error(format!("optimize-js TS→JS fallback failed: {err:?}"))
+    }
   })
 }
 
