@@ -3670,6 +3670,7 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
       .invalid-dup-scroll-state { container-type: scroll-state scroll-state; }
       .scroll-state { container-type: scroll-state; }
       .scroll-state-and-size { container-type: scroll-state size; }
+      .size-and-scroll-state { container-type: size scroll-state; }
       .scroll-state-and-inline-size { container-type: scroll-state inline-size; }
       .commented-size { container-type: size/*comment*/; }
       .escaped-size { container-type: s\69ze; }
@@ -3677,6 +3678,7 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
       .name-only { container: demo; }
       .shorthand-scroll-state { container: demo / scroll-state; }
       .shorthand-scroll-state-and-size { container: demo / scroll-state size; }
+      .shorthand-size-and-scroll-state { container: demo / size scroll-state; }
       .shorthand-scroll-state-and-inline-size { container: demo / inline-size scroll-state; }
       .commented-reset { container: none/*comment*/; }
       .commented-name-only { container: demo/*comment*/; }
@@ -3690,6 +3692,7 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
     <div id="invalid-dup-scroll-state" class="base invalid-dup-scroll-state"></div>
     <div id="scroll-state" class="base scroll-state"></div>
     <div id="scroll-state-and-size" class="base scroll-state-and-size"></div>
+    <div id="size-and-scroll-state" class="base size-and-scroll-state"></div>
     <div id="scroll-state-and-inline-size" class="base scroll-state-and-inline-size"></div>
     <div id="commented-size" class="base commented-size"></div>
     <div id="escaped-size" class="base escaped-size"></div>
@@ -3697,6 +3700,7 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
     <div id="name-only" class="base name-only"></div>
     <div id="shorthand-scroll-state" class="base shorthand-scroll-state"></div>
     <div id="shorthand-scroll-state-and-size" class="base shorthand-scroll-state-and-size"></div>
+    <div id="shorthand-size-and-scroll-state" class="base shorthand-size-and-scroll-state"></div>
     <div id="shorthand-scroll-state-and-inline-size" class="base shorthand-scroll-state-and-inline-size"></div>
     <div id="commented-reset" class="base commented-reset"></div>
     <div id="commented-name-only" class="base commented-name-only"></div>
@@ -3736,6 +3740,13 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
     find_by_id(&styled, "scroll-state-and-size").expect("scroll-state-and-size element");
   assert_eq!(
     scroll_state_and_size.styles.container_type,
+    ContainerType::SizeScrollState
+  );
+
+  let size_and_scroll_state =
+    find_by_id(&styled, "size-and-scroll-state").expect("size-and-scroll-state element");
+  assert_eq!(
+    size_and_scroll_state.styles.container_type,
     ContainerType::SizeScrollState
   );
 
@@ -3779,6 +3790,17 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
   );
   assert_eq!(
     shorthand_scroll_state_and_size.styles.container_name,
+    vec!["demo".to_string()]
+  );
+
+  let shorthand_size_and_scroll_state = find_by_id(&styled, "shorthand-size-and-scroll-state")
+    .expect("shorthand-size-and-scroll-state element");
+  assert_eq!(
+    shorthand_size_and_scroll_state.styles.container_type,
+    ContainerType::SizeScrollState
+  );
+  assert_eq!(
+    shorthand_size_and_scroll_state.styles.container_name,
     vec!["demo".to_string()]
   );
 
