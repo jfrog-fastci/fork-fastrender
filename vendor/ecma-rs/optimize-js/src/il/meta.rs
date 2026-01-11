@@ -392,6 +392,13 @@ pub struct InstMeta {
     serde(default, skip_serializing_if = "OwnershipState::is_default")
   )]
   pub ownership: OwnershipState,
+  /// Per-argument ownership transfer information.
+  ///
+  /// When non-empty, this is aligned 1:1 with the instruction's `args` (i.e.
+  /// `arg_use_modes[i]` describes how `args[i]` is used).
+  ///
+  /// To keep IL metadata lightweight, analyses may leave this empty to mean
+  /// "all arguments are borrowed".
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "is_default_arg_use_modes")
@@ -484,5 +491,13 @@ impl InstMeta {
 
   pub fn is_pure(&self) -> bool {
     self.effects.is_pure()
+  }
+
+  /// Returns the use mode for argument `idx`.
+  ///
+  /// Note: `arg_use_modes` may be empty to represent "all args are borrowed".
+  /// This helper provides a stable query API for downstream backends.
+  pub fn arg_use_mode(&self, idx: usize) -> ArgUseMode {
+    self.arg_use_modes.get(idx).copied().unwrap_or(ArgUseMode::Borrow)
   }
 }

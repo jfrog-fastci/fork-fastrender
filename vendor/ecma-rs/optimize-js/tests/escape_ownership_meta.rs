@@ -39,12 +39,7 @@ fn escape_and_ownership_metadata_is_attached() {
       }
 
       if inst.t == InstTyp::Return {
-        assert_eq!(
-          inst.meta.arg_use_modes.len(),
-          inst.args.len(),
-          "arg_use_modes must be aligned with Inst::args"
-        );
-        return_use = Some(inst.meta.arg_use_modes[0]);
+        return_use = Some(inst.meta.arg_use_mode(0));
       }
     }
   }

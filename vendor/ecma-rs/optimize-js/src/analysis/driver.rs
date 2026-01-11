@@ -193,7 +193,10 @@ fn annotate_cfg_escape_states(cfg: &mut Cfg, escapes: &escape::EscapeResult) {
 /// This is a convenience helper for native backends that need a compact per-instruction view of:
 /// - whether a produced allocation escapes (`InstMeta::result_escape`)
 /// - whether a produced value is owned/borrowed/shared (`InstMeta::ownership`)
-/// - how each argument is used (`InstMeta::arg_use_modes`, aligned with `Inst::args`)
+/// - how each argument is used (`InstMeta::arg_use_modes`)
+///
+/// Note: `arg_use_modes` may be empty to represent "all args are borrowed"; when non-empty it is
+/// aligned 1:1 with `Inst::args`.
 pub fn annotate_escape_and_ownership(
   cfg: &mut Cfg,
   params: &[u32],
