@@ -8,6 +8,18 @@
       throws: Maybe
   purity: Pure
 
+- name: URLSearchParams
+  aliases:
+    - URLSearchParams
+    - window.URLSearchParams
+    - globalThis.URLSearchParams
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Pure
+
 - name: URL.createObjectURL
   aliases:
     - URL.createObjectURL

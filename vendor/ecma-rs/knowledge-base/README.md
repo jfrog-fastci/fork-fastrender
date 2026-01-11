@@ -2,6 +2,26 @@
 
 Semantic knowledge base for `ecma-rs` analysis passes, expressed as YAML.
 
+## Naming conventions
+
+### Node.js builtins
+
+Canonical names use `node:<module>.<export>`:
+
+- `node:fs.readFile`
+- `node:path.join`
+- `node:crypto.randomBytes`
+
+Common alias spellings (e.g. `fs.readFile`, `path.join`) can be listed under `aliases`.
+
+### Web platform globals
+
+Use the global name as it appears in JS:
+
+- Global functions: `fetch`
+- Constructors: `URL`, `URLSearchParams`
+- Prototype members: `URL.prototype.pathname`
+
 ## Bundled file formats
 
 The default (bundled) knowledge base is built from files under:
