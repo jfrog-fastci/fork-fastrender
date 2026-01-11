@@ -138,7 +138,9 @@ void rt_gc_safepoint(void);
 // Safepoint slow path entered only when `RT_GC_EPOCH` is odd (stop-the-world requested).
 // Callers should pass the observed odd epoch value.
 void rt_gc_safepoint_slow(uint64_t epoch);
-
+// Cheap leaf poll used by compiler-inserted loop backedge safepoints.
+// Returns true if a stop-the-world GC is currently requested.
+bool rt_gc_poll(void);
 // Generational write barrier for an object field store.
 //
 // Contract: `obj` must be the same object base pointer that was returned from

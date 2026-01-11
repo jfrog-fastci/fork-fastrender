@@ -151,6 +151,18 @@ pub fn rt_gc_safepoint() {
   }
 }
 
+/// Fast-path check used by compiler-inserted loop backedge polls.
+///
+/// Returns `true` when a stop-the-world safepoint is currently requested.
+///
+/// This must remain a *leaf* (no calls) so codegen can mark it as
+/// `"gc-leaf-function"` and keep the fast path free of statepoints.
+#[inline(always)]
+pub fn rt_gc_poll() -> bool {
+  let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
+  (epoch & 1) != 0
+}
+
 /// Rust implementation of the safepoint slow path.
 ///
 /// This is called via the architecture-specific assembly shim `rt_gc_safepoint_slow`, which

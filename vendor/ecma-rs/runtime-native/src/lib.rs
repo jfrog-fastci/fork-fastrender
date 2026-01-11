@@ -390,6 +390,7 @@ mod tests {
       "void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);",
       "void rt_gc_safepoint(void);",
       "void rt_gc_safepoint_slow(uint64_t epoch);",
+      "bool rt_gc_poll(void);",
       "void rt_write_barrier(uint8_t* obj, uint8_t* slot);",
       "void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);",
       "void rt_gc_collect(void);",
@@ -448,6 +449,7 @@ mod tests {
       crate::shape_table::rt_register_shape_table;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _slow: unsafe extern "C" fn(u64) = rt_gc_safepoint_slow;
+    let _gc_poll: extern "C" fn() -> bool = rt_gc_poll;
     let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
     let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) = rt_write_barrier_range;
     let _collect: extern "C" fn() = rt_gc_collect;
@@ -496,6 +498,7 @@ mod tests {
       _register_shape_table,
       _safepoint,
       _slow,
+      _gc_poll,
       _write_barrier,
       _write_barrier_range,
       _collect,

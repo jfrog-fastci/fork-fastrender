@@ -87,6 +87,14 @@ pub extern "C" fn rt_gc_safepoint() {
   crate::threading::safepoint::rt_gc_safepoint();
 }
 
+/// Cheap leaf poll used by compiler-inserted loop backedge safepoints.
+///
+/// Returns `true` if a stop-the-world safepoint is currently requested.
+#[no_mangle]
+pub extern "C" fn rt_gc_poll() -> bool {
+  crate::threading::safepoint::rt_gc_poll()
+}
+
 /// LLVM `place-safepoints` poll function.
 ///
 /// LLVM's `place-safepoints` pass inserts calls to a symbol named
