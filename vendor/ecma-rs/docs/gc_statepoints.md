@@ -135,6 +135,9 @@ Where:
 - `<NumCallArgs>` is the number of normal call arguments in `<call args...>`.
 - `<Flags>` is the `gc.statepoint` `flags` immarg (native-js currently emits `0`; LLVM 18 accepts `0..=3`).
 - `<NumTransitionArgs>` and `<NumDeoptArgs>` are both always `0` today (but still required to be present).
+  These are the **inline** transition/deopt counts; LLVM 18 rejects non-zero values here. This is
+  separate from the stackmap record header `deopt_count` (`locations[2]`), which may be non-zero when
+  a `"deopt"(...)` operand bundle is present.
 
 #### Statepoint `<ID>` (StackMap record `patchpoint_id`)
 
