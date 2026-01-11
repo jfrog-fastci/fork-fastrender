@@ -81,6 +81,25 @@ The byte pointer itself comes from the non-moving backing store, so it is stable
 for as long as the backing store remains alive and is not detached/transferred/resized;
 pinning is what makes that lifetime explicit for async I/O.
 
+### Generated/native code: keep the owner header alive (`rt_keep_alive_gc_ref`)
+
+Even for **synchronous** operations (where pinning isn't required), compiled/native code often
+derives a raw backing-store pointer (`uint8_t*`) from a GC-managed header object
+(`ArrayBuffer`/`TypedArray`) and then executes code that may hit a GC safepoint (explicit polls,
+calls, etc.) before the last raw-pointer use.
+
+Because the raw backing-store pointer is **not** a GC reference, the compiler can otherwise treat
+the owner object as dead at the safepoint, allowing it to be collected/finalized early and freeing
+the backing store while the raw pointer is still in use.
+
+To prevent this, generated code should emit a keep-alive call after the final raw-pointer use:
+
+- runtime ABI: `rt_keep_alive_gc_ref(GcPtr owner)`
+- native-js wrapper (addrspace-safe): `rt_keep_alive_gc_ref_gc(ptr addrspace(1) owner)`
+
+This is a `NoGC` call that exists only to extend GC liveness until a specific program point (similar
+to Go's `runtime.KeepAlive`).
+
 ## Vectored I/O (`iovec[]` / `msghdr`)
 
 Some syscalls and async APIs require **descriptor structs** in addition to the underlying byte

@@ -35,6 +35,31 @@ may be missing from the emitted stackmap record.
 
 This behavior is the same for both `coreclr` and `statepoint-example`.
 
+### Derived raw pointers and owner liveness (`rt_keep_alive_gc_ref`)
+
+LLVM statepoints track **GC references** (`ptr addrspace(1)`) for relocation and liveness. A raw
+pointer derived from a GC object (for example, an `ArrayBuffer`/`TypedArray` backing-store
+`uint8_t*`) is **not** a GC reference.
+
+This means the following pattern is unsafe in optimized builds:
+
+1. load a raw backing-store pointer from a GC-managed owner object,
+2. hit a safepoint / call that may GC before the last use of the raw pointer,
+3. continue using the raw pointer.
+
+If the compiler decides the owner GC reference is dead at the safepoint (because the only remaining
+uses are via the raw pointer), the GC may collect/finalize the owner early, freeing the backing
+store while the raw pointer is still in use.
+
+To prevent this, generated code must keep the **owner GC reference** live until after the last raw
+pointer use by inserting a keep-alive call at the end of the region:
+
+- runtime ABI: `void rt_keep_alive_gc_ref(GcPtr gc_ref);`
+- native-js wrapper (addrspace-safe): `void rt_keep_alive_gc_ref_gc(ptr addrspace(1));`
+
+This is the native equivalent of Go's `runtime.KeepAlive`: it is a `NoGC` call that exists purely
+to extend liveness; it must be emitted **after** the final use of the derived raw pointer.
+
 ### Runtime ABI safety rule: MayGC calls must not take raw GC pointers
 
 Even if the *caller* wraps a runtime call in an LLVM statepoint, the runtime function itself may
