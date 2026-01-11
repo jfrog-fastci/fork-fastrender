@@ -1046,16 +1046,16 @@ impl StackMaps {
   /// Parse the in-memory stackmaps section using linker-defined boundary symbols.
   ///
   /// This requires the final linked binary to contain a stackmaps section
-  /// (`.llvm_stackmaps` or `.data.rel.ro.llvm_stackmaps`) and define:
+  /// (`.llvm_stackmaps` or `.data.rel.ro.llvm_stackmaps`) and define one of the
+  /// boundary-symbol pairs below:
   ///
-  /// - `__start_llvm_stackmaps`
-  /// - `__stop_llvm_stackmaps`
+  /// - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
+  /// - `__stackmaps_start` / `__stackmaps_end`
   ///
   /// These symbols are provided by `runtime-native/link/stackmaps.ld` (and are
   /// `KEEP`ed so `--gc-sections` does not discard the section).
   ///
-  /// The linker script also defines compatibility aliases:
-  /// - `__stackmaps_{start,end}`
+  /// The linker script also defines legacy project aliases:
   /// - `__fastr_stackmaps_{start,end}`
   /// - `__llvm_stackmaps_{start,end}`
   ///

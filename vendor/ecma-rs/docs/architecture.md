@@ -146,8 +146,8 @@ other crates use this for structured errors and spans.
     an `inkwell` module (including `_with_statepoints` helpers that run
     `rewrite-statepoints-for-gc` before emitting objects/asm).
   - `native_js::link` provides stackmap-aware ELF linking helpers and exports
-    `__start_llvm_stackmaps`/`__stop_llvm_stackmaps` (plus aliases like
-    `__fastr_stackmaps_start/end`) so the runtime can locate `.llvm_stackmaps` in memory.
+    `__stackmaps_start/end` (plus compat aliases like `__start_llvm_stackmaps/__stop_llvm_stackmaps`
+    and `__fastr_stackmaps_start/end`) so the runtime can locate `.llvm_stackmaps` in memory.
   - `native_js::compile_program` is the typechecked compilation entrypoint used by the
     `native-js` CLI binary (and by `native-js-cli --pipeline checked`).
   - `native_js::compile_typescript_to_llvm_ir` / `native_js::compile_project_to_llvm_ir` are

@@ -56,10 +56,14 @@ bash vendor/ecma-rs/scripts/native_link.sh -o myapp <objs...>
 `native-js` users should prefer the Rust API helpers in `native_js::link`, which
 always inject a linker-script fragment and export:
 
+- `__stackmaps_start`
+- `__stackmaps_end`
 - `__start_llvm_stackmaps`
 - `__stop_llvm_stackmaps`
 - `__fastr_stackmaps_start`
 - `__fastr_stackmaps_end`
+- `__llvm_stackmaps_start`
+- `__llvm_stackmaps_end`
 
 For linking arbitrary programs against `runtime-native` (e.g. from C), see:
 

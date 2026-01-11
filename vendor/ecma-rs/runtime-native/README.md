@@ -122,10 +122,10 @@ clang-18 -fuse-ld=lld-18 \
 
 If your program uses LLVM statepoints / stackmaps (i.e. it contains an
 in-memory `.llvm_stackmaps` section) and you want the runtime to be able to
-locate it for stack walking, you must also export the boundary symbols:
+locate it for stack walking, you must also export stackmap boundary symbols, e.g.:
 
-- `__start_llvm_stackmaps`
-- `__stop_llvm_stackmaps`
+- `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
+- `__stackmaps_start` / `__stackmaps_end` (generic alias used by tooling)
 
 Note: when linking multiple object files that each contain `.llvm_stackmaps`,
 ELF linkers concatenate the section payloads. The resulting output section can
@@ -133,11 +133,10 @@ contain **multiple independent StackMap v3 blobs** back-to-back. The runtime’s
 parser (`runtime_native::stackmaps::StackMaps::parse`) handles this by scanning
 all blobs and building one callsite index.
 
-The `runtime-native/link/stackmaps.ld` linker script fragment defines these symbols and also
-provides aliases:
+The `runtime-native/link/stackmaps.ld` linker script fragment defines all of these symbols and
+also provides legacy aliases:
 
-- `__stackmaps_{start,end}` (generic alias)
-- `__fastr_stackmaps_{start,end}` and `__llvm_stackmaps_{start,end}` (legacy aliases)
+- `__fastr_stackmaps_{start,end}` and `__llvm_stackmaps_{start,end}`
 
 `runtime-native/stackmaps.ld` is kept for backwards compatibility with older build scripts.
 

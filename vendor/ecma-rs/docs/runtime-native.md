@@ -24,9 +24,9 @@ without having to reverse-engineer assumptions from codegen.
 >   - rewrite input objects to rename `.llvm_stackmaps` / `.llvm_faultmaps` →
 >     `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps`
 >     (via `llvm-objcopy --rename-section ...`)
->   - retain the section + export `__start_llvm_stackmaps/__stop_llvm_stackmaps`
->     (plus aliases like `__fastr_stackmaps_start/__fastr_stackmaps_end`) via a tiny linker-script
->     fragment.
+>   - retain the section + export `__stackmaps_start/__stackmaps_end`
+>     (plus compat aliases like `__start_llvm_stackmaps/__stop_llvm_stackmaps` and
+>     `__fastr_stackmaps_start/__fastr_stackmaps_end`) via a tiny linker-script fragment.
 >
 > See: `scripts/native_js_link_linux.sh` and `runtime-native/link/stackmaps.ld`
 > (`runtime-native/stackmaps.ld` is a compatibility alias).

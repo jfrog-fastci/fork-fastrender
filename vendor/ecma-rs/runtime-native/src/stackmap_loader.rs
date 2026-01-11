@@ -17,15 +17,17 @@ const STACKMAP_SECTION_NAMES: [&str; 3] = [
 ///
 /// Prefer symbol-based discovery when present because section headers may be stripped.
 ///
-/// - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` are stable boundary symbols defined by the
-///   linker-script fragments in:
+/// This repo's linker scripts define stable boundary symbols:
+/// - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
 ///   - `runtime-native/link/stackmaps.ld` (lld-friendly)
 ///   - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening)
-/// - `__stackmaps_{start,end}` is a generic alias used by `llvm-stackmaps` and other tooling.
-/// - `__fastr_stackmaps_*` / `__llvm_stackmaps_*` are legacy/project-specific aliases.
+///
+/// They also define aliases:
+/// - `__stackmaps_{start,end}` (generic alias used by `llvm-stackmaps` and other tooling)
+/// - `__fastr_stackmaps_*` / `__llvm_stackmaps_*` (legacy project-specific aliases)
 const STACKMAP_SYMBOL_RANGES: [(&str, &str); 4] = [
-  ("__start_llvm_stackmaps", "__stop_llvm_stackmaps"),
   ("__stackmaps_start", "__stackmaps_end"),
+  ("__start_llvm_stackmaps", "__stop_llvm_stackmaps"),
   ("__fastr_stackmaps_start", "__fastr_stackmaps_end"),
   ("__llvm_stackmaps_start", "__llvm_stackmaps_end"),
 ];
@@ -78,7 +80,7 @@ pub struct StackMapBlob {
 /// Find the stackmap data in an ELF/Mach-O/COFF file.
 ///
 /// Discovery order:
-/// 1. Linker-script start/stop symbols (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps`)
+/// 1. Linker-script boundary symbols (preferred: `__stackmaps_start` / `__stackmaps_end`)
 /// 2. Section name lookup for known section names
 pub fn find_stackmap_section<'a>(
   file_bytes: &'a [u8],

@@ -169,7 +169,8 @@ The API is intentionally small and currently consists of:
   - `link::link_object_buffers_to_elf_executable(...)`
   - `link::LinkOpts` (defaults to non-PIE on Linux to avoid stackmap relocation issues)
   - exported symbols: `link::LLVM_STACKMAPS_START_SYM` / `link::LLVM_STACKMAPS_STOP_SYM`
-    (the injected linker script also defines aliases like `__fastr_stackmaps_start/end`)
+    (the injected linker script also defines the generic alias `__stackmaps_start/end` and legacy
+    aliases like `__fastr_stackmaps_start/end`)
 - `validate::validate_strict_subset(...)`: validator for the **strict compilation
   subset** currently supported by the native backend (syntax + type restrictions;
   used by the `native-js` binary in `native-js-cli`).

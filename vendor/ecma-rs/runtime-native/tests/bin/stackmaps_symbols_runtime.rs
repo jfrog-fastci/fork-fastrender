@@ -4,9 +4,9 @@ use runtime_native::stackmaps::StackMaps;
 use runtime_native::stackmaps_loader::load_llvm_stackmaps_via_symbols;
 
 #[test]
-fn loads_stackmaps_via_start_stop_symbols() {
+fn loads_stackmaps_via_linker_symbols() {
   let bytes = load_llvm_stackmaps_via_symbols()
-    .expect("linker-defined __start_llvm_stackmaps/__stop_llvm_stackmaps should be present");
+    .expect("linker-defined __stackmaps_start/__stackmaps_end should be present");
   assert!(
     !bytes.is_empty(),
     "expected non-empty .llvm_stackmaps section when using the linker script"
