@@ -1029,13 +1029,27 @@ fn compute_font_relative_metrics(
 
     let authored_variations =
       style_for_variations.map(crate::text::variations::authored_variations_from_style);
-    let variations: Vec<Variation> = match (style_for_variations, authored_variations.as_deref()) {
+    let mut variations: Vec<Variation> = match (style_for_variations, authored_variations.as_deref()) {
       (Some(style), Some(authored)) => crate::text::face_cache::with_face(&font, |face| {
         crate::text::variations::collect_variations_for_face(face, style, &font, font_size, authored)
       })
       .unwrap_or_else(|| authored.to_vec()),
       _ => Vec::new(),
     };
+
+    if let (Some(style), Some(authored)) = (style_for_variations, authored_variations.as_deref()) {
+      let opsz_tag = Tag::from_bytes(b"opsz");
+      let authored_opsz = authored.iter().any(|v| v.tag == opsz_tag);
+      if !authored_opsz
+        && matches!(
+          style.font_optical_sizing,
+          crate::style::types::FontOpticalSizing::Auto
+        )
+      {
+        variations.retain(|v| v.tag != opsz_tag);
+      }
+    }
+
     let coords: Vec<(Tag, f32)> = variations.iter().map(|v| (v.tag, v.value)).collect();
 
     let used_size = compute_font_size_adjusted_size(font_size, font_size_adjust, &font, None);
