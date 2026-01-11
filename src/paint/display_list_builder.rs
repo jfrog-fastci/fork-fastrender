@@ -14774,6 +14774,19 @@ mod tests {
     }
   }
 
+  fn shaped_run_for_char_with_direction(
+    font: Arc<crate::text::font_db::LoadedFont>,
+    ch: char,
+    font_size: f32,
+    direction: crate::text::pipeline::Direction,
+    level: u8,
+  ) -> ShapedRun {
+    let mut run = shaped_run_for_char(font, ch, font_size);
+    run.direction = direction;
+    run.level = level;
+    run
+  }
+
   #[test]
   fn background_clip_text_emits_text_clip_item() {
     let font = test_font();
@@ -14844,6 +14857,99 @@ mod tests {
     assert!(
       found,
       "expected background-clip:text to push a text clip around background-color paints"
+    );
+  }
+
+  #[test]
+  fn background_clip_text_rtl_clip_origin_matches_text_origin() {
+    let font = test_font();
+    let cached_face = face_cache::get_ttf_face(font.as_ref()).expect("parse test font");
+    let face = cached_face.face();
+    let ch = ['W', 'O', 'F', '2']
+      .iter()
+      .copied()
+      .find(|ch| face.glyph_index(*ch).is_some())
+      .expect("expected test font to contain at least one ASCII glyph");
+
+    let run = shaped_run_for_char_with_direction(
+      Arc::clone(&font),
+      ch,
+      16.0,
+      crate::text::pipeline::Direction::RightToLeft,
+      1,
+    );
+    assert!(
+      run.direction.is_rtl() && run.advance > 0.0,
+      "expected an RTL run with positive advance for regression coverage"
+    );
+    let runs: Arc<Vec<ShapedRun>> = Arc::new(vec![run]);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let text_contents = ch.to_string();
+    let text = FragmentNode::new_text_shaped(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      text_contents,
+      14.0,
+      runs,
+      Arc::clone(&text_style),
+    );
+
+    let mut bg_style = ComputedStyle::default();
+    bg_style.background_color = Rgba::rgb(255, 0, 0);
+    let mut layer = BackgroundLayer::default();
+    layer.clip = BackgroundBox::Text;
+    bg_style.background_layers = vec![layer].into();
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 200.0, 60.0),
+      vec![text],
+      Arc::new(bg_style),
+    );
+
+    let builder = DisplayListBuilder::new();
+    let tree = FragmentTree::new(fragment);
+    let list = builder.build_tree(&tree);
+
+    let items = list.items();
+    let text_origin_x = items
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Text(text) => Some(text.origin.x),
+        _ => None,
+      })
+      .expect("expected a Text display item");
+
+    let mut clip_origin_x: Option<f32> = None;
+    for idx in 0..items.len().saturating_sub(2) {
+      let DisplayItem::PushClip(clip) = &items[idx] else {
+        continue;
+      };
+      let ClipShape::Text { runs } = &clip.shape else {
+        continue;
+      };
+      if runs.is_empty() {
+        continue;
+      }
+      let DisplayItem::FillRect(fill) = &items[idx + 1] else {
+        continue;
+      };
+      if fill.color != Rgba::rgb(255, 0, 0) {
+        continue;
+      }
+      if !matches!(items[idx + 2], DisplayItem::PopClip) {
+        continue;
+      }
+      clip_origin_x = Some(runs[0].origin.x);
+      break;
+    }
+
+    let clip_origin_x = clip_origin_x.expect("expected background-clip:text to emit a text clip");
+    assert!(
+      (clip_origin_x - text_origin_x).abs() < 1e-6,
+      "expected background-clip:text clip origin.x ({clip_origin_x}) to match normal text origin.x ({text_origin_x}) for RTL runs"
     );
   }
 
