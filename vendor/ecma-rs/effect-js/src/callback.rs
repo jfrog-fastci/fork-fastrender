@@ -390,11 +390,12 @@ fn analyze_known_callback_reference(
   }
 
   let sem = eval_api_call(api, &crate::eval::CallSiteInfo::default());
+  let (uses_index, uses_array) = infer_known_callback_arg_usage(api);
   Some(CallbackInfo {
     effects: sem.effects,
     purity: sem.purity,
-    uses_index: true,
-    uses_array: true,
+    uses_index,
+    uses_array,
   })
 }
 
@@ -1439,6 +1440,85 @@ fn pat_binds_text(body: &Body, names: &hir_js::NameInterner, pat: PatId, text: &
     PatKind::AssignTarget(_) => false,
   }
 }
+
+fn infer_known_callback_arg_usage(api: &knowledge_base::Api) -> (bool, bool) {
+  let Some(signature) = api.signature.as_deref() else {
+    return (true, true);
+  };
+  let Some((param_count, has_rest)) = parse_signature_params(signature) else {
+    return (true, true);
+  };
+  if has_rest {
+    return (true, true);
+  }
+  (param_count >= 2, param_count >= 3)
+}
+
+fn parse_signature_params(signature: &str) -> Option<(usize, bool)> {
+  let start = signature.find('(')?;
+  let mut angle = 0u32;
+  let mut paren = 0u32;
+  let mut brace = 0u32;
+  let mut bracket = 0u32;
+
+  let mut count = 0usize;
+  let mut saw_any = false;
+  let mut has_rest = false;
+  let mut param_start = None::<usize>;
+
+  let bytes = signature.as_bytes();
+  let mut i = start + 1;
+  while i < bytes.len() {
+    let c = bytes[i] as char;
+    match c {
+      '<' => angle += 1,
+      '>' if angle > 0 => angle -= 1,
+      '(' => paren += 1,
+      ')' if paren > 0 => paren -= 1,
+      '{' => brace += 1,
+      '}' if brace > 0 => brace -= 1,
+      '[' => bracket += 1,
+      ']' if bracket > 0 => bracket -= 1,
+      ')' if angle == 0 && paren == 0 && brace == 0 && bracket == 0 => break,
+      ',' if angle == 0 && paren == 0 && brace == 0 && bracket == 0 => {
+        if let Some(start) = param_start.take() {
+          let end = i;
+          let text = signature[start..end].trim();
+          if !text.is_empty() {
+            saw_any = true;
+            count += 1;
+            if text.starts_with("...") {
+              has_rest = true;
+            }
+          }
+        }
+      }
+      _ => {
+        if param_start.is_none() && !c.is_whitespace() {
+          param_start = Some(i);
+        }
+      }
+    }
+    i += 1;
+  }
+
+  if let Some(start) = param_start {
+    let end = i;
+    let text = signature[start..end].trim();
+    if !text.is_empty() {
+      saw_any = true;
+      count += 1;
+      if text.starts_with("...") {
+        has_rest = true;
+      }
+    }
+  }
+
+  if !saw_any {
+    count = 0;
+  }
+  Some((count, has_rest))
+}
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1720,6 +1800,22 @@ mod tests {
 
     assert_eq!(cb.purity, Purity::Pure);
     assert!(cb.effects.contains(EffectSet::MAY_THROW));
+    assert!(!cb.uses_index);
+    assert!(!cb.uses_array);
+  }
+
+  #[test]
+  fn callback_reference_to_known_variadic_api_marks_index_and_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(Math.min);").unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert!(cb.uses_index);
+    assert!(cb.uses_array);
   }
 
   #[test]
