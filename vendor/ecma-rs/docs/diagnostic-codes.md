@@ -46,7 +46,7 @@ prefixes for planned crates) and where they come from.
 | `TC####` | `typecheck-ts` | Repo-owned type checker diagnostics (see `typecheck-ts/src/codes.rs`). |
 | `TN####` | `typecheck-ts` | Strict-native diagnostics (see `typecheck-ts/src/codes.rs`). |
 | `EFF####` | `effect-js` | Effect inference diagnostics. |
-| `NJS####` | `native-js` | Native compiler / strict-subset validation diagnostics (see `native-js/src/codes.rs`). |
+| `NJS####` | `native-js` | Native compilation / codegen pipeline diagnostics (including strict-subset validation; see `native-js/src/codes.rs`). |
 | `RTN####` | `runtime-native` | Native runtime (GC, scheduler, stdlib) diagnostics. |
 | `KB####` | `knowledge-base` | Knowledge base schema/consistency validation diagnostics. |
 | `TS####` / `TS#####` | TypeScript | Upstream `tsc` diagnostic codes used for parity. |

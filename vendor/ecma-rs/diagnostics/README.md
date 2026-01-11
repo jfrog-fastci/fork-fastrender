@@ -38,7 +38,7 @@ repo-wide policy and registry):
 - `MINIFY####`: minify tooling (e.g. benchmarks)
 - `EMIT####`: `emit-js` emitter
 - `EFF####`: `effect-js` effect inference
-- `NJS####`: `native-js` native compilation backend (LLVM)
+- `NJS####`: `native-js` native compilation / codegen pipeline (LLVM)
 - `RTN####`: `runtime-native` native runtime
 - `KB####`: `knowledge-base` tooling
 - `VMJS####`: `vm-js` JavaScript interpreter
