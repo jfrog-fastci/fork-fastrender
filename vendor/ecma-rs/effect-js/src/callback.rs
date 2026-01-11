@@ -15,34 +15,33 @@ pub struct CallbackInfo {
   pub uses_array: bool,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct CallSiteInfo {
-  pub callback: Option<CallbackInfo>,
-}
-
 pub fn callsite_info_for_args(
   lowered: &hir_js::LowerResult,
   body: BodyId,
   call_expr: ExprId,
   kb: &KnowledgeBase,
-) -> CallSiteInfo {
+) -> crate::db::CallSiteInfo {
   let Some(body_ref) = lowered.body(body) else {
-    return CallSiteInfo::default();
+    return crate::db::CallSiteInfo::default();
   };
   let Some(expr) = body_ref.exprs.get(call_expr.0 as usize) else {
-    return CallSiteInfo::default();
+    return crate::db::CallSiteInfo::default();
   };
   let ExprKind::Call(call) = &expr.kind else {
-    return CallSiteInfo::default();
+    return crate::db::CallSiteInfo::default();
   };
 
-  let callback = call
-    .args
-    .first()
-    .filter(|arg| !arg.spread)
-    .and_then(|arg| analyze_inline_callback(lowered, body, arg.expr, kb));
+  let Some(callback_expr) = call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr) else {
+    return crate::db::CallSiteInfo::default();
+  };
 
-  CallSiteInfo { callback }
+  let callback = analyze_inline_callback(lowered, body, callback_expr, kb);
+
+  crate::db::CallSiteInfo {
+    callback_is_pure: callback.map(|cb| matches!(cb.purity, Purity::Pure | Purity::Allocating)),
+    callback_uses_index: callback.map(|cb| cb.uses_index),
+    callback_uses_array: callback.map(|cb| cb.uses_array),
+  }
 }
 
 pub fn analyze_inline_callback(
@@ -627,10 +626,9 @@ mod tests {
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    let cb = info.callback.expect("callback");
-    assert!(matches!(cb.purity, Purity::Pure | Purity::Allocating));
-    assert!(!cb.uses_index);
-    assert!(cb.uses_array);
+    assert_eq!(info.callback_is_pure, Some(true));
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(true));
   }
 
   #[test]
@@ -644,9 +642,8 @@ mod tests {
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    let cb = info.callback.expect("callback");
-    assert!(matches!(cb.purity, Purity::Pure | Purity::Allocating));
-    assert!(!cb.uses_index);
-    assert!(!cb.uses_array);
+    assert_eq!(info.callback_is_pure, Some(true));
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
   }
 }
