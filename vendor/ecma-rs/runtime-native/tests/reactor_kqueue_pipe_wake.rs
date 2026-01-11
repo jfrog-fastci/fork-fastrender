@@ -26,7 +26,7 @@ use runtime_native::reactor::{Reactor, Token};
 
 #[test]
 fn pipe_waker_interrupts_poll_some_timeout() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   std::thread::spawn(move || {
@@ -51,7 +51,7 @@ fn pipe_waker_interrupts_poll_some_timeout() {
 
 #[test]
 fn pipe_waker_interrupts_poll_none_timeout() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   std::thread::spawn(move || {
@@ -79,7 +79,7 @@ fn pipe_waker_drain_no_loss_stress() {
   // This mirrors `reactor_conformance::waker_no_loss_stress`, but specifically exercises the
   // pipe-based wake path. It's sensitive to drain bugs: leaving the pipe readable breaks
   // `EV_CLEAR` edge semantics and can cause the reactor to block forever.
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   let (req_tx, req_rx) = std::sync::mpsc::channel::<()>();
