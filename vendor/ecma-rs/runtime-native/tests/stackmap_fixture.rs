@@ -6,8 +6,11 @@ use runtime_native::stackmaps::Location;
 use runtime_native::statepoints::StatepointRecord;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{gc::SimpleRememberedSet, GcHeap, StackMaps};
+use std::fs;
 use std::mem;
+use std::path::Path;
 use std::ptr;
+use std::process::{Command, Stdio};
 
 const FIXTURE_OBJ: &[u8] =
   include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/statepoint_fixture.o"));
@@ -22,8 +25,8 @@ const FIXTURE_OBJ: &[u8] =
 /// stackmap parsing / location decoding logic returns the wrong offsets.
 const EXPECTED_SP_OFFSETS: &[i32] = &[8, 16];
 
-fn fixture_stackmap_sp_offsets() -> Vec<i32> {
-  let obj = object::File::parse(FIXTURE_OBJ).expect("failed to parse statepoint_fixture.o");
+fn stackmap_sp_offsets_from_obj(obj_bytes: &[u8]) -> Vec<i32> {
+  let obj = object::File::parse(obj_bytes).expect("failed to parse stackmap fixture object");
   let section = obj
     .section_by_name(".llvm_stackmaps")
     .expect("missing .llvm_stackmaps section in fixture object");
@@ -52,6 +55,10 @@ fn fixture_stackmap_sp_offsets() -> Vec<i32> {
   offsets.sort_unstable();
   offsets.dedup();
   offsets
+}
+
+fn fixture_stackmap_sp_offsets() -> Vec<i32> {
+  stackmap_sp_offsets_from_obj(FIXTURE_OBJ)
 }
 
 fn add_signed(base: usize, offset: i32) -> Option<usize> {
@@ -230,5 +237,53 @@ fn perturbed_offsets_do_not_update_the_real_root_slots() {
   assert!(
     heap.is_in_nursery(slot_after),
     "without being enumerated as a root, the pointer should remain a nursery address"
+  );
+}
+
+fn find_llc_18() -> Option<String> {
+  for cand in ["llc-18", "llc"] {
+    let out = Command::new(cand)
+      .arg("--version")
+      .stdout(Stdio::piped())
+      .stderr(Stdio::null())
+      .output()
+      .ok()?;
+    if !out.status.success() {
+      continue;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if stdout.contains("LLVM version 18") {
+      return Some(cand.to_string());
+    }
+  }
+  None
+}
+
+#[test]
+#[ignore]
+fn llvm18_can_regenerate_fixture_and_offsets_match() {
+  let Some(llc) = find_llc_18() else {
+    eprintln!("skipping: unable to locate LLVM 18 llc (`llc-18` or `llc` w/ version 18)");
+    return;
+  };
+
+  let td = tempfile::tempdir().expect("create tempdir");
+  let out_obj = td.path().join("statepoint_fixture.o");
+  let ll_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/statepoint_fixture.ll");
+
+  let status = Command::new(&llc)
+    .args(["-O0", "-filetype=obj", "-o"])
+    .arg(&out_obj)
+    .arg(&ll_path)
+    .status()
+    .expect("spawn llc");
+  assert!(status.success(), "{llc} failed with status {status}");
+
+  let obj_bytes = fs::read(&out_obj).expect("read regenerated object");
+  let offsets = stackmap_sp_offsets_from_obj(&obj_bytes);
+  assert_eq!(
+    offsets,
+    EXPECTED_SP_OFFSETS,
+    "LLVM-generated stackmap offsets differed; update the checked-in fixture and EXPECTED_SP_OFFSETS if LLVM changes"
   );
 }
