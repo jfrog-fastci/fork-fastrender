@@ -17,7 +17,7 @@ use std::sync::Arc;
 use url::Url;
 use vm_js::{
   HostDefined, ImportMetaProperty, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
-  ModuleRequest, PromiseState, PropertyKey, Scope, Value, Vm, VmError, VmHostHooks,
+  ModuleRequest, PromiseState, PropertyKey, RootId, Scope, Value, Vm, VmError, VmHostHooks,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,18 +161,17 @@ impl VmJsModuleLoader {
     entry: EntryModule<'_>,
     import_map_state: Option<&mut ImportMapState>,
   ) -> Result<Value> {
-    let VmJsModuleLoader {
-      fetcher,
-      document_url,
-      document_origin,
-      module_graph,
-      module_id_by_url,
-      module_url_by_id,
-      module_base_url_by_id,
-    } = self;
-    let fetcher = Arc::clone(fetcher);
-    let document_url = document_url.clone();
-    let document_origin = document_origin.clone();
+    let fetcher = Arc::clone(&self.fetcher);
+    let document_url = self.document_url.clone();
+    let document_origin = self.document_origin.clone();
+
+    // Store a stable pointer to the module graph so we can avoid holding an `&mut ModuleGraph`
+    // borrow across microtask checkpoints. Promise reactions for module top-level await run as
+    // microtasks and access the graph via `Vm::module_graph_ptr`.
+    let module_graph_ptr: *mut ModuleGraph = &mut self.module_graph;
+    let module_id_by_url = &mut self.module_id_by_url;
+    let module_url_by_id = &mut self.module_url_by_id;
+    let module_base_url_by_id = &mut self.module_base_url_by_id;
 
     with_event_loop(event_loop, move || {
       let options = {
@@ -195,121 +194,277 @@ impl VmJsModuleLoader {
         import_map_state,
       };
 
-      // Attach the loader's module graph to the VM while we load + evaluate modules *and* while we
-      // drain the post-evaluation microtask checkpoint. This ensures dynamic `import()` continues
-      // to work for Promise jobs queued during module evaluation.
+      // Attach the loader's module graph to the VM while we load + evaluate modules and while we
+      // drain microtask checkpoints. This ensures dynamic `import()` works in Promise jobs queued
+      // during module evaluation.
       let mut module_graph_guard: Option<VmModuleGraphGuard> = None;
-      let mut hooks_finish_err: Option<Error> = None;
 
-      // Borrow-split: the VM needs `&mut ModuleGraph`, while module loading uses the hooks' maps.
-      // Module evaluation also needs both the embedder `VmHost` and the `WindowRealm`.
-      // Pass the real embedder `VmHost` context into module evaluation (same as `WindowHost`'s
-      // classic-script path). This avoids dummy-host indirection and keeps downcasting reliable.
-      let outcome: Result<Value> = {
-        let (vm_host, window_realm) = host.vm_host_and_window_realm();
-        let budget = window_realm.vm_budget_now();
-        let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
-        let mut vm = vm.push_budget(budget);
-        module_graph_guard = Some(VmModuleGraphGuard::new(&mut vm, module_graph));
-        let global_object = realm.global_object();
-        let realm_id = realm.id();
+      // Track the entry module so we can abort an in-progress top-level await evaluation if the
+      // evaluation promise remains pending after draining microtasks.
+      let mut entry_module: Option<ModuleId> = None;
 
-        let tick_result: std::result::Result<(), VmError> = vm.tick();
-        let outcome: Result<Value> = match tick_result {
-          Ok(()) => {
-            // First: fetch/parse the entry module and load its static dependency graph.
-            let mut entry_module: Option<ModuleId> = None;
-            let mut outcome: Result<Value> = Ok(Value::Undefined);
+      // Persistent roots for module-loading/evaluation promises while we run microtasks.
+      let mut load_promise: Option<Value> = None;
+      let mut load_promise_root: Option<RootId> = None;
+      let mut eval_promise: Option<Value> = None;
+      let mut eval_promise_root: Option<RootId> = None;
 
-            {
-              let mut scope = heap.scope();
-              let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
-                EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(
-                  &mut vm,
-                  &mut scope,
-                  module_graph,
-                  url,
-                  Some(hooks.document_url),
-                ),
-                EntryModule::Inline {
-                  url,
-                  base_url,
-                  source_text,
-                } => {
-                  hooks.get_or_parse_inline_module(&mut vm, &mut scope, module_graph, url, base_url, source_text)
+      let mut outcome: Result<Value> = Ok(Value::Undefined);
+
+      // Phase 1: fetch/parse the entry module and load its static dependency graph.
+      if outcome.is_ok() {
+        let load_result: std::result::Result<(), Error> = (|| {
+          let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+          let budget = window_realm.vm_budget_now();
+          let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
+          let mut vm = vm.push_budget(budget);
+
+          if module_graph_guard.is_none() {
+            // SAFETY: `module_graph_ptr` points to `self.module_graph`, which lives for the duration
+            // of this `evaluate_module_entry` call.
+            let module_graph = unsafe { &mut *module_graph_ptr };
+            module_graph_guard = Some(VmModuleGraphGuard::new(&mut vm, module_graph));
+          }
+
+          // Ensure immediate termination when no budget remains (deadline exceeded, interrupted, etc).
+          vm.tick()
+            .map_err(|err| vm_error_to_error_with_fresh_scope(heap, err))?;
+
+          let mut scope = heap.scope();
+          // SAFETY: see above.
+          let module_graph = unsafe { &mut *module_graph_ptr };
+
+          let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
+            EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(
+              &mut vm,
+              &mut scope,
+              module_graph,
+              url,
+              Some(hooks.document_url),
+            ),
+            EntryModule::Inline {
+              url,
+              base_url,
+              source_text,
+            } => hooks.get_or_parse_inline_module(
+              &mut vm,
+              &mut scope,
+              module_graph,
+              url,
+              base_url,
+              source_text,
+            ),
+          };
+
+          let entry_id = match entry_id_result {
+            Ok(id) => id,
+            Err(err) => return Err(vm_error_to_error_in_scope(&mut scope, err)),
+          };
+
+          hooks.module_depths.insert(entry_id, 0);
+
+          let load_promise_value = vm_js::load_requested_modules(
+            &mut vm,
+            &mut scope,
+            module_graph,
+            &mut hooks,
+            entry_id,
+            HostDefined::default(),
+          )
+          .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+
+          // Root the promise across a possible microtask checkpoint.
+          scope
+            .push_root(load_promise_value)
+            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+          let root = scope
+            .heap_mut()
+            .add_root(load_promise_value)
+            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+
+          load_promise = Some(load_promise_value);
+          load_promise_root = Some(root);
+          entry_module = Some(entry_id);
+
+          // If the graph-loading promise is already settled, we can remove the root immediately.
+          // Otherwise, keep it rooted and allow one microtask checkpoint to settle.
+          match ensure_promise_fulfilled(&mut scope, load_promise_value) {
+            Ok(()) => {
+              scope.heap_mut().remove_root(root);
+              load_promise = None;
+              load_promise_root = None;
+            }
+            Err(err) => {
+              // `ensure_promise_fulfilled` returns `VmError::Unimplemented` specifically for pending
+              // promises. Defer handling until after a microtask checkpoint.
+              if !matches!(err, VmError::Unimplemented(_)) {
+                scope.heap_mut().remove_root(root);
+                load_promise = None;
+                load_promise_root = None;
+                return Err(vm_error_to_error_in_scope(&mut scope, err));
+              }
+            }
+          }
+          Ok(())
+        })();
+
+        if let Err(err) = load_result {
+          outcome = Err(err);
+        }
+      }
+
+      // Allow module graph loading to settle via microtasks (e.g. promise reactions).
+      if outcome.is_ok() {
+        if let (Some(load_promise_value), Some(load_root)) =
+          (load_promise.take(), load_promise_root.take())
+        {
+          let microtask_result = current_event_loop_mut::<Host>()
+            .expect("expected current event loop to be installed by with_event_loop")
+            .perform_microtask_checkpoint(host);
+          if let Err(err) = microtask_result {
+            outcome = Err(err);
+          }
+
+          let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+          let heap = window_realm.heap_mut();
+          let mut scope = heap.scope();
+          if outcome.is_ok() {
+            if let Err(err) = ensure_promise_fulfilled(&mut scope, load_promise_value) {
+              outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
+            }
+          }
+          scope.heap_mut().remove_root(load_root);
+        }
+      }
+
+      // Phase 2: link + evaluate.
+      if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
+        let eval_result: std::result::Result<(), Error> = (|| {
+          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          let budget = window_realm.vm_budget_now();
+          let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
+          let mut vm = vm.push_budget(budget);
+
+          vm.tick()
+            .map_err(|err| vm_error_to_error_with_fresh_scope(heap, err))?;
+
+          let mut scope = heap.scope();
+          // SAFETY: see above.
+          let module_graph = unsafe { &mut *module_graph_ptr };
+          let promise = module_graph
+            .evaluate_with_scope(
+              &mut vm,
+              &mut scope,
+              realm.global_object(),
+              realm.id(),
+              entry_id,
+              vm_host,
+              &mut hooks,
+            )
+            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+
+          // Root the promise across a possible microtask checkpoint.
+          scope
+            .push_root(promise)
+            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+          let root = scope
+            .heap_mut()
+            .add_root(promise)
+            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+
+          eval_promise = Some(promise);
+          eval_promise_root = Some(root);
+
+          // If the evaluation promise is already settled, we can remove the root immediately.
+          // Otherwise, keep it rooted and allow one microtask checkpoint to settle (top-level await
+          // via Promise jobs).
+          match ensure_promise_fulfilled(&mut scope, promise) {
+            Ok(()) => {
+              scope.heap_mut().remove_root(root);
+              eval_promise = None;
+              eval_promise_root = None;
+              outcome = Ok(promise);
+            }
+            Err(err) => {
+              if !matches!(err, VmError::Unimplemented(_)) {
+                scope.heap_mut().remove_root(root);
+                eval_promise = None;
+                eval_promise_root = None;
+                return Err(vm_error_to_error_in_scope(&mut scope, err));
+              }
+            }
+          }
+
+          Ok(())
+        })();
+
+        if let Err(err) = eval_result {
+          outcome = Err(err);
+        }
+      }
+
+      // Allow module evaluation to settle via microtasks (top-level await).
+      if outcome.is_ok() {
+        if let (Some(eval_promise_value), Some(eval_root), Some(entry_id)) = (
+          eval_promise.take(),
+          eval_promise_root.take(),
+          entry_module,
+        ) {
+          let mut abort_async_eval = false;
+
+          let microtask_result = current_event_loop_mut::<Host>()
+            .expect("expected current event loop to be installed by with_event_loop")
+            .perform_microtask_checkpoint(host);
+          if let Err(err) = microtask_result {
+            abort_async_eval = true;
+            outcome = Err(err);
+          }
+
+          {
+            let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+            let heap = window_realm.heap_mut();
+            let mut scope = heap.scope();
+            if outcome.is_ok() {
+              match ensure_promise_fulfilled(&mut scope, eval_promise_value) {
+                Ok(()) => {
+                  outcome = Ok(eval_promise_value);
                 }
-              };
-
-              let entry_id = match entry_id_result {
-                Ok(id) => Some(id),
                 Err(err) => {
+                  abort_async_eval = matches!(err, VmError::Unimplemented(_));
                   outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-                  None
-                }
-              };
-
-              if let (Ok(_), Some(entry_id)) = (&outcome, entry_id) {
-                hooks.module_depths.insert(entry_id, 0);
-                let load_promise = match vm_js::load_requested_modules(
-                  &mut vm,
-                  &mut scope,
-                  module_graph,
-                  &mut hooks,
-                  entry_id,
-                  HostDefined::default(),
-                ) {
-                  Ok(p) => p,
-                  Err(err) => {
-                    outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-                    Value::Undefined
-                  }
-                };
-
-                if outcome.is_ok() {
-                  if let Err(err) = ensure_promise_fulfilled(&mut scope, load_promise) {
-                    outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-                  } else {
-                    entry_module = Some(entry_id);
-                  }
                 }
               }
             }
-
-            // Second: link + evaluate.
-            if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
-              let mut scope = heap.scope();
-              let eval_result: std::result::Result<Value, VmError> = (|| {
-                module_graph.evaluate_sync_with_scope(
-                  &mut vm,
-                  &mut scope,
-                  global_object,
-                  realm_id,
-                  entry_id,
-                  vm_host,
-                  &mut hooks,
-                )?;
-
-                // Return a fulfilled Promise for API compatibility with the previous
-                // `ModuleGraph::evaluate`-based implementation.
-                let promise_prototype = realm.intrinsics().promise_prototype();
-                let promise = scope.alloc_promise_with_prototype(Some(promise_prototype))?;
-                scope.heap_mut().promise_fulfill(promise, Value::Undefined)?;
-                Ok(Value::Object(promise))
-              })();
-
-              outcome = match eval_result {
-                Ok(value) => Ok(value),
-                Err(err) => Err(vm_error_to_error_in_scope(&mut scope, err)),
-              };
-            }
-
-            outcome
+            scope.heap_mut().remove_root(eval_root);
           }
-          Err(err) => Err(vm_error_to_error_with_fresh_scope(heap, err)),
-        };
 
-        hooks_finish_err = hooks.finish(heap);
-        outcome
+          if abort_async_eval {
+            let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+            let budget = window_realm.vm_budget_now();
+            let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
+            let mut vm = vm.push_budget(budget);
+            // SAFETY: see above.
+            let module_graph = unsafe { &mut *module_graph_ptr };
+            module_graph.abort_tla_evaluation(&mut vm, heap, entry_id);
+          }
+        }
+      }
+
+      // Final cleanup: ensure any promise roots are removed even on error.
+      {
+        let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+        let heap = window_realm.heap_mut();
+        if let Some(root) = load_promise_root.take() {
+          heap.remove_root(root);
+        }
+        if let Some(root) = eval_promise_root.take() {
+          heap.remove_root(root);
+        }
+      }
+
+      let hooks_finish_err = {
+        let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+        hooks.finish(window_realm.heap_mut())
       };
 
       // HTML: after executing a script/module, perform a microtask checkpoint.

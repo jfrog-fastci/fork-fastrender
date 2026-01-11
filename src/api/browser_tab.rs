@@ -113,6 +113,18 @@ pub trait BrowserTabJsExecutor {
     Ok(())
   }
 
+  /// Called by the host after it drains the microtask queue ("perform a microtask checkpoint").
+  ///
+  /// This lets JS executors finalize work that is expected to settle via Promise jobs/microtasks
+  /// (for example, module top-level await that resumes via `Promise.then` reactions).
+  fn after_microtask_checkpoint(
+    &mut self,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    Ok(())
+  }
+
   /// Returns and clears any navigation request emitted by the JS embedding (for example via
   /// `window.location.href = ...`).
   fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -491,6 +503,17 @@ impl BrowserTabHost {
     let result = crate::js::with_document_write_state(&mut state, || f(self));
     self.document_write_state = state;
     result
+  }
+
+  fn perform_microtask_checkpoint_and_notify_executor(
+    &mut self,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))?;
+    // Allow the executor to observe Promise-job side effects that only become visible after the
+    // microtask queue is drained (e.g. module evaluation promises for top-level await).
+    let (executor, document) = (&mut self.executor, &mut self.document);
+    executor.after_microtask_checkpoint(document.as_mut(), event_loop)
   }
 
   fn register_html_source(&mut self, url: String, html: String) {
@@ -1078,7 +1101,7 @@ impl BrowserTabHost {
 
             let microtask_err = if self.js_execution_depth.get() == 0 {
               self
-                .with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))
+                .perform_microtask_checkpoint_and_notify_executor(event_loop)
                 .err()
             } else {
               None
@@ -1192,7 +1215,7 @@ impl BrowserTabHost {
             // the final `ScriptElementSpec`.
             if self.js_execution_depth.get() == 0 {
               with_active_streaming_parser(&state.parser, || {
-                self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))
+                self.perform_microtask_checkpoint_and_notify_executor(event_loop)
               })?;
             }
             if self.pending_navigation.is_some() {
@@ -1662,7 +1685,7 @@ impl BrowserTabHost {
     // end-tag boundary (before we compute the final `ScriptElementSpec`). Avoid duplicating the
     // checkpoint here during an active streaming parse.
     if spec.parser_inserted && !self.streaming_parse_active && self.js_execution_depth.get() == 0 {
-      self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))?;
+      self.perform_microtask_checkpoint_and_notify_executor(event_loop)?;
     }
 
     // HTML: "prepare the script element" can return early without executing the script (e.g.
@@ -2046,7 +2069,7 @@ impl BrowserTabHost {
 
           let microtask_err = if should_checkpoint && self.js_execution_depth.get() == 0 {
             self
-              .with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))
+              .perform_microtask_checkpoint_and_notify_executor(event_loop)
               .err()
           } else {
             None
@@ -2154,7 +2177,7 @@ impl BrowserTabHost {
 
             let microtask_err = if host.js_execution_depth.get() == 0 {
               host
-                .with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))
+                .perform_microtask_checkpoint_and_notify_executor(event_loop)
                 .err()
             } else {
               None
@@ -2965,7 +2988,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
     // If parsing completion is signalled from outside an event-loop task turn, perform a microtask
     // checkpoint immediately *only* when we are not currently executing JS.
     if event_loop.currently_running_task().is_none() && self.js_execution_depth.get() == 0 {
-      event_loop.perform_microtask_checkpoint(self)?;
+      self.perform_microtask_checkpoint_and_notify_executor(event_loop)?;
     }
 
     Ok(())
@@ -9360,6 +9383,80 @@ html, body { margin: 0; padding: 0; }
       dom.get_attribute(body, "data-top-level-this-undefined")
         .expect("get_attribute should succeed"),
       Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_top_level_await_promise_resolve_settles_via_microtasks() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          await Promise.resolve();
+          document.body.setAttribute("data-tla", "1");
+        </script>
+      </body>"#,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-tla")
+        .expect("get_attribute should succeed"),
+      Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_top_level_await_that_never_settles_errors_deterministically() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut options = RenderOptions::default();
+    options.diagnostics_level = crate::api::DiagnosticsLevel::Basic;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          await new Promise(() => {});
+          document.body.setAttribute("data-never", "1");
+        </script>
+      </body>"#,
+      options,
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-never")
+        .expect("get_attribute should succeed"),
+      None
+    );
+
+    let diagnostics = tab
+      .diagnostics
+      .as_ref()
+      .expect("diagnostics should be enabled")
+      .clone()
+      .into_inner();
+    assert!(
+      diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc.message.contains("asynchronous module loading/evaluation is not supported")),
+      "expected async module evaluation failure to be reported, got js_exceptions={:?}",
+      diagnostics.js_exceptions
     );
     Ok(())
   }

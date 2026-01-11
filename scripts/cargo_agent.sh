@@ -278,6 +278,16 @@ if [[ "${needs_frame_pointers}" -eq 1 && "${RUSTFLAGS:-}" != *"force-frame-point
   fi
 fi
 
+# `libaom-sys` (used for AVIF decoding) requires an assembler (yasm/nasm) for
+# optimized x86_64 builds. Our CI/agent environments don't necessarily have
+# those tools installed, which would make *any* `cargo build/test` fail.
+#
+# Use a tiny CMake toolchain file to force the portable (non-asm) libaom build
+# by default. Allow callers to override by setting `CMAKE_TOOLCHAIN_FILE`.
+if [[ -z "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
+  export CMAKE_TOOLCHAIN_FILE="${repo_root}/.cargo/aom_generic_toolchain.cmake"
+fi
+
 # Some CI/agent environments configure `build.rustc-wrapper = "sccache"` in a global Cargo config.
 # When the sccache daemon is unhealthy, it can fail *some* compilations mid-run and surface as a
 # spurious `could not compile ... process didn't exit successfully: sccache rustc ...` error.

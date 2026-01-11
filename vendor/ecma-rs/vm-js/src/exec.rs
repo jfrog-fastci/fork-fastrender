@@ -7282,6 +7282,155 @@ pub(crate) fn run_module(
   result
 }
 
+/// Result of executing a module statement list until a supported top-level `await` boundary.
+///
+/// This is used to model a minimal subset of top-level await by executing a module in "chunks"
+/// separated by `await <expr>;` expression statements (where the awaited value is resolved via
+/// Promise jobs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ModuleTlaStepResult {
+  /// The module body ran to completion (no further supported `await` statements).
+  Completed,
+  /// Execution suspended at `await <expr>;`, returning the awaited Promise and the statement index
+  /// at which execution should resume.
+  Await { promise: Value, resume_index: usize },
+}
+
+/// Executes a module's statement list starting at `start_index`, stopping when it encounters a
+/// supported top-level `await <expr>;` expression statement.
+///
+/// Notes / limitations:
+/// - This is **not** a full implementation of `await` as an expression.
+/// - Only `await` used as an expression statement is treated as a suspension point.
+/// - Other uses of `await` (e.g. in variable initializers) remain unimplemented.
+pub(crate) fn run_module_until_await(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_object: GcObject,
+  realm_id: RealmId,
+  module_id: ModuleId,
+  module_env: GcEnv,
+  source: Arc<SourceText>,
+  stmts: &[Node<Stmt>],
+  start_index: usize,
+) -> Result<ModuleTlaStepResult, VmError> {
+  if start_index >= stmts.len() {
+    return Ok(ModuleTlaStepResult::Completed);
+  }
+
+  // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
+  let exec_ctx = ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(ScriptOrModule::Module(module_id)),
+  };
+  vm.push_execution_context(exec_ctx);
+
+  let result = (|| -> Result<ModuleTlaStepResult, VmError> {
+    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+    env.set_source_info(source.clone(), 0, 0);
+
+    let result = (|| -> Result<ModuleTlaStepResult, VmError> {
+      let (line, col) = source.line_col(0);
+      let frame = StackFrame {
+        function: None,
+        source: source.name.clone(),
+        line,
+        col,
+      };
+      let mut vm_frame = vm.enter_frame(frame)?;
+
+      let mut evaluator = Evaluator {
+        vm: &mut *vm_frame,
+        host,
+        hooks,
+        env: &mut env,
+        strict: true,
+        // Per ECMA-262, module top-level `this` is `undefined`.
+        this: Value::Undefined,
+        new_target: Value::Undefined,
+      };
+
+      // Root the running completion value so it cannot be collected while evaluating subsequent
+      // statements (which may allocate and trigger GC).
+      let last_root = scope.heap_mut().add_root(Value::Undefined)?;
+      let mut last_value: Option<Value> = None;
+
+      for (idx, stmt) in stmts.iter().enumerate().skip(start_index) {
+        // Minimal top-level await support: suspend on `await <expr>;` expression statements.
+        if let Stmt::Expr(expr_stmt) = &*stmt.stx {
+          if let Expr::Unary(unary) = &*expr_stmt.stx.expr.stx {
+            if unary.stx.operator == OperatorName::Await {
+              // Clean up the per-step completion root before suspending.
+              scope.heap_mut().remove_root(last_root);
+
+              // Evaluate the awaited expression (argument) and coerce it with `PromiseResolve`.
+              let awaited_value = evaluator.eval_expr(scope, &unary.stx.argument)?;
+              let mut promise_scope = scope.reborrow();
+              promise_scope.push_root(awaited_value)?;
+              let promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
+                &mut *vm_frame,
+                &mut promise_scope,
+                host,
+                hooks,
+                awaited_value,
+              )?;
+              return Ok(ModuleTlaStepResult::Await {
+                promise,
+                resume_index: idx.saturating_add(1),
+              });
+            }
+          }
+        }
+
+        let completion = evaluator.eval_stmt(scope, stmt)?;
+        let completion = completion.update_empty(last_value);
+        match completion {
+          Completion::Normal(v) => {
+            if let Some(v) = v {
+              last_value = Some(v);
+              scope.heap_mut().set_root(last_root, v);
+            }
+          }
+          abrupt => {
+            scope.heap_mut().remove_root(last_root);
+            return Ok(match abrupt {
+              Completion::Normal(_) => unreachable!("covered above"),
+              Completion::Throw(thrown) => {
+                return Err(VmError::ThrowWithStack {
+                  value: thrown.value,
+                  stack: thrown.stack,
+                })
+              }
+              Completion::Return(_) => {
+                return Err(VmError::Unimplemented("return from module"));
+              }
+              Completion::Break(..) => {
+                return Err(VmError::Unimplemented("break outside of loop"));
+              }
+              Completion::Continue(..) => {
+                return Err(VmError::Unimplemented("continue outside of loop"));
+              }
+            });
+          }
+        }
+      }
+
+      scope.heap_mut().remove_root(last_root);
+      Ok(ModuleTlaStepResult::Completed)
+    })();
+
+    env.teardown(scope.heap_mut());
+    result
+  })();
+
+  let popped = vm.pop_execution_context();
+  debug_assert_eq!(popped, Some(exec_ctx));
+  debug_assert!(popped.is_some(), "module execution popped no execution context");
+  result
+}
+
 pub(crate) fn eval_expr(
   vm: &mut Vm,
   host: &mut dyn VmHost,

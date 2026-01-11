@@ -20,12 +20,18 @@ use crate::web::events::{Event, EventTargetId};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
-  HostDefined, ModuleGraph, ModuleId, PromiseState, SourceText, Value, VmError, VmHost,
+  GcObject, HostDefined, ModuleGraph, ModuleId, PromiseState, SourceText, Value, VmError, VmHost,
 };
 use webidl_vm_js::WebIdlBindingsHost;
 
 use super::BrowserDocumentDom2;
 use super::{BrowserTabHost, BrowserTabJsExecutor, ConsoleMessageLevel, SharedRenderDiagnostics};
+
+#[derive(Debug, Clone, Copy)]
+struct PendingModuleEvaluation {
+  module: ModuleId,
+  promise: GcObject,
+}
 
 /// `vm-js`-backed [`BrowserTabJsExecutor`] that provides a minimal `window`/`document` environment.
 ///
@@ -39,6 +45,7 @@ pub struct VmJsBrowserTabExecutor {
   js_execution_options: JsExecutionOptions,
   inline_module_id_counter: u64,
   document_url: String,
+  pending_module_evaluation: Option<PendingModuleEvaluation>,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
   /// Cached `vm-js` host context for Rust-driven event dispatch.
@@ -59,6 +66,7 @@ impl VmJsBrowserTabExecutor {
       js_execution_options: JsExecutionOptions::default(),
       inline_module_id_counter: 0,
       document_url: "about:blank".to_string(),
+      pending_module_evaluation: None,
       pending_navigation: None,
       diagnostics: None,
       vm_host: None,
@@ -131,6 +139,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     js_execution_options: JsExecutionOptions,
   ) -> Result<()> {
     self.pending_navigation = None;
+    self.pending_module_evaluation = None;
     self.diagnostics = document.shared_diagnostics();
     // `document.currentScript` is read from the embedder `VmHost` (the document) by vm-js native
     // handlers. Share the stable per-tab `CurrentScriptStateHandle` so JS observes the same
@@ -468,12 +477,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       synthesize_inline_module_url(base_url, &inline_id)
     };
 
-    let Some(realm) = self.realm.as_mut() else {
-      return Err(Error::Other(
-        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
-      ));
-    };
-
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
     let webidl_bindings_host = self.webidl_bindings_host;
@@ -482,9 +485,15 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       url: entry_specifier.clone(),
       attributes: Vec::new(),
     };
-    let module_loader = realm.module_loader_handle();
 
-    let exec_result: Result<()> = with_event_loop(event_loop, || {
+    let exec_result: Result<Option<PendingModuleEvaluation>> = with_event_loop(event_loop, || {
+      let Some(realm) = self.realm.as_mut() else {
+        return Err(Error::Other(
+          "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
+        ));
+      };
+      let module_loader = realm.module_loader_handle();
+
       update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
       realm.set_base_url(spec.base_url.clone());
       {
@@ -536,7 +545,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
                 let (message, stack) = vm_error_format::vm_error_to_message_and_stack(heap, err);
                 diag.record_js_exception(message, stack);
               }
-              return Ok(());
+              return Ok(None);
             }
             return Err(vm_error_format::vm_error_to_error(heap, err));
           }
@@ -547,7 +556,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
       let mut scope = heap.scope();
 
-      let module_result: std::result::Result<(), VmError> = (|| {
+      let module_result: std::result::Result<Option<PendingModuleEvaluation>, VmError> = (|| {
         // Load all modules in the static import graph.
         let load_promise = vm_js::load_requested_modules(
           &mut vm,
@@ -561,7 +570,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         ensure_promise_fulfilled(scope.heap(), load_promise)?;
 
         // Link + evaluate the entry module.
-        module_graph.evaluate_sync_with_scope(
+        //
+        // `vm-js` module evaluation returns a Promise to model top-level await semantics. We allow
+        // that promise to be transiently pending as long as it settles once the host drains
+        // microtasks (see `after_microtask_checkpoint`).
+        let eval_promise = module_graph.evaluate_with_scope(
           &mut vm,
           &mut scope,
           realm_ref.global_object(),
@@ -570,8 +583,20 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           document,
           &mut hooks,
         )?;
-
-        Ok(())
+        scope.push_root(eval_promise)?;
+        let Value::Object(promise_obj) = eval_promise else {
+          return Err(VmError::InvariantViolation("expected a Promise object"));
+        };
+        match scope.heap().promise_state(promise_obj)? {
+          PromiseState::Pending => Ok(Some(PendingModuleEvaluation {
+            module: entry_module,
+            promise: promise_obj,
+          })),
+          _ => {
+            ensure_promise_fulfilled(scope.heap(), eval_promise)?;
+            Ok(None)
+          }
+        }
       })();
 
       if let Some(err) = hooks.finish(scope.heap_mut()) {
@@ -579,7 +604,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       }
 
       match module_result {
-        Ok(()) => Ok(()),
+        Ok(pending) => Ok(pending),
         Err(err) => {
           if vm_error_format::vm_error_is_js_exception(&err) {
             if let Some(diag) = diagnostics.as_ref() {
@@ -587,7 +612,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
                 vm_error_format::vm_error_to_message_and_stack(scope.heap_mut(), err);
               diag.record_js_exception(message, stack);
             }
-            Ok(())
+            Ok(None)
           } else {
             Err(vm_error_format::vm_error_to_error(scope.heap_mut(), err))
           }
@@ -595,13 +620,21 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       }
     });
 
-    if let Some(req) = realm.take_pending_navigation_request() {
-      realm.reset_interrupt();
-      self.pending_navigation = Some(req);
-      return Ok(());
+    if let Some(realm) = self.realm.as_mut() {
+      if let Some(req) = realm.take_pending_navigation_request() {
+        realm.reset_interrupt();
+        self.pending_navigation = Some(req);
+        return Ok(());
+      }
     }
 
-    exec_result
+    match exec_result {
+      Ok(pending) => {
+        self.pending_module_evaluation = pending;
+        Ok(())
+      }
+      Err(err) => Err(err),
+    }
   }
 
   fn execute_import_map_script(
@@ -645,6 +678,62 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       Err(err) => {
         if let Some(diag) = self.diagnostics.as_ref() {
           diag.record_js_exception(format_import_map_error(&err), None);
+        }
+        Ok(())
+      }
+    }
+  }
+
+  fn after_microtask_checkpoint(
+    &mut self,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    let Some(pending) = self.pending_module_evaluation.take() else {
+      return Ok(());
+    };
+    let Some(realm) = self.realm.as_mut() else {
+      return Ok(());
+    };
+
+    let diagnostics = self.diagnostics.clone();
+    let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+
+    let Some(modules_ptr) = vm.module_graph_ptr() else {
+      // Module loading disabled; nothing to do.
+      return Ok(());
+    };
+    let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+
+    let state = match heap.promise_state(pending.promise) {
+      Ok(state) => state,
+      Err(err) => return Err(vm_error_format::vm_error_to_error(heap, err)),
+    };
+
+    match state {
+      PromiseState::Fulfilled => Ok(()),
+      PromiseState::Rejected => {
+        let reason = match heap.promise_result(pending.promise) {
+          Ok(reason) => reason.unwrap_or(Value::Undefined),
+          Err(err) => return Err(vm_error_format::vm_error_to_error(heap, err)),
+        };
+        if let Some(diag) = diagnostics.as_ref() {
+          let (message, stack) =
+            vm_error_format::vm_error_to_message_and_stack(heap, VmError::Throw(reason));
+          diag.record_js_exception(message, stack);
+        }
+        Ok(())
+      }
+      PromiseState::Pending => {
+        // The evaluation promise did not settle after draining microtasks, meaning it requires real
+        // async work (timers/tasks/network). Abort the in-progress TLA state so we do not leak
+        // persistent roots in `vm-js`.
+        module_graph.abort_tla_evaluation(vm, heap, pending.module);
+        if let Some(diag) = diagnostics.as_ref() {
+          diag.record_js_exception(
+            "asynchronous module loading/evaluation is not supported".to_string(),
+            None,
+          );
         }
         Ok(())
       }
