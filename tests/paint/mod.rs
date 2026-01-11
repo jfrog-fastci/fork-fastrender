@@ -12,6 +12,7 @@ mod abspos_inset_padding_translation_test;
 mod border_dotted;
 mod border_solid_device_snapping;
 mod border_solid_pixel_snapping;
+mod border_solid_rounded_device_snapping;
 mod unscaled_image_snapping_preserves_border;
 mod border_image_outset_bounds;
 mod border_triangle;

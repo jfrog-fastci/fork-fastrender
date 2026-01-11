@@ -6941,11 +6941,57 @@ impl DisplayListRenderer {
         && (border_width - bottom.width).abs() <= eps
         && (border_width - left.width).abs() <= eps;
       if uniform_widths && rect.width() > 0.0 && rect.height() > 0.0 {
+        // Match Chrome/Skia's box-decoration pixel snapping behaviour for opaque axis-aligned
+        // borders. Without this, tiny-skia will anti-alias the straight border edges when layout
+        // produces fractional coordinates, causing 1px "washed out" borders and subtle bleed into
+        // adjacent pixels (notably on cdc.gov's outline buttons).
+        let mut ring_rect = rect;
+        let mut ring_transform = transform;
+        if blend_mode == tiny_skia::BlendMode::SourceOver
+          && Self::is_translation_only_transform(transform)
+          && Self::is_near_integer(transform.tx)
+          && Self::is_near_integer(transform.ty)
+        {
+          let alpha = (top.color.a * opacity).clamp(0.0, 1.0);
+          let alpha_u8 = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+          if alpha_u8 == 255 {
+            // Bake the near-integer translation into the border geometry so we can snap in device
+            // space (stable under tile-based rendering) and render with an identity transform.
+            let tx = transform.tx.round();
+            let ty = transform.ty.round();
+            let rect = Rect::from_xywh(rect.x() + tx, rect.y() + ty, rect.width(), rect.height());
+
+            // Snap the outer rect edges to integer device pixels. When the border ring is built
+            // from this snapped rect, the straight edges land exactly on pixel boundaries so
+            // anti-aliasing only affects the curved corners.
+            //
+            // Use the same pixel-center rule as Canvas's opaque fill snapping: a pixel at integer
+            // coordinate `i` is covered if its center `i + 0.5` lies inside the rect (inclusive on
+            // the min edge, exclusive on the max edge).
+            let dx0 = rect.min_x();
+            let dx1 = rect.max_x();
+            let dy0 = rect.min_y();
+            let dy1 = rect.max_y();
+            let start_x = (dx0.min(dx1) - 0.5).ceil();
+            let end_x = (dx0.max(dx1) - 0.5).ceil();
+            let start_y = (dy0.min(dy1) - 0.5).ceil();
+            let end_y = (dy0.max(dy1) - 0.5).ceil();
+            let snapped = Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y);
+            if snapped.width() > 0.0 && snapped.height() > 0.0 {
+              ring_rect = snapped;
+              ring_transform = Transform::identity();
+            } else {
+              ring_rect = rect;
+              ring_transform = Transform::identity();
+            }
+          }
+        }
+
         if let Some(path) = crate::paint::rasterize::build_rounded_rect_ring_path(
-          rect.x(),
-          rect.y(),
-          rect.width(),
-          rect.height(),
+          ring_rect.x(),
+          ring_rect.y(),
+          ring_rect.width(),
+          ring_rect.height(),
           &radii,
           border_width,
         ) {
@@ -6960,7 +7006,7 @@ impl DisplayListRenderer {
               &path,
               &paint,
               tiny_skia::FillRule::EvenOdd,
-              transform,
+              ring_transform,
               clip.as_deref(),
             );
           });
