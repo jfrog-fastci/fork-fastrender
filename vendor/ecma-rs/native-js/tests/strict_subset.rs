@@ -4,6 +4,7 @@ use std::sync::Arc;
 use diagnostics::Diagnostic;
 use native_js::validate::validate_strict_subset;
 use typecheck_ts::lib_support::FileKind;
+use typecheck_ts::lib_support::LibFile;
 use typecheck_ts::{FileKey, Host, HostError, Program};
 
 #[derive(Clone, Default)]
@@ -30,6 +31,17 @@ impl Host for TestHost {
 
   fn resolve(&self, _from: &FileKey, _specifier: &str) -> Option<FileKey> {
     None
+  }
+
+  fn lib_files(&self) -> Vec<LibFile> {
+    // Match the `native-js` binary: declare a tiny builtin surface that can be
+    // codegen'd by the current backend without introducing `any`.
+    vec![LibFile {
+      key: FileKey::new("native-js:test-builtins.d.ts"),
+      name: Arc::from("native-js test builtins"),
+      kind: FileKind::Dts,
+      text: Arc::from("declare function print(value: number): void;\n"),
+    }]
   }
 
   fn file_kind(&self, file: &FileKey) -> FileKind {
@@ -148,6 +160,12 @@ fn rejects_try_and_throw() {
   )
   .unwrap_err();
   assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn accepts_print_statement() {
+  let ok = validate("print(1);\n", FileKind::Ts);
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
 }
 
 #[test]
