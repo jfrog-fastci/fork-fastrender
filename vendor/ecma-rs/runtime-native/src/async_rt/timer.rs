@@ -10,6 +10,16 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TimerId(u64);
 
+impl TimerId {
+  pub fn from_raw(raw: u64) -> Self {
+    Self(raw)
+  }
+
+  pub fn as_raw(self) -> u64 {
+    self.0
+  }
+}
+
 pub struct Timers {
   next_id: AtomicU64,
   inner: Mutex<TimersInner>,
@@ -71,6 +81,10 @@ impl Timers {
 
   pub fn has_timers(&self) -> bool {
     !self.inner.lock().unwrap().states.is_empty()
+  }
+
+  pub fn len(&self) -> usize {
+    self.inner.lock().unwrap().states.len()
   }
 
   pub fn schedule(&self, deadline: Instant, task: Task) -> TimerId {

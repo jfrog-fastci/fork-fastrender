@@ -265,3 +265,9 @@ pub fn register_fd(
 pub fn debug_in_epoll_wait() -> bool {
   reactor::debug_in_epoll_wait()
 }
+
+/// Test-only helper: number of active timers currently registered with the global event loop.
+#[doc(hidden)]
+pub fn debug_timer_count() -> usize {
+  global().loop_.debug_timers_count()
+}

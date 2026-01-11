@@ -230,6 +230,9 @@ impl EventLoop {
     }
   }
 
+  pub(crate) fn debug_timers_count(&self) -> usize {
+    self.timers.len()
+  }
   pub(crate) fn reset_for_tests(&self) {
     let _guard = self.poll_lock.lock().unwrap();
 

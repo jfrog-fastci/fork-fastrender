@@ -14,6 +14,7 @@ use parking_lot::Mutex;
 use std::time::Duration;
 
 use crate::async_rt;
+use crate::time;
 
 static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -25,6 +26,7 @@ pub fn reset_runtime_state() {
   async_rt::clear_state_for_tests();
   crate::exports::clear_web_timers_for_tests();
   crate::roots::global_root_registry().clear_for_tests();
+  time::debug_clear_state_for_tests();
 }
 
 /// A per-test guard that serializes access to the global runtime singleton.
