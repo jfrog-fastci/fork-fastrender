@@ -190,6 +190,8 @@ impl TaskState {
   }
 
   fn run(self: &Arc<Self>) {
+    crate::rt_trace::tasks_executed_inc();
+
     let res = catch_unwind(AssertUnwindSafe(|| (self.func)(self.data)));
     if res.is_err() {
       // Never unwind across our `extern "C"` boundary.
@@ -300,8 +302,12 @@ impl Scheduler {
       if n > 1 {
         for offset in 1..n {
           let victim = (idx + offset) % n;
+          crate::rt_trace::steals_attempted_inc();
           match self.inner.stealers[victim].steal_batch_and_pop(local) {
-            Steal::Success(task) => return Some(task),
+            Steal::Success(task) => {
+              crate::rt_trace::steals_succeeded_inc();
+              return Some(task);
+            }
             Steal::Retry => return None,
             Steal::Empty => {}
           }
@@ -317,8 +323,12 @@ impl Scheduler {
       }
 
       for stealer in &self.inner.stealers {
+        crate::rt_trace::steals_attempted_inc();
         match stealer.steal() {
-          Steal::Success(task) => return Some(task),
+          Steal::Success(task) => {
+            crate::rt_trace::steals_succeeded_inc();
+            return Some(task);
+          }
           Steal::Retry => return None,
           Steal::Empty => {}
         }
@@ -362,8 +372,10 @@ fn worker_loop(
     if n > 1 {
       for offset in 1..n {
         let victim = (idx + offset) % n;
+        crate::rt_trace::steals_attempted_inc();
         match inner.stealers[victim].steal_batch_and_pop(&local) {
           Steal::Success(task) => {
+            crate::rt_trace::steals_succeeded_inc();
             spins = 0;
             task.run();
             continue 'work;
@@ -382,8 +394,10 @@ fn worker_loop(
     spins = 0;
 
     threading::set_parked(true);
+    crate::rt_trace::worker_park_inc();
     parker.park_timeout(Duration::from_millis(1));
     threading::set_parked(false);
+    crate::rt_trace::worker_unpark_inc();
 
     // Before running mutator code, poll the GC safepoint.
     threading::safepoint_poll();

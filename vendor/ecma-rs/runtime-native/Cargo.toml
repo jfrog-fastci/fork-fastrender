@@ -24,6 +24,7 @@ gc_stats = []
 # Enables expensive GC verification helpers (heap integrity checks, forwarding verification,
 # nursery poisoning) intended for tests and debugging.
 gc_debug = []
+rt-trace = []
 
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
@@ -57,4 +58,20 @@ harness = false
 
 [[bench]]
 name = "bump_alloc"
+harness = false
+
+[[bench]]
+name = "parallel_spawn_join"
+harness = false
+
+[[bench]]
+name = "scheduler_throughput"
+harness = false
+
+[[bench]]
+name = "async_timers"
+harness = false
+
+[[bench]]
+name = "microtasks"
 harness = false

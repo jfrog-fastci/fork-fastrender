@@ -32,20 +32,36 @@ impl EventLoop {
   }
 
   pub fn enqueue_microtask(&self, task: Task) {
-    self.microtasks.lock().unwrap().push_back(task);
-    self.reactor.wake();
+    let needs_wake = {
+      let mut q = self.microtasks.lock().unwrap();
+      let needs_wake = q.is_empty();
+      q.push_back(task);
+      needs_wake
+    };
+    if needs_wake {
+      self.reactor.wake();
+    }
   }
 
   pub fn enqueue_macrotask(&self, task: Task) {
-    self.macrotasks.lock().unwrap().push_back(task);
-    self.reactor.wake();
+    let needs_wake = {
+      let mut q = self.macrotasks.lock().unwrap();
+      let needs_wake = q.is_empty();
+      q.push_back(task);
+      needs_wake
+    };
+    if needs_wake {
+      self.reactor.wake();
+    }
   }
 
   pub fn schedule_timer(&self, deadline: Instant, task: Task) -> TimerId {
+    let old_deadline = self.timers.next_deadline();
     let id = self.timers.schedule(deadline, task);
-    // If this timer is sooner than a currently-blocking epoll_wait timeout, we
-    // need to wake so `poll` recomputes its timeout.
-    self.reactor.wake();
+    let new_deadline = self.timers.next_deadline();
+    if matches!((old_deadline, new_deadline), (None, Some(_))) || new_deadline < old_deadline {
+      self.reactor.wake();
+    }
     id
   }
 
@@ -107,15 +123,17 @@ impl EventLoop {
   }
 
   fn drain_microtasks(&self) {
+    let mut batch: VecDeque<Task> = VecDeque::new();
     loop {
-      let tasks: Vec<Task> = {
+      {
         let mut q = self.microtasks.lock().unwrap();
         if q.is_empty() {
+          std::mem::swap(&mut *q, &mut batch);
           break;
         }
-        q.drain(..).collect()
-      };
-      for task in tasks {
+        std::mem::swap(&mut *q, &mut batch);
+      }
+      while let Some(task) = batch.pop_front() {
         threading::safepoint_poll();
         task.run();
       }
@@ -204,6 +222,7 @@ impl EventLoop {
       // Loop to run the newly-ready tasks (or newly-due timers).
     }
   }
+
   pub(crate) fn reset_for_tests(&self) {
     let _guard = self.poll_lock.lock().unwrap();
 

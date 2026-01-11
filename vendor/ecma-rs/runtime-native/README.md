@@ -172,3 +172,44 @@ The runtime provides a minimal `Promise` implementation sufficient for async/awa
 
 Continuations are always scheduled onto the async runtime **microtask** queue and are executed
 FIFO by calling `rt_async_poll()`.
+
+## Benchmarks
+
+From the repository root:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh bench -p runtime-native
+```
+
+To enable trace counters during a run:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh bench -p runtime-native --features rt-trace
+```
+
+### Bench suite
+
+- `parallel_spawn_join`: spawn + join overhead across varying task counts / payload sizes.
+- `scheduler_throughput`: tasks/sec for empty tasks and small CPU loops.
+- `microtasks`: enqueue + drain rate of the async runtime microtask queue.
+- `async_timers`: timer heap insert + dispatch costs; plus a small timer accuracy probe.
+
+### Interpreting results
+
+- Prefer comparisons **between commits** on the same machine/configuration.
+- For throughput benches, Criterion prints **elements/sec**; higher is better.
+- For the timer accuracy probe, the measured iteration time should be close to the requested
+  delay (large drift indicates scheduling jitter or timer implementation issues).
+
+## Trace counters (`rt-trace`)
+
+When compiled with `--features rt-trace`, the runtime collects a small set of global counters
+intended for lightweight regression detection in tests/benches.
+
+Use:
+
+```rust
+let snap = runtime_native::rt_debug_snapshot_counters();
+```
+
+When `rt-trace` is not enabled, all values are always `0`.

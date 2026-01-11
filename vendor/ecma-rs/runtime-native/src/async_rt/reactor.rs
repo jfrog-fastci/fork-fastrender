@@ -248,6 +248,7 @@ impl Reactor {
     if n == 0 {
       return Ok(Vec::new());
     }
+    crate::rt_trace::epoll_wakeups_inc();
 
     let mut needs_wake_drain = false;
     let mut ready_tokens: Vec<(WatcherId, u32)> = Vec::new();

@@ -25,6 +25,7 @@ pub mod gc;
 pub use reactor::Interest;
 pub use reactor::WatcherId;
 pub use timer::TimerId;
+pub use timer::Timers;
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;

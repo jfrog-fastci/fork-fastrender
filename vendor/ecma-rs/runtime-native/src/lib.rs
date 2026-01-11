@@ -64,6 +64,7 @@ mod blocking_pool;
 mod exports;
 mod interner;
 mod platform;
+mod rt_trace;
 mod string;
 mod trap;
 
@@ -77,6 +78,8 @@ pub use gc::TypeDescriptor;
 pub use async_rt::set_strict_await_yields;
 pub use stackmaps::StackMaps;
 pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
+pub use rt_trace::rt_debug_snapshot_counters;
+pub use rt_trace::RtDebugCountersSnapshot;
 pub use string::*;
 pub use timer_wheel::{TimerKey, TimerWheel};
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};

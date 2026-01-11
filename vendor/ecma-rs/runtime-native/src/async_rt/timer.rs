@@ -87,12 +87,16 @@ impl Timers {
     );
     inner.heap.push(HeapEntry { deadline, id, seq });
     inner.maybe_rebuild_heap();
+    crate::rt_trace::timer_heap_inc_by(1);
     id
   }
 
   pub fn cancel(&self, id: TimerId) -> bool {
     let mut inner = self.inner.lock().unwrap();
     let existed = inner.states.remove(&id).is_some();
+    if existed {
+      crate::rt_trace::timer_heap_dec_by(1);
+    }
     inner.maybe_rebuild_heap();
     existed
   }
@@ -112,6 +116,7 @@ impl Timers {
       }
       // Entry is current; remove state and enqueue the task.
       let state = inner.states.remove(&top.id).expect("entry must be current");
+      crate::rt_trace::timer_heap_dec_by(1);
       ready.push(state.task);
       inner.purge_stale_top();
     }
@@ -127,14 +132,30 @@ impl Timers {
 
   pub fn clear(&self) {
     let mut inner = self.inner.lock().unwrap();
+    let active = inner.states.len() as u64;
     inner.heap.clear();
     inner.states.clear();
+    if active > 0 {
+      crate::rt_trace::timer_heap_dec_by(active);
+    }
+  }
+}
+
+impl Drop for Timers {
+  fn drop(&mut self) {
+    let active = self.inner.lock().unwrap().states.len() as u64;
+    if active > 0 {
+      crate::rt_trace::timer_heap_dec_by(active);
+    }
   }
 }
 
 impl TimersInner {
   fn is_entry_current(&self, entry: HeapEntry) -> bool {
-    self.states.get(&entry.id).is_some_and(|st| st.seq == entry.seq && st.deadline == entry.deadline)
+    self
+      .states
+      .get(&entry.id)
+      .is_some_and(|st| st.seq == entry.seq && st.deadline == entry.deadline)
   }
 
   fn purge_stale_top(&mut self) {
