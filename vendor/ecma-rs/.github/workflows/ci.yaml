@@ -65,6 +65,9 @@ jobs:
       # Keep the base workspace CI job LLVM-free and lint/test them in a
       # dedicated job that installs LLVM 18.
       - name: cargo clippy (workspace)
+        env:
+          # `runtime-native` enforces frame pointers for FP-based stack walking (see runtime-native/build.rs).
+          RUSTFLAGS: -C force-frame-pointers=yes
         run: >
           cargo clippy --workspace --all-targets --all-features
           --exclude native-js --exclude native-js-cli
