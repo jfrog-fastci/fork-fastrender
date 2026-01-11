@@ -56,7 +56,6 @@ pub mod resolve;
 pub mod runtime_abi;
 pub mod poc_stackmaps;
 pub mod strict;
-pub mod llvm_passes;
 pub mod validate;
 pub mod eval;
 
