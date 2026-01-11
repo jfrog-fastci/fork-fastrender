@@ -64,7 +64,7 @@ fn lowers_bigint_literal() {
     to_value(expr).unwrap(),
     json!({
       "$t": "LitBigInt",
-      "value": "1234n"
+      "value": "1234"
     })
   );
 }

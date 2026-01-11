@@ -78,7 +78,8 @@ fn lower_const(c: &Const) -> Node<Expr> {
     }))),
     Const::Null => node(Expr::LitNull(node(LitNullExpr {}))),
     Const::BigInt(value) => node(Expr::LitBigInt(node(LitBigIntExpr {
-      value: format!("{value}n"),
+      // `parse-js` stores BigInt literal bodies without the trailing `n`; the emitter appends it.
+      value: value.to_str_radix(10),
     }))),
     Const::Undefined => node(Expr::Unary(node(UnaryExpr {
       operator: OperatorName::Void,
