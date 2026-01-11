@@ -240,7 +240,7 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
   // Allocate a native PromiseHeader directly and reject it with no handlers.
   let mut p = Box::new(PromiseHeader {
     state: AtomicU8::new(PromiseHeader::PENDING),
-    reactions: AtomicUsize::new(0),
+    waiters: AtomicUsize::new(0),
     flags: AtomicU8::new(0),
   });
   let p_ref = PromiseRef((&mut *p as *mut PromiseHeader).cast());
