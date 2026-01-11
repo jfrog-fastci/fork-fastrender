@@ -1,5 +1,5 @@
 use runtime_native::buffer::{global_backing_store_allocator, ArrayBuffer, ArrayBufferError, BackingStoreAllocator};
-use runtime_native::io::{IoLimitError, IoLimits, IoLimiter, IoOp};
+use runtime_native::io::{IoLimitError, IoLimits, IoLimiter, IoOp, IoVecRange, PinnedIoVec};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
@@ -200,6 +200,29 @@ fn pinning_charges_backing_store_alloc_len_even_when_byte_len_is_smaller() {
 
   let op = IoOp::pin_array_buffer_range(&limiter, &buf, 0..1).unwrap();
   assert_eq!(limiter.counters().pinned_bytes_current, alloc_len);
+  drop(op);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
+}
+
+#[test]
+fn pin_iovecs_charges_deduped_alloc_len_per_backing_store() {
+  let limiter = Arc::new(IoLimiter::new(IoLimits {
+    max_pinned_bytes: 8,
+    max_inflight_ops: 8,
+    max_pinned_bytes_per_op: None,
+  }));
+
+  let buf = ArrayBuffer::new_zeroed(8).unwrap();
+
+  // Two segments, same backing store: should be charged once (8), not twice (16) and not by the
+  // segment lengths (2).
+  let ranges = [
+    IoVecRange::array_buffer(&buf, 0, 1).unwrap(),
+    IoVecRange::array_buffer(&buf, 1, 1).unwrap(),
+  ];
+  let iovecs = PinnedIoVec::try_from_ranges(&ranges).unwrap();
+  let op = IoOp::pin_iovecs(&limiter, iovecs).unwrap();
+  assert_eq!(limiter.counters().pinned_bytes_current, 8);
   drop(op);
   assert_eq!(limiter.counters().pinned_bytes_current, 0);
 }
