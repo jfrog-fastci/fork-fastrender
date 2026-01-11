@@ -9389,6 +9389,7 @@ impl FlexFormattingContext {
       raw_layout_width: f32,
       raw_layout_height: f32,
       zero_main_size_is_legitimate: bool,
+      zero_cross_size_is_legitimate: bool,
     }
 
     #[derive(Clone)]
@@ -9756,6 +9757,62 @@ impl FlexFormattingContext {
       } else {
         false
       };
+      // Similar to `zero_main_size_is_legitimate`, but for the *cross* axis. This guards against
+      // treating empty flex items that legitimately collapse to 0×0 as "collapsed layouts" that
+      // must be inflated to fit out-of-flow content (e.g. abspos overlays).
+      //
+      // The cross axis is `block` for `flex-direction: row` and `inline` for `column`. In vertical
+      // writing modes those axes may map to different physical dimensions, so determine whether the
+      // cross axis is horizontal (→ width) or vertical (→ height) explicitly.
+      let cross_axis_is_horizontal = if main_axis_is_row {
+        block_is_horizontal
+      } else {
+        inline_is_horizontal
+      };
+      let raw_cross_size = if cross_axis_is_horizontal {
+        raw_layout_width
+      } else {
+        raw_layout_height
+      };
+      let cross_size_is_zero =
+        raw_cross_size.is_finite() && raw_cross_size >= 0.0 && raw_cross_size <= eps;
+      let explicit_zero_cross_size = if cross_axis_is_horizontal {
+        child_box
+          .style
+          .width
+          .as_ref()
+          .map(|l| l.unit.is_absolute() && l.value.abs() <= eps && !l.unit.is_percentage())
+          .unwrap_or(false)
+      } else {
+        child_box
+          .style
+          .height
+          .as_ref()
+          .map(|l| l.unit.is_absolute() && l.value.abs() <= eps && !l.unit.is_percentage())
+          .unwrap_or(false)
+      };
+      let zero_cross_size_is_legitimate = if cross_size_is_zero {
+        if explicit_zero_cross_size || skip_contents {
+          true
+        } else {
+          let fc_type = child_box
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          let fc = factory.get(fc_type);
+          let intrinsic_cross = if main_axis_is_row {
+            fc.compute_intrinsic_block_size(child_box, IntrinsicSizingMode::MaxContent)
+          } else {
+            fc.compute_intrinsic_inline_size(child_box, IntrinsicSizingMode::MaxContent)
+          };
+          match intrinsic_cross {
+            Ok(size) => size <= eps,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => false,
+          }
+        }
+      } else {
+        false
+      };
       let needs_intrinsic_main = !zero_main_size_is_legitimate
         && ((main_axis_is_row && raw_layout_width <= eps)
           || (!main_axis_is_row && raw_layout_height <= eps));
@@ -9777,6 +9834,7 @@ impl FlexFormattingContext {
         raw_layout_width,
         raw_layout_height,
         zero_main_size_is_legitimate,
+        zero_cross_size_is_legitimate,
       });
 
       if skip_contents {
@@ -10376,6 +10434,7 @@ impl FlexFormattingContext {
       let raw_layout_width = metrics.raw_layout_width;
       let raw_layout_height = metrics.raw_layout_height;
       let zero_main_size_is_legitimate = metrics.zero_main_size_is_legitimate;
+      let zero_cross_size_is_legitimate = metrics.zero_cross_size_is_legitimate;
       let child_cross_align = child_box
         .style
         .align_self
@@ -10419,18 +10478,24 @@ impl FlexFormattingContext {
               intrinsic_size.height = visual_size.height;
             }
           }
-           let mut resolved_width = layout_width;
-           let mut resolved_height = layout_height;
-           let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-             && main_axis_is_horizontal
-             && resolved_width <= eps)
-             && !(main_axis_is_horizontal && zero_main_size_is_legitimate && resolved_width <= eps);
-           let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-             && !main_axis_is_horizontal
-             && resolved_height <= eps)
-             && !(!main_axis_is_horizontal
-               && zero_main_size_is_legitimate
-               && resolved_height <= eps);
+          let mut resolved_width = layout_width;
+          let mut resolved_height = layout_height;
+          let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+            && main_axis_is_horizontal
+            && resolved_width <= eps)
+            && !(main_axis_is_horizontal && zero_main_size_is_legitimate && resolved_width <= eps)
+            && !(!main_axis_is_horizontal
+              && zero_cross_size_is_legitimate
+              && resolved_width <= eps);
+          let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+            && !main_axis_is_horizontal
+            && resolved_height <= eps)
+            && !(!main_axis_is_horizontal
+              && zero_main_size_is_legitimate
+              && resolved_height <= eps)
+            && !(main_axis_is_horizontal
+              && zero_cross_size_is_legitimate
+              && resolved_height <= eps);
           if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
             resolved_width = intrinsic_size.width;
           }
@@ -10943,79 +11008,85 @@ impl FlexFormattingContext {
 
           if final_fragment.is_none() {
             // Position the child using the Taffy-computed coordinates (relative to parent).
-             let mut resolved_width = layout_width;
-             let mut resolved_height = layout_height;
-             let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-               && main_axis_is_horizontal
-               && resolved_width <= eps)
-               && !(main_axis_is_horizontal && zero_main_size_is_legitimate && resolved_width <= eps);
-             let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-               && !main_axis_is_horizontal
-               && resolved_height <= eps)
-               && !(!main_axis_is_horizontal
-                 && zero_main_size_is_legitimate
-                 && resolved_height <= eps);
+            let mut resolved_width = layout_width;
+            let mut resolved_height = layout_height;
+            let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+              && main_axis_is_horizontal
+              && resolved_width <= eps)
+              && !(main_axis_is_horizontal && zero_main_size_is_legitimate && resolved_width <= eps)
+              && !(!main_axis_is_horizontal
+                && zero_cross_size_is_legitimate
+                && resolved_width <= eps);
+            let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+              && !main_axis_is_horizontal
+              && resolved_height <= eps)
+              && !(!main_axis_is_horizontal
+                && zero_main_size_is_legitimate
+                && resolved_height <= eps)
+              && !(main_axis_is_horizontal
+                && zero_cross_size_is_legitimate
+                && resolved_height <= eps);
             if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
               resolved_width = intrinsic_size.width;
             }
-             if allow_height_fallback && resolved_height <= eps && intrinsic_size.height > eps {
-               resolved_height = intrinsic_size.height;
-             }
-             let raw_main_size = if main_axis_is_horizontal {
-               raw_layout_width
-             } else {
-               raw_layout_height
-             };
-              let resolved_main_size = if main_axis_is_horizontal {
-                resolved_width
+            if allow_height_fallback && resolved_height <= eps && intrinsic_size.height > eps {
+              resolved_height = intrinsic_size.height;
+            }
+            let raw_main_size = if main_axis_is_horizontal {
+              raw_layout_width
+            } else {
+              raw_layout_height
+            };
+            let resolved_main_size = if main_axis_is_horizontal {
+              resolved_width
+            } else {
+              resolved_height
+            };
+            let (child_loc_x, child_loc_y) = if raw_main_size <= eps && resolved_main_size > eps {
+              if main_axis_is_horizontal {
+                (
+                  adjust_zero_main_axis_location(child_loc_x, resolved_width),
+                  child_loc_y,
+                )
               } else {
-                resolved_height
-              };
-              let (child_loc_x, child_loc_y) = if raw_main_size <= eps && resolved_main_size > eps {
+                (
+                  child_loc_x,
+                  adjust_zero_main_axis_location(child_loc_y, resolved_height),
+                )
+              }
+            } else {
+              (child_loc_x, child_loc_y)
+            };
+            let raw_cross_size = if main_axis_is_horizontal {
+              raw_layout_height
+            } else {
+              raw_layout_width
+            };
+            let resolved_cross_size = if main_axis_is_horizontal {
+              resolved_height
+            } else {
+              resolved_width
+            };
+            let (child_loc_x, child_loc_y) =
+              if raw_cross_size <= eps && resolved_cross_size > eps {
                 if main_axis_is_horizontal {
                   (
-                    adjust_zero_main_axis_location(child_loc_x, resolved_width),
-                    child_loc_y,
+                    child_loc_x,
+                    adjust_zero_cross_axis_location(child_loc_y, resolved_height, child_cross_align),
                   )
                 } else {
                   (
-                    child_loc_x,
-                    adjust_zero_main_axis_location(child_loc_y, resolved_height),
+                    adjust_zero_cross_axis_location(child_loc_x, resolved_width, child_cross_align),
+                    child_loc_y,
                   )
                 }
               } else {
                 (child_loc_x, child_loc_y)
               };
-              let raw_cross_size = if main_axis_is_horizontal {
-                raw_layout_height
-              } else {
-                raw_layout_width
-              };
-              let resolved_cross_size = if main_axis_is_horizontal {
-                resolved_height
-              } else {
-                resolved_width
-              };
-              let (child_loc_x, child_loc_y) =
-                if raw_cross_size <= eps && resolved_cross_size > eps {
-                  if main_axis_is_horizontal {
-                    (
-                      child_loc_x,
-                      adjust_zero_cross_axis_location(child_loc_y, resolved_height, child_cross_align),
-                    )
-                  } else {
-                    (
-                      adjust_zero_cross_axis_location(child_loc_x, resolved_width, child_cross_align),
-                      child_loc_y,
-                    )
-                  }
-                } else {
-                  (child_loc_x, child_loc_y)
-                };
-              let mut origin_x = child_loc_x;
-              let mut origin_y = child_loc_y;
-              if main_axis_is_horizontal && rect.height().is_finite() {
-                let limit = rect.height().max(1.0) * 5.0;
+            let mut origin_x = child_loc_x;
+            let mut origin_y = child_loc_y;
+            if main_axis_is_horizontal && rect.height().is_finite() {
+              let limit = rect.height().max(1.0) * 5.0;
               if origin_y.abs() > limit {
                 origin_y = rect.origin.y;
               }

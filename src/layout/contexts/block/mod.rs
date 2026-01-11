@@ -3118,20 +3118,19 @@ impl BlockFormattingContext {
         // In-flow child fragments are translated from the block's content coordinate space into
         // the fragment-local (border-box) coordinate space via `content_origin` above.
         //
-        // Keep out-of-flow positioned descendants consistent: when they are positioned against
-        // this block's padding box, their layout coordinates are still expressed in the content
-        // coordinate space (origin at the content box). Translate the positioned fragment roots
-        // into the same border-box coordinate space so `top: 0; left: 0` aligns with the padding
-        // edge rather than leaking into negative coordinates (which can cause positioned
-        // backgrounds to paint outside their containing block, e.g. the IETF jumbotron overlay
-        // darkening the header).
-        if cb == parent_padding_cb && (content_origin.x != 0.0 || content_origin.y != 0.0) {
+        // Keep out-of-flow positioned descendants consistent: their layout coordinates are still
+        // expressed in the content coordinate space (origin at the content edge). Translate the
+        // positioned fragment roots into the same border-box coordinate space so `top: 0; left: 0`
+        // aligns with the padding edge rather than leaking into negative coordinates (which can
+        // cause positioned backgrounds to paint outside their containing block, e.g. the IETF
+        // jumbotron overlay darkening the header).
+        //
+        // Viewport-fixed fragments are stored in absolute viewport coordinates, so do not translate
+        // them by this block's `content_origin`.
+        if cb != viewport_cb && (content_origin.x != 0.0 || content_origin.y != 0.0) {
           child_fragment.translate_root_in_place(content_origin);
         }
         child_fragment.style = Some(original_style);
-        if content_origin.x != 0.0 || content_origin.y != 0.0 {
-          child_fragment.translate_root_in_place(content_origin);
-        }
         if trace_positioned.contains(&pos_child.id) {
           let (text_count, total) = count_text_fragments(&child_fragment);
           let mut snippets = Vec::new();
