@@ -8712,10 +8712,51 @@ impl FormattingContext for TableFormattingContext {
         total
       };
 
+      let base_y = row_offsets.get(row_start).copied().unwrap_or(0.0);
+      let cell_span_end = (cell.col + cell.colspan).min(col_widths.len());
+      let mut spanned_width = 0.0;
+      for col_idx in cell.col..cell_span_end {
+        spanned_width += col_widths.get(col_idx).copied().unwrap_or(0.0);
+      }
+      if cell_span_end > cell.col {
+        spanned_width += h_spacing * (cell_span_end - cell.col).saturating_sub(1) as f32;
+      }
+
+      let mut fragment = crate::layout::contexts::block::unconvert_fragment_axes_root(laid.fragment);
+
+      // Table cells treat `height` as a *minimum* height (CSS 2.1 §17.5.3). When that minimum
+      // height inflates the cell box, the cell's fragment height (`laid.height`) equals the row
+      // height and a naive `(spanned_height - laid.height)` offset would be zero, preventing
+      // `vertical-align: middle/bottom` from moving the actual content.
+      //
+      // Instead, compute offsets based on the vertical extent of the cell's in-flow children so
+      // content is aligned even when the cell's own height is what set the row height.
+      let (content_min_y, content_height) = {
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for child in &fragment.children {
+          let y0 = child.bounds.y();
+          let y1 = y0 + child.bounds.height();
+          min_y = min_y.min(y0);
+          max_y = max_y.max(y1);
+        }
+        if min_y.is_finite() && max_y.is_finite() {
+          (min_y, (max_y - min_y).max(0.0))
+        } else {
+          (0.0, 0.0)
+        }
+      };
+
       let (y_offset, aligned_baseline) = match laid.vertical_align {
         VerticalAlign::Top => (0.0, None),
-        VerticalAlign::Bottom => ((spanned_height - laid.height).max(0.0), None),
-        VerticalAlign::Middle => (((spanned_height - laid.height) / 2.0).max(0.0), None),
+        VerticalAlign::Bottom => {
+          let desired_top = (spanned_height - content_height).max(0.0);
+          ((desired_top - content_min_y).max(0.0), None)
+        }
+        VerticalAlign::Middle => {
+          let desired_top = ((spanned_height - content_height) / 2.0).max(0.0);
+          ((desired_top - content_min_y).max(0.0), None)
+        }
         _ => {
           let raw_baseline = laid.baseline.unwrap_or(laid.height);
           let baseline = if raw_baseline >= laid.height && spanned_height > laid.height {
@@ -8753,18 +8794,6 @@ impl FormattingContext for TableFormattingContext {
           (row_base - baseline, Some(row_base))
         }
       };
-
-      let base_y = row_offsets.get(row_start).copied().unwrap_or(0.0);
-      let cell_span_end = (cell.col + cell.colspan).min(col_widths.len());
-      let mut spanned_width = 0.0;
-      for col_idx in cell.col..cell_span_end {
-        spanned_width += col_widths.get(col_idx).copied().unwrap_or(0.0);
-      }
-      if cell_span_end > cell.col {
-        spanned_width += h_spacing * (cell_span_end - cell.col).saturating_sub(1) as f32;
-      }
-
-      let mut fragment = crate::layout::contexts::block::unconvert_fragment_axes_root(laid.fragment);
 
       // Position the cell box at the start of its row/column span and give it the full spanned size
       // so backgrounds and borders cover the allocated grid slot. Table slot geometry is expressed
@@ -19378,6 +19407,74 @@ mod tests {
       offset.abs() < 0.5,
       "row vertical-align should place content at top (offset {:.2})",
       offset
+    );
+  }
+
+  #[test]
+  fn vertical_align_middle_centers_content_when_cell_height_exceeds_content() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.height = Some(Length::px(40.0));
+    cell_style.height_keyword = None;
+    cell_style.vertical_align = VerticalAlign::Middle;
+    cell_style.vertical_align_specified = true;
+    cell_style.padding_top = Length::px(0.0);
+    cell_style.padding_bottom = Length::px(0.0);
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    inner_style.height = Some(Length::px(10.0));
+    inner_style.height_keyword = None;
+    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+    let cell = BoxNode::new_block(
+      Arc::new(cell_style),
+      FormattingContextType::Block,
+      vec![inner],
+    );
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![row],
+    );
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite_width(200.0))
+      .expect("table layout");
+
+    let cell_fragment = fragment
+      .children
+      .iter()
+      .find(|f| {
+        f.style
+          .as_ref()
+          .map(|s| s.display == Display::TableCell)
+          .unwrap_or(false)
+      })
+      .expect("cell fragment");
+    let content = cell_fragment.children.first().expect("cell content");
+
+    // `vertical-align: middle` should place the cell's content in the center of the cell box
+    // when `height` inflates the cell (CSS 2.1 §17.5.3).
+    let offset = content.bounds.y() - cell_fragment.bounds.y();
+    let expected = (cell_fragment.bounds.height() - content.bounds.height()) / 2.0;
+    assert!(
+      (offset - expected).abs() < 0.5,
+      "expected centered content offset {:.2}, got {:.2} (cell h {:.2}, content h {:.2})",
+      expected,
+      offset,
+      cell_fragment.bounds.height(),
+      content.bounds.height()
     );
   }
 
