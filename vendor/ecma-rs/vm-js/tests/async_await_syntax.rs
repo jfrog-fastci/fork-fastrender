@@ -243,6 +243,78 @@ fn await_in_async_expression_body_nested_expression() -> Result<(), VmError> {
 }
 
 #[test]
+fn return_expression_with_chained_post_await_member_access() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        return (await Promise.resolve({ a: { b: "ok" } })).a.b;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn return_expression_with_chained_post_await_call_and_member_access() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        return (await Promise.resolve({
+          x: "ok",
+          make() { return { y: this.x }; },
+        })).make().y;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn call_awaited_function_value() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        return (await Promise.resolve(function () { return "ok"; }))();
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
 fn await_operand_throw_rejects_promise() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

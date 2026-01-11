@@ -7038,6 +7038,117 @@ fn async_body_result_from_error(
   }
 }
 
+fn expr_contains_await(expr: &Node<Expr>) -> bool {
+  match &*expr.stx {
+    Expr::Unary(unary) => {
+      unary.stx.operator == OperatorName::Await || expr_contains_await(&unary.stx.argument)
+    }
+    Expr::UnaryPostfix(unary) => expr_contains_await(&unary.stx.argument),
+    Expr::Binary(binary) => {
+      expr_contains_await(&binary.stx.left) || expr_contains_await(&binary.stx.right)
+    }
+    Expr::Cond(cond) => {
+      expr_contains_await(&cond.stx.test)
+        || expr_contains_await(&cond.stx.consequent)
+        || expr_contains_await(&cond.stx.alternate)
+    }
+    Expr::Member(member) => expr_contains_await(&member.stx.left),
+    Expr::ComputedMember(member) => {
+      expr_contains_await(&member.stx.object) || expr_contains_await(&member.stx.member)
+    }
+    Expr::Call(call) => {
+      expr_contains_await(&call.stx.callee)
+        || call
+          .stx
+          .arguments
+          .iter()
+          .any(|arg| expr_contains_await(&arg.stx.value))
+    }
+    Expr::Import(import) => {
+      expr_contains_await(&import.stx.module)
+        || import
+          .stx
+          .attributes
+          .as_ref()
+          .is_some_and(|attrs| expr_contains_await(attrs))
+    }
+    Expr::TaggedTemplate(tag) => {
+      expr_contains_await(&tag.stx.function)
+        || tag.stx.parts.iter().any(|part| match part {
+          LitTemplatePart::Substitution(expr) => expr_contains_await(expr),
+          LitTemplatePart::String(_) => false,
+        })
+    }
+    Expr::LitArr(arr) => arr.stx.elements.iter().any(|elem| match elem {
+      LitArrElem::Single(expr) | LitArrElem::Rest(expr) => expr_contains_await(expr),
+      LitArrElem::Empty => false,
+    }),
+    Expr::LitObj(obj) => obj.stx.members.iter().any(|member| match &member.stx.typ {
+      ObjMemberType::Valued { key, val } => {
+        let key_has_await = match key {
+          ClassOrObjKey::Direct(_) => false,
+          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        };
+
+        let val_has_await = match val {
+          ClassOrObjVal::Prop(Some(expr)) => expr_contains_await(expr),
+          ClassOrObjVal::Prop(None) => false,
+          // Function-valued members: the function body is not evaluated at object creation time.
+          ClassOrObjVal::Getter(_)
+          | ClassOrObjVal::Setter(_)
+          | ClassOrObjVal::Method(_)
+          | ClassOrObjVal::IndexSignature(_)
+          | ClassOrObjVal::StaticBlock(_) => false,
+        };
+
+        key_has_await || val_has_await
+      }
+      ObjMemberType::Shorthand { .. } => false,
+      ObjMemberType::Rest { val } => expr_contains_await(val),
+    }),
+    Expr::LitTemplate(tpl) => tpl.stx.parts.iter().any(|part| match part {
+      LitTemplatePart::Substitution(expr) => expr_contains_await(expr),
+      LitTemplatePart::String(_) => false,
+    }),
+
+    // Nested functions are not evaluated when the function value is created.
+    Expr::Func(_) | Expr::ArrowFunc(_) => false,
+
+    // TypeScript-only nodes: only the wrapped expression is evaluated.
+    Expr::Instantiation(inst) => expr_contains_await(&inst.stx.expression),
+    Expr::TypeAssertion(expr) => expr_contains_await(&expr.stx.expression),
+    Expr::NonNullAssertion(expr) => expr_contains_await(&expr.stx.expression),
+    Expr::SatisfiesExpr(expr) => expr_contains_await(&expr.stx.expression),
+
+    _ => false,
+  }
+}
+
+fn await_arg_in_post_await_expr(expr: &Node<Expr>) -> Option<&Node<Expr>> {
+  match &*expr.stx {
+    Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => Some(&unary.stx.argument),
+    Expr::Member(member) => await_arg_in_post_await_expr(&member.stx.left),
+    Expr::ComputedMember(member) => {
+      if expr_contains_await(&member.stx.member) {
+        return None;
+      }
+      await_arg_in_post_await_expr(&member.stx.object)
+    }
+    Expr::Call(call) => {
+      if call
+        .stx
+        .arguments
+        .iter()
+        .any(|arg| expr_contains_await(&arg.stx.value))
+      {
+        return None;
+      }
+      await_arg_in_post_await_expr(&call.stx.callee)
+    }
+    _ => None,
+  }
+}
+
 fn async_eval_expr_after_await(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -7047,24 +7158,21 @@ fn async_eval_expr_after_await(
   // Charge a tick for completing evaluation of the surrounding expression after resumption.
   evaluator.tick()?;
 
+  if !expr_contains_await(expr) {
+    let res = evaluator.eval_expr(scope, expr);
+    return match res {
+      Ok(v) => Ok(v),
+      Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, scope, err)),
+    };
+  }
+
   match &*expr.stx {
     // `await <expr>`: the awaited value is the `await` expression result.
     Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => Ok(awaited_value),
 
-    // `(await <expr>).prop`
+    // Member access chains like `(await <expr>).prop` and `(await <expr>).a.b`.
     Expr::Member(member) => {
-      let Expr::Unary(unary) = &*member.stx.left.stx else {
-        return Err(VmError::InvariantViolation(
-          "async post-await member expression did not contain await base",
-        ));
-      };
-      if unary.stx.operator != OperatorName::Await {
-        return Err(VmError::InvariantViolation(
-          "async post-await member expression did not contain await base",
-        ));
-      }
-
-      let base = awaited_value;
+      let base = async_eval_expr_after_await(evaluator, scope, &member.stx.left, awaited_value)?;
       if member.stx.optional_chaining && is_nullish(base) {
         return Ok(Value::Undefined);
       }
@@ -7076,258 +7184,214 @@ fn async_eval_expr_after_await(
         base,
         key: PropertyKey::from_string(key_s),
       };
-      evaluator
-        .get_value_from_reference(&mut key_scope, &reference)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
+      match evaluator.get_value_from_reference(&mut key_scope, &reference) {
+        Ok(v) => Ok(v),
+        Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)),
+      }
     }
 
-    // `(await <expr>)[key]`
+    // Computed member access chains like `(await <expr>)[key]`.
     Expr::ComputedMember(member) => {
-      let Expr::Unary(unary) = &*member.stx.object.stx else {
-        return Err(VmError::InvariantViolation(
-          "async post-await computed member expression did not contain await base",
-        ));
-      };
-      if unary.stx.operator != OperatorName::Await {
-        return Err(VmError::InvariantViolation(
-          "async post-await computed member expression did not contain await base",
-        ));
-      }
-
-      let base = awaited_value;
+      let base = async_eval_expr_after_await(evaluator, scope, &member.stx.object, awaited_value)?;
       if member.stx.optional_chaining && is_nullish(base) {
         return Ok(Value::Undefined);
       }
 
+      if expr_contains_await(&member.stx.member) {
+        return Err(VmError::Unimplemented(
+          "await in computed member key after await",
+        ));
+      }
+
       let mut key_scope = scope.reborrow();
       key_scope.push_root(base)?;
-      let member_value = evaluator
-        .eval_expr(&mut key_scope, &member.stx.member)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-      key_scope
-        .push_root(member_value)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-      let key = evaluator
-        .to_property_key_operator(&mut key_scope, member_value)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+      let member_value = match evaluator.eval_expr(&mut key_scope, &member.stx.member) {
+        Ok(v) => v,
+        Err(err) => return Err(coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)),
+      };
+      key_scope.push_root(member_value)?;
+      let key = match evaluator.to_property_key_operator(&mut key_scope, member_value) {
+        Ok(k) => k,
+        Err(err) => return Err(coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)),
+      };
       let reference = Reference::Property { base, key };
-      evaluator
-        .get_value_from_reference(&mut key_scope, &reference)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
+      match evaluator.get_value_from_reference(&mut key_scope, &reference) {
+        Ok(v) => Ok(v),
+        Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)),
+      }
     }
 
-    // `(await <expr>).method(...)`
+    // Calls whose callee is derived from an awaited value, including chained patterns like:
+    // - `(await obj).method(...)`
+    // - `(await obj).a.b(...)`
+    // - `(await fn)(...)`
     Expr::Call(call) => {
-      let base = awaited_value;
-      match &*call.stx.callee.stx {
-        Expr::Member(member) => {
-          let Expr::Unary(unary) = &*member.stx.left.stx else {
-            return Err(VmError::InvariantViolation(
-              "async post-await call did not contain await base",
-            ));
-          };
-          if unary.stx.operator != OperatorName::Await {
-            return Err(VmError::InvariantViolation(
-              "async post-await call did not contain await base",
-            ));
-          }
+      if call
+        .stx
+        .arguments
+        .iter()
+        .any(|arg| expr_contains_await(&arg.stx.value))
+      {
+        return Err(VmError::Unimplemented("await in call arguments after await"));
+      }
 
-          // Optional chaining short-circuits on the awaited base value.
+      let (callee_value, this_value) = match &*call.stx.callee.stx {
+        Expr::Member(member) => {
+          let base =
+            async_eval_expr_after_await(evaluator, scope, &member.stx.left, awaited_value)?;
           if member.stx.optional_chaining && is_nullish(base) {
             return Ok(Value::Undefined);
           }
 
-          let this_value = base;
-          let mut call_scope = scope.reborrow();
-          call_scope.push_root(base)?;
-          let key_s = call_scope.alloc_string(&member.stx.right)?;
-          let reference = Reference::Property {
-            base,
-            key: PropertyKey::from_string(key_s),
-          };
-          let callee_value = match evaluator.get_value_from_reference(&mut call_scope, &reference) {
-            Ok(v) => v,
-            Err(err) => {
-              return Err(coerce_error_to_throw_for_async(
-                evaluator.vm,
-                &mut call_scope,
-                err,
-              ))
-            }
-          };
-
-          if call.stx.optional_chaining && is_nullish(callee_value) {
-            return Ok(Value::Undefined);
-          }
-
-          call_scope.push_roots(&[callee_value, this_value])?;
-
-          let mut args: Vec<Value> = Vec::new();
-          args
-            .try_reserve_exact(call.stx.arguments.len())
-            .map_err(|_| VmError::OutOfMemory)?;
-          for arg in &call.stx.arguments {
-            if arg.stx.spread {
-              let spread_value = evaluator
-                .eval_expr(&mut call_scope, &arg.stx.value)
-                .map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err)
-                })?;
-              call_scope.push_root(spread_value)?;
-
-              let mut iter = iterator::get_iterator(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                &mut call_scope,
-                spread_value,
-              )
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?;
-              call_scope.push_roots(&[iter.iterator, iter.next_method])?;
-
-              while let Some(value) = iterator::iterator_step_value(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                &mut call_scope,
-                &mut iter,
-              )
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?
-              {
-                evaluator.tick()?;
-                call_scope.push_root(value)?;
-                args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-                args.push(value);
+          let callee_value = {
+            let mut callee_scope = scope.reborrow();
+            callee_scope.push_root(base)?;
+            let key_s = callee_scope.alloc_string(&member.stx.right)?;
+            let reference = Reference::Property {
+              base,
+              key: PropertyKey::from_string(key_s),
+            };
+            match evaluator.get_value_from_reference(&mut callee_scope, &reference) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(coerce_error_to_throw_for_async(
+                  evaluator.vm,
+                  &mut callee_scope,
+                  err,
+                ))
               }
-            } else {
-              let value = evaluator
-                .eval_expr(&mut call_scope, &arg.stx.value)
-                .map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err)
-                })?;
-              call_scope.push_root(value)?;
-              args.push(value);
             }
-          }
-
-          evaluator
-            .call(&mut call_scope, callee_value, this_value, &args)
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))
+          };
+          (callee_value, base)
         }
         Expr::ComputedMember(member) => {
-          let Expr::Unary(unary) = &*member.stx.object.stx else {
-            return Err(VmError::InvariantViolation(
-              "async post-await call did not contain await base",
-            ));
-          };
-          if unary.stx.operator != OperatorName::Await {
-            return Err(VmError::InvariantViolation(
-              "async post-await call did not contain await base",
+          if expr_contains_await(&member.stx.member) {
+            return Err(VmError::Unimplemented(
+              "await in computed member key after await",
             ));
           }
 
+          let base =
+            async_eval_expr_after_await(evaluator, scope, &member.stx.object, awaited_value)?;
           if member.stx.optional_chaining && is_nullish(base) {
             return Ok(Value::Undefined);
           }
 
-          let this_value = base;
-          let mut call_scope = scope.reborrow();
-          call_scope.push_root(base)?;
-          let member_value = match evaluator.eval_expr(&mut call_scope, &member.stx.member) {
-            Ok(v) => v,
-            Err(err) => {
-              return Err(coerce_error_to_throw_for_async(
-                evaluator.vm,
-                &mut call_scope,
-                err,
-              ))
-            }
-          };
-          call_scope.push_root(member_value)?;
-          let key = match evaluator.to_property_key_operator(&mut call_scope, member_value) {
-            Ok(k) => k,
-            Err(err) => {
-              return Err(coerce_error_to_throw_for_async(
-                evaluator.vm,
-                &mut call_scope,
-                err,
-              ))
-            }
-          };
-          let reference = Reference::Property { base, key };
-          let callee_value = match evaluator.get_value_from_reference(&mut call_scope, &reference) {
-            Ok(v) => v,
-            Err(err) => {
-              return Err(coerce_error_to_throw_for_async(
-                evaluator.vm,
-                &mut call_scope,
-                err,
-              ))
-            }
-          };
+          let callee_value = {
+            let mut callee_scope = scope.reborrow();
+            callee_scope.push_root(base)?;
 
-          if call.stx.optional_chaining && is_nullish(callee_value) {
-            return Ok(Value::Undefined);
-          }
-
-          call_scope.push_roots(&[callee_value, this_value])?;
-
-          let mut args: Vec<Value> = Vec::new();
-          args
-            .try_reserve_exact(call.stx.arguments.len())
-            .map_err(|_| VmError::OutOfMemory)?;
-          for arg in &call.stx.arguments {
-            if arg.stx.spread {
-              let spread_value = evaluator
-                .eval_expr(&mut call_scope, &arg.stx.value)
-                .map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err)
-                })?;
-              call_scope.push_root(spread_value)?;
-
-              let mut iter = iterator::get_iterator(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                &mut call_scope,
-                spread_value,
-              )
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?;
-              call_scope.push_roots(&[iter.iterator, iter.next_method])?;
-
-              while let Some(value) = iterator::iterator_step_value(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                &mut call_scope,
-                &mut iter,
-              )
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?
-              {
-                evaluator.tick()?;
-                call_scope.push_root(value)?;
-                args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-                args.push(value);
+            let member_value = match evaluator.eval_expr(&mut callee_scope, &member.stx.member) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(coerce_error_to_throw_for_async(
+                  evaluator.vm,
+                  &mut callee_scope,
+                  err,
+                ))
               }
-            } else {
-              let value = evaluator
-                .eval_expr(&mut call_scope, &arg.stx.value)
-                .map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err)
-                })?;
-              call_scope.push_root(value)?;
-              args.push(value);
-            }
-          }
+            };
+            callee_scope.push_root(member_value)?;
+            let key = match evaluator.to_property_key_operator(&mut callee_scope, member_value) {
+              Ok(k) => k,
+              Err(err) => {
+                return Err(coerce_error_to_throw_for_async(
+                  evaluator.vm,
+                  &mut callee_scope,
+                  err,
+                ))
+              }
+            };
 
-          evaluator
-            .call(&mut call_scope, callee_value, this_value, &args)
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))
+            let reference = Reference::Property { base, key };
+            match evaluator.get_value_from_reference(&mut callee_scope, &reference) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(coerce_error_to_throw_for_async(
+                  evaluator.vm,
+                  &mut callee_scope,
+                  err,
+                ))
+              }
+            }
+          };
+          (callee_value, base)
         }
-        _ => Err(VmError::InvariantViolation(
-          "async post-await call did not contain member callee",
-        )),
+        _ => {
+          let callee_value =
+            async_eval_expr_after_await(evaluator, scope, &call.stx.callee, awaited_value)?;
+          (callee_value, Value::Undefined)
+        }
+      };
+
+      if call.stx.optional_chaining && is_nullish(callee_value) {
+        return Ok(Value::Undefined);
       }
+
+      let mut call_scope = scope.reborrow();
+      call_scope.push_roots(&[callee_value, this_value])?;
+
+      let mut args: Vec<Value> = Vec::new();
+      args
+        .try_reserve_exact(call.stx.arguments.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for arg in &call.stx.arguments {
+        if arg.stx.spread {
+          let spread_value = match evaluator.eval_expr(&mut call_scope, &arg.stx.value) {
+            Ok(v) => v,
+            Err(err) => {
+              return Err(coerce_error_to_throw_for_async(
+                evaluator.vm,
+                &mut call_scope,
+                err,
+              ))
+            }
+          };
+          call_scope.push_root(spread_value)?;
+
+          let mut iter = iterator::get_iterator(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut call_scope,
+            spread_value,
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?;
+          call_scope.push_roots(&[iter.iterator, iter.next_method])?;
+
+          while let Some(value) = iterator::iterator_step_value(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut call_scope,
+            &mut iter,
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?
+          {
+            evaluator.tick()?;
+            call_scope.push_root(value)?;
+            args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            args.push(value);
+          }
+        } else {
+          let value = match evaluator.eval_expr(&mut call_scope, &arg.stx.value) {
+            Ok(v) => v,
+            Err(err) => {
+              return Err(coerce_error_to_throw_for_async(
+                evaluator.vm,
+                &mut call_scope,
+                err,
+              ))
+            }
+          };
+          call_scope.push_root(value)?;
+          args.push(value);
+        }
+      }
+
+      evaluator
+        .call(&mut call_scope, callee_value, this_value, &args)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))
     }
 
     _ => Err(VmError::Unimplemented(
@@ -7538,63 +7602,23 @@ fn async_eval_var_decl_until_await(
       }
     };
 
-    let await_info: Option<(&Node<Expr>, AsyncResumeKind)> = match &*init.stx {
-      Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => Some((
-        &unary.stx.argument,
+    if let Some(await_arg) = await_arg_in_post_await_expr(init) {
+      // Suspend: we will resume and finish evaluating the initializer expression with the awaited
+      // value substituted as the `await` expression result.
+      let resume = if matches!(
+        &*init.stx,
+        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await
+      ) {
         AsyncResumeKind::VarDecl {
           stmt_index,
           declarator_index,
-        },
-      )),
-      Expr::Member(member) => match &*member.stx.left.stx {
-        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => Some((
-          &unary.stx.argument,
-          AsyncResumeKind::VarDeclExpr {
-            stmt_index,
-            declarator_index,
-          },
-        )),
-        _ => None,
-      },
-      Expr::ComputedMember(member) => match &*member.stx.object.stx {
-        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => Some((
-          &unary.stx.argument,
-          AsyncResumeKind::VarDeclExpr {
-            stmt_index,
-            declarator_index,
-          },
-        )),
-        _ => None,
-      },
-      Expr::Call(call) => match &*call.stx.callee.stx {
-        Expr::Member(member) => match &*member.stx.left.stx {
-          Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => Some((
-            &unary.stx.argument,
-            AsyncResumeKind::VarDeclExpr {
-              stmt_index,
-              declarator_index,
-            },
-          )),
-          _ => None,
-        },
-        Expr::ComputedMember(member) => match &*member.stx.object.stx {
-          Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => Some((
-            &unary.stx.argument,
-            AsyncResumeKind::VarDeclExpr {
-              stmt_index,
-              declarator_index,
-            },
-          )),
-          _ => None,
-        },
-        _ => None,
-      },
-      _ => None,
-    };
-
-    if let Some((await_arg, resume)) = await_info {
-      // Suspend: we will resume and finish evaluating the initializer expression with the awaited
-      // value substituted as the `await` expression result.
+        }
+      } else {
+        AsyncResumeKind::VarDeclExpr {
+          stmt_index,
+          declarator_index,
+        }
+      };
       let await_value = match evaluator.eval_expr(scope, await_arg) {
         Ok(v) => v,
         Err(err) => match async_body_result_from_error(evaluator.vm, scope, err) {
@@ -7646,45 +7670,19 @@ fn run_async_body(
           "async expression-body function resumed at non-zero statement index",
         ));
       }
-      let await_info: Option<(&Node<Expr>, AsyncResumeKind)> = match &*expr.stx {
-        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-          Some((&unary.stx.argument, AsyncResumeKind::Return))
-        }
-        Expr::Member(member) => match &*member.stx.left.stx {
-          Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-            Some((&unary.stx.argument, AsyncResumeKind::ReturnExprBody))
-          }
-          _ => None,
-        },
-        Expr::ComputedMember(member) => match &*member.stx.object.stx {
-          Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-            Some((&unary.stx.argument, AsyncResumeKind::ReturnExprBody))
-          }
-          _ => None,
-        },
-        Expr::Call(call) => match &*call.stx.callee.stx {
-          Expr::Member(member) => match &*member.stx.left.stx {
-            Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-              Some((&unary.stx.argument, AsyncResumeKind::ReturnExprBody))
-            }
-            _ => None,
-          },
-          Expr::ComputedMember(member) => match &*member.stx.object.stx {
-            Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-              Some((&unary.stx.argument, AsyncResumeKind::ReturnExprBody))
-            }
-            _ => None,
-          },
-          _ => None,
-        },
-        _ => None,
-      };
-
-      if let Some((await_arg, resume)) = await_info {
+      if let Some(await_arg) = await_arg_in_post_await_expr(expr) {
         evaluator.tick()?;
         let await_value = match evaluator.eval_expr(scope, await_arg) {
           Ok(v) => v,
           Err(err) => return async_body_result_from_error(evaluator.vm, scope, err),
+        };
+        let resume = if matches!(
+          &*expr.stx,
+          Expr::Unary(unary) if unary.stx.operator == OperatorName::Await
+        ) {
+          AsyncResumeKind::Return
+        } else {
+          AsyncResumeKind::ReturnExprBody
         };
         return Ok(AsyncBodyResult::Await {
           await_value,
@@ -7711,126 +7709,47 @@ fn run_async_body(
           continue;
         }
 
-        // Top-level `await` expression statement: `await expr;`
+        // Top-level `await` expression statement: `await expr;` and common post-await chains like
+        // `(await expr).prop;` / `(await expr).a().b;`.
         if let Stmt::Expr(expr_stmt) = &*stmt.stx {
-          if let Expr::Unary(unary) = &*expr_stmt.stx.expr.stx {
-            if unary.stx.operator == OperatorName::Await {
-              evaluator.tick()?;
-              let v = match evaluator.eval_expr(scope, &unary.stx.argument) {
-                Ok(v) => v,
-                Err(err) => return async_body_result_from_error(evaluator.vm, scope, err),
-              };
-              return Ok(AsyncBodyResult::Await {
-                await_value: v,
-                resume: AsyncResumeKind::Continue {
-                  next_stmt_index: idx + 1,
-                },
-              });
-            }
-          }
-
-          let await_arg: Option<&Node<Expr>> = match &*expr_stmt.stx.expr.stx {
-            Expr::Member(member) => match &*member.stx.left.stx {
-              Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-                Some(&unary.stx.argument)
-              }
-              _ => None,
-            },
-            Expr::ComputedMember(member) => match &*member.stx.object.stx {
-              Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-                Some(&unary.stx.argument)
-              }
-              _ => None,
-            },
-            Expr::Call(call) => match &*call.stx.callee.stx {
-              Expr::Member(member) => match &*member.stx.left.stx {
-                Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-                  Some(&unary.stx.argument)
-                }
-                _ => None,
-              },
-              Expr::ComputedMember(member) => match &*member.stx.object.stx {
-                Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-                  Some(&unary.stx.argument)
-                }
-                _ => None,
-              },
-              _ => None,
-            },
-            _ => None,
-          };
-
-          if let Some(await_arg) = await_arg {
+          if let Some(await_arg) = await_arg_in_post_await_expr(&expr_stmt.stx.expr) {
             evaluator.tick()?;
             let await_value = match evaluator.eval_expr(scope, await_arg) {
               Ok(v) => v,
               Err(err) => return async_body_result_from_error(evaluator.vm, scope, err),
             };
-            return Ok(AsyncBodyResult::Await {
-              await_value,
-              resume: AsyncResumeKind::ExprStmt { stmt_index: idx },
-            });
+            let resume = if matches!(
+              &*expr_stmt.stx.expr.stx,
+              Expr::Unary(unary) if unary.stx.operator == OperatorName::Await
+            ) {
+              AsyncResumeKind::Continue {
+                next_stmt_index: idx + 1,
+              }
+            } else {
+              AsyncResumeKind::ExprStmt { stmt_index: idx }
+            };
+            return Ok(AsyncBodyResult::Await { await_value, resume });
           }
         }
 
         // Top-level `return await expr;`
         if let Stmt::Return(ret) = &*stmt.stx {
           if let Some(value_expr) = &ret.stx.value {
-            if let Expr::Unary(unary) = &*value_expr.stx {
-              if unary.stx.operator == OperatorName::Await {
-                evaluator.tick()?;
-                let v = match evaluator.eval_expr(scope, &unary.stx.argument) {
-                  Ok(v) => v,
-                  Err(err) => return async_body_result_from_error(evaluator.vm, scope, err),
-                };
-                return Ok(AsyncBodyResult::Await {
-                  await_value: v,
-                  resume: AsyncResumeKind::Return,
-                });
-              }
-            }
-
-            let await_arg: Option<&Node<Expr>> = match &*value_expr.stx {
-              Expr::Member(member) => match &*member.stx.left.stx {
-                Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-                  Some(&unary.stx.argument)
-                }
-                _ => None,
-              },
-              Expr::ComputedMember(member) => match &*member.stx.object.stx {
-                Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-                  Some(&unary.stx.argument)
-                }
-                _ => None,
-              },
-              Expr::Call(call) => match &*call.stx.callee.stx {
-                Expr::Member(member) => match &*member.stx.left.stx {
-                  Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-                    Some(&unary.stx.argument)
-                  }
-                  _ => None,
-                },
-                Expr::ComputedMember(member) => match &*member.stx.object.stx {
-                  Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-                    Some(&unary.stx.argument)
-                  }
-                  _ => None,
-                },
-                _ => None,
-              },
-              _ => None,
-            };
-
-            if let Some(await_arg) = await_arg {
+            if let Some(await_arg) = await_arg_in_post_await_expr(value_expr) {
               evaluator.tick()?;
               let await_value = match evaluator.eval_expr(scope, await_arg) {
                 Ok(v) => v,
                 Err(err) => return async_body_result_from_error(evaluator.vm, scope, err),
               };
-              return Ok(AsyncBodyResult::Await {
-                await_value,
-                resume: AsyncResumeKind::ReturnExpr { stmt_index: idx },
-              });
+              let resume = if matches!(
+                &*value_expr.stx,
+                Expr::Unary(unary) if unary.stx.operator == OperatorName::Await
+              ) {
+                AsyncResumeKind::Return
+              } else {
+                AsyncResumeKind::ReturnExpr { stmt_index: idx }
+              };
+              return Ok(AsyncBodyResult::Await { await_value, resume });
             }
           }
         }

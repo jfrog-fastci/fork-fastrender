@@ -57,7 +57,8 @@ fn for_in_restores_lexical_env_on_uncatchable_error() {
   let mut rt = new_runtime();
   let err = rt
     // Trigger an uncatchable VM error inside the loop body so we can assert the loop restores its
-    // per-iteration lexical environment before unwinding.
+    // per-iteration lexical environment before unwinding. `debugger` is a no-op in this VM, so use
+    // an explicitly-unimplemented feature instead.
     .exec_script(r#"for (let k in {a:1}) { class C { m(){} } }"#)
     .unwrap_err();
   assert!(matches!(err, VmError::Unimplemented(_)));
