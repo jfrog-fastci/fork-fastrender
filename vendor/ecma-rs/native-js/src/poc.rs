@@ -13,6 +13,7 @@ use llvm_sys::core::{
 };
 use llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
 use std::ptr;
 
 use crate::llvm::gc::GC_STRATEGY;
@@ -350,7 +351,7 @@ unsafe fn llvm_get_or_add_fn(module: LLVMModuleRef, name: &str, ty: llvm_sys::pr
 }
 
 unsafe fn verify_module(module: LLVMModuleRef) {
-  let mut err: *mut i8 = ptr::null_mut();
+  let mut err: *mut c_char = ptr::null_mut();
   let failed = LLVMVerifyModule(
     module,
     LLVMVerifierFailureAction::LLVMReturnStatusAction,
