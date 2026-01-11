@@ -6,7 +6,8 @@
 //!
 //! To avoid this, mutator threads may explicitly transition into a **GC-safe
 //! region** before they block in native code. While in a GC-safe region, the
-//! safepoint coordinator treats the thread as already stopped and will scan it
+//! safepoint coordinator treats the thread as already quiescent: it does not
+//! wait for it to reach a cooperative safepoint poll, and instead scans roots
 //! using the last published safepoint context.
 //!
 //! # Contract

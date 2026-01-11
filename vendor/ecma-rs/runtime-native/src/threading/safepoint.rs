@@ -220,7 +220,7 @@ pub fn rt_gc_request_stop_the_world() -> u64 {
 
 /// Wait until all registered threads have acknowledged the current stop-the-world request.
 ///
-/// Threads marked as `parked` are treated as already quiescent.
+/// Threads marked as `parked` (or in a GC-safe/"native" region) are treated as already quiescent.
 pub fn rt_gc_wait_for_world_stopped() {
   let coord = coordinator();
 
@@ -423,9 +423,9 @@ fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
 /// 1) Per-thread root scopes (runtime-native handle stack).
 /// 2) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`.
 /// 3) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`).
-  /// 4) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
-  ///    - has observed `stop_epoch` (published `safepoint_epoch_observed == stop_epoch`), or
-  ///    - is in a GC-safe ("NativeSafe") region with a published safepoint context.
+/// 4) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
+///    - has observed `stop_epoch` (published `safepoint_epoch_observed == stop_epoch`), or
+///    - is in a GC-safe ("NativeSafe") region with a published safepoint context.
 ///
 /// # Panics
 /// Panics if `stop_epoch` is not an odd (stop-the-world) epoch.

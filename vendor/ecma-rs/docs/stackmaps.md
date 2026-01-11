@@ -19,7 +19,11 @@ When linking multiple objects, ELF linkers concatenate those section payloads, p
 **multiple independent StackMap v3 blobs back-to-back**, each starting with its own `version=3`
 header.
 
-This means runtime code must not assume `.llvm_stackmaps` is a single global header + tables.
+Linkers may also insert alignment padding between concatenated payloads (usually 0x00), and some
+toolchains have been observed to leave short non-zero “tail” bytes between blobs.
+
+This means runtime code must not assume `.llvm_stackmaps` is a single global header + tables or that
+blobs are perfectly packed without padding.
 
 Runtime-native provides helpers that handle both cases:
 
