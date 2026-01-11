@@ -645,7 +645,15 @@ fn find_program(names: &[&str]) -> Option<PathBuf> {
   for dir in std::env::split_paths(&path) {
     for name in names {
       let candidate = dir.join(name);
-      if candidate.is_file() {
+      if candidate.is_file()
+        && Command::new(&candidate)
+          .arg("--version")
+          .stdin(Stdio::null())
+          .stdout(Stdio::null())
+          .stderr(Stdio::null())
+          .status()
+          .is_ok_and(|s| s.success())
+      {
         return Some(candidate);
       }
     }
