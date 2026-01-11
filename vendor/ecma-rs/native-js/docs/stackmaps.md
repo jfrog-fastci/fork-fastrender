@@ -13,6 +13,21 @@ in-memory byte range:
 The native runtime (`runtime-native`) reads that byte range to locate safepoints and enumerate GC
 roots.
 
+## Why compiled→compiled calls must be statepointed
+
+LLVM stackmap records produced by statepoints are looked up by **return address**.
+
+If the GC runs inside some callee (due to allocation or an explicit safepoint poll), the stack
+walker must be able to recover GC roots for *every* frame, including all callers. The return
+address stored in the callee’s frame points into the caller at the callsite.
+
+If that callsite in the caller was emitted as a plain `call`, there is no stackmap record for the
+return address and precise GC cannot recover the caller’s live roots.
+
+Therefore `native-js` must emit **calls between compiled functions** as statepoints whenever the
+callee may trigger GC. Until effect analysis is wired in, we conservatively assume compiled callees
+are *may-GC* unless explicitly annotated `no_gc` / `leaf_no_alloc`.
+
 ## Two observed composition modes
 
 When linking multiple compilation units, `.llvm_stackmaps` is **not guaranteed** to be a single
@@ -56,4 +71,3 @@ needed to skip to the end of the blob. A robust decoder should:
 Linux regression tests covering both modes live in:
 
 - `native-js/tests/stackmaps_multimodule_linux.rs`
-

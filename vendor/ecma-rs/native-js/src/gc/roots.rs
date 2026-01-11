@@ -37,11 +37,17 @@
 //! Root a derived pointer only when the offset cannot be reconstructed later.
 
 use crate::gc::statepoint::StatepointEmitter;
+use crate::runtime_fn::GcEffect;
 use llvm_sys::core::{
-  LLVMBuildAlloca, LLVMBuildLoad2, LLVMBuildStore, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
-  LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMVoidTypeInContext,
+  LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildLoad2, LLVMBuildStore, LLVMCreateBuilderInContext,
+  LLVMDisposeBuilder, LLVMGetPointerAddressSpace, LLVMGetReturnType, LLVMGetTypeKind,
+  LLVMGlobalGetValueType, LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMTypeOf,
+  LLVMVoidTypeInContext,
 };
-use llvm_sys::prelude::{LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMTypeRef, LLVMValueRef};
+use llvm_sys::prelude::{
+  LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMTypeRef, LLVMValueRef,
+};
+use llvm_sys::LLVMTypeKind;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -173,76 +179,7 @@ impl GcFrame {
     out
   }
 
-  /// Emit a safepointed call and write relocated values back into all rooted
-  /// slots.
-  pub unsafe fn safepoint_call(
-    &self,
-    builder: LLVMBuilderRef,
-    statepoints: &mut StatepointEmitter,
-    callee: LLVMValueRef,
-    call_args: &[LLVMValueRef],
-  ) -> Option<LLVMValueRef> {
-    let roots: Vec<GcRoot> = self.rooted.borrow().iter().copied().collect();
-
-    // Deterministic ordering: all bases first (in insertion order), then derived
-    // pointers (in insertion order).
-    let mut base_slots = Vec::new();
-    let mut derived_roots: Vec<(GcSlot, GcSlot)> = Vec::new();
-    for root in roots {
-      match root {
-        GcRoot::Base(slot) => base_slots.push(slot),
-        GcRoot::Derived { base, derived } => derived_roots.push((base, derived)),
-      }
-    }
-
-    let mut base_slot_index: HashMap<GcSlot, u32> = HashMap::with_capacity(base_slots.len());
-    for (idx, slot) in base_slots.iter().copied().enumerate() {
-      base_slot_index.insert(slot, idx as u32);
-    }
-
-    let mut gc_live_slots = Vec::with_capacity(base_slots.len() + derived_roots.len());
-    gc_live_slots.extend_from_slice(&base_slots);
-    for &(_, derived) in &derived_roots {
-      gc_live_slots.push(derived);
-    }
-
-    let mut base_indices = Vec::with_capacity(gc_live_slots.len());
-    for (idx, _) in base_slots.iter().enumerate() {
-      base_indices.push(idx as u32);
-    }
-    for &(base, _) in &derived_roots {
-      let base_idx = *base_slot_index.get(&base).expect(
-        "derived root references base slot that is not rooted as a base (root_base must be called first)",
-      );
-      base_indices.push(base_idx);
-    }
-
-    let mut live_vals = Vec::with_capacity(gc_live_slots.len());
-    for (idx, slot) in gc_live_slots.iter().copied().enumerate() {
-      live_vals.push(self.load(builder, slot, &format!("gc_live{idx}")));
-    }
-
-    let sp = statepoints.emit_statepoint_call_with_base_indices(
-      builder,
-      callee,
-      call_args,
-      &live_vals,
-      &base_indices,
-    );
-
-    for (slot, relocated) in gc_live_slots.into_iter().zip(sp.relocated.iter().copied()) {
-      self.store(builder, slot, relocated);
-    }
-
-    sp.result
-  }
-
-  /// Like [`GcFrame::safepoint_call`], but supports an **indirect** callee (`ptr %fp`).
-  ///
-  /// `callee_fn_ty` must be the callee's function type (not a pointer type); it is used to attach
-  /// the required `elementtype(<fn-ty>)` attribute to the statepoint callee operand under LLVM 18
-  /// opaque pointers.
-  pub unsafe fn safepoint_call_indirect(
+  unsafe fn safepoint_call_inner(
     &self,
     builder: LLVMBuilderRef,
     statepoints: &mut StatepointEmitter,
@@ -274,7 +211,7 @@ impl GcFrame {
       gc_live_slots.push(derived);
     }
 
-    let mut base_indices = Vec::with_capacity(gc_live_slots.len());
+    let mut base_indices = Vec::with_capacity(gc_live_slots.len() + call_args.len());
     for (idx, _) in base_slots.iter().enumerate() {
       base_indices.push(idx as u32);
     }
@@ -285,9 +222,25 @@ impl GcFrame {
       base_indices.push(base_idx);
     }
 
-    let mut live_vals = Vec::with_capacity(gc_live_slots.len());
+    let num_rooted = gc_live_slots.len();
+    let mut live_vals = Vec::with_capacity(num_rooted + call_args.len());
     for (idx, slot) in gc_live_slots.iter().copied().enumerate() {
       live_vals.push(self.load(builder, slot, &format!("gc_live{idx}")));
+    }
+
+    // Auto-include any `ptr addrspace(1)` call arguments in the `"gc-live"` bundle.
+    //
+    // These may be *outgoing arguments* that the callee will read, so they must be tracked and
+    // relocatable at the statepoint even if the caller doesn't use them after the call.
+    for &arg in call_args {
+      let ty = LLVMTypeOf(arg);
+      if LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
+        && LLVMGetPointerAddressSpace(ty) == 1
+      {
+        let derived_idx = live_vals.len() as u32;
+        live_vals.push(arg);
+        base_indices.push(derived_idx);
+      }
     }
 
     let sp = statepoints.emit_statepoint_call_indirect(
@@ -299,11 +252,90 @@ impl GcFrame {
       &base_indices,
     );
 
-    for (slot, relocated) in gc_live_slots.into_iter().zip(sp.relocated.iter().copied()) {
-      self.store(builder, slot, relocated);
+    // Write back relocated values for rooted slots only. Call arguments appended to `live_vals`
+    // do not have backing slots; their relocation is handled by the statepoint lowering itself.
+    for (idx, slot) in gc_live_slots.into_iter().enumerate() {
+      self.store(builder, slot, sp.relocated[idx]);
     }
 
     sp.result
+  }
+
+  /// Emit a safepointed call and write relocated values back into all rooted
+  /// slots.
+  pub unsafe fn safepoint_call(
+    &self,
+    builder: LLVMBuilderRef,
+    statepoints: &mut StatepointEmitter,
+    callee: LLVMValueRef,
+    call_args: &[LLVMValueRef],
+  ) -> Option<LLVMValueRef> {
+    let callee_fn_ty = LLVMGlobalGetValueType(callee);
+    self.safepoint_call_inner(builder, statepoints, callee, callee_fn_ty, call_args)
+  }
+
+  /// Like [`GcFrame::safepoint_call`], but supports an **indirect** callee (`ptr %fp`).
+  ///
+  /// `callee_fn_ty` must be the callee's function type (not a pointer type); it is used to attach
+  /// the required `elementtype(<fn-ty>)` attribute to the statepoint callee operand under LLVM 18
+  /// opaque pointers.
+  pub unsafe fn safepoint_call_indirect(
+    &self,
+    builder: LLVMBuilderRef,
+    statepoints: &mut StatepointEmitter,
+    callee_ptr: LLVMValueRef,
+    callee_fn_ty: LLVMTypeRef,
+    call_args: &[LLVMValueRef],
+  ) -> Option<LLVMValueRef> {
+    self.safepoint_call_inner(builder, statepoints, callee_ptr, callee_fn_ty, call_args)
+  }
+
+  /// Emit a call to a compiled/user function, choosing between a plain call and a statepointed call.
+  ///
+  /// **Conservative default:** if `effect` is `None`, this assumes the callee is `may-GC` and emits a
+  /// statepoint. This ensures callers have stackmap records at the return address when GC can run
+  /// inside the callee.
+  pub unsafe fn compiled_call(
+    &self,
+    builder: LLVMBuilderRef,
+    statepoints: &mut StatepointEmitter,
+    callee: LLVMValueRef,
+    call_args: &[LLVMValueRef],
+    effect: Option<GcEffect>,
+  ) -> Option<LLVMValueRef> {
+    let callee_fn_ty = LLVMGlobalGetValueType(callee);
+    self.compiled_call_indirect(builder, statepoints, callee, callee_fn_ty, call_args, effect)
+  }
+
+  /// Like [`GcFrame::compiled_call`], but supports an indirect callee value.
+  pub unsafe fn compiled_call_indirect(
+    &self,
+    builder: LLVMBuilderRef,
+    statepoints: &mut StatepointEmitter,
+    callee_ptr: LLVMValueRef,
+    callee_fn_ty: LLVMTypeRef,
+    call_args: &[LLVMValueRef],
+    effect: Option<GcEffect>,
+  ) -> Option<LLVMValueRef> {
+    match effect.unwrap_or(GcEffect::MayGc) {
+      GcEffect::NoGc => {
+        let ret_ty = LLVMGetReturnType(callee_fn_ty);
+        let call = LLVMBuildCall2(
+          builder,
+          callee_fn_ty,
+          callee_ptr,
+          call_args.as_ptr().cast_mut(),
+          call_args.len() as u32,
+          b"call\0".as_ptr().cast(),
+        );
+        if LLVMGetTypeKind(ret_ty) == LLVMTypeKind::LLVMVoidTypeKind {
+          None
+        } else {
+          Some(call)
+        }
+      }
+      GcEffect::MayGc => self.safepoint_call_inner(builder, statepoints, callee_ptr, callee_fn_ty, call_args),
+    }
   }
 }
 
