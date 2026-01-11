@@ -62,6 +62,12 @@ fn parse_all_supports_concatenated_blobs() {
   let pad_len = (8 - (fixture_multi.len() % 8)) % 8;
   fixture_multi.extend(std::iter::repeat(0u8).take(pad_len));
 
+  // Some linkers/object configurations can introduce additional 0-filled padding
+  // between input sections even when both payloads are already 8-byte aligned
+  // (e.g. due to stricter-than-8 alignment on one input section). Ensure we
+  // tolerate it.
+  fixture_multi.extend_from_slice(&[0u8; 8]);
+
   fixture_multi.extend_from_slice(&fixture_b);
 
   // Trailing padding at end-of-section should be ignored.
