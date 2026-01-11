@@ -123,6 +123,27 @@ fn validate_body_syntax(
       ExprKind::ImportMeta => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`import.meta` is not supported yet");
       }
+      ExprKind::This => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "`this` is not supported yet");
+      }
+      ExprKind::Literal(lit) => match lit {
+        hir_js::Literal::Number(_) | hir_js::Literal::Boolean(_) => {}
+        hir_js::Literal::String(_) => {
+          push_unsupported_syntax(out, Span::new(file, expr.span), "string literals are not supported yet");
+        }
+        hir_js::Literal::Null => {
+          push_unsupported_syntax(out, Span::new(file, expr.span), "`null` is not supported yet");
+        }
+        hir_js::Literal::Undefined => {
+          push_unsupported_syntax(out, Span::new(file, expr.span), "`undefined` is not supported yet");
+        }
+        hir_js::Literal::BigInt(_) => {
+          push_unsupported_syntax(out, Span::new(file, expr.span), "`bigint` is not supported yet");
+        }
+        hir_js::Literal::Regex(_) => {
+          push_unsupported_syntax(out, Span::new(file, expr.span), "regex literals are not supported yet");
+        }
+      },
       ExprKind::Yield { .. } => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`yield` is not supported yet");
       }
@@ -131,6 +152,60 @@ fn validate_body_syntax(
       }
       ExprKind::Unary { op: UnaryOp::Await, .. } => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`await` is not supported yet");
+      }
+      ExprKind::Unary {
+        op: UnaryOp::Typeof | UnaryOp::Void | UnaryOp::Delete,
+        ..
+      } => {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, expr.span),
+          "unsupported unary operator in native-js strict subset",
+        );
+      }
+      ExprKind::Binary {
+        op:
+          hir_js::BinaryOp::Exponent
+          | hir_js::BinaryOp::ShiftRightUnsigned
+          | hir_js::BinaryOp::LogicalOr
+          | hir_js::BinaryOp::LogicalAnd
+          | hir_js::BinaryOp::NullishCoalescing
+          | hir_js::BinaryOp::In
+          | hir_js::BinaryOp::Instanceof
+          | hir_js::BinaryOp::Comma,
+        ..
+      } => {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, expr.span),
+          "unsupported binary operator in native-js strict subset",
+        );
+      }
+      ExprKind::Conditional { .. } => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "conditional expressions are not supported yet");
+      }
+      ExprKind::FunctionExpr { .. } => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "function expressions are not supported yet");
+      }
+      ExprKind::Assignment {
+        op:
+          hir_js::AssignOp::ShiftLeftAssign
+          | hir_js::AssignOp::ShiftRightAssign
+          | hir_js::AssignOp::ShiftRightUnsignedAssign
+          | hir_js::AssignOp::BitOrAssign
+          | hir_js::AssignOp::BitAndAssign
+          | hir_js::AssignOp::BitXorAssign
+          | hir_js::AssignOp::LogicalOrAssign
+          | hir_js::AssignOp::LogicalAndAssign
+          | hir_js::AssignOp::NullishAssign
+          | hir_js::AssignOp::ExponentAssign,
+        ..
+      } => {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, expr.span),
+          "unsupported assignment operator in native-js strict subset",
+        );
       }
       ExprKind::Call(call) => {
         if call.optional {
@@ -253,6 +328,9 @@ fn validate_body_syntax(
       ExprKind::Jsx(_) => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "JSX is not supported by native-js yet");
       }
+      ExprKind::Missing => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "unsupported expression in native-js strict subset");
+      }
       _ => {}
     }
   }
@@ -275,12 +353,15 @@ fn validate_body_syntax(
       StmtKind::Throw(_) => {
         push_unsupported_syntax(out, Span::new(file, stmt.span), "`throw` is not supported by native-js yet");
       }
-      StmtKind::ForIn { await_, .. } if *await_ => {
+      StmtKind::ForIn { .. } => {
         push_unsupported_syntax(
           out,
           Span::new(file, stmt.span),
-          "`for await (...)` is not supported by native-js yet",
+          "`for..in`/`for..of` statements are not supported by native-js yet",
         );
+      }
+      StmtKind::Switch { .. } => {
+        push_unsupported_syntax(out, Span::new(file, stmt.span), "`switch` is not supported by native-js yet");
       }
       StmtKind::Var(decl) => match decl.kind {
         VarDeclKind::Using | VarDeclKind::AwaitUsing => {
@@ -290,7 +371,15 @@ fn validate_body_syntax(
             "`using` declarations are not supported by native-js yet",
           );
         }
-        _ => {}
+        _ => {
+          if decl.declarators.iter().any(|d| d.init.is_none()) {
+            push_unsupported_syntax(
+              out,
+              Span::new(file, stmt.span),
+              "variable declarations must have an initializer in native-js strict subset",
+            );
+          }
+        }
       },
       _ => {}
     }

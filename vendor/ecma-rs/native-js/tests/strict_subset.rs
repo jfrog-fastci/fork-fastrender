@@ -115,6 +115,24 @@ fn rejects_array_literal() {
 }
 
 #[test]
+fn rejects_string_literal() {
+  let err = validate("const s = \"hi\";\nvoid s;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_conditional_expression() {
+  let err = validate("const x = true ? 1 : 2;\nvoid x;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_logical_or() {
+  let err = validate("const x = 1 || 2;\nvoid x;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
 fn rejects_member_access() {
   let err = validate("const x = Math.PI;\nvoid x;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
@@ -155,6 +173,37 @@ fn rejects_try_and_throw() {
         throw 1;
       } catch (e) {
       }
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_switch_statement() {
+  let err = validate(
+    r#"
+      switch (1) {
+        case 1:
+          break;
+        default:
+          break;
+      }
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_var_decl_without_initializer() {
+  let err = validate(
+    r#"
+      let x: number;
+      x = 1;
+      void x;
     "#,
     FileKind::Ts,
   )
