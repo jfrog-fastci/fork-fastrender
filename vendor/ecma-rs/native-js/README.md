@@ -316,7 +316,9 @@ The helper surface lives under `native_js::llvm`:
   - `set_gc_strategy(&FunctionValue, &str)` to mark a function with a custom `gc "<strategy>"` string (advanced)
 - `native_js::llvm::passes`
   - `rewrite_statepoints_for_gc(&Module, &TargetMachine)` (runs via `llvm-sys`
-    `LLVMRunPasses`, plus `verify<safepoint-ir>` in debug builds)
+    `LLVMRunPasses`, plus `verify<safepoint-ir>` in debug builds, and then
+    validates the resulting module with `Module::verify()` to fail fast on
+    invalid IR)
 
 `rewrite-statepoints-for-gc` only rewrites call sites that occur inside
 **GC-managed functions** (i.e. functions annotated with `gc "<strategy>"`), so
