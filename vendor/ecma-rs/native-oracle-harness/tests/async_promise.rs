@@ -10,8 +10,9 @@ fn fixture_path(name: &str) -> PathBuf {
 
 #[test]
 fn await_promise_resolve_returns_ok() {
-  let out = run_fixture_with_options(fixture_path("await_promise_resolve.js"), &OracleHarnessOptions::default())
-    .expect("fixture should run");
+  let out =
+    run_fixture_with_options(fixture_path("await_promise_resolve.js"), &OracleHarnessOptions::default())
+      .expect("fixture should run");
   assert_eq!(out, "ok");
 }
 
@@ -23,6 +24,16 @@ fn await_promise_reject_is_catchable() {
   )
   .expect("fixture should run");
   assert_eq!(out, "caught:boom");
+}
+
+#[test]
+fn await_promise_resolve_async_await_returns_ok() {
+  let out = run_fixture_with_options(
+    fixture_path("await_promise_resolve_async_await.js"),
+    &OracleHarnessOptions::default(),
+  )
+  .expect("fixture should run");
+  assert_eq!(out, "ok");
 }
 
 #[test]
