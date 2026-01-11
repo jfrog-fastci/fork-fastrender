@@ -34,7 +34,28 @@ pub fn stackmaps_bytes() -> &'static [u8] {
             end_addr >= start_addr,
             "invalid .llvm_stackmaps range: __stackmaps_end ({end_addr:#x}) < __stackmaps_start ({start_addr:#x})"
         );
-        slice::from_raw_parts(start, end_addr - start_addr)
+
+        let len = end_addr - start_addr;
+
+        // Stack maps are metadata; if this is enormous something went very wrong (e.g. the linker
+        // script wasn't applied and the symbols resolved to unrelated addresses).
+        const MAX_LEN: usize = 512 * 1024 * 1024; // 512 MiB
+        assert!(
+            len <= MAX_LEN,
+            "invalid .llvm_stackmaps length: {len} bytes (max {MAX_LEN}); linker script probably not applied"
+        );
+
+        // StackMap v3 payload contains 64-bit fields and records are 8-byte aligned.
+        assert!(
+            start_addr % 8 == 0,
+            ".llvm_stackmaps pointer misaligned: start={start_addr:#x}"
+        );
+        assert!(
+            len % 8 == 0,
+            ".llvm_stackmaps length misaligned: len={len} (expected multiple of 8)"
+        );
+
+        slice::from_raw_parts(start, len)
     }
 }
 
@@ -53,9 +74,10 @@ mod tests {
     core::arch::global_asm!(
         r#"
         .section .llvm_stackmaps,"a",@progbits
+        .p2align 3
         .globl __stackmaps_start
         __stackmaps_start:
-        .byte 0xDE, 0xAD, 0xBE, 0xEF
+        .byte 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE
         .globl __stackmaps_end
         __stackmaps_end:
         .text
@@ -64,6 +86,9 @@ mod tests {
 
     #[test]
     fn stackmaps_bytes_reads_section_range() {
-        assert_eq!(stackmaps_bytes(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(
+            stackmaps_bytes(),
+            &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE]
+        );
     }
 }
