@@ -121,8 +121,8 @@ Expected artifacts:
 The stackmaps linker-script fragment you need depends on whether you're producing **PIE** output and
 which linker your C toolchain drives:
 
-- Non-PIE executables: `runtime-native/link/stackmaps_nopie.ld`
-- PIE executables / DSOs:
+- non-PIE executables (`-no-pie`, default policy): `runtime-native/link/stackmaps_nopie.ld`
+- PIE executables / DSOs (`-pie`):
   - lld: `runtime-native/link/stackmaps.ld`
   - GNU ld: `runtime-native/link/stackmaps_gnuld.ld`
 
@@ -132,21 +132,23 @@ To check which linker `cc` uses:
 cc -Wl,--version
 ```
 
-Example (lld, explicitly selected; from the workspace root):
+Example (non-PIE, lld; explicitly selected; from the workspace root):
 
 ```bash
 clang-18 -fuse-ld=lld-18 \
+  -no-pie \
   -I runtime-native/include \
-  -Wl,-T,runtime-native/link/stackmaps.ld \
+  -Wl,-T,runtime-native/link/stackmaps_nopie.ld \
   /path/to/program.c \
   target/release/libruntime_native.a \
   -o program
 ```
 
-Example (GNU ld; from the workspace root):
+Example (PIE, GNU ld; from the workspace root):
 
 ```bash
 cc -std=c99 \
+  -pie \
   -I runtime-native/include \
   -Wl,-T,runtime-native/link/stackmaps_gnuld.ld \
   /path/to/program.c \
@@ -167,9 +169,9 @@ contain **multiple independent StackMap v3 blobs** back-to-back. The runtime’s
 parser (`runtime_native::stackmaps::StackMaps::parse`) handles this by scanning
 all blobs and building one callsite index.
 
-The `runtime-native/link/stackmaps.ld` (lld) and `runtime-native/link/stackmaps_gnuld.ld` (GNU ld)
-linker script fragments (and `runtime-native/link/stackmaps_nopie.ld` for non-PIE) define all of
-these symbols and also provide legacy aliases:
+The `runtime-native/link/stackmaps_nopie.ld` (non-PIE), `runtime-native/link/stackmaps.ld` (PIE, lld),
+and `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE) linker script fragments define all of these
+symbols and also provide legacy aliases:
 
 - `__fastr_stackmaps_{start,end}` and `__llvm_stackmaps_{start,end}`
 
@@ -183,11 +185,14 @@ symbols, so the linker script (or an equivalent mechanism) is required.
 When linking from C/clang, pass the appropriate fragment explicitly:
 
 ```bash
-# lld:
-cc ... -Wl,-T,runtime-native/link/stackmaps.ld ...
+# non-PIE:
+cc ... -no-pie -Wl,-T,runtime-native/link/stackmaps_nopie.ld ...
 
-# GNU ld:
-cc ... -Wl,-T,runtime-native/link/stackmaps_gnuld.ld ...
+# PIE + lld:
+cc ... -pie -Wl,-T,runtime-native/link/stackmaps.ld ...
+
+# PIE + GNU ld:
+cc ... -pie -Wl,-T,runtime-native/link/stackmaps_gnuld.ld ...
 ```
 
 When linking from Rust, you still need to pass the script to the final link step

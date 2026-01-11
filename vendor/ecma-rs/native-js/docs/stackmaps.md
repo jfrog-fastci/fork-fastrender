@@ -5,7 +5,11 @@ LLVM emits stackmap metadata for statepoints/patchpoints into the ELF section:
 > `.llvm_stackmaps` (StackMap v3)
 
 The `native-js` link pipeline preserves this data and exports global symbols that delimit the
-in-memory byte range (see `native-js/src/link.rs` and `runtime-native/link/stackmaps.ld`):
+in-memory byte range (see `native-js/src/link.rs` and `runtime-native/link/` linker fragments):
+
+- `runtime-native/link/stackmaps_nopie.ld` (non-PIE)
+- `runtime-native/link/stackmaps.ld` (PIE, lld-friendly; stackmaps may be merged into `.data.rel.ro`)
+- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening; avoids RWX segments)
 
 - Canonical:
   - `__start_llvm_stackmaps`

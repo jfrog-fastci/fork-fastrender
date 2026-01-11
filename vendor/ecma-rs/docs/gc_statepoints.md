@@ -17,7 +17,10 @@ See also (repo-local, complementary):
 - `docs/llvm_statepoints_llvm18.md` — verifier-correct minimal fixture IR
 - `docs/llvm_statepoint_directives.md` — overriding statepoint ID / patch bytes when using `rewrite-statepoints-for-gc`
 - `docs/runtime-native.md` — broader runtime ABI notes (thread anchoring, stackmap parsing, linker script usage)
-- `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat) — linker script fragment that retains stackmaps and defines start/end symbols
+- `runtime-native/link/stackmaps_nopie.ld` (non-PIE)
+- `runtime-native/link/stackmaps.ld` (PIE, lld-friendly)
+- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE) — linker script fragments that retain stackmaps and define start/end symbols
+- `runtime-native/stackmaps.ld` (compat) — older alias kept for build script compatibility
 
 The ABI assumptions documented here are guarded by fast regression scripts:
 

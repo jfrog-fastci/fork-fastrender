@@ -28,8 +28,10 @@ without having to reverse-engineer assumptions from codegen.
 >     (plus compat aliases like `__start_llvm_stackmaps/__stop_llvm_stackmaps` and
 >     `__fastr_stackmaps_start/__fastr_stackmaps_end`) via a tiny linker-script fragment.
 >
-> See: `scripts/native_js_link_linux.sh` and `runtime-native/link/stackmaps.ld`
-> (`runtime-native/stackmaps.ld` is a compatibility alias).
+> See: `scripts/native_js_link_linux.sh` (PIE policy) and the linker fragments under
+> `runtime-native/link/` (`stackmaps_nopie.ld` for non-PIE; `stackmaps.ld` for PIE/lld;
+> `stackmaps_gnuld.ld` for GNU ld PIE). `runtime-native/stackmaps.ld` is kept as a compatibility
+> alias for older build scripts.
 
 ## ABI header + external smoke test
 

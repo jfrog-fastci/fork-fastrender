@@ -3,7 +3,8 @@
 LLVM statepoints emit GC stack map metadata into a loadable ELF section named
 `.llvm_stackmaps` (and sometimes `.llvm_faultmaps`).
 When linking PIE binaries we prefer to relocate these bytes into
-`.data.rel.ro.llvm_stackmaps` so runtime relocations can be applied safely.
+`.data.rel.ro.llvm_stackmaps` in the *input objects* so runtime relocations can be applied safely
+(the linker script may then merge them into a broader RELRO output section like `.data.rel.ro`).
 
 ## Multi-object linking: concatenated stackmap blobs
 
@@ -39,17 +40,18 @@ that uses `KEEP(*(.llvm_stackmaps ...))`:
 # Non-PIE executables (default policy in this repo):
 -Wl,--gc-sections -Wl,-T,vendor/ecma-rs/runtime-native/link/stackmaps_nopie.ld
 
-# PIE/shared objects:
+# PIE/shared objects (lld-friendly; see PIE section below):
 -Wl,--gc-sections -Wl,-T,vendor/ecma-rs/runtime-native/link/stackmaps.ld
 ```
 
-This works with both **GNU ld** and **lld**:
+Both fragments work with **GNU ld** and **lld**, but they target different layouts:
 
-- `runtime-native/link/stackmaps_nopie.ld` anchors at `INSERT AFTER .text;` (which is always present)
-  and keeps stackmaps in a normal read-only section.
-- `runtime-native/link/stackmaps.ld` is the lld-oriented **PIE** fragment; it anchors at
-  `INSERT BEFORE .dynamic;` so writable stackmaps (needed for PIE relocations) land in the RELRO/data
-  region rather than risking an RWX text segment.
+- `runtime-native/link/stackmaps_nopie.ld`: non-PIE output; emits a dedicated `.llvm_stackmaps`
+  output section and anchors at `INSERT AFTER .text;` (which is always present).
+- `runtime-native/link/stackmaps.ld`: PIE/lld-friendly; anchors at `INSERT BEFORE .dynamic;` and
+  places stackmaps/faultmaps into RELRO-friendly data (the standard `.data.rel.ro` output section)
+  so writable stackmaps (needed for PIE relocations) don't land in the executable text segment
+  (RWX).
 
 For GNU ld **PIE** builds where stackmaps must be writable for relocations,
 `scripts/native_link.sh` selects `runtime-native/link/stackmaps_gnuld.ld` automatically to keep
@@ -57,8 +59,8 @@ stackmaps/faultmaps in dedicated `.data.rel.ro.llvm_*` output sections.
 
 It also defines stable boundary symbols for runtime discovery (see below).
 
-> Note: `runtime-native/link/stackmaps.ld` is injected via the GNU ld/LLD linker-script
-> `INSERT` mechanism (anchored at `INSERT BEFORE .dynamic;`). If you use a linker that
+> Note: the stackmaps fragments are injected via the GNU ld/LLD linker-script
+> `INSERT` mechanism. If you use a linker that
 > doesn't support `INSERT` (some
 > alternative linkers do not), switch to GNU ld or lld (e.g. `clang-18 -fuse-ld=lld-18`),
 > or avoid `--gc-sections`.
@@ -98,7 +100,10 @@ always inject a linker-script fragment and export:
 
 For linking arbitrary programs against `runtime-native` (e.g. from C), see:
 
-- `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat), and
+- `runtime-native/link/stackmaps_nopie.ld` (non-PIE)
+- `runtime-native/link/stackmaps.ld` (PIE, lld-friendly)
+- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE)
+- `runtime-native/stackmaps.ld` (compat), and
 - `runtime-native/README.md`
 
 For the Linux AOT/PIE linking policy used by the native-js toolchain scripts, see:
@@ -139,7 +144,8 @@ llvm-objcopy \
 
 The more general `scripts/native_link.sh` uses `llvm-objcopy --set-section-flags` when
 `ECMA_RS_NATIVE_PIE=1` and relies on the injected `runtime-native/link/stackmaps.ld` linker script
-to place stackmaps in a writable/RELRO-friendly output section.
+to place stackmaps in a writable/RELRO-friendly output section (non-PIE uses
+`runtime-native/link/stackmaps_nopie.ld`).
 
 Current default policy in `native-js` and `native_link.sh`: **non-PIE** (`-no-pie`) unless the
 caller opts into PIE explicitly (note: non-PIE disables main-executable ASLR on Linux).
