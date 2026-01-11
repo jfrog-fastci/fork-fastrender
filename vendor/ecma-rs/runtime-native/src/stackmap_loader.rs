@@ -19,7 +19,8 @@ const STACKMAP_SECTION_NAMES: [&str; 3] = [
 ///
 /// This repo's linker scripts define stable boundary symbols:
 /// - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
-///   - `runtime-native/link/stackmaps.ld` (lld-friendly)
+///   - `runtime-native/link/stackmaps_nopie.ld` (non-PIE)
+///   - `runtime-native/link/stackmaps.ld` (PIE, lld-friendly)
 ///   - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening)
 ///
 /// They also define aliases:
