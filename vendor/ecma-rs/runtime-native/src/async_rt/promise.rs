@@ -218,13 +218,25 @@ fn drain_reactions(ptr: *mut RtPromise) {
 }
 
 pub(crate) fn promise_is_handled(p: PromiseRef) -> bool {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
+  if p.is_null() {
     // Null is a "never settles" sentinel and is not eligible for rejection tracking.
     return true;
   }
 
-  (unsafe { &(*ptr).header.flags }.load(Ordering::Acquire) & PROMISE_FLAG_HANDLED) != 0
+  // IMPORTANT: do not cast to `RtPromise` here.
+  //
+  // `PromiseRef` is an ABI handle whose concrete allocation layout depends on the promise producer:
+  // - `async_rt::promise` allocates `RtPromise` (which embeds `PromiseHeader` + additional fields),
+  // - native async ABI promises are arbitrary `PromiseHeader + payload` allocations created by
+  //   generated code.
+  //
+  // The rejection tracker only needs the `PromiseHeader` prefix; dereferencing `RtPromise` would be
+  // UB for smaller native-ABI promise layouts.
+  let header = promise_header_ref(p);
+  if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+  unsafe { &*header }.is_handled()
 }
 
 pub(crate) fn promise_mark_handled(p: PromiseRef) {

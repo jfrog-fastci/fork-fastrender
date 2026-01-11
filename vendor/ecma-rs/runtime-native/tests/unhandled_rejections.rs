@@ -1,4 +1,5 @@
 use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::async_abi::PromiseHeader;
 use runtime_native::test_util::{PromiseRejectionEvent, TestRuntimeGuard};
 
 extern "C" fn noop(_data: *mut u8) {}
@@ -93,6 +94,87 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
 
   // Next microtask checkpoint: should report `rejectionhandled` for `p`.
   while runtime_native::rt_async_poll_legacy() {}
+  assert_eq!(
+    runtime_native::test_util::drain_promise_rejection_events(),
+    vec![PromiseRejectionEvent::RejectionHandled { promise: p }]
+  );
+}
+
+#[test]
+fn native_promise_rejection_is_reported_as_unhandled() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut promise_header = Box::new(PromiseHeader {
+    state: core::sync::atomic::AtomicU8::new(0),
+    reactions: core::sync::atomic::AtomicUsize::new(0),
+    flags: core::sync::atomic::AtomicU8::new(0),
+  });
+  let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
+
+  unsafe {
+    runtime_native::rt_promise_init(p);
+    runtime_native::rt_promise_reject(p);
+  }
+
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert_eq!(
+    runtime_native::test_util::drain_promise_rejection_events(),
+    vec![PromiseRejectionEvent::UnhandledRejection { promise: p }]
+  );
+}
+
+#[test]
+fn native_promise_mark_handled_before_checkpoint_suppresses_unhandled() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut promise_header = Box::new(PromiseHeader {
+    state: core::sync::atomic::AtomicU8::new(0),
+    reactions: core::sync::atomic::AtomicUsize::new(0),
+    flags: core::sync::atomic::AtomicU8::new(0),
+  });
+  let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
+
+  unsafe {
+    runtime_native::rt_promise_init(p);
+    runtime_native::rt_promise_reject(p);
+    runtime_native::rt_promise_mark_handled(p);
+  }
+
+  while runtime_native::rt_async_poll_legacy() {}
+  assert_eq!(
+    runtime_native::test_util::drain_promise_rejection_events(),
+    Vec::<PromiseRejectionEvent>::new()
+  );
+}
+
+#[test]
+fn native_promise_mark_handled_after_unhandled_reports_rejectionhandled() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut promise_header = Box::new(PromiseHeader {
+    state: core::sync::atomic::AtomicU8::new(0),
+    reactions: core::sync::atomic::AtomicUsize::new(0),
+    flags: core::sync::atomic::AtomicU8::new(0),
+  });
+  let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
+
+  unsafe {
+    runtime_native::rt_promise_init(p);
+    runtime_native::rt_promise_reject(p);
+  }
+
+  while runtime_native::rt_async_poll_legacy() {}
+  assert_eq!(
+    runtime_native::test_util::drain_promise_rejection_events(),
+    vec![PromiseRejectionEvent::UnhandledRejection { promise: p }]
+  );
+
+  unsafe {
+    runtime_native::rt_promise_mark_handled(p);
+  }
+  while runtime_native::rt_async_poll_legacy() {}
+
   assert_eq!(
     runtime_native::test_util::drain_promise_rejection_events(),
     vec![PromiseRejectionEvent::RejectionHandled { promise: p }]

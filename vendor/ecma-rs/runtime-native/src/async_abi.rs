@@ -77,6 +77,21 @@ impl PromiseHeader {
       .compare_exchange(Self::PENDING, target, Ordering::AcqRel, Ordering::Acquire)
       .is_ok()
   }
+
+  /// Promise has been marked "handled" for unhandled rejection tracking.
+  pub const FLAG_HANDLED: u8 = 0x1;
+
+  #[inline]
+  pub fn is_handled(&self) -> bool {
+    (self.flags.load(Ordering::Acquire) & Self::FLAG_HANDLED) != 0
+  }
+
+  /// Mark the promise as handled and return whether this call transitioned the flag.
+  #[inline]
+  pub fn mark_handled(&self) -> bool {
+    let prev = self.flags.fetch_or(Self::FLAG_HANDLED, Ordering::AcqRel);
+    (prev & Self::FLAG_HANDLED) == 0
+  }
 }
 
 /// Opaque pointer to a promise header (and therefore the start of a generated `Promise<T>`).

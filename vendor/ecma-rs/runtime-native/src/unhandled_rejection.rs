@@ -72,6 +72,7 @@ pub(crate) fn microtask_checkpoint() {
       tracker
         .events
         .push(PromiseRejectionEvent::UnhandledRejection { promise });
+      eprintln!("unhandledrejection: {promise:?}");
       tracker.outstanding_rejected.insert(promise);
     }
   }
@@ -82,6 +83,7 @@ pub(crate) fn microtask_checkpoint() {
       tracker
         .events
         .push(PromiseRejectionEvent::RejectionHandled { promise });
+      eprintln!("rejectionhandled: {promise:?}");
     }
   }
 }

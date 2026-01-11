@@ -228,6 +228,7 @@ extern "C" {
   pub fn rt_promise_init(p: PromiseRef);
   pub fn rt_promise_fulfill(p: PromiseRef);
   pub fn rt_promise_reject(p: PromiseRef);
+  pub fn rt_promise_mark_handled(p: PromiseRef);
   pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
   pub fn rt_async_spawn_deferred(coro: *mut Coroutine) -> PromiseRef;
   pub fn rt_async_cancel_all();
@@ -340,6 +341,7 @@ mod tests {
       "rt_promise_init(",
       "rt_promise_fulfill(",
       "rt_promise_reject(",
+      "rt_promise_mark_handled(",
       "rt_async_spawn(",
       "rt_async_spawn_deferred(",
       "rt_async_cancel_all(",

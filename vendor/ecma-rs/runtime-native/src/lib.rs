@@ -379,6 +379,32 @@ pub unsafe extern "C" fn rt_promise_reject(_p: PromiseRef) {
 pub unsafe extern "C" fn rt_promise_try_reject(p: PromiseRef) -> bool {
   crate::ffi::abort_on_panic(|| unsafe { crate::native_async::promise_try_reject(p) })
 }
+
+/// Mark a promise as handled for unhandled-rejection tracking.
+///
+/// This is called by generated code whenever it attaches a rejection handler to a promise
+/// (e.g. `.catch`, `.then(_, onRejected)`, or `await`).
+///
+/// # Safety
+/// `p` must point to a valid promise allocation whose prefix is [`async_abi::PromiseHeader`].
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_mark_handled(p: PromiseRef) {
+  crate::ffi::abort_on_panic(|| {
+    if p.is_null() {
+      return;
+    }
+
+    let ptr = p.0 as *mut async_abi::PromiseHeader;
+    if (ptr as usize) % core::mem::align_of::<async_abi::PromiseHeader>() != 0 {
+      std::process::abort();
+    }
+
+    // Mark the promise handled (idempotent) and notify the tracker.
+    let header = unsafe { &*ptr };
+    header.mark_handled();
+    unhandled_rejection::on_handle(p);
+  })
+}
 /// Request a stop-the-world GC safepoint.
 ///
 /// Internal runtime hook; not a stable public API.
@@ -719,6 +745,7 @@ mod tests {
       "bool rt_promise_try_fulfill(PromiseRef p);",
       "void rt_promise_reject(PromiseRef p);",
       "bool rt_promise_try_reject(PromiseRef p);",
+      "void rt_promise_mark_handled(PromiseRef p);",
       "uint8_t* rt_promise_payload_ptr(PromiseRef p);",
       "PromiseRef rt_async_spawn(CoroutineRef coro);",
       "PromiseRef rt_async_spawn_deferred(CoroutineRef coro);",
@@ -813,6 +840,7 @@ mod tests {
     let _promise_try_fulfill: unsafe extern "C" fn(PromiseRef) -> bool = rt_promise_try_fulfill;
     let _promise_reject: unsafe extern "C" fn(PromiseRef) = rt_promise_reject;
     let _promise_try_reject: unsafe extern "C" fn(PromiseRef) -> bool = rt_promise_try_reject;
+    let _promise_mark_handled: unsafe extern "C" fn(PromiseRef) = rt_promise_mark_handled;
     let _promise_payload_ptr: extern "C" fn(PromiseRef) -> *mut u8 = rt_promise_payload_ptr;
     let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
     let _async_spawn_deferred: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn_deferred;
@@ -903,6 +931,7 @@ mod tests {
       _promise_try_fulfill,
       _promise_reject,
       _promise_try_reject,
+      _promise_mark_handled,
       _promise_payload_ptr,
       _async_spawn,
       _async_cancel_all,

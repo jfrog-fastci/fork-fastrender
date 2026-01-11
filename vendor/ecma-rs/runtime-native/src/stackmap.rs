@@ -72,3 +72,4 @@ pub use crate::stackmaps::{
   CallSite, CallsiteEntry, LiveOut, Location, StackMap, StackMapError, StackMapRecord, StackMaps,
   StackSizeRecord,
 };
+

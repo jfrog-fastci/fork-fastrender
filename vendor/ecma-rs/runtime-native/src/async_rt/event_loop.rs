@@ -244,6 +244,7 @@ impl EventLoop {
         }
       }
     }
+    crate::unhandled_rejection::microtask_checkpoint();
     did_work
   }
 

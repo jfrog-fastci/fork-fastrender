@@ -132,9 +132,15 @@ fn promise_register_reaction(p: *mut PromiseHeader, node: *mut PromiseReactionNo
     return;
   }
 
-  // Mark "handled" as soon as someone attaches a reaction (await/then). This is a placeholder for
-  // future unhandled rejection tracking.
-  unsafe { &(*p).flags }.fetch_or(0x1, Ordering::Release);
+  // Mark "handled" as soon as someone attaches a reaction (await/then).
+  //
+  // This mirrors HTML/Node's notion that registering a rejection handler marks a promise as
+  // handled for the purposes of unhandled rejection tracking.
+  let promise = promise_handle_from_header(p);
+  unsafe {
+    (*p).mark_handled();
+  }
+  crate::unhandled_rejection::on_handle(promise);
 
   push_reaction(p, node);
 
@@ -193,6 +199,11 @@ pub(crate) unsafe fn promise_try_reject(p: AbiPromiseRef) -> bool {
   }
 
   state.store(PromiseHeader::REJECTED, Ordering::Release);
+
+  // If no one attached a handler yet, schedule unhandled-rejection tracking.
+  if unsafe { !(*header).is_handled() } {
+    crate::unhandled_rejection::on_reject(p);
+  }
   drain_reactions(header);
   true
 }
