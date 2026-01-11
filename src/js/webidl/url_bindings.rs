@@ -205,6 +205,13 @@ fn array_to_iterator(
     let next_key = rt.property_key_from_str("next")?;
     rt.define_data_property(iter, next_key, next, false)?;
 
+    // Iterator objects returned by URLSearchParams.{entries,keys,values} must be iterable:
+    // https://tc39.es/ecma262/#sec-%arrayiteratorprototype%-@@iterator
+    let iterator = rt.alloc_function_value(|_rt, this, _args| Ok(this))?;
+    roots.push(rt.heap_mut().add_root(iterator)?);
+    let iter_key = rt.symbol_iterator()?;
+    rt.define_data_property(iter, iter_key, iterator, false)?;
+
     Ok(iter)
   })();
 

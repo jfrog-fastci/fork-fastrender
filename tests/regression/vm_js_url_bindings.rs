@@ -366,6 +366,30 @@ fn urlsearchparams_size_sort_and_iteration() {
 }
 
 #[test]
+fn urlsearchparams_iterators_are_iterable() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let params = new_url_search_params(&mut rt, global, Some("a=1&b=2"));
+  let iter_key = rt.symbol_iterator().unwrap();
+
+  for method_name in ["entries", "keys", "values"] {
+    let iter = call_method(&mut rt, params, method_name, &[]);
+    let iter_method = rt.get(iter, iter_key).unwrap();
+    assert!(
+      rt.is_callable(iter_method),
+      "expected URLSearchParams.{method_name}() iterator to have a callable [Symbol.iterator]"
+    );
+    let returned = call(&mut rt, iter_method, iter, &[]);
+    assert_eq!(
+      returned, iter,
+      "expected URLSearchParams.{method_name}() iterator [Symbol.iterator]() to return itself"
+    );
+  }
+}
+
+#[test]
 fn url_instance_initialization_survives_gc_pressure() {
   // Force a GC cycle before essentially every heap allocation to ensure that instance
   // initialization doesn't rely on Rust locals being traced.
