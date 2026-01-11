@@ -50,8 +50,9 @@ derive_required_symbols() {
       | sed -E 's/^[^A-Za-z0-9_]*//; s/[[:space:]]*\($//' \
       || true
 
-    # Variable export (not matched by the function regex).
+    # Variable exports (not matched by the function regex).
     echo "RT_GC_EPOCH"
+    echo "RT_THREAD"
   } | sort -u >"${out_file}"
 
   if [[ ! -s "${out_file}" ]]; then
