@@ -1741,13 +1741,13 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("      }\n");
   out.push_str("    }\n");
   out.push_str("    ConvertedValue::Record { value_ty, entries, .. } => {\n");
-  out.push_str("      let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();\n");
+  out.push_str("      let mut out: Vec<(String, BindingValue<RtJsValue<Host, R>>)> = Vec::with_capacity(entries.len());\n");
   out.push_str("      for (k, v) in entries {\n");
   out.push_str(
-    "        map.insert(k, converted_value_to_binding_value::<Host, R>(rt, ctx, &value_ty, v)?);\n",
+    "        out.push((k, converted_value_to_binding_value::<Host, R>(rt, ctx, &value_ty, v)?));\n",
   );
   out.push_str("      }\n");
-  out.push_str("      BindingValue::Dictionary(map)\n");
+  out.push_str("      BindingValue::Record(out)\n");
   out.push_str("    }\n");
   out.push_str("    ConvertedValue::Dictionary { name, members } => {\n");
   out.push_str("      let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();\n");
@@ -1766,7 +1766,14 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("      BindingValue::Dictionary(map)\n");
   out.push_str("    }\n");
   out.push_str("    ConvertedValue::Union { member_ty, value } => {\n");
-  out.push_str("      return converted_value_to_binding_value::<Host, R>(rt, ctx, &member_ty, *value);\n");
+  out.push_str("      let member_type = member_ty.to_string();\n");
+  out.push_str(
+    "      let value = converted_value_to_binding_value::<Host, R>(rt, ctx, &member_ty, *value)?;\n",
+  );
+  out.push_str("      BindingValue::Union {\n");
+  out.push_str("        member_type,\n");
+  out.push_str("        value: Box::new(value),\n");
+  out.push_str("      }\n");
   out.push_str("    }\n");
   out.push_str("  })\n");
   out.push_str("}\n\n");

@@ -17,7 +17,10 @@ test = false
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 conformance-harness = { path = "../vendor/ecma-rs/conformance-harness" }
-fastrender = { path = ".." }
+# `xtask` uses a tiny subset of the renderer crate (mostly committed WebIDL snapshots) and should
+# stay as lightweight as possible. Avoid compiling optional heavy dependencies (e.g. AVIF via
+# `libaom-sys`) when building `xtask` and its integration tests.
+fastrender = { path = "..", default-features = false }
 # `xtask js wpt-dom` defaults to exercising the in-tree vm-js backend, so ensure that backend is
 # compiled in when building xtask.
 js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner", features = ["vmjs"] }

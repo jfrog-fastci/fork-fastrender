@@ -247,6 +247,81 @@ fn legacy_attribute_wrappers_do_not_duplicate_rust_symbols() {
 }
 
 #[test]
+fn legacy_converted_value_to_binding_value_preserves_union_and_record_wrappers() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  let idl = r#"
+    [Exposed=Window]
+    interface Foo {
+      undefined bar(optional (DOMString or long) value);
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Legacy,
+  )
+  .unwrap();
+
+  let record_start = out
+    .find("ConvertedValue::Record")
+    .expect("expected legacy bindings to match ConvertedValue::Record");
+  let dictionary_start = out[record_start..]
+    .find("ConvertedValue::Dictionary")
+    .map(|idx| record_start + idx)
+    .expect("expected ConvertedValue::Dictionary to appear after ConvertedValue::Record");
+  let record_arm = &out[record_start..dictionary_start];
+
+  assert!(
+    record_arm.contains("BindingValue::Record("),
+    "expected ConvertedValue::Record arm to construct BindingValue::Record"
+  );
+  assert!(
+    !record_arm.contains("BindingValue::Dictionary("),
+    "ConvertedValue::Record must not be coerced into BindingValue::Dictionary"
+  );
+  assert!(
+    !record_arm.contains("BTreeMap"),
+    "ConvertedValue::Record arm must not allocate a BTreeMap (records preserve ordering)"
+  );
+
+  let union_start = out
+    .find("ConvertedValue::Union")
+    .expect("expected legacy bindings to match ConvertedValue::Union");
+  let union_arm = &out[union_start..];
+
+  assert!(
+    union_arm.contains("let member_type = member_ty.to_string();"),
+    "expected union conversion to preserve the selected member type"
+  );
+  assert!(
+    union_arm.contains("BindingValue::Union"),
+    "expected union conversion to wrap values in BindingValue::Union"
+  );
+  assert!(
+    union_arm.contains("value: Box::new(value)"),
+    "expected union conversion to box the inner value"
+  );
+  assert!(
+    !union_arm.contains("return converted_value_to_binding_value"),
+    "union conversion must not discard the union wrapper by returning the inner value"
+  );
+}
+
+#[test]
 fn generated_dictionary_converters_handle_required_defaults_and_inheritance() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()

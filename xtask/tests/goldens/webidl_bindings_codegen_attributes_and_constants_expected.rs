@@ -201,14 +201,15 @@ pub mod window {
       ConvertedValue::Record {
         value_ty, entries, ..
       } => {
-        let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();
+        let mut out: Vec<(String, BindingValue<RtJsValue<Host, R>>)> =
+          Vec::with_capacity(entries.len());
         for (k, v) in entries {
-          map.insert(
+          out.push((
             k,
             converted_value_to_binding_value::<Host, R>(rt, ctx, &value_ty, v)?,
-          );
+          ));
         }
-        BindingValue::Dictionary(map)
+        BindingValue::Record(out)
       }
       ConvertedValue::Dictionary { name, members } => {
         let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();
@@ -228,7 +229,12 @@ pub mod window {
         BindingValue::Dictionary(map)
       }
       ConvertedValue::Union { member_ty, value } => {
-        return converted_value_to_binding_value::<Host, R>(rt, ctx, &member_ty, *value);
+        let member_type = member_ty.to_string();
+        let value = converted_value_to_binding_value::<Host, R>(rt, ctx, &member_ty, *value)?;
+        BindingValue::Union {
+          member_type,
+          value: Box::new(value),
+        }
       }
     })
   }
