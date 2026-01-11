@@ -12,7 +12,14 @@ fn safepoint_request_wakes_io_uring_wait() {
   let waiter = match runtime_native::io::uring::IoUringCqeWaiter::new() {
     Ok(waiter) => waiter,
     Err(err) => {
-      if matches!(err.raw_os_error(), Some(libc::ENOSYS | libc::EPERM | libc::EACCES)) {
+      if matches!(
+        err.raw_os_error(),
+        Some(libc::ENOSYS)
+          | Some(libc::EINVAL)
+          | Some(libc::EPERM)
+          | Some(libc::EACCES)
+          | Some(libc::EOPNOTSUPP)
+      ) {
         return;
       }
       panic!("failed to initialize io_uring: {err}");
