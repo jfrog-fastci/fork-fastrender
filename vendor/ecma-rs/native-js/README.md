@@ -100,7 +100,7 @@ bash scripts/cargo_llvm.sh test -p native-js --lib
 ### Runnable example (in-memory source → native executable)
 
 This crate ships a small runnable example that compiles an in-memory TypeScript snippet to a native
-executable (LLVM IR → object via LLVM TargetMachine, then system link), runs it, and prints stdout:
+executable (TS → textual LLVM IR → `clang` → native executable), runs it, and prints stdout:
 
 ```bash
 # From repo root:
