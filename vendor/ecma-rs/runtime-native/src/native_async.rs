@@ -22,9 +22,14 @@ const STATE_REJECTING: PromiseState = 4;
 
 #[inline]
 fn ensure_event_loop_thread_registered() {
-  // The JS-shaped async runtime is driven by the main thread/event loop. Register it on
-  // first use so GC can coordinate stop-the-world safepoints across all mutator threads.
-  crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
+  // The native async ABI is driven by the JS-shaped `async_rt` event loop. Ensure the current
+  // thread is registered with the appropriate kind:
+  // - `Main` for the event-loop thread
+  // - `External` for other threads that enter the runtime
+  //
+  // This matches the behavior used by `rt_async_poll` and avoids permanently "upgrading" an
+  // arbitrary thread to `Main` (thread kinds are monotonic).
+  crate::async_rt::ensure_event_loop_thread();
 }
 
 #[inline]
