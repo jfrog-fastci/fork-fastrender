@@ -839,13 +839,13 @@ mod tests {
       &mut self,
       source_text: &str,
       _base_url: Option<&str>,
-      _script_node_id: NodeId,
+      script_node_id: NodeId,
       _event_loop: &mut EventLoop<Self>,
     ) -> Result<()> {
-      assert_eq!(
+      assert_ne!(
         self.current_script(),
-        None,
-        "import maps must not set document.currentScript"
+        Some(script_node_id),
+        "import maps must not set document.currentScript to themselves"
       );
       self.log.push(format!("importmap:{source_text}"));
       Ok(())

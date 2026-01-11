@@ -233,12 +233,15 @@ impl ScriptOrchestrator {
       return Ok(());
     }
 
+    let existing_current_script = host.current_script();
     let new_current_script = match script_type {
       ScriptType::Classic => (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script),
       // `Document.currentScript` is null for module scripts.
       ScriptType::Module => None,
-      // Import maps and unknown script types are not executed (currentScript remains null).
-      ScriptType::ImportMap | ScriptType::Unknown => None,
+      // Import map scripts do not set `Document.currentScript`; preserve the existing value.
+      ScriptType::ImportMap => existing_current_script,
+      // Unknown script types should be ignored by "prepare a script" (currentScript remains null).
+      ScriptType::Unknown => None,
     };
 
     let source_snapshot = host.with_dom(|dom| script_source_snapshot(dom, script));
@@ -295,10 +298,13 @@ impl ScriptOrchestrator {
       return Ok(());
     }
 
+    let existing_current_script = current_script_state.borrow().current_script;
     let new_current_script = match script_type {
       ScriptType::Classic => (!node_root_is_shadow_root(dom, script)).then_some(script),
       ScriptType::Module => None,
-      ScriptType::ImportMap | ScriptType::Unknown => None,
+      // Import map scripts do not set `Document.currentScript`; preserve the existing value.
+      ScriptType::ImportMap => existing_current_script,
+      ScriptType::Unknown => None,
     };
 
     self.execute_with_current_script_state_resolved(current_script_state, new_current_script, f)
@@ -352,15 +358,13 @@ impl ScriptOrchestrator {
         ))
       })?;
 
+    let existing_current_script = host.current_script();
     let new_current_script = match script_type {
       ScriptType::Classic => (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script),
       // `Document.currentScript` is null for module scripts.
       ScriptType::Module => None,
-      // `Document.currentScript` is also null for import map scripts.
-      //
-      // Import maps *do* execute (they register/merge into import map state), but per HTML they never
-      // set `currentScript`.
-      ScriptType::ImportMap => None,
+      // Import map scripts do not set `Document.currentScript`; preserve the existing value.
+      ScriptType::ImportMap => existing_current_script,
       // Unknown script types should be ignored by "prepare a script" (currentScript remains null).
       ScriptType::Unknown => None,
     };
@@ -617,6 +621,108 @@ mod tests {
     assert_eq!(
       executor.observed,
       vec![Some(script_a), Some(script_b), Some(script_a)]
+    );
+    assert_eq!(host.current_script(), None);
+    assert_eq!(host.script_state.borrow().stack_depth(), 0);
+    Ok(())
+  }
+
+  struct NestedImportMapExecutor {
+    outer_script: NodeId,
+    import_map_script: NodeId,
+    observed: Vec<Option<NodeId>>,
+    did_nested: bool,
+  }
+
+  impl NestedImportMapExecutor {
+    fn new(outer_script: NodeId, import_map_script: NodeId) -> Self {
+      Self {
+        outer_script,
+        import_map_script,
+        observed: Vec::new(),
+        did_nested: false,
+      }
+    }
+  }
+
+  impl ScriptBlockExecutor<Host> for NestedImportMapExecutor {
+    fn execute_script(
+      &mut self,
+      host: &mut Host,
+      orchestrator: &mut ScriptOrchestrator,
+      script: NodeId,
+      script_type: ScriptType,
+    ) -> Result<()> {
+      self.observed.push(host.current_script());
+      if script == self.outer_script {
+        assert_eq!(
+          script_type,
+          ScriptType::Classic,
+          "outer script should be executed as a classic script"
+        );
+        assert!(
+          !self.did_nested,
+          "nested executor should run nested script only once"
+        );
+        self.did_nested = true;
+
+        orchestrator.execute_script_element(
+          host,
+          self.import_map_script,
+          ScriptType::ImportMap,
+          self,
+        )?;
+
+        // Import map scripts do not set `document.currentScript`, so it must remain the classic
+        // script element that was already executing.
+        assert_eq!(
+          host.current_script(),
+          Some(self.outer_script),
+          "import map execution must not clobber document.currentScript"
+        );
+        self.observed.push(host.current_script());
+      } else if script == self.import_map_script {
+        assert_eq!(
+          script_type,
+          ScriptType::ImportMap,
+          "expected nested script to be executed as an import map"
+        );
+        assert_eq!(
+          host.current_script(),
+          Some(self.outer_script),
+          "import maps must not change document.currentScript (should remain the outer classic script)"
+        );
+      }
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn nested_import_map_execution_preserves_current_script() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html(
+      r#"<!doctype html><script id=outer></script><script type=importmap>{"imports":{}}</script>"#,
+    )
+    .unwrap();
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let scripts = find_script_elements(&dom);
+    assert_eq!(scripts.len(), 2);
+    let outer_script = scripts[0];
+    let import_map_script = scripts[1];
+
+    let mut host = Host {
+      dom,
+      script_state: CurrentScriptStateHandle::default(),
+      log: None,
+    };
+    let mut orchestrator = ScriptOrchestrator::new();
+    let mut executor = NestedImportMapExecutor::new(outer_script, import_map_script);
+
+    orchestrator.execute_script_element(&mut host, outer_script, ScriptType::Classic, &mut executor)?;
+
+    assert_eq!(
+      executor.observed,
+      vec![Some(outer_script), Some(outer_script), Some(outer_script)],
+      "import map execution should observe the currently executing classic script as document.currentScript"
     );
     assert_eq!(host.current_script(), None);
     assert_eq!(host.script_state.borrow().stack_depth(), 0);

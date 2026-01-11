@@ -475,7 +475,10 @@ Import maps are *data blocks* that execute (register) synchronously, but they ar
 Only classic scripts participate in `Document.currentScript`:
 
 - During module script execution, HTML asserts `document.currentScript` is **null**.
-- Import map scripts never set `Document.currentScript` (and should run with it null).
+- Import map scripts never set `Document.currentScript`.
+  - This means an import map runs with whatever value was already present: typically **null** during
+    parsing, but potentially a currently executing classic script element during nested/re-entrant
+    execution (import maps can execute immediately even if another script is already executing).
 
 So, once module scripts/import maps are integrated, the host-side bookkeeping must treat
 `currentScript` as **classic-only**.
