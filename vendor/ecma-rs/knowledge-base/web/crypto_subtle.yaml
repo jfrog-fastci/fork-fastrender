@@ -1,0 +1,17 @@
+# WebCrypto `crypto.subtle` API semantics.
+
+- name: crypto.subtle.digest
+  kind: function
+  aliases:
+    - crypto.subtle.digest
+    - window.crypto.subtle.digest
+    - globalThis.crypto.subtle.digest
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
