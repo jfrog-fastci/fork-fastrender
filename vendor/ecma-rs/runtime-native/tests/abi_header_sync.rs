@@ -35,6 +35,12 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     );
   }
 
+  // Native async ABI versioning.
+  assert!(
+    HEADER.contains("RT_ASYNC_ABI_VERSION"),
+    "`runtime_native.h` is missing RT_ASYNC_ABI_VERSION (async ABI version tag)"
+  );
+
   // Stats APIs are feature-gated on the Rust side; the C header uses a macro
   // guard to avoid exposing unavailable symbols by default.
   assert!(
