@@ -511,6 +511,40 @@ fn check_and_build_reject_eval() {
 }
 
 #[test]
+fn check_and_build_reject_string_literal() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { const s = \"hi\"; return 0; }\n",
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("NJS0009"))
+    .stderr(predicates::str::contains("string literals are not supported"));
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("NJS0009"))
+    .stderr(predicates::str::contains("string literals are not supported"))
+    // Ensure we don't fall through to the opaque backend errors (`NJS01xx`) at build time.
+    .stderr(predicates::str::contains("NJS010").not());
+}
+
+#[test]
 fn tsconfig_types_are_loaded_from_type_roots() {
   let tmp = TempDir::new().unwrap();
 

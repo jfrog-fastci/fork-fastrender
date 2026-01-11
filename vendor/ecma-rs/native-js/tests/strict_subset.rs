@@ -80,19 +80,19 @@ fn assert_has_code(diags: &[Diagnostic], code: &str) {
 
 #[test]
 fn rejects_explicit_any() {
-  let err = validate("let x: any = 1;\nvoid x;\n", FileKind::Ts).unwrap_err();
+  let err = validate("let x: any = 1;\nx;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0010");
 }
 
 #[test]
 fn rejects_inferred_any() {
-  let err = validate("const x = JSON.parse(\"1\");\nvoid x;\n", FileKind::Ts).unwrap_err();
+  let err = validate("const x = JSON.parse(\"1\");\nx;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0010");
 }
 
 #[test]
 fn rejects_union_type() {
-  let err = validate("const x: number | string = 1;\nvoid x;\n", FileKind::Ts).unwrap_err();
+  let err = validate("const x: number | string = 1;\nx;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0010");
 }
 
@@ -104,7 +104,37 @@ fn rejects_with_statement() {
 
 #[test]
 fn rejects_object_literal() {
-  let err = validate("const obj = { x: 1 };\nvoid obj;\n", FileKind::Ts).unwrap_err();
+  let err = validate("const obj = { x: 1 };\nobj;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_string_literal() {
+  let err = validate("const s = \"hi\";\ns;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_var_decl_without_initializer() {
+  let err = validate("let x: number;\nx = 1;\nx;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_switch_statement() {
+  let err = validate("switch (1) { case 1: break; }\n", FileKind::Js).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_for_in_loop() {
+  let err = validate("const obj: any = 0 as any;\nfor (const k in obj) { k; }\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_non_i32_numeric_literals() {
+  let err = validate("const a: number = 1.5;\nconst b: number = 1e3;\na;\nb;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
 }
 

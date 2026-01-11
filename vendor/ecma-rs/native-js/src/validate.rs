@@ -15,10 +15,12 @@
 
 use crate::codes;
 use crate::resolve::{BindingId, Resolver};
-use diagnostics::{Diagnostic, Span};
+use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
-  Body, BodyId, BodyKind, ExprKind, FileKind, ForInit, PatKind, StmtKind, UnaryOp, VarDeclKind,
+  AssignOp, BinaryOp, Body, BodyId, BodyKind, ExprId, ExprKind, FileKind, ForInit, FunctionBody, Literal, NameId,
+  PatId, PatKind, StmtId, StmtKind, UnaryOp, VarDecl, VarDeclKind,
 };
+use std::collections::HashSet;
 use typecheck_ts::{Program, TypeKindSummary};
 
 /// Validate that all files reachable from `program`'s roots use only the strict
@@ -65,8 +67,25 @@ fn validate_body(
     return;
   };
 
-  validate_body_syntax(program, file, body_data, lowered, resolver, out);
-  validate_body_types(program, file, body, body_data, lowered, resolver, out);
+  let syntax = validate_body_syntax(program, file, body_data, lowered, resolver, out);
+  validate_body_types(program, file, body, body_data, lowered, resolver, &syntax, out);
+}
+
+#[derive(Debug)]
+struct BodySyntaxInfo {
+  /// Expression ids which are allowed to be an intrinsic `print(x)` call in statement position.
+  ///
+  /// `print` is lowered specially (to `printf`) by the native HIR backend, but only when it appears as a standalone
+  /// statement. `print(...)` is not supported as an expression.
+  allowed_print_stmt_call_expr: Vec<bool>,
+}
+
+impl BodySyntaxInfo {
+  fn new(body: &Body) -> Self {
+    Self {
+      allowed_print_stmt_call_expr: vec![false; body.exprs.len()],
+    }
+  }
 }
 
 fn validate_body_syntax(
@@ -76,16 +95,9 @@ fn validate_body_syntax(
   lowered: &hir_js::LowerResult,
   resolver: &Resolver<'_>,
   out: &mut Vec<Diagnostic>,
-) {
+) -> BodySyntaxInfo {
+  let mut info = BodySyntaxInfo::new(body);
   let file_resolver = resolver.for_file(file);
-  let expr_stmt_roots: std::collections::HashSet<hir_js::ExprId> = body
-    .stmts
-    .iter()
-    .filter_map(|stmt| match stmt.kind {
-      StmtKind::Expr(expr) => Some(expr),
-      _ => None,
-    })
-    .collect();
   // Body-level constructs.
   match body.kind {
     BodyKind::Class => {
@@ -122,11 +134,24 @@ fn validate_body_syntax(
     }
   }
 
-  for (idx, expr) in body.exprs.iter().enumerate() {
-    let expr_id = hir_js::ExprId(idx as u32);
+  // Statement-driven checks that depend on source order (intrinsic call allowance, loop/label validation, scoping).
+  let root_stmts: Vec<StmtId> = match body.function.as_ref().map(|f| &f.body) {
+    Some(FunctionBody::Block(stmts)) => stmts.to_vec(),
+    Some(FunctionBody::Expr(_)) => Vec::new(),
+    None => body.root_stmts.clone(),
+  };
+  let mut state = SyntaxState::new(file, body, lowered, out, &mut info);
+  for stmt in root_stmts {
+    state.validate_stmt(stmt);
+  }
+
+  for (expr_idx, expr) in body.exprs.iter().enumerate() {
     match &expr.kind {
       ExprKind::Super => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`super` is not supported yet");
+      }
+      ExprKind::This => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "`this` is not supported by native-js yet");
       }
       ExprKind::NewTarget => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`new.target` is not supported yet");
@@ -134,36 +159,6 @@ fn validate_body_syntax(
       ExprKind::ImportMeta => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`import.meta` is not supported yet");
       }
-      ExprKind::This => {
-        push_unsupported_syntax(out, Span::new(file, expr.span), "`this` is not supported yet");
-      }
-      ExprKind::Literal(lit) => match lit {
-        hir_js::Literal::Number(raw) => {
-          if !is_supported_i32_number_literal(raw) {
-            push_unsupported_syntax(
-              out,
-              Span::new(file, expr.span),
-              "numeric literals must be 32-bit signed integers in native-js strict subset",
-            );
-          }
-        }
-        hir_js::Literal::Boolean(_) => {}
-        hir_js::Literal::String(_) => {
-          push_unsupported_syntax(out, Span::new(file, expr.span), "string literals are not supported yet");
-        }
-        hir_js::Literal::Null => {
-          push_unsupported_syntax(out, Span::new(file, expr.span), "`null` is not supported yet");
-        }
-        hir_js::Literal::Undefined => {
-          push_unsupported_syntax(out, Span::new(file, expr.span), "`undefined` is not supported yet");
-        }
-        hir_js::Literal::BigInt(_) => {
-          push_unsupported_syntax(out, Span::new(file, expr.span), "`bigint` is not supported yet");
-        }
-        hir_js::Literal::Regex(_) => {
-          push_unsupported_syntax(out, Span::new(file, expr.span), "regex literals are not supported yet");
-        }
-      },
       ExprKind::Yield { .. } => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`yield` is not supported yet");
       }
@@ -173,69 +168,15 @@ fn validate_body_syntax(
       ExprKind::Unary { op: UnaryOp::Await, .. } => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`await` is not supported yet");
       }
-      ExprKind::Unary {
-        op: UnaryOp::Typeof | UnaryOp::Void | UnaryOp::Delete,
-        ..
-      } => {
-        push_unsupported_syntax(
-          out,
-          Span::new(file, expr.span),
-          "unsupported unary operator in native-js strict subset",
-        );
-      }
-      ExprKind::Binary {
-        op:
-          hir_js::BinaryOp::Exponent
-          | hir_js::BinaryOp::ShiftRightUnsigned
-          | hir_js::BinaryOp::LogicalOr
-          | hir_js::BinaryOp::LogicalAnd
-          | hir_js::BinaryOp::NullishCoalescing
-          | hir_js::BinaryOp::In
-          | hir_js::BinaryOp::Instanceof
-          | hir_js::BinaryOp::Comma,
-        ..
-      } => {
-        push_unsupported_syntax(
-          out,
-          Span::new(file, expr.span),
-          "unsupported binary operator in native-js strict subset",
-        );
-      }
-      ExprKind::Conditional { .. } => {
-        push_unsupported_syntax(out, Span::new(file, expr.span), "conditional expressions are not supported yet");
-      }
-      ExprKind::FunctionExpr { .. } => {
-        push_unsupported_syntax(out, Span::new(file, expr.span), "function expressions are not supported yet");
-      }
-      ExprKind::Assignment {
-        op:
-          hir_js::AssignOp::ShiftLeftAssign
-          | hir_js::AssignOp::ShiftRightAssign
-          | hir_js::AssignOp::ShiftRightUnsignedAssign
-          | hir_js::AssignOp::BitOrAssign
-          | hir_js::AssignOp::BitAndAssign
-          | hir_js::AssignOp::BitXorAssign
-          | hir_js::AssignOp::LogicalOrAssign
-          | hir_js::AssignOp::LogicalAndAssign
-          | hir_js::AssignOp::NullishAssign
-          | hir_js::AssignOp::ExponentAssign,
-        ..
-      } => {
-        push_unsupported_syntax(
-          out,
-          Span::new(file, expr.span),
-          "unsupported assignment operator in native-js strict subset",
-        );
-      }
       ExprKind::Call(call) => {
-        let is_print_intrinsic = callee_is_ident(body, lowered, call.callee, "print");
-        if is_print_intrinsic && !expr_stmt_roots.contains(&expr_id) {
-          push_unsupported_syntax(
-            out,
-            Span::new(file, expr.span),
-            "`print(...)` is only supported as a standalone statement in native-js strict subset",
-          );
+        if *info
+          .allowed_print_stmt_call_expr
+          .get(expr_idx)
+          .unwrap_or(&false)
+        {
+          continue;
         }
+
         if call.optional {
           push_unsupported_syntax(
             out,
@@ -253,38 +194,19 @@ fn validate_body_syntax(
 
         // Only allow the simplest call shape: `foo(a, b)` where `foo` is an identifier.
         // (Calls through member access / indirect expressions aren't lowered yet.)
-        if !matches!(
+        let callee_is_ident_expr = matches!(
           body
             .exprs
             .get(call.callee.0 as usize)
             .map(|e| &e.kind),
           Some(ExprKind::Ident(_))
-        ) {
+        );
+        if !callee_is_ident_expr {
           push_unsupported_syntax(
             out,
             Span::new(file, expr.span),
             "only direct identifier calls are supported by native-js yet",
           );
-        }
-
-        // `print(...)` is a codegen intrinsic, so allow it even when it comes from `.d.ts` libs.
-        if !is_print_intrinsic {
-          let ok = (|| {
-            let BindingId::Def(def) = file_resolver.resolve_expr_ident(body, call.callee)? else {
-              return None;
-            };
-            let resolved = resolve_import_def(program, def)?;
-            is_codegen_callable_function_def(program, resolved).then_some(())
-          })()
-          .is_some();
-
-          if !ok {
-            push_unsupported_syntax(
-              out,
-              Span::new(file, expr.span),
-              "call callee must resolve to a top-level function definition",
-            );
-          }
         }
 
         // Detect `eval(...)` and `Function(...)` / `new Function(...)` by callee identifier.
@@ -302,6 +224,116 @@ fn validate_body_syntax(
             out,
             Span::new(file, expr.span),
             "`new` expressions are not supported by native-js yet",
+          );
+        }
+
+        // `print(...)` is a codegen intrinsic, but only in statement position.
+        if callee_is_ident(body, lowered, call.callee, "print") {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "the `print` intrinsic is only supported as a statement (`print(x)` with one argument and no spread)",
+          );
+        } else if !call.optional && !call.is_new && !call.args.iter().any(|arg| arg.spread) && callee_is_ident_expr {
+          let ok = (|| {
+            let BindingId::Def(def) = file_resolver.resolve_expr_ident(body, call.callee)? else {
+              return None;
+            };
+            let resolved = resolve_import_def(program, def)?;
+            is_codegen_callable_function_def(program, resolved).then_some(())
+          })()
+          .is_some();
+
+          if !ok {
+            push_unsupported_syntax(
+              out,
+              Span::new(file, expr.span),
+              "call callee must resolve to a top-level function definition",
+            );
+          }
+        }
+      }
+      ExprKind::Literal(Literal::String(_)) => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "string literals are not supported by native-js yet");
+      }
+      ExprKind::Literal(Literal::Null) => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "`null` literals are not supported by native-js yet");
+      }
+      ExprKind::Literal(Literal::Undefined) => {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, expr.span),
+          "`undefined` values are not supported by native-js yet",
+        );
+      }
+      ExprKind::Literal(Literal::BigInt(_)) => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "`bigint` literals are not supported by native-js yet");
+      }
+      ExprKind::Literal(Literal::Regex(_)) => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "regex literals are not supported by native-js yet");
+      }
+      ExprKind::Literal(Literal::Number(raw)) => {
+        if !numeric_literal_is_i32(raw) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            format!("unsupported numeric literal `{raw}` (expected 32-bit integer)"),
+          );
+        }
+      }
+      ExprKind::Unary { op, .. } => {
+        // `await` is handled above.
+        if !matches!(op, UnaryOp::Plus | UnaryOp::Minus | UnaryOp::Not | UnaryOp::BitNot) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            format!("unsupported unary operator `{op:?}` in native-js strict subset"),
+          );
+        }
+      }
+      ExprKind::Binary { op, .. } => {
+        if !matches!(
+          op,
+          BinaryOp::Add
+            | BinaryOp::Subtract
+            | BinaryOp::Multiply
+            | BinaryOp::Divide
+            | BinaryOp::Remainder
+            | BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor
+            | BinaryOp::ShiftLeft
+            | BinaryOp::ShiftRight
+            | BinaryOp::LessThan
+            | BinaryOp::LessEqual
+            | BinaryOp::GreaterThan
+            | BinaryOp::GreaterEqual
+            | BinaryOp::Equality
+            | BinaryOp::Inequality
+            | BinaryOp::StrictEquality
+            | BinaryOp::StrictInequality
+        ) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            format!("unsupported binary operator `{op:?}` in native-js strict subset"),
+          );
+        }
+      }
+      ExprKind::Assignment { op, .. } => {
+        if !matches!(
+          op,
+          AssignOp::Assign
+            | AssignOp::AddAssign
+            | AssignOp::SubAssign
+            | AssignOp::MulAssign
+            | AssignOp::DivAssign
+            | AssignOp::RemAssign
+        ) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            format!("unsupported assignment operator `{op:?}` in native-js strict subset"),
           );
         }
       }
@@ -355,71 +387,23 @@ fn validate_body_syntax(
       ExprKind::Jsx(_) => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "JSX is not supported by native-js yet");
       }
+      ExprKind::Conditional { .. } => {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, expr.span),
+          "conditional (`?:`) expressions are not supported by native-js yet",
+        );
+      }
+      ExprKind::FunctionExpr { .. } => {
+        push_unsupported_syntax(out, Span::new(file, expr.span), "function expressions are not supported by native-js yet");
+      }
       ExprKind::Missing => {
-        push_unsupported_syntax(out, Span::new(file, expr.span), "unsupported expression in native-js strict subset");
-      }
-      _ => {}
-    }
-  }
-
-  for stmt in body.stmts.iter() {
-    match &stmt.kind {
-      StmtKind::Decl(_) if !matches!(body.kind, BodyKind::TopLevel) => {
         push_unsupported_syntax(
           out,
-          Span::new(file, stmt.span),
-          "nested declarations are not supported by native-js yet",
+          Span::new(file, expr.span),
+          "unsupported expression in native-js strict subset",
         );
       }
-      StmtKind::With { .. } => {
-        push_unsupported_syntax(out, Span::new(file, stmt.span), "`with` statements are not supported yet");
-      }
-      StmtKind::Try { .. } => {
-        push_unsupported_syntax(out, Span::new(file, stmt.span), "`try` is not supported by native-js yet");
-      }
-      StmtKind::Throw(_) => {
-        push_unsupported_syntax(out, Span::new(file, stmt.span), "`throw` is not supported by native-js yet");
-      }
-      StmtKind::ForIn { .. } => {
-        push_unsupported_syntax(
-          out,
-          Span::new(file, stmt.span),
-          "`for..in`/`for..of` statements are not supported by native-js yet",
-        );
-      }
-      StmtKind::Switch { .. } => {
-        push_unsupported_syntax(out, Span::new(file, stmt.span), "`switch` is not supported by native-js yet");
-      }
-      StmtKind::For {
-        init: Some(ForInit::Var(decl)),
-        ..
-      } => {
-        if decl.declarators.iter().any(|d| d.init.is_none()) {
-          push_unsupported_syntax(
-            out,
-            Span::new(file, stmt.span),
-            "variable declarations must have an initializer in native-js strict subset",
-          );
-        }
-      }
-      StmtKind::Var(decl) => match decl.kind {
-        VarDeclKind::Using | VarDeclKind::AwaitUsing => {
-          push_unsupported_syntax(
-            out,
-            Span::new(file, stmt.span),
-            "`using` declarations are not supported by native-js yet",
-          );
-        }
-        _ => {
-          if decl.declarators.iter().any(|d| d.init.is_none()) {
-            push_unsupported_syntax(
-              out,
-              Span::new(file, stmt.span),
-              "variable declarations must have an initializer in native-js strict subset",
-            );
-          }
-        }
-      },
       _ => {}
     }
   }
@@ -451,6 +435,8 @@ fn validate_body_syntax(
       _ => {}
     }
   }
+
+  info
 }
 
 fn validate_body_types(
@@ -460,50 +446,64 @@ fn validate_body_types(
   hir: &Body,
   lowered: &hir_js::LowerResult,
   resolver: &Resolver<'_>,
+  syntax: &BodySyntaxInfo,
   out: &mut Vec<Diagnostic>,
 ) {
   let result = program.check_body(body);
   let file_resolver = resolver.for_file(file);
 
-  // Direct calls such as `foo(1)` require the callee identifier to have a callable type.
+  // The strict subset validator generally rejects callable/reference types. However, direct calls such as `foo(1)`
+  // require the callee identifier to have a callable type, and in the direct-call lowering path we never materialize
+  // the function value (codegen resolves the callee as a symbol).
   //
-  // The strict subset validator generally rejects callable/reference types, but in the direct-call
-  // lowering path we never materialize the function value; codegen resolves the callee as a symbol.
-  // Skip validating the callee identifier's type in this specific position so programs can call
-  // declared functions (and small host-provided intrinsics like `print(...)`) without enabling
-  // first-class function values.
+  // Skip validating the callee identifier's type only when it appears as the direct callee of an allowed call:
+  // - intrinsic `print(x)` in statement position
+  // - direct calls to top-level function definitions (the only functions codegen can call)
   let mut skip_expr_type_check = vec![false; result.expr_types().len()];
-  for expr in hir.exprs.iter() {
-    if let ExprKind::Call(call) = &expr.kind {
-      if call.optional || call.is_new || call.args.iter().any(|arg| arg.spread) {
-        continue;
-      }
-      let idx = call.callee.0 as usize;
-      if idx >= skip_expr_type_check.len() {
-        continue;
-      }
-      if !matches!(hir.exprs.get(idx).map(|e| &e.kind), Some(ExprKind::Ident(_))) {
-        continue;
-      }
-      // `print(...)` is a codegen intrinsic (lowered to `printf`), so allow it even though it is
-      // declared in a `.d.ts` and does not resolve to a `DefId`.
-      let is_print_intrinsic = callee_is_ident(hir, lowered, call.callee, "print");
-      if !is_print_intrinsic {
-        let ok = (|| {
-          let BindingId::Def(def) = file_resolver.resolve_expr_ident(hir, call.callee)? else {
-            return None;
-          };
-          let resolved = resolve_import_def(program, def)?;
-          is_codegen_callable_function_def(program, resolved).then_some(())
-        })()
-        .is_some();
 
-        if !ok {
-          continue;
-        }
-      }
+  for (expr_idx, expr) in hir.exprs.iter().enumerate() {
+    let ExprKind::Call(call) = &expr.kind else {
+      continue;
+    };
+    if call.optional || call.is_new || call.args.iter().any(|arg| arg.spread) {
+      continue;
+    }
+    let callee_idx = call.callee.0 as usize;
+    if callee_idx >= skip_expr_type_check.len() {
+      continue;
+    }
+    if !matches!(
+      hir.exprs.get(callee_idx).map(|e| &e.kind),
+      Some(ExprKind::Ident(_))
+    ) {
+      continue;
+    }
 
-      skip_expr_type_check[idx] = true;
+    if *syntax
+      .allowed_print_stmt_call_expr
+      .get(expr_idx)
+      .unwrap_or(&false)
+    {
+      skip_expr_type_check[callee_idx] = true;
+      continue;
+    }
+
+    // Don't treat the `print` intrinsic as a normal callable; it's only supported in statement position.
+    if callee_is_ident(hir, lowered, call.callee, "print") {
+      continue;
+    }
+
+    let ok = (|| {
+      let BindingId::Def(def) = file_resolver.resolve_expr_ident(hir, call.callee)? else {
+        return None;
+      };
+      let resolved = resolve_import_def(program, def)?;
+      is_codegen_callable_function_def(program, resolved).then_some(())
+    })()
+    .is_some();
+
+    if ok {
+      skip_expr_type_check[callee_idx] = true;
     }
   }
 
@@ -531,7 +531,7 @@ fn validate_type_kind(program: &Program, span: Span, ty: typecheck_ts::TypeId, o
   out.push(
     codes::STRICT_SUBSET_UNSUPPORTED_TYPE
       .error(message, span)
-      .with_note("supported types are currently limited to: number, boolean, string, void, null, undefined"),
+      .with_note("supported types are currently limited to: number (32-bit integer), boolean, void/undefined, never"),
   );
 }
 
@@ -540,14 +540,11 @@ fn is_supported_type_kind(kind: &TypeKindSummary) -> bool {
     kind,
     TypeKindSummary::Never
       | TypeKindSummary::Void
-      | TypeKindSummary::Null
       | TypeKindSummary::Undefined
       | TypeKindSummary::Boolean
       | TypeKindSummary::BooleanLiteral(_)
       | TypeKindSummary::Number
       | TypeKindSummary::NumberLiteral(_)
-      | TypeKindSummary::String
-      | TypeKindSummary::StringLiteral(_)
   )
 }
 
@@ -555,6 +552,10 @@ fn unsupported_type_message(kind: &TypeKindSummary) -> String {
   match kind {
     TypeKindSummary::Any => "`any` is not supported by native-js strict subset".to_string(),
     TypeKindSummary::Unknown => "`unknown` is not supported by native-js strict subset".to_string(),
+    TypeKindSummary::Null => "`null` is not supported by native-js strict subset".to_string(),
+    TypeKindSummary::String | TypeKindSummary::StringLiteral(_) => {
+      "`string` is not supported by native-js strict subset".to_string()
+    }
     TypeKindSummary::Union { .. } => "union types are not supported by native-js strict subset yet".to_string(),
     TypeKindSummary::Intersection { .. } => {
       "intersection types are not supported by native-js strict subset yet".to_string()
@@ -591,38 +592,6 @@ fn callee_is_ident(body: &Body, lowered: &hir_js::LowerResult, expr: hir_js::Exp
     ExprKind::Ident(name) => lowered.names.resolve(*name) == Some(target),
     _ => false,
   }
-}
-
-fn is_supported_i32_number_literal(raw: &str) -> bool {
-  let raw = raw.trim();
-  if raw.is_empty() {
-    return false;
-  }
-
-  let normalized: String = raw.chars().filter(|c| *c != '_').collect();
-  let (radix, digits) = if let Some(rest) = normalized.strip_prefix("0x") {
-    (16, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0X") {
-    (16, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0b") {
-    (2, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0B") {
-    (2, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0o") {
-    (8, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0O") {
-    (8, rest)
-  } else {
-    if normalized.contains('.') || normalized.contains('e') || normalized.contains('E') {
-      return false;
-    }
-    (10, normalized.as_str())
-  };
-
-  let Ok(value) = i64::from_str_radix(digits, radix) else {
-    return false;
-  };
-  i32::try_from(value).is_ok()
 }
 
 fn resolve_import_def(program: &Program, def: typecheck_ts::DefId) -> Option<typecheck_ts::DefId> {
@@ -667,4 +636,332 @@ fn is_codegen_callable_function_def(program: &Program, def: typecheck_ts::DefId)
     return false;
   }
   def_data.body.is_some()
+}
+
+fn numeric_literal_is_i32(raw: &str) -> bool {
+  // Keep this logic in sync with `native_js::codegen::parse_i32_const`.
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return false;
+  }
+  let normalized: String = raw.chars().filter(|c| *c != '_').collect();
+  let (radix, digits) = if let Some(rest) = normalized.strip_prefix("0x") {
+    (16, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0X") {
+    (16, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0b") {
+    (2, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0B") {
+    (2, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0o") {
+    (8, rest)
+  } else if let Some(rest) = normalized.strip_prefix("0O") {
+    (8, rest)
+  } else {
+    if normalized.contains('.') || normalized.contains('e') || normalized.contains('E') {
+      return false;
+    }
+    (10, normalized.as_str())
+  };
+
+  let Ok(value) = i64::from_str_radix(digits, radix) else {
+    return false;
+  };
+  i32::try_from(value).is_ok()
+}
+
+struct SyntaxState<'a, 'b> {
+  file: typecheck_ts::FileId,
+  body: &'a Body,
+  lowered: &'a hir_js::LowerResult,
+  out: &'b mut Vec<Diagnostic>,
+  info: &'b mut BodySyntaxInfo,
+  scopes: Vec<HashSet<NameId>>,
+  loop_stack: Vec<Option<NameId>>,
+}
+
+impl<'a, 'b> SyntaxState<'a, 'b> {
+  fn new(
+    file: typecheck_ts::FileId,
+    body: &'a Body,
+    lowered: &'a hir_js::LowerResult,
+    out: &'b mut Vec<Diagnostic>,
+    info: &'b mut BodySyntaxInfo,
+  ) -> Self {
+    let mut state = Self {
+      file,
+      body,
+      lowered,
+      out,
+      info,
+      scopes: vec![HashSet::new()],
+      loop_stack: Vec::new(),
+    };
+    if let Some(func) = &state.body.function {
+      for param in func.params.iter() {
+        state.declare_pat(param.pat);
+      }
+    }
+    state
+  }
+
+  fn push_scope(&mut self) {
+    self.scopes.push(HashSet::new());
+  }
+
+  fn pop_scope(&mut self) {
+    self.scopes.pop();
+    if self.scopes.is_empty() {
+      // Internal invariant: there is always a root scope.
+      self.scopes.push(HashSet::new());
+    }
+  }
+
+  fn is_shadowed(&self, name: NameId) -> bool {
+    self.scopes.iter().rev().any(|scope| scope.contains(&name))
+  }
+
+  fn declare_pat(&mut self, pat: PatId) {
+    let Some(pat) = self.body.pats.get(pat.0 as usize) else {
+      return;
+    };
+    let PatKind::Ident(name) = &pat.kind else {
+      return;
+    };
+    if let Some(scope) = self.scopes.last_mut() {
+      scope.insert(*name);
+    }
+  }
+
+  fn validate_stmt(&mut self, stmt_id: StmtId) {
+    let Some(stmt) = self.body.stmts.get(stmt_id.0 as usize) else {
+      return;
+    };
+    match &stmt.kind {
+      StmtKind::Empty | StmtKind::Debugger => {}
+      StmtKind::Expr(expr) => {
+        self.maybe_allow_intrinsic_call_stmt(*expr);
+      }
+      StmtKind::Return(_) => {}
+      StmtKind::Block(stmts) => {
+        self.push_scope();
+        for &s in stmts {
+          self.validate_stmt(s);
+        }
+        self.pop_scope();
+      }
+      StmtKind::If {
+        consequent,
+        alternate,
+        ..
+      } => {
+        self.validate_stmt(*consequent);
+        if let Some(alt) = alternate {
+          self.validate_stmt(*alt);
+        }
+      }
+      StmtKind::While { body, .. } => self.validate_loop(None, *body),
+      StmtKind::DoWhile { body, .. } => self.validate_loop(None, *body),
+      StmtKind::For { init, body, .. } => self.validate_for_loop(None, init.as_ref(), *body, stmt.span),
+      StmtKind::ForIn { .. } => {
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, stmt.span),
+          "`for-in` / `for-of` loops are not supported by native-js yet",
+        );
+      }
+      StmtKind::Switch { .. } => {
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, stmt.span),
+          "`switch` statements are not supported by native-js yet",
+        );
+      }
+      StmtKind::Try { .. } => {
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, stmt.span),
+          "`try` is not supported by native-js yet",
+        );
+      }
+      StmtKind::Throw(_) => {
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, stmt.span),
+          "`throw` is not supported by native-js yet",
+        );
+      }
+      StmtKind::With { .. } => {
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, stmt.span),
+          "`with` statements are not supported by native-js yet",
+        );
+      }
+      StmtKind::Decl(_) if self.body.function.is_some() => {
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, stmt.span),
+          "nested declarations are not supported by native-js yet",
+        );
+      }
+      StmtKind::Var(decl) => self.validate_var_decl(decl, stmt.span),
+      StmtKind::Break(label) => self.validate_break_continue("break", *label, stmt.span),
+      StmtKind::Continue(label) => self.validate_break_continue("continue", *label, stmt.span),
+      StmtKind::Labeled { label, body } => self.validate_labeled(*label, *body, stmt.span),
+      _ => {}
+    }
+  }
+
+  fn validate_loop(&mut self, label: Option<NameId>, body: StmtId) {
+    self.loop_stack.push(label);
+    self.validate_stmt(body);
+    self.loop_stack.pop();
+  }
+
+  fn validate_for_loop(&mut self, label: Option<NameId>, init: Option<&ForInit>, body: StmtId, span: TextRange) {
+    // Keep loop scoping in sync with `native_js::codegen::FnCodegen::codegen_for`.
+    //
+    // `for (let/const ...)` introduces a lexical scope that does not leak outside the loop. `var` does *not* introduce a
+    // new scope in this subset.
+    let needs_loop_scope = matches!(
+      init,
+      Some(ForInit::Var(decl)) if matches!(decl.kind, VarDeclKind::Let | VarDeclKind::Const)
+    );
+    if needs_loop_scope {
+      self.push_scope();
+    }
+    if let Some(init) = init {
+      if let ForInit::Var(decl) = init {
+        self.validate_var_decl(decl, span);
+      }
+    }
+    self.loop_stack.push(label);
+    self.validate_stmt(body);
+    self.loop_stack.pop();
+    if needs_loop_scope {
+      self.pop_scope();
+    }
+  }
+
+  fn validate_break_continue(&mut self, keyword: &str, label: Option<NameId>, span: TextRange) {
+    if self.loop_stack.is_empty() {
+      push_unsupported_syntax(
+        self.out,
+        Span::new(self.file, span),
+        format!("`{keyword}` is only supported inside loops in native-js yet"),
+      );
+      return;
+    }
+    if let Some(label) = label {
+      if !self.loop_stack.iter().rev().any(|l| *l == Some(label)) {
+        let lbl = self.lowered.names.resolve(label).unwrap_or("<label>");
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, span),
+          format!("unknown loop label `{lbl}` for `{keyword}`"),
+        );
+      }
+    }
+  }
+
+  fn validate_labeled(&mut self, label: NameId, body: StmtId, span: TextRange) {
+    let Some(stmt) = self.body.stmts.get(body.0 as usize) else {
+      return;
+    };
+    match &stmt.kind {
+      StmtKind::While { body, .. } => self.validate_loop(Some(label), *body),
+      StmtKind::DoWhile { body, .. } => self.validate_loop(Some(label), *body),
+      StmtKind::For { init, body, .. } => self.validate_for_loop(Some(label), init.as_ref(), *body, span),
+      _ => push_unsupported_syntax(
+        self.out,
+        Span::new(self.file, span),
+        "only labeled loops are supported by native-js yet",
+      ),
+    }
+  }
+
+  fn validate_var_decl(&mut self, decl: &VarDecl, span: TextRange) {
+    match decl.kind {
+      VarDeclKind::Var | VarDeclKind::Let | VarDeclKind::Const => {}
+      VarDeclKind::Using | VarDeclKind::AwaitUsing => {
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, span),
+          "`using` declarations are not supported by native-js yet",
+        );
+        return;
+      }
+    }
+
+    // Track shadowing for intrinsics like `print`.
+    //
+    // Match codegen's behaviour: `LocalEnv` only contains locals. Module-level
+    // `let`/`const`/`var` (defs without a function-like ancestor) are stored in
+    // globals and do not shadow intrinsics.
+    let shadows_intrinsics = self.body.function.is_some()
+      || (self.scopes.len() > 1 && matches!(decl.kind, VarDeclKind::Let | VarDeclKind::Const));
+
+    for declarator in decl.declarators.iter() {
+      if declarator.init.is_none() {
+        let pat_span = self
+          .body
+          .pats
+          .get(declarator.pat.0 as usize)
+          .map(|p| p.span)
+          .unwrap_or(span);
+        push_unsupported_syntax(
+          self.out,
+          Span::new(self.file, pat_span),
+          "variable declarations must have an initializer in native-js strict subset",
+        );
+      }
+      if shadows_intrinsics {
+        self.declare_pat(declarator.pat);
+      }
+    }
+  }
+
+  fn maybe_allow_intrinsic_call_stmt(&mut self, expr_id: ExprId) {
+    let Some(expr) = self.body.exprs.get(expr_id.0 as usize) else {
+      return;
+    };
+    let ExprKind::Call(call) = &expr.kind else {
+      return;
+    };
+    if call.optional || call.is_new {
+      return;
+    }
+    if call.args.len() != 1 {
+      return;
+    }
+    let Some(arg) = call.args.first() else {
+      return;
+    };
+    if arg.spread {
+      return;
+    }
+
+    let Some(callee_expr) = self.body.exprs.get(call.callee.0 as usize) else {
+      return;
+    };
+    let ExprKind::Ident(name) = &callee_expr.kind else {
+      return;
+    };
+    if self.lowered.names.resolve(*name) != Some("print") {
+      return;
+    }
+    if self.is_shadowed(*name) {
+      return;
+    }
+
+    // This is an allowed intrinsic `print(x)` statement call.
+    if let Some(slot) = self
+      .info
+      .allowed_print_stmt_call_expr
+      .get_mut(expr_id.0 as usize)
+    {
+      *slot = true;
+    }
+  }
 }

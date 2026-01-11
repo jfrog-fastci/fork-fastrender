@@ -466,6 +466,24 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
   let mut opts = CompileOptions::default();
   opts.builtins = !cli.no_builtins;
 
+  fn looks_like_module_source(source: &str) -> bool {
+    fn starts_with_kw(line: &str, kw: &str) -> bool {
+      let trimmed = line.trim_start();
+      let Some(rest) = trimmed.strip_prefix(kw) else {
+        return false;
+      };
+      // Ensure a word boundary so we don't treat `important` as `import`.
+      match rest.chars().next() {
+        None => true,
+        Some(ch) => !ch.is_ascii_alphanumeric() && ch != '_',
+      }
+    }
+
+    source
+      .lines()
+      .any(|line| starts_with_kw(line, "import") || starts_with_kw(line, "export"))
+  }
+
   // Fast path: for common single-file smoke tests (no explicit `--entry-fn`), avoid constructing a
   // `typecheck-ts` program graph and instead use the pure `parse-js` emitter directly. This keeps
   // the CLI responsive and prevents the builtins integration tests from timing out when run under
@@ -479,10 +497,13 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
       }
     };
 
-    match compile_typescript_to_llvm_ir(&source, opts.clone()) {
-      Ok(ir) => return ir,
-      Err(NativeJsError::Codegen(native_js::codegen::CodegenError::UnsupportedStmt)) => {
-        // Likely uses `import`/`export` constructs; fall back to the project compiler.
+    // Module syntax (`import`/`export`) requires the project compiler for module graph construction
+    // and deterministic init ordering.
+    if !looks_like_module_source(&source) {
+      match compile_typescript_to_llvm_ir(&source, opts.clone()) {
+        Ok(ir) => return ir,
+        Err(NativeJsError::Codegen(native_js::codegen::CodegenError::UnsupportedStmt)) => {
+          // Likely uses `import`/`export` constructs; fall back to the project compiler.
       }
       Err(NativeJsError::Codegen(native_js::codegen::CodegenError::TypeError(msg)))
         if msg.contains("`main` is reserved") =>
@@ -497,8 +518,9 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
         // Fall back to the project compiler which supports multi-file module linking.
       }
       Err(err) => {
-        eprintln!("{err}");
-        exit(1);
+          eprintln!("{err}");
+          exit(1);
+        }
       }
     }
   }
