@@ -5,8 +5,8 @@
 //! - Erase TypeScript-only syntax to JavaScript (TS→JS "erasure").
 //! - Execute the erased JavaScript in the oracle runtime.
 //!
-//! The TS→JS step uses the `emit-js` erasure emitter by default. When that
-//! emitter encounters unsupported syntax, consumers can enable the
+//! The TS→JS step uses the shared `ts-erase` lowering pipeline. When erasure
+//! encounters unsupported syntax, consumers can enable the
 //! `optimize-js-fallback` feature to fall back to the heavier `optimize-js`
 //! compile+decompile path.
 
@@ -16,6 +16,7 @@ use parse_js::{Dialect, ParseOptions, SourceType};
 #[derive(Debug)]
 pub enum TsToJsError {
   Parse(parse_js::error::SyntaxError),
+  Erase(Vec<diagnostics::Diagnostic>),
   Emit(emit_js::JsEmitError),
   #[cfg(feature = "optimize-js-fallback")]
   Optimize(Vec<optimize_js::Diagnostic>),
@@ -27,6 +28,11 @@ impl std::fmt::Display for TsToJsError {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       TsToJsError::Parse(err) => write!(f, "{err}"),
+      TsToJsError::Erase(diagnostics) => write!(
+        f,
+        "ts-erase TS→JS erasure failed with {} diagnostic(s)",
+        diagnostics.len()
+      ),
       TsToJsError::Emit(err) => write!(f, "emit-js TS→JS erasure failed: {err:?}"),
       #[cfg(feature = "optimize-js-fallback")]
       TsToJsError::Optimize(diagnostics) => write!(
@@ -46,12 +52,13 @@ impl std::error::Error for TsToJsError {}
 /// executed by the oracle VM.
 ///
 /// This is intentionally a best-effort API:
-/// - It first attempts to use `emit-js`'s TS→JS erasure emitter.
-/// - If emission fails and the `optimize-js-fallback` feature is enabled, it
-///   falls back to `optimize-js`'s decompiler, which supports a wider range of
-///   syntax (but is significantly heavier).
+/// - It first attempts to parse TS, erase it via `ts-erase` (strict subset), and
+///   emit JS via `emit-js`.
+/// - If erasure/emission fails and the `optimize-js-fallback` feature is
+///   enabled, it falls back to `optimize-js`'s decompiler, which supports a
+///   wider range of syntax (but is significantly heavier).
 pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
-  let ast = parse_js::parse_with_options(
+  let mut ast = parse_js::parse_with_options(
     source,
     ParseOptions {
       dialect: Dialect::Ts,
@@ -59,6 +66,14 @@ pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
     },
   )
   .map_err(TsToJsError::Parse)?;
+
+  if let Err(diags) = ts_erase::erase_types_strict_native(
+    diagnostics::FileId(0),
+    SourceType::Script,
+    &mut ast,
+  ) {
+    return erase_with_optimize_js_fallback(source, TsToJsError::Erase(diags));
+  }
 
   let mut emitter = Emitter::new(EmitOptions::minified());
   match emit_js::emit_js_top_level(&mut emitter, ast.stx.as_ref()) {

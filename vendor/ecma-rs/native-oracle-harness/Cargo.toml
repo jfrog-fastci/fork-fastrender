@@ -7,15 +7,16 @@ repository.workspace = true
 publish = false
 
 [features]
-# Enable falling back to the `optimize-js` decompiler when `emit-js` cannot
-# erase a particular TypeScript construct yet.
+# Enable falling back to the `optimize-js` decompiler when `ts-erase` or
+# `emit-js` cannot handle a particular TypeScript construct yet.
 optimize-js-fallback = ["dep:optimize-js"]
 
 [dependencies]
+diagnostics = { workspace = true }
 emit-js = { workspace = true }
 parse-js = { workspace = true }
 runtime-js = { workspace = true }
+ts-erase = { workspace = true }
 vm-js = { workspace = true }
 
 optimize-js = { workspace = true, optional = true }
-
