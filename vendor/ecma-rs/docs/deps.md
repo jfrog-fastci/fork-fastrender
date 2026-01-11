@@ -15,6 +15,7 @@ graph TD
     hir_js["hir-js"]
     knowledge_base["knowledge-base"]
     llvm_stackmaps["llvm-stackmaps"]
+    megatest_harness["megatest-harness"]
     minify_js["minify-js"]
     minify_js_bench["minify-js-bench"]
     minify_js_cli["minify-js-cli"]
@@ -60,6 +61,10 @@ graph TD
     hir_js --> diagnostics
     hir_js --> parse_js
     knowledge_base --> effect_model
+    megatest_harness --> diagnostics
+    megatest_harness --> hir_js
+    megatest_harness --> optimize_js
+    megatest_harness --> parse_js
     minify_js --> diagnostics
     minify_js --> emit_js
     minify_js --> hir_js
