@@ -33,12 +33,6 @@ fn maybe_enable_stackmaps_linker_symbols() {
   let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
   let script = manifest_dir.join("link").join("stackmaps.ld");
 
-  // Allow `.llvm_stackmaps` relocations in PIE binaries when using lld.
-  //
-  // LLVM 18 emits absolute relocations in `.llvm_stackmaps` that can otherwise
-  // trigger "TEXTREL" style link failures under `-pie`. See `docs/runtime-native.md`.
-  println!("cargo:rustc-link-arg=-Wl,-z,notext");
-
   // Pass an *absolute* path so the linker can always find it, regardless of the current working
   // directory Cargo uses for the link step.
   println!("cargo:rustc-link-arg=-Wl,-T,{}", script.display());
@@ -55,9 +49,10 @@ fn maybe_build_stackmap_test_artifact() {
 
   let opt = find_tool(&["opt-18", "opt"]);
   let llc = find_tool(&["llc-18", "llc"]);
-  let (Some(opt), Some(llc)) = (opt, llc) else {
+  let objcopy = find_tool(&["llvm-objcopy-18", "llvm-objcopy"]);
+  let (Some(opt), Some(llc), Some(objcopy)) = (opt, llc, objcopy) else {
     println!(
-      "cargo:warning=runtime-native: LLVM tools not found (need opt/llc); skipping stackmap integration artifact"
+      "cargo:warning=runtime-native: LLVM tools not found (need opt/llc/llvm-objcopy); skipping stackmap integration artifact"
     );
     emit_stub();
     return;
@@ -84,6 +79,12 @@ fn maybe_build_stackmap_test_artifact() {
       return;
     }
   };
+
+  if let Err(err) = rewrite_stackmap_sections_for_pie(&obj_path, &objcopy) {
+    println!("cargo:warning=runtime-native: failed to rewrite stackmap sections: {err}");
+    emit_stub();
+    return;
+  }
 
   fs::write(
     &data_rs,
@@ -203,7 +204,8 @@ fn parse_stackmap_offsets(obj_path: &Path) -> Result<(u32, i32), String> {
   let obj = object::File::parse(&*bytes).map_err(|e| format!("parse object: {e}"))?;
   let section = obj
     .section_by_name(".llvm_stackmaps")
-    .ok_or_else(|| "missing .llvm_stackmaps section".to_string())?;
+    .or_else(|| obj.section_by_name(".data.rel.ro.llvm_stackmaps"))
+    .ok_or_else(|| "missing .llvm_stackmaps/.data.rel.ro.llvm_stackmaps section".to_string())?;
   let data = section
     .data()
     .map_err(|e| format!("read .llvm_stackmaps data: {e}"))?;
@@ -271,6 +273,45 @@ fn parse_stackmap_offsets(obj_path: &Path) -> Result<(u32, i32), String> {
 
   let sp_offset = sp_offset.ok_or_else(|| "no Indirect [SP + off] location found".to_string())?;
   Ok((inst_offset, sp_offset))
+}
+
+fn rewrite_stackmap_sections_for_pie(obj_path: &Path, objcopy: &str) -> Result<(), String> {
+  let bytes = fs::read(obj_path).map_err(|e| format!("read {obj_path:?}: {e}"))?;
+  let obj = object::File::parse(&*bytes).map_err(|e| format!("parse object: {e}"))?;
+
+  let has_new_stackmaps = obj.section_by_name(".data.rel.ro.llvm_stackmaps").is_some();
+  let has_old_stackmaps = obj.section_by_name(".llvm_stackmaps").is_some();
+  if !has_new_stackmaps && has_old_stackmaps {
+    let status = Command::new(objcopy)
+      .args([
+        "--rename-section",
+        ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
+      ])
+      .arg(obj_path)
+      .status()
+      .map_err(|e| format!("spawn {objcopy}: {e}"))?;
+    if !status.success() {
+      return Err(format!("{objcopy} failed to rename .llvm_stackmaps"));
+    }
+  }
+
+  let has_new_faultmaps = obj.section_by_name(".data.rel.ro.llvm_faultmaps").is_some();
+  let has_old_faultmaps = obj.section_by_name(".llvm_faultmaps").is_some();
+  if !has_new_faultmaps && has_old_faultmaps {
+    let status = Command::new(objcopy)
+      .args([
+        "--rename-section",
+        ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents",
+      ])
+      .arg(obj_path)
+      .status()
+      .map_err(|e| format!("spawn {objcopy}: {e}"))?;
+    if !status.success() {
+      return Err(format!("{objcopy} failed to rename .llvm_faultmaps"));
+    }
+  }
+
+  Ok(())
 }
 
 struct Cursor<'a> {
