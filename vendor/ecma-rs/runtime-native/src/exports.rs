@@ -1909,6 +1909,8 @@ extern "C" fn drop_handle_io_watcher_data(data: *mut u8) {
 /// provided `fd` **must already be set to `O_NONBLOCK`** before calling this
 /// function.
 ///
+/// The fd must remain `O_NONBLOCK` for the lifetime of the registration.
+///
 /// `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not
 /// be zero). To stop watching, call [`rt_io_unregister`].
 ///
@@ -1978,6 +1980,8 @@ pub extern "C" fn rt_io_register(
 /// ## Nonblocking / edge-triggered contract
 ///
 /// Like [`rt_io_register`], the provided `fd` **must already be set to `O_NONBLOCK`**.
+///
+/// The fd must remain `O_NONBLOCK` for the lifetime of the registration.
 ///
 /// On registration failure (return value `0`), `drop_data(data)` is still invoked and the runtime
 /// does not retain the pointer.
@@ -2049,6 +2053,8 @@ pub extern "C" fn rt_io_register_with_drop(
 ///
 /// The provided `fd` **must already be set to `O_NONBLOCK`**. The runtime does not modify caller
 /// file descriptor flags.
+///
+/// The fd must remain `O_NONBLOCK` for the lifetime of the registration.
 #[no_mangle]
 pub extern "C" fn rt_io_register_rooted(
   fd: i32,
@@ -2130,6 +2136,8 @@ pub extern "C" fn rt_io_register_rooted(
 ///
 /// Like [`rt_io_register`], the provided `fd` **must already be set to `O_NONBLOCK`**. The runtime
 /// does not modify caller file descriptor flags.
+///
+/// The fd must remain `O_NONBLOCK` for the lifetime of the registration.
 #[no_mangle]
 pub unsafe extern "C" fn rt_io_register_rooted_h(
   fd: i32,
@@ -2213,6 +2221,8 @@ pub unsafe extern "C" fn rt_io_register_rooted_h(
 ///
 /// Like [`rt_io_register`], the provided `fd` **must already be set to `O_NONBLOCK`**. The runtime
 /// does not modify caller file descriptor flags.
+///
+/// The fd must remain `O_NONBLOCK` for the lifetime of the registration.
 #[no_mangle]
 pub extern "C" fn rt_io_register_handle(
   fd: i32,
@@ -2293,6 +2303,8 @@ pub extern "C" fn rt_io_register_handle(
 ///
 /// Like [`rt_io_register`], the provided `fd` **must already be set to `O_NONBLOCK`**. The runtime
 /// does not modify caller file descriptor flags.
+///
+/// The fd must remain `O_NONBLOCK` for the lifetime of the registration.
 #[no_mangle]
 pub extern "C" fn rt_io_register_handle_with_drop(
   fd: i32,
