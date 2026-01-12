@@ -9399,6 +9399,246 @@ const SET_ITERATOR_SET_MARKER: &str = "vm-js.internal.SetIteratorSet";
 const SET_ITERATOR_INDEX_MARKER: &str = "vm-js.internal.SetIteratorIndex";
 const SET_ITERATOR_KIND_MARKER: &str = "vm-js.internal.SetIteratorKind";
 const GENERATOR_STATE_MARKER: &str = "vm-js.internal.GeneratorState";
+
+// --- Modern Array.prototype built-ins (ES2022+ / ES2023) ---
+
+#[derive(Clone, Copy, Debug)]
+enum FlattenDepth {
+  Finite(u32),
+  Infinite,
+}
+
+impl FlattenDepth {
+  fn is_zero(self) -> bool {
+    matches!(self, FlattenDepth::Finite(0))
+  }
+
+  fn dec(self) -> FlattenDepth {
+    match self {
+      FlattenDepth::Infinite => FlattenDepth::Infinite,
+      FlattenDepth::Finite(0) => FlattenDepth::Finite(0),
+      FlattenDepth::Finite(n) => FlattenDepth::Finite(n - 1),
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FlattenFrame {
+  source: GcObject,
+  source_len: usize,
+  source_index: usize,
+  depth: FlattenDepth,
+  /// Whether to apply the `mapperFunction` (only true for the root `flatMap` invocation).
+  apply_mapper: bool,
+}
+
+fn array_create_with_intrinsics(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  len: usize,
+) -> Result<GcObject, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let array = scope.alloc_array(len)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(array, Some(intr.array_prototype()))?;
+  Ok(array)
+}
+
+// https://tc39.es/ecma262/#sec-arrayspeciescreate
+fn array_species_create_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  original: GcObject,
+  len: usize,
+) -> Result<GcObject, VmError> {
+  // 1. Let isArray be ? IsArray(originalArray).
+  let is_array =
+    crate::spec_ops::is_array_with_host_and_hooks(vm, scope, host, hooks, Value::Object(original))?;
+  if !is_array {
+    // 2. If isArray is false, return ? ArrayCreate(length).
+    return array_create_with_intrinsics(vm, scope, len);
+  }
+
+  let intr = require_intrinsics(vm)?;
+  let default_ctor = Value::Object(intr.array_constructor());
+
+  // 3. Let C be ? SpeciesConstructor(originalArray, %Array%).
+  let ctor = crate::spec_ops::species_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    original,
+    default_ctor,
+  )?;
+
+  // 4. Return ? Construct(C, « length »).
+  let constructed =
+    vm.construct_with_host_and_hooks(host, scope, hooks, ctor, &[Value::Number(len as f64)], ctor)?;
+  let Value::Object(obj) = constructed else {
+    return Err(VmError::InvariantViolation(
+      "ArraySpeciesCreate: Construct did not return an object",
+    ));
+  };
+  Ok(obj)
+}
+
+// https://tc39.es/ecma262/#sec-flattenintoarray
+fn flatten_into_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  target: GcObject,
+  source: GcObject,
+  source_len: usize,
+  start: usize,
+  depth: FlattenDepth,
+  mapper: Option<(Value, Value)>,
+) -> Result<usize, VmError> {
+  // `targetIndex` is specified as an integer in the range [0, 2^53 - 1).
+  const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991; // 2^53 - 1
+
+  let mut target_index = start;
+
+  let mut stack: Vec<FlattenFrame> = Vec::new();
+  vec_try_push(
+    &mut stack,
+    FlattenFrame {
+      source,
+      source_len,
+      source_index: 0,
+      depth,
+      apply_mapper: mapper.is_some(),
+    },
+  )?;
+
+  // Budget the total number of processed source indices (across nested arrays).
+  let mut steps: usize = 0;
+
+  while let Some(frame) = stack.last_mut() {
+    if frame.source_index >= frame.source_len {
+      stack.pop();
+      continue;
+    }
+
+    let source_index = frame.source_index;
+    frame.source_index = frame.source_index.checked_add(1).ok_or(VmError::OutOfMemory)?;
+
+    steps = steps.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    if steps % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    // Capture values needed outside the per-iteration scope.
+    let mut nested_to_push: Option<FlattenFrame> = None;
+    let mut nested_to_root: Option<GcObject> = None;
+
+    {
+      // Use a nested scope so per-iteration roots do not accumulate.
+      let mut iter_scope = scope.reborrow();
+
+      // `P = ToString(sourceIndex)`
+      let key_s = alloc_string_from_usize(&mut iter_scope, source_index)?;
+      iter_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      // 1. Let exists be ? HasProperty(source, P).
+      if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, frame.source, key)? {
+        continue;
+      }
+
+      // 2. Let element be ? Get(source, P).
+      let mut element = iter_scope.get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        frame.source,
+        key,
+        Value::Object(frame.source),
+      )?;
+
+      // 3. If mapperFunction is present, then:
+      if frame.apply_mapper {
+        if let Some((mapper_fn, this_arg)) = mapper {
+          let call_args = [
+            element,
+            Value::Number(source_index as f64),
+            Value::Object(frame.source),
+          ];
+          element = vm.call_with_host_and_hooks(
+            host,
+            &mut iter_scope,
+            hooks,
+            mapper_fn,
+            this_arg,
+            &call_args,
+          )?;
+        }
+      }
+
+      // 4. If depth > 0 and IsArray(element) is true, then:
+      if !frame.depth.is_zero() {
+        let is_array =
+          crate::spec_ops::is_array_with_host_and_hooks(vm, &mut iter_scope, host, hooks, element)?;
+        if is_array {
+          let Value::Object(element_obj) = element else {
+            return Err(VmError::InvariantViolation(
+              "FlattenIntoArray: IsArray returned true for non-object",
+            ));
+          };
+
+          // `elementLen = ? LengthOfArrayLike(element)`
+          let element_len = length_of_array_like_usize(vm, &mut iter_scope, host, hooks, element_obj)?;
+
+          nested_to_root = Some(element_obj);
+          nested_to_push = Some(FlattenFrame {
+            source: element_obj,
+            source_len: element_len,
+            source_index: 0,
+            depth: frame.depth.dec(),
+            // Mapper is only applied to the top-level `flatMap` invocation.
+            apply_mapper: false,
+          });
+        }
+      }
+
+      if nested_to_push.is_none() {
+        // 5. Else, append element to target.
+        if (target_index as u64) >= MAX_SAFE_INTEGER {
+          return Err(VmError::TypeError(
+            "FlattenIntoArray target index exceeds maximum safe integer",
+          ));
+        }
+
+        // Root `element` across key allocation + property definition: it can be produced by accessors
+        // / mapper calls and otherwise be unreachable.
+        iter_scope.push_root(element)?;
+
+        let to_s = alloc_string_from_usize(&mut iter_scope, target_index)?;
+        iter_scope.push_root(Value::String(to_s))?;
+        let to_key = PropertyKey::from_string(to_s);
+        iter_scope.create_data_property_or_throw(target, to_key, element)?;
+
+        target_index = target_index.checked_add(1).ok_or(VmError::OutOfMemory)?;
+      }
+    }
+
+    if let Some(obj) = nested_to_root {
+      // Keep nested arrays alive even if user code deletes them from the source while we're
+      // flattening (e.g. via getters / Proxy traps / mapper side effects).
+      scope.push_root(Value::Object(obj))?;
+    }
+    if let Some(frame) = nested_to_push {
+      vec_try_push(&mut stack, frame)?;
+    }
+  }
+
+  Ok(target_index)
+}
 /// `Array.prototype.at(index)` (ECMA-262).
 pub fn array_prototype_at(
   vm: &mut Vm,
@@ -9411,33 +9651,626 @@ pub fn array_prototype_at(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.at
   let mut scope = scope.reborrow();
+
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
   let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
   let index_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let relative = scope.to_integer_or_infinity(vm, host, hooks, index_val)?;
+
   if !relative.is_finite() {
     return Ok(Value::Undefined);
   }
-  let k = if relative >= 0.0 {
-    relative
-  } else {
+
+  let k = if relative < 0.0 {
     (len as f64) + relative
+  } else {
+    relative
   };
-  if k < 0.0 || k >= (len as f64) || k > (usize::MAX as f64) {
+
+  if k < 0.0 || k >= (len as f64) {
     return Ok(Value::Undefined);
   }
-  let idx = k as usize;
 
-  let mut key_scope = scope.reborrow();
-  key_scope.push_root(Value::Object(obj))?;
-  // Avoid intermediate Rust `String` allocations (which are infallible and can abort the process on
-  // allocator OOM).
-  let key_s = alloc_string_from_usize(&mut key_scope, idx)?;
-  key_scope.push_root(Value::String(key_s))?;
+  let k_usize = k as usize;
+  let key_s = alloc_string_from_usize(&mut scope, k_usize)?;
+  scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
-  key_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))
+
+  scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))
+}
+
+/// `Array.prototype.flat([depth])` (ECMA-262).
+pub fn array_prototype_flat(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.flat
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let source_len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  // Spec: `depthNum = 1; if depth is not undefined, depthNum = ? ToIntegerOrInfinity(depth)`
+  let depth_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let depth_num = if matches!(depth_arg, Value::Undefined) {
+    1.0
+  } else {
+    scope.to_integer_or_infinity(vm, host, hooks, depth_arg)?
+  };
+  let depth = if depth_num <= 0.0 {
+    FlattenDepth::Finite(0)
+  } else if !depth_num.is_finite() {
+    FlattenDepth::Infinite
+  } else {
+    let depth_u64 = depth_num as u64;
+    let depth_u32 = u32::try_from(depth_u64).unwrap_or(u32::MAX);
+    FlattenDepth::Finite(depth_u32)
+  };
+
+  let target = array_species_create_with_host_and_hooks(vm, &mut scope, host, hooks, obj, 0)?;
+  scope.push_root(Value::Object(target))?;
+
+  let _ = flatten_into_array(vm, &mut scope, host, hooks, target, obj, source_len, 0, depth, None)?;
+
+  Ok(Value::Object(target))
+}
+
+/// `Array.prototype.flatMap(mapperFunction[, thisArg])` (ECMA-262).
+pub fn array_prototype_flat_map(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.flatmap
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let mapper_fn = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(mapper_fn)? {
+    return Err(VmError::TypeError("Array.prototype.flatMap mapper is not callable"));
+  }
+  scope.push_root(mapper_fn)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let source_len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  let target = array_species_create_with_host_and_hooks(vm, &mut scope, host, hooks, obj, 0)?;
+  scope.push_root(Value::Object(target))?;
+
+  let _ = flatten_into_array(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    target,
+    obj,
+    source_len,
+    0,
+    FlattenDepth::Finite(1),
+    Some((mapper_fn, this_arg)),
+  )?;
+
+  Ok(Value::Object(target))
+}
+
+/// `Array.prototype.findLast(predicate[, thisArg])` (ECMA-262).
+pub fn array_prototype_find_last(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.findlast
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let predicate = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(predicate)? {
+    return Err(VmError::TypeError(
+      "Array.prototype.findLast predicate is not callable",
+    ));
+  }
+  scope.push_root(predicate)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  let mut k = len;
+  while k > 0 {
+    k -= 1;
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    // Use a nested scope so per-iteration roots do not accumulate.
+    let mut iter_scope = scope.reborrow();
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
+      continue;
+    }
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+    let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
+    let selected_val =
+      vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, predicate, this_arg, &call_args)?;
+    if iter_scope.heap().to_boolean(selected_val)? {
+      return Ok(value);
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+/// `Array.prototype.findLastIndex(predicate[, thisArg])` (ECMA-262).
+pub fn array_prototype_find_last_index(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.findlastindex
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let predicate = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(predicate)? {
+    return Err(VmError::TypeError(
+      "Array.prototype.findLastIndex predicate is not callable",
+    ));
+  }
+  scope.push_root(predicate)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  let mut k = len;
+  while k > 0 {
+    k -= 1;
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
+      continue;
+    }
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+    let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
+    let selected_val =
+      vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, predicate, this_arg, &call_args)?;
+    if iter_scope.heap().to_boolean(selected_val)? {
+      return Ok(Value::Number(k as f64));
+    }
+  }
+
+  Ok(Value::Number(-1.0))
+}
+
+/// `Array.prototype.toReversed()` (ES2023).
+pub fn array_prototype_to_reversed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.toreversed
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  let out = array_create_with_intrinsics(vm, &mut scope, len)?;
+  scope.push_root(Value::Object(out))?;
+
+  for k in 0..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let from = len
+      .checked_sub(k)
+      .and_then(|v| v.checked_sub(1))
+      .ok_or(VmError::OutOfMemory)?;
+
+    // Use a nested scope so per-iteration roots do not accumulate.
+    let mut iter_scope = scope.reborrow();
+
+    let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
+    iter_scope.push_root(Value::String(from_s))?;
+    let from_key = PropertyKey::from_string(from_s);
+
+    let to_s = alloc_string_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(Value::String(to_s))?;
+    let to_key = PropertyKey::from_string(to_s);
+
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+    iter_scope.push_root(value)?;
+    iter_scope.create_data_property_or_throw(out, to_key, value)?;
+  }
+
+  Ok(Value::Object(out))
+}
+
+/// `Array.prototype.toSorted([compareFn])` (ES2023).
+pub fn array_prototype_to_sorted(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.tosorted
+  use std::cmp::Ordering;
+  const TICK_EVERY: usize = 1024;
+
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let comparefn = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(comparefn, Value::Undefined) && !scope.heap().is_callable(comparefn)? {
+    return Err(VmError::TypeError("Array.prototype.toSorted compareFn is not callable"));
+  }
+  scope.push_root(comparefn)?;
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  #[derive(Clone, Copy)]
+  struct SortItem {
+    value: Value,
+    original_pos: usize,
+  }
+
+  let mut items: Vec<SortItem> = Vec::new();
+  items
+    .try_reserve_exact(len.min(1024))
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  // Collect values via `Get` (holes are converted to `undefined` / prototype values).
+  for k in 0..len {
+    if k % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let value = {
+      let mut iter_scope = scope.reborrow();
+      let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
+      iter_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?
+    };
+
+    // Root captured values for the duration of the sort so they remain alive even if user
+    // comparator/toString side-effects delete them from the receiver.
+    scope.push_root(value)?;
+    vec_try_push(
+      &mut items,
+      SortItem {
+        value,
+        original_pos: k,
+      },
+    )?;
+  }
+
+  let mut sort_err: Option<VmError> = None;
+  let mut compare_count: usize = 0;
+  items.sort_unstable_by(|a, b| {
+    if sort_err.is_some() {
+      return a.original_pos.cmp(&b.original_pos);
+    }
+
+    compare_count = compare_count.wrapping_add(1);
+    if compare_count % TICK_EVERY == 0 {
+      if let Err(e) = vm.tick() {
+        sort_err = Some(e);
+        return a.original_pos.cmp(&b.original_pos);
+      }
+    }
+
+    let result: Result<Ordering, VmError> = (|| {
+      // Undefined sorts to the end (regardless of comparefn).
+      match (a.value, b.value) {
+        (Value::Undefined, Value::Undefined) => return Ok(Ordering::Equal),
+        (Value::Undefined, _) => return Ok(Ordering::Greater),
+        (_, Value::Undefined) => return Ok(Ordering::Less),
+        _ => {}
+      }
+
+      // User comparefn.
+      if !matches!(comparefn, Value::Undefined) {
+        let cmp_value = vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          comparefn,
+          Value::Undefined,
+          &[a.value, b.value],
+        )?;
+        let n = scope.to_number(vm, host, hooks, cmp_value)?;
+        if n.is_nan() || n == 0.0 {
+          return Ok(Ordering::Equal);
+        }
+        return Ok(if n < 0.0 { Ordering::Less } else { Ordering::Greater });
+      }
+
+      // Default string comparison (UTF-16 code unit order).
+      let mut cmp_scope = scope.reborrow();
+      cmp_scope.push_roots(&[a.value, b.value])?;
+
+      let a_str = cmp_scope.to_string(vm, host, hooks, a.value)?;
+      cmp_scope.push_root(Value::String(a_str))?;
+      let b_str = cmp_scope.to_string(vm, host, hooks, b.value)?;
+      cmp_scope.push_root(Value::String(b_str))?;
+
+      let a_units = cmp_scope.heap().get_string(a_str)?.as_code_units();
+      let b_units = cmp_scope.heap().get_string(b_str)?.as_code_units();
+      Ok(a_units.cmp(b_units))
+    })();
+
+    let ord = match result {
+      Ok(ord) => ord,
+      Err(e) => {
+        sort_err = Some(e);
+        Ordering::Equal
+      }
+    };
+
+    if ord == Ordering::Equal {
+      // Ensure stability by falling back to the original collection order when `SortCompare`
+      // produces 0.
+      a.original_pos.cmp(&b.original_pos)
+    } else {
+      ord
+    }
+  });
+
+  if let Some(err) = sort_err {
+    return Err(err);
+  }
+
+  let out = array_create_with_intrinsics(vm, &mut scope, len)?;
+  scope.push_root(Value::Object(out))?;
+
+  for j in 0..len {
+    if j % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let value = items[j].value;
+    let mut iter_scope = scope.reborrow();
+    let key_s = alloc_string_from_usize(&mut iter_scope, j)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    iter_scope.create_data_property_or_throw(out, key, value)?;
+  }
+
+  Ok(Value::Object(out))
+}
+
+/// `Array.prototype.toSpliced(start, deleteCount, ...items)` (ES2023).
+pub fn array_prototype_to_spliced(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.tospliced
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  let start_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let actual_start = slice_index_from_value(vm, &mut scope, host, hooks, start_val, len, 0)?;
+
+  let insert_count = args.len().saturating_sub(2);
+
+  let actual_delete_count = if args.len() < 2 {
+    len.saturating_sub(actual_start)
+  } else {
+    let delete_count_val = args.get(1).copied().unwrap_or(Value::Undefined);
+    let dc = scope.to_integer_or_infinity(vm, host, hooks, delete_count_val)?;
+    if dc <= 0.0 {
+      0usize
+    } else if !dc.is_finite() {
+      len.saturating_sub(actual_start)
+    } else {
+      let max = len.saturating_sub(actual_start);
+      (dc as usize).min(max)
+    }
+  };
+
+  let new_len = len
+    .checked_sub(actual_delete_count)
+    .and_then(|v| v.checked_add(insert_count))
+    .ok_or(VmError::OutOfMemory)?;
+
+  let out = array_create_with_intrinsics(vm, &mut scope, new_len)?;
+  scope.push_root(Value::Object(out))?;
+
+  let mut k = 0usize;
+
+  // Copy prefix (Get-based: holes are converted to `undefined` / prototype values).
+  while k < actual_start {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    iter_scope.push_root(value)?;
+    iter_scope.create_data_property_or_throw(out, key, value)?;
+    k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
+  }
+
+  // Insert items.
+  for item in args.iter().copied().skip(2) {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(item)?;
+
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    iter_scope.create_data_property_or_throw(out, key, item)?;
+    k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
+  }
+
+  // Copy suffix.
+  while k < new_len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let from = k
+      .checked_add(actual_delete_count)
+      .and_then(|v| v.checked_sub(insert_count))
+      .ok_or(VmError::OutOfMemory)?;
+
+    let mut iter_scope = scope.reborrow();
+
+    let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
+    iter_scope.push_root(Value::String(from_s))?;
+    let from_key = PropertyKey::from_string(from_s);
+
+    let to_s = alloc_string_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(Value::String(to_s))?;
+    let to_key = PropertyKey::from_string(to_s);
+
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+    iter_scope.push_root(value)?;
+    iter_scope.create_data_property_or_throw(out, to_key, value)?;
+
+    k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
+  }
+
+  Ok(Value::Object(out))
+}
+
+/// `Array.prototype.with(index, value)` (ES2023).
+pub fn array_prototype_with(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.with
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  let index_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let relative_index = scope.to_integer_or_infinity(vm, host, hooks, index_val)?;
+
+  if !relative_index.is_finite() {
+    return Err(VmError::RangeError("index out of range"));
+  }
+
+  let actual_index = if relative_index < 0.0 {
+    (len as f64) + relative_index
+  } else {
+    relative_index
+  };
+
+  if actual_index < 0.0 || actual_index >= (len as f64) {
+    return Err(VmError::RangeError("index out of range"));
+  }
+
+  let actual_index = actual_index as usize;
+
+  let value = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(value)?;
+
+  let out = array_create_with_intrinsics(vm, &mut scope, len)?;
+  scope.push_root(Value::Object(out))?;
+
+  for k in 0..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let from_value = if k == actual_index {
+      value
+    } else {
+      iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?
+    };
+
+    iter_scope.push_root(from_value)?;
+    iter_scope.create_data_property_or_throw(out, key, from_value)?;
+  }
+
+  Ok(Value::Object(out))
 }
 
 /// `Array.prototype.map` (minimal).

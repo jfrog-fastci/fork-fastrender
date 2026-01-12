@@ -279,6 +279,127 @@ glob = "built-ins/Array/prototype/sort/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Array/prototype/at/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/at/coerced-index-resize.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/at/typed-array-resizable-buffer.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+glob = "built-ins/Array/prototype/flat/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Array/prototype/flatMap/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Array/prototype/findLast/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLast/callbackfn-resize-arraybuffer.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLast/resizable-buffer-grow-mid-iteration.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLast/resizable-buffer-shrink-mid-iteration.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLast/resizable-buffer.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+glob = "built-ins/Array/prototype/findLastIndex/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLastIndex/callbackfn-resize-arraybuffer.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLastIndex/resizable-buffer-grow-mid-iteration.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLastIndex/resizable-buffer-shrink-mid-iteration.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLastIndex/resizable-buffer.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+glob = "built-ins/Array/prototype/toReversed/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/toReversed/length-exceeding-array-length-limit.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
+glob = "built-ins/Array/prototype/toSorted/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/toSorted/length-exceeding-array-length-limit.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
+glob = "built-ins/Array/prototype/toSpliced/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/toSpliced/length-exceeding-array-length-limit.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/toSpliced/length-clamped-to-2pow53minus1.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
+glob = "built-ins/Array/prototype/with/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/with/length-exceeding-array-length-limit.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/with/index-smaller-than-minus-length.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/with/index-bigger-or-eq-than-length.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
 id = "built-ins/Array/prototype/concat/arg-length-exceeding-integer-limit.js"
 status = "pass"
 reason = "vm-js implements the Array.prototype.concat max-safe-integer length guard (prevents pathological length loops)."

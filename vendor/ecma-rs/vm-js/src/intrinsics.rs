@@ -982,6 +982,16 @@ impl Intrinsics {
     let array_prototype_shift = vm.register_native_call(builtins::array_prototype_shift)?;
     let array_prototype_unshift = vm.register_native_call(builtins::array_prototype_unshift)?;
     let array_prototype_splice = vm.register_native_call(builtins::array_prototype_splice)?;
+    let array_prototype_at = vm.register_native_call(builtins::array_prototype_at)?;
+    let array_prototype_flat = vm.register_native_call(builtins::array_prototype_flat)?;
+    let array_prototype_flat_map = vm.register_native_call(builtins::array_prototype_flat_map)?;
+    let array_prototype_find_last = vm.register_native_call(builtins::array_prototype_find_last)?;
+    let array_prototype_find_last_index =
+      vm.register_native_call(builtins::array_prototype_find_last_index)?;
+    let array_prototype_to_reversed = vm.register_native_call(builtins::array_prototype_to_reversed)?;
+    let array_prototype_to_sorted = vm.register_native_call(builtins::array_prototype_to_sorted)?;
+    let array_prototype_to_spliced = vm.register_native_call(builtins::array_prototype_to_spliced)?;
+    let array_prototype_with = vm.register_native_call(builtins::array_prototype_with)?;
     let array_is_array = vm.register_native_call(builtins::array_is_array)?;
     let array_constructor_from = vm.register_native_call(builtins::array_constructor_from)?;
     let array_prototype_keys = vm.register_native_call(builtins::array_prototype_keys)?;
@@ -2208,6 +2218,139 @@ impl Intrinsics {
           splice_key,
           data_desc(Value::Object(splice_fn), true, false, true),
         )?;
+
+        // --- Modern Array.prototype methods (ES2022+ / ES2023) ---
+        let at_s = scope.alloc_string("at")?;
+        scope.push_root(Value::String(at_s))?;
+        let at_key = PropertyKey::from_string(at_s);
+        let at_fn = scope.alloc_native_function(array_prototype_at, None, at_s, 1)?;
+        scope.push_root(Value::Object(at_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(at_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          at_key,
+          data_desc(Value::Object(at_fn), true, false, true),
+        )?;
+
+        let flat_s = scope.alloc_string("flat")?;
+        scope.push_root(Value::String(flat_s))?;
+        let flat_key = PropertyKey::from_string(flat_s);
+        let flat_fn = scope.alloc_native_function(array_prototype_flat, None, flat_s, 0)?;
+        scope.push_root(Value::Object(flat_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(flat_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          flat_key,
+          data_desc(Value::Object(flat_fn), true, false, true),
+        )?;
+
+        let flat_map_s = scope.alloc_string("flatMap")?;
+        scope.push_root(Value::String(flat_map_s))?;
+        let flat_map_key = PropertyKey::from_string(flat_map_s);
+        let flat_map_fn =
+          scope.alloc_native_function(array_prototype_flat_map, None, flat_map_s, 1)?;
+        scope.push_root(Value::Object(flat_map_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(flat_map_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          flat_map_key,
+          data_desc(Value::Object(flat_map_fn), true, false, true),
+        )?;
+
+        let find_last_s = scope.alloc_string("findLast")?;
+        scope.push_root(Value::String(find_last_s))?;
+        let find_last_key = PropertyKey::from_string(find_last_s);
+        let find_last_fn =
+          scope.alloc_native_function(array_prototype_find_last, None, find_last_s, 1)?;
+        scope.push_root(Value::Object(find_last_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(find_last_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          find_last_key,
+          data_desc(Value::Object(find_last_fn), true, false, true),
+        )?;
+
+        let find_last_index_s = scope.alloc_string("findLastIndex")?;
+        scope.push_root(Value::String(find_last_index_s))?;
+        let find_last_index_key = PropertyKey::from_string(find_last_index_s);
+        let find_last_index_fn =
+          scope.alloc_native_function(array_prototype_find_last_index, None, find_last_index_s, 1)?;
+        scope.push_root(Value::Object(find_last_index_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(find_last_index_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          find_last_index_key,
+          data_desc(Value::Object(find_last_index_fn), true, false, true),
+        )?;
+
+        let to_reversed_s = scope.alloc_string("toReversed")?;
+        scope.push_root(Value::String(to_reversed_s))?;
+        let to_reversed_key = PropertyKey::from_string(to_reversed_s);
+        let to_reversed_fn =
+          scope.alloc_native_function(array_prototype_to_reversed, None, to_reversed_s, 0)?;
+        scope.push_root(Value::Object(to_reversed_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(to_reversed_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          to_reversed_key,
+          data_desc(Value::Object(to_reversed_fn), true, false, true),
+        )?;
+
+        let to_sorted_s = scope.alloc_string("toSorted")?;
+        scope.push_root(Value::String(to_sorted_s))?;
+        let to_sorted_key = PropertyKey::from_string(to_sorted_s);
+        let to_sorted_fn = scope.alloc_native_function(array_prototype_to_sorted, None, to_sorted_s, 1)?;
+        scope.push_root(Value::Object(to_sorted_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(to_sorted_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          to_sorted_key,
+          data_desc(Value::Object(to_sorted_fn), true, false, true),
+        )?;
+
+        let to_spliced_s = scope.alloc_string("toSpliced")?;
+        scope.push_root(Value::String(to_spliced_s))?;
+        let to_spliced_key = PropertyKey::from_string(to_spliced_s);
+        let to_spliced_fn =
+          scope.alloc_native_function(array_prototype_to_spliced, None, to_spliced_s, 2)?;
+        scope.push_root(Value::Object(to_spliced_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(to_spliced_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          to_spliced_key,
+          data_desc(Value::Object(to_spliced_fn), true, false, true),
+        )?;
+
+        let with_s = scope.alloc_string("with")?;
+        scope.push_root(Value::String(with_s))?;
+        let with_key = PropertyKey::from_string(with_s);
+        let with_fn = scope.alloc_native_function(array_prototype_with, None, with_s, 2)?;
+        scope.push_root(Value::Object(with_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(with_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          with_key,
+          data_desc(Value::Object(with_fn), true, false, true),
+        )?;
+
         let values_s = scope.alloc_string("values")?;
         scope.push_root(Value::String(values_s))?;
         let values_key = PropertyKey::from_string(values_s);
