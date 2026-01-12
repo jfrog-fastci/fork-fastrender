@@ -71,6 +71,13 @@ GC tracing helpers:
 - `TypeStore::gc_ptr_offsets(LayoutId)` extracts unconditional GC pointer
   offsets (pointers that are present regardless of union discriminants).
 
+String representation (native AOT):
+
+- `TypeKind::String` / string literals currently lower to an **interned id**
+  (`AbiScalar::U32`) rather than a GC-managed pointer. This keeps object/tuple
+  shapes GC-traceable with simple flat pointer maps and matches the
+  `runtime-native` string interner ABI (`InternedId`).
+
 ## Fuzzing
 
 This crate exposes a fuzz entry point behind the `fuzzing` and `serde-json`

@@ -346,6 +346,9 @@ impl LayoutStore {
       TypeKind::Number | TypeKind::NumberLiteral(_) => Layout::Scalar {
         abi: AbiScalar::F64,
       },
+      // Native AOT representation: `string` is a runtime-managed interned id (`u32`), not a GC
+      // pointer. This allows object/tuple shapes containing strings to remain traceable with a flat
+      // pointer map (no GC slots for string fields).
       TypeKind::String | TypeKind::StringLiteral(_) | TypeKind::TemplateLiteral(_) => Layout::Scalar {
         abi: AbiScalar::U32,
       },

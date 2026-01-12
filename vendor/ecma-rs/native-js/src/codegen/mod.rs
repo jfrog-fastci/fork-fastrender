@@ -120,6 +120,7 @@ pub fn codegen<'ctx>(
 enum TsAbiKind {
   Number,
   Boolean,
+  /// Runtime-native interned string id (`InternedId`, `u32`).
   String,
   Void,
   /// GC-managed pointer value (`ptr addrspace(1)`).
