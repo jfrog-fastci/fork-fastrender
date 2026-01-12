@@ -167,7 +167,11 @@ fn promise_then_rooted_passes_relocated_data_ptr() {
   }));
 
   runtime_native::rt_promise_then_rooted_legacy(promise, on_settle_store_self_ptr, old_data.cast());
-  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
+  // `then_rooted` installs:
+  // - a persistent handle for the rooted callback `data`, and
+  // - a persistent handle for the promise itself while it has pending reactions tracked for
+  //   `rt_async_cancel_all`.
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 2);
 
   // Simulate a moving GC updating the rooted callback data pointer in-place.
   assert_eq!(replace_global_root_ptr(old_data.cast(), new_data.cast()), 1);
@@ -345,7 +349,10 @@ fn promise_adopt_continuation_uses_relocated_dst_ptr() {
   let dst_new = runtime_native::rt_promise_new_legacy();
 
   runtime_native::rt_promise_resolve_promise_legacy(dst_old, src);
-  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 2);
+  // Promise adoption stores:
+  // - roots for `dst` and `src` pointers inside the adopt continuation, and
+  // - a root for `src` while it has a pending reaction tracked for `rt_async_cancel_all`.
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 3);
 
   assert_eq!(
     replace_global_root_ptr(dst_old.0.cast::<u8>(), dst_new.0.cast::<u8>()),
