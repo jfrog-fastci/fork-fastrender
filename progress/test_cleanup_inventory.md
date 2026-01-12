@@ -61,6 +61,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/dom_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/dom_integration/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/font_tests.rs` | delete | `src/text/tests/font/` | Top-level harness removed; suite moved out of `tests/` into `src/text/tests/font/**` unit tests. | DONE |
 | `tests/js_harness_tests.rs` | unit | `src/js/vmjs/window_timers.rs` + `src/js/vmjs/window.rs` | Removed `tests/js_harness_tests.rs` and the old `tests/js_harness/` harness directory; coverage migrated into VM/Window unit tests (timers + window APIs). | DONE |
+| `tests/observers_scheduling.rs` | integration | `tests/js/observers_scheduling.rs` | Consolidated into the unified integration harness under `tests/js/`. | DONE |
 | `tests/layout_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/layout/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/legacy_tests.rs` | unit | `src/paint/tests/legacy/**` | Migrated the legacy paint backend regression suite into unit tests and removed the standalone test binary + legacy harness modules. | DONE |
 | `tests/misc_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/misc/**` and is pulled into `tests/integration.rs`. | DONE |
