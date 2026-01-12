@@ -19,6 +19,7 @@ const CODE_FOREIGN_GLOBAL: &str = "OPTN0002";
 const CODE_SPREAD_CALL: &str = "OPTN0003";
 const CODE_DYNAMIC_PROP: &str = "OPTN0004";
 const CODE_BANNED_BUILTIN: &str = "OPTN0005";
+#[cfg(feature = "typed")]
 const CODE_MISSING_TYPE_ID: &str = "OPTN0006";
 
 /// Options controlling strict-native validation at the IL boundary.
