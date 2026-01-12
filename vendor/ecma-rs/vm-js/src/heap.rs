@@ -10,7 +10,7 @@ use crate::symbol::JsSymbol;
 use crate::CompiledFunctionRef;
 use crate::{
   EnvRootId, GcEnv, GcObject, GcString, GcSymbol, HeapId, RealmId, RootId, Value, Vm, VmError,
-  VmHost, VmHostHooks,
+  VmHost, VmHostHooks, WeakGcObject,
 };
 use std::cell::Cell;
 use core::mem;
@@ -643,6 +643,29 @@ impl Heap {
       self.free_list.push(idx as u32);
     }
 
+    // WeakSet hygiene: remove dead keys from live WeakSet objects.
+    //
+    // Even though `WeakSet` operations treat dead keys as absent, failing to prune them causes the
+    // internal entry list to grow without bound across GC cycles.
+    //
+    // This is intentionally in-place (no allocation): we move each entry vector out temporarily so
+    // we can call back into `&self` for liveness checks without holding a borrow into `self.slots`.
+    for idx in 0..self.slots.len() {
+      let mut entries = {
+        let Some(HeapObject::WeakSet(ws)) = self.slots[idx].value.as_mut() else {
+          continue;
+        };
+        mem::take(&mut ws.entries)
+      };
+      entries.retain(|entry| entry.upgrade(&*self).is_some());
+      let Some(HeapObject::WeakSet(ws)) = self.slots[idx].value.as_mut() else {
+        continue;
+      };
+      ws.entries = entries;
+      // Note: we do not shrink the underlying allocation here; `retain` only updates length.
+      // Slot `bytes` accounting remains unchanged because the allocation capacity is unchanged.
+    }
+
     #[cfg(debug_assertions)]
     self.debug_assert_used_bytes_is_correct();
   }
@@ -814,6 +837,7 @@ impl Heap {
           | HeapObject::Function(_)
           | HeapObject::Proxy(_)
           | HeapObject::Promise(_)
+          | HeapObject::WeakSet(_)
       )
     )
   }
@@ -997,7 +1021,8 @@ impl Heap {
         | HeapObject::Uint8Array(_)
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
-        | HeapObject::Promise(_),
+        | HeapObject::Promise(_)
+        | HeapObject::WeakSet(_),
       ) => {
         self.slots[idx].host_slots = Some(slots);
         Ok(())
@@ -1019,7 +1044,8 @@ impl Heap {
         | HeapObject::Uint8Array(_)
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
-        | HeapObject::Promise(_),
+        | HeapObject::Promise(_)
+        | HeapObject::WeakSet(_),
       ) => Ok(self.slots[idx].host_slots),
       _ => Err(VmError::invalid_handle()),
     }
@@ -1038,7 +1064,8 @@ impl Heap {
         | HeapObject::Uint8Array(_)
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
-        | HeapObject::Promise(_),
+        | HeapObject::Promise(_)
+        | HeapObject::WeakSet(_),
       ) => {
         self.slots[idx].host_slots = None;
         Ok(())
@@ -1182,6 +1209,7 @@ impl Heap {
       HeapObject::Uint8Array(a) => Ok(&a.base),
       HeapObject::Function(f) => Ok(&f.base),
       HeapObject::Promise(p) => Ok(&p.object.base),
+      HeapObject::WeakSet(ws) => Ok(&ws.base),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -1193,6 +1221,157 @@ impl Heap {
       HeapObject::Uint8Array(a) => Ok(&mut a.base),
       HeapObject::Function(f) => Ok(&mut f.base),
       HeapObject::Promise(p) => Ok(&mut p.object.base),
+      HeapObject::WeakSet(ws) => Ok(&mut ws.base),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  /// Returns `true` if `key` is present in `set`.
+  ///
+  /// Dead/stale keys are treated as absent.
+  pub fn weak_set_has(&self, set: GcObject, key: GcObject) -> Result<bool, VmError> {
+    if !self.is_valid_object(key) {
+      return Ok(false);
+    }
+
+    let HeapObject::WeakSet(ws) = self.get_heap_object(set.0)? else {
+      return Err(VmError::invalid_handle());
+    };
+
+    for entry in ws.entries.iter() {
+      let Some(obj) = entry.upgrade(self) else {
+        continue;
+      };
+      if obj == key {
+        return Ok(true);
+      }
+    }
+    Ok(false)
+  }
+
+  /// Inserts `key` into `set`.
+  ///
+  /// Dead/stale keys are ignored.
+  pub fn weak_set_add(&mut self, set: GcObject, key: GcObject) -> Result<(), VmError> {
+    if !self.is_valid_object(set) {
+      return Err(VmError::invalid_handle());
+    }
+    if !self.is_valid_object(key) {
+      return Ok(());
+    }
+
+    // Root inputs across any potential GC while growing the entry vector.
+    let mut scope = self.scope();
+    scope.push_roots(&[Value::Object(set), Value::Object(key)])?;
+    scope.heap.weak_set_add_rooted(set, key)
+  }
+
+  fn weak_set_add_rooted(&mut self, set: GcObject, key: GcObject) -> Result<(), VmError> {
+    let slot_idx = self
+      .validate(set.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let key_weak = WeakGcObject::from(key);
+
+    let (entry_len, entry_cap, property_count, old_bytes) = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::WeakSet(ws)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+
+      // WeakSet operations must treat dead keys as absent. Entries are expected to be GC-pruned,
+      // but this check prevents stale keys from being observed even if pruning falls behind.
+      for entry in ws.entries.iter() {
+        if *entry == key_weak && entry.upgrade(self).is_some() {
+          return Ok(());
+        }
+      }
+
+      (
+        ws.entries.len(),
+        ws.entries.capacity(),
+        ws.base.properties.len(),
+        slot.bytes,
+      )
+    };
+
+    let required_len = entry_len.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    let desired_capacity = grown_capacity(entry_cap, required_len);
+    if desired_capacity == usize::MAX {
+      return Err(VmError::OutOfMemory);
+    }
+
+    let expected_new_bytes =
+      JsWeakSet::heap_size_bytes_for_counts(property_count, desired_capacity);
+    let grow_by = expected_new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      self.ensure_can_allocate(grow_by)?;
+      let Some(HeapObject::WeakSet(ws)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      reserve_vec_to_len::<WeakGcObject>(&mut ws.entries, required_len)?;
+    }
+
+    let Some(HeapObject::WeakSet(ws)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    ws.entries.push(key_weak);
+    let new_bytes = ws.heap_size_bytes();
+    self.update_slot_bytes(slot_idx, new_bytes);
+
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  /// Removes `key` from `set`, returning whether it was present.
+  ///
+  /// Dead/stale keys are treated as absent.
+  pub fn weak_set_delete(&mut self, set: GcObject, key: GcObject) -> Result<bool, VmError> {
+    if !self.is_valid_object(key) {
+      return Ok(false);
+    }
+
+    let slot_idx = self
+      .validate(set.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let key_weak = WeakGcObject::from(key);
+    let mut removed = false;
+
+    // No allocation: `retain` is in-place.
+    let mut entries = {
+      let Some(HeapObject::WeakSet(ws)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      mem::take(&mut ws.entries)
+    };
+
+    entries.retain(|entry| {
+      let Some(obj) = entry.upgrade(&*self) else {
+        return false;
+      };
+      if *entry == key_weak && obj == key {
+        removed = true;
+        return false;
+      }
+      true
+    });
+
+    let Some(HeapObject::WeakSet(ws)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    ws.entries = entries;
+
+    Ok(removed)
+  }
+
+  /// Returns the number of entries currently stored in `set`.
+  ///
+  /// Note: this counts *weak* entries and is intended for engine tests/introspection.
+  pub fn weak_set_entry_count(&self, set: GcObject) -> Result<usize, VmError> {
+    match self.get_heap_object(set.0)? {
+      HeapObject::WeakSet(ws) => Ok(ws.entries.len()),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -1397,6 +1576,9 @@ impl Heap {
         fulfill_reaction_count: usize,
         reject_reaction_count: usize,
       },
+      WeakSet {
+        entry_capacity: usize,
+      },
     }
 
     let (idx, target_kind, property_count) = {
@@ -1456,6 +1638,17 @@ impl Heap {
           },
           p.object.base.properties.len(),
         ),
+        HeapObject::WeakSet(ws) => (
+          ws
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::WeakSet {
+            entry_capacity: ws.entries.capacity(),
+          },
+          ws.base.properties.len(),
+        ),
         _ => return Err(VmError::invalid_handle()),
       }
     };
@@ -1481,6 +1674,9 @@ impl Heap {
         fulfill_reaction_count,
         reject_reaction_count,
       ),
+      TargetKind::WeakSet { entry_capacity } => {
+        JsWeakSet::heap_size_bytes_for_counts(new_property_count, entry_capacity)
+      }
     };
 
     // Allocate the new property table fallibly so hostile inputs cannot abort the host process
@@ -1491,27 +1687,31 @@ impl Heap {
       .map_err(|_| VmError::OutOfMemory)?;
 
     {
-        let slot = &self.slots[slot_idx];
-        match slot.value.as_ref() {
-          Some(HeapObject::Object(obj)) => {
-            buf.extend_from_slice(&obj.base.properties[..idx]);
-            buf.extend_from_slice(&obj.base.properties[idx + 1..]);
-          }
-          Some(HeapObject::ArrayBuffer(obj)) => {
-            buf.extend_from_slice(&obj.base.properties[..idx]);
-            buf.extend_from_slice(&obj.base.properties[idx + 1..]);
-          }
-          Some(HeapObject::Uint8Array(obj)) => {
-            buf.extend_from_slice(&obj.base.properties[..idx]);
-            buf.extend_from_slice(&obj.base.properties[idx + 1..]);
-          }
-          Some(HeapObject::Function(func)) => {
-            buf.extend_from_slice(&func.base.properties[..idx]);
-            buf.extend_from_slice(&func.base.properties[idx + 1..]);
-          }
+      let slot = &self.slots[slot_idx];
+      match slot.value.as_ref() {
+        Some(HeapObject::Object(obj)) => {
+          buf.extend_from_slice(&obj.base.properties[..idx]);
+          buf.extend_from_slice(&obj.base.properties[idx + 1..]);
+        }
+        Some(HeapObject::ArrayBuffer(obj)) => {
+          buf.extend_from_slice(&obj.base.properties[..idx]);
+          buf.extend_from_slice(&obj.base.properties[idx + 1..]);
+        }
+        Some(HeapObject::Uint8Array(obj)) => {
+          buf.extend_from_slice(&obj.base.properties[..idx]);
+          buf.extend_from_slice(&obj.base.properties[idx + 1..]);
+        }
+        Some(HeapObject::Function(func)) => {
+          buf.extend_from_slice(&func.base.properties[..idx]);
+          buf.extend_from_slice(&func.base.properties[idx + 1..]);
+        }
         Some(HeapObject::Promise(p)) => {
           buf.extend_from_slice(&p.object.base.properties[..idx]);
           buf.extend_from_slice(&p.object.base.properties[idx + 1..]);
+        }
+        Some(HeapObject::WeakSet(ws)) => {
+          buf.extend_from_slice(&ws.base.properties[..idx]);
+          buf.extend_from_slice(&ws.base.properties[idx + 1..]);
         }
         _ => return Err(VmError::invalid_handle()),
       }
@@ -1527,6 +1727,7 @@ impl Heap {
       HeapObject::Uint8Array(obj) => obj.base.properties = properties,
       HeapObject::Function(func) => func.base.properties = properties,
       HeapObject::Promise(p) => p.object.base.properties = properties,
+      HeapObject::WeakSet(ws) => ws.base.properties = properties,
       _ => return Err(VmError::invalid_handle()),
     }
 
@@ -3021,6 +3222,9 @@ impl Heap {
         fulfill_reaction_count: usize,
         reject_reaction_count: usize,
       },
+      WeakSet {
+        entry_capacity: usize,
+      },
     }
 
     let (target_kind, property_count, old_bytes, existing_idx, array_len) = {
@@ -3108,6 +3312,22 @@ impl Heap {
             None,
           )
         }
+        HeapObject::WeakSet(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::WeakSet {
+              entry_capacity: obj.entries.capacity(),
+            },
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
         _ => return Err(VmError::invalid_handle()),
       }
     };
@@ -3146,6 +3366,7 @@ impl Heap {
           Some(HeapObject::Uint8Array(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Function(func)) => func.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Promise(p)) => p.object.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::WeakSet(ws)) => ws.base.properties[existing_idx].desc = desc,
           _ => return Err(VmError::invalid_handle()),
         }
       }
@@ -3169,6 +3390,9 @@ impl Heap {
             fulfill_reaction_count,
             reject_reaction_count,
           ),
+          TargetKind::WeakSet { entry_capacity } => {
+            JsWeakSet::heap_size_bytes_for_counts(new_property_count, entry_capacity)
+          }
         };
 
         // Before allocating, enforce heap limits based on the net growth of this object.
@@ -3190,6 +3414,7 @@ impl Heap {
             Some(HeapObject::Uint8Array(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::Function(func)) => buf.extend_from_slice(&func.base.properties),
             Some(HeapObject::Promise(p)) => buf.extend_from_slice(&p.object.base.properties),
+            Some(HeapObject::WeakSet(ws)) => buf.extend_from_slice(&ws.base.properties),
             _ => return Err(VmError::invalid_handle()),
           }
         }
@@ -3203,6 +3428,7 @@ impl Heap {
           Some(HeapObject::Uint8Array(obj)) => obj.base.properties = properties,
           Some(HeapObject::Function(func)) => func.base.properties = properties,
           Some(HeapObject::Promise(p)) => p.object.base.properties = properties,
+          Some(HeapObject::WeakSet(ws)) => ws.base.properties = properties,
           _ => return Err(VmError::invalid_handle()),
         }
 
@@ -3944,6 +4170,15 @@ impl<'a> Scope<'a> {
     self.heap.ensure_can_allocate(new_bytes)?;
 
     let obj = HeapObject::Object(JsObject::new(None));
+    Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates an empty `WeakSet` object on the heap.
+  pub fn alloc_weak_set(&mut self) -> Result<GcObject, VmError> {
+    let new_bytes = JsWeakSet::heap_size_bytes_for_counts(0, 0);
+    self.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::WeakSet(JsWeakSet::new(None));
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
@@ -4846,6 +5081,7 @@ enum HeapObject {
   Proxy(JsProxy),
   Env(EnvRecord),
   Promise(JsPromise),
+  WeakSet(JsWeakSet),
 }
 
 impl Trace for HeapObject {
@@ -4860,6 +5096,7 @@ impl Trace for HeapObject {
       HeapObject::Proxy(p) => p.trace(tracer),
       HeapObject::Env(e) => e.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
+      HeapObject::WeakSet(ws) => ws.trace(tracer),
     }
   }
 }
@@ -5124,6 +5361,40 @@ impl Trace for JsUint8Array {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     self.base.trace(tracer);
     tracer.trace_value(Value::Object(self.viewed_array_buffer));
+  }
+}
+
+#[derive(Debug)]
+struct JsWeakSet {
+  base: ObjectBase,
+  entries: Vec<WeakGcObject>,
+}
+
+impl JsWeakSet {
+  fn new(prototype: Option<GcObject>) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      entries: Vec::new(),
+    }
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    Self::heap_size_bytes_for_counts(self.base.properties.len(), self.entries.capacity())
+  }
+
+  fn heap_size_bytes_for_counts(property_count: usize, entry_capacity: usize) -> usize {
+    let props_bytes = ObjectBase::properties_heap_size_bytes_for_count(property_count);
+    let entries_bytes = entry_capacity
+      .checked_mul(mem::size_of::<WeakGcObject>())
+      .unwrap_or(usize::MAX);
+    props_bytes.saturating_add(entries_bytes)
+  }
+}
+
+impl Trace for JsWeakSet {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    // WeakSet keys are weak: do not trace `entries`.
+    self.base.trace(tracer);
   }
 }
 
