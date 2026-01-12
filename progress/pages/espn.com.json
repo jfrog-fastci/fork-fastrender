@@ -15,7 +15,7 @@
     "layout": 89.96956046189376,
     "paint": 52.982074494226325
   },
-  "notes": "",
+  "notes": "Visually good. Fixture Chrome diff at 1200x800 shows correct overall layout/structure; remaining ~9–11% pixel diffs vs Chrome (perceptual ≈0.02) are dominated by small per-channel differences from text rasterization/hinting and subtle blur/gradient rounding rather than missing cascade/layout primitives.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 89579,
