@@ -328,6 +328,12 @@ fn bind_object_pattern(
 
   let rest_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(rest_obj))?;
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(rest_obj, Some(intr.object_prototype()))?;
 
   let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
   for key in keys {
@@ -349,7 +355,7 @@ fn bind_object_pattern(
 
     // `CopyDataProperties` uses `Get` even though we already have the descriptor.
     let v = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-    let _ = scope.create_data_property(rest_obj, key, v)?;
+    scope.create_data_property_or_throw(rest_obj, key, v)?;
   }
 
   bind_pattern(

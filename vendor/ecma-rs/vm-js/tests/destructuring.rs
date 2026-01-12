@@ -39,6 +39,17 @@ fn object_destructuring_supports_rest() {
 }
 
 #[test]
+fn object_destructuring_rest_object_has_object_prototype() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var {a,...r} = {a:1,b:2}; r instanceof Object && Object.getPrototypeOf(r) === Object.prototype"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_destructuring_binds_elements_and_holes() {
   let mut rt = new_runtime();
   let value = rt
