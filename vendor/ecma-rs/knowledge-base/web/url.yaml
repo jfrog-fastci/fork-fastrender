@@ -20,6 +20,18 @@
     may_throw: true
   purity: Pure
 
+- name: URLPattern
+  kind: constructor
+  aliases:
+    - URLPattern
+    - window.URLPattern
+    - globalThis.URLPattern
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
 - name: URL.createObjectURL
   kind: function
   aliases:

@@ -2852,6 +2852,15 @@ properties:
       Some("node/web_navigator.yaml")
     );
 
+    let pattern = kb
+      .api_for_target("URLPattern", &node_25)
+      .expect("URLPattern should resolve for Node 21+");
+    assert_eq!(pattern.name, "URLPattern");
+    assert_eq!(
+      kb.source_for_target("URLPattern", &node_25),
+      Some("node/web_url.yaml")
+    );
+
     let node_20 = TargetEnv::Node {
       version: Version::parse("20.0.0").unwrap(),
     };
@@ -2862,6 +2871,10 @@ properties:
     assert!(
       kb.api_for_target("navigator.userAgent", &node_20).is_none(),
       "navigator.userAgent should not resolve for Node < 21"
+    );
+    assert!(
+      kb.api_for_target("URLPattern", &node_20).is_none(),
+      "URLPattern should not resolve for Node < 21"
     );
   }
 

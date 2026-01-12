@@ -22,6 +22,15 @@
     may_throw: true
   purity: Pure
 
+- name: URLPattern
+  kind: constructor
+  # Global `URLPattern` is relatively new in Node; conservatively gate to Node 21+.
+  since: "v21.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
 - name: URL.prototype.toString
   kind: function
   since: "v0.1.0"
