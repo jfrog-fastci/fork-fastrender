@@ -137,7 +137,18 @@ pub struct CompilerOptions {
   pub emit: EmitKind,
   /// Target triple to compile for. `None` means "host default".
   pub target: Option<Triple>,
-  /// Whether to emit debug info.
+  /// Enable DWARF debug info emission and debug-friendly defaults.
+  ///
+  /// When enabled, native-js:
+  /// - emits DWARF line tables / debug sections for object + executable emission;
+  /// - marks TS-generated functions as `optnone` + `noinline` so stepping is more predictable;
+  /// - disables linker `--gc-sections` for executables (debug builds are size-insensitive and we
+  ///   want predictable section retention);
+  /// - keeps temporary output directories in some helper APIs when no explicit `output` is set.
+  ///
+  /// Note: this flag does not automatically change [`CompilerOptions::opt_level`]. If you want
+  /// minimal optimization, set `opt_level = OptLevel::O0` (the `native-js` CLI does this for
+  /// `--debug`).
   pub debug: bool,
   /// Remap source paths embedded in emitted debug info (DWARF).
   ///

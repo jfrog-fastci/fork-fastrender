@@ -195,10 +195,33 @@ See `native-js-cli` for the CLI front-ends:
   bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- check path/to/entry.ts
   bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run path/to/entry.ts
   bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- bench path/to/entry.ts --warmup 1 --iters 10
-
+  
   # Emit machine-readable benchmark timings (does not mix with program stdout/stderr):
   bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- --json bench path/to/entry.ts --warmup 1 --iters 10
   ```
+
+## Debug builds
+
+`native-js` has a debug-friendly mode controlled by [`CompilerOptions::debug`] (and the CLI
+`--debug` flag).
+
+When enabled, native-js:
+
+- emits DWARF debug info (e.g. `.debug_info`, `.debug_line`) for object/executable outputs
+- marks TS-generated functions as `optnone` + `noinline` so stepping is more predictable
+- disables linker `--gc-sections` for executables (debug builds are size-insensitive and we want
+  predictable section retention)
+- keeps temporary output directories in some helper APIs when no explicit `output` is set (useful
+  when debugging compiler output)
+
+If you are embedding the compiler and want minimal optimization, also set
+`opts.opt_level = OptLevel::O0`. The CLI does this automatically for `--debug`.
+
+### LLVM 18 note: `llvm.dbg.*` intrinsics and GC/statepoints
+
+LLVM 18's statepoint pipeline has known crashers when `llvm.dbg.*` intrinsics are present in
+GC-managed functions. native-js strips these no-op calls before running `place-safepoints` /
+`rewrite-statepoints-for-gc` so it can still emit debug objects with working DWARF line tables.
 
 ## Public API overview (current)
 
