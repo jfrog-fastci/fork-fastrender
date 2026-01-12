@@ -3976,6 +3976,12 @@ fn cors_preflight_cache_url_key(url: &str) -> String {
   // The Fetch preflight cache keys off a URL record. Canonicalize the input so semantically
   // equivalent URLs (e.g. "https://example.com" vs "https://example.com/") reuse the same cache
   // entry.
+  //
+  // Note: URL fragments are not sent over the network, so they must not participate in preflight
+  // caching. Otherwise `fetch("https://example.com/#a")` and `fetch("https://example.com/#b")`
+  // would redundantly preflight the same URL record.
+  let url = trim_ascii_whitespace(url);
+  let url = url.split_once('#').map(|(before, _)| before).unwrap_or(url);
   if let Ok(parsed) = Url::parse(url) {
     return parsed.as_str().to_string();
   }
@@ -12434,6 +12440,30 @@ mod tests {
     let entry = &cache.entries[0];
     assert_eq!(entry.header_name.as_deref(), Some("*"));
     assert!(entry.expires_at > initial_expiry);
+  }
+
+  #[test]
+  fn cors_preflight_cache_url_key_strips_fragments() {
+    assert_eq!(
+      cors_preflight_cache_url_key("https://example.com/#a"),
+      "https://example.com/"
+    );
+    assert_eq!(
+      cors_preflight_cache_url_key("https://example.com/#b"),
+      "https://example.com/"
+    );
+    assert_eq!(
+      cors_preflight_cache_url_key("https://example.com/path?x=1#frag"),
+      "https://example.com/path?x=1"
+    );
+  }
+
+  #[test]
+  fn cors_preflight_cache_url_key_strips_fragments_after_normalization() {
+    assert_eq!(
+      cors_preflight_cache_url_key("https://example.com/a b#frag"),
+      "https://example.com/a%20b"
+    );
   }
 
   #[test]
