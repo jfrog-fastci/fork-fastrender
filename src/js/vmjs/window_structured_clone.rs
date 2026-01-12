@@ -309,22 +309,17 @@ enum Node {
   },
   BooleanObject {
     value: bool,
-    props: Vec<(GcString, EncodedValue)>,
   },
   NumberObject {
     value: f64,
-    props: Vec<(GcString, EncodedValue)>,
   },
   StringObject {
     value: GcString,
-    props: Vec<(GcString, EncodedValue)>,
   },
   BigIntObject {
     value: Value,
-    props: Vec<(GcString, EncodedValue)>,
   },
   Error {
-    kind: ErrorTag,
     name: ErrorTag,
     /// `Some` if the serialized message is a string, `None` if the serialized message is
     /// `undefined`.
@@ -779,7 +774,6 @@ fn serialize_enumerable_own_string_keys_into_node(
   obj: GcObject,
   depth: usize,
   node_id: NodeId,
-  skip_error_name_and_message: bool,
 ) -> Result<(), VmError> {
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(obj))?;
@@ -793,11 +787,6 @@ fn serialize_enumerable_own_string_keys_into_node(
     let PropertyKey::String(key_s) = key else {
       continue;
     };
-    if skip_error_name_and_message
-      && (gc_string_eq_str(&scope, key_s, "name")? || gc_string_eq_str(&scope, key_s, "message")?)
-    {
-      continue;
-    }
 
     let Some(desc) = scope
       .heap()
@@ -817,12 +806,7 @@ fn serialize_enumerable_own_string_keys_into_node(
     let encoded = serialize_value(vm, &mut scope, host, hooks, state, prop_val, depth + 1)?;
 
     match state.nodes.get_mut(node_id) {
-      Some(Node::Array { props, .. }
-      | Node::Object { props }
-      | Node::BooleanObject { props, .. }
-      | Node::NumberObject { props, .. }
-      | Node::StringObject { props, .. }
-      | Node::BigIntObject { props, .. }) => props.push((key_s, encoded)),
+      Some(Node::Array { props, .. } | Node::Object { props }) => props.push((key_s, encoded)),
       _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
     }
   }
@@ -1132,9 +1116,8 @@ fn serialize_object(
     .heap()
     .object_get_own_data_property_value(obj, &boolean_marker_key)?
   {
-    let id = state.push_node(Node::BooleanObject { value: b, props: Vec::new() }, vm, scope)?;
+    let id = state.push_node(Node::BooleanObject { value: b }, vm, scope)?;
     state.object_to_id.insert(obj, id);
-    serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, false)?;
     return Ok(EncodedValue::Object(id));
   }
 
@@ -1143,9 +1126,8 @@ fn serialize_object(
     .heap()
     .object_get_own_data_property_value(obj, &number_marker_key)?
   {
-    let id = state.push_node(Node::NumberObject { value: n, props: Vec::new() }, vm, scope)?;
+    let id = state.push_node(Node::NumberObject { value: n }, vm, scope)?;
     state.object_to_id.insert(obj, id);
-    serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, false)?;
     return Ok(EncodedValue::Object(id));
   }
 
@@ -1154,9 +1136,8 @@ fn serialize_object(
     .heap()
     .object_get_own_data_property_value(obj, &string_marker_key)?
   {
-    let id = state.push_node(Node::StringObject { value: s, props: Vec::new() }, vm, scope)?;
+    let id = state.push_node(Node::StringObject { value: s }, vm, scope)?;
     state.object_to_id.insert(obj, id);
-    serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, false)?;
     return Ok(EncodedValue::Object(id));
   }
 
@@ -1165,20 +1146,24 @@ fn serialize_object(
     .heap()
     .object_get_own_data_property_value(obj, &bigint_marker_key)?
   {
-    let id = state.push_node(Node::BigIntObject { value: v, props: Vec::new() }, vm, scope)?;
+    let id = state.push_node(Node::BigIntObject { value: v }, vm, scope)?;
     state.object_to_id.insert(obj, id);
-    serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, false)?;
     return Ok(EncodedValue::Object(id));
   }
 
   // Error objects.
   if let Some(intr) = vm.intrinsics() {
-    if let Some(kind) = error_kind_for_object(vm, scope, intr, obj)? {
+    if error_kind_for_object(vm, scope, intr, obj)?.is_some() {
       let name_value = vm.get_with_host_and_hooks(host, scope, hooks, obj, state.error_name_key)?;
       let name = match name_value {
+        Value::Undefined | Value::Null => ErrorTag::Error,
         Value::String(s) => error_tag_from_utf16(scope.heap().get_string(s)?.as_code_units())
           .unwrap_or(ErrorTag::Error),
-        _ => ErrorTag::Error,
+        other => {
+          let s = scope.to_string(vm, host, hooks, other)?;
+          scope.push_root(Value::String(s))?;
+          error_tag_from_utf16(scope.heap().get_string(s)?.as_code_units()).unwrap_or(ErrorTag::Error)
+        }
       };
 
       // HTML structured clone reads the message from the *own* "message" data property descriptor,
@@ -1199,7 +1184,6 @@ fn serialize_object(
 
       let id = state.push_node(
         Node::Error {
-          kind,
           name,
           message,
         },
@@ -1286,7 +1270,6 @@ fn serialize_object(
     obj,
     depth,
     placeholder_id,
-    false,
   )?;
 
   Ok(EncodedValue::Object(placeholder_id))
@@ -1614,8 +1597,8 @@ fn deserialize_node(
     }
     7 => {
       // Boolean object.
-      let (value, props) = match state.nodes.get_mut(id) {
-        Some(Node::BooleanObject { value, props }) => (*value, std::mem::take(props)),
+      let value = match state.nodes.get(id) {
+        Some(Node::BooleanObject { value }) => *value,
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
 
@@ -1640,32 +1623,12 @@ fn deserialize_node(
         },
       )?;
 
-      for (i, (key_s, val)) in props.into_iter().enumerate() {
-        if i % 1024 == 0 {
-          vm.tick()?;
-        }
-        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
-        let key = PropertyKey::from_string(key_s);
-        scope.define_property(
-          obj,
-          key,
-          PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: cloned_val,
-              writable: true,
-            },
-          },
-        )?;
-      }
-
       obj
     }
     8 => {
       // Number object.
-      let (value, props) = match state.nodes.get_mut(id) {
-        Some(Node::NumberObject { value, props }) => (*value, std::mem::take(props)),
+      let value = match state.nodes.get(id) {
+        Some(Node::NumberObject { value }) => *value,
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
 
@@ -1690,32 +1653,12 @@ fn deserialize_node(
         },
       )?;
 
-      for (i, (key_s, val)) in props.into_iter().enumerate() {
-        if i % 1024 == 0 {
-          vm.tick()?;
-        }
-        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
-        let key = PropertyKey::from_string(key_s);
-        scope.define_property(
-          obj,
-          key,
-          PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: cloned_val,
-              writable: true,
-            },
-          },
-        )?;
-      }
-
       obj
     }
     9 => {
       // String object.
-      let (value, props) = match state.nodes.get_mut(id) {
-        Some(Node::StringObject { value, props }) => (*value, std::mem::take(props)),
+      let value = match state.nodes.get(id) {
+        Some(Node::StringObject { value }) => *value,
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
 
@@ -1740,32 +1683,12 @@ fn deserialize_node(
         },
       )?;
 
-      for (i, (key_s, val)) in props.into_iter().enumerate() {
-        if i % 1024 == 0 {
-          vm.tick()?;
-        }
-        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
-        let key = PropertyKey::from_string(key_s);
-        scope.define_property(
-          obj,
-          key,
-          PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: cloned_val,
-              writable: true,
-            },
-          },
-        )?;
-      }
-
       obj
     }
     10 => {
       // BigInt object.
-      let (value, props) = match state.nodes.get_mut(id) {
-        Some(Node::BigIntObject { value, props }) => (*value, std::mem::take(props)),
+      let value = match state.nodes.get(id) {
+        Some(Node::BigIntObject { value }) => *value,
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
 
@@ -1790,63 +1713,32 @@ fn deserialize_node(
         },
       )?;
 
-      for (i, (key_s, val)) in props.into_iter().enumerate() {
-        if i % 1024 == 0 {
-          vm.tick()?;
-        }
-        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
-        let key = PropertyKey::from_string(key_s);
-        scope.define_property(
-          obj,
-          key,
-          PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: cloned_val,
-              writable: true,
-            },
-          },
-        )?;
-      }
-
       obj
     }
     11 => {
       // Error object.
-      let (kind, name, message) = match state.nodes.get_mut(id) {
-        Some(Node::Error {
-          kind,
-          name,
-          message,
-        }) => (*kind, *name, message.take()),
+      let (name, message) = match state.nodes.get_mut(id) {
+        Some(Node::Error { name, message }) => (*name, message.take()),
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
 
-      let obj = scope.alloc_object()?;
+      let proto = name.prototype(intr);
+      let obj = scope.alloc_error()?;
       scope.push_root(Value::Object(obj))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(obj, Some(kind.prototype(intr)))?;
+      scope.heap_mut().object_set_prototype(obj, Some(proto))?;
       state.clones.insert(id, obj);
 
-      // HTML structured clone defines own non-enumerable `name` and `message` properties and does
-      // not copy any additional own properties.
       let name_s = scope.alloc_string(name.as_str())?;
       scope.push_root(Value::String(name_s))?;
       let name_key = alloc_key(scope, "name")?;
       scope.define_property(obj, name_key, data_desc(Value::String(name_s)))?;
 
-      let message_value = match message {
-        Some(units) => {
-          let s = scope.alloc_string_from_u16_vec(units)?;
-          scope.push_root(Value::String(s))?;
-          Value::String(s)
-        }
-        None => Value::Undefined,
-      };
-      let message_key = alloc_key(scope, "message")?;
-      scope.define_property(obj, message_key, data_desc(message_value))?;
+      if let Some(units) = message {
+        let s = scope.alloc_string_from_u16_vec(units)?;
+        scope.push_root(Value::String(s))?;
+        let message_key = alloc_key(scope, "message")?;
+        scope.define_property(obj, message_key, data_desc(Value::String(s)))?;
+      }
 
       obj
     }
@@ -2211,11 +2103,11 @@ mod tests {
          const cn = structuredClone(n);\
          const cs = structuredClone(s);\
          const cbi = structuredClone(bi);\
-         return cb !== b && Object.getPrototypeOf(cb) === Boolean.prototype && cb.valueOf() === true && cb.extra === 1 &&\
-                cn !== n && Object.getPrototypeOf(cn) === Number.prototype && cn.valueOf() === 5 && cn.extra === 2 &&\
-                cs !== s && Object.getPrototypeOf(cs) === String.prototype && cs.valueOf() === 'hi' && cs.extra === 3 &&\
-                cbi !== bi && Object.getPrototypeOf(cbi) === BigInt.prototype && cbi.valueOf() === 1n && cbi.extra === 4;\
-       })()",
+         return cb !== b && Object.getPrototypeOf(cb) === Boolean.prototype && cb.valueOf() === true && cb.extra === undefined &&\
+                cn !== n && Object.getPrototypeOf(cn) === Number.prototype && cn.valueOf() === 5 && cn.extra === undefined &&\
+                cs !== s && Object.getPrototypeOf(cs) === String.prototype && cs.valueOf() === 'hi' && cs.extra === undefined &&\
+                cbi !== bi && Object.getPrototypeOf(cbi) === BigInt.prototype && cbi.valueOf() === 1n && cbi.extra === undefined;\
+        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
@@ -2239,6 +2131,22 @@ mod tests {
          cyc.self = cyc;\
          const cyc2 = structuredClone(cyc);\
          return cyc2 !== cyc && cyc2.name === 'Error' && cyc2.message === 'x' && cyc2.self === undefined;\
+        })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_error_missing_own_message_property() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const e = new Error();\
+         if (Object.prototype.hasOwnProperty.call(e, 'message') !== false) return false;\
+         const c = structuredClone(e);\
+         return Object.prototype.hasOwnProperty.call(c, 'message') === false;\
        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
@@ -2424,8 +2332,8 @@ mod tests {
          const e = new Error('x');\
          Object.defineProperty(e, 'message', { get() { throw 1 }, enumerable: false });\
          const c = structuredClone(e);\
-         return c.message === undefined;\
-       })()",
+         return Object.prototype.hasOwnProperty.call(c, 'message') === false && c.message === '';\
+        })()",
     )?;
     assert_eq!(accessor_message_ok, Value::Bool(true));
 
