@@ -4,13 +4,14 @@ This directory contains integration tests that exercise *browser-adjacent* code 
 rendering, UI worker protocol plumbing, and the `browser` binary startup hooks) **without requiring a
 real window or GPU**.
 
-The tests here are compiled into a single integration test binary:
+The tests here are **not** a standalone Cargo integration-test target. They are Rust modules under
+`tests/browser_integration/` that are included by the main integration test harness:
 
-- Harness entrypoint: `tests/browser_integration_tests.rs`
+- Harness entrypoint: `tests/integration.rs` (includes `mod browser_integration;`)
 - Module aggregator: `tests/browser_integration/mod.rs`
 
-This keeps test compilation/linking fast and avoids spawning hundreds of separate Rust test
-executables.
+This keeps test compilation/linking fast and avoids reintroducing per-category `tests/*.rs` test
+binaries.
 
 ## Adding new tests (required structure)
 
@@ -22,6 +23,7 @@ Instead:
 1. Add a new Rust module under `tests/browser_integration/` (for example:
    `tests/browser_integration/worker_protocol_smoke.rs`).
 2. Register it in `tests/browser_integration/mod.rs` with `mod worker_protocol_smoke;`.
+3. Ensure `tests/integration.rs` includes `mod browser_integration;` (it should already).
 
 ## Running safely (scoped + feature-gated)
 
@@ -31,13 +33,13 @@ test target.
 Run the default (headless) subset:
 
 ```bash
-bash scripts/cargo_agent.sh test --test browser_integration_tests
+bash scripts/cargo_agent.sh test -p fastrender --test integration browser_integration::
 ```
 
 Run tests that are gated behind the UI feature (optionally filtered to a specific test name):
 
 ```bash
-bash scripts/cargo_agent.sh test --test browser_integration_tests --features browser_ui <test-name>
+bash scripts/cargo_agent.sh test -p fastrender --test integration --features browser_ui browser_integration::
 ```
 
 Notes:
@@ -45,9 +47,9 @@ Notes:
 - Some tests are feature-gated behind `--features browser_ui` (the `browser` binary and the
   UI↔worker protocol types are `browser_ui`-only). If a test needs to spawn `browser` or drive the
   headless worker loop via `UiToWorker`/`WorkerToUi`, run with `--features browser_ui`.
-- The `browser_integration_tests` binary defaults to `RUST_TEST_THREADS=1` for determinism (the
-  suite shares global resources and spawns many worker threads). Override with `-- --test-threads N`
-  or `RUST_TEST_THREADS` if you need parallelism.
+- Browser integration tests default to `RUST_TEST_THREADS=1` for determinism (the suite shares
+  global resources and spawns many worker threads). Override with `-- --test-threads N` or
+  `RUST_TEST_THREADS` if you need parallelism.
 - The harness also prefers deterministic bundled fonts by default, setting `FASTR_USE_BUNDLED_FONTS=1`
   unless explicitly opted out (`FASTR_USE_BUNDLED_FONTS=0`).
 
@@ -129,8 +131,8 @@ delay scoped to the worker lifetime and serialize these tests with `stage_listen
 avoid leaking the setting across unrelated tests.
 
 Avoid mutating the legacy render-delay environment variable from within these integration tests:
-the browser integration suite is compiled into a single test binary, so changing a process env var
-can slow down unrelated tests running in the same process and cause flakiness under parallel
+these tests run in-process inside the shared `integration` test binary, so changing a process env
+var can slow down unrelated tests running in the same process and cause flakiness under parallel
 execution.
 
 ## Timeouts and cleanup (avoid hangs)
