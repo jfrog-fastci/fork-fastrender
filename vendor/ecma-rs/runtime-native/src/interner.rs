@@ -300,8 +300,12 @@ pub(crate) fn intern_with_entry(bytes: &[u8], entry_fp: u64) -> InternedId {
     return id;
   }
 
+  // `InternedId::INVALID` is reserved as a stable sentinel value in the ABI. Never allocate it.
   let id_u32 = u32::try_from(tables.entries.len()).expect("too many interned strings");
   let id = InternedId(id_u32);
+  if id == InternedId::INVALID {
+    panic!("too many interned strings");
+  }
 
   let (handle, len) = alloc_interned_object(bytes, entry_fp);
 
