@@ -34,6 +34,7 @@ use fastrender::api::{
 use fastrender::debug::snapshot;
 use fastrender::error::{RenderError, RenderStage, ResourceError};
 use fastrender::image_compare::{self, CompareConfig};
+use fastrender::image_output::RgbaAlphaMode;
 use fastrender::pageset::{
   pageset_entries, pageset_stem, PagesetEntry, PagesetFilter, CACHE_HTML_DIR,
 };
@@ -1623,35 +1624,10 @@ impl ProgressAccuracy {
 fn rgba_image_from_pixmap(pixmap: &Pixmap) -> Result<RgbaImage, String> {
   let width = pixmap.width();
   let height = pixmap.height();
-  let pixels = pixmap.data();
+  let rgba = fastrender::image_output::pixmap_to_rgba8(pixmap, RgbaAlphaMode::Straight)
+    .map_err(|err| err.to_string())?;
 
-  // tiny-skia stores premultiplied RGBA pixels in RGBA byte order. Convert to straight RGBA.
-  let mut rgba_data = Vec::with_capacity(pixels.len());
-  for chunk in pixels.chunks_exact(4) {
-    let r = chunk[0];
-    let g = chunk[1];
-    let b = chunk[2];
-    let a = chunk[3];
-
-    // Unpremultiply alpha.
-    let (r, g, b) = if a > 0 {
-      let alpha = a as f32 / 255.0;
-      (
-        ((r as f32 / alpha).min(255.0)) as u8,
-        ((g as f32 / alpha).min(255.0)) as u8,
-        ((b as f32 / alpha).min(255.0)) as u8,
-      )
-    } else {
-      (0, 0, 0)
-    };
-
-    rgba_data.push(r);
-    rgba_data.push(g);
-    rgba_data.push(b);
-    rgba_data.push(a);
-  }
-
-  RgbaImage::from_raw(width, height, rgba_data)
+  RgbaImage::from_raw(width, height, rgba)
     .ok_or_else(|| "failed to create RGBA image".to_string())
 }
 
@@ -9859,6 +9835,21 @@ mod tests {
   use tempfile::tempdir;
 
   static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+  #[test]
+  fn rgba_image_from_pixmap_converts_premultiplied_to_straight_rgba() {
+    let mut pixmap = Pixmap::new(3, 1).expect("pixmap");
+    let premultiplied: [u8; 12] = [
+      5, 10, 15, 0, // alpha=0 -> RGB should become 0 in straight mode
+      64, 32, 128, 128, // alpha=128 -> exercises f32 truncation
+      200, 100, 50, 255, // alpha=255 -> unchanged
+    ];
+    pixmap.data_mut().copy_from_slice(&premultiplied);
+
+    let img = rgba_image_from_pixmap(&pixmap).expect("convert pixmap to RGBA image");
+    let expected_straight: [u8; 12] = [0, 0, 0, 0, 127, 63, 254, 128, 200, 100, 50, 255];
+    assert_eq!(img.as_raw(), expected_straight.as_slice());
+  }
 
   #[test]
   fn push_worker_args_does_not_duplicate_disk_cache_flags() {
