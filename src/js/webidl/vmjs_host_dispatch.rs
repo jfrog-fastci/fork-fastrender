@@ -575,6 +575,22 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     Ok(id)
   }
 
+  fn dom_exception_class_for_realm(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+  ) -> Result<DomExceptionClassVmJs, VmError> {
+    let global = if let Some(global) = self.global {
+      global
+    } else {
+      vm
+        .user_data_mut::<WindowRealmUserData>()
+        .and_then(|data| data.window_obj())
+        .ok_or(VmError::TypeError("DOMException global not available"))?
+    };
+    dom_exception_class(vm, scope, global)
+  }
+
   fn is_dom_backed_event_target(
     vm: &mut Vm,
     heap: &vm_js::Heap,
@@ -2196,10 +2212,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           match result {
             Ok(()) => Ok(Value::Undefined),
             Err(err) => {
-              let global = self
-                .global
-                .ok_or(VmError::InvariantViolation("DOMException requires a global object"))?;
-              let class = dom_exception_class(vm, scope, global)?;
+              let class = self.dom_exception_class_for_realm(vm, scope)?;
               Err(throw_dom_error(scope, class, err))
             }
           }
@@ -2243,10 +2256,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           match result {
             Ok(()) => Ok(Value::Undefined),
             Err(err) => {
-              let global = self
-                .global
-                .ok_or(VmError::InvariantViolation("DOMException requires a global object"))?;
-              let class = dom_exception_class(vm, scope, global)?;
+              let class = self.dom_exception_class_for_realm(vm, scope)?;
               Err(throw_dom_error(scope, class, err))
             }
           }
@@ -2341,10 +2351,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
           Ok(None) => Ok(Value::Null),
           Err(err) => {
-            let global = self
-              .global
-              .ok_or(VmError::InvariantViolation("DOMException requires a global object"))?;
-            let class = dom_exception_class(vm, scope, global)?;
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
           }
         }
@@ -2370,10 +2377,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         match result {
           Ok(_) => Ok(Value::Undefined),
           Err(err) => {
-            let global = self
-              .global
-              .ok_or(VmError::InvariantViolation("DOMException requires a global object"))?;
-            let class = dom_exception_class(vm, scope, global)?;
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
           }
         }
@@ -2397,10 +2401,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         match result {
           Ok(_) => Ok(Value::Undefined),
           Err(err) => {
-            let global = self
-              .global
-              .ok_or(VmError::InvariantViolation("DOMException requires a global object"))?;
-            let class = dom_exception_class(vm, scope, global)?;
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
           }
         }

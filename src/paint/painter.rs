@@ -13216,6 +13216,13 @@ impl Painter {
     {
       return;
     }
+    self.paint_solid_rect_crisp(rect, color, clip_mask);
+  }
+
+  fn paint_solid_rect_crisp(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    if color.a <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+      return;
+    }
 
     let device_rect = self.device_rect(rect);
     if device_rect.width() <= 0.0 || device_rect.height() <= 0.0 {
