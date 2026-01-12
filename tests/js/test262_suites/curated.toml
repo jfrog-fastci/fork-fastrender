@@ -158,10 +158,49 @@ include = [
   "built-ins/Function/prototype/apply/**/*.js",
   "staging/sm/Function/15.3.4.3-01.js",
 
-  # Promise (targeted iterator-close / [[Done]] semantics)
+  # Promise.* (targeted iterator-close / [[Done]] semantics)
+  #
+  # These cover spec-sensitive iterator consumption behaviors that test262 checks heavily:
+  # - IteratorStep/IteratorValue failures must set `iteratorRecord.[[Done]] = true` so callers do
+  #   *not* attempt IteratorClose.
+  # - IteratorClose must suppress JS-visible errors when the incoming completion is a throw.
+  #
+  # Promise.all
   "built-ins/Promise/all/iter-step-err-no-close.js",
+  "built-ins/Promise/all/iter-next-val-err-no-close.js",
   "built-ins/Promise/all/invoke-resolve-error-close.js",
   "built-ins/Promise/all/invoke-then-get-error-close.js",
+  "built-ins/Promise/all/invoke-then-error-close.js",
+  "built-ins/Promise/all/capability-resolve-throws-no-close.js",
+  "built-ins/Promise/all/resolve-throws-iterator-return-null-or-undefined.js",
+  "built-ins/Promise/all/resolve-throws-iterator-return-is-not-callable.js",
+  # Promise.race
+  "built-ins/Promise/race/iter-step-err-no-close.js",
+  "built-ins/Promise/race/iter-next-val-err-no-close.js",
+  "built-ins/Promise/race/invoke-resolve-error-close.js",
+  "built-ins/Promise/race/invoke-then-get-error-close.js",
+  "built-ins/Promise/race/invoke-then-error-close.js",
+  "built-ins/Promise/race/resolve-throws-iterator-return-null-or-undefined.js",
+  "built-ins/Promise/race/resolve-throws-iterator-return-is-not-callable.js",
+  # Promise.allSettled
+  "built-ins/Promise/allSettled/iter-step-err-no-close.js",
+  "built-ins/Promise/allSettled/iter-next-val-err-no-close.js",
+  "built-ins/Promise/allSettled/invoke-resolve-error-close.js",
+  "built-ins/Promise/allSettled/invoke-then-get-error-close.js",
+  "built-ins/Promise/allSettled/invoke-then-error-close.js",
+  "built-ins/Promise/allSettled/capability-resolve-throws-no-close.js",
+  "built-ins/Promise/allSettled/resolve-throws-iterator-return-null-or-undefined.js",
+  "built-ins/Promise/allSettled/resolve-throws-iterator-return-is-not-callable.js",
+  # Promise.any
+  "built-ins/Promise/any/iter-step-err-no-close.js",
+  "built-ins/Promise/any/iter-next-val-err-no-close.js",
+  "built-ins/Promise/any/invoke-resolve-error-close.js",
+  "built-ins/Promise/any/invoke-then-get-error-close.js",
+  "built-ins/Promise/any/invoke-then-error-close.js",
+  "built-ins/Promise/any/capability-resolve-throws-no-close.js",
+  "built-ins/Promise/any/capability-reject-throws-no-close.js",
+  "built-ins/Promise/any/resolve-throws-iterator-return-null-or-undefined.js",
+  "built-ins/Promise/any/resolve-throws-iterator-return-is-not-callable.js",
 ]
 
 exclude = [
