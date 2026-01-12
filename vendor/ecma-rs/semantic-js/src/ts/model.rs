@@ -402,6 +402,26 @@ pub enum ModuleRef {
 
 pub type ImportSource = ModuleRef;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ModuleEdgeKind {
+  Import,
+  TypeImport,
+  ImportEqualsRequire,
+  ReExportNamed,
+  ReExportAll,
+  ReExportAllAs,
+  ModuleAugmentation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModuleEdge {
+  pub kind: ModuleEdgeKind,
+  pub specifier: String,
+  pub target: ModuleRef,
+  pub span: Span,
+  pub is_type_only: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SymbolOrigin {
   Local,
@@ -727,9 +747,11 @@ pub struct TsProgramSemantics {
   pub(crate) symbols: SymbolTable,
   pub(crate) module_symbols: BTreeMap<FileId, SymbolGroups>,
   pub(crate) module_exports: BTreeMap<FileId, ExportMap>,
+  pub(crate) module_edges: BTreeMap<FileId, Vec<ModuleEdge>>,
   pub(crate) global_symbols: BTreeMap<String, SymbolGroup>,
   pub(crate) ambient_module_symbols: BTreeMap<String, SymbolGroups>,
   pub(crate) ambient_module_exports: BTreeMap<String, ExportMap>,
+  pub(crate) ambient_module_edges: BTreeMap<String, Vec<ModuleEdge>>,
   pub(crate) def_to_symbol: BTreeMap<(DefId, Namespace), SymbolId>,
 }
 
@@ -739,9 +761,11 @@ impl TsProgramSemantics {
       symbols: SymbolTable::new(),
       module_symbols: BTreeMap::new(),
       module_exports: BTreeMap::new(),
+      module_edges: BTreeMap::new(),
       global_symbols: BTreeMap::new(),
       ambient_module_symbols: BTreeMap::new(),
       ambient_module_exports: BTreeMap::new(),
+      ambient_module_edges: BTreeMap::new(),
       def_to_symbol: BTreeMap::new(),
     }
   }
@@ -755,6 +779,14 @@ impl TsProgramSemantics {
 
   pub fn exports_of_opt(&self, file: FileId) -> Option<&ExportMap> {
     self.module_exports.get(&file)
+  }
+
+  pub fn module_edges(&self, file: FileId) -> &[ModuleEdge] {
+    self
+      .module_edges
+      .get(&file)
+      .expect("module edges available for file")
+      .as_slice()
   }
 
   pub fn symbols(&self) -> &SymbolTable {
@@ -812,6 +844,13 @@ impl TsProgramSemantics {
 
   pub fn ambient_module_exports(&self) -> &BTreeMap<String, ExportMap> {
     &self.ambient_module_exports
+  }
+
+  pub fn ambient_module_edges(&self, specifier: &str) -> Option<&[ModuleEdge]> {
+    self
+      .ambient_module_edges
+      .get(specifier)
+      .map(|edges| edges.as_slice())
   }
 
   pub fn exports_of_ambient_module(&self, specifier: &str) -> Option<&ExportMap> {

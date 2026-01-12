@@ -89,6 +89,14 @@ fn export_snapshot(
   out
 }
 
+fn module_edges_snapshot(sem: &TsProgramSemantics, files: &[FileId]) -> BTreeMap<FileId, Vec<ModuleEdge>> {
+  let mut out = BTreeMap::new();
+  for file in files {
+    out.insert(*file, sem.module_edges(*file).to_vec());
+  }
+  out
+}
+
 fn symbol_table_snapshot(table: &SymbolTable) -> (Vec<SymbolData>, Vec<DeclData>) {
   let mut symbols: Vec<_> = table.symbols.values().cloned().collect();
   symbols.sort_by_key(|s| s.id);
@@ -759,6 +767,272 @@ fn type_imports_are_traversed() {
   let symbols = semantics.symbols();
   let foo = exports_a.get("Foo").expect("Foo exported");
   assert!(foo.symbol_for(Namespace::TYPE, symbols).is_some());
+}
+
+#[test]
+fn module_graph_exposes_edges_for_imports_reexports_type_imports_and_augmentations() {
+  let file_a = FileId(9000);
+  let file_b = FileId(9001);
+  let file_c = FileId(9002);
+
+  let mut a = HirFile::module(file_a);
+  a.decls
+    .push(mk_decl(0, "Foo", DeclKind::Interface, Exported::Named));
+
+  let mut b = HirFile::module(file_b);
+  b.imports.push(Import {
+    specifier: "a".to_string(),
+    specifier_span: span(10),
+    default: None,
+    namespace: None,
+    named: vec![ImportNamed {
+      imported: "Foo".to_string(),
+      local: "Foo".to_string(),
+      is_type_only: false,
+      imported_span: span(11),
+      local_span: span(12),
+    }],
+    is_type_only: false,
+  });
+
+  let mut c = HirFile::module(file_c);
+  c.type_imports.push(TypeImport {
+    specifier: "a".to_string(),
+    specifier_span: span(20),
+  });
+  c.exports.push(Export::All(ExportAll {
+    specifier: "b".to_string(),
+    is_type_only: false,
+    specifier_span: span(21),
+    alias: None,
+    alias_span: None,
+  }));
+  c.ambient_modules.push(AmbientModule {
+    name: "./a".to_string(),
+    name_span: span(22),
+    decls: Vec::new(),
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+  c.ambient_modules.push(AmbientModule {
+    name: "pkg".to_string(),
+    name_span: span(30),
+    decls: Vec::new(),
+    imports: vec![Import {
+      specifier: "a".to_string(),
+      specifier_span: span(31),
+      default: None,
+      namespace: None,
+      named: Vec::new(),
+      is_type_only: false,
+    }],
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_b => Arc::new(b),
+    file_c => Arc::new(c),
+  };
+
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "a".to_string() => file_a,
+    "b".to_string() => file_b,
+    "./a".to_string() => file_a,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_c], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  assert_eq!(semantics.module_edges(file_a), &[]);
+
+  assert_eq!(
+    semantics.module_edges(file_b),
+    &[ModuleEdge {
+      kind: ModuleEdgeKind::Import,
+      specifier: "a".to_string(),
+      target: ModuleRef::File(file_a),
+      span: Span::new(file_b, span(10)),
+      is_type_only: false,
+    }]
+  );
+
+  assert_eq!(
+    semantics.module_edges(file_c),
+    &[
+      ModuleEdge {
+        kind: ModuleEdgeKind::TypeImport,
+        specifier: "a".to_string(),
+        target: ModuleRef::File(file_a),
+        span: Span::new(file_c, span(20)),
+        is_type_only: true,
+      },
+      ModuleEdge {
+        kind: ModuleEdgeKind::ReExportAll,
+        specifier: "b".to_string(),
+        target: ModuleRef::File(file_b),
+        span: Span::new(file_c, span(21)),
+        is_type_only: false,
+      },
+      ModuleEdge {
+        kind: ModuleEdgeKind::ModuleAugmentation,
+        specifier: "./a".to_string(),
+        target: ModuleRef::File(file_a),
+        span: Span::new(file_c, span(22)),
+        is_type_only: false,
+      },
+    ]
+  );
+
+  let pkg_edges = semantics
+    .ambient_module_edges("pkg")
+    .expect("pkg ambient module bound");
+  assert_eq!(
+    pkg_edges,
+    &[ModuleEdge {
+      kind: ModuleEdgeKind::Import,
+      specifier: "a".to_string(),
+      target: ModuleRef::File(file_a),
+      span: Span::new(file_c, span(31)),
+      is_type_only: false,
+    }]
+  );
+  assert!(semantics.ambient_module_edges("does_not_exist").is_none());
+}
+
+#[test]
+fn module_graph_is_deterministic_across_root_orders() {
+  let file_a = FileId(9100);
+  let file_b = FileId(9101);
+  let file_c = FileId(9102);
+
+  let mut a = HirFile::module(file_a);
+  a.decls
+    .push(mk_decl(0, "Foo", DeclKind::Interface, Exported::Named));
+
+  let mut b = HirFile::module(file_b);
+  b.imports.push(Import {
+    specifier: "a".to_string(),
+    specifier_span: span(10),
+    default: None,
+    namespace: None,
+    named: vec![ImportNamed {
+      imported: "Foo".to_string(),
+      local: "Foo".to_string(),
+      is_type_only: false,
+      imported_span: span(11),
+      local_span: span(12),
+    }],
+    is_type_only: false,
+  });
+
+  let mut c = HirFile::module(file_c);
+  c.type_imports.push(TypeImport {
+    specifier: "a".to_string(),
+    specifier_span: span(20),
+  });
+  c.exports.push(Export::All(ExportAll {
+    specifier: "b".to_string(),
+    is_type_only: false,
+    specifier_span: span(21),
+    alias: None,
+    alias_span: None,
+  }));
+  c.ambient_modules.push(AmbientModule {
+    name: "./a".to_string(),
+    name_span: span(22),
+    decls: Vec::new(),
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+  c.ambient_modules.push(AmbientModule {
+    name: "pkg".to_string(),
+    name_span: span(30),
+    decls: Vec::new(),
+    imports: vec![Import {
+      specifier: "a".to_string(),
+      specifier_span: span(31),
+      default: None,
+      namespace: None,
+      named: Vec::new(),
+      is_type_only: false,
+    }],
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_b => Arc::new(b),
+    file_c => Arc::new(c),
+  };
+  let resolver_map = maplit::hashmap! {
+    "a".to_string() => file_a,
+    "b".to_string() => file_b,
+    "./a".to_string() => file_a,
+  };
+
+  let roots = vec![file_a, file_b, file_c];
+  let baseline_resolver = StaticResolver::new(resolver_map.clone());
+  let (baseline, diags) = bind_ts_program(&roots, &baseline_resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+  let baseline_edges = module_edges_snapshot(&baseline, &roots);
+  let baseline_pkg_edges = baseline
+    .ambient_module_edges("pkg")
+    .expect("pkg ambient module bound")
+    .to_vec();
+
+  let files = Arc::new(files);
+  let resolver_map = Arc::new(resolver_map);
+  let mut orders = vec![roots.clone()];
+  for seed in 0..5 {
+    let mut order = roots.clone();
+    order.shuffle(&mut StdRng::seed_from_u64(seed + 1));
+    orders.push(order);
+  }
+
+  let handles: Vec<_> = orders
+    .into_iter()
+    .map(|order| {
+      let files = files.clone();
+      let resolver_map = resolver_map.clone();
+      thread::spawn(move || {
+        let resolver = StaticResolver::new((*resolver_map).clone());
+        let (sem, diags) = bind_ts_program(&order, &resolver, |f| files.get(&f).unwrap().clone());
+        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+        let edges = module_edges_snapshot(&sem, &order);
+        let pkg_edges = sem
+          .ambient_module_edges("pkg")
+          .expect("pkg ambient module bound")
+          .to_vec();
+        (edges, pkg_edges)
+      })
+    })
+    .collect();
+
+  for handle in handles {
+    let (edges, pkg_edges) = handle.join().unwrap();
+    assert_eq!(edges, baseline_edges);
+    assert_eq!(pkg_edges, baseline_pkg_edges);
+  }
 }
 
 #[test]

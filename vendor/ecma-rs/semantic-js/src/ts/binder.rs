@@ -22,6 +22,7 @@ struct ModuleState {
   symbols: SymbolGroups,
   imports: BTreeMap<String, ImportEntry>,
   import_module_refs: Vec<ModuleRefEntry>,
+  module_edges: Vec<ModuleEdge>,
   export_specs: Vec<ExportSpec>,
   exports: ExportMap,
   export_spans: BTreeMap<String, ExportNamespaceSpans>,
@@ -38,6 +39,7 @@ impl ModuleState {
       symbols: BTreeMap::new(),
       imports: BTreeMap::new(),
       import_module_refs: Vec::new(),
+      module_edges: Vec::new(),
       export_specs: Vec::new(),
       exports: ExportMap::new(),
       export_spans: BTreeMap::new(),
@@ -267,6 +269,11 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       .iter()
       .map(|(id, m)| (*id, m.symbols.clone()))
       .collect();
+    let module_edges: BTreeMap<FileId, Vec<ModuleEdge>> = self
+      .modules
+      .iter()
+      .map(|(id, m)| (*id, m.module_edges.clone()))
+      .collect();
     let ambient_module_symbols: BTreeMap<String, SymbolGroups> = self
       .ambient_modules
       .iter()
@@ -276,6 +283,11 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       .ambient_modules
       .iter()
       .map(|(name, m)| (name.clone(), m.exports.clone()))
+      .collect();
+    let ambient_module_edges: BTreeMap<String, Vec<ModuleEdge>> = self
+      .ambient_modules
+      .iter()
+      .map(|(name, m)| (name.clone(), m.module_edges.clone()))
       .collect();
 
     let module_states: Vec<ModuleState> = self.modules.values().cloned().collect();
@@ -346,9 +358,11 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         symbols: self.symbols.clone(),
         module_symbols,
         module_exports,
+        module_edges,
         global_symbols,
         ambient_module_symbols,
         ambient_module_exports,
+        ambient_module_edges,
         def_to_symbol,
       },
       self.diagnostics.clone(),
@@ -415,7 +429,15 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         continue;
       }
 
+      let augmentation_span = Span::new(hir.file_id, ambient.name_span);
       if let Some(target) = self.resolver.resolve(hir.file_id, &ambient.name) {
+        state.module_edges.push(ModuleEdge {
+          kind: ModuleEdgeKind::ModuleAugmentation,
+          specifier: ambient.name.clone(),
+          target: ModuleRef::File(target),
+          span: augmentation_span,
+          is_type_only: false,
+        });
         self.pending_augmentations.push(PendingModuleAugmentation {
           target: AugmentationTarget::File(target),
           origin: hir.file_id,
@@ -441,6 +463,13 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       } else {
         // Relative module declarations inside modules are treated as augmentations
         // and must resolve to an existing file or ambient module.
+        state.module_edges.push(ModuleEdge {
+          kind: ModuleEdgeKind::ModuleAugmentation,
+          specifier: ambient.name.clone(),
+          target: ModuleRef::Unresolved(ambient.name.clone()),
+          span: augmentation_span,
+          is_type_only: false,
+        });
         self.pending_augmentations.push(PendingModuleAugmentation {
           target: AugmentationTarget::Ambient(ambient.name.clone()),
           origin: hir.file_id,
@@ -753,6 +782,13 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       if let ModuleRef::File(t) = &target {
         deps.push(*t);
       }
+      state.module_edges.push(ModuleEdge {
+        kind: ModuleEdgeKind::TypeImport,
+        specifier: import.specifier.clone(),
+        target: target.clone(),
+        span: specifier_span,
+        is_type_only: true,
+      });
       state.import_module_refs.push(ModuleRefEntry {
         module: target,
         span: specifier_span,
@@ -771,6 +807,13 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       if let ModuleRef::File(t) = &target {
         deps.push(*t);
       }
+      state.module_edges.push(ModuleEdge {
+        kind: ModuleEdgeKind::Import,
+        specifier: import.specifier.clone(),
+        target: target.clone(),
+        span: specifier_span,
+        is_type_only: import_statement_is_type_only(import),
+      });
       state.import_module_refs.push(ModuleRefEntry {
         module: target.clone(),
         span: specifier_span,
@@ -827,6 +870,13 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           if let ModuleRef::File(t) = &target {
             deps.push(*t);
           }
+          state.module_edges.push(ModuleEdge {
+            kind: ModuleEdgeKind::ImportEqualsRequire,
+            specifier: specifier.clone(),
+            target: target.clone(),
+            span,
+            is_type_only: false,
+          });
           state.import_module_refs.push(ModuleRefEntry {
             module: target.clone(),
             span,
@@ -906,6 +956,13 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             if let ModuleRef::File(t) = &resolved {
               deps.push(*t);
             }
+            state.module_edges.push(ModuleEdge {
+              kind: ModuleEdgeKind::ReExportNamed,
+              specifier: spec.to_string(),
+              target: resolved.clone(),
+              span: spec_span,
+              is_type_only: named.is_type_only,
+            });
             (resolved, spec_span)
           });
           for item in &named.items {
@@ -944,6 +1001,17 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           if let ModuleRef::File(t) = &target {
             deps.push(*t);
           }
+          state.module_edges.push(ModuleEdge {
+            kind: if all.alias.is_some() {
+              ModuleEdgeKind::ReExportAllAs
+            } else {
+              ModuleEdgeKind::ReExportAll
+            },
+            specifier: all.specifier.clone(),
+            target: target.clone(),
+            span: spec_span,
+            is_type_only: all.is_type_only,
+          });
           if let Some(alias) = &all.alias {
             let alias_span = Span::new(file_id, all.alias_span.unwrap_or(all.specifier_span));
             first_export_span.get_or_insert(alias_span);
@@ -1550,6 +1618,17 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         }
       }
     }
+
+    for edge in state.module_edges.iter_mut() {
+      if let ModuleRef::Unresolved(spec) = &edge.target {
+        if self.ambient_modules.contains_key(spec) {
+          edge.target = ModuleRef::Ambient(spec.clone());
+        }
+      }
+    }
+
+    state.module_edges.sort();
+    state.module_edges.dedup();
   }
 
   fn rewrite_module_ref(
@@ -2316,6 +2395,34 @@ fn has_ambient_module_named(specifier: &str, modules: &[AmbientModule]) -> bool 
     m.name == specifier
       || (!m.ambient_modules.is_empty() && has_ambient_module_named(specifier, &m.ambient_modules))
   })
+}
+
+fn import_statement_is_type_only(import: &Import) -> bool {
+  if import.is_type_only {
+    return true;
+  }
+
+  let mut has_any_binding = false;
+  if let Some(default) = &import.default {
+    has_any_binding = true;
+    if !default.is_type_only {
+      return false;
+    }
+  }
+  if let Some(ns) = &import.namespace {
+    has_any_binding = true;
+    if !ns.is_type_only {
+      return false;
+    }
+  }
+  for named in &import.named {
+    has_any_binding = true;
+    if !named.is_type_only {
+      return false;
+    }
+  }
+
+  has_any_binding
 }
 
 fn is_relative_module_specifier(specifier: &str) -> bool {
