@@ -240,6 +240,20 @@ jobs:
             exit 1
           fi
 
+          # If a shard crashes before emitting JSON, the shard step writes a small
+          # stub report with an `error` field so the merge still succeeds. Surface
+          # those here to keep failures visible in the triage artifact.
+          : > reports/ts-conformance-shard-errors.txt
+          for f in "${files[@]}"; do
+            err="$(jq -r '.error // empty' "$f" || true)"
+            if [[ -n "${err}" ]]; then
+              echo "${f}: ${err}" | tee -a reports/ts-conformance-shard-errors.txt >&2
+            fi
+          done
+          if [[ ! -s reports/ts-conformance-shard-errors.txt ]]; then
+            echo "(none)" > reports/ts-conformance-shard-errors.txt
+          fi
+
           jq -s '{
             compare_mode: (.[0].compare_mode),
             results: ([.[].results[]] | sort_by(.id))
@@ -269,6 +283,7 @@ jobs:
         with:
           name: ts-conformance-triage
           path: |
+            reports/ts-conformance-shard-errors.txt
             reports/ts-conformance-merged.json
             reports/ts-conformance-triage.json
             reports/ts-conformance-triage.stderr.log
