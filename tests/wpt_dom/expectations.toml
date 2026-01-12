@@ -39,3 +39,23 @@ id = "vmjs/time_determinism_baseline.window.js"
 backend = "quickjs"
 status = "skip"
 reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."
+
+[[expectations]]
+id = "dom/document_createElement_invalid_qualified_name.window.js"
+status = "xfail"
+reason = "Document.createElement currently does not validate qualified names / throw DOMException InvalidCharacterError."
+
+[[expectations]]
+id = "dom/document_createElementNS_namespace_constraints.window.js"
+status = "xfail"
+reason = "Document.createElementNS namespace/prefix validation (and DOMException types) not implemented yet."
+
+[[expectations]]
+id = "dom/element_setAttribute_invalid_qualified_name.window.js"
+status = "xfail"
+reason = "Element.setAttribute currently does not validate qualified names / throw DOMException InvalidCharacterError."
+
+[[expectations]]
+id = "dom/queryselector_invalid_selector_domexception.window.js"
+status = "xfail"
+reason = "querySelector currently throws a non-DOMException error; should be a DOMException SyntaxError once DOMException is implemented."
