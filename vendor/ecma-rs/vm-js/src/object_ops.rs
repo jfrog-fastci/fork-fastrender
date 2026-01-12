@@ -589,6 +589,40 @@ impl<'a> Scope<'a> {
     obj: GcObject,
     key: PropertyKey,
   ) -> Result<Option<PropertyDescriptor>, VmError> {
+    self.object_get_own_property_with_host_and_hooks_impl(vm, host, hooks, obj, key, false)
+  }
+
+  /// Like [`Scope::object_get_own_property_with_host_and_hooks`], but materializes string-exotic
+  /// integer-index property values (i.e. `"0"`, `"1"`, ...) into the returned descriptor.
+  ///
+  /// vm-js models string index properties lazily by returning `[[Value]]: undefined` from
+  /// `OrdinaryGetOwnProperty` and materializing the actual character value via `Get` only when the
+  /// value is observed. This avoids allocating a new 1-code-unit string for each descriptor in
+  /// algorithms that only need attributes like `[[Enumerable]]`.
+  ///
+  /// Builtins that expose descriptors to user code (`Object.getOwnPropertyDescriptor(s)`,
+  /// `Reflect.getOwnPropertyDescriptor`) and Proxy invariant checks need the fully-materialized
+  /// value to be spec-correct.
+  pub fn object_get_own_property_with_host_and_hooks_complete(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    self.object_get_own_property_with_host_and_hooks_impl(vm, host, hooks, obj, key, true)
+  }
+
+  fn object_get_own_property_with_host_and_hooks_impl(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    materialize_string_index_value: bool,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
     // Root inputs so a Proxy trap can allocate freely.
     let mut scope = self.reborrow();
     let key_root = match key {
@@ -624,7 +658,14 @@ impl<'a> Scope<'a> {
 
       // If the trap is undefined, forward to the target's `[[GetOwnProperty]]`.
       let Some(trap) = trap else {
-        return scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key);
+        return scope.object_get_own_property_with_host_and_hooks_impl(
+          vm,
+          host,
+          hooks,
+          target,
+          key,
+          materialize_string_index_value,
+        );
       };
 
       // Call the trap with `(target, key)`.
@@ -643,7 +684,8 @@ impl<'a> Scope<'a> {
       scope.push_root(trap_result)?;
 
       // Invariants require comparing the trap result with the target's actual descriptor.
-      let target_desc = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?;
+      let target_desc =
+        scope.object_get_own_property_with_host_and_hooks_impl(vm, host, hooks, target, key, true)?;
 
       // Root any values from `target_desc` across subsequent allocations/GC (especially important
       // if `target_desc` itself came from a nested Proxy trap and is not reachable from `target`'s
@@ -759,7 +801,23 @@ impl<'a> Scope<'a> {
       return Ok(Some(result_desc));
     }
 
-    scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())
+    let desc = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())?;
+    if !materialize_string_index_value {
+      return Ok(desc);
+    }
+    let Some(mut desc) = desc else {
+      return Ok(None);
+    };
+    if let PropertyKind::Data {
+      value: Value::Undefined,
+      writable,
+    } = desc.kind
+    {
+      if let Some(value) = scope.string_object_get_index_value_with_tick(obj, &key, || vm.tick())? {
+        desc.kind = PropertyKind::Data { value, writable };
+      }
+    }
+    Ok(Some(desc))
   }
 
   /// ECMAScript `[[Get]]` internal method dispatch.
@@ -1949,7 +2007,8 @@ impl<'a> Scope<'a> {
 
       // Proxy invariants: if the trap reports success, the resulting definition must be compatible
       // with the target.
-      let target_desc = self.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?;
+      let target_desc =
+        self.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, target, key)?;
       let extensible = self.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
       if !crate::property_descriptor_ops::is_compatible_property_descriptor(
         extensible,
@@ -3808,9 +3867,8 @@ fn proxy_define_own_property_with_tick(
   // - it cannot violate non-configurable/non-writable constraints,
   // - and if the caller requested `configurable: false`, the target must now have a non-configurable
   //   property.
-  let mut tick = Vm::tick;
   let target_desc =
-    scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, target, key, &mut tick)?;
+    scope.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, target, key)?;
   let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
   let compatible = property_descriptor_ops::is_compatible_property_descriptor(
     extensible_target,

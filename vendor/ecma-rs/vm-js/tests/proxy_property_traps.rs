@@ -440,6 +440,36 @@ fn proxy_define_property_trap_invariants_are_enforced() -> Result<(), VmError> {
 }
 
 #[test]
+fn proxy_define_property_trap_invariants_observe_string_index_values() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = r#"
+    (() => {
+      const target = new String("abc");
+      const p = new Proxy(target, { defineProperty() { return true; } });
+
+      // String index properties are non-writable/non-configurable data properties.
+      // A Proxy cannot report success for an incompatible definition. In particular,
+      // defining `value: undefined` must throw because the actual target value is `"a"`.
+      let ok1 = false;
+      try { Object.defineProperty(p, "0", { value: undefined }); } catch (e) { ok1 = e instanceof TypeError; }
+
+      // Reflect.defineProperty follows a different internal call path in vm-js, so also assert it
+      // enforces the same invariants.
+      let ok2 = false;
+      try { Reflect.defineProperty(p, "0", { value: undefined }); } catch (e) { ok2 = e instanceof TypeError; }
+
+      return ok1 && ok2;
+    })()
+  "#;
+  let value = rt.exec_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn proxy_define_property_trap_can_revoke_during_trap_lookup_without_breaking_operation(
 ) -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());

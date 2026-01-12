@@ -766,19 +766,11 @@ pub fn object_get_own_property_descriptor(
   let key = scope.to_property_key(vm, host, hooks, prop_val)?;
   root_property_key(scope, key)?;
 
-  let is_proxy = scope.heap().get_proxy_data(obj)?.is_some();
-  let Some(mut desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
+  let Some(desc) =
+    scope.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, obj, key)?
+  else {
     return Ok(Value::Undefined);
   };
-
-  // Ensure string exotic index properties report their actual value (which is not stored in the
-  // property table).
-  if !is_proxy {
-    if let PropertyKind::Data { writable, .. } = desc.kind {
-      let value = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-      desc.kind = PropertyKind::Data { value, writable };
-    }
-  }
 
   let out = from_property_descriptor(vm, scope, desc)?;
   Ok(Value::Object(out))
@@ -816,7 +808,6 @@ pub fn object_get_own_property_descriptors(
     });
   }
   scope.push_roots(&key_roots)?;
-  let is_proxy = scope.heap().is_proxy_object(obj);
 
   let intr = require_intrinsics(vm)?;
   let out = scope.alloc_object()?;
@@ -830,38 +821,17 @@ pub fn object_get_own_property_descriptors(
       vm.tick()?;
     }
 
-    // `GetOwnPropertyDescriptor` can return `undefined` even for keys returned by a Proxy `ownKeys`
-    // trap; in that case, `Object.getOwnPropertyDescriptors` stores `undefined` for that key.
-    let desc = scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?;
-
+    // Spec: `desc = ? GetOwnPropertyDescriptor(obj, key)`.
+    let Some(desc) =
+      scope.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, obj, key)?
+    else {
+      continue;
+    };
     let mut item_scope = scope.reborrow();
     item_scope.push_root(Value::Object(out))?;
     root_property_key(&mut item_scope, key)?;
-
-    let value = if let Some(mut desc) = desc {
-      // Ensure string/typed-array exotic index properties report their actual value (which may not
-      // be stored in the property table).
-      if !is_proxy {
-        if let PropertyKind::Data { writable, .. } = desc.kind {
-          let v = item_scope.ordinary_get_with_host_and_hooks(
-            vm,
-            host,
-            hooks,
-            obj,
-            key,
-            Value::Object(obj),
-          )?;
-          desc.kind = PropertyKind::Data { value: v, writable };
-        }
-      }
-
-      let desc_obj = from_property_descriptor(vm, &mut item_scope, desc)?;
-      Value::Object(desc_obj)
-    } else {
-      Value::Undefined
-    };
-
-    item_scope.create_data_property_or_throw(out, key, value)?;
+    let desc_obj = from_property_descriptor(vm, &mut item_scope, desc)?;
+    item_scope.create_data_property_or_throw(out, key, Value::Object(desc_obj))?;
   }
 
   Ok(Value::Object(out))
@@ -1965,7 +1935,7 @@ pub fn reflect_get_own_property_descriptor(
   root_property_key(&mut scope, key)?;
 
   let Some(desc) =
-    scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?
+    scope.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, target, key)?
   else {
     return Ok(Value::Undefined);
   };

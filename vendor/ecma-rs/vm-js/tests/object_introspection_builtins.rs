@@ -2,7 +2,7 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -53,6 +53,26 @@ fn object_get_own_property_descriptor_returns_data_descriptor_fields() {
 }
 
 #[test]
+fn object_get_own_property_descriptor_materializes_string_index_values() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        const s = new String("abc");
+        const direct = Object.getOwnPropertyDescriptor(s, "0");
+        const p = new Proxy(s, {});
+        const proxied = Object.getOwnPropertyDescriptor(p, "0");
+        const proxiedReflect = Reflect.getOwnPropertyDescriptor(p, "0");
+        return direct.value === "a" && proxied.value === "a" && proxiedReflect.value === "a";
+      })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_is_extensible_primitives_false_objects_true() {
   let mut rt = new_runtime();
   let value = rt
@@ -74,7 +94,7 @@ fn object_get_own_property_descriptors_is_proxy_aware() {
         },
       });
       const descs = Object.getOwnPropertyDescriptors(p);
-      return descs.a.value === 1 && descs.b === undefined;
+      return descs.a.value === 1 && !Object.hasOwn(descs, "b");
     })()
   "#;
   let value = rt.exec_script(script).unwrap();
