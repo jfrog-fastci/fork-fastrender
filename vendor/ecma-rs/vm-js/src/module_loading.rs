@@ -408,8 +408,8 @@ impl GraphLoadingState {
             let resolve = cap.resolve;
             let reject = cap.reject;
 
-            let on_fulfilled_call = vm.register_native_call(dynamic_import_eval_on_fulfilled)?;
-            let on_rejected_call = vm.register_native_call(dynamic_import_eval_on_rejected)?;
+            let on_fulfilled_call = vm.dynamic_import_eval_on_fulfilled_call_id()?;
+            let on_rejected_call = vm.dynamic_import_eval_on_rejected_call_id()?;
 
             let on_fulfilled_name = eval_scope.alloc_string("dynamicImportEvalOnFulfilled")?;
             eval_scope.push_root(Value::String(on_fulfilled_name))?;
@@ -574,7 +574,7 @@ struct DynamicImportContinuation {
   module: ModuleId,
 }
 
-fn dynamic_import_eval_on_fulfilled(
+pub(crate) fn dynamic_import_eval_on_fulfilled(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -597,7 +597,7 @@ fn dynamic_import_eval_on_fulfilled(
   Ok(Value::Undefined)
 }
 
-fn dynamic_import_eval_on_rejected(
+pub(crate) fn dynamic_import_eval_on_rejected(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,

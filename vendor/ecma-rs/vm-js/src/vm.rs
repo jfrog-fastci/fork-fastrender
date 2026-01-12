@@ -338,6 +338,8 @@ pub struct Vm {
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
   module_tla_on_rejected_call: Option<NativeFunctionId>,
   module_tla_init_default_export_on_fulfilled_call: Option<NativeFunctionId>,
+  dynamic_import_eval_on_fulfilled_call: Option<NativeFunctionId>,
+  dynamic_import_eval_on_rejected_call: Option<NativeFunctionId>,
   async_from_sync_iterator_unwrap_call: Option<NativeFunctionId>,
   async_from_sync_iterator_close_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
@@ -571,6 +573,8 @@ impl Vm {
       module_tla_on_fulfilled_call: None,
       module_tla_on_rejected_call: None,
       module_tla_init_default_export_on_fulfilled_call: None,
+      dynamic_import_eval_on_fulfilled_call: None,
+      dynamic_import_eval_on_rejected_call: None,
       async_from_sync_iterator_unwrap_call: None,
       async_from_sync_iterator_close_call: None,
       next_async_continuation_id: 0,
@@ -666,6 +670,28 @@ impl Vm {
     let id =
       self.register_native_call(crate::exec::module_tla_init_default_export_on_fulfilled)?;
     self.module_tla_init_default_export_on_fulfilled_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn dynamic_import_eval_on_fulfilled_call_id(
+    &mut self,
+  ) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.dynamic_import_eval_on_fulfilled_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::module_loading::dynamic_import_eval_on_fulfilled)?;
+    self.dynamic_import_eval_on_fulfilled_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn dynamic_import_eval_on_rejected_call_id(
+    &mut self,
+  ) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.dynamic_import_eval_on_rejected_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::module_loading::dynamic_import_eval_on_rejected)?;
+    self.dynamic_import_eval_on_rejected_call = Some(id);
     Ok(id)
   }
 
@@ -3239,6 +3265,25 @@ mod tests {
     let init_default_second = vm.module_tla_init_default_export_on_fulfilled_call_id()?;
     assert_eq!(init_default_first, init_default_second);
     assert_eq!(init_default_len, vm.native_calls.len());
+
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_import_internal_native_call_ids_are_cached() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+
+    let fulfilled_first = vm.dynamic_import_eval_on_fulfilled_call_id()?;
+    let len = vm.native_calls.len();
+    let fulfilled_second = vm.dynamic_import_eval_on_fulfilled_call_id()?;
+    assert_eq!(fulfilled_first, fulfilled_second);
+    assert_eq!(len, vm.native_calls.len());
+
+    let rejected_first = vm.dynamic_import_eval_on_rejected_call_id()?;
+    let len = vm.native_calls.len();
+    let rejected_second = vm.dynamic_import_eval_on_rejected_call_id()?;
+    assert_eq!(rejected_first, rejected_second);
+    assert_eq!(len, vm.native_calls.len());
 
     Ok(())
   }
