@@ -199,7 +199,9 @@ pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
     if !align.is_power_of_two() {
       crate::trap::rt_trap_invalid_arg("promise payload align must be a power of two");
     }
-    crate::alloc::alloc_bytes(layout.size, align, "promise payload")
+    // Zero the payload buffer for determinism and to avoid exposing uninitialized
+    // bytes if the producer doesn't fully write the output struct.
+    crate::alloc::alloc_bytes_zeroed(layout.size, align, "promise payload")
   };
 
   let promise = Box::new(RtPromise::new_pending());
