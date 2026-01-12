@@ -11885,8 +11885,9 @@ impl DisplayListBuilder {
       return;
     }
 
-    // Chrome's 1px border sits inside the image box. Using `StrokeRect` here would center the
-    // stroke on the edge, which gets clipped/anti-aliased and ends up darker than browsers.
+    // Chrome's broken-image icon uses a crisp 1px border that sits inside the icon rect. Using
+    // `StrokeRect` here would center the stroke on the edge, which gets clipped/anti-aliased and
+    // ends up darker than browsers.
     let thickness: f32 = 1.0;
     let th = thickness.min(h);
     let tw = thickness.min(w);
@@ -11966,7 +11967,8 @@ impl DisplayListBuilder {
       }));
     }
 
-    self.emit_inside_border_rect(icon_rect, Rgba::rgb(192, 192, 192));
+    // Chrome's broken-image icon border is a slightly darker gray than the old full-frame border.
+    self.emit_inside_border_rect(icon_rect, Rgba::rgb(163, 163, 163));
   }
 
   fn measure_text_advance_width(&mut self, text: &str, style: &ComputedStyle) -> Option<f32> {
@@ -12178,11 +12180,9 @@ impl DisplayListBuilder {
     }
     match replaced_type {
       // Chrome renders a broken-image icon inside a small 1px-bordered square and leaves the
-      // image box itself transparent (so author-provided backgrounds show through). Chrome also
-      // draws a thin border around the broken image box.
+      // image box itself transparent (so author-provided backgrounds show through). It does **not**
+      // draw a full border around the replaced box itself.
       ReplacedType::Image { .. } => {
-        self.emit_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192));
-
         // Draw a small icon in the top-left when there is enough room. Keep it from dominating
         // tiny boxes (e.g. 20×20) so author-provided backgrounds remain visible.
         let icon_inset = 2.0;
@@ -14699,8 +14699,6 @@ impl DisplayListBuilder {
         ..
       }
     ) {
-      self.emit_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192));
-
       let icon_inset = 2.0;
       let icon_gap = 2.0;
       let icon_size = Self::missing_image_icon_size(content_rect);
@@ -14713,30 +14711,14 @@ impl DisplayListBuilder {
       );
 
       if icon_size > 0.0 {
-        let mut icon_x = content_inner_rect.x();
-        let trimmed_alt = trim_ascii_whitespace(alt);
-        if !trimmed_alt.is_empty() {
-          if let Some(style) = style {
-            if let Some(text_width) = self.measure_text_advance_width(trimmed_alt, style) {
-              let group_width = icon_size + icon_gap + text_width;
-              icon_x = match Self::effective_text_align(style) {
-                crate::style::types::TextAlign::Center => {
-                  content_inner_rect.x()
-                    + ((content_inner_rect.width() - group_width).max(0.0) / 2.0)
-                }
-                crate::style::types::TextAlign::Right => {
-                  content_inner_rect.x() + (content_inner_rect.width() - group_width).max(0.0)
-                }
-                _ => content_inner_rect.x(),
-              };
-            }
-          }
-        }
-
-        let icon_rect = Rect::from_xywh(icon_x, content_inner_rect.y(), icon_size, icon_size);
+        // Chrome positions the broken-image icon (and following alt text) at the top-left of the
+        // replaced box. It does not appear to honor the inherited `text-align` value for this UA
+        // fallback rendering, so keep it stable by always aligning to the start edge.
+        let icon_rect =
+          Rect::from_xywh(content_inner_rect.x(), content_inner_rect.y(), icon_size, icon_size);
         self.emit_broken_image_icon(icon_rect);
 
-        let text_x = icon_x + icon_size + icon_gap;
+        let text_x = icon_rect.x() + icon_size + icon_gap;
         let text_rect = Rect::from_xywh(
           text_x,
           content_inner_rect.y(),
@@ -20687,7 +20669,7 @@ mod tests {
   }
 
   #[test]
-  fn missing_image_alt_text_centers_icon_and_text_together() {
+  fn missing_image_alt_text_ignores_text_align() {
     use crate::style::types::TextAlign;
 
     let mut style = ComputedStyle::default();
@@ -20727,15 +20709,15 @@ mod tests {
       })
       .expect("Expected text item for alt fallback");
 
+    // Chrome's UA broken-image rendering is always left-aligned within the image box, even when
+    // `text-align: center` is inherited.
     let border_x = list
       .items()
       .iter()
       .find_map(|item| match item {
         DisplayItem::FillRect(fill)
-          if fill.color == Rgba::rgb(192, 192, 192)
-            && (fill.rect.y() - 2.0).abs() < 0.01
-            && (fill.rect.height() - 1.0).abs() < 0.01
-            && (fill.rect.width() - 16.0).abs() < 0.01 =>
+          if fill.color == Rgba::rgb(163, 163, 163)
+            && fill.rect == Rect::from_xywh(2.0, 2.0, 16.0, 1.0) =>
         {
           Some(fill.rect.x())
         }
@@ -20743,22 +20725,13 @@ mod tests {
       })
       .expect("Expected broken-image icon border fill");
 
-    let icon_inset = 2.0;
-    let icon_size = 16.0;
-    let icon_gap = 2.0;
-    let inner_width = 200.0 - icon_inset * 2.0;
-    let group_width = icon_size + icon_gap + text.advance_width;
-    let expected_icon_x = icon_inset + ((inner_width - group_width).max(0.0) / 2.0);
     assert!(
-      (border_x - expected_icon_x).abs() < 0.5,
-      "expected centered broken-image icon at x≈{}, got x={}",
-      expected_icon_x,
-      border_x
+      (border_x - 2.0).abs() < 0.01,
+      "expected broken-image icon to remain at x=2 when text-align:center, got x={border_x}",
     );
     assert!(
-      (text.origin.x - (expected_icon_x + icon_size + icon_gap)).abs() < 0.5,
-      "expected centered missing-image alt text to start at x≈{}, got x={}",
-      expected_icon_x + icon_size + icon_gap,
+      (text.origin.x - 20.0).abs() < 0.5,
+      "expected missing-image alt text to start at x≈20 when text-align:center, got x={}",
       text.origin.x
     );
   }
