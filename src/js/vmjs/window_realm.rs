@@ -3090,6 +3090,145 @@ fn window_location_get_native(
   )
 }
 
+fn queue_hashchange_event_task(hooks: &mut dyn VmHostHooks, old_url: String, new_url: String) {
+  if let Some(event_loop) = event_loop_mut_from_hooks::<crate::api::BrowserTabHost>(hooks) {
+    queue_hashchange_event_task_for_event_loop(event_loop, old_url, new_url);
+    return;
+  }
+  if let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) {
+    queue_hashchange_event_task_for_event_loop(event_loop, old_url, new_url);
+  }
+}
+
+fn queue_hashchange_event_task_for_event_loop<Host: WindowRealmHost + 'static>(
+  event_loop: &mut EventLoop<Host>,
+  old_url: String,
+  new_url: String,
+) {
+  let _ = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+    dispatch_hashchange_event_task(host, event_loop, old_url, new_url)
+  });
+}
+
+fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+  old_url: String,
+  new_url: String,
+) -> crate::error::Result<()> {
+  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+  hooks.set_event_loop(event_loop);
+
+  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+  let realm_id = window_realm.realm_id;
+  let result = window_realm.with_vm_budget(|rt| {
+    let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+
+    let document_obj = match vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.document_obj)
+    {
+      Some(obj) => obj,
+      None => return Ok(()),
+    };
+
+    let dispatch_event = {
+      scope.push_root(Value::Object(document_obj))?;
+      let key = alloc_key(&mut scope, EVENT_TARGET_DISPATCH_EVENT_KEY)?;
+      scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &key)?
+        .unwrap_or(Value::Undefined)
+    };
+    let dispatch_event = if matches!(dispatch_event, Value::Object(_))
+      && scope.heap().is_callable(dispatch_event).unwrap_or(false)
+    {
+      dispatch_event
+    } else {
+      return Ok(());
+    };
+
+    let event_proto = {
+      scope.push_root(Value::Object(document_obj))?;
+      let key = alloc_key(&mut scope, EVENT_PROTOTYPE_KEY)?;
+      scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &key)?
+        .and_then(|v| match v {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        })
+    };
+
+    let event_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(event_obj))?;
+    if let Some(proto) = event_proto {
+      scope.heap_mut().object_set_prototype(event_obj, Some(proto))?;
+    }
+
+    let type_key = alloc_key(&mut scope, "type")?;
+    let type_s = scope.alloc_string("hashchange")?;
+    scope.push_root(Value::String(type_s))?;
+    scope.define_property(event_obj, type_key, data_desc(Value::String(type_s)))?;
+
+    let bubbles_key = alloc_key(&mut scope, "bubbles")?;
+    scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(false)))?;
+    let cancelable_key = alloc_key(&mut scope, "cancelable")?;
+    scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(false)))?;
+    let composed_key = alloc_key(&mut scope, "composed")?;
+    scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+    let default_prevented_key = alloc_key(&mut scope, "defaultPrevented")?;
+    scope.define_property(event_obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+    let cancel_bubble_key = alloc_key(&mut scope, "cancelBubble")?;
+    scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+    let old_url_key = alloc_key(&mut scope, "oldURL")?;
+    let old_url_s = scope.alloc_string(&old_url)?;
+    scope.push_root(Value::String(old_url_s))?;
+    scope.define_property(
+      event_obj,
+      old_url_key,
+      read_only_data_desc(Value::String(old_url_s)),
+    )?;
+    let new_url_key = alloc_key(&mut scope, "newURL")?;
+    let new_url_s = scope.alloc_string(&new_url)?;
+    scope.push_root(Value::String(new_url_s))?;
+    scope.define_property(
+      event_obj,
+      new_url_key,
+      read_only_data_desc(Value::String(new_url_s)),
+    )?;
+
+    let global = realm.global_object();
+    vm.call_with_host_and_hooks(
+      vm_host,
+      &mut scope,
+      &mut hooks,
+      dispatch_event,
+      Value::Object(global),
+      &[Value::Object(event_obj)],
+    )?;
+    Ok(())
+  });
+
+  if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+    return Err(err);
+  }
+
+  match result {
+    Ok(()) => Ok(()),
+    Err(err) => Err(crate::js::vm_error_format::vm_error_to_error(
+      window_realm.heap_mut(),
+      err,
+    )),
+  }
+}
+
 fn request_location_navigation(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3099,17 +3238,20 @@ fn request_location_navigation(
   url_value: Value,
   replace: bool,
 ) -> Result<Value, VmError> {
-  let base_url = {
-    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-      return Err(VmError::InvariantViolation(
-        "window realm missing user data",
-      ));
+  let (base_url, current_document_url, document_obj, window_obj) = {
+    let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation("window realm missing user data"));
     };
     // Match `document.baseURI`: fall back to the document URL when no explicit base URL is set.
-    data
-      .base_url
-      .clone()
-      .unwrap_or_else(|| data.document_url.clone())
+    (
+      data
+        .base_url
+        .clone()
+        .unwrap_or_else(|| data.document_url.clone()),
+      data.document_url.clone(),
+      data.document_obj,
+      data.window_obj,
+    )
   };
 
   let url_value = match url_value {
@@ -3134,6 +3276,145 @@ fn request_location_navigation(
         hooks,
         &format!("Navigation to {other}: URLs is not supported"),
       ));
+    }
+  }
+
+  // Same-document fragment navigation fast path.
+  //
+  // Assigning `location.href = "#fragment"` (or `location = "#fragment"`) should update the current
+  // URL, push/replace a session history entry, and fire `hashchange` asynchronously. It must not
+  // perform a full navigation (no pending navigation request, and no VM interruption).
+  if let Ok(current_parsed) = Url::parse(&current_document_url) {
+    let mut current_no_fragment = current_parsed;
+    current_no_fragment.set_fragment(None);
+    let mut target_no_fragment = parsed.clone();
+    target_no_fragment.set_fragment(None);
+    if current_no_fragment == target_no_fragment {
+      if current_document_url == resolved {
+        return Ok(Value::Undefined);
+      }
+
+      let resolved_s = scope.alloc_string(&resolved)?;
+      scope.push_root(Value::String(resolved_s))?;
+
+      {
+        // Root objects while allocating property keys: `alloc_key` can trigger GC.
+        let mut scope = scope.reborrow();
+        if let Some(location_obj) = location_obj {
+          scope.push_root(Value::Object(location_obj))?;
+          let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
+          scope.define_property(
+            location_obj,
+            location_url_key,
+            data_desc(Value::String(resolved_s)),
+          )?;
+        }
+
+        if let Some(document_obj) = document_obj {
+          scope.push_root(Value::Object(document_obj))?;
+          let doc_url_key = alloc_key(&mut scope, "URL")?;
+          scope.define_property(
+            document_obj,
+            doc_url_key,
+            data_desc(Value::String(resolved_s)),
+          )?;
+        }
+      }
+
+      let (history_state, session_history_len) = {
+        let heap = scope.heap_mut();
+        let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+          return Err(VmError::InvariantViolation("window realm missing user data"));
+        };
+        if data.session_history.entries.is_empty() {
+          return Err(VmError::InvariantViolation(
+            "window realm missing session history state",
+          ));
+        }
+        if data.session_history.index >= data.session_history.entries.len() {
+          return Err(VmError::InvariantViolation(
+            "window realm session history index out of bounds",
+          ));
+        }
+
+        let state = heap
+          .get_root(data.session_history.entries[data.session_history.index].state_root)
+          .unwrap_or(Value::Null);
+
+        let old_doc_url = std::mem::replace(&mut data.document_url, resolved.clone());
+        let update_base =
+          data.base_url.is_none() || data.base_url.as_deref() == Some(old_doc_url.as_str());
+        if update_base {
+          data.base_url = Some(resolved.clone());
+          data
+            .module_loader
+            .borrow_mut()
+            .set_document_url(data.base_url.clone());
+        }
+
+        let state_root = heap.add_root(state)?;
+        if replace {
+          let entry = &mut data.session_history.entries[data.session_history.index];
+          entry.url = data.document_url.clone();
+          let old_root = std::mem::replace(&mut entry.state_root, state_root);
+          heap.remove_root(old_root);
+        } else {
+          let forward_start = data.session_history.index + 1;
+          if forward_start < data.session_history.entries.len() {
+            for entry in data.session_history.entries.drain(forward_start..) {
+              heap.remove_root(entry.state_root);
+            }
+          }
+          data
+            .session_history
+            .entries
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          data.session_history.entries.push(SessionHistoryEntry {
+            url: data.document_url.clone(),
+            state_root,
+          });
+          data.session_history.index = data.session_history.entries.len() - 1;
+        }
+
+        (state, data.session_history.entries.len())
+      };
+
+      if let Some(window_obj) = window_obj {
+        let history_obj = {
+          // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
+          let mut scope = scope.reborrow();
+          scope.push_root(Value::Object(window_obj))?;
+          let key = alloc_key(&mut scope, "history")?;
+          scope
+            .heap()
+            .object_get_own_data_property_value(window_obj, &key)?
+            .and_then(|v| match v {
+              Value::Object(obj) => Some(obj),
+              _ => None,
+            })
+        };
+
+        if let Some(history_obj) = history_obj {
+          // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
+          let mut scope = scope.reborrow();
+          scope.push_root(Value::Object(history_obj))?;
+          scope.push_root(history_state)?;
+
+          let state_key = alloc_key(&mut scope, "state")?;
+          scope.define_property(history_obj, state_key, read_only_data_desc(history_state))?;
+          let length_key = alloc_key(&mut scope, "length")?;
+          scope.define_property(
+            history_obj,
+            length_key,
+            read_only_data_desc(Value::Number(session_history_len as f64)),
+          )?;
+        }
+      }
+
+      // Fire `hashchange` asynchronously when an event loop is available.
+      queue_hashchange_event_task(hooks, current_document_url, resolved);
+      return Ok(Value::Undefined);
     }
   }
 
@@ -3238,6 +3519,41 @@ fn location_replace_native(
   request_location_navigation(vm, scope, host, hooks, Some(location_obj), url_value, true)
 }
 
+fn location_reload_native(
+  vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(_) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let current_url = {
+    let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation("window realm missing user data"));
+    };
+    data.document_url.clone()
+  };
+
+  {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation("window realm missing user data"));
+    };
+    data.pending_navigation = Some(LocationNavigationRequest {
+      url: current_url,
+      replace: true,
+    });
+  }
+
+  vm.interrupt_handle().interrupt();
+  vm.tick()?;
+  Ok(Value::Undefined)
+}
+
 fn location_pathname_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3315,6 +3631,51 @@ fn location_search_set_native(
     return Ok(Value::Undefined);
   };
   url.set_query(query.as_deref());
+  let new_href = url.to_string();
+  let new_href_s = scope.alloc_string(&new_href)?;
+  request_location_navigation(
+    vm,
+    scope,
+    host,
+    hooks,
+    Some(location_obj),
+    Value::String(new_href_s),
+    false,
+  )
+}
+
+fn location_hash_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let hash_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let hash_value = match hash_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(hash_value))?;
+  let mut hash = scope.heap().get_string(hash_value)?.to_utf8_lossy();
+  if !hash.is_empty() && !hash.starts_with('#') {
+    hash = format!("#{hash}");
+  }
+
+  let Some(mut url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::Undefined);
+  };
+  if hash.is_empty() {
+    url.set_fragment(None);
+  } else {
+    url.set_fragment(Some(&hash[1..]));
+  }
   let new_href = url.to_string();
   let new_href_s = scope.alloc_string(&new_href)?;
   request_location_navigation(
@@ -18246,6 +18607,7 @@ fn init_window_globals(
   let href_key = alloc_key(&mut scope, "href")?;
   let assign_key = alloc_key(&mut scope, "assign")?;
   let replace_key = alloc_key(&mut scope, "replace")?;
+  let reload_key = alloc_key(&mut scope, "reload")?;
   let protocol_key = alloc_key(&mut scope, "protocol")?;
   let host_key = alloc_key(&mut scope, "host")?;
   let hostname_key = alloc_key(&mut scope, "hostname")?;
@@ -18402,6 +18764,16 @@ fn init_window_globals(
     data_desc(Value::Object(replace_func)),
   )?;
 
+  let reload_call_id = vm.register_native_call(location_reload_native)?;
+  let reload_name = scope.alloc_string("reload")?;
+  scope.push_root(Value::String(reload_name))?;
+  let reload_func = scope.alloc_native_function(reload_call_id, None, reload_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(reload_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(reload_func))?;
+  scope.define_property(location_obj, reload_key, data_desc(Value::Object(reload_func)))?;
+
   let location_set_call_id = vm.register_native_call(location_set_unimplemented_native)?;
   let location_set_name = scope.alloc_string("set location")?;
   scope.push_root(Value::String(location_set_name))?;
@@ -18522,7 +18894,6 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(pathname_set_func))?;
-
   scope.define_property(
     location_obj,
     pathname_key,
@@ -18556,7 +18927,6 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(search_set_func))?;
-
   scope.define_property(
     location_obj,
     search_key,
@@ -18578,6 +18948,15 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(hash_get_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(hash_get_func))?;
+
+  let hash_set_call_id = vm.register_native_call(location_hash_set_native)?;
+  let hash_set_name = scope.alloc_string("set hash")?;
+  scope.push_root(Value::String(hash_set_name))?;
+  let hash_set_func = scope.alloc_native_function(hash_set_call_id, None, hash_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(hash_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(hash_set_func))?;
   scope.define_property(
     location_obj,
     hash_key,
@@ -18586,7 +18965,7 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Accessor {
         get: Value::Object(hash_get_func),
-        set: Value::Object(location_set_func),
+        set: Value::Object(hash_set_func),
       },
     },
   )?;
@@ -23236,6 +23615,7 @@ mod tests {
   use crate::js::clock::VirtualClock;
   use crate::js::vm_error_format;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
+  use crate::js::window::WindowHost;
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
   use std::time::Duration;
 
@@ -27203,6 +27583,165 @@ mod tests {
       other => panic!("expected interrupted termination, got {other:?}"),
     }
 
+    Ok(())
+  }
+
+  #[test]
+  fn location_href_fragment_navigation_updates_url_history_and_emits_hashchange(
+  ) -> crate::error::Result<()> {
+    let mut host = WindowHost::new(
+      dom2::Document::new(QuirksMode::NoQuirks),
+      "https://example.com/",
+    )?;
+
+    host.exec_script(
+      "globalThis.__events = [];\n\
+       window.addEventListener('hashchange', (e) => { __events.push(e.oldURL + '|' + e.newURL); });\n\
+       location.href = '#a';\n\
+       globalThis.__sync_len = __events.length;\n\
+       globalThis.__href = location.href;\n\
+       globalThis.__url = document.URL;\n\
+       globalThis.__hist_len = history.length;",
+    )?;
+
+    assert_eq!(host.exec_script("__sync_len")?, Value::Number(0.0));
+    assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
+    assert!(host
+      .host_mut()
+      .window_realm()
+      .take_pending_navigation_request()
+      .is_none());
+
+    let href_v = host.exec_script("__href")?;
+    let url_v = host.exec_script("__url")?;
+    {
+      let heap = host.host_mut().window_realm().heap();
+      assert_eq!(get_string(heap, href_v), "https://example.com/#a");
+      assert_eq!(get_string(heap, url_v), "https://example.com/#a");
+    }
+
+    host.run_until_idle(crate::js::RunLimits::unbounded())?;
+    assert_eq!(host.exec_script("__events.length")?, Value::Number(1.0));
+    let event_v = host.exec_script("__events[0]")?;
+    {
+      let heap = host.host_mut().window_realm().heap();
+      assert_eq!(
+        get_string(heap, event_v),
+        "https://example.com/|https://example.com/#a"
+      );
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn location_replace_fragment_replaces_entry_and_emits_hashchange() -> crate::error::Result<()> {
+    let mut host = WindowHost::new(
+      dom2::Document::new(QuirksMode::NoQuirks),
+      "https://example.com/",
+    )?;
+
+    host.exec_script(
+      "globalThis.__events = [];\n\
+       window.addEventListener('hashchange', (e) => { __events.push(e.oldURL + '|' + e.newURL); });\n\
+       location.replace('#b');\n\
+       globalThis.__sync_len = __events.length;\n\
+       globalThis.__hist_len = history.length;\n\
+       globalThis.__href = location.href;",
+    )?;
+
+    assert_eq!(host.exec_script("__sync_len")?, Value::Number(0.0));
+    assert_eq!(host.exec_script("__hist_len")?, Value::Number(1.0));
+    assert!(host
+      .host_mut()
+      .window_realm()
+      .take_pending_navigation_request()
+      .is_none());
+    let href_v = host.exec_script("__href")?;
+    {
+      let heap = host.host_mut().window_realm().heap();
+      assert_eq!(get_string(heap, href_v), "https://example.com/#b");
+    }
+
+    host.run_until_idle(crate::js::RunLimits::unbounded())?;
+    assert_eq!(host.exec_script("__events.length")?, Value::Number(1.0));
+    let event_v = host.exec_script("__events[0]")?;
+    {
+      let heap = host.host_mut().window_realm().heap();
+      assert_eq!(
+        get_string(heap, event_v),
+        "https://example.com/|https://example.com/#b"
+      );
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn location_hash_set_normalizes_and_pushes_history() -> crate::error::Result<()> {
+    let mut host = WindowHost::new(
+      dom2::Document::new(QuirksMode::NoQuirks),
+      "https://example.com/",
+    )?;
+
+    host.exec_script(
+      "globalThis.__events = 0;\n\
+       window.addEventListener('hashchange', () => { __events++; });\n\
+       location.hash = 'c';\n\
+       globalThis.__hash = location.hash;\n\
+       globalThis.__href = location.href;\n\
+       globalThis.__hist_len = history.length;",
+    )?;
+    assert_eq!(host.exec_script("__events")?, Value::Number(0.0));
+    assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
+    let hash_v = host.exec_script("__hash")?;
+    let href_v = host.exec_script("__href")?;
+    {
+      let heap = host.host_mut().window_realm().heap();
+      assert_eq!(get_string(heap, hash_v), "#c");
+      assert_eq!(get_string(heap, href_v), "https://example.com/#c");
+    }
+
+    host.run_until_idle(crate::js::RunLimits::unbounded())?;
+    assert_eq!(host.exec_script("__events")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn history_push_state_does_not_emit_hashchange() -> crate::error::Result<()> {
+    let mut host = WindowHost::new(
+      dom2::Document::new(QuirksMode::NoQuirks),
+      "https://example.com/",
+    )?;
+
+    host.exec_script(
+      "globalThis.__events = 0;\n\
+       window.addEventListener('hashchange', () => { __events++; });\n\
+       history.pushState({ a: 1 }, '', '#a');\n\
+       globalThis.__href = location.href;\n\
+       globalThis.__hist_len = history.length;",
+    )?;
+    assert_eq!(host.exec_script("__events")?, Value::Number(0.0));
+    assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
+    let href_v = host.exec_script("__href")?;
+    {
+      let heap = host.host_mut().window_realm().heap();
+      assert_eq!(get_string(heap, href_v), "https://example.com/#a");
+    }
+
+    host.run_until_idle(crate::js::RunLimits::unbounded())?;
+    assert_eq!(host.exec_script("__events")?, Value::Number(0.0));
+    Ok(())
+  }
+
+  #[test]
+  fn location_reload_requests_navigation_with_replace() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    assert!(realm.exec_script("location.reload(); 1 + 2").is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.com/");
+    assert_eq!(req.replace, true);
     Ok(())
   }
 }
