@@ -191,9 +191,10 @@ impl ProgramState {
   ) {
     type TypeImportNode = Node<parse_js::ast::type_expr::TypeImport>;
     type TypeQueryNode = Node<parse_js::ast::type_expr::TypeQuery>;
+    type ImportExprNode = Node<parse_js::ast::expr::ImportExpr>;
 
     #[derive(derive_visitor::Visitor)]
-    #[visitor(TypeImportNode(enter), TypeQueryNode(enter))]
+    #[visitor(TypeImportNode(enter), TypeQueryNode(enter), ImportExprNode(enter))]
     struct TypeImportCollector<'a> {
       state: &'a mut ProgramState,
       file: FileId,
@@ -219,6 +220,18 @@ impl ProgramState {
           self.host,
           self.queue,
         );
+      }
+
+      fn enter_import_expr_node(&mut self, node: &ImportExprNode) {
+        let parse_js::ast::expr::Expr::LitStr(specifier) = node.stx.module.stx.as_ref() else {
+          return;
+        };
+        if let Some(target) = self
+          .state
+          .record_module_resolution(self.file, specifier.stx.value.as_str(), self.host)
+        {
+          self.queue.push_back(target);
+        }
       }
     }
 

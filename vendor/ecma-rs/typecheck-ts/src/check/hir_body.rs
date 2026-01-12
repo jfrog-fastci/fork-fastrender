@@ -3206,6 +3206,46 @@ impl<'a> Checker<'a> {
         self.store.union(vec![cons, alt])
       }
       AstExpr::Call(call) => self.check_call_expr(call, None),
+      AstExpr::Import(import) => {
+        let prim = self.store.primitive_ids();
+        let arg_ty = self.check_expr(&import.stx.module);
+        if let Some(attributes) = import.stx.attributes.as_ref() {
+          let _ = self.check_expr(attributes);
+        }
+
+        self.check_assignable_with_code(
+          &import.stx.module,
+          arg_ty,
+          prim.string,
+          None,
+          &codes::ARGUMENT_TYPE_MISMATCH,
+        );
+
+        let inner_ty = if let AstExpr::LitStr(str_lit) = import.stx.module.stx.as_ref() {
+          if let Some(resolver) = self.type_resolver.as_ref() {
+            let specifier = str_lit.stx.value.as_str();
+            match resolver.resolve_import_typeof(specifier, None) {
+              Some(def) => self.store.intern_type(TypeKind::Ref {
+                def,
+                args: Vec::new(),
+              }),
+              None => {
+                self.diagnostics.push(codes::UNRESOLVED_MODULE.error(
+                  format!("unresolved module specifier \"{specifier}\""),
+                  Span::new(self.file, loc_to_range(self.file, import.stx.module.loc)),
+                ));
+                prim.any
+              }
+            }
+          } else {
+            prim.any
+          }
+        } else {
+          prim.any
+        };
+
+        self.promise_type(inner_ty).unwrap_or(prim.unknown)
+      }
       AstExpr::TaggedTemplate(tagged) => self.check_tagged_template_expr(tagged, expr.loc, None),
       AstExpr::Member(mem) => {
         let full_range = loc_to_range(self.file, mem.loc);
@@ -3564,89 +3604,6 @@ impl<'a> Checker<'a> {
     } else {
       prim.unknown
     }
-  }
-
-  fn check_super_call_expr(
-    &mut self,
-    call: &Node<parse_js::ast::expr::CallExpr>,
-    contextual_return: Option<TypeId>,
-  ) -> TypeId {
-    let prim = self.store.primitive_ids();
-    let callee_ty = self.this_super_context.super_value_ty.unwrap_or(prim.unknown);
-    self.record_expr_type(call.stx.callee.loc, callee_ty);
-    let callee_ty = self.expand_callable_type(callee_ty);
-
-    let candidate_sigs =
-      construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);
-
-    let mut arg_types = Vec::with_capacity(call.stx.arguments.len());
-    let mut const_arg_types = Vec::with_capacity(call.stx.arguments.len());
-    for arg in call.stx.arguments.iter() {
-      let ty = self.check_expr(&arg.stx.value);
-      if arg.stx.spread {
-        arg_types.push(CallArgType::spread(ty));
-      } else {
-        arg_types.push(CallArgType::new(ty));
-      }
-      const_arg_types.push(self.const_inference_type(&arg.stx.value));
-    }
-
-    let span = Span {
-      file: self.file,
-      range: loc_to_range(self.file, call.loc),
-    };
-
-    let resolution = resolve_construct(
-      &self.store,
-      &self.relate,
-      &self.instantiation_cache,
-      callee_ty,
-      &arg_types,
-      Some(&const_arg_types),
-      None,
-      contextual_return,
-      span,
-      self.ref_expander,
-    );
-
-    let allow_assignable_fallback = resolution.diagnostics.len() == 1
-      && resolution.diagnostics[0].code.as_str() == codes::NO_OVERLOAD.as_str()
-      && candidate_sigs.len() == 1;
-    let mut reported_assignability = false;
-    if allow_assignable_fallback {
-      if let Some(sig_id) = resolution
-        .contextual_signature
-        .or_else(|| candidate_sigs.first().copied())
-      {
-        let sig = self.store.signature(sig_id);
-        let before = self.diagnostics.len();
-        for (idx, arg) in call.stx.arguments.iter().enumerate() {
-          if arg.stx.spread {
-            continue;
-          }
-          let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, idx) else {
-            continue;
-          };
-          let arg_ty = arg_types.get(idx).map(|arg| arg.ty).unwrap_or(prim.unknown);
-          self.check_assignable_with_code(
-            &arg.stx.value,
-            arg_ty,
-            param_ty,
-            None,
-            &codes::ARGUMENT_TYPE_MISMATCH,
-          );
-        }
-        reported_assignability = self.diagnostics.len() > before;
-      }
-    }
-
-    if !reported_assignability {
-      for diag in &resolution.diagnostics {
-        self.diagnostics.push(diag.clone());
-      }
-    }
-    self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
-    resolution.return_type
   }
 
   fn check_call_expr(
@@ -10160,6 +10117,7 @@ pub fn check_body_with_env_with_bindings_strict_native(
     body,
     names,
     Arc::clone(&store),
+    None,
     file,
     BodyThisSuperContext::default(),
     initial,
@@ -10195,6 +10153,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
   _source: &str,
   store: Arc<TypeStore>,
   initial: &HashMap<NameId, TypeId>,
+  type_resolver: Option<Arc<dyn TypeResolver>>,
   expr_def_types: &HashMap<DefId, TypeId>,
   flow_bindings: Option<&FlowBindings>,
   relate: RelateCtx,
@@ -10207,6 +10166,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
     body,
     names,
     Arc::clone(&store),
+    type_resolver,
     file,
     this_super_context,
     initial,
@@ -10262,6 +10222,9 @@ struct FlowBodyChecker<'a> {
   body: &'a Body,
   names: &'a NameInterner,
   store: Arc<TypeStore>,
+  type_resolver: Option<Arc<dyn TypeResolver>>,
+  promise_def: Option<DefId>,
+  promise_any: TypeId,
   file: FileId,
   this_super_context: BodyThisSuperContext,
   relate: RelateCtx<'a>,
@@ -10983,6 +10946,7 @@ impl<'a> FlowBodyChecker<'a> {
     body: &'a Body,
     names: &'a NameInterner,
     store: Arc<TypeStore>,
+    type_resolver: Option<Arc<dyn TypeResolver>>,
     file: FileId,
     this_super_context: BodyThisSuperContext,
     initial: &HashMap<NameId, TypeId>,
@@ -11041,11 +11005,26 @@ impl<'a> FlowBodyChecker<'a> {
 
     let expr_spans: Vec<TextRange> = body.exprs.iter().map(|e| e.span).collect();
     let pat_spans: Vec<TextRange> = body.pats.iter().map(|p| p.span).collect();
+
+    let promise_def = type_resolver
+      .as_ref()
+      .and_then(|resolver| resolver.resolve_type_name(&["Promise".to_string()]));
+    let promise_any = promise_def
+      .map(|def| {
+        store.canon(store.intern_type(TypeKind::Ref {
+          def,
+          args: vec![prim.any],
+        }))
+      })
+      .unwrap_or(prim.unknown);
     Self {
       body_id,
       body,
       names,
       store,
+      type_resolver,
+      promise_def,
+      promise_any,
       file,
       this_super_context,
       relate,
@@ -12035,6 +12014,32 @@ impl<'a> FlowBodyChecker<'a> {
         }
         prim.unknown
       }
+      ExprKind::ImportCall {
+        argument,
+        attributes,
+      } => {
+        let _ = self.eval_expr(*argument, env);
+        if let Some(attrs) = attributes {
+          let _ = self.eval_expr(*attrs, env);
+        }
+
+        let module_ty = match &self.body.exprs[argument.0 as usize].kind {
+          ExprKind::Literal(hir_js::Literal::String(s)) => self
+            .type_resolver
+            .as_ref()
+            .and_then(|resolver| resolver.resolve_import_typeof(s.lossy.as_str(), None))
+            .map(|def| self.store.intern_type(TypeKind::Ref {
+              def,
+              args: Vec::new(),
+            })),
+          _ => None,
+        };
+
+        match module_ty {
+          Some(module_ty) => self.promise_type(module_ty),
+          None => self.promise_any,
+        }
+      }
       ExprKind::Await { expr } => {
         let inner = self.eval_expr(*expr, env).0;
         awaited_type(self.store.as_ref(), inner, self.ref_expander)
@@ -12089,16 +12094,6 @@ impl<'a> FlowBodyChecker<'a> {
         let ty = self.eval_expr(*expr, env).0;
         self.widen_object_literals = prev;
         ty
-      }
-      ExprKind::ImportCall {
-        argument,
-        attributes,
-      } => {
-        let _ = self.eval_expr(*argument, env);
-        if let Some(attrs) = attributes {
-          let _ = self.eval_expr(*attrs, env);
-        }
-        prim.unknown
       }
       ExprKind::Jsx(elem) => {
         for attr in elem.attributes.iter() {
@@ -13220,6 +13215,16 @@ impl<'a> FlowBodyChecker<'a> {
       }
       _ => ty,
     }
+  }
+
+  fn promise_type(&self, inner: TypeId) -> TypeId {
+    let prim = self.store.primitive_ids();
+    let Some(def) = self.promise_def else {
+      return prim.unknown;
+    };
+    self
+      .store
+      .canon(self.store.intern_type(TypeKind::Ref { def, args: vec![inner] }))
   }
 
   fn for_of_element_type(&self, ty: TypeId) -> TypeId {
