@@ -99,6 +99,22 @@ jobs:
 
           echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
 
+      - name: Matrix summary (step summary)
+        if: always()
+        run: |
+          {
+            echo "## Upstream TS conformance matrix"
+            echo
+            echo "- Event: ${GITHUB_EVENT_NAME}"
+            echo "- Enabled: ${{ steps.manifest.outputs.run_enabled }}"
+            echo "- Shards (full run): ${UPSTREAM_CONFORMANCE_SHARD_TOTAL}"
+            echo "- Shards (PR/push): ${UPSTREAM_CONFORMANCE_PR_SHARDS}"
+            echo
+            echo '```json'
+            echo '${{ steps.compute.outputs.matrix }}'
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   upstream-conformance:
     name: Upstream TypeScript conformance (${{ matrix.shard_index }}/${{ matrix.shard_total }})
     runs-on: ubuntu-latest
