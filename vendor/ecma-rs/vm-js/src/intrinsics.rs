@@ -473,6 +473,8 @@ impl Intrinsics {
     let string_prototype_substr = vm.register_native_call(builtins::string_prototype_substr)?;
     let string_prototype_split = vm.register_native_call(builtins::string_prototype_split)?;
     let string_prototype_repeat = vm.register_native_call(builtins::string_prototype_repeat)?;
+    let string_prototype_pad_start = vm.register_native_call(builtins::string_prototype_pad_start)?;
+    let string_prototype_pad_end = vm.register_native_call(builtins::string_prototype_pad_end)?;
     let string_prototype_to_lower_case =
       vm.register_native_call(builtins::string_prototype_to_lower_case)?;
     let string_prototype_to_upper_case =
@@ -1293,6 +1295,40 @@ impl Intrinsics {
         scope.push_root(Value::String(repeat_s))?;
         let key = PropertyKey::from_string(repeat_s);
         let func = scope.alloc_native_function(string_prototype_repeat, None, repeat_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.padStart
+      {
+        let pad_start_s = scope.alloc_string("padStart")?;
+        scope.push_root(Value::String(pad_start_s))?;
+        let key = PropertyKey::from_string(pad_start_s);
+        let func = scope.alloc_native_function(string_prototype_pad_start, None, pad_start_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.padEnd
+      {
+        let pad_end_s = scope.alloc_string("padEnd")?;
+        scope.push_root(Value::String(pad_end_s))?;
+        let key = PropertyKey::from_string(pad_end_s);
+        let func = scope.alloc_native_function(string_prototype_pad_end, None, pad_end_s, 1)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()

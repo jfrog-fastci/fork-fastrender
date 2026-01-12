@@ -7012,6 +7012,135 @@ pub fn string_prototype_repeat(
   Ok(Value::String(out))
 }
 
+fn string_pad(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  this: Value,
+  args: &[Value],
+  pad_at_start: bool,
+) -> Result<Value, VmError> {
+  // Spec reference: `String.prototype.padStart` / `String.prototype.padEnd`.
+  //
+  // This is a deliberately small, deterministic implementation:
+  // - supports the common `targetLength` + optional `padString` arguments
+  // - throws RangeError for non-finite target lengths (e.g. Infinity)
+  // - treats empty padString as a no-op, per spec
+  let mut scope = scope.reborrow();
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut n = scope.to_number(vm, host, hooks, target_value)?;
+  if n.is_nan() || n <= 0.0 {
+    return Ok(Value::String(s));
+  }
+  if !n.is_finite() {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid string length")?;
+    return Err(VmError::Throw(err));
+  }
+  n = n.trunc();
+  if n <= 0.0 {
+    return Ok(Value::String(s));
+  }
+
+  // Guard before converting to usize.
+  if n > (usize::MAX as f64) {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid string length")?;
+    return Err(VmError::Throw(err));
+  }
+  let target_len = n as usize;
+
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units().to_vec()
+  };
+  if target_len <= units.len() {
+    return Ok(Value::String(s));
+  }
+  let fill_len = target_len - units.len();
+
+  // Compute pad string code units.
+  let pad_units: Vec<u16> = match args.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined => vec![0x0020], // " "
+    pad_value => {
+      let pad_s = scope.to_string(vm, host, hooks, pad_value)?;
+      let js = scope.heap().get_string(pad_s)?;
+      js.as_code_units().to_vec()
+    }
+  };
+
+  if pad_units.is_empty() {
+    // Per spec, empty padString results in no padding.
+    return Ok(Value::String(s));
+  }
+
+  // Build the filler string (truncated repetition of padString to exactly `fill_len` code units).
+  let mut filler: Vec<u16> = Vec::new();
+  filler
+    .try_reserve_exact(fill_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut iterations: usize = 0;
+  while filler.len() < fill_len {
+    if iterations % 1024 == 0 {
+      vm.tick()?;
+    }
+    iterations = iterations.saturating_add(1);
+
+    let remaining = fill_len - filler.len();
+    if remaining >= pad_units.len() {
+      filler.extend_from_slice(&pad_units);
+    } else {
+      filler.extend_from_slice(&pad_units[..remaining]);
+    }
+  }
+
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(target_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+  if pad_at_start {
+    out.extend_from_slice(&filler);
+    out.extend_from_slice(&units);
+  } else {
+    out.extend_from_slice(&units);
+    out.extend_from_slice(&filler);
+  }
+
+  Ok(Value::String(scope.alloc_string_from_u16_vec(out)?))
+}
+
+/// `String.prototype.padStart(targetLength, padString)` (ECMA-262).
+pub fn string_prototype_pad_start(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  string_pad(vm, scope, host, hooks, this, args, /* pad_at_start */ true)
+}
+
+/// `String.prototype.padEnd(targetLength, padString)` (ECMA-262).
+pub fn string_prototype_pad_end(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  string_pad(vm, scope, host, hooks, this, args, /* pad_at_start */ false)
+}
+
 /// `String.prototype.toLowerCase` (ECMA-262) (minimal).
 pub fn string_prototype_to_lower_case(
   vm: &mut Vm,

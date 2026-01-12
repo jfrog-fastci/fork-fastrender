@@ -85,6 +85,7 @@ mod js_webidl_sequence_conversion;
 mod js_webidl_window_alert;
 mod vm_js_crypto_subtle_digest;
 mod vm_js_define_own_property_smoke;
+mod vm_js_string_pad_start_end;
 mod vm_js_dom_bindings;
 mod vm_js_dom_exception_smoke;
 mod vm_js_function_call_apply_bind_smoke;
