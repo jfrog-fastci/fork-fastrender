@@ -933,7 +933,6 @@ mod tests {
       "PromiseRef rt_parallel_spawn_promise_rooted(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
       "PromiseRef rt_parallel_spawn_promise_rooted_h(void (*task)(uint8_t*, PromiseRef), GcHandle data, PromiseLayout layout);",
       "LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
-      "LegacyPromiseRef rt_spawn_blocking_rooted(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
       "void rt_promise_init(PromiseRef p);",
       "void rt_promise_fulfill(PromiseRef p);",
       "bool rt_promise_try_fulfill(PromiseRef p);",
@@ -1113,8 +1112,6 @@ mod tests {
     ) -> abi::PromiseRef = rt_parallel_spawn_promise_rooted_h;
     let _spawn_blocking: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
       rt_spawn_blocking;
-    let _spawn_blocking_rooted: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
-      rt_spawn_blocking_rooted;
     let _promise_init: unsafe extern "C" fn(PromiseRef) = rt_promise_init;
     let _promise_fulfill: unsafe extern "C" fn(PromiseRef) = rt_promise_fulfill;
     let _promise_try_fulfill: unsafe extern "C" fn(PromiseRef) -> bool = rt_promise_try_fulfill;
@@ -1285,7 +1282,6 @@ mod tests {
       _for,
       _spawn_promise,
       _spawn_blocking,
-      _spawn_blocking_rooted,
       _promise_init,
       _promise_fulfill,
       _promise_try_fulfill,

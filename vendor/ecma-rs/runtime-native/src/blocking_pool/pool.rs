@@ -10,14 +10,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-enum WorkData {
-  Unrooted(*mut u8),
-  Rooted(async_rt::gc::Root),
-}
-
 struct WorkItem {
   task: extern "C" fn(*mut u8, PromiseRef),
-  data: WorkData,
+  data: *mut u8,
   // `PromiseRef` is currently an opaque pointer to a Rust-allocated `RtPromise` (outside the GC).
   //
   // If promises ever become GC-managed in the future, this must be rooted/pinned here: blocking
@@ -112,56 +107,7 @@ impl BlockingPool {
       let mut q = self.shared.queue.lock();
       q.push_back(WorkItem {
         task,
-        data: WorkData::Unrooted(data),
-        promise,
-      });
-    }
-    self.shared.cv.notify_one();
-    promise
-  }
-
-  pub(crate) fn spawn_rooted(
-    &self,
-    task: extern "C" fn(*mut u8, PromiseRef),
-    data: *mut u8,
-  ) -> PromiseRef {
-    // Ensure the async runtime is initialized so promise settlement can wake a blocked `epoll_wait`.
-    let _ = async_rt::global();
-    let promise = async_rt::promise::promise_new();
-
-    // Safety: the rooted ABI contract requires `data` be a valid pointer to a GC-managed object.
-    let root = unsafe { async_rt::gc::Root::new_unchecked(data) };
-
-    {
-      let mut q = self.shared.queue.lock();
-      q.push_back(WorkItem {
-        task,
-        data: WorkData::Rooted(root),
-        promise,
-      });
-    }
-    self.shared.cv.notify_one();
-    promise
-  }
-
-  pub(crate) unsafe fn spawn_rooted_h(
-    &self,
-    task: extern "C" fn(*mut u8, PromiseRef),
-    slot: crate::roots::GcHandle,
-  ) -> PromiseRef {
-    // Ensure the async runtime is initialized so promise settlement can wake a blocked `epoll_wait`.
-    let _ = async_rt::global();
-    let promise = async_rt::promise::promise_new();
-
-    // Safety: caller promises `slot` is a valid pointer-to-slot containing a GC-managed object base
-    // pointer.
-    let root = unsafe { async_rt::gc::Root::new_from_slot_unchecked(slot) };
-
-    {
-      let mut q = self.shared.queue.lock();
-      q.push_back(WorkItem {
-        task,
-        data: WorkData::Rooted(root),
+        data,
         promise,
       });
     }
@@ -199,23 +145,17 @@ fn worker_loop(shared: Arc<Shared>) {
     // Before running mutator code, poll the GC safepoint.
     threading::safepoint_poll();
 
-    match &work.data {
-      WorkData::Unrooted(ptr) => {
-        let gc_safe = threading::enter_gc_safe_region();
+    // Blocking tasks execute in a GC-safe region so stop-the-world GC doesn't deadlock on a worker
+    // thread blocked in a syscall or long wait.
+    //
+    // Contract: the task must not touch or mutate the GC heap while running (no GC allocations, no
+    // dereferencing GC pointers, no write barriers).
+    let gc_safe = threading::enter_gc_safe_region();
 
-        // The task is responsible for settling the promise. If it panics we abort the process
-        // deterministically instead of unwinding into the runtime.
-        crate::ffi::invoke_cb2_promise(work.task, *ptr, work.promise);
+    // The task is responsible for settling the promise. If it panics we abort the process
+    // deterministically instead of unwinding into the runtime.
+    crate::ffi::invoke_cb2_promise(work.task, work.data, work.promise);
 
-        drop(gc_safe);
-      }
-      WorkData::Rooted(root) => {
-        // Rooted work items may access GC-managed data. Do *not* enter a GC-safe region while
-        // executing them; the GC-safe contract forbids touching the GC heap while the world may be
-        // stopped/moving.
-        let data = root.ptr();
-        crate::ffi::invoke_cb2_promise(work.task, data, work.promise);
-      }
-    }
+    drop(gc_safe);
   }
 }

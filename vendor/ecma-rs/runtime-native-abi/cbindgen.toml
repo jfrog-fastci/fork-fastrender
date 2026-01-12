@@ -134,7 +134,6 @@ include = [
   "rt_parallel_spawn_promise",
   "rt_parallel_spawn_promise_rooted",
   "rt_spawn_blocking",
-  "rt_spawn_blocking_rooted",
   "rt_promise_init",
   "rt_promise_fulfill",
   "rt_promise_try_fulfill",

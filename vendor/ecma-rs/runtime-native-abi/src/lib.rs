@@ -700,14 +700,6 @@ extern "C" {
     task: extern "C" fn(*mut u8, LegacyPromiseRef),
     data: *mut u8,
   ) -> LegacyPromiseRef;
-  pub fn rt_spawn_blocking_rooted(
-    task: extern "C" fn(*mut u8, LegacyPromiseRef),
-    data: GcPtr,
-  ) -> LegacyPromiseRef;
-  pub fn rt_spawn_blocking_rooted_h(
-    task: extern "C" fn(*mut u8, LegacyPromiseRef),
-    data: GcHandle,
-  ) -> LegacyPromiseRef;
 
   // Async
   pub fn rt_promise_init(p: PromiseRef);
@@ -1258,7 +1250,6 @@ mod tests {
       "rt_parallel_spawn_promise_rooted(",
       "rt_parallel_spawn_promise_rooted_h(",
       "rt_spawn_blocking(",
-      "rt_spawn_blocking_rooted(",
       "rt_promise_init(",
       "rt_promise_fulfill(",
       "rt_promise_try_fulfill(",

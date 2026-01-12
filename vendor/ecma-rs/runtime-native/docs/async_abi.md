@@ -577,8 +577,6 @@ Contract:
 ### Blocking thread pool
 
 - `rt_spawn_blocking(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef`
-- `rt_spawn_blocking_rooted(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef`
-- `rt_spawn_blocking_rooted_h(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: GcHandle) -> LegacyPromiseRef`
 
 `PromiseRef`, `LegacyPromiseRef`, `ValueRef`, `CoroutineId`, `CoroutineRef`, `RtCoroutineHeader`,
 `TimerId`, and `IoWatcherId` are ABI-level opaque types; their layout is defined in

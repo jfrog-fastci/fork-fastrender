@@ -779,19 +779,18 @@ PromiseRef rt_parallel_spawn_promise_rooted_h(void (*task)(uint8_t*, PromiseRef)
 // etc.). The task must resolve/reject `promise` via `rt_promise_resolve_legacy` /
 // `rt_promise_reject_legacy`.
 //
+// Contract:
+// - `data` must remain valid until `task` runs.
+// - `data` must point to non-GC-managed memory: blocking tasks run in a GC-safe ("NativeSafe")
+//   region and must not dereference GC pointers.
+//
 // Blocking tasks execute in a GC-safe ("NativeSafe") region: they must not touch the GC heap (no
-// GC allocations, no write barriers, and no dereferencing GC-managed pointers unless pinned via a
-// stable handle).
+// GC allocations, no write barriers, and no dereferencing GC-managed pointers).
 //
 // Pool size:
-// - default: min(available_parallelism, 32)
+// - default: min(available_parallelism, 4)
 // - override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` (or legacy `RT_BLOCKING_THREADS`)
 LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);
-// Rooted variant: `data` must be a GC-managed object base pointer. The runtime keeps the object
-// alive (and relocates the pointer across GC moves) until the blocking task finishes.
-LegacyPromiseRef rt_spawn_blocking_rooted(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);
-// Like `rt_spawn_blocking_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
-LegacyPromiseRef rt_spawn_blocking_rooted_h(void (*task)(uint8_t*, LegacyPromiseRef), GcHandle data);
 
 // -----------------------------------------------------------------------------
 // Native promise ABI (PromiseHeader prefix)
