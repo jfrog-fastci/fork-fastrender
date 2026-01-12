@@ -3,6 +3,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+const CMD_TIMEOUT_SECS: &str = "600";
+
+fn has_timeout() -> bool {
+  static HAS_TIMEOUT: OnceLock<bool> = OnceLock::new();
+  *HAS_TIMEOUT.get_or_init(|| cmd_exists("timeout"))
+}
 
 fn cmd_exists(cmd: &str) -> bool {
   Command::new(cmd)
@@ -24,10 +32,16 @@ fn find_tool(candidates: &[&'static str]) -> Option<&'static str> {
 }
 
 fn run(cmd: &str, args: &[&str]) {
-  let status = Command::new(cmd)
-    .args(args)
-    .status()
-    .unwrap_or_else(|e| panic!("failed to run {cmd}: {e}"));
+  let status = if has_timeout() {
+    Command::new("timeout")
+      .args(["-k", "10", CMD_TIMEOUT_SECS])
+      .arg(cmd)
+      .args(args)
+      .status()
+  } else {
+    Command::new(cmd).args(args).status()
+  }
+  .unwrap_or_else(|e| panic!("failed to run {cmd}: {e}"));
   assert!(
     status.success(),
     "{cmd} {:?} failed with status {status}",
@@ -36,10 +50,16 @@ fn run(cmd: &str, args: &[&str]) {
 }
 
 fn output(cmd: &str, args: &[&str]) -> String {
-  let out = Command::new(cmd)
-    .args(args)
-    .output()
-    .unwrap_or_else(|e| panic!("failed to run {cmd}: {e}"));
+  let out = if has_timeout() {
+    Command::new("timeout")
+      .args(["-k", "10", CMD_TIMEOUT_SECS])
+      .arg(cmd)
+      .args(args)
+      .output()
+  } else {
+    Command::new(cmd).args(args).output()
+  }
+  .unwrap_or_else(|e| panic!("failed to run {cmd}: {e}"));
   assert!(
     out.status.success(),
     "{cmd} {:?} failed with status {}",

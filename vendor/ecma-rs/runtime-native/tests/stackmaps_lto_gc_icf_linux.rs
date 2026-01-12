@@ -8,6 +8,24 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+
+const CMD_TIMEOUT_SECS: &str = "900";
+
+fn has_timeout() -> bool {
+  static HAS_TIMEOUT: OnceLock<bool> = OnceLock::new();
+  *HAS_TIMEOUT.get_or_init(|| command_works("timeout"))
+}
+
+fn command_with_timeout(program: &str) -> Command {
+  if has_timeout() {
+    let mut cmd = Command::new("timeout");
+    cmd.args(["-k", "10", CMD_TIMEOUT_SECS]).arg(program);
+    cmd
+  } else {
+    Command::new(program)
+  }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LtoMode {
@@ -99,7 +117,7 @@ fn rename_stackmap_sections_to_data_rel_ro(objcopy: &str, obj_path: &Path, what:
   let has_new_stackmaps = obj.section_by_name(".data.rel.ro.llvm_stackmaps").is_some();
   let has_old_stackmaps = obj.section_by_name(".llvm_stackmaps").is_some();
   if !has_new_stackmaps && has_old_stackmaps {
-    let mut cmd = Command::new(objcopy);
+    let mut cmd = command_with_timeout(objcopy);
     cmd.args([
       "--rename-section",
       ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
@@ -111,7 +129,7 @@ fn rename_stackmap_sections_to_data_rel_ro(objcopy: &str, obj_path: &Path, what:
   let has_new_faultmaps = obj.section_by_name(".data.rel.ro.llvm_faultmaps").is_some();
   let has_old_faultmaps = obj.section_by_name(".llvm_faultmaps").is_some();
   if !has_new_faultmaps && has_old_faultmaps {
-    let mut cmd = Command::new(objcopy);
+    let mut cmd = command_with_timeout(objcopy);
     cmd.args([
       "--rename-section",
       ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents",
@@ -155,7 +173,7 @@ fn patch_stackmap_section_flags(objcopy: &str, obj_path: &Path, what: &str) {
     if obj.section_by_name(sec).is_none() {
       continue;
     }
-    let mut cmd = Command::new(objcopy);
+    let mut cmd = command_with_timeout(objcopy);
     if objcopy.contains("llvm-objcopy") {
       cmd.arg(format!(
         "--set-section-flags={sec}=alloc,load,contents,data"
@@ -174,7 +192,7 @@ fn compile_ir(clang: &str, out_dir: &Path, name: &str, ir: &str, lto: LtoMode) -
   write_file(&ll_path, ir);
 
   let obj_path = out_dir.join(format!("{name}{}.o", lto.suffix()));
-  let mut cmd = Command::new(clang);
+  let mut cmd = command_with_timeout(clang);
   cmd.arg("-c")
     .arg("-O2")
     .args(["-ffunction-sections", "-fdata-sections"])
@@ -194,7 +212,7 @@ fn compile_c(clang: &str, out_dir: &Path, name: &str, c: &str, lto: LtoMode) -> 
   write_file(&c_path, c);
 
   let obj_path = out_dir.join(format!("{name}{}.o", lto.suffix()));
-  let mut cmd = Command::new(clang);
+  let mut cmd = command_with_timeout(clang);
   cmd.arg("-c")
     .arg("-O2")
     .args(["-ffunction-sections", "-fdata-sections"])
@@ -228,7 +246,7 @@ fn materialize_lto_objects(
   // This is necessary because clang's `-flto` inputs may be raw LLVM bitcode
   // (not ELF). The stackmaps section is generated during LTO codegen, so we
   // can't pre-patch it in the original bitcode inputs.
-  let mut cmd = Command::new(clang);
+  let mut cmd = command_with_timeout(clang);
   cmd.arg("-no-pie")
     .arg(lld_flag)
     .arg(lto_flag)
@@ -658,7 +676,7 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
     }
 
     let exe = out_dir.join(format!("{}.out", cfg.name));
-    let mut cmd = Command::new(clang);
+    let mut cmd = command_with_timeout(clang);
     cmd.arg("-no-pie");
 
     // Match production (clang + lld) when available. LTO/ICF require lld.
