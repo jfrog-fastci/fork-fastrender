@@ -3907,6 +3907,9 @@ impl<'a> Checker<'a> {
     contextual_return: Option<TypeId>,
   ) -> TypeId {
     let prim = self.store.primitive_ids();
+    if matches!(call.stx.callee.stx.as_ref(), AstExpr::Super(_)) {
+      return self.check_super_call_expr(call, contextual_return);
+    }
     let callee_ty = self.check_expr(&call.stx.callee);
 
     let call_optional = call.stx.optional_chaining || self.is_optional_chain_expr(&call.stx.callee);
@@ -8343,6 +8346,7 @@ impl<'a> Checker<'a> {
       }
     };
 
+    let prim = self.store.primitive_ids();
     let mut shape = Shape::new();
     for member in obj.stx.members.iter() {
       match &member.stx.typ {
@@ -8413,11 +8417,33 @@ impl<'a> Checker<'a> {
           }
         }
         ObjMemberType::Shorthand { id } => {
-          let key = PropKey::String(self.store.intern_name_ref(&id.stx.name));
-          let ty = self
-            .lookup(&id.stx.name)
-            .map(|b| b.ty)
-            .unwrap_or(self.store.primitive_ids().unknown);
+          let name = id.stx.name.clone();
+          let key = PropKey::String(self.store.intern_name_ref(&name));
+          let value_ty = match self.lookup(&name) {
+            Some(binding) => binding.ty,
+            None => {
+              let mut range = loc_to_range(self.file, id.loc);
+              if range.start == range.end {
+                let len = name.len() as u32;
+                range.start = range.start.saturating_sub(len);
+                range.end = range.start.saturating_add(len);
+              }
+              self.diagnostics.push(codes::UNKNOWN_IDENTIFIER.error(
+                format!("unknown identifier `{}`", name),
+                Span {
+                  file: self.file,
+                  range,
+                },
+              ));
+              prim.any
+            }
+          };
+          self.record_expr_type(id.loc, value_ty);
+          let ty = if self.widen_object_literals {
+            self.widen_object_prop(value_ty)
+          } else {
+            value_ty
+          };
           shape.properties.push(types_ts_interned::Property {
             key,
             data: PropData {
@@ -8627,14 +8653,33 @@ impl<'a> Checker<'a> {
         ObjMemberType::Shorthand { id } => {
           let name = id.stx.name.clone();
           let key = PropKey::String(self.store.intern_name_ref(&name));
-          let value = self.lookup(&name).map(|b| b.ty).unwrap_or(prim.unknown);
+          let value_ty = match self.lookup(&name) {
+            Some(binding) => binding.ty,
+            None => {
+              let mut range = loc_to_range(self.file, id.loc);
+              if range.start == range.end {
+                let len = name.len() as u32;
+                range.start = range.start.saturating_sub(len);
+                range.end = range.start.saturating_add(len);
+              }
+              self.diagnostics.push(codes::UNKNOWN_IDENTIFIER.error(
+                format!("unknown identifier `{}`", name),
+                Span {
+                  file: self.file,
+                  range,
+                },
+              ));
+              prim.any
+            }
+          };
+          self.record_expr_type(id.loc, value_ty);
           let expected_prop = self.member_type(expected, &name);
           let ty = if expected_prop != prim.unknown {
-            self.contextual_widen_container(value, expected_prop)
+            self.contextual_widen_container(value_ty, expected_prop)
           } else if self.widen_object_literals {
-            self.widen_object_prop(value)
+            self.widen_object_prop(value_ty)
           } else {
-            value
+            value_ty
           };
           shape.properties.push(types_ts_interned::Property {
             key,
