@@ -460,13 +460,22 @@ impl<'p> HirSourceToInst<'p> {
 
     let iter_result_tmp_var = if await_ {
       let awaited_tmp_var = self.c_temp.bump();
-      self.out.push(Inst::call(
-        awaited_tmp_var,
-        Arg::Builtin("__optimize_js_await".to_string()),
-        Arg::Const(Const::Undefined),
-        vec![Arg::Var(next_result_tmp_var)],
-        Vec::new(),
-      ));
+      #[cfg(feature = "native-async-ops")]
+      {
+        self
+          .out
+          .push(Inst::await_(awaited_tmp_var, Arg::Var(next_result_tmp_var), false));
+      }
+      #[cfg(not(feature = "native-async-ops"))]
+      {
+        self.out.push(Inst::call(
+          awaited_tmp_var,
+          Arg::Builtin("__optimize_js_await".to_string()),
+          Arg::Const(Const::Undefined),
+          vec![Arg::Var(next_result_tmp_var)],
+          Vec::new(),
+        ));
+      }
       awaited_tmp_var
     } else {
       next_result_tmp_var

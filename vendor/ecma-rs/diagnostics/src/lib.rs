@@ -31,6 +31,13 @@ pub mod paths;
 pub mod render;
 pub use files::SimpleFiles;
 
+/// Convenience alias for a collection of [`Diagnostic`] values.
+///
+/// Many crates in this workspace pass diagnostics across crate boundaries as a
+/// single type; using an alias keeps signatures concise and avoids repeating
+/// `Vec<Diagnostic>` everywhere.
+pub type Diagnostics = Vec<Diagnostic>;
+
 /// Panic payload used by long-running operations to signal cooperative
 /// cancellation across crate boundaries.
 ///

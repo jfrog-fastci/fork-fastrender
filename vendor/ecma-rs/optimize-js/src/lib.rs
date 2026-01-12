@@ -45,6 +45,7 @@ pub mod dump;
 pub mod strict_native;
 pub mod opt;
 pub mod ssa;
+pub mod strict_native_verifier;
 pub mod symbol;
 pub mod types;
 pub mod util;
@@ -58,6 +59,7 @@ pub use crate::decompile::{program_to_ast, DecompileOptions};
 pub use crate::native::{compile_file_native_ready, NativeReadyOptions, NativeReadyProgram};
 #[cfg(feature = "serde")]
 pub use crate::dump::{dump_program, DumpOptions, ProgramDump, DUMP_VERSION};
+pub use crate::strict_native_verifier::{verify_program_strict_native, VerifyOptions};
 use crate::il::inst::Inst;
 use crate::util::counter::Counter;
 use ahash::HashMap;
@@ -134,13 +136,13 @@ pub struct CompileCfgOptions {
   /// This is enabled by default. Turning it off can be useful for experimenting
   /// with downstream backends/analyses on the unoptimised SSA graph.
   pub run_opt_passes: bool,
-  /// Enable loop-invariant code motion (LICM) during the optimization loop.
-  ///
-  /// This is disabled by default to avoid changing existing compilation/test
-  /// baselines unless explicitly requested by the caller.
-  pub enable_licm: bool,
   /// Options controlling interprocedural inlining on SSA CFGs.
   pub inline: InlineOptions,
+  /// Enable loop-invariant code motion (LICM).
+  ///
+  /// This is disabled by default because it requires additional analysis to be effective and can
+  /// change existing optimization/test baselines.
+  pub enable_licm: bool,
   /// Enable additional loop optimizations (induction variable analysis, strength reduction,
   /// conservative unrolling).
   ///
@@ -178,8 +180,8 @@ impl Default for CompileCfgOptions {
     Self {
       keep_ssa: false,
       run_opt_passes: true,
-      enable_licm: false,
       inline: InlineOptions::default(),
+      enable_licm: false,
       enable_loop_opts: false,
     }
   }
@@ -763,7 +765,6 @@ pub(crate) fn build_program_function_with_options(
           c_label = Counter::new(next);
         }
       }
-
       if !iteration_result.any_change() {
         break;
       }

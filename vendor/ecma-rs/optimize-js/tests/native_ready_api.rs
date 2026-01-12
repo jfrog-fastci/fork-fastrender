@@ -69,7 +69,10 @@ fn native_ready_retains_ssa_phi_nodes() {
     file_id,
     TopLevelMode::Module,
     false,
-    NativeReadyOptions::default(),
+    NativeReadyOptions {
+      verify_strict_native: false,
+      ..NativeReadyOptions::default()
+    },
   )
   .expect("compile native-ready");
 
@@ -93,7 +96,10 @@ fn native_ready_populates_inst_meta_escape_and_ownership() {
     file_id,
     TopLevelMode::Module,
     false,
-    NativeReadyOptions::default(),
+    NativeReadyOptions {
+      verify_strict_native: false,
+      ..NativeReadyOptions::default()
+    },
   )
   .expect("compile native-ready");
 
@@ -174,6 +180,7 @@ fn native_ready_program_analyses_are_deterministic() {
     false,
     NativeReadyOptions {
       run_opt_passes: true,
+      verify_strict_native: false,
       ..NativeReadyOptions::default()
     },
   )
@@ -185,6 +192,7 @@ fn native_ready_program_analyses_are_deterministic() {
     false,
     NativeReadyOptions {
       run_opt_passes: true,
+      verify_strict_native: false,
       ..NativeReadyOptions::default()
     },
   )

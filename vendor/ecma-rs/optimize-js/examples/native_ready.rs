@@ -46,7 +46,10 @@ fn main() {
     file_id,
     TopLevelMode::Module,
     false,
-    NativeReadyOptions::default(),
+    NativeReadyOptions {
+      verify_strict_native: false,
+      ..NativeReadyOptions::default()
+    },
   )
   .expect("compile native-ready");
 

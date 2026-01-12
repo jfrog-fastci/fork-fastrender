@@ -9,7 +9,10 @@
 use crate::analysis;
 use crate::strict_native;
 use crate::types;
-use crate::{CompileCfgOptions, Diagnostic, OptimizeResult, Program, Span, TextRange, TopLevelMode};
+use crate::{
+  verify_program_strict_native, CompileCfgOptions, Diagnostic, OptimizeResult, Program, Span,
+  TextRange, TopLevelMode, VerifyOptions,
+};
 use hir_js::FileKind as HirFileKind;
 use std::sync::Arc;
 
@@ -109,6 +112,19 @@ pub fn compile_file_native_ready(
 
   if opts.verify_strict_native {
     strict_native::validate_program(&program, opts.strict_native_opts)?;
+    let verify_opts = VerifyOptions {
+      file,
+      // Property access restrictions are handled by `strict_native::validate_program` using
+      // SSA-aware constant propagation. The standalone verifier's GetProp/PropAssign check is more
+      // naive, so disable it here to avoid false positives.
+      allow_dynamic_getprop: true,
+      allow_call_spreads: opts.strict_native_opts.allow_spread_calls,
+      allow_unknown_memory: opts.strict_native_opts.allow_unknown_memory,
+      // Typed metadata requirements are handled by `strict_native::validate_program`.
+      require_type_metadata: false,
+      ..Default::default()
+    };
+    verify_program_strict_native(&program, &verify_opts).map_err(|diags| diags)?;
   }
 
   Ok(NativeReadyProgram {

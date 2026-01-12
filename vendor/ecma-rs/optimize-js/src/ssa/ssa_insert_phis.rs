@@ -96,6 +96,7 @@ pub fn insert_phis_for_ssa_construction(
           state.type_summary.update(summary);
         }
         if inst.meta.hir_expr.is_some()
+          || inst.meta.span.is_some()
           || inst.meta.type_summary.is_some()
           || inst.meta.type_id.is_some()
         {
