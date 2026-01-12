@@ -211,3 +211,150 @@ fn dataview_set_coerces_offset_and_value_before_detached_check_when_detached_dur
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn dataview_constructor_coerces_offset_before_throwing_on_detached_arraybuffer() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("detachArrayBuffer", detach_array_buffer, 1)?;
+
+  let value = rt.exec_script(
+    r#"
+    var ab = new ArrayBuffer(8);
+    var called = false;
+    var threw = false;
+    try {
+      new DataView(ab, { valueOf(){ called = true; detachArrayBuffer(ab); return 0; } });
+    } catch (e) {
+      threw = e.name === "TypeError";
+    }
+    called && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn dataview_constructor_toindex_errors_precede_detached_check() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let ab = rt.exec_script("var ab = new ArrayBuffer(8); ab")?;
+  let Value::Object(ab) = ab else {
+    panic!("expected ArrayBuffer object");
+  };
+  rt.heap_mut().detach_array_buffer(ab)?;
+
+  let value = rt.exec_script(
+    r#"
+    var neg = false;
+    try { new DataView(ab, -1); } catch (e) { neg = e.name === "RangeError"; }
+    var inf = false;
+    try { new DataView(ab, Infinity); } catch (e) { inf = e.name === "RangeError"; }
+    neg && inf
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn dataview_get_toindex_errors_precede_detached_check() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let ab = rt.exec_script("var ab = new ArrayBuffer(8); var dv = new DataView(ab, 0, 8); ab")?;
+  let Value::Object(ab) = ab else {
+    panic!("expected ArrayBuffer object");
+  };
+  rt.heap_mut().detach_array_buffer(ab)?;
+
+  let value = rt.exec_script(
+    r#"
+    var neg = false;
+    try { dv.getUint8(-1); } catch (e) { neg = e.name === "RangeError"; }
+    var inf = false;
+    try { dv.getUint8(Infinity); } catch (e) { inf = e.name === "RangeError"; }
+    var tooBig = false;
+    try { dv.getUint8(9007199254740992); } catch (e) { tooBig = e.name === "RangeError"; }
+    neg && inf && tooBig
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn dataview_get_propagates_toindex_exceptions_before_detached_check() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let ab = rt.exec_script("var ab = new ArrayBuffer(8); var dv = new DataView(ab, 0, 8); ab")?;
+  let Value::Object(ab) = ab else {
+    panic!("expected ArrayBuffer object");
+  };
+  rt.heap_mut().detach_array_buffer(ab)?;
+
+  let value = rt.exec_script(
+    r#"
+    var called = false;
+    var threw = false;
+    try {
+      dv.getUint8({ valueOf(){ called = true; throw new RangeError("boom"); } });
+    } catch (e) {
+      threw = e.name === "RangeError" && e.message === "boom";
+    }
+    called && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn dataview_set_toindex_errors_precede_detached_check() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let ab = rt.exec_script("var ab = new ArrayBuffer(8); var dv = new DataView(ab, 0, 8); ab")?;
+  let Value::Object(ab) = ab else {
+    panic!("expected ArrayBuffer object");
+  };
+  rt.heap_mut().detach_array_buffer(ab)?;
+
+  let value = rt.exec_script(
+    r#"
+    var neg = false;
+    try { dv.setUint8(-1, 1); } catch (e) { neg = e.name === "RangeError"; }
+    var inf = false;
+    try { dv.setUint8(Infinity, 1); } catch (e) { inf = e.name === "RangeError"; }
+    var tooBig = false;
+    try { dv.setUint8(9007199254740992, 1); } catch (e) { tooBig = e.name === "RangeError"; }
+    neg && inf && tooBig
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn dataview_set_propagates_value_coercion_exceptions_before_detached_check() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let ab = rt.exec_script("var ab = new ArrayBuffer(8); var dv = new DataView(ab, 0, 8); ab")?;
+  let Value::Object(ab) = ab else {
+    panic!("expected ArrayBuffer object");
+  };
+  rt.heap_mut().detach_array_buffer(ab)?;
+
+  let value = rt.exec_script(
+    r#"
+    var called = false;
+    var threw = false;
+    try {
+      dv.setUint8(0, { valueOf(){ called = true; throw new RangeError("boom"); } });
+    } catch (e) {
+      threw = e.name === "RangeError" && e.message === "boom";
+    }
+    called && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
