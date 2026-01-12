@@ -380,4 +380,38 @@ mod tests {
       "expected cache hit to avoid extra rasterization"
     );
   }
+
+  #[test]
+  fn icon_texture_clamps_huge_sizes_to_max_side_px() {
+    let ctx = egui::Context::default();
+
+    // Request an absurdly large icon. This should clamp rather than allocating a giant image/texture.
+    let (_id, side_points) = icon_texture(&ctx, BrowserIcon::Back, 100_000.0, false);
+    assert!(
+      side_points <= MAX_ICON_SIDE_PX as f32,
+      "expected side_points to clamp to MAX_ICON_SIDE_PX, got {side_points}"
+    );
+  }
+
+  #[test]
+  fn cache_keys_include_dark_mode() {
+    let ctx = egui::Context::default();
+
+    let (id_light, _size_light) = icon_texture(&ctx, BrowserIcon::Reload, 16.0, false);
+    let calls_after_light = ctx.data_mut(|d| {
+      d.get_temp_mut_or_default::<IconCache>(cache_id()).rasterize_calls
+    });
+
+    let (id_dark, _size_dark) = icon_texture(&ctx, BrowserIcon::Reload, 16.0, true);
+    let calls_after_dark = ctx.data_mut(|d| {
+      d.get_temp_mut_or_default::<IconCache>(cache_id()).rasterize_calls
+    });
+
+    assert_ne!(id_light, id_dark, "expected dark-mode key to create a new texture");
+    assert_eq!(
+      calls_after_light + 1,
+      calls_after_dark,
+      "expected dark-mode request to trigger one additional rasterization"
+    );
+  }
 }
