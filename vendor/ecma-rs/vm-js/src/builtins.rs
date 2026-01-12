@@ -8744,13 +8744,17 @@ pub fn object_prototype_is_prototype_of(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let o = scope.to_object(vm, host, hooks, this)?;
-  scope.push_root(Value::Object(o))?;
-
   let v = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(mut v_obj) = v else {
+    // Spec note: `Object.prototype.isPrototypeOf` observes the argument type *before*
+    // `ToObject(this value)` so `Object.prototype.isPrototypeOf.call(null, 1)` returns `false`
+    // rather than throwing (legacy behaviour preserved by ECMA-262 ordering).
     return Ok(Value::Bool(false));
   };
+  scope.push_roots(&[this, Value::Object(v_obj)])?;
+
+  let o = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(o))?;
 
   let mut steps = 0usize;
   loop {

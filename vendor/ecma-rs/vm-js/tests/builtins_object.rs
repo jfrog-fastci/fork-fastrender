@@ -842,6 +842,25 @@ fn object_prototype_methods_work() -> Result<(), VmError> {
   )?;
   assert_eq!(out, Value::Bool(false));
 
+  // `isPrototypeOf` checks the argument type before `ToObject(this)`, so null/undefined receivers
+  // return false when `V` is not an object (matching ES2020+ ordering).
+  let args = [Value::Number(10.0)];
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(is_prototype_of),
+    Value::Null,
+    &args,
+  )?;
+  assert_eq!(out, Value::Bool(false));
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(is_prototype_of),
+    Value::Undefined,
+    &args,
+  )?;
+  assert_eq!(out, Value::Bool(false));
+
   // propertyIsEnumerable (own vs inherited)
   define_enumerable_data_property(&mut scope, p, "z", Value::Number(9.0))?;
   define_enumerable_data_property(&mut scope, o, "x", Value::Number(1.0))?;
