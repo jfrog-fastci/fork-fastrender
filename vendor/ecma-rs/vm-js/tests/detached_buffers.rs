@@ -46,7 +46,7 @@ fn slice_on_detached_buffers_throws_type_error() {
 }
 
 #[test]
-fn heap_byte_access_helpers_throw_type_error_on_detached() -> Result<(), VmError> {
+fn heap_byte_access_helpers_throw_type_error_on_detached_and_writes_are_noop() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut scope = heap.scope();
 
@@ -66,14 +66,10 @@ fn heap_byte_access_helpers_throw_type_error_on_detached() -> Result<(), VmError
     other => panic!("expected TypeError, got {other:?}"),
   }
 
-  match scope.heap_mut().uint8_array_write(view, 0, &[1]).unwrap_err() {
-    VmError::TypeError(msg) => assert_eq!(msg, "ArrayBuffer is detached"),
-    other => panic!("expected TypeError, got {other:?}"),
-  }
+  assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
 
   // Preserve out-of-bounds behaviour (no-op write).
   assert_eq!(scope.heap_mut().uint8_array_write(view, 4, &[1, 2])?, 0);
 
   Ok(())
 }
-

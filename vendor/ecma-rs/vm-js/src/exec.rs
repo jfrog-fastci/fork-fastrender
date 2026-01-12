@@ -8535,16 +8535,6 @@ enum AsyncFrame {
     iterator_root: RootId,
     next_method_root: RootId,
   },
-  /// Continue a `for await..of` loop after awaiting the iterated value (sync iterable wrapper).
-  ForAwaitOfAfterValue {
-    stmt: *const ForOfStmt,
-    label_set: Vec<String>,
-    v_root: RootId,
-    outer_lex: GcEnv,
-    iterator_record: async_iterator::AsyncIteratorRecord,
-    iterator_root: RootId,
-    next_method_root: RootId,
-  },
   /// Continue a `for await..of` loop after evaluating the loop body.
   ForAwaitOfAfterBody {
     stmt: *const ForOfStmt,
@@ -8958,12 +8948,6 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     }
     AsyncFrame::ForAwaitOfAfterRhs { v_root, .. } => heap.remove_root(*v_root),
     AsyncFrame::ForAwaitOfAfterNext {
-      v_root,
-      iterator_root,
-      next_method_root,
-      ..
-    }
-    | AsyncFrame::ForAwaitOfAfterValue {
       v_root,
       iterator_root,
       next_method_root,
@@ -12682,31 +12666,6 @@ fn async_for_await_of_after_next(
       }
     }
   };
-
-  // Async-from-sync wrappers require awaiting each iterated value.
-  if iterator_record.is_sync() {
-    let mut frames = VecDeque::new();
-    if let Err(err) = async_frames_push(
-      &mut frames,
-      AsyncFrame::ForAwaitOfAfterValue {
-        stmt: stmt as *const ForOfStmt,
-        label_set,
-        v_root,
-        outer_lex,
-        iterator_record,
-        iterator_root,
-        next_method_root,
-      },
-    ) {
-      async_for_await_of_cleanup(&mut step_scope, v_root, iterator_root, next_method_root);
-      return Err(err);
-    }
-
-    return Ok(AsyncEval::Suspend(AsyncSuspend {
-      await_value: value,
-      frames,
-    }));
-  }
 
   async_for_await_of_handle_iter_value(
     evaluator,
@@ -20207,81 +20166,6 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "for-await-of next frame received completion state",
-          ))
-        }
-      },
-
-      AsyncFrame::ForAwaitOfAfterValue {
-        stmt,
-        label_set,
-        v_root,
-        outer_lex,
-        iterator_record,
-        iterator_root,
-        next_method_root,
-      } => match state {
-        AsyncState::Expr(value_res) => match value_res {
-          Ok(value) => {
-            let stmt = unsafe { &*stmt };
-            match async_for_await_of_handle_iter_value(
-              evaluator,
-              scope,
-              stmt,
-              label_set,
-              v_root,
-              outer_lex,
-              iterator_record,
-              iterator_root,
-              next_method_root,
-              value,
-            ) {
-              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
-              Ok(AsyncEval::Suspend(mut suspend)) => {
-                suspend.frames.append(&mut frames);
-                return Ok(AsyncBodyResult::Await {
-                  await_value: suspend.await_value,
-                  frames: suspend.frames,
-                });
-              }
-              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
-              }
-              Err(err) => return Err(err),
-            }
-          }
-          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-            let completion = completion_from_expr_result(Err(err))?;
-            match async_for_await_of_close(
-              evaluator,
-              scope,
-              v_root,
-              iterator_root,
-              next_method_root,
-              &iterator_record,
-              completion,
-            ) {
-              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
-              Ok(AsyncEval::Suspend(mut suspend)) => {
-                suspend.frames.append(&mut frames);
-                return Ok(AsyncBodyResult::Await {
-                  await_value: suspend.await_value,
-                  frames: suspend.frames,
-                });
-              }
-              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
-              }
-              Err(err) => return Err(err),
-            }
-          }
-          Err(err) => {
-            async_for_await_of_cleanup(scope, v_root, iterator_root, next_method_root);
-            return Err(err);
-          }
-        },
-        AsyncState::Completion(_) => {
-          return Err(VmError::InvariantViolation(
-            "for-await-of value frame received completion state",
           ))
         }
       },

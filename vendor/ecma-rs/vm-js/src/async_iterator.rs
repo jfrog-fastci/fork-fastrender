@@ -22,11 +22,6 @@ pub enum AsyncIteratorRecord {
 
 impl AsyncIteratorRecord {
   #[inline]
-  pub fn is_sync(&self) -> bool {
-    matches!(self, AsyncIteratorRecord::Sync { .. })
-  }
-
-  #[inline]
   pub fn iterator(&self) -> Value {
     match self {
       AsyncIteratorRecord::Protocol { iterator, .. } => *iterator,
@@ -49,6 +44,44 @@ fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
   let key_s = scope.alloc_string(s)?;
   scope.push_root(Value::String(key_s))?;
   Ok(PropertyKey::from_string(key_s))
+}
+
+fn promise_reject(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  reason: Value,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(reason)?;
+
+  let cap = promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+
+  // Root the resolving functions + reason across the reject call (can allocate / run user JS).
+  scope.push_roots(&[cap.promise, cap.reject, reason])?;
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    cap.reject,
+    Value::Undefined,
+    &[reason],
+  )?;
+  Ok(cap.promise)
+}
+
+fn reject_promise_from_vm_error(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  err: VmError,
+) -> Result<Value, VmError> {
+  let Some(reason) = err.thrown_value() else {
+    return Err(err);
+  };
+  promise_reject(vm, host, hooks, scope, reason)
 }
 
 /// `GetAsyncIterator` (ECMA-262).
@@ -133,27 +166,6 @@ pub fn create_async_from_sync_iterator(sync: iterator::IteratorRecord) -> AsyncI
   AsyncIteratorRecord::Sync { sync }
 }
 
-fn create_iter_result_object(
-  scope: &mut Scope<'_>,
-  value: Value,
-  done: bool,
-) -> Result<Value, VmError> {
-  // Root the inputs across allocation and property definition.
-  let mut scope = scope.reborrow();
-  scope.push_roots(&[value])?;
-
-  let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj))?;
-
-  let value_key = string_key(&mut scope, "value")?;
-  scope.create_data_property_or_throw(obj, value_key, value)?;
-
-  let done_key = string_key(&mut scope, "done")?;
-  scope.create_data_property_or_throw(obj, done_key, Value::Bool(done))?;
-
-  Ok(Value::Object(obj))
-}
-
 /// `AsyncIteratorNext` (ECMA-262).
 ///
 /// Note: this returns the *raw* result of calling the iterator's `next` method (which the caller
@@ -176,14 +188,98 @@ pub fn async_iterator_next(
       vm.call_with_host_and_hooks(host, &mut call_scope, hooks, *next_method, *iterator, &[])
     }
     AsyncIteratorRecord::Sync { sync } => {
-      let next_value = iterator::iterator_step_value(vm, host, hooks, scope, sync)?;
-      let done = next_value.is_none();
-      let value = next_value.unwrap_or(Value::Undefined);
+      let mut next_scope = scope.reborrow();
+      next_scope.push_roots(&[sync.iterator, sync.next_method])?;
 
-      let iter_result = create_iter_result_object(scope, value, done)?;
-      let mut promise_scope = scope.reborrow();
-      promise_scope.push_root(iter_result)?;
-      promise_ops::promise_resolve_with_host_and_hooks(vm, &mut promise_scope, host, hooks, iter_result)
+      let result = match iterator::iterator_next(vm, host, hooks, &mut next_scope, sync) {
+        Ok(v) => v,
+        Err(err) => return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, err),
+      };
+
+      if !matches!(result, Value::Object(_)) {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
+        let reason = crate::error_object::new_type_error_object(
+          &mut next_scope,
+          &intr,
+          "AsyncFromSyncIterator.next: IteratorNext returned non-object",
+        )?;
+        return promise_reject(vm, host, hooks, &mut next_scope, reason);
+      }
+
+      // Root the iterator result object while reading `done`/`value`.
+      next_scope.push_root(result)?;
+      let done = match iterator::iterator_complete(vm, host, hooks, &mut next_scope, result) {
+        Ok(d) => d,
+        Err(err) => return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, err),
+      };
+      let value = match iterator::iterator_value(vm, host, hooks, &mut next_scope, result) {
+        Ok(v) => v,
+        Err(err) => return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, err),
+      };
+      next_scope.push_root(value)?;
+
+      let value_wrapper = match promise_ops::promise_resolve_with_host_and_hooks(
+        vm,
+        &mut next_scope,
+        host,
+        hooks,
+        value,
+      ) {
+        Ok(p) => p,
+        Err(err) => {
+          if !done {
+            let record = iterator::IteratorRecord {
+              iterator: sync.iterator,
+              next_method: Value::Undefined,
+              done: false,
+            };
+            if let Err(close_err) = iterator::iterator_close(vm, host, hooks, &mut next_scope, &record) {
+              return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, close_err);
+            }
+          }
+          return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, err);
+        }
+      };
+      next_scope.push_root(value_wrapper)?;
+
+      let unwrap_call_id = vm.async_from_sync_iterator_unwrap_call_id()?;
+      let unwrap_name = next_scope.alloc_string("")?;
+      let unwrap = next_scope.alloc_native_function_with_slots(
+        unwrap_call_id,
+        None,
+        unwrap_name,
+        1,
+        &[Value::Bool(done)],
+      )?;
+      next_scope.push_root(Value::Object(unwrap))?;
+
+      let on_rejected = if done {
+        None
+      } else {
+        let close_call_id = vm.async_from_sync_iterator_close_call_id()?;
+        let close_name = next_scope.alloc_string("")?;
+        let close = next_scope.alloc_native_function_with_slots(
+          close_call_id,
+          None,
+          close_name,
+          1,
+          &[sync.iterator],
+        )?;
+        next_scope.push_root(Value::Object(close))?;
+        Some(Value::Object(close))
+      };
+
+      promise_ops::perform_promise_then_with_host_and_hooks(
+        vm,
+        &mut next_scope,
+        host,
+        hooks,
+        value_wrapper,
+        Some(Value::Object(unwrap)),
+        on_rejected,
+      )
     }
   }
 }
