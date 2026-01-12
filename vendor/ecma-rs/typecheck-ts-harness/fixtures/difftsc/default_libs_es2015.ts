@@ -1,3 +1,5 @@
 // @target: ES2015
 
-document.querySelectorAll("div")[Symbol.iterator]();
+declare const headers: Headers;
+
+headers.entries;
