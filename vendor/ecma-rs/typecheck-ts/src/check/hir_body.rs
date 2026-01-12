@@ -8405,7 +8405,15 @@ impl<'a> Checker<'a> {
           }
           false
         }
-        TypeKind::Union(members) | TypeKind::Intersection(members) => members
+        // For union types, a property is only considered present if it exists on
+        // all constituents (mirrors TS property-access rules).
+        TypeKind::Union(members) => members
+          .iter()
+          .copied()
+          .all(|member| inner(checker, member, prop, seen)),
+        // Intersection types accumulate properties from all members, so a
+        // property exists if any member provides it.
+        TypeKind::Intersection(members) => members
           .iter()
           .copied()
           .any(|member| inner(checker, member, prop, seen)),
