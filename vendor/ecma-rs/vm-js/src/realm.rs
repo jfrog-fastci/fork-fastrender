@@ -1,5 +1,6 @@
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
-use crate::{GcObject, Heap, Intrinsics, RealmId, RootId, Value, Vm, VmError, WellKnownSymbols};
+use crate::{GcEnv, GcObject, Heap, Intrinsics, RealmId, RootId, Value, Vm, VmError, WellKnownSymbols};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_REALM_ID: AtomicU64 = AtomicU64::new(1);
@@ -14,9 +15,88 @@ static NEXT_REALM_ID: AtomicU64 = AtomicU64::new(1);
 pub struct Realm {
   id: RealmId,
   global_object: GcObject,
+  global_lexical_env: GcEnv,
   intrinsics: Intrinsics,
   roots: Vec<RootId>,
   torn_down: bool,
+}
+
+fn set_intrinsic_function_realm_metadata(
+  heap: &mut Heap,
+  roots: &[RootId],
+  global_object: GcObject,
+  realm_id: RealmId,
+) -> Result<(), VmError> {
+  // Traverse the intrinsic object graph starting from the realm's persistent roots and populate
+  // `[[Realm]]` + `[[JobRealm]]` on all intrinsic function objects. Most intrinsic functions are
+  // reachable only via prototype/property links and are not directly included in `roots`, so this
+  // must walk the graph rather than just iterating root values.
+
+  let mut worklist: Vec<GcObject> = Vec::new();
+  worklist
+    .try_reserve_exact(roots.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for &root in roots {
+    if let Some(Value::Object(obj)) = heap.get_root(root) {
+      worklist.push(obj);
+    }
+  }
+
+  let mut visited: HashSet<GcObject> = HashSet::new();
+
+  while let Some(obj) = worklist.pop() {
+    if visited.try_reserve(1).is_err() {
+      return Err(VmError::OutOfMemory);
+    }
+    if !visited.insert(obj) {
+      continue;
+    }
+
+    if heap.is_callable(Value::Object(obj))? {
+      heap.set_function_realm(obj, global_object)?;
+      heap.set_function_job_realm(obj, realm_id)?;
+    }
+
+    if let Some(proto) = heap.object_prototype(obj)? {
+      if worklist.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      worklist.push(proto);
+    }
+
+    let keys = heap.own_property_keys(obj)?;
+    for key in keys {
+      let Some(desc) = heap.object_get_own_property(obj, &key)? else {
+        continue;
+      };
+      match desc.kind {
+        PropertyKind::Data { value, .. } => {
+          if let Value::Object(child) = value {
+            if worklist.try_reserve(1).is_err() {
+              return Err(VmError::OutOfMemory);
+            }
+            worklist.push(child);
+          }
+        }
+        PropertyKind::Accessor { get, set } => {
+          if let Value::Object(child) = get {
+            if worklist.try_reserve(1).is_err() {
+              return Err(VmError::OutOfMemory);
+            }
+            worklist.push(child);
+          }
+          if let Value::Object(child) = set {
+            if worklist.try_reserve(1).is_err() {
+              return Err(VmError::OutOfMemory);
+            }
+            worklist.push(child);
+          }
+        }
+      }
+    }
+  }
+
+  Ok(())
 }
 
 fn global_data_desc(value: Value) -> PropertyDescriptor {
@@ -67,7 +147,23 @@ impl Realm {
       .set_default_object_prototype(Some(intrinsics.object_prototype()));
 
     // Any error after this point should also unregister roots to avoid leaks.
+    let mut global_lexical_env: Option<GcEnv> = None;
     if let Err(err) = (|| -> Result<(), VmError> {
+      // Create the realm's global lexical environment and store it on the intrinsic Function
+      // constructor's captured environment slot, matching `CreateDynamicFunction` semantics.
+      //
+      // This environment record is kept alive by the Function constructor (which is itself kept
+      // alive by the realm's persistent roots), so we do not need a separate persistent env root at
+      // the realm layer.
+      let env = scope.env_create(None)?;
+      global_lexical_env = Some(env);
+      scope
+        .heap_mut()
+        .set_function_closure_env(intrinsics.function_constructor(), Some(env))?;
+
+      // Populate `[[Realm]]` + `[[JobRealm]]` on all intrinsic function objects.
+      set_intrinsic_function_realm_metadata(scope.heap_mut(), &roots, global_object, id)?;
+
       // Make the global object spec-shaped:
       // `%GlobalObject%.[[Prototype]]` is `%Object.prototype%`.
       scope.heap_mut().object_set_prototype(
@@ -355,9 +451,13 @@ impl Realm {
 
     vm.set_intrinsics(intrinsics);
 
+    let global_lexical_env = global_lexical_env
+      .expect("global lexical environment should be initialized after successful Realm::new");
+
     Ok(Self {
       id,
       global_object,
+      global_lexical_env,
       intrinsics,
       roots,
       torn_down: false,
@@ -372,6 +472,10 @@ impl Realm {
   /// The realm's intrinsic objects.
   pub fn intrinsics(&self) -> &Intrinsics {
     &self.intrinsics
+  }
+
+  pub(crate) fn global_lexical_env(&self) -> GcEnv {
+    self.global_lexical_env
   }
 
   pub fn well_known_symbols(&self) -> &WellKnownSymbols {

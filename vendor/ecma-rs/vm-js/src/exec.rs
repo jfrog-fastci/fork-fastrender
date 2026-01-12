@@ -209,12 +209,12 @@ pub(crate) struct RuntimeEnv {
 }
 
 impl RuntimeEnv {
-  fn new(heap: &mut Heap, global_object: GcObject) -> Result<Self, VmError> {
-    // Root the global object across env allocation in case it triggers GC.
+  fn new(heap: &mut Heap, global_object: GcObject, lexical_env: GcEnv) -> Result<Self, VmError> {
+    // Root the global object and lexical environment across root registration in case it triggers
+    // GC.
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global_object))?;
-
-    let lexical_env = scope.env_create(None)?;
+    scope.push_env_root(lexical_env)?;
     let lexical_root = scope.heap_mut().add_env_root(lexical_env)?;
 
     Ok(Self {
@@ -735,28 +735,12 @@ impl JsRuntime {
     let mut vm = vm;
     let mut heap = heap;
     let realm = Realm::new(&mut vm, &mut heap)?;
-    let env = RuntimeEnv::new(&mut heap, realm.global_object())?;
+    let env = RuntimeEnv::new(&mut heap, realm.global_object(), realm.global_lexical_env())?;
     let mut modules = Box::new(ModuleGraph::new());
     // Make the runtime-owned module graph available to nested ECMAScript function calls (and other
     // VM entry points that do not naturally thread an explicit `&mut ModuleGraph` parameter).
     vm.set_module_graph(modules.as_mut());
 
-    // Intrinsic Function constructor semantics rely on `[[Realm]]` and (for dynamic functions)
-    // `[[Environment]]` being populated:
-    // - `builtins::function_constructor_construct` creates functions in the realm of the Function
-    //   constructor object.
-    // - Those created functions should capture the global lexical environment (not the caller's
-    //   lexical environment), so we store the global lexical env on the Function constructor's
-    //   closure env slot.
-    //
-    // Realm initialization happens before `RuntimeEnv::new` creates the global lexical environment,
-    // so patch it up here once both exist.
-    {
-      let function_ctor = realm.intrinsics().function_constructor();
-      heap.set_function_realm(function_ctor, realm.global_object())?;
-      heap.set_function_job_realm(function_ctor, realm.id())?;
-      heap.set_function_closure_env(function_ctor, Some(env.lexical_env()))?;
-    }
     Ok(Self {
       vm,
       heap,
