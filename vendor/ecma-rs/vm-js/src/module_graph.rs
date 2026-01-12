@@ -1507,6 +1507,11 @@ impl ModuleGraph {
           )?;
         }
         Ok(ModuleTlaStepResult::Await { promise: awaited, resume_index }) => {
+          // `awaited` is produced by running module bytecode and is not automatically rooted across
+          // subsequent allocations. Root it before creating persistent roots / scheduling Promise
+          // reactions so a GC cannot collect it (leaving behind an invalid handle).
+          eval_scope.push_root(awaited)?;
+
           // Root the capability values in the heap so they survive across microtasks.
           let roots = PromiseCapabilityRoots::new(&mut eval_scope, cap)?;
           self.torn_down = false;
@@ -1566,6 +1571,28 @@ impl ModuleGraph {
 
       Ok(promise)
     })();
+
+    // If module evaluation initiated a dynamic `import()` continuation whose Promise reactions are
+    // still pending, keep `vm.module_graph_ptr` installed until those reactions run.
+    //
+    // This is important for embeddings that complete module loading synchronously: the imported
+    // module's evaluation promise might be pending due to top-level await, and its resume microtask
+    // needs to recover the module graph via `vm.module_graph_ptr`.
+    //
+    // Note: `insert_pending_dynamic_import_evaluation` captures the VM's current module graph
+    // pointer as the "previous" value to restore. When dynamic import begins during this
+    // synchronous evaluation, that value will be `self`. Overwrite it with the true outer previous
+    // pointer before disarming the guard so completion restores correctly.
+    if result.is_ok()
+      && graph_guard.restore_on_drop
+      && !self.pending_dynamic_import_evaluations.is_empty()
+    {
+      let self_ptr: *mut ModuleGraph = self;
+      if self.pending_dynamic_import_prev_graph == Some(self_ptr) {
+        self.pending_dynamic_import_prev_graph = graph_guard.prev_graph();
+      }
+      graph_guard.disarm();
+    }
 
     result
   }
@@ -1856,6 +1883,10 @@ impl ModuleGraph {
     let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
       "top-level await requires intrinsics (create a Realm first)",
     ))?;
+
+    // Root the awaited promise before any allocations (e.g. allocating callback names/functions)
+    // so a GC cannot collect it while we are preparing the resume handlers.
+    scope.push_root(awaited_promise)?;
 
     let on_fulfilled_call = vm.module_tla_on_fulfilled_call_id()?;
     let on_rejected_call = vm.module_tla_on_rejected_call_id()?;

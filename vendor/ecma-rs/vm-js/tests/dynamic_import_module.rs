@@ -211,6 +211,182 @@ impl VmHostHooks for TestHostHooks {
   }
 }
 
+/// Host hook implementation that completes `HostLoadImportedModule` synchronously by immediately
+/// calling `FinishLoadingImportedModule`.
+///
+/// This is a useful stress test for module-graph pointer restoration: dynamic import may start
+/// evaluating the imported module (including top-level await) *before* the surrounding evaluation
+/// returns to the caller.
+struct SyncHostHooks {
+  microtasks: MicrotaskQueue,
+  modules: HashMap<String, ModuleId>,
+}
+
+impl SyncHostHooks {
+  fn new() -> Self {
+    Self {
+      microtasks: MicrotaskQueue::new(),
+      modules: HashMap::new(),
+    }
+  }
+
+  fn register_module(&mut self, specifier: &str, module: ModuleId) {
+    self.modules.insert(specifier.to_string(), module);
+  }
+
+  fn teardown_jobs(&mut self, vm: &mut Vm, heap: &mut Heap) {
+    struct Ctx<'a> {
+      vm: &'a mut Vm,
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for Ctx<'_> {
+      fn call(
+        &mut self,
+        host: &mut dyn VmHostHooks,
+        callee: Value,
+        this: Value,
+        args: &[Value],
+      ) -> Result<Value, VmError> {
+        let mut scope = self.heap.scope();
+        self.vm.call_with_host(&mut scope, host, callee, this, args)
+      }
+
+      fn construct(
+        &mut self,
+        host: &mut dyn VmHostHooks,
+        callee: Value,
+        args: &[Value],
+        new_target: Value,
+      ) -> Result<Value, VmError> {
+        let mut scope = self.heap.scope();
+        self
+          .vm
+          .construct_with_host(&mut scope, host, callee, args, new_target)
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: vm_js::RootId) {
+        self.heap.remove_root(id)
+      }
+    }
+
+    let mut ctx = Ctx { vm, heap };
+    self.microtasks.teardown(&mut ctx);
+  }
+
+  fn perform_microtask_checkpoint(&mut self, vm: &mut Vm, heap: &mut Heap) -> Result<(), VmError> {
+    if !self.microtasks.begin_checkpoint() {
+      return Ok(());
+    }
+
+    struct Ctx<'a> {
+      vm: &'a mut Vm,
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for Ctx<'_> {
+      fn call(
+        &mut self,
+        host: &mut dyn VmHostHooks,
+        callee: Value,
+        this: Value,
+        args: &[Value],
+      ) -> Result<Value, VmError> {
+        let mut scope = self.heap.scope();
+        self.vm.call_with_host(&mut scope, host, callee, this, args)
+      }
+
+      fn construct(
+        &mut self,
+        host: &mut dyn VmHostHooks,
+        callee: Value,
+        args: &[Value],
+        new_target: Value,
+      ) -> Result<Value, VmError> {
+        let mut scope = self.heap.scope();
+        self
+          .vm
+          .construct_with_host(&mut scope, host, callee, args, new_target)
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: vm_js::RootId) {
+        self.heap.remove_root(id)
+      }
+    }
+
+    let mut ctx = Ctx { vm, heap };
+
+    let mut first_err: Option<VmError> = None;
+    let mut termination_err: Option<VmError> = None;
+    while let Some((_realm, job)) = self.microtasks.pop_front() {
+      let job_result = job.run(&mut ctx, self);
+      match job_result {
+        Ok(()) => {}
+        Err(e @ VmError::Termination(_)) => {
+          termination_err = Some(e);
+          break;
+        }
+        Err(e) => {
+          if first_err.is_none() {
+            first_err = Some(e);
+          }
+        }
+      }
+    }
+
+    if termination_err.is_some() {
+      self.microtasks.teardown(&mut ctx);
+    }
+
+    self.microtasks.end_checkpoint();
+    match termination_err {
+      Some(e) => Err(e),
+      None => first_err.map_or(Ok(()), Err),
+    }
+  }
+}
+
+impl VmHostHooks for SyncHostHooks {
+  fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<vm_js::RealmId>) {
+    self.microtasks.host_enqueue_promise_job(job, realm);
+  }
+
+  fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
+    &[]
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    _host_defined: HostDefined,
+    payload: ModuleLoadPayload,
+  ) -> Result<(), VmError> {
+    let module = *self
+      .modules
+      .get(module_request.specifier.as_str())
+      .ok_or_else(|| VmError::InvariantViolation("no module registered for specifier"))?;
+    vm.finish_loading_imported_module(
+      scope,
+      modules,
+      self,
+      referrer,
+      module_request,
+      payload,
+      Ok(module),
+    )
+  }
+}
+
 #[test]
 fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
@@ -322,6 +498,113 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
 
   scope.heap_mut().remove_root(promise_root);
   drop(scope);
+  modules.teardown(&mut vm, &mut heap);
+  host_hooks.teardown_jobs(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn dynamic_import_tla_module_works_with_sync_host_completion_without_attached_graph() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut modules = ModuleGraph::new();
+  let tla = modules.add_module(SourceTextModuleRecord::parse(
+    "await Promise.resolve(); export const x = 1;",
+  )?);
+  let consumer =
+    modules.add_module(SourceTextModuleRecord::parse("export const p = import('./tla.js');")?);
+
+  // Evaluate without pre-attaching the module graph pointer to the VM.
+  assert!(vm.module_graph_ptr().is_none());
+
+  let mut host_hooks = SyncHostHooks::new();
+  host_hooks.register_module("./tla.js", tla);
+
+  let mut dummy_host = ();
+  let _eval_promise = modules.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    consumer,
+    &mut dummy_host,
+    &mut host_hooks,
+  )?;
+
+  // The consumer module itself evaluated synchronously, but `import('./tla.js')` already started
+  // evaluating the imported module. Since that evaluation is suspended on top-level await, the VM
+  // must keep the module graph pointer installed so the resume microtask can run even though the
+  // embedding never permanently attached a module graph.
+  assert!(vm.module_graph_ptr().is_some());
+
+  // Read `p` from the consumer module namespace.
+  let p_root = {
+    let mut scope = heap.scope();
+    let ns_consumer = modules.get_module_namespace(consumer, &mut vm, &mut scope)?;
+    let p_key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let p_value = scope.ordinary_get_with_host_and_hooks(
+      &mut vm,
+      &mut dummy_host,
+      &mut host_hooks,
+      ns_consumer,
+      p_key,
+      Value::Object(ns_consumer),
+    )?;
+
+    let Value::Object(promise_obj) = p_value else {
+      return Err(VmError::InvariantViolation(
+        "module export p should be a promise object",
+      ));
+    };
+    let root = scope.heap_mut().add_root(p_value)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+    root
+  };
+
+  host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  // Once the dynamic import promise settles, the temporary graph attachment should be cleaned up.
+  assert!(vm.module_graph_ptr().is_none());
+
+  let mut scope = heap.scope();
+  let p_value = scope
+    .heap()
+    .get_root(p_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(promise_obj) = p_value else {
+    return Err(VmError::InvariantViolation(
+      "promise root should reference an object",
+    ));
+  };
+  assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let ns_value = scope
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  let Value::Object(ns_obj) = ns_value else {
+    return Err(VmError::InvariantViolation(
+      "dynamic import promise should fulfill to a namespace object",
+    ));
+  };
+
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let x_value = scope.ordinary_get_with_host_and_hooks(
+    &mut vm,
+    &mut dummy_host,
+    &mut host_hooks,
+    ns_obj,
+    x_key,
+    Value::Object(ns_obj),
+  )?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+
+  scope.heap_mut().remove_root(p_root);
+  drop(scope);
+
   modules.teardown(&mut vm, &mut heap);
   host_hooks.teardown_jobs(&mut vm, &mut heap);
   realm.teardown(&mut heap);
