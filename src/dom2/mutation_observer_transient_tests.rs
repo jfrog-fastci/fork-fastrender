@@ -147,3 +147,71 @@ fn mutation_observer_observe_update_clears_transients() {
   doc.set_attribute(child, "data-x", "1").unwrap();
   assert!(doc.mutation_observer_take_deliveries().is_empty());
 }
+
+#[test]
+fn mutation_observer_observe_update_clears_transients_sourced_from_transients() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let observed_root = doc.create_element("div", "");
+  let removed_parent = doc.create_element("div", "");
+  let removed_child = doc.create_element("span", "");
+  doc.append_child(root, observed_root).unwrap();
+  doc.append_child(observed_root, removed_parent).unwrap();
+  doc.append_child(removed_parent, removed_child).unwrap();
+
+  // Observe attributes in the original connected subtree.
+  doc
+    .mutation_observer_observe(
+      1,
+      observed_root,
+      MutationObserverInit {
+        attributes: true,
+        subtree: true,
+        ..MutationObserverInit::default()
+      },
+    )
+    .unwrap();
+
+  // First removal installs a transient registered observer on `removed_parent`.
+  doc.remove_child(observed_root, removed_parent).unwrap();
+  assert_eq!(
+    doc.mutation_observer_transient_registration_count(removed_parent),
+    1
+  );
+  assert_eq!(
+    doc.mutation_observer_transient_registration_count(removed_child),
+    0
+  );
+
+  // Removing a descendant from within the detached subtree should create a transient registered
+  // observer whose *source is the transient registered observer* on `removed_parent` (spec:
+  // source is the `registered` entry from the inclusive ancestor's registered observer list).
+  doc.remove_child(removed_parent, removed_child).unwrap();
+  assert_eq!(
+    doc.mutation_observer_transient_registration_count(removed_child),
+    1
+  );
+
+  // Updating the registration on the transient parent should remove transients sourced from that
+  // transient registration (i.e. clear the nested transient on `removed_child`).
+  doc
+    .mutation_observer_observe(
+      1,
+      removed_parent,
+      MutationObserverInit {
+        attributes: true,
+        subtree: false,
+        ..MutationObserverInit::default()
+      },
+    )
+    .unwrap();
+  assert_eq!(
+    doc.mutation_observer_transient_registration_count(removed_child),
+    0
+  );
+
+  // Mutations on `removed_child` are no longer observed.
+  doc.set_attribute(removed_child, "data-x", "1").unwrap();
+  assert!(doc.mutation_observer_take_deliveries().is_empty());
+}
