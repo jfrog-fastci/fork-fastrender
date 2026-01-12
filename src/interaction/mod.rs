@@ -28,8 +28,8 @@ pub use fragment_geometry::content_rect_for_border_rect;
 pub use fragment_geometry::padding_rect_for_border_rect;
 pub use hit_test::{hit_test_dom, resolve_label_associated_control, HitTestKind, HitTestResult};
 pub use hit_testing::{
-  fragment_tree_with_scroll, hit_test_dom_viewport_point, hit_test_dom_with_scroll,
-  hit_test_with_scroll,
+  fragment_tree_with_scroll, fragment_tree_with_scroll_and_sticky, hit_test_dom_viewport_point,
+  hit_test_dom_with_scroll, hit_test_with_scroll,
 };
 pub use state::{ImePreeditState, InteractionState};
 pub use url::resolve_url;
