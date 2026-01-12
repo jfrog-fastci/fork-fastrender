@@ -2131,15 +2131,20 @@ impl Canvas {
 
     // Determine the covered pixel bounds in device space.
     //
-    // - Min edge: use Chrome/Skia's "open min" pixel-center rule so fractional starts don't bleed
-    //   upward/left into adjacent 1px borders.
-    // - Max edge: include the last partially-covered scanline/column even when the max edge does
-    //   not reach the pixel center. This matches Chrome's non-AA background fills and prevents the
-    //   element's own box-shadow from peeking through as a 1px band (regression: britannica.com).
+    // Chrome/Skia's non-AA axis-aligned fills use a pixel-center rule:
+    // - Min edge: "open" (pixel centers exactly on the min edge are outside)
+    // - Max edge: "closed" (pixel centers exactly on the max edge are inside)
+    //
+    // In terms of integer pixel coordinates, that maps to:
+    //   start = floor(min + 0.5)
+    //   end   = floor(max + 0.5)
+    //
+    // This avoids 1px seams when adjacent opaque backgrounds share the same fractional boundary,
+    // while still matching Chrome's rasterization for partially-covered edge pixels.
     let start_x = (min_x + 0.5).floor();
-    let end_x = max_x.ceil();
+    let end_x = (max_x + 0.5).floor();
     let start_y = (min_y + 0.5).floor();
-    let end_y = max_y.ceil();
+    let end_y = (max_y + 0.5).floor();
 
     Some(Rect::from_xywh(
       start_x,

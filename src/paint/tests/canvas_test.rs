@@ -213,27 +213,42 @@ fn opaque_axis_aligned_rect_fills_are_pixel_snapped() {
 }
 
 #[test]
-fn opaque_axis_aligned_rect_fills_cover_partial_max_edge_scanline() {
-  // Regression for britannica.com: the header background ends at y=139.40625, which intersects the
-  // y=139 scanline but does not reach its center. Chrome's non-AA fill still covers that last
-  // partially-covered row; otherwise the header's own box-shadow becomes visible as a 1px light
-  // band.
-  let mut canvas = Canvas::new(10, 20, Rgba::WHITE).unwrap();
-  let header_color = Rgba::rgb(7, 28, 46);
-  canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.4), header_color);
+fn opaque_axis_aligned_rect_fills_do_not_cover_partial_max_edge_scanline() {
+  // Chrome/Skia's non-AA rect fill uses a pixel-center rule: a scanline is covered only if its
+  // pixel centers are inside the rect.
+  //
+  // For a `0..10.4px` height rect, the y=9 scanline (center 9.5) is covered but the y=10 scanline
+  // (center 10.5) is not.
+  let mut canvas = Canvas::new(20, 20, Rgba::WHITE).unwrap();
+  let fill = Rgba::rgb(7, 28, 46);
+  canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.4, 10.4), fill);
+
+  let p9 = canvas.pixmap().pixel(0, 9).unwrap();
+  assert_eq!(
+    (p9.red(), p9.green(), p9.blue(), p9.alpha()),
+    (7, 28, 46, 255),
+    "expected the last fully covered scanline to be filled"
+  );
 
   let p10 = canvas.pixmap().pixel(0, 10).unwrap();
   assert_eq!(
     (p10.red(), p10.green(), p10.blue(), p10.alpha()),
-    (7, 28, 46, 255),
-    "expected the last partially-covered scanline to be fully filled"
+    (255, 255, 255, 255),
+    "expected the partially covered scanline to remain unfilled"
   );
 
-  let p11 = canvas.pixmap().pixel(0, 11).unwrap();
+  let px9 = canvas.pixmap().pixel(9, 0).unwrap();
   assert_eq!(
-    (p11.red(), p11.green(), p11.blue(), p11.alpha()),
+    (px9.red(), px9.green(), px9.blue(), px9.alpha()),
+    (7, 28, 46, 255),
+    "expected the last fully covered column to be filled"
+  );
+
+  let px10 = canvas.pixmap().pixel(10, 0).unwrap();
+  assert_eq!(
+    (px10.red(), px10.green(), px10.blue(), px10.alpha()),
     (255, 255, 255, 255),
-    "expected fill to stop before the next scanline"
+    "expected the partially covered column to remain unfilled"
   );
 }
 
