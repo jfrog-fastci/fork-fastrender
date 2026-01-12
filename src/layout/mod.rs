@@ -109,3 +109,6 @@ pub(crate) mod style_override;
 // pub mod flex;         // W3.T08
 // pub mod grid;         // W3.T09
 // pub mod positioned;   // W3.T12
+
+#[cfg(test)]
+mod tests;
