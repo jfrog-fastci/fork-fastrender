@@ -22,6 +22,18 @@ different string.
 
 Re-interning the same bytes after reclamation yields a **new** `InternedId`.
 
+## Invalid/sentinel IDs
+
+The reserved invalid `InternedId` value is:
+
+- Rust: `InternedId::INVALID`
+- C: `RT_INTERNED_ID_INVALID` (defined in `include/runtime_native.h` as `UINT32_MAX`)
+
+This value is never returned by `rt_string_intern`.
+
+`rt_string_lookup` returns `{ptr = NULL, len = 0}` for invalid/reclaimed IDs. This is intentionally
+distinct from the valid empty string, which returns `{ptr != NULL, len = 0}`.
+
 ## Ownership + GC-safety (`rt_string_lookup` vs `rt_string_lookup_pinned`)
 
 ### `rt_string_lookup`
