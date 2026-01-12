@@ -2078,6 +2078,9 @@ fn fragment_tree_impl(
 
   let mut analyzer =
     FragmentationAnalyzer::new(&root, context, axes, true, Some(options.fragmentainer_size));
+  if matches!(context, FragmentationContext::Column) {
+    analyzer.set_allow_early_sibling_breaks(true);
+  }
 
   let total_extent = analyzer.content_extent().max(options.fragmentainer_size);
   let boundaries = analyzer.boundaries(options.fragmentainer_size, total_extent)?;
@@ -7237,6 +7240,58 @@ mod tests {
     assert!(
       (first_break - 30.0).abs() < BREAK_EPSILON,
       "expected break at the start of the 10px column gap (flow pos 30), got {first_break} (boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
+  fn column_fragmentation_prefers_between_sibling_break_over_limit() {
+    let fragmentainer_size = 100.0;
+    let options = FragmentationOptions::new(fragmentainer_size).with_columns(2, 0.0);
+
+    let a = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+      1,
+      vec![],
+    );
+    let b = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 80.0, 100.0, 40.0),
+      2,
+      vec![],
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 120.0), vec![a, b]);
+
+    let fragments = fragment_tree(&root, &options).expect("fragment tree");
+    assert_eq!(fragments.len(), 2, "fragments={fragments:#?}");
+
+    let col0_ids: Vec<_> = fragments[0].children.iter().map(box_id).collect();
+    assert_eq!(
+      col0_ids,
+      vec![Some(1)],
+      "expected the overflowing block to move to the next column (not be clipped), got col0_ids={col0_ids:?}"
+    );
+
+    let col1_ids: Vec<_> = fragments[1].children.iter().map(box_id).collect();
+    assert_eq!(
+      col1_ids,
+      vec![Some(2)],
+      "expected the moved block to appear as a whole in the next column, got col1_ids={col1_ids:?}"
+    );
+
+    let b_fragment = &fragments[1].children[0];
+    assert!(
+      b_fragment.slice_info.is_first && b_fragment.slice_info.is_last,
+      "expected moved block to be unfragmented, got slice_info={:?}",
+      b_fragment.slice_info
+    );
+    assert!(
+      (b_fragment.bounds.y() - 0.0).abs() < 0.01,
+      "expected moved block to start at the top of the column, got y={}",
+      b_fragment.bounds.y()
+    );
+    assert!(
+      (b_fragment.bounds.height() - 40.0).abs() < 0.01,
+      "expected moved block to preserve its full height (40px), got h={}",
+      b_fragment.bounds.height()
     );
   }
 
