@@ -48,6 +48,13 @@ pub fn register_reactor_waker(waker: fn()) {
 ///   stack does not contain untracked GC pointers.
 /// - Before executing mutator code after un-parking, the thread must poll a
 ///   safepoint (e.g. via [`safepoint_poll`]).
+//
+// Do not inline: entering/leaving the parked state may publish a `SafepointContext` via
+// `arch::capture_safepoint_context`, whose assembly helper walks the frame-pointer chain and
+// expects this function to have its own distinct frame. If this were inlined into the caller, the
+// captured `fp` would skip too far up the stack (missing the caller's frame), which would make
+// stackmap-based scanning unsound.
+#[inline(never)]
 pub fn set_parked(parked: bool) {
   let thread = registry::current_thread_state();
   let is_registered = thread.is_some();
