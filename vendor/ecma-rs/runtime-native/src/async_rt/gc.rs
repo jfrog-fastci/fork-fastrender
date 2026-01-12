@@ -42,6 +42,11 @@ impl Root {
   ///
   /// Pointers that do not point into the GC heap are ignored by GC tracing (they remain valid as
   /// stable handles, but do not keep any GC object alive).
+  ///
+  /// ## Moving-GC safety
+  /// If `ptr` refers to a **movable** GC-managed object, prefer [`Root::new_from_slot_unchecked`]:
+  /// contention on the persistent handle table lock may temporarily enter a GC-safe region,
+  /// allowing a moving GC to relocate objects before the handle table slot is allocated.
   pub unsafe fn new_unchecked(ptr: *mut u8) -> Self {
     let id = crate::roots::global_persistent_handle_table().alloc(ptr);
     Self {

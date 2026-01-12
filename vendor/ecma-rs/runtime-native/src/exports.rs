@@ -1101,6 +1101,16 @@ pub extern "C" fn rt_gc_root_set(handle: u32, ptr: *mut u8) -> bool {
 // table (`roots::PersistentHandleTable`) so the GC can update the stored pointer when objects move.
 
 /// Allocate a new persistent handle rooting `ptr`.
+///
+/// ## Moving-GC safety
+/// This function accepts a raw pointer value. It is therefore only safe to use with:
+/// - pointers that are **not** GC-managed, or
+/// - GC-managed pointers that are known to be **stable** for the duration of the call (e.g. pinned
+///   objects).
+///
+/// If `ptr` refers to a **movable** GC-managed object, use [`rt_handle_alloc_h`] instead so the
+/// runtime can re-load the pointer from an addressable slot *after* acquiring internal locks (lock
+/// contention may temporarily enter a GC-safe region, allowing a moving GC to relocate objects).
 #[no_mangle]
 pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
   abort_on_panic(|| crate::roots::global_persistent_handle_table().alloc(ptr).to_u64())
@@ -1150,6 +1160,11 @@ pub extern "C" fn rt_handle_load(handle: u64) -> *mut u8 {
 /// Update the pointer stored in a persistent handle slot.
 ///
 /// Invalid handles are ignored.
+///
+/// ## Moving-GC safety
+/// This function accepts a raw pointer value. If the new value is a **movable** GC-managed object,
+/// prefer [`rt_handle_store_h`] so the runtime reads the pointer from a slot after acquiring the
+/// handle table lock.
 #[no_mangle]
 pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
   abort_on_panic(|| {
@@ -1198,6 +1213,12 @@ pub extern "C" fn rt_gc_stats_reset() {
 ///
 /// Weak handles do not keep the referent alive. If the referent is collected, `rt_weak_get`
 /// returns null.
+///
+/// ## Moving-GC safety
+/// If `value` is a **movable** GC-managed pointer, prefer [`rt_weak_add_h`]. Lock contention while
+/// registering the weak handle may temporarily enter a GC-safe region, allowing a moving GC to
+/// relocate objects; `rt_weak_add_h` reads the pointer from an addressable slot after acquiring the
+/// weak-handle table lock.
 #[no_mangle]
 pub extern "C" fn rt_weak_add(value: crate::roots::GcPtr) -> u64 {
   abort_on_panic(|| crate::gc::weak::global_weak_add(value).as_u64())
