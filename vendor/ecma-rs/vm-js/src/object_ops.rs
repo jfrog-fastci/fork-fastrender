@@ -746,12 +746,39 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
-    // Integer-indexed exotic objects (typed arrays): numeric index keys are handled without
-    // consulting the prototype chain.
+    // Integer-indexed exotic objects (typed arrays): canonical numeric index strings are handled
+    // without consulting the prototype chain.
+    //
+    // https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-hasproperty-p
     if self.heap().is_typed_array_object(obj) {
-      if let Some(index) = self.heap().array_index(&key) {
-        return Ok((index as usize) < self.heap().typed_array_length(obj)?);
+      let PropertyKey::String(s) = key else {
+        // Only string keys can be numeric index strings.
+        return Ok(self.heap().get_property_with_tick(obj, &key, &mut tick)?.is_some());
+      };
+
+      let Some(numeric_index) = self.heap().canonical_numeric_index_string(s)? else {
+        // Non-numeric keys use ordinary `[[HasProperty]]` semantics.
+        return Ok(self.heap().get_property_with_tick(obj, &PropertyKey::String(s), &mut tick)?.is_some());
+      };
+
+      // `IsValidIntegerIndex`
+      if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+        // -0 is a canonical numeric index string but never a valid integer index.
+        return Ok(false);
       }
+      if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
+        return Ok(false);
+      }
+      if numeric_index < 0.0 {
+        return Ok(false);
+      }
+      if numeric_index > usize::MAX as f64 {
+        return Ok(false);
+      }
+
+      let index = numeric_index as usize;
+      let len = self.heap().typed_array_length(obj)?;
+      return Ok(index < len);
     }
 
     if self
@@ -2203,7 +2230,7 @@ impl<'a> Scope<'a> {
       return self.ordinary_define_own_property(obj, key, desc);
     };
 
-    let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? else {
+    let Some(numeric_index) = self.heap().canonical_numeric_index_string(s)? else {
       return self.ordinary_define_own_property(obj, PropertyKey::String(s), desc);
     };
 

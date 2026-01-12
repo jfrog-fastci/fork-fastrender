@@ -11,6 +11,15 @@ pub fn to_number(heap: &mut Heap, value: Value) -> Result<f64, VmError> {
   to_number_with_tick(heap, value, &mut || Ok(()))
 }
 
+/// Implements `ToNumber` for a String value, without requiring a mutable [`Heap`] borrow.
+///
+/// This is useful for internal algorithms like `CanonicalNumericIndexString` that only need
+/// string-to-number parsing and should not force callers to take `&mut Heap`.
+pub(crate) fn string_to_number(heap: &Heap, s: GcString) -> Result<f64, VmError> {
+  let mut tick = || Ok(());
+  string_to_number_with_tick(heap, s, &mut tick)
+}
+
 /// Budget-aware variant of [`to_number`].
 pub(crate) fn to_number_with_tick(
   heap: &mut Heap,

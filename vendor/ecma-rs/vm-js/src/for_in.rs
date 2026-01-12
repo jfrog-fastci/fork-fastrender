@@ -148,7 +148,7 @@ impl ForInEnumerator {
         // Proxy objects in their prototype chain) remains trap-driven; we only need this filtering
         // for typed array numeric indices.
         if scope.heap().is_typed_array_object(self.original_object)
-          && scope.heap().array_index(&key).is_some()
+          && scope.heap().canonical_numeric_index_string(key_s)?.is_some()
           && !scope.ordinary_has_property_with_tick(self.original_object, key, || vm.tick())?
         {
           continue;

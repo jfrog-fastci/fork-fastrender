@@ -3028,13 +3028,13 @@ impl Heap {
   ///
   /// Returns `Some(numericIndex)` when `s` is a *canonical numeric string* (including the special
   /// `"-0"` case), and `None` otherwise.
-  pub(crate) fn canonical_numeric_index_string(&mut self, s: GcString) -> Result<Option<f64>, VmError> {
+  pub(crate) fn canonical_numeric_index_string(&self, s: GcString) -> Result<Option<f64>, VmError> {
     let units = self.get_string(s)?.as_code_units();
     if units.len() == 2 && units[0] == b'-' as u16 && units[1] == b'0' as u16 {
       return Ok(Some(-0.0));
     }
 
-    let n = self.to_number(Value::String(s))?;
+    let n = crate::ops::string_to_number(self, s)?;
     let s2 = crate::property::number_to_string(n);
     if self.get_string(s)?.to_utf8_lossy() == s2 {
       Ok(Some(n))

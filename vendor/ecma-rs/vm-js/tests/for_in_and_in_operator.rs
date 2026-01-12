@@ -136,9 +136,15 @@ fn for_in_over_typed_array_skips_prototype_numeric_keys() {
     .exec_script(
       r#"
       Uint8Array.prototype['0']=7;
+      Uint8Array.prototype['-0']=7;
+      Uint8Array.prototype['1.5']=7;
+      Uint8Array.prototype['4294967295']=7;
       var s='';
       for (var k in new Uint8Array(0)) { s+=k; }
       delete Uint8Array.prototype['0'];
+      delete Uint8Array.prototype['-0'];
+      delete Uint8Array.prototype['1.5'];
+      delete Uint8Array.prototype['4294967295'];
       s
       "#,
     )
