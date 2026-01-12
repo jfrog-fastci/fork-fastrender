@@ -17,6 +17,75 @@ fn main() {
   }
 }
 
+const ENV_BROWSER_HUD: &str = "FASTR_BROWSER_HUD";
+
+fn parse_browser_hud_env(raw: Option<&str>) -> Result<bool, String> {
+  let Some(raw) = raw else {
+    return Ok(false);
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return Ok(false);
+  }
+
+  if raw == "1"
+    || raw.eq_ignore_ascii_case("true")
+    || raw.eq_ignore_ascii_case("yes")
+    || raw.eq_ignore_ascii_case("on")
+  {
+    return Ok(true);
+  }
+
+  if raw == "0"
+    || raw.eq_ignore_ascii_case("false")
+    || raw.eq_ignore_ascii_case("no")
+    || raw.eq_ignore_ascii_case("off")
+  {
+    return Ok(false);
+  }
+
+  Err(format!(
+    "{ENV_BROWSER_HUD}: invalid value {raw:?}; expected 0|1|true|false"
+  ))
+}
+
+fn browser_hud_enabled_from_env() -> bool {
+  let raw = match std::env::var(ENV_BROWSER_HUD) {
+    Ok(raw) => raw,
+    Err(_) => return false,
+  };
+
+  match parse_browser_hud_env(Some(&raw)) {
+    Ok(enabled) => enabled,
+    Err(err) => {
+      eprintln!("{err}");
+      false
+    }
+  }
+}
+
+#[cfg(test)]
+mod browser_hud_env_tests {
+  use super::*;
+
+  #[test]
+  fn parse_browser_hud_env_values() {
+    assert_eq!(parse_browser_hud_env(None), Ok(false));
+    assert_eq!(parse_browser_hud_env(Some("")), Ok(false));
+    assert_eq!(parse_browser_hud_env(Some("   ")), Ok(false));
+    assert_eq!(parse_browser_hud_env(Some("0")), Ok(false));
+    assert_eq!(parse_browser_hud_env(Some("1")), Ok(true));
+    assert_eq!(parse_browser_hud_env(Some("true")), Ok(true));
+    assert_eq!(parse_browser_hud_env(Some("TrUe")), Ok(true));
+    assert_eq!(parse_browser_hud_env(Some("yes")), Ok(true));
+    assert_eq!(parse_browser_hud_env(Some("on")), Ok(true));
+    assert_eq!(parse_browser_hud_env(Some("false")), Ok(false));
+    assert_eq!(parse_browser_hud_env(Some("no")), Ok(false));
+    assert_eq!(parse_browser_hud_env(Some("off")), Ok(false));
+    assert!(parse_browser_hud_env(Some("maybe")).is_err());
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 use arboard::Clipboard;
 #[cfg(feature = "browser_ui")]
@@ -943,6 +1012,27 @@ struct WgpuInitOptions {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+struct BrowserHud {
+  last_frame_start: Option<std::time::Instant>,
+  last_frame_cpu_ms: Option<f32>,
+  fps: Option<f32>,
+  text_buf: String,
+}
+
+#[cfg(feature = "browser_ui")]
+impl BrowserHud {
+  fn new() -> Self {
+    Self {
+      last_frame_start: None,
+      last_frame_cpu_ms: None,
+      fps: None,
+      text_buf: String::with_capacity(256),
+    }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
@@ -1023,6 +1113,7 @@ struct App {
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
   debug_log: std::collections::VecDeque<String>,
+  hud: Option<BrowserHud>,
 
   /// Periodic tick driver state for animated documents.
   ///
@@ -1253,6 +1344,11 @@ error: {err}",
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
       debug_log: std::collections::VecDeque::new(),
+      hud: if browser_hud_enabled_from_env() {
+        Some(BrowserHud::new())
+      } else {
+        None
+      },
       animation_tick_tab: None,
       next_animation_tick: None,
     })
@@ -1926,6 +2022,89 @@ error: {err}",
       viewport_css,
       dpr,
     });
+  }
+
+  fn render_hud(&mut self, ctx: &egui::Context) {
+    let Some(hud) = self.hud.as_mut() else {
+      return;
+    };
+
+    let pos = if let Some(page_rect) = self.page_rect_points {
+      egui::pos2(page_rect.min.x + 6.0, page_rect.min.y + 6.0)
+    } else {
+      egui::pos2(6.0, 6.0)
+    };
+
+    let tab = self.browser_state.active_tab();
+    let loading = tab.map(|t| t.loading).unwrap_or(false);
+    let stage = tab
+      .and_then(|t| t.stage)
+      .map(|s| s.as_str())
+      .unwrap_or("-");
+
+    let warning = tab.and_then(|t| t.warning.as_deref());
+    let viewport_clamped = warning.is_some_and(|w| w.starts_with("Viewport clamped:"));
+
+    let (viewport_css, dpr) =
+      if self.viewport_cache_tab == self.browser_state.active_tab_id() && self.viewport_cache_dpr > 0.0
+      {
+        (Some(self.viewport_cache_css), Some(self.viewport_cache_dpr))
+      } else {
+        (None, None)
+      };
+
+    use std::fmt::Write;
+    hud.text_buf.clear();
+
+    match (hud.last_frame_cpu_ms, hud.fps) {
+      (Some(ms), Some(fps)) if ms.is_finite() && fps.is_finite() => {
+        let _ = writeln!(&mut hud.text_buf, "ui: {ms:.1}ms  {fps:.0} fps");
+      }
+      (Some(ms), _) if ms.is_finite() => {
+        let _ = writeln!(&mut hud.text_buf, "ui: {ms:.1}ms  - fps");
+      }
+      _ => {
+        let _ = writeln!(&mut hud.text_buf, "ui: - ms  - fps");
+      }
+    }
+
+    let _ = writeln!(
+      &mut hud.text_buf,
+      "tab: loading={} stage={}",
+      if loading { "yes" } else { "no" },
+      stage
+    );
+
+    if let (Some((w, h)), Some(dpr)) = (viewport_css, dpr) {
+      let _ = writeln!(&mut hud.text_buf, "viewport_css: {w}x{h}  dpr: {dpr:.2}");
+    } else {
+      let _ = writeln!(&mut hud.text_buf, "viewport_css: -  dpr: -");
+    }
+
+    let _ = writeln!(
+      &mut hud.text_buf,
+      "clamped: {}",
+      if viewport_clamped { "yes" } else { "no" }
+    );
+
+    egui::Area::new(egui::Id::new("fastr_browser_hud"))
+      .order(egui::Order::Foreground)
+      .interactable(false)
+      .fixed_pos(pos)
+      .show(ctx, |ui| {
+        egui::Frame::none()
+          .fill(egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200))
+          .rounding(egui::Rounding::same(4.0))
+          .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+          .show(ui, |ui| {
+            ui.label(
+              egui::RichText::new(hud.text_buf.as_str())
+                .monospace()
+                .small()
+                .color(egui::Color32::WHITE),
+            );
+          });
+      });
   }
 
   fn render_hover_status(&mut self, ctx: &egui::Context) {
@@ -3389,6 +3568,21 @@ error: {err}",
   }
 
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) {
+    let frame_start = if let Some(hud) = self.hud.as_mut() {
+      let now = std::time::Instant::now();
+      if let Some(prev) = hud.last_frame_start {
+        let dt = now.saturating_duration_since(prev);
+        let secs = dt.as_secs_f32();
+        if secs.is_finite() && secs > 0.0 {
+          hud.fps = Some((1.0 / secs).min(10_000.0));
+        }
+      }
+      hud.last_frame_start = Some(now);
+      Some(now)
+    } else {
+      None
+    };
+
     // Upload any newly received page pixmaps now (coalesced). We do this right before drawing so
     // multiple `FrameReady` messages received between redraws result in a single GPU upload.
     self.flush_pending_frame_uploads();
@@ -3651,6 +3845,7 @@ error: {err}",
       }
     });
 
+    self.render_hud(&ctx);
     self.render_hover_status(&ctx);
     self.render_select_dropdown(&ctx);
     self.render_context_menu(&ctx);
@@ -3748,6 +3943,13 @@ error: {err}",
 
     for id in &full_output.textures_delta.free {
       self.egui_renderer.free_texture(id);
+    }
+
+    if let (Some(hud), Some(frame_start)) = (self.hud.as_mut(), frame_start) {
+      let elapsed_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+      if elapsed_ms.is_finite() {
+        hud.last_frame_cpu_ms = Some(elapsed_ms);
+      }
     }
   }
 }
