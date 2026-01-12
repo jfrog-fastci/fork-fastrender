@@ -4742,7 +4742,7 @@ impl App {
                     ui.label(
                       egui::RichText::new("Failed")
                         .small()
-                        .color(egui::Color32::from_rgb(180, 0, 0)),
+                        .color(ui.visuals().error_fg_color),
                     );
                     if !error.trim().is_empty() {
                       ui.label(egui::RichText::new(error).small());
