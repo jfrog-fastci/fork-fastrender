@@ -127,13 +127,10 @@ impl EventWrapper {
 
     // Stable JS-visible sentinels for non-node event targets.
     //
-    // `vm-js` string values are not interned, so allocating `"document"`/`"window"` on every event
-    // wrapper allocation would produce distinct `GcString` ids and unnecessary GC pressure. We
-    // pre-allocate + root these once per `JsDomEvents` runtime.
-    let window_target = rt.alloc_string_value("window")?;
-    let _ = rt.heap_mut().add_root(window_target)?;
-    let document_target = rt.alloc_string_value("document")?;
-    let _ = rt.heap_mut().add_root(document_target)?;
+    // `vm-js` string values are not interned. Explicitly intern these once per `JsDomEvents` runtime
+    // so they have stable identity and remain GC-reachable.
+    let window_target = rt.intern_string_value("window")?;
+    let document_target = rt.intern_string_value("document")?;
 
     // Prototype with methods/getters that mutate the active Rust `Event`.
     let prototype = rt.alloc_object_value()?;

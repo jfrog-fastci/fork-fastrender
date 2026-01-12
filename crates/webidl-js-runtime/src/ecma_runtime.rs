@@ -121,13 +121,12 @@ pub struct VmJsRuntime {
   bindings_host_ptr: Option<NonNull<()>>,
   bindings_host_type_id: Option<TypeId>,
 
-  // A tiny, explicit intern table for values where host code relies on stable string identity.
-  //
-  // `vm-js` strings are not automatically interned, and `Value` equality compares string handles
-  // (not contents). Some host shims use strings as stand-ins for stable JS identity (until real
-  // platform objects exist), so keep those specific strings alive and re-use the same handle.
-  interned_window: Option<GcString>,
-  interned_document: Option<GcString>,
+  /// Explicit string intern table for cases where host code relies on stable string identity.
+  ///
+  /// `vm-js` string values are not automatically interned, and `Value` equality compares string
+  /// handles (not contents). For host shims that need stable identity for sentinel values,
+  /// [`VmJsRuntime::intern_string_value`] provides an explicit opt-in.
+  interned_strings: HashMap<String, GcString>,
 }
 
 impl VmJsRuntime {
@@ -163,8 +162,7 @@ impl VmJsRuntime {
       last_swept_gc_runs: 0,
       bindings_host_ptr: None,
       bindings_host_type_id: None,
-      interned_window: None,
-      interned_document: None,
+      interned_strings: HashMap::new(),
     }
   }
 
@@ -284,28 +282,6 @@ impl VmJsRuntime {
     scope.alloc_string(s)
   }
 
-  fn intern_window_string(&mut self) -> Result<GcString, VmError> {
-    if let Some(handle) = self.interned_window {
-      return Ok(handle);
-    }
-    let handle = self.alloc_string_handle("window")?;
-    // Keep this handle alive for the lifetime of the runtime.
-    let _ = self.heap.add_root(Value::String(handle))?;
-    self.interned_window = Some(handle);
-    Ok(handle)
-  }
-
-  fn intern_document_string(&mut self) -> Result<GcString, VmError> {
-    if let Some(handle) = self.interned_document {
-      return Ok(handle);
-    }
-    let handle = self.alloc_string_handle("document")?;
-    // Keep this handle alive for the lifetime of the runtime.
-    let _ = self.heap.add_root(Value::String(handle))?;
-    self.interned_document = Some(handle);
-    Ok(handle)
-  }
-
   /// Creates a string [`PropertyKey`] from a Rust `&str`.
   ///
   /// This is a convenience for embeddings that want to access properties by name without having to
@@ -371,13 +347,33 @@ impl VmJsRuntime {
     self.prop_key_str(s)
   }
 
-  pub fn alloc_string_value(&mut self, s: &str) -> Result<Value, VmError> {
-    let handle = match s {
-      "window" => self.intern_window_string()?,
-      "document" => self.intern_document_string()?,
-      _ => self.alloc_string_handle(s)?,
-    };
+  /// Allocate a rooted, interned string [`Value`].
+  ///
+  /// This is intended for cases where host code needs stable identity for a particular string
+  /// (e.g. sentinel values used in place of platform objects).
+  pub fn intern_string_value(&mut self, s: &str) -> Result<Value, VmError> {
+    if let Some(handle) = self.interned_strings.get(s).copied() {
+      return Ok(Value::String(handle));
+    }
+
+    // Ensure we can insert into the intern table without risking an OOM abort during `insert`.
+    self
+      .interned_strings
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let mut key = String::new();
+    key.try_reserve(s.len()).map_err(|_| VmError::OutOfMemory)?;
+    key.push_str(s);
+
+    let handle = self.alloc_string_handle(&key)?;
+    // Keep this handle alive for the lifetime of the runtime.
+    let _ = self.heap.add_root(Value::String(handle))?;
+    self.interned_strings.insert(key, handle);
     Ok(Value::String(handle))
+  }
+
+  pub fn alloc_string_value(&mut self, s: &str) -> Result<Value, VmError> {
+    Ok(Value::String(self.alloc_string_handle(s)?))
   }
 
   pub fn alloc_object_value(&mut self) -> Result<Value, VmError> {
@@ -2358,5 +2354,49 @@ mod tests {
     assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(
       &rt, func_obj, iface
     ));
+  }
+
+  #[test]
+  fn alloc_string_value_does_not_implicitly_intern_window_or_document() {
+    let mut rt = VmJsRuntime::new();
+
+    let a = rt.alloc_string_value("window").unwrap();
+    let b = rt.alloc_string_value("window").unwrap();
+    let (Value::String(a), Value::String(b)) = (a, b) else {
+      panic!("expected string values");
+    };
+    assert_ne!(a, b);
+
+    let a = rt.alloc_string_value("document").unwrap();
+    let b = rt.alloc_string_value("document").unwrap();
+    let (Value::String(a), Value::String(b)) = (a, b) else {
+      panic!("expected string values");
+    };
+    assert_ne!(a, b);
+  }
+
+  #[test]
+  fn intern_string_value_provides_stable_identity_and_is_gc_rooted() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+    let window = rt.intern_string_value("window").unwrap();
+    let Value::String(window_handle) = window else {
+      panic!("expected interned string value");
+    };
+
+    // Should survive GC thanks to the runtime-internal root.
+    rt.heap_mut().collect_garbage();
+    let window_text = rt
+      .heap()
+      .get_string(window_handle)
+      .unwrap()
+      .to_utf8_lossy();
+    assert_eq!(window_text, "window");
+
+    let window2 = rt.intern_string_value("window").unwrap();
+    let Value::String(window_handle2) = window2 else {
+      panic!("expected interned string value");
+    };
+    assert_eq!(window_handle, window_handle2);
   }
 }
