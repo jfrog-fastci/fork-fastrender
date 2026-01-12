@@ -449,4 +449,140 @@ export function main() {
       "expected main() shim to call the lowered TS main() `{expected_symbol}`, got:\n{ir}"
     );
   }
+
+  fn find_line<'a>(ir: &'a str, needle: &str) -> &'a str {
+    ir.lines()
+      .find(|l| l.contains(needle))
+      .unwrap_or_else(|| panic!("missing `{needle}` in IR:\n{ir}"))
+  }
+
+  fn find_define_line<'a>(ir: &'a str, needle: &str) -> &'a str {
+    ir.lines()
+      .find(|l| l.trim_start().starts_with("define") && l.contains(needle))
+      .unwrap_or_else(|| panic!("missing `define` for `{needle}` in IR:\n{ir}"))
+  }
+
+  fn attr_group_on_line(line: &str) -> Option<u32> {
+    let idx = line.find('#')?;
+    let digits: String = line[idx + 1..]
+      .chars()
+      .take_while(|c| c.is_ascii_digit())
+      .collect();
+    digits.parse().ok()
+  }
+
+  fn attr_line_for_define<'a>(ir: &'a str, define_line: &str) -> &'a str {
+    let group = attr_group_on_line(define_line)
+      .unwrap_or_else(|| panic!("missing attribute group on define line:\n{define_line}\n\nIR:\n{ir}"));
+    find_line(ir, &format!("attributes #{group} ="))
+  }
+
+  fn assert_stack_walking_attrs(ir: &str, define_line: &str) {
+    let attrs = attr_line_for_define(ir, define_line);
+    assert!(
+      attrs.contains("\"frame-pointer\"=\"all\""),
+      "expected stack-walking frame-pointer attr, got:\n{attrs}\n\nIR:\n{ir}"
+    );
+    assert!(
+      attrs.contains("\"disable-tail-calls\"=\"true\"") || attrs.contains("disable-tail-calls"),
+      "expected stack-walking disable-tail-calls attr, got:\n{attrs}\n\nIR:\n{ir}"
+    );
+  }
+
+  fn assert_debug_function_attrs(ir: &str, define_line: &str) {
+    let attrs = attr_line_for_define(ir, define_line);
+    assert!(
+      attrs.contains("optnone"),
+      "expected `optnone` in attrs, got:\n{attrs}\n\nIR:\n{ir}"
+    );
+    assert!(
+      attrs.contains("noinline"),
+      "expected `noinline` in attrs, got:\n{attrs}\n\nIR:\n{ir}"
+    );
+  }
+
+  fn assert_no_debug_function_attrs(ir: &str, define_line: &str) {
+    let attrs = attr_line_for_define(ir, define_line);
+    assert!(
+      !attrs.contains("optnone") && !attrs.contains("noinline"),
+      "did not expect debug-only attrs, got:\n{attrs}\n\nIR:\n{ir}"
+    );
+  }
+
+  #[test]
+  fn debug_build_applies_debuggable_function_attributes() {
+    use crate::{compile, llvm_symbol_for_def, llvm_symbol_for_file_init, CompilerOptions, EmitKind};
+    use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
+    use typecheck_ts::{FileKey, MemoryHost, Program};
+
+    let mut host = MemoryHost::with_options(TsCompilerOptions {
+      libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+      ..Default::default()
+    });
+    let key = FileKey::new("main.ts");
+    host.insert(
+      key.clone(),
+      r#"
+export function main() {
+  return 1 + 2;
+}
+"#,
+    );
+
+    let program = Program::new(host, vec![key.clone()]);
+    let diags = program.check();
+    assert!(
+      diags.iter().all(|d| d.severity != super::Severity::Error),
+      "expected sample to typecheck cleanly, got: {diags:#?}"
+    );
+
+    let file = program.file_id(&key).expect("file id");
+    let def = program
+      .exports_of(file)
+      .get("main")
+      .and_then(|e| e.def)
+      .expect("exported def for `main`");
+    let expected_ts_main = llvm_symbol_for_def(&program, def);
+    let expected_file_init = llvm_symbol_for_file_init(file);
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let out_path = tmp.path().join("debug.ll");
+
+    let mut opts = CompilerOptions::default();
+    opts.debug = true;
+    opts.emit = EmitKind::LlvmIr;
+    opts.output = Some(out_path);
+
+    let out = compile(&program, &opts).expect("compile (debug)");
+    let ir = out.llvm_ir.expect("llvm_ir");
+
+    let ts_main_def = find_define_line(&ir, &format!("@{expected_ts_main}("));
+    assert_stack_walking_attrs(&ir, ts_main_def);
+    assert_debug_function_attrs(&ir, ts_main_def);
+
+    let file_init_def = find_define_line(&ir, &format!("@{expected_file_init}("));
+    assert_stack_walking_attrs(&ir, file_init_def);
+    assert_debug_function_attrs(&ir, file_init_def);
+
+    let c_main_def = find_define_line(&ir, "@main(");
+    assert_stack_walking_attrs(&ir, c_main_def);
+    assert_debug_function_attrs(&ir, c_main_def);
+
+    let out_path = tmp.path().join("release.ll");
+    let mut opts = CompilerOptions::default();
+    opts.emit = EmitKind::LlvmIr;
+    opts.output = Some(out_path);
+
+    let out = compile(&program, &opts).expect("compile (non-debug)");
+    let ir = out.llvm_ir.expect("llvm_ir");
+
+    let ts_main_def = find_define_line(&ir, &format!("@{expected_ts_main}("));
+    assert_no_debug_function_attrs(&ir, ts_main_def);
+
+    let file_init_def = find_define_line(&ir, &format!("@{expected_file_init}("));
+    assert_no_debug_function_attrs(&ir, file_init_def);
+
+    let c_main_def = find_define_line(&ir, "@main(");
+    assert_no_debug_function_attrs(&ir, c_main_def);
+  }
 }

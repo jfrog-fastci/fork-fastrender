@@ -1,4 +1,4 @@
-use inkwell::attributes::AttributeLoc;
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
@@ -24,6 +24,14 @@ pub(crate) fn apply_stack_walking_frame_attrs(context: &Context, func: FunctionV
 
   func.add_attribute(AttributeLoc::Function, frame_pointer);
   func.add_attribute(AttributeLoc::Function, disable_tail_calls);
+}
+
+pub(crate) fn apply_debug_function_attrs(context: &Context, func: FunctionValue<'_>) {
+  let optnone = context.create_enum_attribute(Attribute::get_named_enum_kind_id("optnone"), 0);
+  let noinline = context.create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
+
+  func.add_attribute(AttributeLoc::Function, optnone);
+  func.add_attribute(AttributeLoc::Function, noinline);
 }
 
 /// Mark a call instruction as `notail`.
