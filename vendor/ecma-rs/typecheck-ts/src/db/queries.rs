@@ -2377,7 +2377,7 @@ pub mod body_check {
           Some(extends_in_type_info || extends_in_body)
         })()
         .unwrap_or(false);
-        let this_ty = body
+        let this_ty_from_expr = body
           .exprs
           .iter()
           .position(|expr| matches!(expr.kind, hir_js::ExprKind::This))
@@ -2385,6 +2385,85 @@ pub mod body_check {
           .filter(|ty| ctx.store.contains_type_id(*ty))
           .map(|ty| ctx.store.canon(ty))
           .unwrap_or(prim.unknown);
+        let this_ty = if this_ty_from_expr != prim.unknown {
+          this_ty_from_expr
+        } else {
+          (|| {
+            let mut current_id = body_id;
+            let mut current_body = body;
+            let mut current_lowered = &*lowered;
+            loop {
+              let Some(owner_def) = current_lowered.def(current_body.owner) else {
+                return prim.unknown;
+              };
+              let inherit = match current_body.kind {
+                HirBodyKind::Function => current_body
+                  .function
+                  .as_ref()
+                  .is_some_and(|func| func.is_arrow),
+                HirBodyKind::Initializer => owner_def.path.kind != hir_js::DefKind::Field,
+                _ => false,
+              };
+              if inherit {
+                let Some(parent_id) = ctx.body_parents.get(&current_id).copied() else {
+                  return prim.unknown;
+                };
+                let Some(parent_meta) = ctx.body_info.get(&parent_id).copied() else {
+                  return prim.unknown;
+                };
+                let Some(parent_hir) = parent_meta.hir else {
+                  return prim.unknown;
+                };
+                let Some(parent_lowered) = ctx.lowered.get(&parent_meta.file) else {
+                  return prim.unknown;
+                };
+                let Some(parent_body) = parent_lowered.body(parent_hir) else {
+                  return prim.unknown;
+                };
+                current_id = parent_id;
+                current_body = parent_body;
+                current_lowered = parent_lowered.as_ref();
+                continue;
+              }
+
+              let (class_def, is_static) = match owner_def.path.kind {
+                hir_js::DefKind::Method
+                | hir_js::DefKind::Constructor
+                | hir_js::DefKind::Getter
+                | hir_js::DefKind::Setter => {
+                  let Some(parent) = owner_def.parent else {
+                    return prim.unknown;
+                  };
+                  (parent, owner_def.is_static)
+                }
+                hir_js::DefKind::Field if matches!(current_body.kind, HirBodyKind::Initializer) => {
+                  let Some(parent) = owner_def.parent else {
+                    return prim.unknown;
+                  };
+                  (parent, owner_def.is_static)
+                }
+                hir_js::DefKind::StaticBlock => {
+                  let Some(parent) = owner_def.parent else {
+                    return prim.unknown;
+                  };
+                  (parent, true)
+                }
+                _ => return prim.unknown,
+              };
+
+              let this_def = if is_static {
+                ctx.value_defs.get(&class_def).copied().unwrap_or(class_def)
+              } else {
+                class_def
+              };
+              let this_ty = map_def_ty(this_def);
+              if this_ty != prim.unknown && ctx.store.contains_type_id(this_ty) {
+                return ctx.store.canon(this_ty);
+              }
+              return prim.unknown;
+            }
+          })()
+        };
         let flow_result = check_body_with_env_tables_with_bindings(
           body_id,
           body,

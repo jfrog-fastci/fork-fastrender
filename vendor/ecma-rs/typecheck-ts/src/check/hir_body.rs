@@ -4448,8 +4448,20 @@ impl<'a> Checker<'a> {
     }
 
     let mut this_arg = match call.stx.callee.stx.as_ref() {
-      AstExpr::Member(mem) => self.recorded_expr_type(mem.stx.left.loc),
-      AstExpr::ComputedMember(mem) => self.recorded_expr_type(mem.stx.object.loc),
+      AstExpr::Member(mem) => {
+        if matches!(mem.stx.left.stx.as_ref(), AstExpr::Super(_)) {
+          Some(self.current_this_ty)
+        } else {
+          self.recorded_expr_type(mem.stx.left.loc)
+        }
+      }
+      AstExpr::ComputedMember(mem) => {
+        if matches!(mem.stx.object.stx.as_ref(), AstExpr::Super(_)) {
+          Some(self.current_this_ty)
+        } else {
+          self.recorded_expr_type(mem.stx.object.loc)
+        }
+      }
       _ => None,
     };
     if call_optional {
@@ -14674,7 +14686,11 @@ impl<'a> FlowBodyChecker<'a> {
 
     let this_arg = match &self.body.exprs[callee_for_this.0 as usize].kind {
       ExprKind::Member(MemberExpr { object, .. }) => {
-        let mut ty = self.expr_types[object.0 as usize];
+        let mut ty = if matches!(self.body.exprs[object.0 as usize].kind, ExprKind::Super) {
+          self.this_ty
+        } else {
+          self.expr_types[object.0 as usize]
+        };
         if chain_short_circuit {
           ty = self.optional_chain_exec_type_for(*object, ty);
         }
