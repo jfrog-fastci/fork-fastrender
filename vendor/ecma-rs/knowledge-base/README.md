@@ -154,7 +154,16 @@ Some modules additionally include `effects.base: [...]` as a shorthand list of b
 (e.g. `[alloc, io, network, reads_global, may_throw]`). The loader treats these as defaults for the
 boolean fields and ignores unknown tokens (e.g. `async`).
 
-`template: depends_on_callback` is treated as “depends on argument 0” for now.
+Notes on structured `effects:` mappings:
+
+- `template: depends_on_callback` is treated as “depends on argument 0” for now, and the loader
+  accepts common historical/ergonomic spellings like `DependsOnCallback` / `dependsOnCallback`.
+- The loader is intentionally lenient about minor spelling differences in the boolean fields and
+  `effects.base` tokens (e.g. `alloc` vs `allocates`, `readGlobal` vs `reads_global`,
+  `mayThrow` vs `may_throw`).
+- `template: unknown` does **not** implicitly set any effect flags (alloc/io/network/etc). If you
+  want to attach additional base flags to an unknown template, specify them explicitly via boolean
+  fields or `effects.base`.
 
 ## Property reads (`kind: property_get`)
 
