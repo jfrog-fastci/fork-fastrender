@@ -2968,6 +2968,34 @@ fn resolve_promise(
     return fulfill_promise(vm, hooks, scope, promise, resolution, current_realm);
   }
 
+  // If `resolution` is a Promise and `then` is the intrinsic `%Promise.prototype%.then`, we can
+  // link the two Promises directly via `PerformPromiseThen` without calling `then`.
+  //
+  // This matches the spec's intent for `PromiseResolveThenableJob` and avoids observable side
+  // effects from Promise species construction (e.g. `await` must not invoke a Promise's
+  // `@@species` constructor).
+  if scope.heap().is_promise_object(thenable_obj) {
+    let Value::Object(then_obj) = then else {
+      return Err(VmError::Unimplemented("callable then is not an object"));
+    };
+    if then_obj == intr.promise_prototype_then() {
+      // Root the thenable Promise while allocating fresh resolving functions and scheduling
+      // Promise reaction jobs.
+      scope.push_root(Value::Object(thenable_obj))?;
+      let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
+      scope.push_roots(&[resolve, reject])?;
+      perform_promise_then_no_capability(
+        vm,
+        scope,
+        hooks,
+        Value::Object(thenable_obj),
+        resolve,
+        reject,
+      )?;
+      return Ok(());
+    }
+  }
+
   let Value::Object(then_obj) = then else {
     return Err(VmError::Unimplemented("callable then is not an object"));
   };
@@ -5027,6 +5055,28 @@ fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
   let key_s = scope.alloc_string(s)?;
   scope.push_root(Value::String(key_s))?;
   Ok(PropertyKey::from_string(key_s))
+}
+
+fn alloc_string_from_usize(scope: &mut Scope<'_>, n: usize) -> Result<crate::GcString, VmError> {
+  // Avoid intermediate Rust `String` allocations (which are infallible and can abort the process on
+  // allocator OOM).
+  if n == 0 {
+    return scope.alloc_string("0");
+  }
+
+  // `usize::MAX` is at most 20 decimal digits on 64-bit platforms; keep a larger buffer for safety.
+  let mut buf = [0u8; 32];
+  let mut pos = buf.len();
+  let mut x = n;
+  while x > 0 {
+    let digit = (x % 10) as u8;
+    x /= 10;
+    pos -= 1;
+    buf[pos] = b'0' + digit;
+  }
+
+  let s = std::str::from_utf8(&buf[pos..]).unwrap_or("0");
+  scope.alloc_string(s)
 }
 
 fn get_data_property_value(
@@ -11280,7 +11330,7 @@ impl<'a> JsonParser<'a> {
         let value = self.parse_value(vm, &mut el_scope)?;
         el_scope.push_root(value)?;
 
-        let key_s = el_scope.alloc_string(&idx.to_string())?;
+        let key_s = alloc_string_from_usize(&mut el_scope, idx)?;
         el_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
         el_scope.define_property(array, key, data_desc(value, true, true, true))?;
@@ -11381,7 +11431,18 @@ pub fn json_parse(
   scope.push_root(Value::String(s))?;
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    js.as_code_units().to_vec()
+    let src = js.as_code_units();
+    let mut out: Vec<u16> = Vec::new();
+    out
+      .try_reserve_exact(src.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for (i, &u) in src.iter().enumerate() {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
+      out.push(u);
+    }
+    out
   };
 
   let mut parser = JsonParser::new(&units);
@@ -11450,7 +11511,7 @@ pub fn json_parse(
           let mut idx_scope = scope.reborrow();
           idx_scope.push_root(Value::Object(obj))?;
 
-          let idx_s = idx_scope.alloc_string(&i.to_string())?;
+          let idx_s = alloc_string_from_usize(&mut idx_scope, i)?;
           idx_scope.push_root(Value::String(idx_s))?;
           let new_element = internalize_json_property(vm, &mut idx_scope, host, hooks, obj, idx_s, reviver)?;
 
@@ -11882,7 +11943,7 @@ pub fn json_stringify(
           out.push_unit(b',' as u16)?;
         }
         let mut el_scope = scope.reborrow();
-        let key_s = el_scope.alloc_string(&i.to_string())?;
+        let key_s = alloc_string_from_usize(&mut el_scope, i)?;
         el_scope.push_root(Value::String(key_s))?;
         let element =
           prepare_json_value_for_property(vm, &mut el_scope, host, hooks, state, obj, key_s)?
@@ -11903,7 +11964,7 @@ pub fn json_stringify(
           out.push_units(&state.indent)?;
         }
         let mut el_scope = scope.reborrow();
-        let key_s = el_scope.alloc_string(&i.to_string())?;
+        let key_s = alloc_string_from_usize(&mut el_scope, i)?;
         el_scope.push_root(Value::String(key_s))?;
         let element =
           prepare_json_value_for_property(vm, &mut el_scope, host, hooks, state, obj, key_s)?
@@ -12085,7 +12146,7 @@ pub fn json_stringify(
         if i % 1024 == 0 {
           vm.tick()?;
         }
-        let idx_s = scope.alloc_string(&i.to_string())?;
+        let idx_s = alloc_string_from_usize(&mut scope, i)?;
         scope.push_root(Value::String(idx_s))?;
         let v = scope.ordinary_get_with_host_and_hooks(
           vm,

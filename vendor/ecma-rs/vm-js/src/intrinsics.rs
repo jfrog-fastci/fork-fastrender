@@ -89,6 +89,7 @@ pub struct Intrinsics {
 
   promise: GcObject,
   promise_prototype: GcObject,
+  promise_prototype_then: GcObject,
   promise_capability_executor_call: NativeFunctionId,
   promise_resolving_function_call: NativeFunctionId,
   promise_finally_handler_call: NativeFunctionId,
@@ -2681,6 +2682,14 @@ impl Intrinsics {
         .object_set_prototype(func, Some(function_prototype))?;
       scope.define_property(json, key, data_desc(Value::Object(func), true, false, true))?;
     }
+    {
+      let to_string_tag_value = scope.alloc_string("JSON")?;
+      scope.define_property(
+        json,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(to_string_tag_value), false, false, true),
+      )?;
+    }
 
     // `%Reflect%`
     let reflect = alloc_rooted_object(scope, roots)?;
@@ -3120,6 +3129,7 @@ impl Intrinsics {
     }
 
     // Promise.prototype.then / Promise.prototype.catch / Promise.prototype.finally / @@toStringTag
+    let promise_prototype_then;
     {
       let then_call = vm.register_native_call(builtins::promise_prototype_then)?;
       let then_name = scope.alloc_string("then")?;
@@ -3127,6 +3137,7 @@ impl Intrinsics {
       scope
         .heap_mut()
         .object_set_prototype(then, Some(function_prototype))?;
+      promise_prototype_then = then;
 
       let key = PropertyKey::from_string(scope.alloc_string("then")?);
       scope.define_property(
@@ -3229,6 +3240,7 @@ impl Intrinsics {
 
       promise,
       promise_prototype,
+      promise_prototype_then,
       promise_capability_executor_call,
       promise_resolving_function_call,
       promise_finally_handler_call,
@@ -3471,6 +3483,10 @@ impl Intrinsics {
 
   pub fn promise_prototype(&self) -> GcObject {
     self.promise_prototype
+  }
+
+  pub(crate) fn promise_prototype_then(&self) -> GcObject {
+    self.promise_prototype_then
   }
 
   pub(crate) fn promise_capability_executor_call(&self) -> NativeFunctionId {

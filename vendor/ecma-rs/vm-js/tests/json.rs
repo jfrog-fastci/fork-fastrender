@@ -110,3 +110,10 @@ fn json_stringify_throws_on_bigint() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn json_has_symbol_to_string_tag() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"JSON[Symbol.toStringTag] === "JSON""#)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
