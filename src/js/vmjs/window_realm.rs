@@ -30131,7 +30131,10 @@ mod tests {
         target.addEventListener('mousedown', cap);\n\
         target.addEventListener('mousemove', cap);\n\
         target.addEventListener('mouseup', cap);\n\
-        target.addEventListener('mouseover', capRelated);",
+        target.onmouseover = capRelated;\n\
+        target.onmouseout = capRelated;\n\
+        target.onmouseenter = capRelated;\n\
+        target.onmouseleave = capRelated;",
     )?;
 
     struct DummyHost;
@@ -30274,14 +30277,104 @@ mod tests {
     )
     .expect("mouseover dispatch should succeed");
 
+    let mut out = web_events::Event::new(
+      "mouseout",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    out.is_trusted = true;
+    out.mouse = Some(web_events::MouseEvent {
+      client_x: 0.0,
+      client_y: 0.0,
+      button: 0,
+      buttons: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: Some(web_events::EventTargetId::Node(other).normalize()),
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut out,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("mouseout dispatch should succeed");
+
+    let mut enter = web_events::Event::new(
+      "mouseenter",
+      web_events::EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    enter.is_trusted = true;
+    enter.mouse = Some(web_events::MouseEvent {
+      client_x: 0.0,
+      client_y: 0.0,
+      button: 0,
+      buttons: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: Some(web_events::EventTargetId::Node(other).normalize()),
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut enter,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("mouseenter dispatch should succeed");
+
+    let mut leave = web_events::Event::new(
+      "mouseleave",
+      web_events::EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    leave.is_trusted = true;
+    leave.mouse = Some(web_events::MouseEvent {
+      client_x: 0.0,
+      client_y: 0.0,
+      button: 0,
+      buttons: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: Some(web_events::EventTargetId::Node(other).normalize()),
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut leave,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("mouseleave dispatch should succeed");
+
     let realm = realm_slot.as_mut().expect("expected realm slot");
     let ok = realm.exec_script(
       "(() => {\n\
-         return __log.length === 4 &&\n\
+         return __log.length === 7 &&\n\
            __log[0] === 'mousedown|true|10|20|0|1|true|false|true|false' &&\n\
            __log[1] === 'mousemove|true|11|22|0|1|false|true|false|true' &&\n\
            __log[2] === 'mouseup|true|12|24|0|0|false|false|false|false' &&\n\
-           __log[3] === 'mouseover|true|other';\n\
+           __log[3] === 'mouseover|true|other' &&\n\
+           __log[4] === 'mouseout|true|other' &&\n\
+           __log[5] === 'mouseenter|true|other' &&\n\
+           __log[6] === 'mouseleave|true|other';\n\
         })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
