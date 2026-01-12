@@ -3,6 +3,7 @@ use crate::js::console_sink::{fanout_console_sink, stderr_console_sink};
 use crate::js::time::update_time_bindings_clock;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+use crate::js::web_storage::{SessionNamespaceId, StorageListenerGuard, with_default_hub_mut};
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
@@ -68,6 +69,7 @@ pub struct VmJsBrowserTabExecutor {
   document_url: String,
   document_referrer_policy: ReferrerPolicy,
   session_storage_namespace: u64,
+  session_storage_guard: Option<StorageListenerGuard>,
   pending_module_evaluation: Option<PendingModuleEvaluation>,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
@@ -92,6 +94,7 @@ impl VmJsBrowserTabExecutor {
       document_url: "about:blank".to_string(),
       document_referrer_policy: ReferrerPolicy::default(),
       session_storage_namespace: WindowRealmConfig::new("about:blank").session_storage_namespace,
+      session_storage_guard: None,
       pending_module_evaluation: None,
       pending_navigation: None,
       diagnostics: None,
@@ -151,6 +154,7 @@ impl Drop for VmJsBrowserTabExecutor {
     self.xhr_bindings = None;
     self.websocket_bindings = None;
     self.realm = None;
+    self.session_storage_guard = None;
   }
 }
 impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
@@ -300,6 +304,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.xhr_bindings = Some(xhr_bindings);
     self.websocket_bindings = Some(websocket_bindings);
     self.realm = Some(realm);
+    if self.session_storage_guard.is_none() {
+      self.session_storage_guard = Some(with_default_hub_mut(|hub| {
+        hub.register_window(SessionNamespaceId(self.session_storage_namespace))
+      }));
+    }
     Ok(())
   }
 
@@ -1985,6 +1994,50 @@ mod tests {
         .iter()
         .any(|entry| entry.message == "Object.create propertiesObject"),
       "expected Object.create unimplemented reason in telemetry, got {js:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn session_storage_namespace_is_cleaned_up_when_executor_is_dropped() -> Result<()> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    struct ResetGuard;
+    impl Drop for ResetGuard {
+      fn drop(&mut self) {
+        crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+      }
+    }
+    let _guard = ResetGuard;
+
+    let url = "https://example.com/doc.html";
+    let ns: u64 = 424242;
+
+    {
+      let mut document =
+        BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+      let current_script = CurrentScriptStateHandle::default();
+      let mut executor = VmJsBrowserTabExecutor::new();
+      executor.session_storage_namespace = ns;
+      executor.reset_for_navigation(
+        Some(url),
+        &mut document,
+        &current_script,
+        JsExecutionOptions::default(),
+      )?;
+
+      let origin_key = crate::js::web_storage::origin_key_from_document_url(url);
+      let area = crate::js::web_storage::get_session_area(SessionNamespaceId(ns), origin_key.as_deref());
+      area.lock().set_item("k", "v").unwrap();
+      assert_eq!(
+        crate::js::web_storage::with_default_hub(|hub| hub.session_areas.len()),
+        1
+      );
+    }
+
+    // Dropping the executor should unregister the namespace and clear all session areas for it.
+    assert_eq!(
+      crate::js::web_storage::with_default_hub(|hub| hub.session_areas.len()),
+      0
     );
     Ok(())
   }

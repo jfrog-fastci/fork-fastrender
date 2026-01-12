@@ -49,6 +49,37 @@ pub type StorageOriginKey = Option<String>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionNamespaceId(pub u64);
 
+/// RAII guard for tracking a window/browsing-context lifetime within a session storage namespace.
+///
+/// When the last guard for a [`SessionNamespaceId`] is dropped, the thread-local [`WebStorageHub`]
+/// clears all session storage areas and listener records scoped to that namespace.
+#[derive(Debug)]
+pub struct StorageListenerGuard {
+  session: Option<SessionNamespaceId>,
+}
+
+impl StorageListenerGuard {
+  fn new(session: SessionNamespaceId) -> Self {
+    Self {
+      session: Some(session),
+    }
+  }
+
+  #[allow(dead_code)]
+  pub fn disarm(mut self) {
+    self.session = None;
+  }
+}
+
+impl Drop for StorageListenerGuard {
+  fn drop(&mut self) {
+    let Some(session) = self.session.take() else {
+      return;
+    };
+    with_default_hub_mut(|hub| hub.unregister_window(session));
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageChange {
   pub key: Option<String>,
@@ -222,11 +253,62 @@ pub struct WebStorageHub {
   limits: StorageLimits,
   pub local_areas: HashMap<String, Arc<Mutex<StorageArea>>>,
   pub session_areas: HashMap<(SessionNamespaceId, String), Arc<Mutex<StorageArea>>>,
+  active_session_namespaces: HashMap<SessionNamespaceId, usize>,
+  // Storage event listeners (TODO) keyed by (session namespace, origin).
+  //
+  // When session namespaces are destroyed, we must clear listeners as well as storage areas so the
+  // thread-local hub does not retain references forever.
+  session_listeners: HashMap<(SessionNamespaceId, String), Vec<()>>,
 }
 
 impl WebStorageHub {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  pub fn register_window(&mut self, session: SessionNamespaceId) -> StorageListenerGuard {
+    let count = self.active_session_namespaces.entry(session).or_insert(0);
+    *count = count.saturating_add(1);
+    StorageListenerGuard::new(session)
+  }
+
+  pub fn active_session_namespace_refcount(&self, session: SessionNamespaceId) -> usize {
+    self
+      .active_session_namespaces
+      .get(&session)
+      .copied()
+      .unwrap_or(0)
+  }
+
+  fn unregister_window(&mut self, session: SessionNamespaceId) {
+    let Some(count) = self.active_session_namespaces.get_mut(&session) else {
+      debug_assert!(
+        false,
+        "attempted to unregister unknown session storage namespace {session:?}"
+      );
+      return;
+    };
+
+    if *count > 1 {
+      *count = count.saturating_sub(1);
+      return;
+    }
+
+    self.active_session_namespaces.remove(&session);
+
+    // Clear and remove all session storage areas for this namespace (all origins).
+    self.session_areas.retain(|(ns, _origin), area| {
+      if *ns != session {
+        return true;
+      }
+      area.lock().clear();
+      false
+    });
+
+    // Remove any listener records scoped to this namespace.
+    self
+      .session_listeners
+      .retain(|(ns, _origin), _listeners| *ns != session);
   }
 
   pub fn set_limits(&mut self, limits: StorageLimits) {
@@ -305,9 +387,11 @@ pub fn clear_default_web_storage_hub() {
 
     hub.local_areas.clear();
     hub.session_areas.clear();
+    hub.active_session_namespaces.clear();
+    hub.session_listeners.clear();
 
-    // Storage event listeners are not yet modelled in FastRender. If/when listener registries are
-    // added to `WebStorageHub`, they must be cleared here as well to avoid cross-test leakage.
+    // Note: listener registries are currently stubbed out (`session_listeners`) but should always be
+    // cleared here to avoid cross-test leakage.
   });
 }
 
@@ -375,7 +459,8 @@ pub fn set_default_storage_quota_for_tests(bytes: usize) {
 #[cfg(test)]
 mod tests {
   use super::{
-    get_local_area, reset_default_web_storage_hub_for_tests, set_default_storage_quota_for_tests,
+    get_local_area, get_session_area, reset_default_web_storage_hub_for_tests,
+    set_default_storage_quota_for_tests, with_default_hub, with_default_hub_mut, SessionNamespaceId,
     StorageArea, StorageError,
   };
 
@@ -478,5 +563,65 @@ mod tests {
     let err = area.lock().set_item("k", "9876543210").unwrap_err();
     assert_eq!(err, StorageError::QuotaExceeded);
     assert_eq!(area.lock().get_item("k").as_deref(), Some("0123456789"));
+  }
+
+  #[test]
+  fn session_storage_areas_are_removed_when_last_window_in_namespace_is_dropped() {
+    reset_default_web_storage_hub_for_tests();
+    // Ensure this test leaves the thread-local hub in a clean state even if it fails (the Rust test
+    // harness may reuse worker threads between tests).
+    struct ResetGuard;
+    impl Drop for ResetGuard {
+      fn drop(&mut self) {
+        reset_default_web_storage_hub_for_tests();
+      }
+    }
+    let _guard = ResetGuard;
+
+    let ns = SessionNamespaceId(424242);
+
+    let window_1 = with_default_hub_mut(|hub| hub.register_window(ns));
+    let window_2 = with_default_hub_mut(|hub| hub.register_window(ns));
+    assert_eq!(
+      with_default_hub(|hub| hub.active_session_namespace_refcount(ns)),
+      2
+    );
+
+    let local = get_local_area(Some("https://example.com"));
+    local.lock().set_item("local_k", "local_v").unwrap();
+
+    let session_a = get_session_area(ns, Some("https://example.com"));
+    session_a.lock().set_item("k", "v").unwrap();
+    let session_b = get_session_area(ns, Some("https://other.example"));
+    session_b.lock().set_item("k2", "v2").unwrap();
+
+    assert_eq!(with_default_hub(|hub| hub.session_areas.len()), 2);
+    assert_eq!(with_default_hub(|hub| hub.local_areas.len()), 1);
+
+    drop(window_1);
+    assert_eq!(
+      with_default_hub(|hub| hub.active_session_namespace_refcount(ns)),
+      1
+    );
+    assert_eq!(with_default_hub(|hub| hub.session_areas.len()), 2);
+
+    drop(window_2);
+    assert_eq!(
+      with_default_hub(|hub| hub.active_session_namespace_refcount(ns)),
+      0
+    );
+    assert_eq!(with_default_hub(|hub| hub.session_areas.len()), 0);
+    // localStorage must not be cleared.
+    assert_eq!(with_default_hub(|hub| hub.local_areas.len()), 1);
+    assert_eq!(local.lock().get_item("local_k").as_deref(), Some("local_v"));
+
+    // If some consumer still holds an `Arc` to a session area, it should have been cleared.
+    assert_eq!(session_a.lock().get_item("k"), None);
+    assert_eq!(session_b.lock().get_item("k2"), None);
+
+    // Re-registering a window in the same namespace must create a fresh (empty) storage area.
+    let _window_3 = with_default_hub_mut(|hub| hub.register_window(ns));
+    let session_a2 = get_session_area(ns, Some("https://example.com"));
+    assert_eq!(session_a2.lock().get_item("k"), None);
   }
 }
