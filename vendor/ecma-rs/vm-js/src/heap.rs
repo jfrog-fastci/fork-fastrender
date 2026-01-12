@@ -802,9 +802,40 @@ impl Heap {
           | HeapObject::ArrayBuffer(_)
           | HeapObject::Uint8Array(_)
           | HeapObject::Function(_)
+          | HeapObject::Proxy(_)
           | HeapObject::Promise(_)
       )
     )
+  }
+
+  /// Returns `true` if `obj` currently points to a live Proxy object allocation.
+  ///
+  /// This is the spec-shaped "brand check" used by `IsRevokedProxy`-like operations: an object is a
+  /// Proxy if it has Proxy internal slots (represented here by the `HeapObject::Proxy` variant).
+  pub fn is_proxy_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Proxy(_)))
+  }
+
+  /// Returns the `[[ProxyTarget]]` internal slot of `proxy`.
+  ///
+  /// Returns `Ok(None)` for revoked proxies.
+  pub fn proxy_target(&self, proxy: GcObject) -> Result<Option<GcObject>, VmError> {
+    Ok(self.get_proxy(proxy)?.target)
+  }
+
+  /// Returns the `[[ProxyHandler]]` internal slot of `proxy`.
+  ///
+  /// Returns `Ok(None)` for revoked proxies.
+  pub fn proxy_handler(&self, proxy: GcObject) -> Result<Option<GcObject>, VmError> {
+    Ok(self.get_proxy(proxy)?.handler)
+  }
+
+  /// Revokes a Proxy object by clearing its `[[ProxyTarget]]` and `[[ProxyHandler]]` internal slots.
+  pub fn proxy_revoke(&mut self, proxy: GcObject) -> Result<(), VmError> {
+    let p = self.get_proxy_mut(proxy)?;
+    p.target = None;
+    p.handler = None;
+    Ok(())
   }
 
   /// Returns `true` if `obj` currently points to a live Promise object allocation.
@@ -955,6 +986,7 @@ impl Heap {
         | HeapObject::ArrayBuffer(_)
         | HeapObject::Uint8Array(_)
         | HeapObject::Function(_)
+        | HeapObject::Proxy(_)
         | HeapObject::Promise(_),
       ) => {
         self.slots[idx].host_slots = Some(slots);
@@ -976,6 +1008,7 @@ impl Heap {
         | HeapObject::ArrayBuffer(_)
         | HeapObject::Uint8Array(_)
         | HeapObject::Function(_)
+        | HeapObject::Proxy(_)
         | HeapObject::Promise(_),
       ) => Ok(self.slots[idx].host_slots),
       _ => Err(VmError::invalid_handle()),
@@ -994,6 +1027,7 @@ impl Heap {
         | HeapObject::ArrayBuffer(_)
         | HeapObject::Uint8Array(_)
         | HeapObject::Function(_)
+        | HeapObject::Proxy(_)
         | HeapObject::Promise(_),
       ) => {
         self.slots[idx].host_slots = None;
@@ -2036,6 +2070,20 @@ impl Heap {
   fn get_uint8_array(&self, obj: GcObject) -> Result<&JsUint8Array, VmError> {
     match self.get_heap_object(obj.0)? {
       HeapObject::Uint8Array(a) => Ok(a),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  fn get_proxy(&self, obj: GcObject) -> Result<&JsProxy, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::Proxy(p) => Ok(p),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  fn get_proxy_mut(&mut self, obj: GcObject) -> Result<&mut JsProxy, VmError> {
+    match self.get_heap_object_mut(obj.0)? {
+      HeapObject::Proxy(p) => Ok(p),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -3775,6 +3823,29 @@ impl<'a> Scope<'a> {
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
+  /// Allocates a new Proxy object with `[[ProxyTarget]] = target` and `[[ProxyHandler]] = handler`.
+  pub fn alloc_proxy(&mut self, target: GcObject, handler: GcObject) -> Result<GcObject, VmError> {
+    if !self.heap.is_valid_object(target) || !self.heap.is_valid_object(handler) {
+      return Err(VmError::invalid_handle());
+    }
+
+    // Root inputs during allocation in case `ensure_can_allocate` or slot-table growth triggers GC.
+    let mut scope = self.reborrow();
+    scope.push_root(Value::Object(target))?;
+    scope.push_root(Value::Object(handler))?;
+
+    // Proxies have no heap-owned payload allocations (their internal slots are stored inline in the
+    // heap slot table).
+    let new_bytes = 0;
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::Proxy(JsProxy {
+      target: Some(target),
+      handler: Some(handler),
+    });
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
   /// Allocates an ordinary object with the provided `[[Prototype]]` and own properties.
   pub fn alloc_object_with_properties(
     &mut self,
@@ -4637,6 +4708,7 @@ enum HeapObject {
   Uint8Array(JsUint8Array),
   Function(JsFunction),
   Env(EnvRecord),
+  Proxy(JsProxy),
   Promise(JsPromise),
 }
 
@@ -4650,6 +4722,7 @@ impl Trace for HeapObject {
       HeapObject::Uint8Array(a) => a.trace(tracer),
       HeapObject::Function(f) => f.trace(tracer),
       HeapObject::Env(e) => e.trace(tracer),
+      HeapObject::Proxy(p) => p.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
     }
   }
@@ -4976,6 +5049,23 @@ impl Trace for JsPromise {
       for reaction in reactions.iter() {
         reaction.trace(tracer);
       }
+    }
+  }
+}
+
+#[derive(Debug)]
+struct JsProxy {
+  target: Option<GcObject>,
+  handler: Option<GcObject>,
+}
+
+impl Trace for JsProxy {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    if let Some(target) = self.target {
+      tracer.trace_value(Value::Object(target));
+    }
+    if let Some(handler) = self.handler {
+      tracer.trace_value(Value::Object(handler));
     }
   }
 }
