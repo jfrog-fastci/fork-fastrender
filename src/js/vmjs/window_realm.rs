@@ -30196,10 +30196,19 @@ mod tests {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     assert_eq!(
       realm.exec_script(
-        "Event.NONE === 0 &&\n\
-         Event.CAPTURING_PHASE === 1 &&\n\
-         Event.AT_TARGET === 2 &&\n\
-         Event.BUBBLING_PHASE === 3",
+        "(() => {\n\
+          const e = new Event('x');\n\
+          return (\n\
+            Event.NONE === 0 &&\n\
+            Event.CAPTURING_PHASE === 1 &&\n\
+            Event.AT_TARGET === 2 &&\n\
+            Event.BUBBLING_PHASE === 3 &&\n\
+            e.NONE === 0 &&\n\
+            e.CAPTURING_PHASE === 1 &&\n\
+            e.AT_TARGET === 2 &&\n\
+            e.BUBBLING_PHASE === 3\n\
+          );\n\
+        })()",
       )?,
       Value::Bool(true)
     );
@@ -30242,6 +30251,57 @@ mod tests {
       )?,
       Value::Bool(true)
     );
+    Ok(())
+  }
+
+  #[test]
+  fn event_composed_path_returns_bubble_order_for_dom_subtree() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const div = document.createElement('div');\n\
+        const span = document.createElement('span');\n\
+        div.appendChild(span);\n\
+        document.body.appendChild(div);\n\
+\n\
+        // Undispatched events have no composed path.\n\
+        const undispatched = new Event('x');\n\
+        if (undispatched.composedPath().length !== 0) return false;\n\
+\n\
+        let ok = false;\n\
+        span.addEventListener('x', (e) => {\n\
+          const p1 = e.composedPath();\n\
+          const p2 = e.composedPath();\n\
+          ok = (\n\
+            p1 !== p2 &&\n\
+            p1.length === 6 &&\n\
+            p2.length === 6 &&\n\
+            p1[0] === span &&\n\
+            p1[1] === div &&\n\
+            p1[2] === document.body &&\n\
+            p1[3] === document.documentElement &&\n\
+            p1[4] === document &&\n\
+            p1[5] === window &&\n\
+            p2[0] === span &&\n\
+            p2[1] === div &&\n\
+            p2[2] === document.body &&\n\
+            p2[3] === document.documentElement &&\n\
+            p2[4] === document &&\n\
+            p2[5] === window\n\
+          );\n\
+        });\n\
+        span.dispatchEvent(new Event('x', { bubbles: true }));\n\
+        return ok;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
@@ -30333,13 +30393,15 @@ mod tests {
     assert_eq!(
       realm.exec_script(
         "(() => {\n\
-          let ok = false;\n\
+          let ok = true;\n\
           document.addEventListener('x', (e) => {\n\
-            ok = (e.returnValue === true);\n\
+            ok = ok && (e.returnValue === true);\n\
             e.returnValue = false;\n\
             ok = ok && (e.defaultPrevented === true) && (e.returnValue === false);\n\
           });\n\
-          document.dispatchEvent(new Event('x', { cancelable: true }));\n\
+          const ev = new Event('x', { cancelable: true });\n\
+          const ret = document.dispatchEvent(ev);\n\
+          ok = ok && (ret === false) && (ev.defaultPrevented === true) && (ev.returnValue === false);\n\
           return ok;\n\
         })()",
       )?,
