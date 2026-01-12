@@ -1149,6 +1149,8 @@ mod tests {
 
         // Create a promise in this thread so we don't have to send raw pointers across threads.
         let p = promise_new();
+        // `track_pending_reactions` tracks the `PromiseHeader` prefix (not the legacy `RtPromise`
+        // wrapper type).
         let ptr = promise_header_ref(p);
 
         c_start_rx.recv().unwrap();
