@@ -205,6 +205,8 @@ impl<'a> Scope<'a> {
       .is_some()
     {
       self.string_define_own_property_index(obj, key, desc)
+    } else if self.heap().is_typed_array_object(obj) {
+      self.typed_array_define_own_property(obj, key, desc)
     } else {
       self.ordinary_define_own_property(obj, key, desc)
     }
@@ -268,6 +270,14 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
+    // Integer-indexed exotic objects (typed arrays): numeric index keys are handled without
+    // consulting the prototype chain.
+    if self.heap().is_typed_array_object(obj) {
+      if let Some(index) = self.heap().array_index(&key) {
+        return Ok((index as usize) < self.heap().typed_array_length(obj)?);
+      }
+    }
+
     if self
       .heap()
       .get_property_with_tick(obj, &key, &mut tick)?
@@ -416,6 +426,12 @@ impl<'a> Scope<'a> {
       return Ok(value);
     }
 
+    // Integer-indexed exotic objects (typed arrays): numeric index keys do not consult the
+    // prototype chain. If we didn't find an own property above, this is an out-of-bounds index.
+    if self.heap().is_typed_array_object(obj) && self.heap().array_index(&key).is_some() {
+      return Ok(Value::Undefined);
+    }
+
     let Some(desc) = self
       .heap()
       .get_property_from_prototype_with_tick(obj, &key, || vm.tick())?
@@ -489,6 +505,13 @@ impl<'a> Scope<'a> {
       return Ok(value);
     }
 
+    // Integer-indexed exotic objects (typed arrays): numeric index keys do not consult the
+    // prototype chain or host exotic hooks. If we didn't find an own property above, this is an
+    // out-of-bounds index.
+    if scope.heap().is_typed_array_object(obj) && scope.heap().array_index(&key).is_some() {
+      return Ok(Value::Undefined);
+    }
+
     // Host hook for "exotic" property getters (e.g. DOM named properties) runs before walking the
     // prototype chain.
     if let Some(value) = hooks.host_exotic_get(&mut scope, obj, key, receiver)? {
@@ -531,6 +554,30 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
+    // Integer-indexed exotic objects (typed arrays): numeric index keys do not consult the
+    // prototype chain.
+    if self.heap().is_typed_array_object(obj) && self.heap().array_index(&key).is_some() {
+      if let Some(desc) = self
+        .heap()
+        .object_get_own_property_with_tick(obj, &key, || vm.tick())?
+      {
+        return match desc.kind {
+          PropertyKind::Data { value, .. } => Ok(value),
+          PropertyKind::Accessor { get, .. } => {
+            if matches!(get, Value::Undefined) {
+              Ok(Value::Undefined)
+            } else {
+              if !self.heap().is_callable(get)? {
+                return Err(VmError::TypeError("accessor getter is not callable"));
+              }
+              vm.call_with_host(self, host, get, receiver, &[])
+            }
+          }
+        };
+      }
+      return Ok(Value::Undefined);
+    }
+
     let Some(desc) = self
       .heap()
       .get_property_with_tick(obj, &key, || vm.tick())?
@@ -766,6 +813,16 @@ impl<'a> Scope<'a> {
     if self.string_object_in_range_index(obj, &key)?.is_some() {
       return Ok(false);
     }
+
+    // Integer-indexed exotic objects (typed arrays): in-range numeric index properties are
+    // non-configurable and cannot be deleted.
+    if self.heap().is_typed_array_object(obj) {
+      if let Some(idx) = self.heap().array_index(&key) {
+        if (idx as usize) < self.heap().typed_array_length(obj)? {
+          return Ok(false);
+        }
+      }
+    }
     self.heap_mut().ordinary_delete(obj, key)
   }
 
@@ -796,6 +853,16 @@ impl<'a> Scope<'a> {
 
     if self.string_object_in_range_index(obj, &key)?.is_some() {
       return Ok(false);
+    }
+
+    // Integer-indexed exotic objects (typed arrays): in-range numeric index properties are
+    // non-configurable and cannot be deleted.
+    if self.heap().is_typed_array_object(obj) {
+      if let Some(idx) = self.heap().array_index(&key) {
+        if (idx as usize) < self.heap().typed_array_length(obj)? {
+          return Ok(false);
+        }
+      }
     }
 
     self.heap_mut().ordinary_delete(obj, key)
@@ -850,10 +917,10 @@ impl<'a> Scope<'a> {
       return Ok(out);
     }
 
-    if self.heap().is_uint8_array_object(obj) {
+    if self.heap().is_typed_array_object(obj) {
       self.push_root(Value::Object(obj))?;
 
-      let len = self.heap().uint8_array_length(obj)?;
+      let len = self.heap().typed_array_length(obj)?;
       let own_keys = self
         .heap()
         .ordinary_own_property_keys_with_tick(obj, &mut tick)?;
@@ -1278,6 +1345,65 @@ impl<'a> Scope<'a> {
       };
       let v_units = self.heap().get_string(s)?.as_code_units();
       if v_units.len() != 1 || v_units[0] != unit {
+        return Ok(false);
+      }
+    }
+
+    Ok(true)
+  }
+
+  fn typed_array_define_own_property(
+    &mut self,
+    obj: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptorPatch,
+  ) -> Result<bool, VmError> {
+    desc.validate()?;
+
+    // Fast path: typed array integer index properties.
+    let Some(index) = self.heap().array_index(&key) else {
+      return self.ordinary_define_own_property(obj, key, desc);
+    };
+
+    // Non-canonical numeric strings are not integer indices and should be treated as ordinary.
+    //
+    // `array_index` already enforces the canonical form.
+    let len = self.heap().typed_array_length(obj)?;
+    if index as usize >= len {
+      return Ok(false);
+    }
+
+    if desc.is_accessor_descriptor() {
+      return Ok(false);
+    }
+    // Typed array index properties are always:
+    // - enumerable: true
+    // - configurable: false
+    // - writable: true
+    if matches!(desc.configurable, Some(true)) {
+      return Ok(false);
+    }
+    if let Some(enumerable) = desc.enumerable {
+      if !enumerable {
+        return Ok(false);
+      }
+    }
+    if let Some(writable) = desc.writable {
+      if !writable {
+        return Ok(false);
+      }
+    }
+
+    if let Some(value) = desc.value {
+      // `typed_array_set_element_value` performs the ToNumber conversion and element-type
+      // conversion/clamping.
+      //
+      // This should always return `true` for an in-bounds `index`, but treat a `false` return as a
+      // rejection to preserve spec-like behaviour under internal invariant violations.
+      let ok = self
+        .heap_mut()
+        .typed_array_set_element_value(obj, index as usize, value)?;
+      if !ok {
         return Ok(false);
       }
     }

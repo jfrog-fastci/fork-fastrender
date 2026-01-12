@@ -47,6 +47,15 @@ pub struct Intrinsics {
   symbol_prototype: GcObject,
   array_buffer_prototype: GcObject,
   uint8_array_prototype: GcObject,
+  int8_array_prototype: GcObject,
+  uint8_clamped_array_prototype: GcObject,
+  int16_array_prototype: GcObject,
+  uint16_array_prototype: GcObject,
+  int32_array_prototype: GcObject,
+  uint32_array_prototype: GcObject,
+  float32_array_prototype: GcObject,
+  float64_array_prototype: GcObject,
+  data_view_prototype: GcObject,
   weak_map_prototype: GcObject,
   weak_set_prototype: GcObject,
   object_constructor: GcObject,
@@ -59,6 +68,15 @@ pub struct Intrinsics {
   symbol_constructor: GcObject,
   array_buffer: GcObject,
   uint8_array: GcObject,
+  int8_array: GcObject,
+  uint8_clamped_array: GcObject,
+  int16_array: GcObject,
+  uint16_array: GcObject,
+  int32_array: GcObject,
+  uint32_array: GcObject,
+  float32_array: GcObject,
+  float64_array: GcObject,
+  data_view: GcObject,
   is_nan: GcObject,
   is_finite: GcObject,
   parse_int: GcObject,
@@ -447,6 +465,51 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(uint8_array_prototype, Some(object_prototype))?;
+
+    let int8_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(int8_array_prototype, Some(object_prototype))?;
+
+    let uint8_clamped_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(uint8_clamped_array_prototype, Some(object_prototype))?;
+
+    let int16_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(int16_array_prototype, Some(object_prototype))?;
+
+    let uint16_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(uint16_array_prototype, Some(object_prototype))?;
+
+    let int32_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(int32_array_prototype, Some(object_prototype))?;
+
+    let uint32_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(uint32_array_prototype, Some(object_prototype))?;
+
+    let float32_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(float32_array_prototype, Some(object_prototype))?;
+
+    let float64_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(float64_array_prototype, Some(object_prototype))?;
+
+    let data_view_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(data_view_prototype, Some(object_prototype))?;
 
     // `%WeakMap.prototype%` / `%WeakSet.prototype%` (minimal).
     //
@@ -2574,21 +2637,435 @@ impl Intrinsics {
       data_desc(Value::Object(uint8_array), true, false, true),
     )?;
 
-    // Uint8Array.prototype.byteLength / length / byteOffset / buffer
-    {
-      let byte_length_key_s = scope.alloc_string("byteLength")?;
-      scope.push_root(Value::String(byte_length_key_s))?;
-      let byte_length_key = PropertyKey::from_string(byte_length_key_s);
-      let byte_length_get_call =
-        vm.register_native_call(builtins::uint8_array_prototype_byte_length_get)?;
-      let byte_length_get_name = scope.alloc_string("get byteLength")?;
-      let byte_length_get = scope.alloc_native_function(byte_length_get_call, None, byte_length_get_name, 0)?;
-      scope.push_root(Value::Object(byte_length_get))?;
+    // --- TypedArray constructors ---
+    //
+    // These currently support only:
+    // - `new X(length)`
+    // - `new X(arrayBuffer, byteOffset?, length?)`
+    //
+    // TODO: Add iterable/typed-array sources.
+
+    // `%Int8Array%`
+    let int8_array_call = vm.register_native_call(builtins::int8_array_constructor_call)?;
+    let int8_array_construct =
+      vm.register_native_construct(builtins::int8_array_constructor_construct)?;
+    let int8_array_name = scope.alloc_string("Int8Array")?;
+    let int8_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      int8_array_call,
+      Some(int8_array_construct),
+      int8_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(int8_array, Some(function_prototype))?;
+    scope.define_property(
+      int8_array,
+      common.prototype,
+      data_desc(Value::Object(int8_array_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      int8_array,
+      common.name,
+      data_desc(Value::String(int8_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      int8_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      int8_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(int8_array), true, false, true),
+    )?;
+
+    // `%Uint8ClampedArray%`
+    let uint8_clamped_array_call =
+      vm.register_native_call(builtins::uint8_clamped_array_constructor_call)?;
+    let uint8_clamped_array_construct =
+      vm.register_native_construct(builtins::uint8_clamped_array_constructor_construct)?;
+    let uint8_clamped_array_name = scope.alloc_string("Uint8ClampedArray")?;
+    let uint8_clamped_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      uint8_clamped_array_call,
+      Some(uint8_clamped_array_construct),
+      uint8_clamped_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(uint8_clamped_array, Some(function_prototype))?;
+    scope.define_property(
+      uint8_clamped_array,
+      common.prototype,
+      data_desc(
+        Value::Object(uint8_clamped_array_prototype),
+        true,
+        false,
+        false,
+      ),
+    )?;
+    scope.define_property(
+      uint8_clamped_array,
+      common.name,
+      data_desc(Value::String(uint8_clamped_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      uint8_clamped_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      uint8_clamped_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(uint8_clamped_array), true, false, true),
+    )?;
+
+    // `%Int16Array%`
+    let int16_array_call = vm.register_native_call(builtins::int16_array_constructor_call)?;
+    let int16_array_construct =
+      vm.register_native_construct(builtins::int16_array_constructor_construct)?;
+    let int16_array_name = scope.alloc_string("Int16Array")?;
+    let int16_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      int16_array_call,
+      Some(int16_array_construct),
+      int16_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(int16_array, Some(function_prototype))?;
+    scope.define_property(
+      int16_array,
+      common.prototype,
+      data_desc(Value::Object(int16_array_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      int16_array,
+      common.name,
+      data_desc(Value::String(int16_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      int16_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      int16_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(int16_array), true, false, true),
+    )?;
+
+    // `%Uint16Array%`
+    let uint16_array_call = vm.register_native_call(builtins::uint16_array_constructor_call)?;
+    let uint16_array_construct =
+      vm.register_native_construct(builtins::uint16_array_constructor_construct)?;
+    let uint16_array_name = scope.alloc_string("Uint16Array")?;
+    let uint16_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      uint16_array_call,
+      Some(uint16_array_construct),
+      uint16_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(uint16_array, Some(function_prototype))?;
+    scope.define_property(
+      uint16_array,
+      common.prototype,
+      data_desc(Value::Object(uint16_array_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      uint16_array,
+      common.name,
+      data_desc(Value::String(uint16_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      uint16_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      uint16_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(uint16_array), true, false, true),
+    )?;
+
+    // `%Int32Array%`
+    let int32_array_call = vm.register_native_call(builtins::int32_array_constructor_call)?;
+    let int32_array_construct =
+      vm.register_native_construct(builtins::int32_array_constructor_construct)?;
+    let int32_array_name = scope.alloc_string("Int32Array")?;
+    let int32_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      int32_array_call,
+      Some(int32_array_construct),
+      int32_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(int32_array, Some(function_prototype))?;
+    scope.define_property(
+      int32_array,
+      common.prototype,
+      data_desc(Value::Object(int32_array_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      int32_array,
+      common.name,
+      data_desc(Value::String(int32_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      int32_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      int32_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(int32_array), true, false, true),
+    )?;
+
+    // `%Uint32Array%`
+    let uint32_array_call = vm.register_native_call(builtins::uint32_array_constructor_call)?;
+    let uint32_array_construct =
+      vm.register_native_construct(builtins::uint32_array_constructor_construct)?;
+    let uint32_array_name = scope.alloc_string("Uint32Array")?;
+    let uint32_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      uint32_array_call,
+      Some(uint32_array_construct),
+      uint32_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(uint32_array, Some(function_prototype))?;
+    scope.define_property(
+      uint32_array,
+      common.prototype,
+      data_desc(Value::Object(uint32_array_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      uint32_array,
+      common.name,
+      data_desc(Value::String(uint32_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      uint32_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      uint32_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(uint32_array), true, false, true),
+    )?;
+
+    // `%Float32Array%`
+    let float32_array_call = vm.register_native_call(builtins::float32_array_constructor_call)?;
+    let float32_array_construct =
+      vm.register_native_construct(builtins::float32_array_constructor_construct)?;
+    let float32_array_name = scope.alloc_string("Float32Array")?;
+    let float32_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      float32_array_call,
+      Some(float32_array_construct),
+      float32_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(float32_array, Some(function_prototype))?;
+    scope.define_property(
+      float32_array,
+      common.prototype,
+      data_desc(Value::Object(float32_array_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      float32_array,
+      common.name,
+      data_desc(Value::String(float32_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      float32_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      float32_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(float32_array), true, false, true),
+    )?;
+
+    // `%Float64Array%`
+    let float64_array_call = vm.register_native_call(builtins::float64_array_constructor_call)?;
+    let float64_array_construct =
+      vm.register_native_construct(builtins::float64_array_constructor_construct)?;
+    let float64_array_name = scope.alloc_string("Float64Array")?;
+    let float64_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      float64_array_call,
+      Some(float64_array_construct),
+      float64_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(float64_array, Some(function_prototype))?;
+    scope.define_property(
+      float64_array,
+      common.prototype,
+      data_desc(Value::Object(float64_array_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      float64_array,
+      common.name,
+      data_desc(Value::String(float64_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      float64_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      float64_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(float64_array), true, false, true),
+    )?;
+
+    // `%DataView%`
+    let data_view_call = vm.register_native_call(builtins::data_view_constructor_call)?;
+    let data_view_construct =
+      vm.register_native_construct(builtins::data_view_constructor_construct)?;
+    let data_view_name = scope.alloc_string("DataView")?;
+    let data_view = alloc_rooted_native_function(
+      scope,
+      roots,
+      data_view_call,
+      Some(data_view_construct),
+      data_view_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(data_view, Some(function_prototype))?;
+    scope.define_property(
+      data_view,
+      common.prototype,
+      data_desc(Value::Object(data_view_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      data_view,
+      common.name,
+      data_desc(Value::String(data_view_name), false, false, true),
+    )?;
+    scope.define_property(
+      data_view,
+      common.length,
+      data_desc(Value::Number(1.0), false, false, true),
+    )?;
+    scope.define_property(
+      data_view_prototype,
+      common.constructor,
+      data_desc(Value::Object(data_view), true, false, true),
+    )?;
+
+    // --- TypedArray prototype accessors/methods ---
+    let typed_array_byte_length_get_call =
+      vm.register_native_call(builtins::typed_array_prototype_byte_length_get)?;
+    let typed_array_length_get_call =
+      vm.register_native_call(builtins::typed_array_prototype_length_get)?;
+    let typed_array_byte_offset_get_call =
+      vm.register_native_call(builtins::typed_array_prototype_byte_offset_get)?;
+    let typed_array_buffer_get_call =
+      vm.register_native_call(builtins::typed_array_prototype_buffer_get)?;
+    let typed_array_slice_call = vm.register_native_call(builtins::typed_array_prototype_slice)?;
+    let typed_array_subarray_call =
+      vm.register_native_call(builtins::typed_array_prototype_subarray)?;
+    let typed_array_set_call = vm.register_native_call(builtins::typed_array_prototype_set)?;
+
+    let make_getter = |scope: &mut Scope<'_>, call: NativeFunctionId, name: &str| -> Result<GcObject, VmError> {
+      let name_s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(name_s))?;
+      let get = scope.alloc_native_function(call, None, name_s, 0)?;
+      scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
-        .object_set_prototype(byte_length_get, Some(function_prototype))?;
+        .object_set_prototype(get, Some(function_prototype))?;
+      Ok(get)
+    };
+
+    let byte_length_get = make_getter(scope, typed_array_byte_length_get_call, "get byteLength")?;
+    let length_get = make_getter(scope, typed_array_length_get_call, "get length")?;
+    let byte_offset_get = make_getter(scope, typed_array_byte_offset_get_call, "get byteOffset")?;
+    let buffer_get = make_getter(scope, typed_array_buffer_get_call, "get buffer")?;
+
+    let make_method =
+      |scope: &mut Scope<'_>, call: NativeFunctionId, name: &str, length: u32| -> Result<GcObject, VmError> {
+        let name_s = scope.alloc_string(name)?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call, None, name_s, length)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        Ok(func)
+      };
+
+    let slice_fn = make_method(scope, typed_array_slice_call, "slice", 2)?;
+    let subarray_fn = make_method(scope, typed_array_subarray_call, "subarray", 2)?;
+    let set_fn = make_method(scope, typed_array_set_call, "set", 1)?;
+
+    // Root the key strings across subsequent allocations: we allocate multiple keys before storing
+    // them on any rooted object.
+    let byte_length_key_s = scope.alloc_string("byteLength")?;
+    scope.push_root(Value::String(byte_length_key_s))?;
+    let byte_length_key = PropertyKey::from_string(byte_length_key_s);
+    let byte_offset_key_s = scope.alloc_string("byteOffset")?;
+    scope.push_root(Value::String(byte_offset_key_s))?;
+    let byte_offset_key = PropertyKey::from_string(byte_offset_key_s);
+    let buffer_key_s = scope.alloc_string("buffer")?;
+    scope.push_root(Value::String(buffer_key_s))?;
+    let buffer_key = PropertyKey::from_string(buffer_key_s);
+    let slice_key_s = scope.alloc_string("slice")?;
+    scope.push_root(Value::String(slice_key_s))?;
+    let slice_key = PropertyKey::from_string(slice_key_s);
+    let subarray_key_s = scope.alloc_string("subarray")?;
+    scope.push_root(Value::String(subarray_key_s))?;
+    let subarray_key = PropertyKey::from_string(subarray_key_s);
+    let set_key_s = scope.alloc_string("set")?;
+    scope.push_root(Value::String(set_key_s))?;
+    let set_key = PropertyKey::from_string(set_key_s);
+
+    let typed_array_prototypes = [
+      uint8_array_prototype,
+      int8_array_prototype,
+      uint8_clamped_array_prototype,
+      int16_array_prototype,
+      uint16_array_prototype,
+      int32_array_prototype,
+      uint32_array_prototype,
+      float32_array_prototype,
+      float64_array_prototype,
+    ];
+
+    for proto in typed_array_prototypes {
       scope.define_property(
-        uint8_array_prototype,
+        proto,
         byte_length_key,
         PropertyDescriptor {
           enumerable: false,
@@ -2599,20 +3076,9 @@ impl Intrinsics {
           },
         },
       )?;
-
-      let length_key_s = scope.alloc_string("length")?;
-      scope.push_root(Value::String(length_key_s))?;
-      let length_key = PropertyKey::from_string(length_key_s);
-      let length_get_call = vm.register_native_call(builtins::uint8_array_prototype_length_get)?;
-      let length_get_name = scope.alloc_string("get length")?;
-      let length_get = scope.alloc_native_function(length_get_call, None, length_get_name, 0)?;
-      scope.push_root(Value::Object(length_get))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(length_get, Some(function_prototype))?;
       scope.define_property(
-        uint8_array_prototype,
-        length_key,
+        proto,
+        common.length,
         PropertyDescriptor {
           enumerable: false,
           configurable: true,
@@ -2622,20 +3088,8 @@ impl Intrinsics {
           },
         },
       )?;
-
-      let byte_offset_key_s = scope.alloc_string("byteOffset")?;
-      scope.push_root(Value::String(byte_offset_key_s))?;
-      let byte_offset_key = PropertyKey::from_string(byte_offset_key_s);
-      let byte_offset_get_call =
-        vm.register_native_call(builtins::uint8_array_prototype_byte_offset_get)?;
-      let byte_offset_get_name = scope.alloc_string("get byteOffset")?;
-      let byte_offset_get = scope.alloc_native_function(byte_offset_get_call, None, byte_offset_get_name, 0)?;
-      scope.push_root(Value::Object(byte_offset_get))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(byte_offset_get, Some(function_prototype))?;
       scope.define_property(
-        uint8_array_prototype,
+        proto,
         byte_offset_key,
         PropertyDescriptor {
           enumerable: false,
@@ -2646,19 +3100,8 @@ impl Intrinsics {
           },
         },
       )?;
-
-      let buffer_key_s = scope.alloc_string("buffer")?;
-      scope.push_root(Value::String(buffer_key_s))?;
-      let buffer_key = PropertyKey::from_string(buffer_key_s);
-      let buffer_get_call = vm.register_native_call(builtins::uint8_array_prototype_buffer_get)?;
-      let buffer_get_name = scope.alloc_string("get buffer")?;
-      let buffer_get = scope.alloc_native_function(buffer_get_call, None, buffer_get_name, 0)?;
-      scope.push_root(Value::Object(buffer_get))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(buffer_get, Some(function_prototype))?;
       scope.define_property(
-        uint8_array_prototype,
+        proto,
         buffer_key,
         PropertyDescriptor {
           enumerable: false,
@@ -2669,25 +3112,151 @@ impl Intrinsics {
           },
         },
       )?;
+
+      scope.define_property(proto, slice_key, data_desc(Value::Object(slice_fn), true, false, true))?;
+      scope.define_property(proto, subarray_key, data_desc(Value::Object(subarray_fn), true, false, true))?;
+      scope.define_property(proto, set_key, data_desc(Value::Object(set_fn), true, false, true))?;
     }
 
-    // Uint8Array.prototype.slice
-    {
-      let slice_call = vm.register_native_call(builtins::uint8_array_prototype_slice)?;
-      let slice_s = scope.alloc_string("slice")?;
-      scope.push_root(Value::String(slice_s))?;
-      let key = PropertyKey::from_string(slice_s);
-      let func = scope.alloc_native_function(slice_call, None, slice_s, 2)?;
-      scope.push_root(Value::Object(func))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(func, Some(function_prototype))?;
-      scope.define_property(
-        uint8_array_prototype,
-        key,
-        data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
+    // --- DataView prototype accessors/methods ---
+    let data_view_byte_length_get_call =
+      vm.register_native_call(builtins::data_view_prototype_byte_length_get)?;
+    let data_view_byte_offset_get_call =
+      vm.register_native_call(builtins::data_view_prototype_byte_offset_get)?;
+    let data_view_buffer_get_call =
+      vm.register_native_call(builtins::data_view_prototype_buffer_get)?;
+
+    let data_view_byte_length_get = make_getter(scope, data_view_byte_length_get_call, "get byteLength")?;
+    let data_view_byte_offset_get = make_getter(scope, data_view_byte_offset_get_call, "get byteOffset")?;
+    let data_view_buffer_get = make_getter(scope, data_view_buffer_get_call, "get buffer")?;
+
+    scope.define_property(
+      data_view_prototype,
+      byte_length_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(data_view_byte_length_get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+    scope.define_property(
+      data_view_prototype,
+      byte_offset_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(data_view_byte_offset_get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+    scope.define_property(
+      data_view_prototype,
+      buffer_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(data_view_buffer_get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let mut define_dv_method =
+      |name: &str, call: NativeFunctionId, length: u32| -> Result<(), VmError> {
+        let func = make_method(scope, call, name, length)?;
+        let key_s = scope.alloc_string(name)?;
+        scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        scope.define_property(data_view_prototype, key, data_desc(Value::Object(func), true, false, true))
+      };
+
+    define_dv_method(
+      "getInt8",
+      vm.register_native_call(builtins::data_view_prototype_get_int8)?,
+      1,
+    )?;
+    define_dv_method(
+      "getUint8",
+      vm.register_native_call(builtins::data_view_prototype_get_uint8)?,
+      1,
+    )?;
+    define_dv_method(
+      "getInt16",
+      vm.register_native_call(builtins::data_view_prototype_get_int16)?,
+      2,
+    )?;
+    define_dv_method(
+      "getUint16",
+      vm.register_native_call(builtins::data_view_prototype_get_uint16)?,
+      2,
+    )?;
+    define_dv_method(
+      "getInt32",
+      vm.register_native_call(builtins::data_view_prototype_get_int32)?,
+      2,
+    )?;
+    define_dv_method(
+      "getUint32",
+      vm.register_native_call(builtins::data_view_prototype_get_uint32)?,
+      2,
+    )?;
+    define_dv_method(
+      "getFloat32",
+      vm.register_native_call(builtins::data_view_prototype_get_float32)?,
+      2,
+    )?;
+    define_dv_method(
+      "getFloat64",
+      vm.register_native_call(builtins::data_view_prototype_get_float64)?,
+      2,
+    )?;
+
+    define_dv_method(
+      "setInt8",
+      vm.register_native_call(builtins::data_view_prototype_set_int8)?,
+      2,
+    )?;
+    define_dv_method(
+      "setUint8",
+      vm.register_native_call(builtins::data_view_prototype_set_uint8)?,
+      2,
+    )?;
+    define_dv_method(
+      "setInt16",
+      vm.register_native_call(builtins::data_view_prototype_set_int16)?,
+      3,
+    )?;
+    define_dv_method(
+      "setUint16",
+      vm.register_native_call(builtins::data_view_prototype_set_uint16)?,
+      3,
+    )?;
+    define_dv_method(
+      "setInt32",
+      vm.register_native_call(builtins::data_view_prototype_set_int32)?,
+      3,
+    )?;
+    define_dv_method(
+      "setUint32",
+      vm.register_native_call(builtins::data_view_prototype_set_uint32)?,
+      3,
+    )?;
+    define_dv_method(
+      "setFloat32",
+      vm.register_native_call(builtins::data_view_prototype_set_float32)?,
+      3,
+    )?;
+    define_dv_method(
+      "setFloat64",
+      vm.register_native_call(builtins::data_view_prototype_set_float64)?,
+      3,
+    )?;
 
     // `%Math%`
     let math = alloc_rooted_object(scope, roots)?;
@@ -3311,6 +3880,15 @@ impl Intrinsics {
       symbol_prototype,
       array_buffer_prototype,
       uint8_array_prototype,
+      int8_array_prototype,
+      uint8_clamped_array_prototype,
+      int16_array_prototype,
+      uint16_array_prototype,
+      int32_array_prototype,
+      uint32_array_prototype,
+      float32_array_prototype,
+      float64_array_prototype,
+      data_view_prototype,
       weak_map_prototype,
       weak_set_prototype,
       object_constructor,
@@ -3323,6 +3901,15 @@ impl Intrinsics {
       symbol_constructor,
       array_buffer,
       uint8_array,
+      int8_array,
+      uint8_clamped_array,
+      int16_array,
+      uint16_array,
+      int32_array,
+      uint32_array,
+      float32_array,
+      float64_array,
+      data_view,
       is_nan,
       is_finite,
       parse_int,
@@ -3438,6 +4025,42 @@ impl Intrinsics {
     self.uint8_array_prototype
   }
 
+  pub fn int8_array_prototype(&self) -> GcObject {
+    self.int8_array_prototype
+  }
+
+  pub fn uint8_clamped_array_prototype(&self) -> GcObject {
+    self.uint8_clamped_array_prototype
+  }
+
+  pub fn int16_array_prototype(&self) -> GcObject {
+    self.int16_array_prototype
+  }
+
+  pub fn uint16_array_prototype(&self) -> GcObject {
+    self.uint16_array_prototype
+  }
+
+  pub fn int32_array_prototype(&self) -> GcObject {
+    self.int32_array_prototype
+  }
+
+  pub fn uint32_array_prototype(&self) -> GcObject {
+    self.uint32_array_prototype
+  }
+
+  pub fn float32_array_prototype(&self) -> GcObject {
+    self.float32_array_prototype
+  }
+
+  pub fn float64_array_prototype(&self) -> GcObject {
+    self.float64_array_prototype
+  }
+
+  pub fn data_view_prototype(&self) -> GcObject {
+    self.data_view_prototype
+  }
+
   pub fn weak_map_prototype(&self) -> GcObject {
     self.weak_map_prototype
   }
@@ -3484,6 +4107,42 @@ impl Intrinsics {
 
   pub fn uint8_array(&self) -> GcObject {
     self.uint8_array
+  }
+
+  pub fn int8_array(&self) -> GcObject {
+    self.int8_array
+  }
+
+  pub fn uint8_clamped_array(&self) -> GcObject {
+    self.uint8_clamped_array
+  }
+
+  pub fn int16_array(&self) -> GcObject {
+    self.int16_array
+  }
+
+  pub fn uint16_array(&self) -> GcObject {
+    self.uint16_array
+  }
+
+  pub fn int32_array(&self) -> GcObject {
+    self.int32_array
+  }
+
+  pub fn uint32_array(&self) -> GcObject {
+    self.uint32_array
+  }
+
+  pub fn float32_array(&self) -> GcObject {
+    self.float32_array
+  }
+
+  pub fn float64_array(&self) -> GcObject {
+    self.float64_array
+  }
+
+  pub fn data_view(&self) -> GcObject {
+    self.data_view
   }
 
   pub fn is_nan(&self) -> GcObject {

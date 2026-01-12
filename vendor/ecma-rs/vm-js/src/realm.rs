@@ -296,6 +296,69 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.uint8_array())),
       )?;
 
+      let int8_array_key = PropertyKey::from_string(scope.alloc_string("Int8Array")?);
+      scope.define_property(
+        global_object,
+        int8_array_key,
+        global_data_desc(Value::Object(intrinsics.int8_array())),
+      )?;
+
+      let uint8_clamped_array_key = PropertyKey::from_string(scope.alloc_string("Uint8ClampedArray")?);
+      scope.define_property(
+        global_object,
+        uint8_clamped_array_key,
+        global_data_desc(Value::Object(intrinsics.uint8_clamped_array())),
+      )?;
+
+      let int16_array_key = PropertyKey::from_string(scope.alloc_string("Int16Array")?);
+      scope.define_property(
+        global_object,
+        int16_array_key,
+        global_data_desc(Value::Object(intrinsics.int16_array())),
+      )?;
+
+      let uint16_array_key = PropertyKey::from_string(scope.alloc_string("Uint16Array")?);
+      scope.define_property(
+        global_object,
+        uint16_array_key,
+        global_data_desc(Value::Object(intrinsics.uint16_array())),
+      )?;
+
+      let int32_array_key = PropertyKey::from_string(scope.alloc_string("Int32Array")?);
+      scope.define_property(
+        global_object,
+        int32_array_key,
+        global_data_desc(Value::Object(intrinsics.int32_array())),
+      )?;
+
+      let uint32_array_key = PropertyKey::from_string(scope.alloc_string("Uint32Array")?);
+      scope.define_property(
+        global_object,
+        uint32_array_key,
+        global_data_desc(Value::Object(intrinsics.uint32_array())),
+      )?;
+
+      let float32_array_key = PropertyKey::from_string(scope.alloc_string("Float32Array")?);
+      scope.define_property(
+        global_object,
+        float32_array_key,
+        global_data_desc(Value::Object(intrinsics.float32_array())),
+      )?;
+
+      let float64_array_key = PropertyKey::from_string(scope.alloc_string("Float64Array")?);
+      scope.define_property(
+        global_object,
+        float64_array_key,
+        global_data_desc(Value::Object(intrinsics.float64_array())),
+      )?;
+
+      let data_view_key = PropertyKey::from_string(scope.alloc_string("DataView")?);
+      scope.define_property(
+        global_object,
+        data_view_key,
+        global_data_desc(Value::Object(intrinsics.data_view())),
+      )?;
+
       let is_nan_key = PropertyKey::from_string(scope.alloc_string("isNaN")?);
       scope.define_property(
         global_object,

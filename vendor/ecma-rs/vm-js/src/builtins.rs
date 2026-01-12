@@ -2,6 +2,7 @@ use crate::function::{CallHandler, FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::string::JsString;
 use crate::{
+  heap::TypedArrayKind,
   GcObject, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction, PromiseReactionType,
   PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
   VmHostHooks, SourceText,
@@ -1558,7 +1559,7 @@ pub fn array_buffer_is_view(
 ) -> Result<Value, VmError> {
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
   let is_view = match arg0 {
-    Value::Object(obj) => scope.heap().is_uint8_array_object(obj),
+    Value::Object(obj) => scope.heap().is_array_buffer_view_object(obj),
     _ => false,
   };
   Ok(Value::Bool(is_view))
@@ -1712,7 +1713,218 @@ pub fn uint8_array_constructor_construct(
   Ok(Value::Object(view))
 }
 
-pub fn uint8_array_prototype_byte_length_get(
+fn typed_array_prototype_for_kind(intr: &crate::Intrinsics, kind: TypedArrayKind) -> GcObject {
+  match kind {
+    TypedArrayKind::Int8 => intr.int8_array_prototype(),
+    TypedArrayKind::Uint8 => intr.uint8_array_prototype(),
+    TypedArrayKind::Uint8Clamped => intr.uint8_clamped_array_prototype(),
+    TypedArrayKind::Int16 => intr.int16_array_prototype(),
+    TypedArrayKind::Uint16 => intr.uint16_array_prototype(),
+    TypedArrayKind::Int32 => intr.int32_array_prototype(),
+    TypedArrayKind::Uint32 => intr.uint32_array_prototype(),
+    TypedArrayKind::Float32 => intr.float32_array_prototype(),
+    TypedArrayKind::Float64 => intr.float64_array_prototype(),
+  }
+}
+
+fn typed_array_constructor_construct_impl(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  intr: crate::Intrinsics,
+  kind: TypedArrayKind,
+  prototype: GcObject,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let bytes_per_element = kind.bytes_per_element();
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // `new TypedArray(length)`
+  if !matches!(arg0, Value::Object(_)) {
+    let length_num = if matches!(arg0, Value::Undefined) {
+      0.0
+    } else {
+      scope.heap_mut().to_number(arg0)?
+    };
+    if !length_num.is_finite() || length_num < 0.0 || length_num.fract() != 0.0 {
+      return Err(VmError::TypeError(
+        "TypedArray length must be a non-negative integer",
+      ));
+    }
+    let length = length_num as usize;
+    let byte_length = length
+      .checked_mul(bytes_per_element)
+      .ok_or(VmError::OutOfMemory)?;
+
+    let ab = scope.alloc_array_buffer(byte_length)?;
+    scope.push_root(Value::Object(ab))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+
+    let view = scope.alloc_typed_array(kind, ab, 0, length)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(view, Some(prototype))?;
+    return Ok(Value::Object(view));
+  }
+
+  // `new TypedArray(buffer, byteOffset?, length?)`
+  let Value::Object(buffer) = arg0 else {
+    return Err(VmError::TypeError("TypedArray constructor expects an ArrayBuffer"));
+  };
+  let buf_len = scope
+    .heap()
+    .array_buffer_byte_length(buffer)
+    .map_err(|_| VmError::TypeError("TypedArray constructor expects an ArrayBuffer"))?;
+
+  let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let byte_offset = if matches!(byte_offset_val, Value::Undefined) {
+    0usize
+  } else {
+    let n = scope.heap_mut().to_number(byte_offset_val)?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+      return Err(VmError::TypeError(
+        "TypedArray byteOffset must be a non-negative integer",
+      ));
+    }
+    n as usize
+  };
+  if byte_offset % bytes_per_element != 0 {
+    return Err(VmError::TypeError("TypedArray byteOffset must be aligned"));
+  }
+  if byte_offset > buf_len {
+    return Err(VmError::TypeError("TypedArray view out of bounds"));
+  }
+
+  let length_val = args.get(2).copied().unwrap_or(Value::Undefined);
+  let length = if matches!(length_val, Value::Undefined) {
+    let remaining = buf_len - byte_offset;
+    if remaining % bytes_per_element != 0 {
+      return Err(VmError::TypeError("TypedArray view out of bounds"));
+    }
+    remaining / bytes_per_element
+  } else {
+    let n = scope.heap_mut().to_number(length_val)?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+      return Err(VmError::TypeError(
+        "TypedArray length must be a non-negative integer",
+      ));
+    }
+    n as usize
+  };
+
+  let byte_length = length
+    .checked_mul(bytes_per_element)
+    .ok_or(VmError::OutOfMemory)?;
+  let end = byte_offset
+    .checked_add(byte_length)
+    .ok_or(VmError::OutOfMemory)?;
+  if end > buf_len {
+    return Err(VmError::TypeError("TypedArray view out of bounds"));
+  }
+
+  let view = scope.alloc_typed_array(kind, buffer, byte_offset, length)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(view, Some(prototype))?;
+  Ok(Value::Object(view))
+}
+
+macro_rules! typed_array_ctor {
+  ($call:ident, $construct:ident, $kind:expr, $name:literal, $proto:ident, $length:expr) => {
+    pub fn $call(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      Err(VmError::TypeError(concat!($name, " constructor requires 'new'")))
+    }
+
+    pub fn $construct(
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      let intr = require_intrinsics(vm)?;
+      typed_array_constructor_construct_impl(vm, scope, intr, $kind, intr.$proto(), args)
+    }
+  };
+}
+
+typed_array_ctor!(
+  int8_array_constructor_call,
+  int8_array_constructor_construct,
+  TypedArrayKind::Int8,
+  "Int8Array",
+  int8_array_prototype,
+  3
+);
+typed_array_ctor!(
+  uint8_clamped_array_constructor_call,
+  uint8_clamped_array_constructor_construct,
+  TypedArrayKind::Uint8Clamped,
+  "Uint8ClampedArray",
+  uint8_clamped_array_prototype,
+  3
+);
+typed_array_ctor!(
+  int16_array_constructor_call,
+  int16_array_constructor_construct,
+  TypedArrayKind::Int16,
+  "Int16Array",
+  int16_array_prototype,
+  3
+);
+typed_array_ctor!(
+  uint16_array_constructor_call,
+  uint16_array_constructor_construct,
+  TypedArrayKind::Uint16,
+  "Uint16Array",
+  uint16_array_prototype,
+  3
+);
+typed_array_ctor!(
+  int32_array_constructor_call,
+  int32_array_constructor_construct,
+  TypedArrayKind::Int32,
+  "Int32Array",
+  int32_array_prototype,
+  3
+);
+typed_array_ctor!(
+  uint32_array_constructor_call,
+  uint32_array_constructor_construct,
+  TypedArrayKind::Uint32,
+  "Uint32Array",
+  uint32_array_prototype,
+  3
+);
+typed_array_ctor!(
+  float32_array_constructor_call,
+  float32_array_constructor_construct,
+  TypedArrayKind::Float32,
+  "Float32Array",
+  float32_array_prototype,
+  3
+);
+typed_array_ctor!(
+  float64_array_constructor_call,
+  float64_array_constructor_construct,
+  TypedArrayKind::Float64,
+  "Float64Array",
+  float64_array_prototype,
+  3
+);
+
+pub fn typed_array_prototype_byte_length_get(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -1722,16 +1934,16 @@ pub fn uint8_array_prototype_byte_length_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Uint8Array.byteLength called on non-object"));
+    return Err(VmError::TypeError("TypedArray.byteLength called on non-object"));
   };
   let len = scope
     .heap()
-    .uint8_array_byte_length(obj)
-    .map_err(|_| VmError::TypeError("Uint8Array.byteLength called on incompatible receiver"))?;
+    .typed_array_byte_length(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.byteLength called on incompatible receiver"))?;
   Ok(Value::Number(len as f64))
 }
 
-pub fn uint8_array_prototype_length_get(
+pub fn typed_array_prototype_length_get(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -1741,16 +1953,16 @@ pub fn uint8_array_prototype_length_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Uint8Array.length called on non-object"));
+    return Err(VmError::TypeError("TypedArray.length called on non-object"));
   };
   let len = scope
     .heap()
-    .uint8_array_length(obj)
-    .map_err(|_| VmError::TypeError("Uint8Array.length called on incompatible receiver"))?;
+    .typed_array_length(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.length called on incompatible receiver"))?;
   Ok(Value::Number(len as f64))
 }
 
-pub fn uint8_array_prototype_byte_offset_get(
+pub fn typed_array_prototype_byte_offset_get(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -1760,16 +1972,16 @@ pub fn uint8_array_prototype_byte_offset_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Uint8Array.byteOffset called on non-object"));
+    return Err(VmError::TypeError("TypedArray.byteOffset called on non-object"));
   };
   let offset = scope
     .heap()
-    .uint8_array_byte_offset(obj)
-    .map_err(|_| VmError::TypeError("Uint8Array.byteOffset called on incompatible receiver"))?;
+    .typed_array_byte_offset(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.byteOffset called on incompatible receiver"))?;
   Ok(Value::Number(offset as f64))
 }
 
-pub fn uint8_array_prototype_buffer_get(
+pub fn typed_array_prototype_buffer_get(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -1779,16 +1991,16 @@ pub fn uint8_array_prototype_buffer_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Uint8Array.buffer called on non-object"));
+    return Err(VmError::TypeError("TypedArray.buffer called on non-object"));
   };
   let buffer = scope
     .heap()
-    .uint8_array_buffer(obj)
-    .map_err(|_| VmError::TypeError("Uint8Array.buffer called on incompatible receiver"))?;
+    .typed_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.buffer called on incompatible receiver"))?;
   Ok(Value::Object(buffer))
 }
 
-pub fn uint8_array_prototype_slice(
+pub fn typed_array_prototype_subarray(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -1799,26 +2011,115 @@ pub fn uint8_array_prototype_slice(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Uint8Array.prototype.slice called on non-object"));
+    return Err(VmError::TypeError(
+      "TypedArray.prototype.subarray called on non-object",
+    ));
   };
+  scope.push_root(Value::Object(obj))?;
+
+  let kind = scope
+    .heap()
+    .typed_array_kind(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
   let len = scope
     .heap()
-    .uint8_array_length(obj)
-    .map_err(|_| VmError::TypeError("Uint8Array.prototype.slice called on incompatible receiver"))?;
+    .typed_array_length(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
 
   let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
+  let bytes_per_element = kind.bytes_per_element();
 
+  let buffer = scope
+    .heap()
+    .typed_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
+  let byte_offset = scope
+    .heap()
+    .typed_array_byte_offset(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
+
+  let rel_offset = start
+    .checked_mul(bytes_per_element)
+    .ok_or(VmError::OutOfMemory)?;
+  let new_byte_offset = byte_offset
+    .checked_add(rel_offset)
+    .ok_or(VmError::OutOfMemory)?;
+  let new_len = end - start;
+
+  // Root buffer across allocation.
+  scope.push_root(Value::Object(buffer))?;
+  let view = scope.alloc_typed_array(kind, buffer, new_byte_offset, new_len)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(view, Some(typed_array_prototype_for_kind(&intr, kind)))?;
+  Ok(Value::Object(view))
+}
+
+pub fn typed_array_prototype_slice(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "TypedArray.prototype.slice called on non-object",
+    ));
+  };
+  scope.push_root(Value::Object(obj))?;
+
+  let kind = scope
+    .heap()
+    .typed_array_kind(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
+  let len = scope
+    .heap()
+    .typed_array_length(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
+
+  let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
+  let bytes_per_element = kind.bytes_per_element();
+
+  let buffer = scope
+    .heap()
+    .typed_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
+  let byte_offset = scope
+    .heap()
+    .typed_array_byte_offset(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
+
+  let start_byte = byte_offset
+    .checked_add(start.checked_mul(bytes_per_element).ok_or(VmError::OutOfMemory)?)
+    .ok_or(VmError::OutOfMemory)?;
+  let end_byte = byte_offset
+    .checked_add(end.checked_mul(bytes_per_element).ok_or(VmError::OutOfMemory)?)
+    .ok_or(VmError::OutOfMemory)?;
+
+  // Copy the visible byte range.
+  scope.push_root(Value::Object(buffer))?;
   let bytes = {
-    let data = scope
-      .heap()
-      .uint8_array_data(obj)
-      .map_err(|_| VmError::invalid_handle())?;
-    let slice = &data[start..end];
+    let data = scope.heap().array_buffer_data(buffer)?;
+    let slice = data.get(start_byte..end_byte).ok_or(VmError::TypeError(
+      "TypedArray.prototype.slice out of bounds",
+    ))?;
     let mut out: Vec<u8> = Vec::new();
     out
       .try_reserve_exact(slice.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    vec_try_extend_from_slice(&mut out, slice)?;
+    out.resize(slice.len(), 0);
+    const TICK_EVERY: usize = 16 * 1024;
+    for (i, chunk) in slice.chunks(TICK_EVERY).enumerate() {
+      if i != 0 {
+        vm.tick()?;
+      }
+      let start = i * TICK_EVERY;
+      out[start..start + chunk.len()].copy_from_slice(chunk);
+    }
     out
   };
 
@@ -1828,12 +2129,546 @@ pub fn uint8_array_prototype_slice(
     .heap_mut()
     .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
 
-  let new_view = scope.alloc_uint8_array(ab, 0, end - start)?;
+  let new_view = scope.alloc_typed_array(kind, ab, 0, end - start)?;
   scope
     .heap_mut()
-    .object_set_prototype(new_view, Some(intr.uint8_array_prototype()))?;
+    .object_set_prototype(new_view, Some(typed_array_prototype_for_kind(&intr, kind)))?;
   Ok(Value::Object(new_view))
 }
+
+pub fn typed_array_prototype_set(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(target) = this else {
+    return Err(VmError::TypeError("TypedArray.prototype.set called on non-object"));
+  };
+
+  let target_len = scope
+    .heap()
+    .typed_array_length(target)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.set called on incompatible receiver"))?;
+
+  let source_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(source) = source_val else {
+    return Err(VmError::TypeError("TypedArray.prototype.set expects a typed array source"));
+  };
+  let source_len = scope
+    .heap()
+    .typed_array_length(source)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.set expects a typed array source"))?;
+
+  let offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let offset = if matches!(offset_val, Value::Undefined) {
+    0usize
+  } else {
+    let n = scope.heap_mut().to_number(offset_val)?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+      return Err(VmError::TypeError(
+        "TypedArray.prototype.set offset must be a non-negative integer",
+      ));
+    }
+    n as usize
+  };
+
+  if offset > target_len || source_len > target_len - offset {
+    return Err(VmError::TypeError("TypedArray.prototype.set out of bounds"));
+  }
+
+  // Root source/target while copying.
+  scope.push_roots(&[Value::Object(target), Value::Object(source)])?;
+
+  // Copy values into a temporary Vec so overlapping ranges behave correctly.
+  let mut tmp: Vec<Value> = Vec::new();
+  tmp
+    .try_reserve_exact(source_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+  const TICK_EVERY: usize = 1024;
+  for i in 0..source_len {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let v = scope
+      .heap()
+      .typed_array_get_element_value(source, i)?
+      .ok_or(VmError::InvariantViolation(
+        "typed_array_prototype_set: source index out of bounds",
+      ))?;
+    tmp.push(v);
+  }
+  for (i, v) in tmp.into_iter().enumerate() {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let ok = scope
+      .heap_mut()
+      .typed_array_set_element_value(target, offset + i, v)?;
+    if !ok {
+      return Err(VmError::InvariantViolation(
+        "typed_array_prototype_set: target index out of bounds",
+      ));
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+pub fn data_view_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("DataView constructor requires 'new'"))
+}
+
+pub fn data_view_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(buffer) = arg0 else {
+    return Err(VmError::TypeError("DataView constructor expects an ArrayBuffer"));
+  };
+  let buf_len = scope
+    .heap()
+    .array_buffer_byte_length(buffer)
+    .map_err(|_| VmError::TypeError("DataView constructor expects an ArrayBuffer"))?;
+
+  let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let byte_offset = if matches!(byte_offset_val, Value::Undefined) {
+    0usize
+  } else {
+    let n = scope.heap_mut().to_number(byte_offset_val)?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+      return Err(VmError::TypeError("DataView byteOffset must be a non-negative integer"));
+    }
+    n as usize
+  };
+  if byte_offset > buf_len {
+    return Err(VmError::TypeError("DataView view out of bounds"));
+  }
+
+  let byte_length_val = args.get(2).copied().unwrap_or(Value::Undefined);
+  let byte_length = if matches!(byte_length_val, Value::Undefined) {
+    buf_len - byte_offset
+  } else {
+    let n = scope.heap_mut().to_number(byte_length_val)?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+      return Err(VmError::TypeError("DataView byteLength must be a non-negative integer"));
+    }
+    n as usize
+  };
+  let end = byte_offset
+    .checked_add(byte_length)
+    .ok_or(VmError::OutOfMemory)?;
+  if end > buf_len {
+    return Err(VmError::TypeError("DataView view out of bounds"));
+  }
+
+  let view = scope.alloc_data_view(buffer, byte_offset, byte_length)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(view, Some(intr.data_view_prototype()))?;
+  Ok(Value::Object(view))
+}
+
+pub fn data_view_prototype_byte_length_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("DataView.byteLength called on non-object"));
+  };
+  let len = scope
+    .heap()
+    .data_view_byte_length(obj)
+    .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
+  Ok(Value::Number(len as f64))
+}
+
+pub fn data_view_prototype_byte_offset_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("DataView.byteOffset called on non-object"));
+  };
+  let offset = scope
+    .heap()
+    .data_view_byte_offset(obj)
+    .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
+  Ok(Value::Number(offset as f64))
+}
+
+pub fn data_view_prototype_buffer_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("DataView.buffer called on non-object"));
+  };
+  let buffer = scope
+    .heap()
+    .data_view_buffer(obj)
+    .map_err(|_| VmError::TypeError("DataView.buffer called on incompatible receiver"))?;
+  Ok(Value::Object(buffer))
+}
+
+#[derive(Clone, Copy)]
+enum DataViewElementKind {
+  Int8,
+  Uint8,
+  Int16,
+  Uint16,
+  Int32,
+  Uint32,
+  Float32,
+  Float64,
+}
+
+impl DataViewElementKind {
+  fn size(self) -> usize {
+    match self {
+      DataViewElementKind::Int8 | DataViewElementKind::Uint8 => 1,
+      DataViewElementKind::Int16 | DataViewElementKind::Uint16 => 2,
+      DataViewElementKind::Int32 | DataViewElementKind::Uint32 | DataViewElementKind::Float32 => 4,
+      DataViewElementKind::Float64 => 8,
+    }
+  }
+}
+
+fn data_view_get_impl(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  this: Value,
+  args: &[Value],
+  kind: DataViewElementKind,
+) -> Result<Value, VmError> {
+  let Value::Object(view_obj) = this else {
+    return Err(VmError::TypeError("DataView method called on non-object"));
+  };
+  let byte_length = scope
+    .heap()
+    .data_view_byte_length(view_obj)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+  let view_byte_offset = scope
+    .heap()
+    .data_view_byte_offset(view_obj)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+  let buffer = scope
+    .heap()
+    .data_view_buffer(view_obj)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+
+  let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let offset_num = scope.to_number(vm, host, hooks, offset_val)?;
+  if !offset_num.is_finite() || offset_num < 0.0 || offset_num.fract() != 0.0 {
+    return Err(VmError::TypeError("DataView offset must be a non-negative integer"));
+  }
+  let offset = offset_num as usize;
+
+  let little_endian = match args.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined => false,
+    v => scope.heap().to_boolean(v)?,
+  };
+
+  let size = kind.size();
+  let end = offset.checked_add(size).ok_or(VmError::OutOfMemory)?;
+  if end > byte_length {
+    return Err(VmError::TypeError("DataView offset out of bounds"));
+  }
+
+  scope.push_root(Value::Object(buffer))?;
+  let data = scope.heap().array_buffer_data(buffer)?;
+  let abs = view_byte_offset
+    .checked_add(offset)
+    .ok_or(VmError::OutOfMemory)?;
+
+  let value = match kind {
+    DataViewElementKind::Int8 => {
+      let b = *data.get(abs).ok_or(VmError::TypeError("DataView offset out of bounds"))?;
+      (b as i8) as f64
+    }
+    DataViewElementKind::Uint8 => {
+      let b = *data.get(abs).ok_or(VmError::TypeError("DataView offset out of bounds"))?;
+      b as f64
+    }
+    DataViewElementKind::Int16 => {
+      let bytes: [u8; 2] = data
+        .get(abs..abs + 2)
+        .ok_or(VmError::TypeError("DataView offset out of bounds"))?
+        .try_into()
+        .map_err(|_| VmError::InvariantViolation("DataView slice length mismatch"))?;
+      if little_endian {
+        i16::from_le_bytes(bytes) as f64
+      } else {
+        i16::from_be_bytes(bytes) as f64
+      }
+    }
+    DataViewElementKind::Uint16 => {
+      let bytes: [u8; 2] = data
+        .get(abs..abs + 2)
+        .ok_or(VmError::TypeError("DataView offset out of bounds"))?
+        .try_into()
+        .map_err(|_| VmError::InvariantViolation("DataView slice length mismatch"))?;
+      if little_endian {
+        u16::from_le_bytes(bytes) as f64
+      } else {
+        u16::from_be_bytes(bytes) as f64
+      }
+    }
+    DataViewElementKind::Int32 => {
+      let bytes: [u8; 4] = data
+        .get(abs..abs + 4)
+        .ok_or(VmError::TypeError("DataView offset out of bounds"))?
+        .try_into()
+        .map_err(|_| VmError::InvariantViolation("DataView slice length mismatch"))?;
+      if little_endian {
+        i32::from_le_bytes(bytes) as f64
+      } else {
+        i32::from_be_bytes(bytes) as f64
+      }
+    }
+    DataViewElementKind::Uint32 => {
+      let bytes: [u8; 4] = data
+        .get(abs..abs + 4)
+        .ok_or(VmError::TypeError("DataView offset out of bounds"))?
+        .try_into()
+        .map_err(|_| VmError::InvariantViolation("DataView slice length mismatch"))?;
+      if little_endian {
+        u32::from_le_bytes(bytes) as f64
+      } else {
+        u32::from_be_bytes(bytes) as f64
+      }
+    }
+    DataViewElementKind::Float32 => {
+      let bytes: [u8; 4] = data
+        .get(abs..abs + 4)
+        .ok_or(VmError::TypeError("DataView offset out of bounds"))?
+        .try_into()
+        .map_err(|_| VmError::InvariantViolation("DataView slice length mismatch"))?;
+      let bits = if little_endian {
+        u32::from_le_bytes(bytes)
+      } else {
+        u32::from_be_bytes(bytes)
+      };
+      f32::from_bits(bits) as f64
+    }
+    DataViewElementKind::Float64 => {
+      let bytes: [u8; 8] = data
+        .get(abs..abs + 8)
+        .ok_or(VmError::TypeError("DataView offset out of bounds"))?
+        .try_into()
+        .map_err(|_| VmError::InvariantViolation("DataView slice length mismatch"))?;
+      let bits = if little_endian {
+        u64::from_le_bytes(bytes)
+      } else {
+        u64::from_be_bytes(bytes)
+      };
+      f64::from_bits(bits)
+    }
+  };
+
+  Ok(Value::Number(value))
+}
+
+fn data_view_set_impl(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  this: Value,
+  args: &[Value],
+  kind: DataViewElementKind,
+) -> Result<Value, VmError> {
+  let Value::Object(view_obj) = this else {
+    return Err(VmError::TypeError("DataView method called on non-object"));
+  };
+  let byte_length = scope
+    .heap()
+    .data_view_byte_length(view_obj)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+  let view_byte_offset = scope
+    .heap()
+    .data_view_byte_offset(view_obj)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+  let buffer = scope
+    .heap()
+    .data_view_buffer(view_obj)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+
+  let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let offset_num = scope.to_number(vm, host, hooks, offset_val)?;
+  if !offset_num.is_finite() || offset_num < 0.0 || offset_num.fract() != 0.0 {
+    return Err(VmError::TypeError("DataView offset must be a non-negative integer"));
+  }
+  let offset = offset_num as usize;
+
+  let value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let little_endian = match args.get(2).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined => false,
+    v => scope.heap().to_boolean(v)?,
+  };
+
+  let size = kind.size();
+  let end = offset.checked_add(size).ok_or(VmError::OutOfMemory)?;
+  if end > byte_length {
+    return Err(VmError::TypeError("DataView offset out of bounds"));
+  }
+
+  // Convert via ToNumber (like typed arrays).
+  let n = scope.to_number(vm, host, hooks, value)?;
+
+  let bytes: Vec<u8> = match kind {
+    DataViewElementKind::Int8 => {
+      let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(256.0) as u8 as i8 };
+      vec![v as u8]
+    }
+    DataViewElementKind::Uint8 => {
+      let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(256.0) as u8 };
+      vec![v]
+    }
+    DataViewElementKind::Int16 => {
+      let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(65_536.0) as u16 as i16 };
+      if little_endian {
+        v.to_le_bytes().to_vec()
+      } else {
+        v.to_be_bytes().to_vec()
+      }
+    }
+    DataViewElementKind::Uint16 => {
+      let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(65_536.0) as u16 };
+      if little_endian {
+        v.to_le_bytes().to_vec()
+      } else {
+        v.to_be_bytes().to_vec()
+      }
+    }
+    DataViewElementKind::Int32 => {
+      let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(4_294_967_296.0) as u32 as i32 };
+      if little_endian {
+        v.to_le_bytes().to_vec()
+      } else {
+        v.to_be_bytes().to_vec()
+      }
+    }
+    DataViewElementKind::Uint32 => {
+      let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(4_294_967_296.0) as u32 };
+      if little_endian {
+        v.to_le_bytes().to_vec()
+      } else {
+        v.to_be_bytes().to_vec()
+      }
+    }
+    DataViewElementKind::Float32 => {
+      let v = (n as f32).to_bits();
+      if little_endian {
+        v.to_le_bytes().to_vec()
+      } else {
+        v.to_be_bytes().to_vec()
+      }
+    }
+    DataViewElementKind::Float64 => {
+      let v = n.to_bits();
+      if little_endian {
+        v.to_le_bytes().to_vec()
+      } else {
+        v.to_be_bytes().to_vec()
+      }
+    }
+  };
+
+  debug_assert_eq!(bytes.len(), size);
+  let abs = view_byte_offset
+    .checked_add(offset)
+    .ok_or(VmError::OutOfMemory)?;
+  scope.push_root(Value::Object(buffer))?;
+  scope.heap_mut().array_buffer_write(buffer, abs, &bytes)?;
+  Ok(Value::Undefined)
+}
+
+macro_rules! data_view_get {
+  ($name:ident, $kind:expr) => {
+    pub fn $name(
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      host: &mut dyn VmHost,
+      hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      this: Value,
+      args: &[Value],
+    ) -> Result<Value, VmError> {
+      data_view_get_impl(vm, scope, host, hooks, this, args, $kind)
+    }
+  };
+}
+
+macro_rules! data_view_set {
+  ($name:ident, $kind:expr) => {
+    pub fn $name(
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      host: &mut dyn VmHost,
+      hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      this: Value,
+      args: &[Value],
+    ) -> Result<Value, VmError> {
+      data_view_set_impl(vm, scope, host, hooks, this, args, $kind)
+    }
+  };
+}
+
+data_view_get!(data_view_prototype_get_int8, DataViewElementKind::Int8);
+data_view_get!(data_view_prototype_get_uint8, DataViewElementKind::Uint8);
+data_view_get!(data_view_prototype_get_int16, DataViewElementKind::Int16);
+data_view_get!(data_view_prototype_get_uint16, DataViewElementKind::Uint16);
+data_view_get!(data_view_prototype_get_int32, DataViewElementKind::Int32);
+data_view_get!(data_view_prototype_get_uint32, DataViewElementKind::Uint32);
+data_view_get!(data_view_prototype_get_float32, DataViewElementKind::Float32);
+data_view_get!(data_view_prototype_get_float64, DataViewElementKind::Float64);
+
+data_view_set!(data_view_prototype_set_int8, DataViewElementKind::Int8);
+data_view_set!(data_view_prototype_set_uint8, DataViewElementKind::Uint8);
+data_view_set!(data_view_prototype_set_int16, DataViewElementKind::Int16);
+data_view_set!(data_view_prototype_set_uint16, DataViewElementKind::Uint16);
+data_view_set!(data_view_prototype_set_int32, DataViewElementKind::Int32);
+data_view_set!(data_view_prototype_set_uint32, DataViewElementKind::Uint32);
+data_view_set!(data_view_prototype_set_float32, DataViewElementKind::Float32);
+data_view_set!(data_view_prototype_set_float64, DataViewElementKind::Float64);
 
 pub fn function_constructor_call(
   vm: &mut Vm,
