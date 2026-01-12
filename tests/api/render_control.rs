@@ -1,5 +1,5 @@
 #[test]
-fn test_render_delay_hook_is_linkable_without_browser_ui() {
+fn render_delay_hook_is_linkable_without_browser_ui() {
   // Regression test: `render_control::set_test_render_delay_ms` must remain callable when the
   // library is built as a dependency (integration tests compile `fastrender` without `cfg(test)`).
   //

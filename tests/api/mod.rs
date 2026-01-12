@@ -10,3 +10,4 @@ mod css_import_referrer_semantics;
 mod root_font_size_percent;
 mod svg_document_css;
 mod svg_mask_image;
+mod render_control;

@@ -39,7 +39,6 @@ mod js_rendering;
 mod js_time;
 mod location_navigation;
 mod navigation_streaming;
-mod render_control_test_render_delay_smoke;
 mod select_dropdown;
 mod select_dropdown_hidden_option_arrow_key;
 mod select_dropdown_pick;
