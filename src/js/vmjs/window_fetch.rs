@@ -4746,18 +4746,26 @@ fn request_json_native(
     return Ok(cap.promise);
   }
 
-  let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
+  let parsed: std::result::Result<serde_json::Value, WebFetchError> =
     with_env_state_mut(env_id, scope.heap(), |state| {
       let req = state
         .requests
         .get_mut(&request_id)
         .ok_or(VmError::TypeError("Request: invalid backing request"))?;
-      let parsed = req.body.as_mut().map(|body| body.json());
+      let parsed = match req.body.as_mut() {
+        Some(body) => body.json(),
+        None => {
+          // Fetch: "consume body" on a null body yields an empty byte sequence.
+          // JSON parsing then fails with a SyntaxError (rather than a TypeError).
+          let mut body = Body::empty();
+          body.json()
+        }
+      };
       Ok(parsed)
     })?;
 
   match parsed {
-    Some(Ok(value)) => {
+    Ok(value) => {
       let js_value = json_to_js(vm, scope, &value)?;
       vm.call_with_host_and_hooks(
         &mut *host,
@@ -4768,7 +4776,7 @@ fn request_json_native(
         &[js_value],
       )?;
     }
-    Some(Err(err)) => match err {
+    Err(err) => match err {
       WebFetchError::BodyInvalidJson(e) => {
         let err_value = create_syntax_error(vm, scope, &mut *host, host_hooks, &e.to_string())?;
         vm.call_with_host_and_hooks(
@@ -4792,17 +4800,6 @@ fn request_json_native(
         )?;
       }
     },
-    None => {
-      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Request body is null")?;
-      vm.call_with_host_and_hooks(
-        &mut *host,
-        scope,
-        host_hooks,
-        cap.reject,
-        Value::Undefined,
-        &[err_value],
-      )?;
-    }
   }
 
   Ok(cap.promise)
@@ -6017,18 +6014,26 @@ fn response_json_native(
     return Ok(cap.promise);
   }
 
-  let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
+  let parsed: std::result::Result<serde_json::Value, WebFetchError> =
     with_env_state_mut(env_id, scope.heap(), |state| {
-    let res = state
-      .responses
-      .get_mut(&response_id)
-      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
-    let parsed = res.body.as_mut().map(|body| body.json());
-    Ok(parsed)
-  })?;
+      let res = state
+        .responses
+        .get_mut(&response_id)
+        .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+      let parsed = match res.body.as_mut() {
+        Some(body) => body.json(),
+        None => {
+          // Fetch: "consume body" on a null body yields an empty byte sequence.
+          // JSON parsing then fails with a SyntaxError (rather than a TypeError).
+          let mut body = Body::empty();
+          body.json()
+        }
+      };
+      Ok(parsed)
+    })?;
 
   match parsed {
-    Some(Ok(value)) => {
+    Ok(value) => {
       let js_value = json_to_js(vm, scope, &value)?;
       vm.call_with_host_and_hooks(
         &mut *host,
@@ -6039,7 +6044,7 @@ fn response_json_native(
         &[js_value],
       )?;
     }
-    Some(Err(err)) => match err {
+    Err(err) => match err {
       WebFetchError::BodyInvalidJson(e) => {
         let err_value = create_syntax_error(vm, scope, &mut *host, host_hooks, &e.to_string())?;
         vm.call_with_host_and_hooks(
@@ -6063,18 +6068,6 @@ fn response_json_native(
         )?;
       }
     },
-    None => {
-      let err_value =
-        create_type_error(vm, scope, &mut *host, host_hooks, "Response body is null")?;
-      vm.call_with_host_and_hooks(
-        &mut *host,
-        scope,
-        host_hooks,
-        cap.reject,
-        Value::Undefined,
-        &[err_value],
-      )?;
-    }
   }
 
   Ok(cap.promise)
@@ -8452,6 +8445,54 @@ mod tests {
         scope.heap().get_string(s)?.to_utf8_lossy().to_string()
       }
     };
+    let state = host
+      .as_any_mut()
+      .downcast_mut::<CaptureHostState>()
+      .ok_or(VmError::InvariantViolation("unexpected host state type"))?;
+    if kind == 0 {
+      state.fulfilled = Some(s);
+    } else {
+      state.rejected = Some(s);
+    }
+    Ok(Value::Undefined)
+  }
+
+  fn capture_promise_error_native(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn vm_js::VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    let kind = slots.get(0).copied().unwrap_or(Value::Number(0.0));
+    let kind = number_to_u64(kind).unwrap_or(0);
+    let value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+    let s = match value {
+      Value::Object(obj) => {
+        // Root `obj` while allocating property keys: `alloc_key` can trigger GC.
+        let mut scope = scope.reborrow();
+        scope.push_root(Value::Object(obj))?;
+
+        let name_key = alloc_key(&mut scope, "name")?;
+        let name_val = vm.get(&mut scope, obj, name_key)?;
+        let name = get_string(scope.heap(), name_val);
+
+        let message_key = alloc_key(&mut scope, "message")?;
+        let message_val = vm.get(&mut scope, obj, message_key)?;
+        let message = get_string(scope.heap(), message_val);
+
+        format!("{name}:{message}")
+      }
+      other => {
+        let s = scope.heap_mut().to_string(other)?;
+        scope.heap().get_string(s)?.to_utf8_lossy().to_string()
+      }
+    };
+
     let state = host
       .as_any_mut()
       .downcast_mut::<CaptureHostState>()
@@ -11093,6 +11134,270 @@ mod tests {
     drop(scope);
     drop(bindings);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_json_rejects_with_syntax_error_on_null_body() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+
+    let mut host_state = CaptureHostState::default();
+    let mut hooks = JobQueueHooks::default();
+
+    let resp_obj = {
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+        return Err(VmError::InvariantViolation("Response constructor missing"));
+      };
+
+      // new Response(null, { status: 204 })
+      let init_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(init_obj))?;
+      set_data_prop(
+        &mut scope,
+        init_obj,
+        "status",
+        Value::Number(204.0),
+        /* writable */ true,
+      )?;
+
+      let Value::Object(resp_obj) = response_ctor_construct(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        response_ctor,
+        &[Value::Null, Value::Object(init_obj)],
+        Value::Object(response_ctor),
+      )?
+      else {
+        return Err(VmError::InvariantViolation(
+          "Response constructor must return an object",
+        ));
+      };
+
+      let body_key = alloc_key(&mut scope, "body")?;
+      let body = vm.get(&mut scope, resp_obj, body_key)?;
+      assert!(matches!(
+        body,
+        Value::Null
+      ), "Response.body must be null for a null body status");
+
+      resp_obj
+    };
+
+    let resp_root = heap.add_root(Value::Object(resp_obj))?;
+
+    host_state.fulfilled = None;
+    host_state.rejected = None;
+
+    {
+      let mut scope = heap.scope();
+      let json_key = alloc_key(&mut scope, "json")?;
+      let json_fn = vm.get(&mut scope, resp_obj, json_key)?;
+      let promise = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        json_fn,
+        Value::Object(resp_obj),
+        &[],
+      )?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("Response.json must return a Promise object"));
+      };
+
+      let capture_id = vm.register_native_call(capture_promise_error_native)?;
+      let func_proto = realm.intrinsics().function_prototype();
+
+      let on_fulfilled = {
+        let name = scope.alloc_string("onFulfilled")?;
+        scope.push_root(Value::String(name))?;
+        let f =
+          scope.alloc_native_function_with_slots(capture_id, None, name, 1, &[Value::Number(0.0)])?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+      let on_rejected = {
+        let name = scope.alloc_string("onRejected")?;
+        scope.push_root(Value::String(name))?;
+        let f =
+          scope.alloc_native_function_with_slots(capture_id, None, name, 1, &[Value::Number(1.0)])?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+
+      let then_key = alloc_key(&mut scope, "then")?;
+      let then_fn = vm.get(&mut scope, promise_obj, then_key)?;
+      vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        then_fn,
+        Value::Object(promise_obj),
+        &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+      )?;
+
+      let promise_root = scope.heap_mut().add_root(Value::Object(promise_obj))?;
+      let on_fulfilled_root = scope.heap_mut().add_root(Value::Object(on_fulfilled))?;
+      let on_rejected_root = scope.heap_mut().add_root(Value::Object(on_rejected))?;
+      drop(scope);
+      drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+      heap.remove_root(promise_root);
+      heap.remove_root(on_fulfilled_root);
+      heap.remove_root(on_rejected_root);
+    }
+
+    assert!(
+      host_state.fulfilled.is_none(),
+      "Response.json should not fulfill for a null body"
+    );
+    let rejected = host_state.rejected.as_deref().unwrap_or("");
+    assert!(
+      rejected.starts_with("SyntaxError:"),
+      "expected SyntaxError rejection, got {rejected:?}"
+    );
+
+    heap.remove_root(resp_root);
+    drop(bindings);
+    Ok(())
+  }
+
+  #[test]
+  fn request_json_rejects_with_syntax_error_on_null_body() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+
+    let mut host_state = CaptureHostState::default();
+    let mut hooks = JobQueueHooks::default();
+
+    let req_obj = {
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+        return Err(VmError::InvariantViolation("Request constructor missing"));
+      };
+
+      let url_s = scope.alloc_string("https://example.com/")?;
+      scope.push_root(Value::String(url_s))?;
+
+      let Value::Object(req_obj) = request_ctor_construct(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        request_ctor,
+        &[Value::String(url_s)],
+        Value::Object(request_ctor),
+      )?
+      else {
+        return Err(VmError::InvariantViolation(
+          "Request constructor must return an object",
+        ));
+      };
+
+      let body_key = alloc_key(&mut scope, "body")?;
+      let body = vm.get(&mut scope, req_obj, body_key)?;
+      assert!(
+        matches!(body, Value::Null),
+        "Request.body must be null when no body was provided"
+      );
+
+      req_obj
+    };
+
+    let req_root = heap.add_root(Value::Object(req_obj))?;
+
+    host_state.fulfilled = None;
+    host_state.rejected = None;
+
+    {
+      let mut scope = heap.scope();
+      let json_key = alloc_key(&mut scope, "json")?;
+      let json_fn = vm.get(&mut scope, req_obj, json_key)?;
+      let promise = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        json_fn,
+        Value::Object(req_obj),
+        &[],
+      )?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("Request.json must return a Promise object"));
+      };
+
+      let capture_id = vm.register_native_call(capture_promise_error_native)?;
+      let func_proto = realm.intrinsics().function_prototype();
+
+      let on_fulfilled = {
+        let name = scope.alloc_string("onFulfilled")?;
+        scope.push_root(Value::String(name))?;
+        let f =
+          scope.alloc_native_function_with_slots(capture_id, None, name, 1, &[Value::Number(0.0)])?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+      let on_rejected = {
+        let name = scope.alloc_string("onRejected")?;
+        scope.push_root(Value::String(name))?;
+        let f =
+          scope.alloc_native_function_with_slots(capture_id, None, name, 1, &[Value::Number(1.0)])?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+
+      let then_key = alloc_key(&mut scope, "then")?;
+      let then_fn = vm.get(&mut scope, promise_obj, then_key)?;
+      vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        then_fn,
+        Value::Object(promise_obj),
+        &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+      )?;
+
+      let promise_root = scope.heap_mut().add_root(Value::Object(promise_obj))?;
+      let on_fulfilled_root = scope.heap_mut().add_root(Value::Object(on_fulfilled))?;
+      let on_rejected_root = scope.heap_mut().add_root(Value::Object(on_rejected))?;
+      drop(scope);
+      drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+      heap.remove_root(promise_root);
+      heap.remove_root(on_fulfilled_root);
+      heap.remove_root(on_rejected_root);
+    }
+
+    assert!(
+      host_state.fulfilled.is_none(),
+      "Request.json should not fulfill for a null body"
+    );
+    let rejected = host_state.rejected.as_deref().unwrap_or("");
+    assert!(
+      rejected.starts_with("SyntaxError:"),
+      "expected SyntaxError rejection, got {rejected:?}"
+    );
+
+    heap.remove_root(req_root);
+    drop(bindings);
     Ok(())
   }
 
