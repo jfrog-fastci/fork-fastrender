@@ -850,6 +850,23 @@ pub const JSX_INVALID_ELEMENT_TYPE: Code = Code::new(
   &[],
 );
 
+/// TS2698: Spread types may only be created from object types.
+///
+/// TypeScript emits this diagnostic for invalid JSX spread attributes like
+/// `<div {...1} />`.
+///
+/// - Primary span: the spread expression inside the JSX attribute (`1` in
+///   `{...1}`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_SPREAD_ATTR_MUST_BE_OBJECT: Code = Code::new(
+  "TS2698",
+  "spread types may only be created from object types",
+  "spread expression in a JSX spread attribute",
+  &["primary: JSX spread expression"],
+  &[],
+);
+
 /// TC3004: Variance annotation on a type parameter does not match its usage
 /// within the declaring type.
 ///

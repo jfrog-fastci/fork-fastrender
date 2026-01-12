@@ -4301,6 +4301,38 @@ impl<'a> Checker<'a> {
     children: &[JsxElemChild],
     expected: Option<TypeId>,
   ) -> JsxActualProps {
+    fn is_object_like_jsx_spread_type(
+      checker: &Checker<'_>,
+      ty: TypeId,
+      seen: &mut HashSet<TypeId>,
+      depth: usize,
+    ) -> bool {
+      if depth > 32 {
+        return true;
+      }
+
+      let ty = checker.store.canon(ty);
+      let ty = checker.expand_ref(ty);
+      let expanded = checker.expand_for_props(ty);
+      if expanded != ty {
+        return is_object_like_jsx_spread_type(checker, expanded, seen, depth + 1);
+      }
+
+      let ty = checker.store.canon(ty);
+      if !seen.insert(ty) {
+        return true;
+      }
+
+      match checker.store.type_kind(ty) {
+        TypeKind::Object(_) | TypeKind::Mapped(_) => true,
+        TypeKind::Union(members) | TypeKind::Intersection(members) => members
+          .iter()
+          .copied()
+          .all(|member| is_object_like_jsx_spread_type(checker, member, seen, depth + 1)),
+        _ => false,
+      }
+    }
+
     let prim = self.store.primitive_ids();
     let explicit_attr_count = attrs.len();
     let mut props = HashSet::new();
@@ -4372,7 +4404,17 @@ impl<'a> Checker<'a> {
           let expected_ty = expected
             .filter(|ty| !matches!(self.store.type_kind(*ty), TypeKind::Any | TypeKind::Unknown))
             .unwrap_or(prim.unknown);
-          spreads.push(self.check_expr_with_expected(&value.stx.value, expected_ty));
+          let spread_ty = self.check_expr_with_expected(&value.stx.value, expected_ty);
+          if !matches!(self.store.type_kind(spread_ty), TypeKind::Any) {
+            let mut seen = HashSet::new();
+            if !is_object_like_jsx_spread_type(self, spread_ty, &mut seen, 0) {
+              self.diagnostics.push(codes::JSX_SPREAD_ATTR_MUST_BE_OBJECT.error(
+                "Spread types may only be created from object types.",
+                Span::new(self.file, loc_to_range(self.file, value.stx.value.loc)),
+              ));
+            }
+          }
+          spreads.push(spread_ty);
         }
       }
     }

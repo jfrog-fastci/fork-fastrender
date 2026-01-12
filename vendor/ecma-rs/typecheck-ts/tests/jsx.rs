@@ -707,6 +707,69 @@ declare namespace JSX {
 }
 
 #[test]
+fn jsx_spread_attr_invalid_type_emits_ts2698() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let entry = FileKey::new("entry.tsx");
+  let host = TestHost::new(options)
+    .with_lib(jsx_lib_file())
+    .with_file(entry.clone(), "const el = <div {...1} />;");
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::JSX_SPREAD_ATTR_MUST_BE_OBJECT.as_str()),
+    "expected TS2698, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn jsx_spread_attr_object_type_is_allowed() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let entry = FileKey::new("entry.tsx");
+  let host = TestHost::new(options)
+    .with_lib(jsx_lib_file())
+    .with_file(entry.clone(), "const el = <div {...{}} />;");
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    !diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::JSX_SPREAD_ATTR_MUST_BE_OBJECT.as_str()),
+    "did not expect TS2698, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn jsx_spread_attr_any_is_allowed() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let entry = FileKey::new("entry.tsx");
+  let host = TestHost::new(options)
+    .with_lib(jsx_lib_file())
+    .with_file(entry.clone(), "const el = <div {...(1 as any)} />;");
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    !diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::JSX_SPREAD_ATTR_MUST_BE_OBJECT.as_str()),
+    "did not expect TS2698, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn component_props_checked_for_imported_component_and_imported_value_used_only_in_jsx() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
