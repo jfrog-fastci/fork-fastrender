@@ -882,7 +882,7 @@ pub(crate) fn parallel_flow_content_extent(
       for child in root.children.iter() {
         bbox = bbox.union(child.logical_bounding_box());
       }
-      let bbox_extent = axis.block_size(&bbox);
+      let mut bbox_extent = axis.block_size(&bbox);
       let bounds_extent = axis.block_size(&root.bounds);
       let mut original_extent = root.slice_info.original_block_size;
 
@@ -890,6 +890,11 @@ pub(crate) fn parallel_flow_content_extent(
       // container), the slice metadata still reflects the original unfragmented block-size.
       // Clamping prevents a "full height" original size from forcing additional columns within the
       // clipped fragmentainer.
+      //
+      // Descendant logical bounding boxes can also extend beyond the clipped fragment bounds due to
+      // visual overflow (e.g. text that overflows a fixed-height box). Column fragmentainers clip
+      // their contents; allowing that overflow to inflate the computed extent causes spurious extra
+      // columns and (in paged multicol) unstable pagination.
       if original_extent.is_finite()
         && original_extent > 0.0
         && bounds_extent.is_finite()
@@ -898,6 +903,12 @@ pub(crate) fn parallel_flow_content_extent(
         original_extent = original_extent.min(bounds_extent);
       } else if !original_extent.is_finite() || original_extent < 0.0 {
         original_extent = 0.0;
+      }
+
+      if bbox_extent.is_finite() && bbox_extent > 0.0 && bounds_extent.is_finite() && bounds_extent > 0.0 {
+        bbox_extent = bbox_extent.min(bounds_extent);
+      } else if !bbox_extent.is_finite() || bbox_extent < 0.0 {
+        bbox_extent = 0.0;
       }
 
       bbox_extent.max(original_extent)
@@ -2433,10 +2444,20 @@ pub(crate) fn clip_node(
   // Treat zero-length fragments (common for empty blocks that only contribute forced breaks) as a
   // point at their start edge so they participate in clipping/fragmentation. Using the normal
   // half-open overlap test (`end <= start`) would drop them from *both* adjacent fragmentainers.
-  let bbox_is_zero = node_bbox_block_size <= BREAK_EPSILON;
-  if node_bbox_flow_end < fragment_start
-    || (node_bbox_flow_end <= fragment_start && !bbox_is_zero)
-    || node_bbox_flow_start >= fragment_end
+  //
+  // In multi-column fragmentation, content is clipped to the column fragmentainer and must not
+  // "continue" solely because a descendant overflows the box's own bounds (e.g. a 10px-tall box
+  // whose text has a 1px descent overflow). Including such overflow in the overlap test can produce
+  // tiny continuation fragments that duplicate `box_id`s across columns/pages, which in turn breaks
+  // the paginator's stable break-token mapping.
+  let (overlap_start, overlap_end, overlap_is_zero) = if matches!(context, FragmentationContext::Column) {
+    (node_flow_start, node_flow_end, node_block_size <= BREAK_EPSILON)
+  } else {
+    (node_bbox_flow_start, node_bbox_flow_end, node_bbox_block_size <= BREAK_EPSILON)
+  };
+  if overlap_end < fragment_start
+    || (overlap_end <= fragment_start && !overlap_is_zero)
+    || overlap_start >= fragment_end
   {
     return Ok(None);
   }
@@ -2483,7 +2504,11 @@ pub(crate) fn clip_node(
   // progression is reversed (e.g. `writing-mode: vertical-rl`), where the physical origin of the
   // clip window depends on both its start *and* end.
   let clipped_flow_start = node_flow_start.max(fragment_start);
-  let clipped_flow_end = node_bbox_flow_end.min(fragment_end);
+  let clipped_flow_end = if matches!(context, FragmentationContext::Column) {
+    node_flow_end.min(fragment_end)
+  } else {
+    node_bbox_flow_end.min(fragment_end)
+  };
   // Descendants can extend outside a node's own border box (e.g. scroll overflow or reversed
   // block progression that places content in negative physical coordinates). Use the logical
   // bounding box overlap to derive the clipping window that is propagated to children so

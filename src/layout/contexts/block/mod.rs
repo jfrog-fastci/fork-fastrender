@@ -7216,7 +7216,6 @@ impl BlockFormattingContext {
         logical.height(),
       ));
     }
-
     // Mirror `FragmentNode::translate_root_in_place` semantics: moving a running/footnote anchor
     // must move its stored snapshot subtree as well.
     fragment.starting_style = None;
@@ -7734,7 +7733,6 @@ impl BlockFormattingContext {
     // still need to distribute content evenly across the columns inside each fragmentainer,
     // leaving whitespace at the bottom of shorter columns rather than filling sequentially.
     if fragmentainer_hint.is_some()
-      && matches!(available_block, AvailableSpace::Indefinite)
       && matches!(column_fill, ColumnFill::Balance | ColumnFill::BalanceAll)
       && column_count > 1
     {
@@ -7816,8 +7814,6 @@ impl BlockFormattingContext {
             }
             continue;
           };
-          clipped_content.slice_info =
-            crate::tree::fragment_tree::FragmentSliceInfo::single(set_content_total);
 
           // `clip_node_with_axes` retains the original fragment slice metadata. Reset it so the
           // analyzer's `content_extent` is bounded to the clipped range.
@@ -7999,11 +7995,7 @@ impl BlockFormattingContext {
           Some(PageSide::Right) => crate::style::types::BreakBetween::Right,
           None => crate::style::types::BreakBetween::Page,
         };
-        fragments.push(FragmentNode::new_block_styled(
-          bounds,
-          Vec::new(),
-          Arc::new(marker_style),
-        ));
+        fragments.push(FragmentNode::new_block_styled(bounds, Vec::new(), Arc::new(marker_style)));
       };
 
     for (index, window) in boundaries.windows(2).enumerate() {
@@ -8384,6 +8376,10 @@ impl BlockFormattingContext {
       return Ok((frags, height, positioned, Some(info)));
     }
 
+    let fragmentainer_hint = crate::layout::formatting_context::fragmentainer_block_size_hint()
+      .filter(|size| size.is_finite() && *size > 0.0);
+    let paged_multicol = fragmentainer_hint.is_some();
+
     let base_offset = crate::layout::formatting_context::fragmentainer_block_offset_hint();
     let base_offset = if base_offset.is_finite() {
       base_offset
@@ -8420,14 +8416,12 @@ impl BlockFormattingContext {
           parent.style.column_fill
         };
         let _segment_offset_guard =
-          crate::layout::formatting_context::fragmentainer_block_size_hint()
-            .filter(|size| size.is_finite() && *size > 0.0)
-            .map(|_| {
-              crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
-                base_offset + logical_offset,
-              )
-            });
-        let (mut seg_fragments, seg_height, mut seg_positioned, _seg_flow_height) = self
+          paged_multicol.then(|| {
+            crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
+              base_offset + logical_offset,
+            )
+          });
+        let (mut seg_fragments, seg_height, mut seg_positioned, seg_flow_height) = self
           .layout_column_segment(
             parent,
             &parent.children[idx..end],
@@ -8451,11 +8445,17 @@ impl BlockFormattingContext {
         fragments.extend(seg_fragments);
         positioned_children.extend(seg_positioned);
         physical_offset += seg_height;
-        // In paged contexts, multi-column segments consume whole fragmentainers (column sets) even
-        // when their actual content is shorter. Use the *physical* segment height when advancing
-        // the fragmentation flow cursor so subsequent spanners/siblings start at the correct page
-        // boundary and the paginator doesn't treat trailing blank space as overlapping content.
-        logical_offset += seg_height;
+        // In a paged context (`fragmentainer_hint` is set), column sets are stacked in physical
+        // fragmentainer coordinates (page-sized blocks). The fragments produced by
+        // `layout_column_segment` already have logical coordinates aligned with those physical page
+        // offsets, so the flow cursor must advance by the *full* segment height. Advancing by the
+        // uncolumnized flow height would desynchronize logical vs physical coordinates, confusing the
+        // outer paginator (extra blank pages / wrong placement for following spanners).
+        if paged_multicol {
+          logical_offset += seg_height;
+        } else {
+          logical_offset += seg_flow_height;
+        }
       }
 
       if let Some(span_idx) = next_span {

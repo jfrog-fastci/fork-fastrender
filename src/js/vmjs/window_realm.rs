@@ -4605,6 +4605,7 @@ fn history_state_change_native(
       state_key,
       read_only_data_desc(cloned_state_value),
     )?;
+
     let length_key = alloc_key(&mut scope, "length")?;
     scope.define_property(
       history_obj,

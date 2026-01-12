@@ -1337,6 +1337,7 @@ pub fn paginate_fragment_tree(
   let mut base_page_boundary_token = token.clone();
   let mut page_index = 0usize;
   let mut pending_footnotes: VecDeque<PendingFootnote> = VecDeque::new();
+  let mut string_start_keyword_token = BreakToken::Start;
 
   loop {
     let start_in_base = match &token {
@@ -1511,6 +1512,19 @@ pub fn paginate_fragment_tree(
     );
     document_wrapper.force_stacking_context_with_z_index(0);
     let mut page_running_elements: HashMap<String, RunningElementValues> = HashMap::new();
+    let page_string_start_keyword_pos = match &string_start_keyword_token {
+      BreakToken::Start => 0.0,
+      BreakToken::End => total_height,
+      _ => flow_start_for_token_in_layout(
+        &layout.root,
+        &string_start_keyword_token,
+        0.0,
+        root_block_size,
+        &axis,
+      )
+      .unwrap_or(start),
+    };
+    let mut next_string_start_keyword_token = string_start_keyword_token.clone();
 
     let mut string_slice_start = 0.0f32;
     let mut string_slice_end = 0.0f32;
@@ -1964,7 +1978,7 @@ pub fn paginate_fragment_tree(
         }
 
         string_slice_start = start;
-        string_slice_end = end;
+        let end_for_start_keyword = end;
 
         let mut token_pos = end;
         let mut containing_line = None;
@@ -2025,6 +2039,31 @@ pub fn paginate_fragment_tree(
               .unwrap_or(BreakToken::End);
           }
         }
+        let next_start = if matches!(next_token, BreakToken::End) {
+          total_height
+        } else {
+          flow_start_for_token_in_layout(
+            &layout.root,
+            &next_token,
+            0.0,
+            root_block_size,
+            &axis,
+          )
+          .unwrap_or(total_height)
+        };
+        string_slice_end = next_start;
+        next_string_start_keyword_token = if next_start + EPSILON < end_for_start_keyword {
+          continuation_token_for_pos(
+            &layout.root,
+            end_for_start_keyword,
+            0.0,
+            root_block_size,
+            &axis,
+          )
+          .unwrap_or_else(|| next_token.clone())
+        } else {
+          next_token.clone()
+        };
       }
     }
 
@@ -2046,6 +2085,7 @@ pub fn paginate_fragment_tree(
         &mut string_set_seen_boxes,
         string_slice_start,
         string_slice_end,
+        page_string_start_keyword_pos,
       )
     };
 
@@ -2065,6 +2105,7 @@ pub fn paginate_fragment_tree(
     ));
     if !is_blank_page {
       token = next_token;
+      string_start_keyword_token = next_string_start_keyword_token;
     }
     page_index += 1;
   }
@@ -2402,6 +2443,7 @@ fn running_strings_for_page(
   seen_boxes: &mut HashSet<usize>,
   start: f32,
   end: f32,
+  start_keyword_pos: f32,
 ) -> HashMap<String, RunningStringValues> {
   let start_boundary = start - EPSILON;
   let mut emitted_boxes: HashSet<usize> = HashSet::new();
@@ -2428,16 +2470,16 @@ fn running_strings_for_page(
         first: None,
         last: None,
       });
-    if entry.first.is_none() {
-      if (event.abs_block - start).abs() < EPSILON {
-        entry.start = Some(event.value.clone());
+      if entry.first.is_none() {
+        if (event.abs_block - start_keyword_pos).abs() < EPSILON {
+          entry.start = Some(event.value.clone());
+        }
+        entry.first = Some(event.value.clone());
       }
-      entry.first = Some(event.value.clone());
+      entry.last = Some(event.value.clone());
+      carry.insert(event.name.clone(), event.value.clone());
+      *idx += 1;
     }
-    entry.last = Some(event.value.clone());
-    carry.insert(event.name.clone(), event.value.clone());
-    *idx += 1;
-  }
 
   snapshot
 }

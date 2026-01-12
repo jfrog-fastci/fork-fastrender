@@ -281,8 +281,14 @@ impl Document {
   /// - each observer's node list, and
   /// - all queued mutation records.
   ///
+  /// Callers must also move per-node registrations with [`Self::mutation_observer_move_registrations`]
+  /// so future mutations on the new node continue to queue records.
+  ///
   /// Entries absent from `mapping` are left unchanged.
   pub(crate) fn mutation_observer_remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
+    if mapping.is_empty() {
+      return;
+    }
     self.mutation_observer_agent.borrow_mut().remap_node_ids(mapping);
   }
 
@@ -301,15 +307,19 @@ impl Document {
     if old_idx >= self.nodes.len() || new_idx >= self.nodes.len() {
       return;
     }
+    if old_idx == new_idx {
+      return;
+    }
 
     let moved = std::mem::take(&mut self.nodes[old_idx].registered_observers);
     if moved.is_empty() {
       return;
     }
-
     let new_list = &mut self.nodes[new_idx].registered_observers;
     for reg in moved {
-      new_list.retain(|r| r.observer != reg.observer);
+      new_list.retain(|r| {
+        !(r.observer == reg.observer && r.transient_source == reg.transient_source)
+      });
       new_list.push(reg);
     }
   }
