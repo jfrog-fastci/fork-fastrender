@@ -4,112 +4,14 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::Arc;
 use std::time::Duration;
 
 use native_js::toolchain::LlvmToolchain;
 use native_js::{compile_typescript_to_llvm_ir, CompileOptions};
-use native_oracle_harness::erase_typescript_to_js;
-use vm_js::{
-  GcObject, Heap, HeapLimits, JsRuntime, NativeCall, PropertyDescriptor, PropertyKey, PropertyKind,
-  SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+use native_oracle_harness::{
+  compare_run_outcomes, run_fixture_ts_outcome_with_name, RunOutcome, RunOutcomeCompareOptions,
 };
 use wait_timeout::ChildExt;
-
-#[derive(Default)]
-struct ConsoleCaptureHost {
-  stdout: String,
-}
-
-fn data_desc(value: Value) -> PropertyDescriptor {
-  PropertyDescriptor {
-    enumerable: true,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value,
-      writable: true,
-    },
-  }
-}
-
-fn console_log_call(
-  vm: &mut Vm,
-  scope: &mut vm_js::Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let host = host
-    .as_any_mut()
-    .downcast_mut::<ConsoleCaptureHost>()
-    .expect("native_compare should run with ConsoleCaptureHost");
-
-  for (idx, arg) in args.iter().copied().enumerate() {
-    if idx != 0 {
-      host.stdout.push(' ');
-    }
-    let s = scope.to_string(vm, host, hooks, arg)?;
-    host
-      .stdout
-      .push_str(&scope.heap().get_string(s)?.to_utf8_lossy());
-  }
-  host.stdout.push('\n');
-
-  Ok(Value::Undefined)
-}
-
-fn install_console_capture(rt: &mut JsRuntime) -> Result<(), VmError> {
-  let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
-
-  let call_id: vm_js::NativeFunctionId = vm.register_native_call(console_log_call as NativeCall)?;
-
-  let mut scope = heap.scope();
-  let log_name = scope.alloc_string("log")?;
-  let log_fn = scope.alloc_native_function(call_id, None, log_name, 1)?;
-  // Root `log_fn` across allocations while defining it as an object property.
-  scope.push_root(Value::Object(log_fn))?;
-
-  let console = scope.alloc_object()?;
-  // Root `console` across allocations while defining it on the global object.
-  scope.push_root(Value::Object(console))?;
-
-  let log_key = PropertyKey::from_string(scope.alloc_string("log")?);
-  scope.define_property(console, log_key, data_desc(Value::Object(log_fn)))?;
-
-  let console_key = PropertyKey::from_string(scope.alloc_string("console")?);
-  scope.define_property(
-    realm.global_object(),
-    console_key,
-    data_desc(Value::Object(console)),
-  )?;
-
-  Ok(())
-}
-
-fn run_oracle_stdout(ts_source_name: &str, ts_source: &str) -> Result<String, String> {
-  let js = erase_typescript_to_js(ts_source).map_err(|err| err.to_string())?;
-
-  let vm = Vm::new(VmOptions {
-    default_fuel: Some(200_000),
-    ..VmOptions::default()
-  });
-  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
-  let mut rt = JsRuntime::new(vm, heap).map_err(|err| format!("failed to create vm-js runtime: {err:?}"))?;
-
-  install_console_capture(&mut rt).map_err(|err| format!("failed to install console capture: {err:?}"))?;
-
-  let mut host = ConsoleCaptureHost::default();
-  let source = Arc::new(SourceText::new(ts_source_name, js));
-  rt.exec_script_source_with_host(&mut host, source)
-    .map_err(|err| format!("vm-js execution failed: {err:?}"))?;
-  rt.vm
-    .perform_microtask_checkpoint_with_host(&mut host, &mut rt.heap)
-    .map_err(|err| format!("vm-js microtask checkpoint failed: {err:?}"))?;
-
-  Ok(host.stdout)
-}
 
 fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Output> {
   let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
@@ -136,7 +38,7 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Outp
   })
 }
 
-fn run_native_stdout(tc: &LlvmToolchain, ts_source: &str) -> Result<Output, String> {
+fn run_native_outcome(tc: &LlvmToolchain, ts_source: &str) -> Result<RunOutcome, String> {
   let mut opts = CompileOptions::default();
   opts.builtins = true;
   let ir = compile_typescript_to_llvm_ir(ts_source, opts).map_err(|err| err.to_string())?;
@@ -178,7 +80,16 @@ fn run_native_stdout(tc: &LlvmToolchain, ts_source: &str) -> Result<Output, Stri
     ));
   }
 
-  Ok(out)
+  let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+  let stderr = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
+  Ok(RunOutcome::Ok {
+    // The `native_compare` fixture corpus only compares stdout. The oracle side uses the
+    // `globalThis.__native_result` observation protocol, which yields `"undefined"` for these
+    // fixtures. Keep the value stable so RunOutcome comparisons can focus on stdout.
+    value: "undefined".to_string(),
+    stdout,
+    stderr,
+  })
 }
 
 fn fixtures_dir() -> PathBuf {
@@ -187,10 +98,6 @@ fn fixtures_dir() -> PathBuf {
     .parent()
     .expect("native-oracle-harness should live under vendor/ecma-rs/")
     .join("fixtures/native_compare")
-}
-
-fn normalize_stdout(s: &str) -> &str {
-  s.trim_end()
 }
 
 #[test]
@@ -230,29 +137,26 @@ fn native_compare_fixtures_stdout_matches_oracle() {
     let ts =
       fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read fixture {name}: {err}"));
 
-    let oracle_raw =
-      run_oracle_stdout(name, &ts).unwrap_or_else(|err| panic!("oracle failed for {name}: {err}"));
-    let native = run_native_stdout(&tc, &ts).unwrap_or_else(|err| panic!("native failed for {name}: {err}"));
+    let mut oracle = run_fixture_ts_outcome_with_name(name, &ts);
+    // Normalize stdout for stable comparisons (native output includes a trailing newline).
+    if let RunOutcome::Ok { stdout, .. } = &mut oracle {
+      *stdout = stdout.trim_end().to_string();
+    }
+    let native = run_native_outcome(&tc, &ts).unwrap_or_else(|err| panic!("native failed for {name}: {err}"));
 
-    let oracle = normalize_stdout(&oracle_raw);
-    let native_raw = String::from_utf8_lossy(&native.stdout).into_owned();
-    let native_norm = normalize_stdout(&native_raw);
-
-    if oracle != native_norm {
-      let native_stderr = String::from_utf8_lossy(&native.stderr);
+    let opts = RunOutcomeCompareOptions {
+      compare_stdout: true,
+      ..RunOutcomeCompareOptions::default()
+    };
+    if let Err(err) = compare_run_outcomes(&oracle, &native, opts) {
       panic!(
-        "native/vm-js stdout mismatch for fixture `{name}`\n\
-oracle stdout: {oracle:?}\n\
-native stdout: {native_norm:?}\n\
+        "native/vm-js mismatch for fixture `{name}`: {err}\n\
 \n\
-oracle stdout (raw): {oracle_raw:?}\n\
-native stdout (raw): {native_raw:?}\n\
-\n\
-native stderr:\n{native_stderr}\n\
+oracle outcome: {oracle:?}\n\
+native outcome: {native:?}\n\
 \n\
 TypeScript source:\n{ts}\n"
       );
     }
   }
 }
-
