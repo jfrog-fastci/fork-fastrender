@@ -303,6 +303,22 @@ jobs:
             echo "::error::typecheck-ts-harness did not emit a JSON report (stdout was empty). See ${stderr_path}." >&2
             echo "{\"error\":\"no_json_report\"}" > "${report_path}"
             status=1
+          else
+            # Ensure the report is valid JSON so downstream triage tooling can rely on it.
+            if ! python3 - <<PY
+          import json
+          from pathlib import Path
+          path = Path("${report_path}")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          if not isinstance(data, dict):
+            raise SystemExit("report JSON should be an object")
+          PY
+            then
+              echo "::error::typecheck-ts-harness emitted an invalid JSON report. See ${report_path} and ${stderr_path}." >&2
+              if [[ "${status}" -eq 0 ]]; then
+                status=1
+              fi
+            fi
           fi
 
           echo "status=${status}" >> "${GITHUB_OUTPUT}"
