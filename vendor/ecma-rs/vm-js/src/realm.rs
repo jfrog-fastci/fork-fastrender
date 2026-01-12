@@ -514,8 +514,9 @@ impl Realm {
 
     vm.set_intrinsics(intrinsics);
 
-    let global_lexical_env = global_lexical_env
-      .expect("global lexical environment should be initialized after successful Realm::new");
+    let global_lexical_env = global_lexical_env.ok_or(VmError::InvariantViolation(
+      "global lexical environment missing after successful Realm::new",
+    ))?;
 
     Ok(Self {
       id,

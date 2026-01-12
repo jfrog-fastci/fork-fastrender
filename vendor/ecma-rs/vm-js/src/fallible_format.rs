@@ -58,7 +58,9 @@ pub(crate) fn try_write_u32(out: &mut String, mut value: u32) -> Result<(), VmEr
       buf[i] = b'0' + digit;
     }
   }
-  let s = std::str::from_utf8(&buf[i..]).expect("u32 decimal digits are valid utf-8");
+  let s = std::str::from_utf8(&buf[i..]).map_err(|_| {
+    VmError::InvariantViolation("invalid UTF-8 in u32 decimal digit formatting buffer")
+  })?;
   try_push_str(out, s)
 }
 

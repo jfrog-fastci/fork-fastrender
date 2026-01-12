@@ -343,8 +343,11 @@ impl U256 {
         *slot = b'0' + (n % 10) as u8;
         n /= 10;
       }
-      // Safe: ASCII digits.
-      s.push_str(std::str::from_utf8(&buf).expect("decimal digits are valid utf-8"));
+      // Safe by construction: the buffer is ASCII digits, so it must be valid UTF-8. Still, keep
+      // this non-panicking in case of internal bugs.
+      if let Ok(digits) = std::str::from_utf8(&buf) {
+        s.push_str(digits);
+      }
     }
     s
   }
