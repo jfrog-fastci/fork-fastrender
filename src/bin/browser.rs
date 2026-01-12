@@ -565,6 +565,82 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   };
 
+  // Seed the process-global about-page snapshot so `about:newtab` can render bookmarks + history
+  // immediately (including persisted state) before any new navigation commits happen.
+  {
+    use fastrender::ui::about_pages::{AboutPageSnapshot, BookmarkSnapshot, HistorySnapshot};
+    use std::time::{Duration, UNIX_EPOCH};
+    const MAX_HISTORY: usize = 500;
+
+    let bookmarks_snapshot: Vec<BookmarkSnapshot> = bookmarks
+      .urls
+      .iter()
+      .map(|raw| raw.trim())
+      .filter(|url| !url.is_empty())
+      .map(|url| BookmarkSnapshot {
+        title: None,
+        url: url.to_string(),
+      })
+      .collect();
+
+    #[derive(Default)]
+    struct HistoryAgg {
+      title: Option<String>,
+      last_ms: Option<u64>,
+      visit_count: u64,
+    }
+
+    let mut by_url: std::collections::HashMap<String, HistoryAgg> = std::collections::HashMap::new();
+    for entry in &history.entries {
+      let url = entry.url.trim();
+      if url.is_empty() || fastrender::ui::about_pages::is_about_url(url) {
+        continue;
+      }
+      let agg = by_url.entry(url.to_string()).or_default();
+      agg.visit_count = agg.visit_count.saturating_add(1);
+
+      let title = entry
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+
+      // Prefer the title of the most recent visit, but don't throw away a known title just because
+      // the latest history entry is missing one.
+      if entry.visited_at_ms > agg.last_ms {
+        agg.last_ms = entry.visited_at_ms;
+        if title.is_some() {
+          agg.title = title;
+        }
+      } else if agg.title.is_none() && title.is_some() {
+        agg.title = title;
+      }
+    }
+
+    let mut history_items: Vec<(Option<u64>, String, HistoryAgg)> = by_url
+      .into_iter()
+      .map(|(url, agg)| (agg.last_ms, url, agg))
+      .collect();
+    history_items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    history_items.truncate(MAX_HISTORY);
+
+    let history_snapshot: Vec<HistorySnapshot> = history_items
+      .into_iter()
+      .map(|(last_ms, url, agg)| HistorySnapshot {
+        title: agg.title,
+        url,
+        last_visited: last_ms.and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms))),
+        visit_count: agg.visit_count,
+      })
+      .collect();
+
+    fastrender::ui::about_pages::set_about_page_snapshot(AboutPageSnapshot {
+      bookmarks: bookmarks_snapshot,
+      history: history_snapshot,
+    });
+  }
+
   use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
   use winit::event::Event;
   use winit::event::StartCause;
@@ -3590,6 +3666,7 @@ impl App {
         );
         if result.bookmarks_changed {
           self.autosave_bookmarks();
+          self.sync_about_newtab_bookmarks_snapshot();
         }
       }
     }
@@ -4019,6 +4096,22 @@ impl App {
     }
   }
 
+  fn sync_about_newtab_bookmarks_snapshot(&self) {
+    let mut snapshot = fastrender::ui::about_pages::about_page_snapshot();
+    snapshot.bookmarks = self
+      .bookmarks
+      .urls
+      .iter()
+      .map(|raw| raw.trim())
+      .filter(|url| !url.is_empty())
+      .map(|url| fastrender::ui::about_pages::BookmarkSnapshot {
+        title: None,
+        url: url.to_string(),
+      })
+      .collect();
+    fastrender::ui::about_pages::set_about_page_snapshot(snapshot);
+  }
+
   fn toggle_bookmark_for_active_tab(&mut self) {
     let Some(url) = self
       .browser_state
@@ -4031,10 +4124,17 @@ impl App {
 
     self.bookmarks.toggle_url(&url);
     self.autosave_bookmarks();
+    self.sync_about_newtab_bookmarks_snapshot();
   }
 
   fn clear_history(&mut self) {
     self.browser_state.clear_history();
+
+    // Mirror the clear into the `about:newtab` snapshot so "Recently visited" reflects the
+    // user-visible history store.
+    let mut snapshot = fastrender::ui::about_pages::about_page_snapshot();
+    snapshot.history.clear();
+    fastrender::ui::about_pages::set_about_page_snapshot(snapshot);
 
     let Some(autosave) = self.profile_autosave.as_ref() else {
       return;
