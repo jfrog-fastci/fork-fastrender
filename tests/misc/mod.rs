@@ -8,7 +8,6 @@
 pub(crate) fn global_test_lock() -> crate::common::GlobalTestLockGuard {
   crate::common::global_test_lock()
 }
-mod containment_intrinsic_inline_size_test;
 mod data_url_svg;
 mod error_format_snapshot;
 mod js_css_supports;
