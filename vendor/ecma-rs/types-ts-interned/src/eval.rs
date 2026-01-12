@@ -62,6 +62,32 @@ impl Substitution {
     }
   }
 
+  fn masked(&self, params: &[TypeParamId]) -> Self {
+    if params.is_empty() || self.bindings.is_empty() {
+      return self.clone();
+    }
+
+    let mut params = params.to_vec();
+    params.sort();
+    params.dedup();
+
+    // `bindings` is already sorted by `TypeParamId`, so we can filter in a
+    // deterministic order while doing a linear merge.
+    let mut out = Vec::with_capacity(self.bindings.len());
+    let mut mask_idx = 0;
+    for (param, ty) in self.bindings.iter().copied() {
+      while mask_idx < params.len() && params[mask_idx] < param {
+        mask_idx += 1;
+      }
+      if mask_idx < params.len() && params[mask_idx] == param {
+        continue;
+      }
+      out.push((param, ty));
+    }
+
+    Self { bindings: out }
+  }
+
   fn get(&self, param: TypeParamId) -> Option<TypeId> {
     self
       .bindings
@@ -802,6 +828,13 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     depth: usize,
   ) -> crate::SignatureId {
     let mut sig = self.store.signature(sig);
+    let masked_subst = if sig.type_params.is_empty() {
+      None
+    } else {
+      let bound_params: Vec<_> = sig.type_params.iter().map(|tp| tp.id).collect();
+      Some(subst.masked(&bound_params))
+    };
+    let subst = masked_subst.as_ref().unwrap_or(subst);
     sig.type_params.iter_mut().for_each(|tp| {
       tp.constraint = tp
         .constraint

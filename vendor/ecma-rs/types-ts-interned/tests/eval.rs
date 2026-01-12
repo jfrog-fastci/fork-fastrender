@@ -74,6 +74,84 @@ fn predicate_without_asserted_type_is_unchanged() {
 }
 
 #[test]
+fn signature_type_params_do_not_capture_outer_substitutions() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  // A<string> references B. If type parameter IDs are local to their
+  // definitions, A's `T` and B's signature-local `U` can both be `TypeParamId(0)`.
+  //
+  // The evaluator must treat signature type params as *bound* and therefore
+  // ignore any outer substitution for those IDs.
+  let a_def = DefId(0);
+  let b_def = DefId(1);
+
+  let a_ref_b = store.intern_type(TypeKind::Ref {
+    def: b_def,
+    args: vec![],
+  });
+
+  let u = TypeParamId(0);
+  let u_ty = store.intern_type(TypeKind::TypeParam(u));
+  let mut b_sig = Signature::new(
+    vec![Param {
+      name: None,
+      ty: u_ty,
+      optional: false,
+      rest: false,
+    }],
+    u_ty,
+  );
+  b_sig.type_params = vec![TypeParamDecl::new(u)];
+  let b_sig = store.intern_signature(b_sig);
+  let b_callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![b_sig],
+  });
+
+  let mut expander = MockExpander::default();
+  expander.insert(
+    a_def,
+    ExpandedType {
+      params: vec![TypeParamId(0)],
+      ty: a_ref_b,
+    },
+  );
+  expander.insert(
+    b_def,
+    ExpandedType {
+      params: vec![],
+      ty: b_callable,
+    },
+  );
+
+  let a_string = store.intern_type(TypeKind::Ref {
+    def: a_def,
+    args: vec![primitives.string],
+  });
+
+  let mut eval = evaluator(store.clone(), &expander);
+  let result = eval.evaluate(a_string);
+
+  let TypeKind::Callable { overloads } = store.type_kind(result) else {
+    panic!("expected callable, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(overloads.len(), 1);
+  let sig = store.signature(overloads[0]);
+  assert_eq!(sig.type_params.len(), 1);
+  assert_eq!(sig.type_params[0].id, TypeParamId(0));
+  assert_eq!(sig.params.len(), 1);
+
+  assert!(matches!(
+    store.type_kind(sig.params[0].ty),
+    TypeKind::TypeParam(TypeParamId(0))
+  ));
+  assert!(matches!(
+    store.type_kind(sig.ret),
+    TypeKind::TypeParam(TypeParamId(0))
+  ));
+}
+
+#[test]
 fn recursive_promise_like_evaluation_terminates() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
