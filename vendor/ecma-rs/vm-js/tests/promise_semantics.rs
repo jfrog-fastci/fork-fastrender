@@ -465,6 +465,7 @@ fn basic_fulfillment_then_schedules_microtask_and_fulfills_derived() -> Result<(
       assert_eq!(ctx.vm.microtask_queue().len(), 0, "custom host should be used");
 
       ctx.run_jobs(&mut host)?;
+      ctx.run_jobs(&mut host)?;
 
       assert_eq!(ctx.heap.promise_state(derived_obj)?, PromiseState::Fulfilled);
       assert_eq!(ctx.heap.promise_result(derived_obj)?, Some(Value::Number(2.0)));

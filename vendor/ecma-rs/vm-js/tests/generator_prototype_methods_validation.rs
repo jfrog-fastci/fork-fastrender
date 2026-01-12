@@ -148,11 +148,11 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
       .unwrap_err();
     assert_is_type_error(&mut scope, &intr, err)?;
 
-    // Fake "generator object": has the internal [[GeneratorState]] marker and inherits from
-    // `%GeneratorPrototype%` so builtin receiver validation passes.
+    // Fake "generator object": inherits from `%GeneratorPrototype%` and carries the internal
+    // `[[GeneratorState]]` marker, but does **not** have real generator internal slots.
     //
-    // Since it has no continuation id, `%GeneratorPrototype%.next` / `.return` should still treat
-    // it as an incompatible receiver (TypeError). `%GeneratorPrototype%.throw` remains stubbed.
+    // Builtins must reject it as an incompatible receiver (TypeError); you cannot spoof generator
+    // brand checks by setting `[[Prototype]]` or adding internal-marker properties.
     let gen = scope.alloc_object()?;
     scope.push_root(Value::Object(gen))?;
     scope
@@ -205,7 +205,7 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
         &[Value::Undefined],
       )
       .unwrap_err();
-    assert!(matches!(err, VmError::Unimplemented("GeneratorResumeAbrupt")));
+    assert_is_type_error(&mut scope, &intr, err)?;
   }
 
   realm.teardown(&mut heap);

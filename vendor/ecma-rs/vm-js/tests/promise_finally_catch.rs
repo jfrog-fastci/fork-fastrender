@@ -549,6 +549,10 @@ fn promise_finally_waits_for_returned_promise_before_continuing() -> Result<(), 
     // promise alive across GC.
     scope.push_root(Value::Object(p))?;
 
+    // Root `p` across further Promise/allocations: this test uses the host-facing VM API directly
+    // (without JS stack roots), so `p` must be kept alive across any potential GC.
+    scope.push_root(Value::Object(p))?;
+
     // gate = Promise.withResolvers()
     let Value::Object(record) = ctx.vm.call_with_host(
       &mut scope,

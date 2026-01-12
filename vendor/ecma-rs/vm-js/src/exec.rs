@@ -9390,6 +9390,15 @@ pub(crate) enum GenFrame {
 
   /// Continue evaluating a unary `yield` after its operand expression completes (nested yield).
   YieldAfterOperand,
+  /// Continue evaluating a unary `yield*` after its operand expression completes (nested yield).
+  YieldStarAfterOperand,
+  /// Continue delegating a `yield*` expression to an iterator.
+  ///
+  /// The delegate iterator record is stored directly in the generator continuation so the backing
+  /// iterator object and `next` method remain GC-reachable across yields.
+  YieldStar {
+    iterator_record: iterator::IteratorRecord,
+  },
   /// Continue evaluating a non-`yield` unary expression after its operand completes.
   UnaryAfterArgument {
     expr: *const UnaryExpr,
@@ -9472,6 +9481,10 @@ impl Trace for GenFrame {
         for v in args.iter().copied() {
           tracer.trace_value(v);
         }
+      }
+      GenFrame::YieldStar { iterator_record } => {
+        tracer.trace_value(iterator_record.iterator);
+        tracer.trace_value(iterator_record.next_method);
       }
       _ => {}
     }
@@ -24061,8 +24074,9 @@ fn gen_eval_expr(
   let res = match &*expr.stx {
     Expr::Unary(unary) if unary.stx.operator == OperatorName::Yield => {
       // `parse-js` currently represents `yield;` as `yield undefined` with a synthetic
-      // `IdExpr("undefined")`. That is incorrect if `undefined` is shadowed. Detect this shape
-      // and treat it as a true `undefined` value.
+      // `IdExpr("undefined")`. That is incorrect if `undefined` is shadowed (e.g.
+      // `function* g() { var undefined = 1; yield; }`). Detect this shape and treat it as a true
+      // `undefined` value.
       let is_synthetic_undefined = unary.stx.argument.loc == unary.loc
         && matches!(
           unary.stx.argument.stx.as_ref(),
@@ -24090,7 +24104,16 @@ fn gen_eval_expr(
       }
     }
     Expr::Unary(unary) if unary.stx.operator == OperatorName::YieldDelegated => {
-      Err(VmError::Unimplemented("yield*"))
+      match gen_eval_expr(evaluator, scope, &unary.stx.argument)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => gen_yield_star_begin(evaluator, scope, v.unwrap_or(Value::Undefined)),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(&mut suspend.frames, GenFrame::YieldStarAfterOperand)?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
     }
     // For now, defer to the async-style continuation evaluator for expression forms that can nest
     // yield within larger expressions.
@@ -24223,6 +24246,77 @@ fn gen_eval_expr(
       }
     }
   }
+}
+
+fn gen_yield_star_begin(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  iterable: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  // `yield*` delegates via the iterator protocol, even for Arrays. Use the protocol-only iterator
+  // acquisition API to avoid any internal fast paths that might skip `@@iterator`.
+  let (iterator_record, done, value) = {
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(iterable)?;
+
+    let mut iterator_record = iterator::get_iterator_protocol(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut iter_scope,
+      iterable,
+    )?;
+
+    // Root the delegate iterator and its `next` method across IteratorNext/Complete/Value, which
+    // can allocate and potentially trigger GC.
+    iter_scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+    // Spec: `yield*` forwards sent values to the delegate iterator. The initial value is always
+    // `undefined` (the argument to the first `.next()` call is ignored).
+    let iter_result = iterator::iterator_next(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut iter_scope,
+      &mut iterator_record,
+      Some(Value::Undefined),
+    )?;
+
+    let done = iterator::iterator_complete(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut iter_scope,
+      iter_result,
+    )?;
+
+    let value = iterator::iterator_value(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut iter_scope,
+      iter_result,
+    )?;
+
+    (iterator_record, done, value)
+  };
+
+  if done {
+    return Ok(GenEval::Complete(Completion::normal(value)));
+  }
+
+  // The iterator record is stored in the generator continuation frame, but that frame lives on the
+  // Rust stack until we unwind to the yield boundary. Root the iterator and `next` method now so
+  // they remain GC-reachable while we build the continuation.
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let mut frames: VecDeque<GenFrame> = VecDeque::new();
+  gen_frames_push(&mut frames, GenFrame::YieldStar { iterator_record })?;
+
+  Ok(GenEval::Suspend(GenSuspend {
+    yield_value: value,
+    frames,
+  }))
 }
 
 fn gen_apply_unary_operator(
@@ -24790,6 +24884,80 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::YieldStarAfterOperand => match state {
+        Completion::Normal(v) => match gen_yield_star_begin(evaluator, scope, v.unwrap_or(Value::Undefined))? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            suspend.frames.append(&mut frames);
+            return Ok(GenEval::Suspend(suspend));
+          }
+        },
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::YieldStar { mut iterator_record } => match state {
+        Completion::Normal(v) => {
+          let received = v.unwrap_or(Value::Undefined);
+
+          let iter_result = match iterator::iterator_next(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            &mut iterator_record,
+            Some(received),
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let done = match iterator::iterator_complete(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let value = match iterator::iterator_value(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          if done {
+            state = Completion::normal(value);
+            continue;
+          }
+
+          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
+          gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
+          out_frames.append(&mut frames);
+          return Ok(GenEval::Suspend(GenSuspend {
+            yield_value: value,
+            frames: out_frames,
+          }));
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::UnaryAfterArgument { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
@@ -25217,6 +25385,10 @@ fn gen_root_values_for_continuation(
         if let Some(v) = last_value {
           values.push(*v);
         }
+      }
+      GenFrame::YieldStar { iterator_record } => {
+        values.push(iterator_record.iterator);
+        values.push(iterator_record.next_method);
       }
       GenFrame::WhileAfterTest { v, .. } | GenFrame::WhileAfterBody { v, .. } => values.push(*v),
       GenFrame::TryAfterFinally { pending } => {
