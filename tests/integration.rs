@@ -14,6 +14,9 @@ mod guards;
 mod r#ref;
 mod tooling;
 
+// Regression tests under `tests/regression/`.
+mod regression;
+
 #[test]
 fn llvm18_statepoint_fixture_emits_verified_stackmaps() {
   tooling::llvm_stackmaps::llvm18_statepoint_fixture_emits_verified_stackmaps();
