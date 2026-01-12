@@ -99,10 +99,10 @@ fn typed_array_set_detach_during_offset_throws_type_error() {
 
         var ok1 = false;
         try {
-          var ab = new ArrayBuffer(1);
-          var ta = new Uint8Array(ab);
-          var sb = new ArrayBuffer(1);
-          var src = new Uint8Array(sb);
+          let ab = new ArrayBuffer(1);
+          let ta = new Uint8Array(ab);
+          let sb = new ArrayBuffer(1);
+          let src = new Uint8Array(sb);
           ta.set(src, { valueOf() { detachArrayBuffer(ab); return 0; } });
         } catch (e) {
           ok1 = e && e.name === "TypeError";
@@ -110,10 +110,10 @@ fn typed_array_set_detach_during_offset_throws_type_error() {
 
         var ok2 = false;
         try {
-          var ab2 = new ArrayBuffer(1);
-          var ta2 = new Uint8Array(ab2);
-          var sb2 = new ArrayBuffer(1);
-          var src2 = new Uint8Array(sb2);
+          let ab2 = new ArrayBuffer(1);
+          let ta2 = new Uint8Array(ab2);
+          let sb2 = new ArrayBuffer(1);
+          let src2 = new Uint8Array(sb2);
           ta2.set(src2, { valueOf() { detachArrayBuffer(sb2); return 0; } });
         } catch (e) {
           ok2 = e && e.name === "TypeError";
