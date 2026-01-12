@@ -554,6 +554,17 @@ impl Database {
   /// Cache a checked body result for reuse by span and type queries.
   pub fn set_body_result(&mut self, body: BodyId, result: Arc<BodyCheckResult>) {
     if let Some(existing) = self.body_results.get(&body).copied() {
+      // `Program::check` / `Program::check_body` may repeatedly seed the same
+      // cached `BodyCheckResult` into the salsa database while other threads are
+      // running read-only queries on database snapshots.
+      //
+      // Avoid needless salsa input writes when the cached result is already
+      // present: bumping salsa revisions while snapshots are in use can trigger
+      // query cancellation/unwinding, which then surfaces as spurious ICE
+      // diagnostics in concurrent read-heavy workloads.
+      if Arc::ptr_eq(existing.result(self), &result) {
+        return;
+      }
       existing.set_body(self).to(body);
       existing.set_result(self).to(result);
     } else {
