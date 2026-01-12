@@ -1405,10 +1405,13 @@ fn vm_error_to_outcome(rt: &mut JsRuntime, err: VmError) -> RunOutcome {
 /// Future boundary for a TS→native backend.
 ///
 /// This trait is intentionally lightweight: it takes a TypeScript snippet and returns the
-/// **captured `console.log` output** (as a single string with trailing whitespace trimmed).
+/// **captured stdout output** (as a single string with trailing whitespace trimmed).
+///
+/// In practice this is the output produced via the harness' minimal "native builtins" prelude:
+/// `print(...)` / `console.log(...)`.
 ///
 /// The `vm-js` oracle implements this by running the snippet under the interpreter with a minimal
-/// injected `console.log`, while the `native-js` runner implements it by compiling to a native
+/// injected builtins prelude, while the `native-js` runner implements it by compiling to a native
 /// executable and capturing its stdout.
 pub trait NativeRunner {
   fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic>;
