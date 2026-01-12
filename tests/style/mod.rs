@@ -44,6 +44,7 @@ mod custom_property_registration_test;
 mod custom_property_registration_union_syntax_test;
 mod custom_property_wide_keywords_test;
 mod defaults_test;
+mod defined_pseudo_cascade_toggle_test;
 mod dynamic_range_limit_test;
 mod explicit_no_namespace_selector_test;
 mod extract_print;

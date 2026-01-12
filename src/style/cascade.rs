@@ -7243,6 +7243,7 @@ struct RuleScopes<'a> {
   host_rules: HashMap<usize, RuleIndex<'a>>,
   slot_maps: HashMap<usize, SlotAssignmentMap<'a>>,
   fallback_document_rules_in_shadow_scopes: bool,
+  treat_custom_elements_as_defined: bool,
   quirks_mode: QuirksMode,
   custom_property_registry_ua: Arc<CustomPropertyRegistry>,
   custom_property_registry_document: Arc<CustomPropertyRegistry>,
@@ -11344,12 +11345,21 @@ pub struct CascadeOptions {
   /// fallback. This is a spec deviation: per Shadow DOM + CSS scoping rules, document author rules
   /// never apply within a shadow tree (regardless of whether the shadow root has stylesheets).
   pub fallback_document_rules_in_shadow_scopes: bool,
+  /// When `true`, treat custom elements as always `:defined`.
+  ///
+  /// Spec behavior is that custom elements are `:defined` only if they have been upgraded by the
+  /// custom element registry. FastRender does not run the registry, so this defaults to `true` as a
+  /// compatibility fallback.
+  ///
+  /// Default: `true`.
+  pub treat_custom_elements_as_defined: bool,
 }
 
 impl Default for CascadeOptions {
   fn default() -> Self {
     Self {
       fallback_document_rules_in_shadow_scopes: false,
+      treat_custom_elements_as_defined: true,
     }
   }
 }
@@ -11359,7 +11369,20 @@ impl CascadeOptions {
   pub fn legacy_shadow_document_fallback() -> Self {
     Self {
       fallback_document_rules_in_shadow_scopes: true,
+      ..Self::default()
     }
+  }
+
+  /// Configure whether custom elements should be treated as `:defined`.
+  pub fn with_custom_elements_defined(mut self, enabled: bool) -> Self {
+    self.treat_custom_elements_as_defined = enabled;
+    self
+  }
+
+  /// Use spec-correct behavior for `:defined` on custom elements (treat them as undefined unless
+  /// upgraded).
+  pub fn spec_custom_elements_undefined() -> Self {
+    Self::default().with_custom_elements_defined(false)
   }
 }
 
@@ -12379,6 +12402,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
 
   let fallback_document_rules_in_shadow_scopes =
     cascade_options.fallback_document_rules_in_shadow_scopes;
+  let treat_custom_elements_as_defined = cascade_options.treat_custom_elements_as_defined;
 
   // Legacy cascade entrypoints apply document styles inside shadow roots. When a document
   // stylesheet contains :host / :host-context selectors and a shadow tree has no shadow
@@ -12553,6 +12577,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
     host_rules: shadow_host_indices,
     slot_maps,
     fallback_document_rules_in_shadow_scopes,
+    treat_custom_elements_as_defined,
     quirks_mode,
     custom_property_registry_ua,
     custom_property_registry_document: custom_property_registry_document.clone(),
@@ -12782,7 +12807,11 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         .prefers_color_scheme
         .unwrap_or(ColorScheme::NoPreference);
       let mut style_sharing_cache =
-        StyleSharingCache::new(rule_scopes.quirks_mode, target_fragment, true);
+        StyleSharingCache::new(
+          rule_scopes.quirks_mode,
+          target_fragment,
+          rule_scopes.treat_custom_elements_as_defined,
+        );
       apply_styles_internal(
         dom,
         &rule_scopes,
@@ -13042,6 +13071,7 @@ impl<'a> PreparedCascade<'a> {
 
     let fallback_document_rules_in_shadow_scopes =
       cascade_options.fallback_document_rules_in_shadow_scopes;
+    let treat_custom_elements_as_defined = cascade_options.treat_custom_elements_as_defined;
 
     let (
       custom_property_registry_ua,
@@ -13168,6 +13198,7 @@ impl<'a> PreparedCascade<'a> {
       host_rules: shadow_host_indices,
       slot_maps,
       fallback_document_rules_in_shadow_scopes,
+      treat_custom_elements_as_defined,
       quirks_mode,
       custom_property_registry_ua,
       custom_property_registry_document: custom_property_registry_document.clone(),
@@ -13611,7 +13642,11 @@ impl<'a> PreparedCascade<'a> {
           None
         };
         let mut style_sharing_cache =
-          StyleSharingCache::new(self.rule_scopes.quirks_mode, target_fragment, true);
+          StyleSharingCache::new(
+            self.rule_scopes.quirks_mode,
+            target_fragment,
+            self.rule_scopes.treat_custom_elements_as_defined,
+          );
         apply_styles_internal(
           self.dom,
           &self.rule_scopes,
@@ -14956,7 +14991,7 @@ fn match_exported_pseudo_part_rules<'a>(
           sibling_cache: Some(sibling_cache),
           element_attr_cache: Some(element_attr_cache),
           form_validity_index: Some(&dom_maps.form_validity_index),
-          treat_custom_elements_as_defined: true,
+          treat_custom_elements_as_defined: scopes.treat_custom_elements_as_defined,
         };
 
         let include_self_container = true;
@@ -15320,7 +15355,7 @@ fn match_part_rules_internal<'a>(
           sibling_cache: Some(sibling_cache),
           element_attr_cache: Some(element_attr_cache),
           form_validity_index: Some(&dom_maps.form_validity_index),
-          treat_custom_elements_as_defined: true,
+          treat_custom_elements_as_defined: scopes.treat_custom_elements_as_defined,
         };
 
         let node_summary = if rules.has_has_requirements {
@@ -15728,7 +15763,7 @@ fn match_slotted_pseudo_rules<'a>(
     sibling_cache: Some(sibling_cache),
     element_attr_cache: Some(element_attr_cache),
     form_validity_index: Some(&dom_maps.form_validity_index),
-    treat_custom_elements_as_defined: true,
+    treat_custom_elements_as_defined: scopes.treat_custom_elements_as_defined,
   };
 
   let include_self_container = true;
@@ -16010,6 +16045,7 @@ fn collect_matching_rules<'a>(
     sibling_cache,
     false,
     false,
+    scopes.treat_custom_elements_as_defined,
     scopes.quirks_mode,
   )?;
 
@@ -16036,6 +16072,7 @@ fn collect_matching_rules<'a>(
       sibling_cache,
       allow_shadow_host,
       false,
+      scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
     )?);
   }
@@ -16064,6 +16101,7 @@ fn collect_matching_rules<'a>(
           sibling_cache,
           false,
           false,
+          scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
         )?);
       }
@@ -16091,6 +16129,7 @@ fn collect_matching_rules<'a>(
         sibling_cache,
         true,
         true,
+        scopes.treat_custom_elements_as_defined,
         scopes.quirks_mode,
       )?);
     }
@@ -16118,6 +16157,7 @@ fn collect_matching_rules<'a>(
           sibling_cache,
           true,
           false,
+          scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
         )?);
       }
@@ -16198,6 +16238,7 @@ fn collect_pseudo_matching_rules<'a>(
     pseudo,
     false,
     false,
+    scopes.treat_custom_elements_as_defined,
     scopes.quirks_mode,
   );
 
@@ -16224,6 +16265,7 @@ fn collect_pseudo_matching_rules<'a>(
       pseudo,
       allow_shadow_host,
       false,
+      scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
     ));
   }
@@ -16253,6 +16295,7 @@ fn collect_pseudo_matching_rules<'a>(
           pseudo,
           false,
           false,
+          scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
         ));
       }
@@ -16282,6 +16325,7 @@ fn collect_pseudo_matching_rules<'a>(
       pseudo,
       true,
       true,
+      scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
     ));
   }
@@ -21137,6 +21181,7 @@ mod tests {
           &sibling_cache,
           false,
           false,
+          true,
           QuirksMode::NoQuirks,
         )
         .unwrap_or_else(|err| {
@@ -33747,6 +33792,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       &PseudoElement::Marker,
       false,
       false,
+      true,
       QuirksMode::NoQuirks,
     );
     assert_eq!(
@@ -35155,6 +35201,7 @@ fn find_matching_rules<'a>(
   sibling_cache: &SiblingListCache,
   allow_shadow_host: bool,
   featureless_subject: bool,
+  treat_custom_elements_as_defined: bool,
   quirks_mode: QuirksMode,
 ) -> Result<Vec<MatchedRule<'a>>, RenderError> {
   if !node.is_element() {
@@ -35271,7 +35318,7 @@ fn find_matching_rules<'a>(
     sibling_cache: Some(sibling_cache),
     element_attr_cache,
     form_validity_index: Some(&dom_maps.form_validity_index),
-    treat_custom_elements_as_defined: true,
+    treat_custom_elements_as_defined,
   };
 
   let scope_allows = |scope: &RuleScope, is_slotted: bool| -> bool {
@@ -35902,6 +35949,7 @@ fn find_pseudo_element_rules<'a>(
   pseudo: &PseudoElement,
   allow_shadow_host: bool,
   featureless_subject: bool,
+  treat_custom_elements_as_defined: bool,
   quirks_mode: QuirksMode,
 ) -> Vec<MatchedRule<'a>> {
   if !node.is_element() {
@@ -35990,7 +36038,7 @@ fn find_pseudo_element_rules<'a>(
     sibling_cache: Some(sibling_cache),
     element_attr_cache,
     form_validity_index,
-    treat_custom_elements_as_defined: true,
+    treat_custom_elements_as_defined,
   };
 
   let include_self_container = true;
