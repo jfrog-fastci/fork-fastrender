@@ -4,7 +4,9 @@ use crate::ImportAttribute;
 use crate::LoadedModuleRequest;
 use crate::ModuleRequest;
 use crate::SourceText;
-use crate::{EnvRootId, ExternalMemoryToken, RootId, Vm, VmError};
+use crate::{
+  EnvRootId, ExternalMemoryToken, Heap, PromiseCapability, RootId, Scope, Value, Vm, VmError,
+};
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{
   ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMember, ObjMemberType,
@@ -37,8 +39,121 @@ pub enum ModuleStatus {
   Linking,
   Linked,
   Evaluating,
+  /// Spec `~evaluating-async~` (`ModuleStatus::evaluating-async`).
+  EvaluatingAsync,
   Evaluated,
   Errored,
+}
+
+/// Spec `[[AsyncEvaluationOrder]]` internal slot of Cyclic Module Records.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) enum AsyncEvaluationOrder {
+  /// Spec `~unset~`.
+  #[default]
+  Unset,
+  /// Concrete order index.
+  Order(usize),
+  /// Spec `~done~`.
+  Done,
+}
+
+/// Persistent roots for an ECMAScript PromiseCapability record.
+///
+/// This is used for module loading/evaluation state that can live in host memory across async
+/// boundaries. Callers MUST explicitly tear down these roots when the capability is no longer
+/// needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromiseCapabilityRoots {
+  promise: RootId,
+  resolve: RootId,
+  reject: RootId,
+}
+
+impl PromiseCapabilityRoots {
+  pub(crate) fn new(scope: &mut Scope<'_>, cap: PromiseCapability) -> Result<Self, VmError> {
+    // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
+    let values = [cap.promise, cap.resolve, cap.reject];
+    scope.push_roots(&values)?;
+
+    let mut roots: Vec<RootId> = Vec::new();
+    roots
+      .try_reserve_exact(values.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for &value in &values {
+      match scope.heap_mut().add_root(value) {
+        Ok(id) => roots.push(id),
+        Err(e) => {
+          for root in roots.drain(..) {
+            scope.heap_mut().remove_root(root);
+          }
+          return Err(e);
+        }
+      }
+    }
+
+    Ok(Self {
+      promise: roots[0],
+      resolve: roots[1],
+      reject: roots[2],
+    })
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  pub(crate) fn promise_root(&self) -> RootId {
+    self.promise
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  pub(crate) fn resolve_root(&self) -> RootId {
+    self.resolve
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  pub(crate) fn reject_root(&self) -> RootId {
+    self.reject
+  }
+
+  pub(crate) fn capability(&self, heap: &Heap) -> Option<PromiseCapability> {
+    Some(PromiseCapability {
+      promise: heap.get_root(self.promise)?,
+      resolve: heap.get_root(self.resolve)?,
+      reject: heap.get_root(self.reject)?,
+    })
+  }
+
+  pub(crate) fn teardown(self, heap: &mut Heap) {
+    heap.remove_root(self.promise);
+    heap.remove_root(self.resolve);
+    heap.remove_root(self.reject);
+  }
+}
+
+/// Persistent root for a single JS value stored in host-owned, non-traced memory.
+///
+/// Callers MUST explicitly tear down the root when the value is no longer needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValueRoot(RootId);
+
+#[allow(dead_code)]
+impl ValueRoot {
+  pub(crate) fn new(scope: &mut Scope<'_>, value: Value) -> Result<Self, VmError> {
+    // Root `value` during persistent root registration in case it triggers a GC.
+    scope.push_root(value)?;
+    let id = scope.heap_mut().add_root(value)?;
+    Ok(Self(id))
+  }
+
+  pub(crate) fn get(self, heap: &Heap) -> Option<Value> {
+    heap.get_root(self.0)
+  }
+
+  pub(crate) fn teardown(self, heap: &mut Heap) {
+    heap.remove_root(self.0);
+  }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,13 +226,13 @@ pub struct SourceTextModuleRecord {
   pub requested_modules: Vec<ModuleRequest>,
   pub import_entries: Vec<ImportEntry>,
   pub status: ModuleStatus,
-  /// `[[EvaluationError]]` – stored error completion for a module that finished evaluation with an
+  /// Evaluator-specific stored error completion for a module that finished evaluation with an
   /// error.
   ///
   /// This is currently represented as the message for a `VmError::Unimplemented` rejection reason.
   /// It is used to make repeated `Evaluate()` calls deterministic, and to support host embeddings
   /// (like FastRender) that abort in-progress top-level await evaluation.
-  pub(crate) evaluation_error: Option<&'static str>,
+  pub(crate) evaluation_error_unimplemented: Option<&'static str>,
   /// `[[HasTLA]]` – whether this module contains top-level `await`.
   pub has_tla: bool,
   pub local_export_entries: Vec<LocalExportEntry>,
@@ -138,9 +253,76 @@ pub struct SourceTextModuleRecord {
   /// `[[ImportMeta]]` – cached `import.meta` object (rooted in the heap).
   #[allow(dead_code)]
   pub(crate) import_meta: Option<RootId>,
+
+  // === Cyclic Module Record evaluation state (ECMA-262) ===
+  //
+  // These fields are not yet fully wired into module evaluation; they exist so we can model the
+  // full set of spec-visible states needed for top-level await across the module graph.
+
+  /// `[[CycleRoot]]` – SCC root module record (or empty).
+  #[allow(dead_code)]
+  pub(crate) cycle_root: Option<ModuleId>,
+  /// `[[DFSAncestorIndex]]` – DFS ancestor index (or empty).
+  #[allow(dead_code)]
+  pub(crate) dfs_ancestor_index: Option<usize>,
+  /// `[[AsyncEvaluationOrder]]` – `~unset~ | integer | ~done~`.
+  #[allow(dead_code)]
+  pub(crate) async_evaluation_order: AsyncEvaluationOrder,
+  /// `[[TopLevelCapability]]` – module evaluation promise capability (or empty).
+  #[allow(dead_code)]
+  pub(crate) top_level_capability: Option<PromiseCapabilityRoots>,
+  /// `[[AsyncParentModules]]` – async parent module set.
+  #[allow(dead_code)]
+  pub(crate) async_parent_modules: Vec<ModuleId>,
+  /// `[[PendingAsyncDependencies]]` – async dependency count (or empty).
+  #[allow(dead_code)]
+  pub(crate) pending_async_dependencies: Option<usize>,
+  /// `[[EvaluationError]]` – thrown value during evaluation (or empty).
+  #[allow(dead_code)]
+  pub(crate) evaluation_error: Option<ValueRoot>,
 }
 
 impl SourceTextModuleRecord {
+  #[allow(dead_code)]
+  pub(crate) fn set_top_level_capability(
+    &mut self,
+    scope: &mut Scope<'_>,
+    cap: PromiseCapability,
+  ) -> Result<(), VmError> {
+    if self.top_level_capability.is_some() {
+      return Err(VmError::InvariantViolation(
+        "module already has a top-level promise capability",
+      ));
+    }
+    self.top_level_capability = Some(PromiseCapabilityRoots::new(scope, cap)?);
+    Ok(())
+  }
+
+  #[allow(dead_code)]
+  pub(crate) fn teardown_top_level_capability(&mut self, heap: &mut Heap) {
+    if let Some(roots) = self.top_level_capability.take() {
+      roots.teardown(heap);
+    }
+  }
+
+  #[allow(dead_code)]
+  pub(crate) fn set_evaluation_error(&mut self, scope: &mut Scope<'_>, value: Value) -> Result<(), VmError> {
+    if self.evaluation_error.is_some() {
+      return Err(VmError::InvariantViolation(
+        "module already has an evaluation error value",
+      ));
+    }
+    self.evaluation_error = Some(ValueRoot::new(scope, value)?);
+    Ok(())
+  }
+
+  #[allow(dead_code)]
+  pub(crate) fn teardown_evaluation_error(&mut self, heap: &mut Heap) {
+    if let Some(root) = self.evaluation_error.take() {
+      root.teardown(heap);
+    }
+  }
+
   /// Returns the cached namespace export list (`[[Exports]]`) if a namespace object has been
   /// created.
   pub fn namespace_exports(&self) -> Option<&[String]> {

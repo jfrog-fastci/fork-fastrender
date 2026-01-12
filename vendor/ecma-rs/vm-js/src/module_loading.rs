@@ -20,11 +20,12 @@
 
 use crate::module_graph::ModuleGraph;
 use crate::module_record::ModuleStatus;
+use crate::module_record::PromiseCapabilityRoots;
 use crate::property::PropertyKey;
 use crate::promise::PromiseCapability;
 use crate::{
   GcObject, GcString, ImportAttribute, LoadedModuleRequest, ModuleId, ModuleRequest, PromiseState,
-  RealmId, RootId, Scope, ScriptId, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks,
+  RealmId, Scope, ScriptId, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use std::any::Any;
 use std::cell::RefCell;
@@ -106,44 +107,6 @@ impl fmt::Debug for HostDefined {
 }
 
 #[derive(Debug)]
-struct PromiseCapabilityRoots {
-  promise: RootId,
-  resolve: RootId,
-  reject: RootId,
-}
-
-fn root_promise_capability(
-  scope: &mut Scope<'_>,
-  cap: PromiseCapability,
-) -> Result<PromiseCapabilityRoots, VmError> {
-  // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
-  let values = [cap.promise, cap.resolve, cap.reject];
-  scope.push_roots(&values)?;
-
-  let mut roots: Vec<RootId> = Vec::new();
-  roots
-    .try_reserve_exact(values.len())
-    .map_err(|_| VmError::OutOfMemory)?;
-  for &value in &values {
-    match scope.heap_mut().add_root(value) {
-      Ok(id) => roots.push(id),
-      Err(e) => {
-        for root in roots.drain(..) {
-          scope.heap_mut().remove_root(root);
-        }
-        return Err(e);
-      }
-    }
-  }
-
-  Ok(PromiseCapabilityRoots {
-    promise: roots[0],
-    resolve: roots[1],
-    reject: roots[2],
-  })
-}
-
-#[derive(Debug)]
 struct GraphLoadingStateInner {
   promise_capability: PromiseCapability,
   promise_roots: Option<PromiseCapabilityRoots>,
@@ -205,7 +168,7 @@ impl GraphLoadingState {
         host_ctx,
         hooks,
       )?;
-      let promise_roots = root_promise_capability(&mut root_scope, cap)?;
+      let promise_roots = PromiseCapabilityRoots::new(&mut root_scope, cap)?;
       Ok((cap, promise_roots))
     }?;
 
@@ -318,9 +281,7 @@ impl GraphLoadingState {
       Ok(())
     })();
 
-    scope.heap_mut().remove_root(roots.promise);
-    scope.heap_mut().remove_root(roots.resolve);
-    scope.heap_mut().remove_root(roots.reject);
+    roots.teardown(scope.heap_mut());
 
     if let Err(err) = result {
       if let Some(dynamic_import) = dynamic_import {
@@ -529,9 +490,7 @@ impl GraphLoadingState {
       Ok(())
     })();
 
-    scope.heap_mut().remove_root(roots.promise);
-    scope.heap_mut().remove_root(roots.resolve);
-    scope.heap_mut().remove_root(roots.reject);
+    roots.teardown(scope.heap_mut());
 
     if let Err(err) = result {
       if let Some(dynamic_import) = dynamic_import {
@@ -558,9 +517,7 @@ impl GraphLoadingState {
       (inner.promise_roots.take(), inner.dynamic_import.take())
     };
     if let Some(roots) = roots {
-      heap.remove_root(roots.promise);
-      heap.remove_root(roots.resolve);
-      heap.remove_root(roots.reject);
+      roots.teardown(heap);
     }
     if let Some(dynamic_import) = dynamic_import {
       dynamic_import.state.teardown_roots(heap);
@@ -655,7 +612,7 @@ impl DynamicImportState {
     // popped before we return.
     let roots = {
       let mut root_scope = scope.reborrow();
-      root_promise_capability(&mut root_scope, cap)?
+      PromiseCapabilityRoots::new(&mut root_scope, cap)?
     };
     Ok(Self(Rc::new(RefCell::new(DynamicImportStateInner {
       promise_capability: cap,
@@ -704,9 +661,7 @@ impl DynamicImportState {
       Ok(())
     })();
 
-    scope.heap_mut().remove_root(roots.promise);
-    scope.heap_mut().remove_root(roots.resolve);
-    scope.heap_mut().remove_root(roots.reject);
+    roots.teardown(scope.heap_mut());
     result
   }
 
@@ -741,9 +696,7 @@ impl DynamicImportState {
       Ok(())
     })();
 
-    scope.heap_mut().remove_root(roots.promise);
-    scope.heap_mut().remove_root(roots.resolve);
-    scope.heap_mut().remove_root(roots.reject);
+    roots.teardown(scope.heap_mut());
     result
   }
 
@@ -752,9 +705,7 @@ impl DynamicImportState {
     let Some(roots) = roots else {
       return;
     };
-    heap.remove_root(roots.promise);
-    heap.remove_root(roots.resolve);
-    heap.remove_root(roots.reject);
+    roots.teardown(heap);
   }
 }
 
@@ -2262,7 +2213,7 @@ mod tests {
           .promise_roots
           .as_ref()
           .expect("GraphLoadingState should have promise roots after creation");
-        (roots.promise, roots.resolve, roots.reject)
+        (roots.promise_root(), roots.resolve_root(), roots.reject_root())
       };
       assert!(scope.heap().get_root(promise_root).is_some());
       assert!(scope.heap().get_root(resolve_root).is_some());
@@ -2323,7 +2274,7 @@ mod tests {
           .promise_roots
           .as_ref()
           .expect("GraphLoadingState should have promise roots after creation");
-        (roots.promise, roots.resolve, roots.reject)
+        (roots.promise_root(), roots.resolve_root(), roots.reject_root())
       };
       assert!(scope.heap().get_root(promise_root).is_some());
       assert!(scope.heap().get_root(resolve_root).is_some());

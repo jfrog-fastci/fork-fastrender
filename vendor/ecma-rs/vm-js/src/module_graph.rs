@@ -2,6 +2,7 @@ use crate::execution_context::ModuleId;
 use crate::exec::{instantiate_module_decls, run_module, run_module_until_await, ModuleTlaStepResult};
 use crate::module_record::ModuleNamespaceCache;
 use crate::module_record::ModuleStatus;
+use crate::module_record::PromiseCapabilityRoots;
 use crate::module_record::ResolveExportResult;
 use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
@@ -221,7 +222,7 @@ impl ModuleGraph {
         None => Value::Undefined,
       };
 
-      if let Some(reject) = scope.heap().get_root(roots.reject) {
+      if let Some(reject) = scope.heap().get_root(roots.reject_root()) {
         // Best-effort: ensure the promise settles deterministically so embeddings that inspect the
         // evaluation promise see a rejection instead of a forever-pending promise.
         //
@@ -278,7 +279,7 @@ impl ModuleGraph {
     // (mirrors ECMA-262's "evaluated with error" pattern).
     if let Some(record) = self.modules.get_mut(idx) {
       record.status = ModuleStatus::Evaluated;
-      record.evaluation_error = Some(TLA_ABORT_REASON);
+      record.evaluation_error_unimplemented = Some(TLA_ABORT_REASON);
     }
   }
 
@@ -574,7 +575,10 @@ impl ModuleGraph {
       .status;
 
     match status {
-      ModuleStatus::Linked | ModuleStatus::Evaluating | ModuleStatus::Evaluated => return Ok(()),
+      ModuleStatus::Linked
+      | ModuleStatus::Evaluating
+      | ModuleStatus::EvaluatingAsync
+      | ModuleStatus::Evaluated => return Ok(()),
       ModuleStatus::Linking => return Ok(()),
       ModuleStatus::Errored => return Err(VmError::Unimplemented("module is in an errored state")),
       ModuleStatus::New | ModuleStatus::Unlinked => {}
@@ -973,13 +977,13 @@ impl ModuleGraph {
   ) -> Result<(), VmError> {
     let idx = module_index(module);
     let status = self.modules[idx].status;
-    let evaluation_error = self.modules[idx].evaluation_error;
+    let evaluation_error = self.modules[idx].evaluation_error_unimplemented;
     match status {
       ModuleStatus::Evaluated => match evaluation_error {
         Some(msg) => return Err(VmError::Unimplemented(msg)),
         None => return Ok(()),
       },
-      ModuleStatus::Evaluating => return Ok(()),
+      ModuleStatus::Evaluating | ModuleStatus::EvaluatingAsync => return Ok(()),
       ModuleStatus::Linked => {}
       ModuleStatus::Errored => return Err(VmError::Unimplemented("module is in an errored state")),
       _ => return Err(VmError::Unimplemented("module is not linked")),
@@ -1057,13 +1061,13 @@ impl ModuleGraph {
   ) -> Result<ModuleTlaStepResult, VmError> {
     let idx = module_index(module);
     let status = self.modules[idx].status;
-    let evaluation_error = self.modules[idx].evaluation_error;
+    let evaluation_error = self.modules[idx].evaluation_error_unimplemented;
     match status {
       ModuleStatus::Evaluated => match evaluation_error {
         Some(msg) => return Err(VmError::Unimplemented(msg)),
         None => return Ok(ModuleTlaStepResult::Completed),
       },
-      ModuleStatus::Evaluating => return Ok(ModuleTlaStepResult::Completed),
+      ModuleStatus::Evaluating | ModuleStatus::EvaluatingAsync => return Ok(ModuleTlaStepResult::Completed),
       ModuleStatus::Linked => {}
       ModuleStatus::Errored => return Err(VmError::Unimplemented("module is in an errored state")),
       _ => return Err(VmError::Unimplemented("module is not linked")),
@@ -1197,49 +1201,6 @@ impl ModuleGraph {
 }
 
 #[derive(Debug)]
-struct PromiseCapabilityRoots {
-  promise: RootId,
-  resolve: RootId,
-  reject: RootId,
-}
-
-impl PromiseCapabilityRoots {
-  fn new(scope: &mut Scope<'_>, cap: crate::PromiseCapability) -> Result<Self, VmError> {
-    // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
-    let values = [cap.promise, cap.resolve, cap.reject];
-    scope.push_roots(&values)?;
-
-    let mut roots: Vec<RootId> = Vec::new();
-    roots
-      .try_reserve_exact(values.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-    for &value in &values {
-      match scope.heap_mut().add_root(value) {
-        Ok(id) => roots.push(id),
-        Err(e) => {
-          for root in roots.drain(..) {
-            scope.heap_mut().remove_root(root);
-          }
-          return Err(e);
-        }
-      }
-    }
-
-    Ok(Self {
-      promise: roots[0],
-      resolve: roots[1],
-      reject: roots[2],
-    })
-  }
-
-  fn teardown(self, heap: &mut Heap) {
-    heap.remove_root(self.promise);
-    heap.remove_root(self.resolve);
-    heap.remove_root(self.reject);
-  }
-}
-
-#[derive(Debug)]
 struct TlaEvaluationState {
   resume_index: usize,
   promise_roots: Option<PromiseCapabilityRoots>,
@@ -1341,7 +1302,10 @@ pub(crate) fn module_tla_on_fulfilled(
         .ok_or(VmError::InvariantViolation(
           "missing async module evaluation promise roots on completion",
         ))?;
-      let resolve = scope.heap().get_root(roots.resolve).ok_or_else(VmError::invalid_handle)?;
+      let cap = roots
+        .capability(scope.heap())
+        .ok_or_else(VmError::invalid_handle)?;
+      let resolve = cap.resolve;
       scope.push_root(resolve)?;
       let _ = vm.call_with_host_and_hooks(
         host,
@@ -1380,7 +1344,10 @@ pub(crate) fn module_tla_on_fulfilled(
         .ok_or(VmError::InvariantViolation(
           "missing async module evaluation promise roots on error",
         ))?;
-      let reject = scope.heap().get_root(roots.reject).ok_or_else(VmError::invalid_handle)?;
+      let cap = roots
+        .capability(scope.heap())
+        .ok_or_else(VmError::invalid_handle)?;
+      let reject = cap.reject;
 
       let reason = if let Some(thrown) = err.thrown_value() {
         thrown
@@ -1431,7 +1398,10 @@ pub(crate) fn module_tla_on_rejected(
     .ok_or(VmError::InvariantViolation(
       "missing async module evaluation promise roots on rejection",
     ))?;
-  let reject = scope.heap().get_root(roots.reject).ok_or_else(VmError::invalid_handle)?;
+  let cap = roots
+    .capability(scope.heap())
+    .ok_or_else(VmError::invalid_handle)?;
+  let reject = cap.reject;
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
   scope.push_root(reject)?;
   scope.push_root(reason)?;
