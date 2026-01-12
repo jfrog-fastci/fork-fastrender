@@ -159,3 +159,8 @@ I/O is:
 
 These types are designed to be stored inside an in-flight `io::IoOp` so descriptor/buffer lifetimes
 are tied to completion/cancellation.
+
+Note: `PinnedIoVec` / `PinnedMsgHdr` only ensure pointer stability and ownership of descriptor
+memory. For async I/O, the in-flight operation must also acquire the appropriate backing-store I/O
+borrows (via `io::IoOp` / `io::IoRuntime`) so safe Rust code cannot access the bytes while the
+kernel may read/write them.

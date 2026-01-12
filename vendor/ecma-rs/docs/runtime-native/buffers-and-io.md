@@ -193,6 +193,11 @@ platforms) the safe contract is:
 These types are `Send` so they can be moved into I/O worker threads or stored in in-flight op
 records until completion/cancellation.
 
+Note: `PinnedIoVec` / `PinnedMsgHdr` only ensure pointer stability and ownership of descriptor
+memory. For async I/O, the in-flight operation must also acquire the appropriate backing-store I/O
+borrows (see `io::IoOp`) so safe Rust code cannot access the bytes while the kernel may read/write
+them.
+
 ### Aliasing / borrow invariants (io_uring + compiler safety)
 
 - **Borrow blocks safe access:** while any I/O borrow is active, safe slice access APIs must

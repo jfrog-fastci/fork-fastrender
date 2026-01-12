@@ -97,14 +97,20 @@ enum PinGuard {
 /// A pinned, stable-address `iovec[]` array.
 ///
 /// This is safe to pass to:
-/// - `readv` / `writev`
+/// - synchronous syscalls like `readv` / `writev`
 /// - `sendmsg` / `recvmsg` (when embedded in a stable `msghdr`)
-/// - io_uring vectored operations
+/// - async backends like `io_uring` **as long as** the caller also enforces runtime-native's
+///   borrow protocol for the lifetime of the in-flight op (see [`crate::io::IoOp::pin_iovecs`]).
 ///
 /// because:
 /// 1) the `iovec[]` descriptor array is host-owned (`Box<[iovec]>`) and therefore has a stable
 ///    address for the lifetime of this value.
 /// 2) each `iov_base` points into a pinned backing store (see [`ArrayBuffer::pin`]).
+///
+/// Note: `PinnedIoVec` only provides pointer stability and ownership of the `iovec[]` array. It does
+/// **not** by itself prevent safe Rust access to the referenced backing bytes while an async op is
+/// in flight. For runtime-native-managed async I/O, always use [`crate::io::IoOp`] helpers, which
+/// acquire the appropriate I/O borrows.
 #[must_use = "PinnedIoVec must be kept alive to keep backing stores pinned and iovec pointers valid"]
 #[derive(Debug)]
 pub struct PinnedIoVec {
@@ -253,10 +259,13 @@ pub type IoVecList = PinnedIoVec;
 #[cfg(unix)]
 /// A pinned, stable-address `msghdr` that owns its `iovec[]` descriptor list.
 ///
-/// This is safe to pass to `sendmsg`/`recvmsg` and io_uring `SendMsg`/`RecvMsg` because all
-/// user-provided pointers inside the struct point into:
+/// This is safe to pass to `sendmsg`/`recvmsg` (and to use as descriptor memory for async APIs like
+/// io_uring `SendMsg`/`RecvMsg`) because all user-provided pointers inside the struct point into:
 /// - heap-owned, stable allocations (`Box<msghdr>`, optional `Vec<u8>` for `msg_control` / `msg_name`)
 /// - pinned backing stores (via the owned [`PinnedIoVec`])
+///
+/// Like [`PinnedIoVec`], this type does **not** by itself enforce runtime-native's async I/O borrow
+/// protocol for the backing stores; for runtime-native-managed async I/O prefer [`crate::io::IoOp`].
 #[must_use = "PinnedMsgHdr must be kept alive to keep msghdr/iovec pointers valid"]
 #[derive(Debug)]
 pub struct PinnedMsgHdr {
