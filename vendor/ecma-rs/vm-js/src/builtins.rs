@@ -48,11 +48,12 @@ fn require_callable(this: Value) -> Result<GcObject, VmError> {
 
 // https://tc39.es/ecma262/#sec-symboldescriptivestring
 fn symbol_descriptive_string(scope: &mut Scope<'_>, sym: crate::GcSymbol) -> Result<crate::GcString, VmError> {
-  // Extract the description code units up-front so we don't hold borrows across the final string
-  // allocation (which can trigger GC).
-  let desc_units: Vec<u16> = match scope.heap().get_symbol_description(sym)? {
-    None => Vec::new(),
-    Some(desc) => scope.heap().get_string(desc)?.as_code_units().to_vec(),
+  // Determine the description length up-front so we can allocate the output buffer without holding
+  // heap borrows across allocations (which can trigger GC).
+  let desc = scope.heap().get_symbol_description(sym)?;
+  let desc_len = match desc {
+    None => 0,
+    Some(desc) => scope.heap().get_string(desc)?.as_code_units().len(),
   };
 
   const PREFIX: [u16; 7] = [
@@ -65,13 +66,18 @@ fn symbol_descriptive_string(scope: &mut Scope<'_>, sym: crate::GcSymbol) -> Res
     b'(' as u16,
   ];
 
-  let total_len = PREFIX.len().saturating_add(desc_units.len()).saturating_add(1);
+  let total_len = PREFIX.len().saturating_add(desc_len).saturating_add(1);
   let mut out: Vec<u16> = Vec::new();
   out
     .try_reserve_exact(total_len)
     .map_err(|_| VmError::OutOfMemory)?;
   out.extend_from_slice(&PREFIX);
-  out.extend_from_slice(&desc_units);
+  if let Some(desc) = desc {
+    // Copy description code units into the output buffer, then drop the heap borrow before
+    // allocating the final JS string object.
+    let units = scope.heap().get_string(desc)?.as_code_units();
+    out.extend_from_slice(units);
+  }
   out.push(b')' as u16);
 
   scope.alloc_string_from_u16_vec(out)
