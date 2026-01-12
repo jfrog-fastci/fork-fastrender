@@ -21,6 +21,11 @@ fn assert_module_syntax_error(source: &str) {
 // - language/module-code/early-import-as-eval.js
 // - language/module-code/early-import-as-arguments.js
 // - language/module-code/early-dup-export-id.js
+// - language/module-code/early-dup-export-decl.js
+// - language/module-code/early-dup-export-dflt-id.js
+// - language/module-code/early-dup-export-as-star-as.js
+// - language/module-code/early-dup-export-star-as-dflt.js
+// - language/module-code/early-export-global.js
 // - language/module-code/early-export-unresolvable.js
 #[test]
 fn rejects_duplicate_top_level_function_decls() {
@@ -146,4 +151,52 @@ fn rejects_duplicate_exported_names() {
 #[test]
 fn rejects_exporting_unresolvable_binding() {
   assert_module_syntax_error(r#"export { unresolvable };"#);
+}
+
+#[test]
+fn rejects_exporting_global_binding() {
+  assert_module_syntax_error(r#"export { Number };"#);
+}
+
+#[test]
+fn rejects_duplicate_exported_name_default_vs_named() {
+  assert_module_syntax_error(
+    r#"
+      var x, y;
+      export default x;
+      export { y as default };
+    "#,
+  );
+}
+
+#[test]
+fn rejects_duplicate_exported_name_between_function_and_generator_decls() {
+  assert_module_syntax_error(
+    r#"
+      export function f() {}
+      export function* f() {}
+    "#,
+  );
+}
+
+#[test]
+fn rejects_duplicate_exported_name_between_named_and_export_star_as() {
+  assert_module_syntax_error(
+    r#"
+      var x;
+      export { x as z };
+      export * as z from "./m.js";
+    "#,
+  );
+}
+
+#[test]
+fn rejects_duplicate_exported_name_between_default_and_export_star_as_default() {
+  assert_module_syntax_error(
+    r#"
+      var x;
+      export default x;
+      export * as default from "./m.js";
+    "#,
+  );
 }
