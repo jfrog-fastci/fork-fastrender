@@ -140,13 +140,16 @@ pub fn filename_from_url(url: &str) -> String {
 
 /// Resolve the base download directory for the browser UI worker.
 ///
-/// The integration tests override this via the `FASTR_DOWNLOAD_DIR` runtime toggle to keep
+/// The integration tests override this via the `FASTR_BROWSER_DOWNLOAD_DIR` runtime toggle to keep
 /// downloads deterministic and self-contained.
 pub fn default_download_dir() -> PathBuf {
-  if let Some(raw) = crate::debug::runtime::runtime_toggles().get("FASTR_DOWNLOAD_DIR") {
-    return PathBuf::from(raw);
-  }
-  if let Some(raw) = std::env::var_os("FASTR_DOWNLOAD_DIR") {
+  let toggles = crate::debug::runtime::runtime_toggles();
+  // Prefer the browser CLI/env knob, but keep the old `FASTR_DOWNLOAD_DIR` key as an alias for
+  // existing test setups.
+  if let Some(raw) = toggles
+    .get("FASTR_BROWSER_DOWNLOAD_DIR")
+    .or_else(|| toggles.get("FASTR_DOWNLOAD_DIR"))
+  {
     return PathBuf::from(raw);
   }
 

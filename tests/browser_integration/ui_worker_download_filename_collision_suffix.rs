@@ -64,7 +64,7 @@ fn ui_worker_download_filename_collision_suffix() {
 
   with_runtime_toggles(
     Arc::new(RuntimeToggles::from_map(HashMap::from([(
-      "FASTR_DOWNLOAD_DIR".to_string(),
+      "FASTR_BROWSER_DOWNLOAD_DIR".to_string(),
       download_dir.path().to_string_lossy().to_string(),
     )]))),
     || {
