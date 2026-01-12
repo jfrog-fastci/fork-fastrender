@@ -470,11 +470,31 @@ function installResolutionTracing(host, options, collector) {
       for (let i = 0; i < moduleNames.length; i++) {
         const specifier = moduleNames[i];
         const resolved = results?.[i]?.resolvedFileName ?? null;
+        let kind = null;
+        if (
+          containingSourceFile &&
+          typeof ts.getModeForResolutionAtIndex === "function"
+        ) {
+          try {
+            const resolutionMode = ts.getModeForResolutionAtIndex(
+              containingSourceFile,
+              i,
+              compilerOptions ?? options,
+            );
+            if (resolutionMode === ts.ModuleKind.CommonJS) {
+              kind = "require";
+            } else if (resolutionMode != null) {
+              kind = "import";
+            }
+          } catch {
+            // ignore
+          }
+        }
         recordResolutionTrace(collector, {
           from: normalizePath(containingFile),
           specifier,
           resolved: resolved ? normalizePath(resolved) : null,
-          kind: null,
+          kind,
           mode,
         });
       }
