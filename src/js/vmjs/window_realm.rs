@@ -1647,6 +1647,7 @@ const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
+const STORAGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_storage_event_prototype";
 const EVENT_ID_KEY: &str = "__fastrender_event_id";
 const EVENT_IMMEDIATE_STOP_KEY: &str = "__fastrender_event_stop_immediate";
 const EVENT_LISTENER_ROOTS_KEY: &str = "__fastrender_event_listener_roots";
@@ -5201,6 +5202,163 @@ fn custom_event_constructor_native(
   Ok(Value::Object(obj))
 }
 
+fn storage_event_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut key = Value::Null;
+  let mut old_value = Value::Null;
+  let mut new_value = Value::Null;
+  let mut url = Value::String(scope.alloc_string("")?);
+  let mut storage_area = Value::Null;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let key_key = alloc_key(scope, "key")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &key_key)?
+      {
+        key = match value {
+          Value::Undefined => Value::Null,
+          Value::Null => Value::Null,
+          other => Value::String(scope.heap_mut().to_string(other)?),
+        };
+      }
+
+      let old_value_key = alloc_key(scope, "oldValue")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &old_value_key)?
+      {
+        old_value = match value {
+          Value::Undefined => Value::Null,
+          Value::Null => Value::Null,
+          other => Value::String(scope.heap_mut().to_string(other)?),
+        };
+      }
+
+      let new_value_key = alloc_key(scope, "newValue")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &new_value_key)?
+      {
+        new_value = match value {
+          Value::Undefined => Value::Null,
+          Value::Null => Value::Null,
+          other => Value::String(scope.heap_mut().to_string(other)?),
+        };
+      }
+
+      let url_key = alloc_key(scope, "url")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &url_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          url = Value::String(scope.heap_mut().to_string(value)?);
+        }
+      }
+
+      let storage_area_key = alloc_key(scope, "storageArea")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &storage_area_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          storage_area = value;
+        }
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  // StorageEvent fields.
+  let key_key = alloc_key(scope, "key")?;
+  scope.define_property(obj, key_key, read_only_data_desc(key))?;
+
+  let old_value_key = alloc_key(scope, "oldValue")?;
+  scope.define_property(obj, old_value_key, read_only_data_desc(old_value))?;
+
+  let new_value_key = alloc_key(scope, "newValue")?;
+  scope.define_property(obj, new_value_key, read_only_data_desc(new_value))?;
+
+  let url_key = alloc_key(scope, "url")?;
+  scope.define_property(obj, url_key, read_only_data_desc(url))?;
+
+  let storage_area_key = alloc_key(scope, "storageArea")?;
+  scope.define_property(obj, storage_area_key, read_only_data_desc(storage_area))?;
+
+  Ok(Value::Object(obj))
+}
+
 fn promise_rejection_event_constructor_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5678,6 +5836,22 @@ fn custom_event_constructor_construct_native(
   custom_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
 }
 
+fn storage_event_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  storage_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
 fn promise_rejection_event_constructor_construct_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5856,6 +6030,114 @@ fn custom_event_init_custom_event_native(
 
   let detail_key = alloc_key(scope, "detail")?;
   scope.define_property(event_obj, detail_key, data_desc(detail))?;
+
+  Ok(Value::Undefined)
+}
+
+fn storage_event_init_storage_event_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "StorageEvent.initStorageEvent must be called on a StorageEvent object",
+    ));
+  };
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bubbles = scope.heap().to_boolean(bubbles_arg)?;
+
+  let cancelable_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  let cancelable = scope.heap().to_boolean(cancelable_arg)?;
+
+  let key_arg = args.get(3).copied().unwrap_or(Value::Undefined);
+  let key = match key_arg {
+    Value::Undefined => Value::Null,
+    Value::Null => Value::Null,
+    other => Value::String(scope.heap_mut().to_string(other)?),
+  };
+
+  let old_value_arg = args.get(4).copied().unwrap_or(Value::Undefined);
+  let old_value = match old_value_arg {
+    Value::Undefined => Value::Null,
+    Value::Null => Value::Null,
+    other => Value::String(scope.heap_mut().to_string(other)?),
+  };
+
+  let new_value_arg = args.get(5).copied().unwrap_or(Value::Undefined);
+  let new_value = match new_value_arg {
+    Value::Undefined => Value::Null,
+    Value::Null => Value::Null,
+    other => Value::String(scope.heap_mut().to_string(other)?),
+  };
+
+  let url_arg = args.get(6).copied().unwrap_or(Value::Undefined);
+  let url = if matches!(url_arg, Value::Undefined) {
+    Value::String(scope.alloc_string("")?)
+  } else {
+    Value::String(scope.heap_mut().to_string(url_arg)?)
+  };
+
+  let storage_area_arg = args.get(7).copied().unwrap_or(Value::Undefined);
+  let storage_area = if matches!(storage_area_arg, Value::Undefined) {
+    Value::Null
+  } else {
+    storage_area_arg
+  };
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(
+    event_obj,
+    cancelable_key,
+    data_desc(Value::Bool(cancelable)),
+  )?;
+
+  // `initStorageEvent` does not expose `composed`; reset to false per DOM.
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(
+    event_obj,
+    default_prevented_key,
+    data_desc(Value::Bool(false)),
+  )?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let key_key = alloc_key(scope, "key")?;
+  scope.define_property(event_obj, key_key, read_only_data_desc(key))?;
+
+  let old_value_key = alloc_key(scope, "oldValue")?;
+  scope.define_property(event_obj, old_value_key, read_only_data_desc(old_value))?;
+
+  let new_value_key = alloc_key(scope, "newValue")?;
+  scope.define_property(event_obj, new_value_key, read_only_data_desc(new_value))?;
+
+  let url_key = alloc_key(scope, "url")?;
+  scope.define_property(event_obj, url_key, read_only_data_desc(url))?;
+
+  let storage_area_key = alloc_key(scope, "storageArea")?;
+  scope.define_property(
+    event_obj,
+    storage_area_key,
+    read_only_data_desc(storage_area),
+  )?;
 
   Ok(Value::Undefined)
 }
@@ -7424,6 +7706,8 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
   ) -> Result<GcObject, VmError> {
     let proto_key_name = if event.detail.is_some() {
       CUSTOM_EVENT_PROTOTYPE_KEY
+    } else if event.type_ == "storage" {
+      STORAGE_EVENT_PROTOTYPE_KEY
     } else {
       EVENT_PROTOTYPE_KEY
     };
@@ -7475,6 +7759,23 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     if let Some(detail) = event.detail {
       let detail_key = alloc_key(scope, "detail")?;
       scope.define_property(event_obj, detail_key, data_desc(detail))?;
+    } else if event.type_ == "storage" {
+      // StorageEvent fields (not yet modelled in Rust `web_events::Event`).
+      let key_key = alloc_key(scope, "key")?;
+      scope.define_property(event_obj, key_key, read_only_data_desc(Value::Null))?;
+      let old_value_key = alloc_key(scope, "oldValue")?;
+      scope.define_property(event_obj, old_value_key, read_only_data_desc(Value::Null))?;
+      let new_value_key = alloc_key(scope, "newValue")?;
+      scope.define_property(event_obj, new_value_key, read_only_data_desc(Value::Null))?;
+      let url_key = alloc_key(scope, "url")?;
+      let empty = scope.alloc_string("")?;
+      scope.define_property(event_obj, url_key, read_only_data_desc(Value::String(empty)))?;
+      let storage_area_key = alloc_key(scope, "storageArea")?;
+      scope.define_property(
+        event_obj,
+        storage_area_key,
+        read_only_data_desc(Value::Null),
+      )?;
     }
 
     Ok(event_obj)
@@ -8771,12 +9072,15 @@ fn document_create_event_native(
   enum Kind {
     Event,
     CustomEvent,
+    StorageEvent,
   }
 
   let kind = if name.eq_ignore_ascii_case("Event") {
     Kind::Event
   } else if name.eq_ignore_ascii_case("CustomEvent") {
     Kind::CustomEvent
+  } else if name.eq_ignore_ascii_case("StorageEvent") {
+    Kind::StorageEvent
   } else {
     return Err(VmError::Throw(make_dom_exception(
       scope,
@@ -8788,6 +9092,7 @@ fn document_create_event_native(
   let proto_key = match kind {
     Kind::Event => EVENT_PROTOTYPE_KEY,
     Kind::CustomEvent => CUSTOM_EVENT_PROTOTYPE_KEY,
+    Kind::StorageEvent => STORAGE_EVENT_PROTOTYPE_KEY,
   };
   let proto_key = alloc_key(scope, proto_key)?;
   let proto = scope
@@ -8827,6 +9132,23 @@ fn document_create_event_native(
   if matches!(kind, Kind::CustomEvent) {
     let detail_key = alloc_key(scope, "detail")?;
     scope.define_property(obj, detail_key, data_desc(Value::Null))?;
+  }
+
+  if matches!(kind, Kind::StorageEvent) {
+    let key_key = alloc_key(scope, "key")?;
+    scope.define_property(obj, key_key, read_only_data_desc(Value::Null))?;
+    let old_value_key = alloc_key(scope, "oldValue")?;
+    scope.define_property(obj, old_value_key, read_only_data_desc(Value::Null))?;
+    let new_value_key = alloc_key(scope, "newValue")?;
+    scope.define_property(obj, new_value_key, read_only_data_desc(Value::Null))?;
+    let url_key = alloc_key(scope, "url")?;
+    scope.define_property(obj, url_key, read_only_data_desc(Value::String(empty)))?;
+    let storage_area_key = alloc_key(scope, "storageArea")?;
+    scope.define_property(
+      obj,
+      storage_area_key,
+      read_only_data_desc(Value::Null),
+    )?;
   }
 
   Ok(Value::Object(obj))
@@ -14074,7 +14396,7 @@ fn init_window_globals(
     data_desc(Value::Object(create_fragment_func)),
   )?;
 
-  // --- DOM Events (MVP): Event / CustomEvent / document.createEvent -----------------------------
+  // --- DOM Events (MVP): Event / CustomEvent / StorageEvent / document.createEvent --------------
   //
   // Many real-world bundles include the "CustomEvent polyfill" pattern that calls
   // `document.createEvent("CustomEvent")` + `initCustomEvent`. Install these legacy APIs so such
@@ -14175,6 +14497,29 @@ fn init_window_globals(
     data_desc(Value::Object(init_custom_event_func)),
   )?;
 
+  let storage_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(storage_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(storage_event_proto, Some(event_proto))?;
+
+  let init_storage_event_call_id = vm.register_native_call(storage_event_init_storage_event_native)?;
+  let init_storage_event_name = scope.alloc_string("initStorageEvent")?;
+  scope.push_root(Value::String(init_storage_event_name))?;
+  let init_storage_event_func =
+    scope.alloc_native_function(init_storage_event_call_id, None, init_storage_event_name, 8)?;
+  scope.heap_mut().object_set_prototype(
+    init_storage_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(init_storage_event_func))?;
+  let init_storage_event_key = alloc_key(&mut scope, "initStorageEvent")?;
+  scope.define_property(
+    storage_event_proto,
+    init_storage_event_key,
+    data_desc(Value::Object(init_storage_event_func)),
+  )?;
+
   let promise_rejection_event_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(promise_rejection_event_proto))?;
   scope
@@ -14266,6 +14611,39 @@ fn init_window_globals(
     global,
     custom_event_ctor_key,
     data_desc(Value::Object(custom_event_ctor_func)),
+  )?;
+
+  let storage_event_ctor_call_id = vm.register_native_call(storage_event_constructor_native)?;
+  let storage_event_ctor_construct_id =
+    vm.register_native_construct(storage_event_constructor_construct_native)?;
+  let storage_event_ctor_name = scope.alloc_string("StorageEvent")?;
+  scope.push_root(Value::String(storage_event_ctor_name))?;
+  let storage_event_ctor_func = scope.alloc_native_function(
+    storage_event_ctor_call_id,
+    Some(storage_event_ctor_construct_id),
+    storage_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    storage_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(storage_event_ctor_func))?;
+  scope.define_property(
+    storage_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(storage_event_proto)),
+  )?;
+  scope.define_property(
+    storage_event_proto,
+    constructor_key,
+    data_desc(Value::Object(storage_event_ctor_func)),
+  )?;
+  let storage_event_ctor_key = alloc_key(&mut scope, "StorageEvent")?;
+  scope.define_property(
+    global,
+    storage_event_ctor_key,
+    data_desc(Value::Object(storage_event_ctor_func)),
   )?;
 
   let promise_rejection_event_ctor_call_id =
@@ -14415,6 +14793,12 @@ fn init_window_globals(
     document_obj,
     custom_event_proto_key,
     data_desc(Value::Object(custom_event_proto)),
+  )?;
+  let storage_event_proto_key = alloc_key(&mut scope, STORAGE_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    storage_event_proto_key,
+    data_desc(Value::Object(storage_event_proto)),
   )?;
 
   // document.createEvent(interfaceName)
@@ -17609,6 +17993,25 @@ mod tests {
     )?;
     assert_eq!(doc_called, Value::Number(1.0));
 
+    Ok(())
+  }
+
+  #[test]
+  fn storage_event_constructor_and_document_create_event_exist() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script("typeof StorageEvent === 'function'")?,
+      Value::Bool(true)
+    );
+
+    let ty = realm.exec_script("new StorageEvent('storage').type")?;
+    assert_eq!(get_string(realm.heap(), ty), "storage");
+
+    assert_eq!(
+      realm.exec_script("typeof document.createEvent('StorageEvent').initStorageEvent === 'function'")?,
+      Value::Bool(true)
+    );
     Ok(())
   }
 
