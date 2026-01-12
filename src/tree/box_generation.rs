@@ -4657,7 +4657,27 @@ fn generate_boxes_for_styled_into(
         // and native painting. (HTML <button> is intentionally *not* a replaced box so its
         // descendants can participate in layout, e.g. inline-flex icon+text buttons.)
         let mut appearance_none_form_control: Option<FormControl> = None;
-        if let Some(form_control) = create_form_control_replaced(styled, interaction_state) {
+        let form_control = styled
+          .node
+          .tag_name()
+          .is_some_and(|tag| {
+            tag.eq_ignore_ascii_case("input")
+              || tag.eq_ignore_ascii_case("textarea")
+              || tag.eq_ignore_ascii_case("select")
+              || tag.eq_ignore_ascii_case("progress")
+              || tag.eq_ignore_ascii_case("meter")
+          })
+          .then(|| {
+            let styled_ancestors: Vec<&StyledNode> = stack
+              .iter()
+              .take(stack.len().saturating_sub(1))
+              .map(|frame| frame.styled)
+              .collect();
+            create_form_control_replaced(styled, styled_ancestors.as_slice(), interaction_state)
+          })
+          .flatten();
+
+        if let Some(form_control) = form_control {
           if !matches!(
             form_control.appearance,
             crate::style::types::Appearance::None
@@ -6718,6 +6738,7 @@ fn input_label(node: &DomNode, input_type: &str) -> String {
 
 fn create_form_control_replaced(
   styled: &StyledNode,
+  styled_ancestors: &[&StyledNode],
   interaction_state: Option<&InteractionState>,
 ) -> Option<FormControl> {
   let tag = styled.node.tag_name()?;
@@ -6740,7 +6761,45 @@ fn create_form_control_replaced(
       .filter(|v| v.is_finite())
   };
 
-  let disabled = styled.node.get_attribute_ref("disabled").is_some();
+  let disabled = if styled.node.get_attribute_ref("disabled").is_some() {
+    true
+  } else if tag.eq_ignore_ascii_case("progress") || tag.eq_ignore_ascii_case("meter") {
+    false
+  } else {
+    let mut disabled = false;
+    for (i, ancestor) in styled_ancestors.iter().enumerate().rev() {
+      if !ancestor
+        .node
+        .tag_name()
+        .is_some_and(|a_tag| a_tag.eq_ignore_ascii_case("fieldset"))
+      {
+        continue;
+      }
+      if ancestor.node.get_attribute_ref("disabled").is_none() {
+        continue;
+      }
+
+      let first_legend = ancestor.children.iter().find(|child| {
+        child
+          .node
+          .tag_name()
+          .is_some_and(|child_tag| child_tag.eq_ignore_ascii_case("legend"))
+      });
+
+      if let Some(first_legend) = first_legend {
+        let in_legend = styled_ancestors[i + 1..]
+          .iter()
+          .any(|ancestor| ancestor.node_id == first_legend.node_id);
+        if in_legend {
+          continue;
+        }
+      }
+
+      disabled = true;
+      break;
+    }
+    disabled
+  };
   let inert = styled.node.get_attribute_ref("inert").is_some()
     || styled
       .node
@@ -9575,7 +9634,7 @@ mod tests {
     ];
     select.children = vec![option];
 
-    let control = create_form_control_replaced(&select, None)
+    let control = create_form_control_replaced(&select, &[], None)
       .expect("select should generate a form control")
       .control;
     let FormControlKind::Select(select) = &control else {
@@ -9599,6 +9658,65 @@ mod tests {
       select.items.first(),
       Some(SelectItem::Option { label, value, .. }) if label == "  Foo  Bar  " && value == "Text"
     ));
+  }
+
+  #[test]
+  fn disabled_fieldset_disables_descendant_form_controls_for_paint_state() {
+    let dom = crate::dom::parse_html(
+      "<html><body><fieldset disabled><input required></fieldset></body></html>",
+    )
+    .expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_form_control(node: &BoxNode) -> Option<FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          return Some(control.clone());
+        }
+      }
+      node.children.iter().find_map(find_form_control)
+    }
+
+    let control = find_form_control(&box_tree.root).expect("expected form control");
+    assert!(control.disabled, "control should be disabled by <fieldset disabled>");
+    assert!(
+      !control.required,
+      "disabled form controls should not be marked required for painting/validation UI"
+    );
+    assert!(
+      !control.invalid,
+      "disabled form controls should not be marked invalid for painting/validation UI"
+    );
+  }
+
+  #[test]
+  fn disabled_fieldset_first_legend_exception_preserves_form_control_state() {
+    let dom = crate::dom::parse_html(
+      "<html><body><fieldset disabled><legend><input required></legend></fieldset></body></html>",
+    )
+    .expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_form_control(node: &BoxNode) -> Option<FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          return Some(control.clone());
+        }
+      }
+      node.children.iter().find_map(find_form_control)
+    }
+
+    let control = find_form_control(&box_tree.root).expect("expected form control");
+    assert!(
+      !control.disabled,
+      "controls inside the first <legend> of a disabled <fieldset> should remain enabled"
+    );
+    assert!(
+      control.required,
+      "enabled controls should still reflect required state"
+    );
   }
 
   #[test]
@@ -15413,7 +15531,7 @@ mod tests {
     let mut select = styled_element("select");
     select.children = vec![first, second];
 
-    let control = create_form_control_replaced(&select, None).expect("select form control");
+    let control = create_form_control_replaced(&select, &[], None).expect("select form control");
     assert!(!control.invalid);
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
@@ -15495,7 +15613,7 @@ mod tests {
     set_attr(&mut select, "required", "");
     select.children = vec![placeholder, enabled];
 
-    let control = create_form_control_replaced(&select, None).expect("select form control");
+    let control = create_form_control_replaced(&select, &[], None).expect("select form control");
     assert!(control.required);
     assert!(control.invalid);
     let FormControlKind::Select(select) = &control.control else {
@@ -15535,7 +15653,8 @@ mod tests {
 
     let mut dropdown_size0 = styled_element("select");
     set_attr(&mut dropdown_size0, "size", "0");
-    let control = create_form_control_replaced(&dropdown_size0, None).expect("select form control");
+    let control =
+      create_form_control_replaced(&dropdown_size0, &[], None).expect("select form control");
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
     };
@@ -15544,7 +15663,8 @@ mod tests {
 
     let mut multi_default = styled_element("select");
     set_attr(&mut multi_default, "multiple", "");
-    let control = create_form_control_replaced(&multi_default, None).expect("select form control");
+    let control =
+      create_form_control_replaced(&multi_default, &[], None).expect("select form control");
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
     };
@@ -15554,7 +15674,8 @@ mod tests {
     let mut multi_invalid = styled_element("select");
     set_attr(&mut multi_invalid, "multiple", "");
     set_attr(&mut multi_invalid, "size", "abc");
-    let control = create_form_control_replaced(&multi_invalid, None).expect("select form control");
+    let control =
+      create_form_control_replaced(&multi_invalid, &[], None).expect("select form control");
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
     };
@@ -15564,7 +15685,7 @@ mod tests {
     let mut multi_size3 = styled_element("select");
     set_attr(&mut multi_size3, "multiple", "");
     set_attr(&mut multi_size3, "size", "3");
-    let control = create_form_control_replaced(&multi_size3, None).expect("select form control");
+    let control = create_form_control_replaced(&multi_size3, &[], None).expect("select form control");
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
     };
