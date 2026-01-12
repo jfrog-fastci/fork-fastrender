@@ -27,6 +27,7 @@ mod dom_parsing;
 mod form_controls;
 mod html;
 mod html5ever_tree_sink;
+mod html_fragment_parse;
 mod html_parse;
 pub mod import;
 mod js_shims;

@@ -1,7 +1,8 @@
-use crate::dom::{DomParseOptions, HTML_NAMESPACE};
+use crate::dom::HTML_NAMESPACE;
 use selectors::context::QuirksMode;
 
-use super::import::import_domnodes_into_parent;
+use super::html_fragment_parse::parse_html_fragment_to_dom2_document;
+use super::import::import_dom2_nodes_into_parent;
 use super::{Document, DomError, NodeId, NodeKind};
 
 fn document_quirks_mode(doc: &Document) -> QuirksMode {
@@ -50,21 +51,18 @@ pub(super) fn parse_html_fragment_as_fragment(
   let (context_tag, context_namespace, context_attributes) = element_context(doc, context)?;
   let quirks_mode = document_quirks_mode(doc);
 
-  // Respect the owning document's parsing mode. This matters for elements like `<noscript>`, whose
-  // fragment parsing semantics change based on whether scripting is enabled.
-  let options = DomParseOptions::with_scripting_enabled(doc.scripting_enabled);
-  let parsed = crate::dom::parse_html_fragment_with_context_attrs(
+  let parsed = parse_html_fragment_to_dom2_document(
     html,
     context_tag,
     context_namespace,
     context_attributes,
-    options,
+    doc.scripting_enabled,
     quirks_mode,
   )
-  .map_err(|_| DomError::SyntaxError)?;
+  ?;
 
   let fragment = doc.create_document_fragment();
-  let imported_roots = import_domnodes_into_parent(doc, fragment, &parsed);
+  let imported_roots = import_dom2_nodes_into_parent(doc, fragment, &parsed.document, &parsed.roots);
 
   // HTML: elements created by `innerHTML`/`outerHTML` parsing must not execute scripts when
   // inserted into the document.

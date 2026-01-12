@@ -23,6 +23,18 @@ use super::{Document, NodeId, NodeKind};
 /// `id.index() >= doc.nodes_len()` and treat it as a no-op.
 const IGNORED_HANDLE: NodeId = NodeId(usize::MAX);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IgnoredNodeHandling {
+  /// Drop ignored nodes (comments, doctypes, processing instructions) but preserve their effect on
+  /// text node merging.
+  Ignore,
+  /// Materialize ignored nodes as real `dom2` nodes.
+  ///
+  /// This is used for fragment parsing (`innerHTML`, `createContextualFragment`, ...) where comment
+  /// nodes must be preserved.
+  Materialize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Dom2ElemName {
   ns: Namespace,
@@ -42,10 +54,13 @@ impl ElemName for Dom2ElemName {
 /// html5ever [`TreeSink`] that incrementally builds a live [`Document`].
 ///
 /// Notes:
-/// - Comments, processing instructions, and doctypes are intentionally **not** materialized as
-///   `dom2` nodes during HTML parsing. This matches the renderer DOM (`crate::dom::parse_html`),
-///   which drops these nodes entirely and only exposes the document quirks mode.
+/// - By default (`Dom2TreeSink::new`), comments, processing instructions, and doctypes are
+///   intentionally **not** materialized as `dom2` nodes during HTML parsing. This matches the
+///   renderer DOM (`crate::dom::parse_html`), which drops these nodes entirely and only exposes the
+///   document quirks mode.
 ///   - Doctype tokens are handled exclusively via [`TreeSink::set_quirks_mode`].
+/// - Fragment parsing (`Dom2TreeSink::new_for_fragment`) materializes these nodes so `innerHTML`
+///   and other DOM Parsing APIs can preserve comment nodes.
 /// - HTML namespace elements store `namespace=""` for compatibility with existing selector logic.
 /// - The sink performs parse-time `<base href>` tracking via an internal [`BaseUrlTracker`].
 pub struct Dom2TreeSink {
@@ -59,17 +74,27 @@ pub struct Dom2TreeSink {
   /// but preserved the resulting text node splits.
   ignored_insertion_points: RefCell<FxHashSet<(NodeId, Option<NodeId>)>>,
   declarative_shadow_templates: RefCell<HashMap<NodeId, NodeId>>,
+  ignored_node_handling: IgnoredNodeHandling,
 }
 
 impl Dom2TreeSink {
-  pub fn new(document_url: Option<&str>) -> Self {
+  fn new_with_handling(document_url: Option<&str>, ignored_node_handling: IgnoredNodeHandling) -> Self {
     Self {
       document: RefCell::new(Document::new(SelectorQuirksMode::NoQuirks)),
       base_url_tracker: Rc::new(RefCell::new(BaseUrlTracker::new(document_url))),
       pending_stylesheet_links: RefCell::new(Vec::new()),
       ignored_insertion_points: RefCell::new(FxHashSet::default()),
       declarative_shadow_templates: RefCell::new(HashMap::new()),
+      ignored_node_handling,
     }
+  }
+
+  pub fn new(document_url: Option<&str>) -> Self {
+    Self::new_with_handling(document_url, IgnoredNodeHandling::Ignore)
+  }
+
+  pub(crate) fn new_for_fragment(document_url: Option<&str>) -> Self {
+    Self::new_with_handling(document_url, IgnoredNodeHandling::Materialize)
   }
 
   pub fn base_url_tracker_rc(&self) -> Rc<RefCell<BaseUrlTracker>> {
@@ -707,13 +732,36 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn create_comment(&self, text: StrTendril) -> NodeId {
-    let _ = text;
-    IGNORED_HANDLE
+    match self.ignored_node_handling {
+      IgnoredNodeHandling::Ignore => IGNORED_HANDLE,
+      IgnoredNodeHandling::Materialize => {
+        let mut doc = self.document.borrow_mut();
+        doc.push_node(
+          NodeKind::Comment {
+            content: text.to_string(),
+          },
+          None,
+          /* inert_subtree */ false,
+        )
+      }
+    }
   }
 
   fn create_pi(&self, target: StrTendril, data: StrTendril) -> NodeId {
-    let _ = (target, data);
-    IGNORED_HANDLE
+    match self.ignored_node_handling {
+      IgnoredNodeHandling::Ignore => IGNORED_HANDLE,
+      IgnoredNodeHandling::Materialize => {
+        let mut doc = self.document.borrow_mut();
+        doc.push_node(
+          NodeKind::ProcessingInstruction {
+            target: target.to_string(),
+            data: data.to_string(),
+          },
+          None,
+          /* inert_subtree */ false,
+        )
+      }
+    }
   }
 
   fn append(&self, parent: &NodeId, child: NodeOrText<NodeId>) {
@@ -803,11 +851,28 @@ impl TreeSink for Dom2TreeSink {
     public_id: StrTendril,
     system_id: StrTendril,
   ) {
-    let _ = (name, public_id, system_id);
-    // Do not materialize doctype nodes in dom2 for now; rely on `set_quirks_mode` instead.
-    let doc = self.document.borrow();
-    let root = doc.root();
-    self.record_ignored_insertion_point(&doc, root, None);
+    match self.ignored_node_handling {
+      IgnoredNodeHandling::Ignore => {
+        let _ = (name, public_id, system_id);
+        // Do not materialize doctype nodes in dom2 for now; rely on `set_quirks_mode` instead.
+        let doc = self.document.borrow();
+        let root = doc.root();
+        self.record_ignored_insertion_point(&doc, root, None);
+      }
+      IgnoredNodeHandling::Materialize => {
+        let mut doc = self.document.borrow_mut();
+        let root = doc.root();
+        doc.push_node(
+          NodeKind::Doctype {
+            name: name.to_string(),
+            public_id: public_id.to_string(),
+            system_id: system_id.to_string(),
+          },
+          Some(root),
+          /* inert_subtree */ false,
+        );
+      }
+    }
   }
 
   fn get_template_contents(&self, target: &NodeId) -> NodeId {

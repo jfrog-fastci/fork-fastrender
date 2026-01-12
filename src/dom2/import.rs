@@ -118,6 +118,133 @@ pub fn import_domnodes_into_parent(
   imported
 }
 
+struct Dom2Frame {
+  src: NodeId,
+  dst: NodeId,
+  next_child: usize,
+}
+
+fn push_imported_dom2_node(dst_doc: &mut Document, parent: NodeId, src_doc: &Document, src: NodeId) -> NodeId {
+  let src_node = src_doc.node(src);
+
+  let kind = match &src_node.kind {
+    NodeKind::Document { quirks_mode } => NodeKind::Document {
+      quirks_mode: *quirks_mode,
+    },
+    NodeKind::DocumentFragment => NodeKind::DocumentFragment,
+    NodeKind::Comment { content } => NodeKind::Comment {
+      content: content.clone(),
+    },
+    NodeKind::ProcessingInstruction { target, data } => NodeKind::ProcessingInstruction {
+      target: target.clone(),
+      data: data.clone(),
+    },
+    NodeKind::Doctype {
+      name,
+      public_id,
+      system_id,
+    } => NodeKind::Doctype {
+      name: name.clone(),
+      public_id: public_id.clone(),
+      system_id: system_id.clone(),
+    },
+    NodeKind::ShadowRoot {
+      mode,
+      delegates_focus,
+    } => NodeKind::ShadowRoot {
+      mode: *mode,
+      delegates_focus: *delegates_focus,
+    },
+    NodeKind::Slot {
+      namespace,
+      attributes,
+      assigned,
+    } => NodeKind::Slot {
+      namespace: namespace.clone(),
+      attributes: attributes.clone(),
+      assigned: *assigned,
+    },
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      attributes,
+    } => NodeKind::Element {
+      tag_name: tag_name.clone(),
+      namespace: namespace.clone(),
+      attributes: attributes.clone(),
+    },
+    NodeKind::Text { content } => NodeKind::Text {
+      content: content.clone(),
+    },
+  };
+
+  let id = dst_doc.push_node(kind, Some(parent), src_node.inert_subtree);
+  let dst_node = &mut dst_doc.nodes[id.index()];
+  dst_node.inert_subtree = src_node.inert_subtree;
+  dst_node.script_already_started = src_node.script_already_started;
+  dst_node.script_parser_document = src_node.script_parser_document;
+  dst_node.script_force_async = src_node.script_force_async;
+  dst_node.mathml_annotation_xml_integration_point = src_node.mathml_annotation_xml_integration_point;
+  id
+}
+
+fn import_dom2_subtree(dst_doc: &mut Document, parent: NodeId, src_doc: &Document, root: NodeId) -> NodeId {
+  let root_id = push_imported_dom2_node(dst_doc, parent, src_doc, root);
+
+  let mut stack: Vec<Dom2Frame> = vec![Dom2Frame {
+    src: root,
+    dst: root_id,
+    next_child: 0,
+  }];
+
+  while let Some(mut frame) = stack.pop() {
+    let child_src = src_doc
+      .node(frame.src)
+      .children
+      .get(frame.next_child)
+      .copied();
+    let Some(child_src) = child_src else {
+      continue;
+    };
+
+    let src_parent = frame.src;
+    frame.next_child += 1;
+    let parent_dst = frame.dst;
+    stack.push(frame);
+
+    // Only import children that are actually connected to their parent.
+    if src_doc.node(child_src).parent != Some(src_parent) {
+      continue;
+    }
+
+    let child_dst = push_imported_dom2_node(dst_doc, parent_dst, src_doc, child_src);
+    stack.push(Dom2Frame {
+      src: child_src,
+      dst: child_dst,
+      next_child: 0,
+    });
+  }
+
+  root_id
+}
+
+/// Deep-copy a list of dom2 nodes from `src_doc` under `dst_parent` in `dst_doc`.
+///
+/// This is used by HTML fragment parsing APIs (`innerHTML`, `insertAdjacentHTML`,
+/// `Range.createContextualFragment`) to import a temporary parsed fragment into the live document.
+pub(super) fn import_dom2_nodes_into_parent(
+  dst_doc: &mut Document,
+  dst_parent: NodeId,
+  src_doc: &Document,
+  src_roots: &[NodeId],
+) -> Vec<NodeId> {
+  let mut imported: Vec<NodeId> = Vec::new();
+  for &root in src_roots {
+    imported.push(import_dom2_subtree(dst_doc, dst_parent, src_doc, root));
+  }
+  imported
+}
+
 /// Import an immutable renderer [`DomNode`] tree into a fresh `dom2` [`Document`].
 ///
 /// This enables incremental adoption of the spec-ish mutable DOM by starting from the renderer's

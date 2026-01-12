@@ -316,7 +316,7 @@ fn inner_html_setter_on_template_replaces_template_contents() {
 }
 
 #[test]
-fn inner_html_ignores_comments_for_now() {
+fn inner_html_preserves_comments() {
   let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
   let mut doc = Document::from_renderer_dom(&root);
   let div = find_element_by_id(&doc, "target");
@@ -324,7 +324,10 @@ fn inner_html_ignores_comments_for_now() {
   doc
     .set_inner_html(div, "<!--ignored--><span>hi</span>")
     .unwrap();
-  assert_eq!(doc.get_inner_html(div).unwrap(), "<span>hi</span>");
+  assert_eq!(
+    doc.get_inner_html(div).unwrap(),
+    "<!--ignored--><span>hi</span>"
+  );
 }
 
 #[test]
@@ -338,7 +341,7 @@ fn inner_html_comment_prevents_text_merge_across_boundary() {
   let children = doc.node(div).children.clone();
   assert_eq!(
     children.len(),
-    2,
+    3,
     "comment boundary should prevent adjacent text node merging"
   );
   assert!(
@@ -346,9 +349,14 @@ fn inner_html_comment_prevents_text_merge_across_boundary() {
     "first child should be a text node containing 'a'"
   );
   assert!(
-    matches!(&doc.node(children[1]).kind, NodeKind::Text { content } if content == "b"),
-    "second child should be a text node containing 'b'"
+    matches!(&doc.node(children[1]).kind, NodeKind::Comment { content } if content == "comment"),
+    "second child should be a comment node containing 'comment'"
   );
+  assert!(
+    matches!(&doc.node(children[2]).kind, NodeKind::Text { content } if content == "b"),
+    "third child should be a text node containing 'b'"
+  );
+  assert_eq!(doc.inner_html(div).unwrap(), "a<!--comment-->b");
 }
 
 #[test]
@@ -538,6 +546,22 @@ fn insert_adjacent_html_marks_script_elements_as_already_started() {
   assert!(
     !doc.node(script).script_parser_document,
     "scripts created by insertAdjacentHTML fragment parsing must not be treated as parser-inserted"
+  );
+}
+
+#[test]
+fn insert_adjacent_html_preserves_comments() {
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  doc
+    .insert_adjacent_html(div, "beforeend", "<!--x--><span>y</span>")
+    .unwrap();
+  assert_eq!(
+    doc.inner_html(div).unwrap(),
+    "<!--x--><span>y</span>",
+    "expected insertAdjacentHTML to preserve comments"
   );
 }
 

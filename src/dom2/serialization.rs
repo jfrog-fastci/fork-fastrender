@@ -164,6 +164,13 @@ fn serialize_nodes(
             }
           }
 
+          NodeKind::Comment { content } => {
+            // HTML serialization: comments are emitted verbatim (no escaping).
+            out.push_str("<!--");
+            out.push_str(content);
+            out.push_str("-->");
+          }
+
           NodeKind::Element {
             tag_name,
             namespace,

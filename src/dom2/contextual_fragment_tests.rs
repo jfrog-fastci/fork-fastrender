@@ -117,3 +117,19 @@ fn create_contextual_fragment_uses_parent_element_for_comment_context() {
     "<span>hi</span>"
   );
 }
+
+#[test]
+fn create_contextual_fragment_preserves_comment_nodes() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let div = doc.create_element("div", HTML_NAMESPACE);
+  doc.append_child(doc.root(), div).unwrap();
+
+  let fragment = doc.create_contextual_fragment(div, "<!--x-->").unwrap();
+  let children = doc.node(fragment).children.clone();
+  assert_eq!(children.len(), 1);
+  assert!(
+    matches!(&doc.node(children[0]).kind, NodeKind::Comment { content } if content == "x"),
+    "expected fragment child to be a Comment node, got {:#?}",
+    doc.node(children[0]).kind
+  );
+}
