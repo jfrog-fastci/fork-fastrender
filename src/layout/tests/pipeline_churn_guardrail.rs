@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::layout::contexts::block::BlockFormattingContext;
 use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
 use crate::layout::taffy_integration::{taffy_perf_counters, TaffyPerfCountersGuard};
 use crate::style::display::Display;
 use crate::style::position::Position;
@@ -19,8 +20,8 @@ use crate::style::types::InsetValue;
 use crate::style::values::Length;
 use crate::text::ShapingPipeline;
 use crate::{
-  BoxNode, BoxTree, ComputedStyle, FontContext, FormattingContext, FormattingContextFactory,
-  FormattingContextType, IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
+  BoxNode, BoxTree, ComputedStyle, FontContext, FormattingContextFactory, FormattingContextType,
+  IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
 };
 
 #[test]
