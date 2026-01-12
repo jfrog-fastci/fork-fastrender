@@ -44,7 +44,14 @@ fn iterator_close_on_err(
     }
   }
 
-  match crate::iterator::iterator_close(vm, host, hooks, scope, iterator_record) {
+  match crate::iterator::iterator_close(
+    vm,
+    host,
+    hooks,
+    scope,
+    iterator_record,
+    crate::iterator::CloseCompletionKind::Throw,
+  ) {
     Ok(()) => Err(err),
     Err(close_err) => {
       if original_is_throw {
@@ -503,7 +510,14 @@ fn bind_array_pattern(
     // Iterator binding initialization performs IteratorClose on normal completion when the
     // iterator is not exhausted.
     if !iterator_record.done {
-      crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record)?;
+      crate::iterator::iterator_close(
+        vm,
+        host,
+        hooks,
+        scope,
+        &iterator_record,
+        crate::iterator::CloseCompletionKind::NonThrow,
+      )?;
     }
     return Ok(());
   };

@@ -20,7 +20,7 @@ fn get_iterator_protocol_over_array_returns_iterator_result_objects() -> Result<
   let mut host = ();
   let mut hooks = MicrotaskQueue::new();
 
-  let record = iterator::get_iterator_protocol(vm, &mut host, &mut hooks, &mut scope, array)?;
+  let mut record = iterator::get_iterator_protocol(vm, &mut host, &mut hooks, &mut scope, array)?;
 
   // `get_iterator_protocol` must use the iterator protocol (no Array fast-path), so `next_method`
   // must be callable and the iterator object should be distinct from the array itself.
@@ -39,7 +39,7 @@ fn get_iterator_protocol_over_array_returns_iterator_result_objects() -> Result<
   // Root the iterator object across `next()` calls.
   scope.push_root(record.iterator)?;
 
-  let r1 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &record)?;
+  let r1 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &mut record, None)?;
   scope.push_root(r1)?;
   assert!(!iterator::iterator_complete(vm, &mut host, &mut hooks, &mut scope, r1)?);
   assert_eq!(
@@ -47,7 +47,7 @@ fn get_iterator_protocol_over_array_returns_iterator_result_objects() -> Result<
     Value::Number(1.0)
   );
 
-  let r2 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &record)?;
+  let r2 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &mut record, None)?;
   scope.push_root(r2)?;
   assert!(!iterator::iterator_complete(vm, &mut host, &mut hooks, &mut scope, r2)?);
   assert_eq!(
@@ -55,7 +55,7 @@ fn get_iterator_protocol_over_array_returns_iterator_result_objects() -> Result<
     Value::Number(2.0)
   );
 
-  let r3 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &record)?;
+  let r3 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &mut record, None)?;
   scope.push_root(r3)?;
   assert!(!iterator::iterator_complete(vm, &mut host, &mut hooks, &mut scope, r3)?);
   assert_eq!(
@@ -63,7 +63,7 @@ fn get_iterator_protocol_over_array_returns_iterator_result_objects() -> Result<
     Value::Number(3.0)
   );
 
-  let r4 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &record)?;
+  let r4 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &mut record, None)?;
   scope.push_root(r4)?;
   assert!(iterator::iterator_complete(vm, &mut host, &mut hooks, &mut scope, r4)?);
   assert_eq!(
@@ -73,4 +73,3 @@ fn get_iterator_protocol_over_array_returns_iterator_result_objects() -> Result<
 
   Ok(())
 }
-

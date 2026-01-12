@@ -862,17 +862,25 @@ fn abort_signal_static_any_native(
   })();
 
   if let Err(err) = collect_result {
-    // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
-    // but it must not replace VM-internal fatal errors (termination, OOM, etc).
-    let original_is_throw = err.is_throw_completion();
-    let pending_root = err.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-    let close_res = iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record);
-    if let Some(root) = pending_root {
-      scope.heap_mut().remove_root(root);
-    }
-    if let Err(close_err) = close_res {
-      if original_is_throw {
-        return Err(close_err);
+    if !record.done {
+      // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+      let original_is_throw = err.is_throw_completion();
+      let pending_root = err.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
+      let close_res = iterator::iterator_close(
+        vm,
+        host_ctx,
+        host_hooks,
+        scope,
+        &record,
+        iterator::CloseCompletionKind::Throw,
+      );
+      if let Some(root) = pending_root {
+        scope.heap_mut().remove_root(root);
+      }
+      if let Err(close_err) = close_res {
+        if original_is_throw {
+          return Err(close_err);
+        }
       }
     }
     return Err(err);
@@ -880,7 +888,16 @@ fn abort_signal_static_any_native(
 
   // If an input signal is already aborted, synchronously create an already-aborted composite signal.
   if pre_aborted {
-    iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record)?;
+    if !record.done {
+      iterator::iterator_close(
+        vm,
+        host_ctx,
+        host_hooks,
+        scope,
+        &record,
+        iterator::CloseCompletionKind::NonThrow,
+      )?;
+    }
     let reason = pre_aborted_reason.unwrap_or(Value::Undefined);
     abort_signal(
       vm, scope, host_ctx, host_hooks, signal, reason, /* dispatch_event */ false,

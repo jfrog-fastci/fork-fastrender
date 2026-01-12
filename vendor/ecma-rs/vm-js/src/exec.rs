@@ -1736,6 +1736,43 @@ impl<'a> Evaluator<'a> {
       &mut *self.hooks,
       scope,
       record,
+      iterator::CloseCompletionKind::Throw,
+    ) {
+      Ok(()) => err,
+      Err(close_err) => {
+        if original_is_throw {
+          close_err
+        } else {
+          err
+        }
+      }
+    }
+  }
+
+  fn iterator_close_on_error_force_close(
+    &mut self,
+    scope: &mut Scope<'_>,
+    record: &iterator::IteratorRecord,
+    err: VmError,
+  ) -> VmError {
+    let original_is_throw = err.is_throw_completion();
+
+    // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
+    if original_is_throw {
+      if let Some(thrown) = err.thrown_value() {
+        if let Err(root_err) = scope.push_root(thrown) {
+          return root_err;
+        }
+      }
+    }
+
+    match iterator::iterator_close(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      scope,
+      record,
+      iterator::CloseCompletionKind::Throw,
     ) {
       Ok(()) => err,
       Err(close_err) => {
@@ -6024,16 +6061,23 @@ impl<'a> Evaluator<'a> {
             spread_value,
           )?;
           spread_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-          spread_scope.push_root(iter.next_method)?;
+          if let Err(err) = spread_scope.push_root(iter.next_method) {
+            return Err(self.iterator_close_on_error_force_close(&mut spread_scope, &iter, err));
+          }
 
           loop {
-            let next_value = iterator::iterator_step_value(
+            let next_value = match iterator::iterator_step_value(
               self.vm,
               &mut *self.host,
               &mut *self.hooks,
               &mut spread_scope,
               &mut iter,
-            )?;
+            ) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(self.iterator_close_on_error_force_close(&mut spread_scope, &iter, err))
+              }
+            };
 
             let Some(value) = next_value else {
               break;
@@ -6057,7 +6101,7 @@ impl<'a> Evaluator<'a> {
               Ok(())
             })();
             if let Err(err) = step_res {
-              return Err(err);
+              return Err(self.iterator_close_on_error_force_close(&mut spread_scope, &iter, err));
             }
           }
         }
@@ -6880,16 +6924,23 @@ impl<'a> Evaluator<'a> {
                 spread_value,
               )?;
               new_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-              new_scope.push_root(iter.next_method)?;
+              if let Err(err) = new_scope.push_root(iter.next_method) {
+                return Err(self.iterator_close_on_error_force_close(&mut new_scope, &iter, err));
+              }
 
               loop {
-                let next_value = iterator::iterator_step_value(
+                let next_value = match iterator::iterator_step_value(
                   self.vm,
                   &mut *self.host,
                   &mut *self.hooks,
                   &mut new_scope,
                   &mut iter,
-                )?;
+                ) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    return Err(self.iterator_close_on_error_force_close(&mut new_scope, &iter, err));
+                  }
+                };
 
                 let Some(value) = next_value else {
                   break;
@@ -6903,7 +6954,7 @@ impl<'a> Evaluator<'a> {
                   Ok(())
                 })();
                 if let Err(err) = step_res {
-                  return Err(err);
+                  return Err(self.iterator_close_on_error_force_close(&mut new_scope, &iter, err));
                 }
               }
             } else {
@@ -7106,16 +7157,23 @@ impl<'a> Evaluator<'a> {
           spread_value,
         )?;
         call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-        call_scope.push_root(iter.next_method)?;
+        if let Err(err) = call_scope.push_root(iter.next_method) {
+          return Err(self.iterator_close_on_error_force_close(&mut call_scope, &iter, err));
+        }
 
         loop {
-          let next_value = iterator::iterator_step_value(
+          let next_value = match iterator::iterator_step_value(
             self.vm,
             &mut *self.host,
             &mut *self.hooks,
             &mut call_scope,
             &mut iter,
-          )?;
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              return Err(self.iterator_close_on_error_force_close(&mut call_scope, &iter, err));
+            }
+          };
 
           let Some(value) = next_value else {
             break;
@@ -7129,7 +7187,7 @@ impl<'a> Evaluator<'a> {
             Ok(())
           })();
           if let Err(err) = step_res {
-            return Err(err);
+            return Err(self.iterator_close_on_error_force_close(&mut call_scope, &iter, err));
           }
         }
       } else {
@@ -13213,6 +13271,11 @@ fn async_iterator_close_on_completion(
     return Ok(completion);
   }
   let completion_is_throw = matches!(&completion, Completion::Throw(_));
+  let completion_kind = if completion_is_throw {
+    iterator::CloseCompletionKind::Throw
+  } else {
+    iterator::CloseCompletionKind::NonThrow
+  };
 
   // Root the completion value across `IteratorClose`, which can allocate and trigger GC.
   let close_res: Result<(), VmError> = (|| {
@@ -13226,6 +13289,7 @@ fn async_iterator_close_on_completion(
       &mut *evaluator.hooks,
       &mut close_scope,
       iterator_record,
+      completion_kind,
     )
   })();
 
@@ -16635,6 +16699,47 @@ fn async_iterator_close_on_error(
     &mut *evaluator.hooks,
     scope,
     iter,
+    iterator::CloseCompletionKind::Throw,
+  );
+
+  match close_res {
+    Ok(()) => err,
+    Err(close_err) => {
+      let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
+      if original_is_throw { close_err } else { err }
+    }
+  }
+}
+
+fn async_iterator_close_on_error_force_close(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  iter: &iterator::IteratorRecord,
+  err: VmError,
+) -> VmError {
+  // Do not close iterators that do not implement the iterator protocol (e.g. internal fast-paths).
+  if matches!(iter.next_method, Value::Undefined) {
+    return err;
+  }
+
+  let original_is_throw = err.is_throw_completion();
+
+  // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
+  if original_is_throw {
+    if let Some(thrown) = err.thrown_value() {
+      if let Err(root_err) = scope.push_root(thrown) {
+        return root_err;
+      }
+    }
+  }
+
+  let close_res = iterator::iterator_close(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    scope,
+    iter,
+    iterator::CloseCompletionKind::Throw,
   );
 
   match close_res {
@@ -16676,17 +16781,34 @@ fn async_call_store_arg_value(
     // reachable from the iterator object itself. Treat it as an extra root while pushing the
     // iterator root in case root stack growth triggers GC.
     iter_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-    iter_scope.push_root(iter.next_method)?;
+    if let Err(err) = iter_scope.push_root(iter.next_method) {
+      return Err(async_iterator_close_on_error_force_close(
+        evaluator,
+        &mut iter_scope,
+        &iter,
+        err,
+      ));
+    }
 
     loop {
-      let step = iterator::iterator_step_value(
+      let step = match iterator::iterator_step_value(
         evaluator.vm,
         &mut *evaluator.host,
         &mut *evaluator.hooks,
         &mut iter_scope,
         &mut iter,
-      )
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err))?;
+      ) {
+        Ok(v) => v,
+        Err(err) => {
+          let err = coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err);
+          return Err(async_iterator_close_on_error_force_close(
+            evaluator,
+            &mut iter_scope,
+            &iter,
+            err,
+          ));
+        }
+      };
 
       let Some(v) = step else {
         break;
@@ -16694,16 +16816,47 @@ fn async_call_store_arg_value(
 
       // Per-spread-element tick: spreading large iterators should be budgeted even when no `await`
       // occurs inside the spread.
-      evaluator.tick()?;
+      if let Err(err) = evaluator.tick() {
+        return Err(async_iterator_close_on_error_force_close(
+          evaluator,
+          &mut iter_scope,
+          &iter,
+          err,
+        ));
+      }
 
       let mut root_scope = iter_scope.reborrow();
-      root_scope.push_root(v)?;
+      if let Err(err) = root_scope.push_root(v) {
+        return Err(async_iterator_close_on_error_force_close(
+          evaluator,
+          &mut root_scope,
+          &iter,
+          err,
+        ));
+      }
 
       // Ensure we can record the persistent root before allocating it so we don't leak roots on
       // `Vec` allocation failure.
-      arg_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      if let Err(err) = arg_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory) {
+        return Err(async_iterator_close_on_error_force_close(
+          evaluator,
+          &mut root_scope,
+          &iter,
+          err,
+        ));
+      }
 
-      let id = root_scope.heap_mut().add_root(v)?;
+      let id = match root_scope.heap_mut().add_root(v) {
+        Ok(id) => id,
+        Err(err) => {
+          return Err(async_iterator_close_on_error_force_close(
+            evaluator,
+            &mut root_scope,
+            &iter,
+            err,
+          ))
+        }
+      };
       arg_roots.push(id);
     }
   } else {
@@ -20361,6 +20514,10 @@ fn async_resume_from_frames(
 
                 if !Evaluator::loop_continues(&body_completion, &label_set) {
                   let completion = body_completion.update_empty(Some(v));
+                  let completion_kind = match &completion {
+                    Completion::Throw(_) => iterator::CloseCompletionKind::Throw,
+                    _ => iterator::CloseCompletionKind::NonThrow,
+                  };
                   let close_res: Result<(), VmError> = (|| {
                     let mut close_scope = scope.reborrow();
                     if let Some(v) = completion.value() {
@@ -20372,6 +20529,7 @@ fn async_resume_from_frames(
                       &mut *evaluator.hooks,
                       &mut close_scope,
                       &iterator_record,
+                      completion_kind,
                     )
                   })();
 

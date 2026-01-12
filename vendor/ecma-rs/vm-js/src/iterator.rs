@@ -9,6 +9,18 @@ pub struct IteratorRecord {
   pub done: bool,
 }
 
+/// IteratorClose completion classification.
+///
+/// This mirrors the spec behavior of `IteratorClose(iteratorRecord, completion)`, but avoids
+/// coupling the iterator layer to `exec.rs::Completion`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseCompletionKind {
+  /// Closing on a *throw* completion (errors from `return` are suppressed).
+  Throw,
+  /// Closing on a *non-throw* completion (errors from `return` are propagated).
+  NonThrow,
+}
+
 fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
   let key_s = scope.alloc_string(s)?;
   scope.push_root(Value::String(key_s))?;
@@ -116,9 +128,39 @@ pub fn iterator_next(
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
-  record: &IteratorRecord,
+  record: &mut IteratorRecord,
+  value: Option<Value>,
 ) -> Result<Value, VmError> {
-  vm.call_with_host_and_hooks(host, scope, hooks, record.next_method, record.iterator, &[])
+  let args_buf;
+  let args: &[Value] = match value {
+    None => &[][..],
+    Some(v) => {
+      args_buf = [v];
+      &args_buf[..]
+    }
+  };
+
+  let result = match vm.call_with_host_and_hooks(host, scope, hooks, record.next_method, record.iterator, args) {
+    Ok(v) => v,
+    Err(err) => {
+      record.done = true;
+      return Err(err);
+    }
+  };
+
+  if !matches!(result, Value::Object(_)) {
+    record.done = true;
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    return Err(crate::throw_type_error(
+      scope,
+      intr,
+      "IteratorNext: iterator result is not an object",
+    ));
+  }
+
+  Ok(result)
 }
 
 /// `IteratorComplete` (ECMA-262).
@@ -174,6 +216,38 @@ pub fn iterator_value(
   value_scope.get_with_host_and_hooks(vm, host, hooks, obj, value_key, iter_result)
 }
 
+/// `IteratorStep` (ECMA-262).
+///
+/// Returns `Ok(None)` when iteration is complete.
+pub fn iterator_step(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  record: &mut IteratorRecord,
+) -> Result<Option<Value>, VmError> {
+  if record.done {
+    return Ok(None);
+  }
+
+  let result = iterator_next(vm, host, hooks, scope, record, None)?;
+
+  // Spec: if `IteratorComplete` throws, set `[[Done]] = true` so callers skip IteratorClose.
+  let done = match iterator_complete(vm, host, hooks, scope, result) {
+    Ok(v) => v,
+    Err(err) => {
+      record.done = true;
+      return Err(err);
+    }
+  };
+  if done {
+    record.done = true;
+    return Ok(None);
+  }
+
+  Ok(Some(result))
+}
+
 /// `IteratorStepValue` (ECMA-262).
 ///
 /// Returns `Ok(None)` when iteration is complete.
@@ -188,12 +262,17 @@ pub fn iterator_step_value(
     return Ok(None);
   }
 
-  let result = iterator_next(vm, host, hooks, scope, record)?;
-  if iterator_complete(vm, host, hooks, scope, result)? {
-    record.done = true;
+  let Some(result) = iterator_step(vm, host, hooks, scope, record)? else {
     return Ok(None);
+  };
+
+  match iterator_value(vm, host, hooks, scope, result) {
+    Ok(v) => Ok(Some(v)),
+    Err(err) => {
+      record.done = true;
+      Err(err)
+    }
   }
-  Ok(Some(iterator_value(vm, host, hooks, scope, result)?))
 }
 
 /// `IteratorClose` (ECMA-262).
@@ -206,6 +285,7 @@ pub fn iterator_close(
   hooks: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
   record: &IteratorRecord,
+  completion_kind: CloseCompletionKind,
 ) -> Result<(), VmError> {
   // Root the iterator across property-key allocation and the `GetMethod`/`Call` sequence. Without
   // this, the iterator object could be collected while closing (since values on the Rust stack are
@@ -214,21 +294,49 @@ pub fn iterator_close(
   close_scope.push_root(record.iterator)?;
 
   let return_key = string_key(&mut close_scope, "return")?;
-  let Some(return_method) = crate::spec_ops::get_method_with_host_and_hooks(
+  let return_method = match crate::spec_ops::get_method_with_host_and_hooks(
     vm,
     &mut close_scope,
     host,
     hooks,
     record.iterator,
     return_key,
-  )?
-  else {
+  ) {
+    Ok(m) => m,
+    Err(err) => {
+      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
+        return Ok(());
+      }
+      return Err(err);
+    }
+  };
+
+  let Some(return_method) = return_method else {
     return Ok(());
   };
 
   close_scope.push_root(return_method)?;
-  let result =
-    vm.call_with_host_and_hooks(host, &mut close_scope, hooks, return_method, record.iterator, &[])?;
+  let result = match vm.call_with_host_and_hooks(
+    host,
+    &mut close_scope,
+    hooks,
+    return_method,
+    record.iterator,
+    &[],
+  ) {
+    Ok(v) => v,
+    Err(err) => {
+      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
+        return Ok(());
+      }
+      return Err(err);
+    }
+  };
+
+  if completion_kind == CloseCompletionKind::Throw {
+    // Spec: for throw completions, ignore non-object `return` results.
+    return Ok(());
+  }
 
   if !matches!(result, Value::Object(_)) {
     let intr = vm
@@ -260,16 +368,12 @@ pub fn iterator_close_strict(
   record: &IteratorRecord,
   completion_is_throw: bool,
 ) -> Result<(), VmError> {
-  match iterator_close(vm, host, hooks, scope, record) {
-    Ok(()) => Ok(()),
-    Err(err) => {
-      if completion_is_throw && err.is_throw_completion() {
-        Ok(())
-      } else {
-        Err(err)
-      }
-    }
-  }
+  let completion_kind = if completion_is_throw {
+    CloseCompletionKind::Throw
+  } else {
+    CloseCompletionKind::NonThrow
+  };
+  iterator_close(vm, host, hooks, scope, record, completion_kind)
 }
 
 /// Native call handler for the `unwrap` closure in `AsyncFromSyncIteratorContinuation`.
@@ -356,7 +460,7 @@ pub(crate) fn async_from_sync_iterator_close_call(
     done: false,
   };
 
-  iterator_close(vm, host, hooks, &mut scope, &record)?;
+  iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)?;
   Err(VmError::Throw(reason))
 }
 
@@ -450,7 +554,7 @@ fn async_from_sync_iterator_continuation(
           done: false,
         };
         // IteratorClose errors override the PromiseResolve error.
-        iterator_close(vm, host, hooks, &mut scope, &record)?;
+        iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)?;
       }
       return Err(err);
     }
@@ -861,7 +965,7 @@ pub(crate) fn async_from_sync_iterator_throw_call(
       next_method: Value::Undefined,
       done: false,
     };
-    if let Err(err) = iterator_close(vm, host, hooks, &mut scope, &record) {
+    if let Err(err) = iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw) {
       return reject_promise_from_vm_error(vm, host, hooks, &mut scope, err);
     }
     let intr = vm

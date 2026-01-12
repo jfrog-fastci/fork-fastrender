@@ -739,7 +739,14 @@ fn urlsp_init_pair_from_sequence(
 
   let Some(name_value) = iterator::iterator_step_value(vm, host, hooks, scope, &mut record)? else {
     if !record.done {
-      if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
+      if let Err(err) = iterator::iterator_close(
+        vm,
+        host,
+        hooks,
+        scope,
+        &record,
+        iterator::CloseCompletionKind::Throw,
+      ) {
         return Err(err);
       }
     }
@@ -751,7 +758,14 @@ fn urlsp_init_pair_from_sequence(
   };
   let Some(value_value) = iterator::iterator_step_value(vm, host, hooks, scope, &mut record)? else {
     if !record.done {
-      if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
+      if let Err(err) = iterator::iterator_close(
+        vm,
+        host,
+        hooks,
+        scope,
+        &record,
+        iterator::CloseCompletionKind::Throw,
+      ) {
         return Err(err);
       }
     }
@@ -763,7 +777,14 @@ fn urlsp_init_pair_from_sequence(
   };
   if iterator::iterator_step_value(vm, host, hooks, scope, &mut record)?.is_some() {
     if !record.done {
-      if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
+      if let Err(err) = iterator::iterator_close(
+        vm,
+        host,
+        hooks,
+        scope,
+        &record,
+        iterator::CloseCompletionKind::Throw,
+      ) {
         return Err(err);
       }
     }
@@ -818,11 +839,21 @@ fn urlsp_init_from_iterable(
   match result {
     Ok(()) => Ok(params),
     Err(err) => {
+      if record.done {
+        return Err(err);
+      }
       // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
       // but it must not replace VM-internal fatal errors (termination, OOM, etc).
       let original_is_throw = err.is_throw_completion();
       let pending_root = err.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-      let close_res = iterator::iterator_close(vm, host, hooks, scope, &record);
+      let close_res = iterator::iterator_close(
+        vm,
+        host,
+        hooks,
+        scope,
+        &record,
+        iterator::CloseCompletionKind::Throw,
+      );
       if let Some(root) = pending_root {
         scope.heap_mut().remove_root(root);
       }

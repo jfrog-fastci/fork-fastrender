@@ -927,7 +927,14 @@ pub fn object_from_entries(
           .thrown_value()
           .map(|v| scope.heap_mut().add_root(v))
           .transpose()?;
-        let close_res = crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+        let close_res = crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          &mut scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        );
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
         }
@@ -1672,11 +1679,23 @@ pub fn array_constructor_from(
           // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
           // but it must not replace VM-internal fatal errors (termination, OOM, etc).
           let original_is_throw = err.is_throw_completion();
+          let completion_kind = if original_is_throw {
+            crate::iterator::CloseCompletionKind::Throw
+          } else {
+            crate::iterator::CloseCompletionKind::NonThrow
+          };
           let pending_root = err
             .thrown_value()
             .map(|v| scope.heap_mut().add_root(v))
             .transpose()?;
-          let close_res = crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+          let close_res = crate::iterator::iterator_close(
+            vm,
+            host,
+            hooks,
+            &mut scope,
+            &iterator_record,
+            completion_kind,
+          );
           if let Some(root) = pending_root {
             scope.heap_mut().remove_root(root);
           }
@@ -3786,7 +3805,14 @@ fn aggregate_error_iterable_to_list_array(
           .thrown_value()
           .map(|v| scope.heap_mut().add_root(v))
           .transpose()?;
-        let close_res = crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record);
+        let close_res = crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        );
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
         }
@@ -5844,7 +5870,14 @@ pub fn promise_all(
         let original_is_throw = completion.is_throw_completion();
         let pending_root =
           completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-        match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
+        match crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        ) {
           Ok(()) => {}
           Err(close_err) => {
             // Only propagate close errors for non-catchable failures; otherwise preserve the
@@ -5957,7 +5990,14 @@ pub fn promise_race(
         let original_is_throw = completion.is_throw_completion();
         let pending_root =
           completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-        match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
+        match crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        ) {
           Ok(()) => {}
           Err(close_err) => {
             // Only propagate close errors for non-catchable failures; otherwise preserve the
@@ -6180,7 +6220,14 @@ pub fn promise_all_settled(
         let original_is_throw = completion.is_throw_completion();
         let pending_root =
           completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-        match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
+        match crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        ) {
           Ok(()) => {}
           Err(close_err) => {
             // Only propagate close errors for non-catchable failures; otherwise preserve the
@@ -6387,7 +6434,14 @@ pub fn promise_any(
         let original_is_throw = completion.is_throw_completion();
         let pending_root =
           completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-        match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
+        match crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        ) {
           Ok(()) => {}
           Err(close_err) => {
             // Only propagate close errors for non-catchable failures; otherwise preserve the
@@ -18479,8 +18533,14 @@ pub fn weak_map_constructor_construct(
           .thrown_value()
           .map(|v| scope.heap_mut().add_root(v))
           .transpose()?;
-        let close_res =
-          crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+        let close_res = crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          &mut scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        );
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
         }
@@ -18576,8 +18636,14 @@ pub fn weak_set_constructor_construct(
           .thrown_value()
           .map(|v| scope.heap_mut().add_root(v))
           .transpose()?;
-        let close_res =
-          crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+        let close_res = crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          &mut scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        );
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
         }

@@ -191,7 +191,7 @@ pub fn async_iterator_next(
       let mut next_scope = scope.reborrow();
       next_scope.push_roots(&[sync.iterator, sync.next_method])?;
 
-      let result = match iterator::iterator_next(vm, host, hooks, &mut next_scope, sync) {
+      let result = match iterator::iterator_next(vm, host, hooks, &mut next_scope, sync, None) {
         Ok(v) => v,
         Err(err) => return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, err),
       };
@@ -235,7 +235,14 @@ pub fn async_iterator_next(
               next_method: Value::Undefined,
               done: false,
             };
-            if let Err(close_err) = iterator::iterator_close(vm, host, hooks, &mut next_scope, &record) {
+            if let Err(close_err) = iterator::iterator_close(
+              vm,
+              host,
+              hooks,
+              &mut next_scope,
+              &record,
+              iterator::CloseCompletionKind::Throw,
+            ) {
               return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, close_err);
             }
           }
