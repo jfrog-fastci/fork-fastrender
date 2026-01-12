@@ -1,4 +1,4 @@
-use crate::function::{FunctionData, ThisMode};
+use crate::function::{CallHandler, FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::string::JsString;
 use crate::{
@@ -5177,6 +5177,95 @@ fn vec_try_extend_from_slice<T: Copy>(buf: &mut Vec<T>, slice: &[T]) -> Result<(
   Ok(())
 }
 
+fn alloc_string_from_utf8_with_ticks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  s: &str,
+) -> Result<crate::GcString, VmError> {
+  // `vm-js` budgets large `O(n)` string conversions by ticking while encoding UTF-8 into UTF-16
+  // code units. This avoids `Function.prototype.toString` being an unbudgeted escape hatch for
+  // arbitrarily large source strings.
+  const TICK_EVERY: usize = 4096;
+  let mut units_len: usize = 0;
+  for (i, _) in s.encode_utf16().enumerate() {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    units_len = units_len.saturating_add(1);
+  }
+
+  let mut units: Vec<u16> = Vec::new();
+  units
+    .try_reserve_exact(units_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, unit) in s.encode_utf16().enumerate() {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    units.push(unit);
+  }
+
+  debug_assert_eq!(units.len(), units_len);
+  scope.alloc_string_from_u16_vec(units)
+}
+
+fn canonical_native_function_string(
+  scope: &mut Scope<'_>,
+  name: crate::GcString,
+) -> Result<crate::GcString, VmError> {
+  const PREFIX: [u16; 9] = [
+    b'f' as u16,
+    b'u' as u16,
+    b'n' as u16,
+    b'c' as u16,
+    b't' as u16,
+    b'i' as u16,
+    b'o' as u16,
+    b'n' as u16,
+    b' ' as u16,
+  ];
+  const SUFFIX: [u16; 20] = [
+    b'(' as u16,
+    b')' as u16,
+    b' ' as u16,
+    b'{' as u16,
+    b' ' as u16,
+    b'[' as u16,
+    b'n' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'i' as u16,
+    b'v' as u16,
+    b'e' as u16,
+    b' ' as u16,
+    b'c' as u16,
+    b'o' as u16,
+    b'd' as u16,
+    b'e' as u16,
+    b']' as u16,
+    b' ' as u16,
+    b'}' as u16,
+  ];
+
+  let name_len = scope.heap().get_string(name)?.len_code_units();
+  let total_len = PREFIX
+    .len()
+    .saturating_add(name_len)
+    .saturating_add(SUFFIX.len());
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(total_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  out.extend_from_slice(&PREFIX);
+  out.extend_from_slice(scope.heap().get_string(name)?.as_code_units());
+  out.extend_from_slice(&SUFFIX);
+
+  debug_assert_eq!(out.len(), total_len);
+  scope.alloc_string_from_u16_vec(out)
+}
+
 /// `Function.prototype.call`.
 pub fn function_prototype_call_method(
   vm: &mut Vm,
@@ -5279,6 +5368,90 @@ pub fn function_prototype_bind(
   }
 
   Ok(Value::Object(func))
+}
+
+/// `Function.prototype.toString` (spec-shaped, partial).
+pub fn function_prototype_to_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if !scope.heap().is_callable(this)? {
+    return Err(VmError::TypeError(
+      "Function.prototype.toString called on non-callable receiver",
+    ));
+  }
+  let Value::Object(func_obj) = this else {
+    // `is_callable` returning true implies an object, but keep this defensive to preserve the
+    // TypeError shape.
+    return Err(VmError::NotCallable);
+  };
+
+  // Extract metadata without holding a heap borrow across allocations.
+  let (call_handler, name, is_bound) = {
+    let func = scope.heap().get_function(func_obj)?;
+    (func.call.clone(), func.name, func.bound_target.is_some())
+  };
+
+  // Bound functions never expose their target source text via `toString`; per spec (and JS engine
+  // behaviour), they stringify as `[native code]`.
+  if is_bound {
+    let s = canonical_native_function_string(scope, name)?;
+    return Ok(Value::String(s));
+  }
+
+  match call_handler {
+    CallHandler::Native(_) | CallHandler::User(_) => {
+      let s = canonical_native_function_string(scope, name)?;
+      Ok(Value::String(s))
+    }
+    CallHandler::Ecma(code_id) => {
+      let Some((source, span_start, span_end, kind)) = vm.ecma_function_source_span(code_id) else {
+        let s = canonical_native_function_string(scope, name)?;
+        return Ok(Value::String(s));
+      };
+
+      let text: &str = &source.text;
+      let mut start = (span_start as usize).min(text.len());
+      let mut end = (span_end as usize).min(text.len());
+      if start > end {
+        let s = canonical_native_function_string(scope, name)?;
+        return Ok(Value::String(s));
+      }
+
+      // Clamp to UTF-8 boundaries so we never panic on invalid spans.
+      while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+      }
+      while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+      }
+      if start > end {
+        let s = canonical_native_function_string(scope, name)?;
+        return Ok(Value::String(s));
+      }
+
+      let Some(mut snippet) = text.get(start..end) else {
+        let s = canonical_native_function_string(scope, name)?;
+        return Ok(Value::String(s));
+      };
+
+      // `parse-js` spans for some expression nodes can include trailing delimiter tokens from the
+      // enclosing syntax (e.g. `;` from expression statements). `Function.prototype.toString`
+      // should return the function source text itself, so trim common delimiter suffixes.
+      if kind == crate::vm::EcmaFunctionKind::Expr {
+        let trimmed = snippet.trim_end();
+        snippet = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
+      }
+
+      let s = alloc_string_from_utf8_with_ticks(vm, scope, snippet)?;
+      Ok(Value::String(s))
+    }
+  }
 }
 
 /// `Object.prototype.toString` (partial).

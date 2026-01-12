@@ -506,6 +506,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::function_prototype_apply)?;
     let function_prototype_bind_method =
       vm.register_native_call(builtins::function_prototype_bind)?;
+    let function_prototype_to_string_method =
+      vm.register_native_call(builtins::function_prototype_to_string)?;
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
     let array_prototype_for_each = vm.register_native_call(builtins::array_prototype_for_each)?;
     let array_prototype_index_of = vm.register_native_call(builtins::array_prototype_index_of)?;
@@ -827,6 +829,24 @@ impl Intrinsics {
       let key = PropertyKey::from_string(bind_s);
       let func =
         scope.alloc_native_function(function_prototype_bind_method, None, bind_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        function_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Function.prototype.toString
+    {
+      let to_string_s = scope.alloc_string("toString")?;
+      scope.push_root(Value::String(to_string_s))?;
+      let key = PropertyKey::from_string(to_string_s);
+      let func =
+        scope.alloc_native_function(function_prototype_to_string_method, None, to_string_s, 0)?;
       scope.push_root(Value::Object(func))?;
       scope
         .heap_mut()

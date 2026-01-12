@@ -1294,6 +1294,14 @@ impl Vm {
     Ok(id)
   }
 
+  pub(crate) fn ecma_function_source_span(
+    &self,
+    id: EcmaFunctionId,
+  ) -> Option<(Arc<SourceText>, u32, u32, EcmaFunctionKind)> {
+    let code = self.ecma_functions.get(id.0 as usize)?;
+    Some((code.source.clone(), code.span_start, code.span_end, code.kind))
+  }
+
   fn ecma_function_ast(
     &mut self,
     heap: &mut Heap,
