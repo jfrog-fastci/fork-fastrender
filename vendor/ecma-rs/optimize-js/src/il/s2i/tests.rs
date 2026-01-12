@@ -422,6 +422,76 @@ fn typed_postfix_update_updates_original_local_symbol() {
   );
 }
 
+#[cfg(feature = "typed")]
+#[test]
+fn typed_native_layout_uses_layout_of_interned_for_ref_types() {
+  use std::sync::Arc;
+
+  use typecheck_ts::FileKey;
+  use types_ts_interned::{Layout, PtrKind, TypeKind};
+
+  let source = r#"
+    type Foo = { x: string };
+    declare function use(x: Foo): void;
+    const v: Foo = { x: "hi" };
+    use(v);
+  "#;
+
+  // Mirror `compile_source_typed_cfg_options` but retain the type program so we
+  // can inspect the interned store layouts.
+  let mut host = crate::typed_memory_host_for_source(source);
+  let file = FileKey::new("input.ts");
+  host.insert(file.clone(), source);
+  let type_program = Arc::new(typecheck_ts::Program::new(host, vec![file.clone()]));
+  let diagnostics = type_program.check();
+  assert!(diagnostics.is_empty(), "typecheck failed: {diagnostics:?}");
+  let type_file = type_program
+    .file_id(&file)
+    .expect("typecheck program should know the inserted file");
+
+  let program = crate::compile_file_with_typecheck_cfg_options(
+    Arc::clone(&type_program),
+    type_file,
+    TopLevelMode::Module,
+    false,
+    CompileCfgOptions {
+      keep_ssa: true,
+      run_opt_passes: false,
+    },
+  )
+  .expect("compile typed input");
+
+  let store = type_program.interned_type_store();
+
+  // Ensure `optimize-js` attaches evaluated layouts (via
+  // `Program::layout_of_interned`) for expression types that are still represented
+  // as `TypeKind::Ref` in the interned store.
+  let mut found_ref = false;
+  for (_, block) in program.top_level.body.bblocks.all() {
+    for inst in block.iter() {
+      let Some(ty) = inst.meta.type_id else {
+        continue;
+      };
+      if !matches!(store.type_kind(ty), TypeKind::Ref { .. }) {
+        continue;
+      }
+      found_ref = true;
+      let layout_id = inst
+        .meta
+        .native_layout
+        .expect("expected typed inst to include native_layout");
+      if matches!(store.layout(layout_id), Layout::Ptr { to: PtrKind::Opaque }) {
+        panic!("expected ref type to lower to a concrete layout, got PtrKind::Opaque");
+      }
+    }
+  }
+
+  assert!(
+    found_ref,
+    "expected typed lowering to produce at least one instruction whose type is TypeKind::Ref"
+  );
+}
+
 #[test]
 fn return_statement_emits_return_inst_with_value() {
   let program = compile("(() => { return 1; })();");

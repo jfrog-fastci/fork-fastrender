@@ -43,6 +43,8 @@ pub struct HirSourceToInst<'p> {
   pub continue_stack: Vec<u32>,
   pub label_stack: Vec<LabeledTarget>,
   pub in_function: bool,
+  #[cfg(feature = "typed")]
+  pub native_layout_cache: HashMap<crate::types::TypeId, types_ts_interned::LayoutId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +70,8 @@ impl<'p> HirSourceToInst<'p> {
       continue_stack: Vec::new(),
       label_stack: Vec::new(),
       in_function: body.kind == hir_js::BodyKind::Function,
+      #[cfg(feature = "typed")]
+      native_layout_cache: HashMap::new(),
     }
   }
 
@@ -151,13 +155,13 @@ impl<'p> HirSourceToInst<'p> {
     #[cfg(feature = "typed")]
     {
       inst.meta.native_layout = inst.meta.type_id.and_then(|ty| {
-        let program = self.program.types.program.as_ref()?;
-        let store = program.interned_type_store();
-        if !store.contains_type_id(ty) {
-          return None;
+        if let Some(layout) = self.native_layout_cache.get(&ty) {
+          return Some(*layout);
         }
-        let ty = store.canon(ty);
-        Some(store.layout_of(ty))
+        let program = self.program.types.program.as_ref()?;
+        let layout = program.layout_of_interned(ty);
+        self.native_layout_cache.insert(ty, layout);
+        Some(layout)
       });
     }
     inst.value_type |= summary;
@@ -183,13 +187,13 @@ impl<'p> HirSourceToInst<'p> {
     #[cfg(feature = "typed")]
     {
       inst.meta.native_layout = inst.meta.type_id.and_then(|ty| {
-        let program = self.program.types.program.as_ref()?;
-        let store = program.interned_type_store();
-        if !store.contains_type_id(ty) {
-          return None;
+        if let Some(layout) = self.native_layout_cache.get(&ty) {
+          return Some(*layout);
         }
-        let ty = store.canon(ty);
-        Some(store.layout_of(ty))
+        let program = self.program.types.program.as_ref()?;
+        let layout = program.layout_of_interned(ty);
+        self.native_layout_cache.insert(ty, layout);
+        Some(layout)
       });
     }
     inst.value_type |= summary;
