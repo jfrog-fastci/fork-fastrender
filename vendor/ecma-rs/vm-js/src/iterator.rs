@@ -1280,3 +1280,472 @@ pub(crate) fn async_iterator_close_on_rejected_call(
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
   Err(VmError::Throw(reason))
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::property::{PropertyDescriptor, PropertyKind};
+  use crate::{Heap, HeapLimits, MicrotaskQueue, PromiseState, Realm, VmOptions};
+
+  #[derive(Default)]
+  struct TestHost {
+    return_calls: usize,
+  }
+
+  fn method_returns_slot0(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    let Some(v) = slots.get(0).copied() else {
+      return Err(VmError::InvariantViolation("expected native slot 0"));
+    };
+    Ok(v)
+  }
+
+  fn return_increments_host_and_returns_slot0(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let Some(host) = host.as_any_mut().downcast_mut::<TestHost>() else {
+      return Err(VmError::InvariantViolation("expected TestHost"));
+    };
+    host.return_calls += 1;
+    method_returns_slot0(_vm, scope, host, _hooks, callee, _this, _args)
+  }
+
+  fn throw_slot0(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    let Some(v) = slots.get(0).copied() else {
+      return Err(VmError::InvariantViolation("expected native slot 0"));
+    };
+    Err(VmError::Throw(v))
+  }
+
+  fn value_to_utf8_lossy(heap: &Heap, value: Value) -> Result<String, VmError> {
+    let Value::String(s) = value else {
+      return Err(VmError::InvariantViolation("expected string"));
+    };
+    Ok(heap.get_string(s)?.to_utf8_lossy())
+  }
+
+  fn create_iter_result_object(
+    scope: &mut Scope<'_>,
+    intr: &crate::Intrinsics,
+    value: Value,
+    done: bool,
+  ) -> Result<GcObject, VmError> {
+    scope.push_root(value)?;
+
+    let out = scope.alloc_object()?;
+    scope.push_root(Value::Object(out))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(out, Some(intr.object_prototype()))?;
+
+    let value_key = super::string_key(scope, "value")?;
+    let done_key = super::string_key(scope, "done")?;
+    crate::spec_ops::create_data_property_or_throw(scope, out, value_key, value)?;
+    crate::spec_ops::create_data_property_or_throw(scope, out, done_key, Value::Bool(done))?;
+    Ok(out)
+  }
+
+  fn get_wrapper_method(
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    scope: &mut Scope<'_>,
+    wrapper: Value,
+    name: &str,
+  ) -> Result<Value, VmError> {
+    let Value::Object(wrapper_obj) = wrapper else {
+      return Err(VmError::InvariantViolation(
+        "expected wrapper iterator object",
+      ));
+    };
+    // Root wrapper across key allocation + Get.
+    let mut scope = scope.reborrow();
+    scope.push_root(wrapper)?;
+
+    let key = super::string_key(&mut scope, name)?;
+    scope.get_with_host_and_hooks(vm, host, hooks, wrapper_obj, key, wrapper)
+  }
+
+  #[test]
+  fn async_from_sync_iterator_return_does_not_close_on_rejected_value_when_not_done() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let mut host = TestHost::default();
+    let mut hooks = MicrotaskQueue::new();
+
+    let mut promise_root = None;
+
+    let result: Result<(), VmError> = (|| {
+      let intr = realm.intrinsics();
+      let mut scope = heap.scope();
+
+      let boom_s = scope.alloc_string("boom")?;
+      let boom = Value::String(boom_s);
+
+      let rejected = super::promise_reject(&mut vm, &mut host, &mut hooks, &mut scope, boom)?;
+      scope.push_root(rejected)?;
+
+      let iter_result_obj = create_iter_result_object(&mut scope, &intr, rejected, false)?;
+      let iter_result = Value::Object(iter_result_obj);
+
+      let returns_slot0_id = vm.register_native_call(method_returns_slot0)?;
+      let return_call_id = vm.register_native_call(return_increments_host_and_returns_slot0)?;
+
+      let sync_next_name = scope.alloc_string("next")?;
+      let sync_next = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        sync_next_name,
+        0,
+        &[iter_result],
+      )?;
+      scope.push_root(Value::Object(sync_next))?;
+
+      let sync_return_name = scope.alloc_string("return")?;
+      let sync_return = scope.alloc_native_function_with_slots(
+        return_call_id,
+        None,
+        sync_return_name,
+        0,
+        &[iter_result],
+      )?;
+      scope.push_root(Value::Object(sync_return))?;
+
+      let sync_iter = scope.alloc_object()?;
+      scope.push_root(Value::Object(sync_iter))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(sync_iter, Some(intr.object_prototype()))?;
+
+      let next_key = super::string_key(&mut scope, "next")?;
+      crate::spec_ops::create_data_property_or_throw(&mut scope, sync_iter, next_key, Value::Object(sync_next))?;
+      let return_key = super::string_key(&mut scope, "return")?;
+      crate::spec_ops::create_data_property_or_throw(
+        &mut scope,
+        sync_iter,
+        return_key,
+        Value::Object(sync_return),
+      )?;
+
+      let sync_record = IteratorRecord {
+        iterator: Value::Object(sync_iter),
+        next_method: Value::Object(sync_next),
+        done: false,
+      };
+
+      let wrapper_record =
+        super::create_async_from_sync_iterator(&mut vm, &mut host, &mut hooks, &mut scope, sync_record)?;
+      let wrapper = wrapper_record.iterator;
+
+      let wrapper_return =
+        get_wrapper_method(&mut vm, &mut host, &mut hooks, &mut scope, wrapper, "return")?;
+
+      let promise = vm.call(&mut host, &mut scope, wrapper_return, wrapper, &[])?;
+      scope.push_root(promise)?;
+      promise_root = Some(scope.heap_mut().add_root(promise)?);
+      Ok(())
+    })();
+
+    if let Some(id) = promise_root {
+      vm.perform_microtask_checkpoint_with_host(&mut host, &mut heap)?;
+      let promise = heap.get_root(id).ok_or(VmError::InvariantViolation(
+        "expected promise root to exist",
+      ))?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("expected Promise object"));
+      };
+      assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Rejected);
+      let reason = heap
+        .promise_result(promise_obj)?
+        .ok_or(VmError::InvariantViolation("expected rejection reason"))?;
+      assert_eq!(value_to_utf8_lossy(&heap, reason)?, "boom");
+      assert_eq!(
+        host.return_calls, 1,
+        "AsyncFromSyncIterator.return must not IteratorClose on value rejection"
+      );
+      heap.remove_root(id);
+    }
+
+    realm.teardown(&mut heap);
+    result
+  }
+
+  #[test]
+  fn async_from_sync_iterator_next_closes_on_rejected_value_when_not_done() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let mut host = TestHost::default();
+    let mut hooks = MicrotaskQueue::new();
+
+    let mut promise_root = None;
+
+    let result: Result<(), VmError> = (|| {
+      let intr = realm.intrinsics();
+      let mut scope = heap.scope();
+
+      let boom_s = scope.alloc_string("boom")?;
+      let boom = Value::String(boom_s);
+
+      let rejected = super::promise_reject(&mut vm, &mut host, &mut hooks, &mut scope, boom)?;
+      scope.push_root(rejected)?;
+
+      let iter_result_obj = create_iter_result_object(&mut scope, &intr, rejected, false)?;
+      let iter_result = Value::Object(iter_result_obj);
+
+      let returns_slot0_id = vm.register_native_call(method_returns_slot0)?;
+      let return_call_id = vm.register_native_call(return_increments_host_and_returns_slot0)?;
+
+      let sync_next_name = scope.alloc_string("next")?;
+      let sync_next = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        sync_next_name,
+        0,
+        &[iter_result],
+      )?;
+      scope.push_root(Value::Object(sync_next))?;
+
+      let sync_return_name = scope.alloc_string("return")?;
+      let sync_return = scope.alloc_native_function_with_slots(
+        return_call_id,
+        None,
+        sync_return_name,
+        0,
+        // IteratorClose ignores the return value for throw completions.
+        &[Value::Undefined],
+      )?;
+      scope.push_root(Value::Object(sync_return))?;
+
+      let sync_iter = scope.alloc_object()?;
+      scope.push_root(Value::Object(sync_iter))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(sync_iter, Some(intr.object_prototype()))?;
+
+      let return_key = super::string_key(&mut scope, "return")?;
+      crate::spec_ops::create_data_property_or_throw(
+        &mut scope,
+        sync_iter,
+        return_key,
+        Value::Object(sync_return),
+      )?;
+
+      let sync_record = IteratorRecord {
+        iterator: Value::Object(sync_iter),
+        next_method: Value::Object(sync_next),
+        done: false,
+      };
+
+      let wrapper_record =
+        super::create_async_from_sync_iterator(&mut vm, &mut host, &mut hooks, &mut scope, sync_record)?;
+      let wrapper = wrapper_record.iterator;
+
+      let promise = vm.call(&mut host, &mut scope, wrapper_record.next_method, wrapper, &[])?;
+      scope.push_root(promise)?;
+      promise_root = Some(scope.heap_mut().add_root(promise)?);
+      Ok(())
+    })();
+
+    if let Some(id) = promise_root {
+      vm.perform_microtask_checkpoint_with_host(&mut host, &mut heap)?;
+      let promise = heap.get_root(id).ok_or(VmError::InvariantViolation(
+        "expected promise root to exist",
+      ))?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("expected Promise object"));
+      };
+      assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Rejected);
+      let reason = heap
+        .promise_result(promise_obj)?
+        .ok_or(VmError::InvariantViolation("expected rejection reason"))?;
+      assert_eq!(value_to_utf8_lossy(&heap, reason)?, "boom");
+      assert_eq!(
+        host.return_calls, 1,
+        "AsyncFromSyncIterator.next must IteratorClose on value rejection"
+      );
+      heap.remove_root(id);
+    }
+
+    realm.teardown(&mut heap);
+    result
+  }
+
+  #[test]
+  fn async_from_sync_iterator_close_on_rejection_respects_promise_resolve_abrupt() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let mut host = TestHost::default();
+    let mut hooks = MicrotaskQueue::new();
+
+    let result: Result<(), VmError> = (|| {
+      let intr = realm.intrinsics();
+      let mut scope = heap.scope();
+
+      let boom_s = scope.alloc_string("boom")?;
+      let boom = Value::String(boom_s);
+      scope.push_root(boom)?;
+
+      let promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
+        &mut vm,
+        &mut scope,
+        &mut host,
+        &mut hooks,
+        Value::Number(1.0),
+      )?;
+      scope.push_root(promise)?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("expected promise object"));
+      };
+
+      let throw_id = vm.register_native_call(throw_slot0)?;
+      let getter_name = scope.alloc_string("")?;
+      let getter_fn = scope.alloc_native_function_with_slots(throw_id, None, getter_name, 0, &[boom])?;
+      scope.push_root(Value::Object(getter_fn))?;
+
+      let ctor_key_s = scope.alloc_string("constructor")?;
+      scope.push_root(Value::String(ctor_key_s))?;
+      scope.define_property(
+        promise_obj,
+        PropertyKey::from_string(ctor_key_s),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(getter_fn),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+
+      let iter_result_obj = create_iter_result_object(&mut scope, &intr, promise, false)?;
+      let iter_result = Value::Object(iter_result_obj);
+
+      let returns_slot0_id = vm.register_native_call(method_returns_slot0)?;
+      let return_call_id = vm.register_native_call(return_increments_host_and_returns_slot0)?;
+
+      let sync_next_name = scope.alloc_string("next")?;
+      let sync_next = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        sync_next_name,
+        0,
+        &[iter_result],
+      )?;
+      scope.push_root(Value::Object(sync_next))?;
+
+      let sync_throw_name = scope.alloc_string("throw")?;
+      let sync_throw = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        sync_throw_name,
+        0,
+        &[iter_result],
+      )?;
+      scope.push_root(Value::Object(sync_throw))?;
+
+      let sync_return_name = scope.alloc_string("return")?;
+      let sync_return = scope.alloc_native_function_with_slots(
+        return_call_id,
+        None,
+        sync_return_name,
+        0,
+        &[iter_result],
+      )?;
+      scope.push_root(Value::Object(sync_return))?;
+
+      let sync_iter = scope.alloc_object()?;
+      scope.push_root(Value::Object(sync_iter))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(sync_iter, Some(intr.object_prototype()))?;
+
+      let return_key = super::string_key(&mut scope, "return")?;
+      crate::spec_ops::create_data_property_or_throw(
+        &mut scope,
+        sync_iter,
+        return_key,
+        Value::Object(sync_return),
+      )?;
+      let throw_key = super::string_key(&mut scope, "throw")?;
+      crate::spec_ops::create_data_property_or_throw(&mut scope, sync_iter, throw_key, Value::Object(sync_throw))?;
+
+      let sync_record = IteratorRecord {
+        iterator: Value::Object(sync_iter),
+        next_method: Value::Object(sync_next),
+        done: false,
+      };
+      let wrapper_record =
+        super::create_async_from_sync_iterator(&mut vm, &mut host, &mut hooks, &mut scope, sync_record)?;
+      let wrapper = wrapper_record.iterator;
+
+      // `.next` uses closeOnRejection = true.
+      host.return_calls = 0;
+      let next_promise = vm.call(&mut host, &mut scope, wrapper_record.next_method, wrapper, &[])?;
+      let Value::Object(next_promise_obj) = next_promise else {
+        return Err(VmError::InvariantViolation("expected Promise object"));
+      };
+      assert_eq!(scope.heap().promise_state(next_promise_obj)?, PromiseState::Rejected);
+      assert_eq!(host.return_calls, 1);
+
+      // `.throw` uses closeOnRejection = true.
+      host.return_calls = 0;
+      let wrapper_throw = get_wrapper_method(&mut vm, &mut host, &mut hooks, &mut scope, wrapper, "throw")?;
+      let throw_promise = vm.call(&mut host, &mut scope, wrapper_throw, wrapper, &[])?;
+      let Value::Object(throw_promise_obj) = throw_promise else {
+        return Err(VmError::InvariantViolation("expected Promise object"));
+      };
+      assert_eq!(
+        scope.heap().promise_state(throw_promise_obj)?,
+        PromiseState::Rejected
+      );
+      assert_eq!(host.return_calls, 1);
+
+      // `.return` uses closeOnRejection = false (no IteratorClose on PromiseResolve abrupt).
+      host.return_calls = 0;
+      let wrapper_return = get_wrapper_method(&mut vm, &mut host, &mut hooks, &mut scope, wrapper, "return")?;
+      let return_promise = vm.call(&mut host, &mut scope, wrapper_return, wrapper, &[])?;
+      let Value::Object(return_promise_obj) = return_promise else {
+        return Err(VmError::InvariantViolation("expected Promise object"));
+      };
+      assert_eq!(
+        scope.heap().promise_state(return_promise_obj)?,
+        PromiseState::Rejected
+      );
+      assert_eq!(host.return_calls, 1);
+
+      Ok(())
+    })();
+
+    realm.teardown(&mut heap);
+    result
+  }
+}
