@@ -5107,41 +5107,173 @@ pub fn object_prototype_to_string(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.prototype.tostring
+  //
+  // We keep the algorithm spec-shaped:
+  // 1. Special-case `undefined` / `null`.
+  // 2. `O = ToObject(this)`.
+  // 3. Compute a `builtinTag` (Array / Function / Object / primitive wrappers).
+  // 4. `tag = Get(O, @@toStringTag)` (prototype chain lookup; host-aware; minimal Proxy support).
+  // 5. If `tag` is a string, use it; otherwise use `builtinTag`.
+  // 6. Return `[object ${tag}]`.
   let mut scope = scope.reborrow();
-  let intr = require_intrinsics(vm)?;
-  let (builtin_tag, tag) = match this {
-    Value::Undefined => ("Undefined", None),
-    Value::Null => ("Null", None),
-    Value::Bool(_) => ("Boolean", None),
-    Value::Number(_) => ("Number", None),
-    Value::BigInt(_) => ("BigInt", None),
-    Value::String(_) => ("String", None),
-    Value::Symbol(_) => ("Symbol", None),
-    Value::Object(obj) => {
-      scope.push_root(Value::Object(obj))?;
 
-      let builtin_tag = if scope.heap().is_callable(Value::Object(obj))? {
-        "Function"
-      } else {
-        "Object"
-      };
+  const PREFIX: [u16; 8] = [
+    b'[' as u16,
+    b'o' as u16,
+    b'b' as u16,
+    b'j' as u16,
+    b'e' as u16,
+    b'c' as u16,
+    b't' as u16,
+    b' ' as u16,
+  ];
+  const SUFFIX: [u16; 1] = [b']' as u16];
 
-      let to_string_tag_key = PropertyKey::from_symbol(intr.well_known_symbols().to_string_tag);
-      let value =
-        scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, to_string_tag_key, this)?;
-      let tag = match value {
-        Value::String(s) => Some(scope.heap().get_string(s)?.to_utf8_lossy()),
-        _ => None,
+  const TAG_UNDEFINED: [u16; 9] = [
+    b'U' as u16,
+    b'n' as u16,
+    b'd' as u16,
+    b'e' as u16,
+    b'f' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b'e' as u16,
+    b'd' as u16,
+  ];
+  const TAG_NULL: [u16; 4] = [b'N' as u16, b'u' as u16, b'l' as u16, b'l' as u16];
+  const TAG_BOOLEAN: [u16; 7] = [
+    b'B' as u16,
+    b'o' as u16,
+    b'o' as u16,
+    b'l' as u16,
+    b'e' as u16,
+    b'a' as u16,
+    b'n' as u16,
+  ];
+  const TAG_NUMBER: [u16; 6] = [b'N' as u16, b'u' as u16, b'm' as u16, b'b' as u16, b'e' as u16, b'r' as u16];
+  const TAG_BIGINT: [u16; 6] = [b'B' as u16, b'i' as u16, b'g' as u16, b'I' as u16, b'n' as u16, b't' as u16];
+  const TAG_STRING: [u16; 6] = [b'S' as u16, b't' as u16, b'r' as u16, b'i' as u16, b'n' as u16, b'g' as u16];
+  const TAG_SYMBOL: [u16; 6] = [b'S' as u16, b'y' as u16, b'm' as u16, b'b' as u16, b'o' as u16, b'l' as u16];
+  const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
+  const TAG_FUNCTION: [u16; 8] = [
+    b'F' as u16,
+    b'u' as u16,
+    b'n' as u16,
+    b'c' as u16,
+    b't' as u16,
+    b'i' as u16,
+    b'o' as u16,
+    b'n' as u16,
+  ];
+  const TAG_OBJECT: [u16; 6] = [b'O' as u16, b'b' as u16, b'j' as u16, b'e' as u16, b'c' as u16, b't' as u16];
+
+  fn unwrap_proxy_target(heap: &crate::Heap, mut obj: GcObject) -> Result<Option<GcObject>, VmError> {
+    // Follow Proxy chains iteratively to avoid recursion.
+    for _ in 0..crate::MAX_PROTOTYPE_CHAIN {
+      if !heap.is_proxy_object(obj) {
+        return Ok(Some(obj));
+      }
+      let Some(target) = heap.proxy_target(obj)? else {
+        // Revoked proxy.
+        return Ok(None);
       };
-      (builtin_tag, tag)
+      obj = target;
     }
+    Ok(None)
+  }
+
+  fn get_with_proxy_support(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    receiver: Value,
+  ) -> Result<Value, VmError> {
+    let Some(target) = unwrap_proxy_target(scope.heap(), obj)? else {
+      return Ok(Value::Undefined);
+    };
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, target, key, receiver)
+  }
+
+  // 1. Handle `undefined` / `null` early.
+  if matches!(this, Value::Undefined) {
+    let mut out = Vec::new();
+    out
+      .try_reserve_exact(PREFIX.len() + TAG_UNDEFINED.len() + SUFFIX.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    out.extend_from_slice(&PREFIX);
+    out.extend_from_slice(&TAG_UNDEFINED);
+    out.extend_from_slice(&SUFFIX);
+    return Ok(Value::String(scope.alloc_string_from_u16_vec(out)?));
+  }
+  if matches!(this, Value::Null) {
+    let mut out = Vec::new();
+    out
+      .try_reserve_exact(PREFIX.len() + TAG_NULL.len() + SUFFIX.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    out.extend_from_slice(&PREFIX);
+    out.extend_from_slice(&TAG_NULL);
+    out.extend_from_slice(&SUFFIX);
+    return Ok(Value::String(scope.alloc_string_from_u16_vec(out)?));
+  }
+
+  let intr = require_intrinsics(vm)?;
+  let o = scope.to_object(vm, host, hooks, this)?;
+  let receiver = Value::Object(o);
+  // Root `O` while computing tags and allocating the output string.
+  scope.push_root(receiver)?;
+
+  // `builtinTag`
+  let builtin_tag: &[u16] = match this {
+    Value::Bool(_) => &TAG_BOOLEAN,
+    Value::Number(_) => &TAG_NUMBER,
+    Value::BigInt(_) => &TAG_BIGINT,
+    Value::String(_) => &TAG_STRING,
+    Value::Symbol(_) => &TAG_SYMBOL,
+    Value::Object(_) => {
+      let brand_obj = unwrap_proxy_target(scope.heap(), o)?;
+      if let Some(brand_obj) = brand_obj {
+        if scope.heap().object_is_array(brand_obj)? {
+          &TAG_ARRAY
+        } else if scope.heap().is_callable(Value::Object(o))? {
+          // `IsCallable` follows Proxy chains.
+          &TAG_FUNCTION
+        } else {
+          &TAG_OBJECT
+        }
+      } else {
+        // Revoked (or pathologically deep) Proxy: fall back to callability / object.
+        if scope.heap().is_callable(Value::Object(o))? {
+          &TAG_FUNCTION
+        } else {
+          &TAG_OBJECT
+        }
+      }
+    }
+    _ => &TAG_OBJECT,
   };
 
-  let out = match tag {
-    Some(tag) => format!("[object {tag}]"),
-    None => format!("[object {builtin_tag}]"),
+  // `Get(O, @@toStringTag)`
+  let to_string_tag_key = PropertyKey::from_symbol(intr.well_known_symbols().to_string_tag);
+  let to_string_tag = get_with_proxy_support(vm, &mut scope, host, hooks, o, to_string_tag_key, receiver)?;
+  let tag_override_units: Option<Vec<u16>> = match to_string_tag {
+    Value::String(s) => Some(scope.heap().get_string(s)?.as_code_units().to_vec()),
+    _ => None,
   };
-  Ok(Value::String(scope.alloc_string(&out)?))
+
+  let tag_units = tag_override_units.as_deref().unwrap_or(builtin_tag);
+
+  let mut out = Vec::new();
+  out
+    .try_reserve_exact(PREFIX.len() + tag_units.len() + SUFFIX.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  out.extend_from_slice(&PREFIX);
+  out.extend_from_slice(tag_units);
+  out.extend_from_slice(&SUFFIX);
+  Ok(Value::String(scope.alloc_string_from_u16_vec(out)?))
 }
 
 /// `Object.prototype.hasOwnProperty` (ECMA-262).

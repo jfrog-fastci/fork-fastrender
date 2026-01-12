@@ -43,6 +43,8 @@ pub struct Intrinsics {
   symbol_prototype: GcObject,
   array_buffer_prototype: GcObject,
   uint8_array_prototype: GcObject,
+  weak_map_prototype: GcObject,
+  weak_set_prototype: GcObject,
   object_constructor: GcObject,
   function_constructor: GcObject,
   array_constructor: GcObject,
@@ -435,6 +437,38 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(uint8_array_prototype, Some(object_prototype))?;
+
+    // `%WeakMap.prototype%` / `%WeakSet.prototype%` (minimal).
+    //
+    // These prototypes are currently used for `Object.prototype.toString` tagging via
+    // `@@toStringTag`.
+    let weak_map_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(weak_map_prototype, Some(object_prototype))?;
+    let weak_set_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(weak_set_prototype, Some(object_prototype))?;
+
+    // WeakMap/WeakSet prototype @@toStringTag properties (ECMA-262).
+    {
+      let weak_map_tag = scope.alloc_string("WeakMap")?;
+      scope.push_root(Value::String(weak_map_tag))?;
+      scope.define_property(
+        weak_map_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(weak_map_tag), false, false, true),
+      )?;
+
+      let weak_set_tag = scope.alloc_string("WeakSet")?;
+      scope.push_root(Value::String(weak_set_tag))?;
+      scope.define_property(
+        weak_set_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(weak_set_tag), false, false, true),
+      )?;
+    }
 
     // --- Common property keys used throughout the intrinsic graph ---
     //
@@ -3014,6 +3048,8 @@ impl Intrinsics {
       symbol_prototype,
       array_buffer_prototype,
       uint8_array_prototype,
+      weak_map_prototype,
+      weak_set_prototype,
       object_constructor,
       function_constructor,
       array_constructor,
@@ -3120,6 +3156,14 @@ impl Intrinsics {
 
   pub fn uint8_array_prototype(&self) -> GcObject {
     self.uint8_array_prototype
+  }
+
+  pub fn weak_map_prototype(&self) -> GcObject {
+    self.weak_map_prototype
+  }
+
+  pub fn weak_set_prototype(&self) -> GcObject {
+    self.weak_set_prototype
   }
 
   pub fn object_constructor(&self) -> GcObject {
