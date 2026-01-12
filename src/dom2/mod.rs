@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 mod attrs;
 mod class_list;
+mod cross_document;
 mod error;
 pub use error::{DomError, Result as DomResult};
 mod qualified_name;
@@ -1955,6 +1956,8 @@ mod attrs_tests;
 mod class_list_tests;
 #[cfg(test)]
 mod contextual_fragment_tests;
+#[cfg(test)]
+mod cross_document_tests;
 #[cfg(test)]
 mod html5ever_sink_tests;
 #[cfg(test)]
