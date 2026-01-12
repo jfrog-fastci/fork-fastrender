@@ -1,3 +1,4 @@
+use crate::common::global_state::global_test_lock;
 use fastrender::api::{DiagnosticsLevel, FastRender, RenderOptions};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::style::cascade::{
@@ -26,6 +27,7 @@ impl Drop for CascadeProfileGuard {
 
 #[test]
 fn cascade_profile_env_populates_cascade_diagnostics() {
+  let _lock = global_test_lock();
   let _guard = CascadeProfileGuard::enable();
 
   let toggles = RuntimeToggles::from_map(HashMap::from([(
