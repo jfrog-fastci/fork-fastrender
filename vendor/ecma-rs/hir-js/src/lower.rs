@@ -2004,7 +2004,6 @@ fn lower_expr(
   use parse_js::operator::OperatorName;
 
   let span = ctx.to_range(expr.loc);
-  #[allow(unreachable_patterns)]
   let kind = match &*expr.stx {
     AstExpr::Id(id) => ExprKind::Ident(builder.intern_name(&id.stx.name)),
     AstExpr::This(_) => ExprKind::This,
@@ -2271,6 +2270,21 @@ fn lower_expr(
     AstExpr::ImportMeta(_) => ExprKind::ImportMeta,
     AstExpr::NewTarget(_) => ExprKind::NewTarget,
     AstExpr::JsxElem(elem) => ExprKind::Jsx(lower_jsx_elem(elem, builder, ctx)),
+    AstExpr::JsxExprContainer(container) => {
+      // Expression containers are lowered as part of JSX trees; if we ever see
+      // them as standalone expressions (e.g. via error recovery), lower their
+      // child expression for span-map coverage but keep the expression kind as
+      // `Missing`.
+      let _ = lower_jsx_expr_container(container, builder, ctx);
+      ExprKind::Missing
+    }
+    AstExpr::JsxSpreadAttr(spread) => {
+      // Spread attributes are lowered as part of JSX trees; if we ever see them
+      // as standalone expressions, lower their value for span-map coverage.
+      let _ = lower_expr(&spread.stx.value, builder, ctx);
+      ExprKind::Missing
+    }
+    AstExpr::JsxMember(_) | AstExpr::JsxName(_) | AstExpr::JsxText(_) => ExprKind::Missing,
     AstExpr::ArrPat(arr) => {
       let kind = lower_arr_pat(arr, builder, ctx);
       let _ = builder.alloc_pat(ctx.to_range(arr.loc), kind);
@@ -2286,7 +2300,6 @@ fn lower_expr(
       let _ = builder.alloc_pat(span, PatKind::Ident(name));
       ExprKind::Missing
     }
-    _ => ExprKind::Missing,
   };
 
   builder.alloc_expr(span, kind)
