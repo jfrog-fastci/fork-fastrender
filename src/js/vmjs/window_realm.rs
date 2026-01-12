@@ -12499,9 +12499,7 @@ fn custom_event_constructor_impl(
   let initialized_key = alloc_key(scope, EVENT_INITIALIZED_KEY)?;
   scope.define_property(obj, initialized_key, data_desc(Value::Bool(true)))?;
 
-  // MouseEvent has an own `detail` property (UI Events). Ensure dispatch never mistakes it for
-  // CustomEvent by branding it with the MouseEvent kind.
-  brand_event_object(scope, obj, BrandedEventKind::MouseEvent)?;
+  brand_event_object(scope, obj, BrandedEventKind::CustomEvent)?;
 
   Ok(Value::Object(obj))
 }
