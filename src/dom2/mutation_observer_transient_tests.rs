@@ -215,3 +215,61 @@ fn mutation_observer_observe_update_clears_transients_sourced_from_transients() 
   doc.set_attribute(removed_child, "data-x", "1").unwrap();
   assert!(doc.mutation_observer_take_deliveries().is_empty());
 }
+
+#[test]
+fn mutation_observer_attribute_old_value_is_union_across_registrations() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  let child = doc.create_element("span", "");
+  doc.append_child(root, parent).unwrap();
+  doc.append_child(parent, child).unwrap();
+
+  // Seed an initial value so the attribute mutation has a non-null oldValue.
+  doc.set_attribute(child, "data-x", "a").unwrap();
+
+  // Register the same observer twice in the ancestor chain with different `attributeOldValue`
+  // settings. The closer registration does *not* request oldValue, while the ancestor does.
+  //
+  // Per spec, the queued mutation record should still include oldValue if *any* matching
+  // registration requests it.
+  doc
+    .mutation_observer_observe(
+      1,
+      child,
+      MutationObserverInit {
+        attributes: true,
+        subtree: false,
+        attribute_old_value: false,
+        ..MutationObserverInit::default()
+      },
+    )
+    .unwrap();
+  doc
+    .mutation_observer_observe(
+      1,
+      parent,
+      MutationObserverInit {
+        attributes: true,
+        subtree: true,
+        attribute_old_value: true,
+        ..MutationObserverInit::default()
+      },
+    )
+    .unwrap();
+
+  doc.set_attribute(child, "data-x", "b").unwrap();
+
+  let deliveries = doc.mutation_observer_take_deliveries();
+  let records = deliveries
+    .into_iter()
+    .find(|(id, _)| *id == 1)
+    .map(|(_, recs)| recs)
+    .unwrap_or_default();
+  assert_eq!(records.len(), 1);
+  assert_eq!(records[0].type_, MutationRecordType::Attributes);
+  assert_eq!(records[0].target, child);
+  assert_eq!(records[0].attribute_name.as_deref(), Some("data-x"));
+  assert_eq!(records[0].old_value.as_deref(), Some("a"));
+}

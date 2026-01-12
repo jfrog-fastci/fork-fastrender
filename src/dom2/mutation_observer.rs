@@ -656,7 +656,12 @@ impl Document {
       name.to_string()
     };
 
-    let mut interested: HashMap<MutationObserverId, MutationObserverInit> = HashMap::new();
+    // Track which observers are interested in this mutation and whether any matching registration
+    // requested recording the old attribute value.
+    //
+    // Spec: the interested-observers map stores `oldValue` if **any** matching registration has
+    // `attributeOldValue=true` (it is not per-registration once the observer is included).
+    let mut interested: HashMap<MutationObserverId, bool> = HashMap::new();
     let mut current = Some(target);
     while let Some(node) = current {
       let list = &self.nodes[node.index()].registered_observers;
@@ -676,9 +681,10 @@ impl Document {
             continue;
           }
         }
-        interested
-          .entry(reg.observer)
-          .or_insert_with(|| reg.options.clone());
+        let needs_old_value = interested.entry(reg.observer).or_insert(false);
+        if reg.options.attribute_old_value {
+          *needs_old_value = true;
+        }
       }
       // MutationObserver walks the inclusive ancestors in the DOM tree. Shadow roots form a tree
       // boundary: observers registered outside the shadow tree must not observe mutations inside it.
@@ -699,7 +705,7 @@ impl Document {
     }
 
     let mut agent = self.mutation_observer_agent.borrow_mut();
-    for (observer, options) in interested {
+    for (observer, needs_old_value) in interested {
       let record = MutationRecord {
         type_: MutationRecordType::Attributes,
         target,
@@ -708,11 +714,7 @@ impl Document {
         previous_sibling: None,
         next_sibling: None,
         attribute_name: Some(attr_name.clone()),
-        old_value: if options.attribute_old_value {
-          old_value.clone()
-        } else {
-          None
-        },
+        old_value: needs_old_value.then(|| old_value.clone()).flatten(),
       };
       agent.queue_record(observer, record)?;
     }
@@ -727,7 +729,9 @@ impl Document {
   ) -> Result<(), DomError> {
     self.node_checked(target)?;
 
-    let mut interested: HashMap<MutationObserverId, MutationObserverInit> = HashMap::new();
+    // Track which observers are interested in this mutation and whether any matching registration
+    // requested recording the old character data value.
+    let mut interested: HashMap<MutationObserverId, bool> = HashMap::new();
     let mut current = Some(target);
     while let Some(node) = current {
       let list = &self.nodes[node.index()].registered_observers;
@@ -738,9 +742,10 @@ impl Document {
         if node != target && !reg.options.subtree {
           continue;
         }
-        interested
-          .entry(reg.observer)
-          .or_insert_with(|| reg.options.clone());
+        let needs_old_value = interested.entry(reg.observer).or_insert(false);
+        if reg.options.character_data_old_value {
+          *needs_old_value = true;
+        }
       }
       if matches!(self.nodes[node.index()].kind, NodeKind::ShadowRoot { .. }) {
         break;
@@ -753,7 +758,7 @@ impl Document {
     }
 
     let mut agent = self.mutation_observer_agent.borrow_mut();
-    for (observer, options) in interested {
+    for (observer, needs_old_value) in interested {
       let record = MutationRecord {
         type_: MutationRecordType::CharacterData,
         target,
@@ -762,11 +767,7 @@ impl Document {
         previous_sibling: None,
         next_sibling: None,
         attribute_name: None,
-        old_value: if options.character_data_old_value {
-          old_value.clone()
-        } else {
-          None
-        },
+        old_value: needs_old_value.then(|| old_value.clone()).flatten(),
       };
       agent.queue_record(observer, record)?;
     }
