@@ -175,3 +175,102 @@ type U = { a: number } | { b: boolean };
     ));
   }
 }
+
+#[test]
+fn layout_of_interned_for_callable_is_gc_object_with_closure_header() {
+  let mut host = aot_host();
+  let file = FileKey::new("main.ts");
+  host.insert(file.clone(), "type Fn = (x: number) => boolean;");
+
+  let program = Program::new(host, vec![file.clone()]);
+  let file_id = program.file_id(&file).expect("file id");
+  let fn_def = def_in_file(&program, file_id, "Fn");
+
+  let store = program.interned_type_store();
+  let fn_ref = program.type_of_def_interned(fn_def);
+  let layout_id = program.layout_of_interned(fn_ref);
+  let layout = store.layout(layout_id);
+
+  let payload_layout_id = match layout {
+    Layout::Ptr {
+      to: PtrKind::GcObject { layout },
+    } => layout,
+    other => panic!("expected pointer-to-gc-object layout, got {other:?}"),
+  };
+
+  let Layout::Struct { fields, size, align } = store.layout(payload_layout_id) else {
+    panic!("expected struct payload layout");
+  };
+
+  assert_eq!(size, 16);
+  assert_eq!(align, 8);
+  assert_eq!(fields.len(), 2);
+  assert_eq!(fields[0].key, FieldKey::Internal("fn_ptr".to_string()));
+  assert_eq!(fields[0].offset, 0);
+  assert!(matches!(
+    store.layout(fields[0].layout),
+    Layout::Ptr {
+      to: PtrKind::Opaque
+    }
+  ));
+
+  assert_eq!(fields[1].key, FieldKey::Internal("env".to_string()));
+  assert_eq!(fields[1].offset, 8);
+  assert!(matches!(
+    store.layout(fields[1].layout),
+    Layout::Ptr { to: PtrKind::GcAny }
+  ));
+
+  assert_eq!(store.gc_ptr_offsets(payload_layout_id), vec![8]);
+}
+
+#[test]
+fn layout_of_interned_for_callable_object_includes_closure_header_prefix() {
+  let mut host = aot_host();
+  let file = FileKey::new("main.ts");
+  host.insert(
+    file.clone(),
+    r#"
+type FnObj = { (x: number): boolean; x: string };
+"#,
+  );
+
+  let program = Program::new(host, vec![file.clone()]);
+  let file_id = program.file_id(&file).expect("file id");
+  let fnobj_def = def_in_file(&program, file_id, "FnObj");
+
+  let store = program.interned_type_store();
+  let fnobj_ref = program.type_of_def_interned(fnobj_def);
+  let layout_id = program.layout_of_interned(fnobj_ref);
+  let layout = store.layout(layout_id);
+
+  let payload_layout_id = match layout {
+    Layout::Ptr {
+      to: PtrKind::GcObject { layout },
+    } => layout,
+    other => panic!("expected pointer-to-gc-object layout, got {other:?}"),
+  };
+
+  let Layout::Struct { fields, .. } = store.layout(payload_layout_id) else {
+    panic!("expected struct payload layout");
+  };
+
+  assert_eq!(fields.len(), 3);
+  assert_eq!(fields[0].key, FieldKey::Internal("fn_ptr".to_string()));
+  assert_eq!(fields[0].offset, 0);
+  assert_eq!(fields[1].key, FieldKey::Internal("env".to_string()));
+  assert_eq!(fields[1].offset, 8);
+
+  let prop_name = match &fields[2].key {
+    FieldKey::Prop(PropKey::String(id)) => store.name(*id),
+    other => panic!("expected string prop key, got {other:?}"),
+  };
+  assert_eq!(prop_name, "x");
+  assert_eq!(fields[2].offset, 16);
+  assert!(matches!(
+    store.layout(fields[2].layout),
+    Layout::Ptr { to: PtrKind::GcString }
+  ));
+
+  assert_eq!(store.gc_ptr_offsets(payload_layout_id), vec![8, 16]);
+}
