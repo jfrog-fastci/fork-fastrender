@@ -611,6 +611,18 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             if !allow_imports_and_exports {
               self.report_module_augmentation_imports_and_exports(aug.origin, &aug.module);
             }
+
+            // Even when `export` statements are forbidden in a module
+            // augmentation, `export =` still needs to be applied so `import x =
+            // require()` is typed correctly for host-mapped declaration files.
+            let export_assignments: Vec<Export> = aug
+              .module
+              .exports
+              .iter()
+              .cloned()
+              .filter(|export| matches!(export, Export::ExportAssignment { .. }))
+              .collect();
+
             let imports: &[Import] = if allow_imports_and_exports {
               &aug.module.imports
             } else {
@@ -619,7 +631,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             let exports: &[Export] = if allow_imports_and_exports {
               &aug.module.exports
             } else {
-              &[]
+              &export_assignments
             };
             self.bind_module_items(
               &mut state,
@@ -666,6 +678,13 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
 
           {
             let owner = SymbolOwner::AmbientModule(specifier.clone());
+            let export_assignments: Vec<Export> = aug
+              .module
+              .exports
+              .iter()
+              .cloned()
+              .filter(|export| matches!(export, Export::ExportAssignment { .. }))
+              .collect();
             self.report_module_augmentation_imports_and_exports(aug.origin, &aug.module);
             self.bind_module_items(
               &mut state,
@@ -679,7 +698,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               &aug.module.type_imports,
               &[],
               &aug.module.import_equals,
-              &[],
+              &export_assignments,
               &[],
               &aug.module.ambient_modules,
               &mut deps,
