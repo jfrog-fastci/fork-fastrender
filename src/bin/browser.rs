@@ -3714,6 +3714,7 @@ impl App {
               close_resp.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss")
               });
+              fastrender::ui::chrome::show_tooltip_on_focus(ui, &close_resp, "Dismiss");
               if close_resp.clicked() {
                 dismiss = true;
               }
@@ -4096,6 +4097,7 @@ impl App {
             clear_filter.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear filter")
             });
+            fastrender::ui::chrome::show_tooltip_on_focus(ui, &clear_filter, "Clear filter");
             if clear_filter.clicked() {
               self.debug_log_filter.clear();
             }
@@ -4664,6 +4666,7 @@ impl App {
             close_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close downloads panel")
             });
+            fastrender::ui::chrome::show_tooltip_on_focus(ui, &close_resp, "Close (Esc)");
             if close_resp.clicked() {
               close_panel = true;
             }
@@ -5231,6 +5234,7 @@ impl App {
               prev_resp.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, "Previous month")
               });
+              fastrender::ui::chrome::show_tooltip_on_focus(ui, &prev_resp, "Previous month");
               if prev_resp.clicked() {
                 if *month <= 1 {
                   *month = 12;
@@ -5249,6 +5253,7 @@ impl App {
               next_resp.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, "Next month")
               });
+              fastrender::ui::chrome::show_tooltip_on_focus(ui, &next_resp, "Next month");
               if next_resp.clicked() {
                 if *month >= 12 {
                   *month = 1;
@@ -5265,7 +5270,7 @@ impl App {
             ui.separator();
 
             let Some(first_day) = chrono::NaiveDate::from_ymd_opt(*year, *month, 1) else {
-              ui.colored_label(egui::Color32::RED, "Invalid month/year");
+              ui.colored_label(ui.visuals().error_fg_color, "Invalid month/year");
               return action;
             };
             let (next_year, next_month) = if *month == 12 {
@@ -5274,7 +5279,7 @@ impl App {
               (*year, *month + 1)
             };
             let Some(first_next_month) = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1) else {
-              ui.colored_label(egui::Color32::RED, "Invalid month/year");
+              ui.colored_label(ui.visuals().error_fg_color, "Invalid month/year");
               return action;
             };
             let last_day = first_next_month - chrono::Duration::days(1);
@@ -7704,6 +7709,7 @@ impl App {
               close_resp.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close history panel")
               });
+              fastrender::ui::chrome::show_tooltip_on_focus(ui, &close_resp, "Close");
               if close_resp.clicked() {
                 close_history_panel = true;
               }

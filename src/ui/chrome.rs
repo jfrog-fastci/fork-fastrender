@@ -123,7 +123,7 @@ fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, style: FocusRingSt
     .rect_stroke(response.rect.expand(style.expand), style.rounding, style.stroke);
 }
 
-fn show_tooltip_on_hover_or_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
+pub fn show_tooltip_on_hover_or_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
   if !(response.hovered() || response.has_focus()) {
     return;
   }
@@ -137,7 +137,7 @@ fn show_tooltip_on_hover_or_focus(ui: &egui::Ui, response: &egui::Response, tool
   );
 }
 
-fn show_tooltip_on_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
+pub fn show_tooltip_on_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
   if !response.has_focus() || response.hovered() {
     return;
   }
