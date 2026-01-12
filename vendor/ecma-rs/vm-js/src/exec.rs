@@ -30392,4 +30392,60 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn yield_star_throw_without_throw_method_closes_and_rethrows() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      (function () {
+        let closed = false;
+        const iter = {
+          i: 0,
+          next() {
+            if (this.i < 2) return { value: this.i++, done: false };
+            return { value: undefined, done: true };
+          },
+          return() {
+            closed = true;
+            return { value: undefined, done: true };
+          },
+        };
+
+        const iterable = {
+          [Symbol.iterator]() {
+            return iter;
+          },
+        };
+
+        function* gen() {
+          try {
+            yield* iterable;
+            return "unexpected";
+          } catch (e) {
+            return e;
+          }
+        }
+
+        const it = gen();
+        const first = it.next();
+        if (first.value !== 0 || first.done !== false) return false;
+
+        const res = it.throw(42);
+        return res.value === 42 && res.done === true && closed;
+      })()
+    "#,
+    )?;
+
+    assert_eq!(
+      value,
+      Value::Bool(true),
+      "expected yield* throw to rethrow the provided reason and close the iterator"
+    );
+
+    Ok(())
+  }
 }
