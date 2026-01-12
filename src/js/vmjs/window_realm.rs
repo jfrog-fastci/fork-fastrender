@@ -27632,6 +27632,63 @@ mod tests {
   }
 
   #[test]
+  fn window_session_storage_persists_across_realms_in_same_namespace() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    // Simulate a tab lifetime by registering a session storage namespace and keeping the guard
+    // alive across a "navigation" (dropping one realm and constructing another).
+    let config_a = WindowRealmConfig::new("https://storage-session.test/a");
+    let session_namespace = config_a.session_storage_namespace;
+    let tab_guard = crate::js::web_storage::with_default_hub_mut(|hub| {
+      hub.register_window(crate::js::web_storage::SessionNamespaceId(session_namespace))
+    });
+
+    let mut realm_a = new_realm(config_a)?;
+    realm_a.exec_script("sessionStorage.setItem('k', 'v')")?;
+    drop(realm_a);
+
+    let mut realm_b = new_realm(
+      WindowRealmConfig::new("https://storage-session.test/b")
+        .with_session_storage_namespace(session_namespace),
+    )?;
+    let v = realm_b.exec_script("sessionStorage.getItem('k')")?;
+    assert_eq!(get_string(realm_b.heap(), v), "v");
+
+    drop(tab_guard);
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
+  fn window_session_storage_is_cleared_when_namespace_dropped() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    let config_a = WindowRealmConfig::new("https://storage-session-drop.test/a");
+    let session_namespace = config_a.session_storage_namespace;
+    let tab_guard = crate::js::web_storage::with_default_hub_mut(|hub| {
+      hub.register_window(crate::js::web_storage::SessionNamespaceId(session_namespace))
+    });
+
+    let mut realm_a = new_realm(config_a)?;
+    realm_a.exec_script("sessionStorage.setItem('k', 'v')")?;
+
+    // Dropping the namespace clears all {namespace, origin} areas. Keep the guard alive to ensure
+    // new realms still bind to the persistent (but now empty) session storage map.
+    crate::js::web_storage::drop_session_namespace(session_namespace);
+    assert_eq!(realm_a.exec_script("sessionStorage.getItem('k')")?, Value::Null);
+
+    let mut realm_b = new_realm(
+      WindowRealmConfig::new("https://storage-session-drop.test/b")
+        .with_session_storage_namespace(session_namespace),
+    )?;
+    assert_eq!(realm_b.exec_script("sessionStorage.getItem('k')")?, Value::Null);
+
+    drop(tab_guard);
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
   fn window_local_storage_is_ephemeral_for_file_urls() -> Result<(), VmError> {
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
 

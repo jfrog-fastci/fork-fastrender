@@ -168,6 +168,8 @@ impl Drop for VmJsBrowserTabExecutor {
     self.xhr_bindings = None;
     self.websocket_bindings = None;
     self.realm = None;
+    // Clear the tab's sessionStorage data (spec: cleared when the tab closes).
+    crate::js::web_storage::drop_session_namespace(self.session_storage_namespace);
     self.session_storage_guard = None;
   }
 }

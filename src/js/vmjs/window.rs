@@ -6,6 +6,7 @@ use crate::js::import_maps::{
 };
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::vm_error_format;
+use crate::js::web_storage::{with_default_hub_mut, SessionNamespaceId, StorageListenerGuard};
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::js::window_file_reader::install_window_file_reader_bindings;
 use crate::js::window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
@@ -298,6 +299,8 @@ impl WindowHost {
 /// Host state used by [`WindowHost`]'s event loop.
 pub struct WindowHostState {
   pub document_url: String,
+  session_storage_namespace: u64,
+  _session_storage_guard: StorageListenerGuard,
   /// Current document base URL used for resolving relative URLs.
   ///
   /// This is a host-level concept (HTML `Document.baseURI`) and is not stored in `dom2`.
@@ -385,10 +388,20 @@ impl WindowHostState {
     let document_url = document_url.into();
     let host_fetcher = fetcher.clone();
     let document = DocumentHostState::new(dom);
+
+    // Register a stable session storage namespace for the lifetime of this host. This enables
+    // browser-like `sessionStorage` behaviour when embedding `WindowHost` in a tab-like context (and
+    // allows tests to simulate "same tab" semantics by reusing the namespace id).
+    let config = WindowRealmConfig::new(document_url.clone())
+      .with_current_script_state(document.current_script_state().clone())
+      .with_clock(clock);
+    let session_storage_namespace = config.session_storage_namespace;
+    let session_storage_guard = with_default_hub_mut(|hub| {
+      hub.register_window(SessionNamespaceId(session_storage_namespace))
+    });
+
     let mut window = WindowRealm::new_with_js_execution_options(
-      WindowRealmConfig::new(document_url.clone())
-        .with_current_script_state(document.current_script_state().clone())
-        .with_clock(clock),
+      config,
       js_execution_options,
     )
     .map_err(|err| Error::Other(err.to_string()))?;
@@ -459,6 +472,8 @@ impl WindowHostState {
     Ok(Self {
       base_url: Some(document_url.clone()),
       document_url,
+      session_storage_namespace,
+      _session_storage_guard: session_storage_guard,
       import_map_state: ImportMapState::new_empty(),
       import_map_warnings: Vec::new(),
       import_map_errors: Vec::new(),
@@ -471,6 +486,10 @@ impl WindowHostState {
       webidl_bindings_host,
       js_execution_options,
     })
+  }
+
+  pub fn session_storage_namespace(&self) -> u64 {
+    self.session_storage_namespace
   }
 
   pub fn from_renderer_dom(

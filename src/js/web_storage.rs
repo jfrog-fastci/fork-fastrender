@@ -271,6 +271,24 @@ impl WebStorageHub {
     Self::default()
   }
 
+  fn clear_session_namespace_data(&mut self, session: SessionNamespaceId) {
+    // Clear and remove all session storage areas for this namespace (all origins).
+    self.session_areas.retain(|(ns, _origin), area| {
+      if *ns != session {
+        return true;
+      }
+      // Clear underlying `StorageArea`s in case another part of the process still holds `Arc`
+      // handles to them (e.g. a still-alive JS realm).
+      area.lock().clear();
+      false
+    });
+
+    // Remove any listener records scoped to this namespace.
+    self
+      .session_listeners
+      .retain(|(ns, _origin), _listeners| *ns != session);
+  }
+
   pub fn register_window(&mut self, session: SessionNamespaceId) -> StorageListenerGuard {
     let count = self.active_session_namespaces.entry(session).or_insert(0);
     *count = count.saturating_add(1);
@@ -300,20 +318,7 @@ impl WebStorageHub {
     }
 
     self.active_session_namespaces.remove(&session);
-
-    // Clear and remove all session storage areas for this namespace (all origins).
-    self.session_areas.retain(|(ns, _origin), area| {
-      if *ns != session {
-        return true;
-      }
-      area.lock().clear();
-      false
-    });
-
-    // Remove any listener records scoped to this namespace.
-    self
-      .session_listeners
-      .retain(|(ns, _origin), _listeners| *ns != session);
+    self.clear_session_namespace_data(session);
   }
 
   pub fn set_limits(&mut self, limits: StorageLimits) {
@@ -445,6 +450,15 @@ pub fn get_session_area(session: SessionNamespaceId, origin: Option<&str>) -> Ar
     }
     hub.get_or_create_session_area(session, origin)
   })
+}
+
+/// Drop a session storage namespace (tab).
+///
+/// This clears all `sessionStorage` areas for every origin in the namespace. It is valid to call
+/// this even while windows/realms are still alive; existing `StorageArea` handles are cleared in
+/// place so JS observers see the namespace become empty.
+pub fn drop_session_namespace(namespace_id: u64) {
+  with_default_hub_mut(|hub| hub.clear_session_namespace_data(SessionNamespaceId(namespace_id)));
 }
 
 /// Reset the thread-local default Web Storage hub.
