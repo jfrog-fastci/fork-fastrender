@@ -24,6 +24,10 @@
 //! Only the observe-protocol fixtures currently participate in the expectation suite, but
 //! [`FixtureKind`] allows this module to be reused for both protocols.
 //!
+//! In addition, the directory contains **module graph** fixtures stored as subdirectories. Each
+//! directory fixture must contain an `entry.ts` module (and any number of sibling modules). These
+//! are executed via [`crate::run_fixture_ts_module_dir`].
+//!
 //! ## Expected output rules
 //!
 //! For expectation-based suites, expected output is determined as follows:
@@ -46,6 +50,11 @@ use diagnostics::Diagnostic;
 pub enum FixtureKind {
   /// `*.ts` / `*.tsx` fixtures that use the `globalThis.__native_result` observation protocol.
   Observe,
+  /// Directory fixtures (`<name>/entry.ts`) executed as an ECMAScript module graph.
+  ///
+  /// These still use the observe protocol (`globalThis.__native_result`), but must be executed via
+  /// the module loader/evaluator instead of the script runner.
+  ObserveModuleDir,
   /// `*.js` fixtures that return a string or `Promise<string>`.
   PromiseReturn,
 }
@@ -71,48 +80,72 @@ pub struct FixtureCase {
 
 /// Discover fixtures under `dir` and return them in deterministic order.
 ///
-/// The directory is scanned non-recursively. Files are recognized by extension:
+/// The directory is scanned non-recursively (only direct children are considered). Files are
+/// recognized by extension:
 /// - `*.ts` / `*.tsx` → [`FixtureKind::Observe`]
 /// - `*.js` → [`FixtureKind::PromiseReturn`]
 ///
+/// Subdirectories are treated as module-graph fixtures if they contain an `entry.ts` (or
+/// `entry.tsx` / `entry.js`) file, and are returned as [`FixtureKind::ObserveModuleDir`].
+///
 /// Expected output is parsed via [`parse_expected_output`].
 pub fn discover_native_oracle_fixtures(dir: &Path) -> Vec<FixtureCase> {
-  let mut paths: Vec<PathBuf> = fs::read_dir(dir)
-    .unwrap_or_else(|err| panic!("failed to read fixture dir {dir:?}: {err}"))
-    .map(|entry| {
-      entry
-        .unwrap_or_else(|err| panic!("failed to read fixture dir entry under {dir:?}: {err}"))
-        .path()
-    })
-    .filter(|path| path.is_file())
-    .filter(|path| {
-      path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| FixtureKind::from_extension(ext).is_some())
-    })
-    .collect();
-  paths.sort();
+  let entries = fs::read_dir(dir).unwrap_or_else(|err| panic!("failed to read fixture dir {dir:?}: {err}"));
 
-  paths
-    .into_iter()
-    .map(|path| {
-      let source = fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("failed to read fixture {path:?}: {err}"));
-      let kind = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .and_then(FixtureKind::from_extension)
-        .expect("filtered to known extensions");
+  let mut cases = Vec::<FixtureCase>::new();
+
+  for entry in entries {
+    let path = entry
+      .unwrap_or_else(|err| panic!("failed to read fixture dir entry under {dir:?}: {err}"))
+      .path();
+
+    if path.is_file() {
+      let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        continue;
+      };
+      let Some(kind) = FixtureKind::from_extension(ext) else {
+        continue;
+      };
+
+      let source =
+        fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read fixture {path:?}: {err}"));
       let expected = parse_expected_output(&source, &path);
-      FixtureCase {
+      cases.push(FixtureCase {
         path,
         source,
         expected,
         kind,
-      }
-    })
-    .collect()
+      });
+      continue;
+    }
+
+    if path.is_dir() {
+      // Directory fixture: `<name>/entry.ts` (module graph).
+      let entry_path = ["entry.ts", "entry.tsx", "entry.js"]
+        .into_iter()
+        .map(|name| path.join(name))
+        .find(|p| p.is_file());
+      let Some(entry_path) = entry_path else {
+        continue;
+      };
+
+      let source = fs::read_to_string(&entry_path)
+        .unwrap_or_else(|err| panic!("failed to read module fixture entry {entry_path:?}: {err}"));
+
+      // For directory fixtures, `.out` expectations live next to the directory (`<name>.out`), so
+      // pass the directory path to `parse_expected_output`.
+      let expected = parse_expected_output(&source, &path);
+      cases.push(FixtureCase {
+        path,
+        source,
+        expected,
+        kind: FixtureKind::ObserveModuleDir,
+      });
+    }
+  }
+
+  cases.sort_by(|a, b| a.path.cmp(&b.path));
+  cases
 }
 
 /// Parse the expected output for a fixture file.

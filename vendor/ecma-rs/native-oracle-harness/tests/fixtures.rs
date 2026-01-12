@@ -1,6 +1,7 @@
 use native_oracle_harness::fixtures::{
   discover_native_oracle_fixtures, run_expectation_suite, ExpectationSuiteOptions, FixtureKind,
 };
+use native_oracle_harness::run_fixture_ts_module_dir;
 use native_oracle_harness::run_fixture_ts_with_name;
 use std::path::PathBuf;
 
@@ -13,7 +14,7 @@ fn native_oracle_fixtures_pass() {
   let dir = fixture_dir();
   let cases: Vec<_> = discover_native_oracle_fixtures(&dir)
     .into_iter()
-    .filter(|case| case.kind == FixtureKind::Observe)
+    .filter(|case| matches!(case.kind, FixtureKind::Observe | FixtureKind::ObserveModuleDir))
     .collect();
 
   assert!(
@@ -24,7 +25,11 @@ fn native_oracle_fixtures_pass() {
 
   let report = run_expectation_suite(
     &cases,
-    |case| run_fixture_ts_with_name(&case.path.to_string_lossy(), &case.source),
+    |case| match case.kind {
+      FixtureKind::Observe => run_fixture_ts_with_name(&case.path.to_string_lossy(), &case.source),
+      FixtureKind::ObserveModuleDir => run_fixture_ts_module_dir(&case.path),
+      FixtureKind::PromiseReturn => unreachable!("promise-return fixtures are filtered out"),
+    },
     ExpectationSuiteOptions::default(),
   );
 
