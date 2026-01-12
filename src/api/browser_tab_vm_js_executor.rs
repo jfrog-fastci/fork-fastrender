@@ -16,6 +16,7 @@ use crate::js::{
 use crate::resource::{origin_from_url, CorsMode, ReferrerPolicy, ResourceFetcher};
 use crate::style::media::{MediaContext, MediaType};
 use crate::web::events::{Event, EventTargetId};
+use std::ffi::OsStr;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
@@ -32,6 +33,10 @@ struct PendingModuleEvaluation {
   module: ModuleId,
   promise: GcObject,
   promise_root: RootId,
+}
+
+fn console_stderr_enabled() -> bool {
+  std::env::var_os("FASTR_CONSOLE_STDERR").as_deref() == Some(OsStr::new("1"))
 }
 
 /// `vm-js`-backed [`BrowserTabJsExecutor`] that provides a minimal `window`/`document` environment.
@@ -209,12 +214,27 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .with_current_script_state(current_script.clone())
       .with_session_storage_namespace(self.session_storage_namespace);
 
-    if let Some(diag) = self.diagnostics.clone() {
-      let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
-        let message = vm_error_format::format_console_arguments_limited(heap, args);
-        diag.record_console_message(level, message);
-      });
-      config.console_sink = Some(sink);
+    let stderr_console = console_stderr_enabled();
+    match (self.diagnostics.clone(), stderr_console) {
+      (Some(diag), true) => {
+        let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
+          let message = vm_error_format::format_console_arguments_limited(heap, args);
+          vm_error_format::emit_console_message_to_stderr(level, &message);
+          diag.record_console_message(level, message);
+        });
+        config.console_sink = Some(sink);
+      }
+      (Some(diag), false) => {
+        let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
+          let message = vm_error_format::format_console_arguments_limited(heap, args);
+          diag.record_console_message(level, message);
+        });
+        config.console_sink = Some(sink);
+      }
+      (None, true) => {
+        config.console_sink = Some(vm_error_format::stderr_console_sink());
+      }
+      (None, false) => {}
     }
 
     let fetcher = document.fetcher();
@@ -1174,7 +1194,7 @@ mod tests {
   use crate::resource::{FetchRequest, FetchedResource};
   use crate::text::font_db::FontConfig;
   use std::collections::HashMap;
-  use std::sync::Mutex;
+  use std::sync::{Mutex, OnceLock};
   use vm_js::PropertyKey;
 
   #[derive(Default)]
@@ -1271,6 +1291,70 @@ mod tests {
       node_id: None,
       script_type: crate::js::ScriptType::ImportMap,
     }
+  }
+
+  fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+  }
+
+  struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<String>,
+  }
+
+  impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+      let prev = std::env::var(key).ok();
+      std::env::set_var(key, value);
+      Self { key, prev }
+    }
+  }
+
+  impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+      match &self.prev {
+        Some(value) => std::env::set_var(self.key, value),
+        None => std::env::remove_var(self.key),
+      }
+    }
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_emits_console_to_stderr_when_env_flag_set() -> Result<()> {
+    let _lock = env_lock()
+      .lock()
+      .expect("env var test mutex should not be poisoned");
+    let _guard = EnvVarGuard::set("FASTR_CONSOLE_STDERR", "1");
+
+    // Diagnostics default to off; with `FASTR_CONSOLE_STDERR=1` we should still install a console
+    // sink so output is visible (and the call must not crash).
+    let mut document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      JsExecutionOptions::default(),
+    )?;
+
+    let realm = executor.realm.as_mut().expect("realm initialized");
+    let has_sink = realm
+      .exec_script("typeof console.__fastrender_console_sink_id === 'number'")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert_eq!(
+      has_sink,
+      Value::Bool(true),
+      "expected env flag to install a console sink even when diagnostics are disabled"
+    );
+
+    realm
+      .exec_script("console.log('x')")
+      .map_err(|err| Error::Other(err.to_string()))?;
+
+    Ok(())
   }
 
   #[test]

@@ -1,5 +1,7 @@
+use crate::api::ConsoleMessageLevel;
 use crate::error::Error;
 use std::borrow::Cow;
+use std::sync::Arc;
 use vm_js::{Heap, PropertyKey, StackFrame, Value, VmError};
 
 const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
@@ -524,8 +526,7 @@ pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) 
         if idx > 0 && push_truncated(&mut out, " ", MAX_CONSOLE_MESSAGE_BYTES) {
           break;
         }
-        let formatted =
-          format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
+        let formatted = format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
         if push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES) {
           break;
         }
@@ -681,8 +682,7 @@ pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) 
         }
       },
       'o' | 'O' => {
-        let formatted =
-          format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
+        let formatted = format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
         truncated |= push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
       }
       _ => unreachable!(),
@@ -703,6 +703,29 @@ pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) 
   }
 
   out
+}
+
+pub(crate) fn emit_console_message_to_stderr(level: ConsoleMessageLevel, message: &str) {
+  use std::io::Write;
+
+  let mut stderr = std::io::stderr().lock();
+  let _ = write!(stderr, "[{}] ", level.as_str());
+
+  // Keep each `console.*` call on a single stderr line even when arguments contain newlines.
+  for (idx, part) in message.split(|c| c == '\n' || c == '\r').enumerate() {
+    if idx > 0 {
+      let _ = write!(stderr, " ");
+    }
+    let _ = write!(stderr, "{part}");
+  }
+  let _ = writeln!(stderr);
+}
+
+pub(crate) fn stderr_console_sink() -> crate::js::ConsoleSink {
+  Arc::new(|level, heap, args| {
+    let message = format_console_arguments_limited(heap, args);
+    emit_console_message_to_stderr(level, &message);
+  })
 }
 
 #[cfg(test)]
