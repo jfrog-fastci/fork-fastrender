@@ -6,6 +6,7 @@
     "options": {
       "exactOptionalPropertyTypes": false,
       "jsx": 4,
+      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -19,18 +20,10 @@
   },
   "diagnostics": [
     {
-      "code": 2792,
-      "file": "main.tsx",
-      "start": 165,
-      "end": 185,
-      "category": "error",
-      "message": "Cannot find module 'react/jsx-runtime'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?"
-    },
-    {
       "code": 2741,
       "file": "main.tsx",
-      "start": 200,
-      "end": 205,
+      "start": 227,
+      "end": 232,
       "category": "error",
       "message": "Property 'offspring' is missing in type '{ children: string; }' but required in type '{ offspring: string; }'."
     }

@@ -1,4 +1,5 @@
 // @jsx: react-jsx
+// @moduleResolution: node
 
 declare function Title(props: { children: string }): JSX.Element;
 declare function Wrong(props: { offspring: string }): JSX.Element;

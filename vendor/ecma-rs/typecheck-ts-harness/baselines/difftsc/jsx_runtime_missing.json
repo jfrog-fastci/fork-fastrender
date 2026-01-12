@@ -7,6 +7,7 @@
       "exactOptionalPropertyTypes": false,
       "jsx": 4,
       "jsxImportSource": "preact",
+      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -20,12 +21,12 @@
   },
   "diagnostics": [
     {
-      "code": 2792,
+      "code": 2875,
       "file": "main.tsx",
-      "start": 59,
-      "end": 66,
+      "start": 86,
+      "end": 93,
       "category": "error",
-      "message": "Cannot find module 'preact/jsx-runtime'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?"
+      "message": "This JSX tag requires the module path 'preact/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed."
     }
   ]
 }
