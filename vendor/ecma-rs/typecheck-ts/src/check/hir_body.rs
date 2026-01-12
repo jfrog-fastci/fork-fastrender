@@ -3025,7 +3025,11 @@ impl<'a> Checker<'a> {
           }
         }
       }
-      AstExpr::NonNullAssertion(assert) => self.check_expr(&assert.stx.expression),
+      AstExpr::NonNullAssertion(assert) => {
+        let inner_ty = self.check_expr(&assert.stx.expression);
+        let (non_nullish, _) = narrow_non_nullish(inner_ty, &self.store);
+        non_nullish
+      }
       AstExpr::SatisfiesExpr(expr) => {
         let target_ty = self.lowerer.lower_type_expr(&expr.stx.type_annotation);
         let value_ty = self.check_expr_with_expected(&expr.stx.expression, target_ty);
