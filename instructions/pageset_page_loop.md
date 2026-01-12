@@ -120,9 +120,11 @@ If you can't explain the failure in terms of a spec rule + code path, you are no
 
 Prefer, in order:
 
-1. **Unit tests in `src/`** next to the code you changed (parser / cascade / layout / paint internals).
+1. **Unit tests in `src/`** next to the code you changed (parser / cascade / computed value).
+   - Layout primitives: unit tests under `src/layout/**` (or `src/layout/tests/**`, depending on the final layout test structure).
+   - Paint primitives: unit tests under `src/paint/**` (or `src/paint/tests/**`, depending on the final paint test structure).
 2. **Integration tests under `tests/`** (via `tests/integration.rs` modules) only when you need to exercise the public API, offline fixture runners, or WPT harnesses.
-3. **Tiny offline fixture** (minimal HTML/CSS/assets) only when the behavior can't be expressed cleanly as a unit/integration test.
+3. **Tiny offline fixture** (minimal HTML/CSS/assets) only when the behavior can't be expressed cleanly as a unit test.
 
 The regression should encode the *primitive* (not the whole live page).
 
