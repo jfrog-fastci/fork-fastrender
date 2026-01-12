@@ -1470,7 +1470,77 @@ impl InlineFormattingContext {
     let first_combinable = combinable_indices.first().copied();
     let last_combinable = combinable_indices.last().copied();
 
-    for (idx, child) in box_node.children.iter().enumerate() {
+    #[derive(Debug)]
+    enum InlineChildGroup {
+      Single(usize),
+      /// Adjacent text boxes with identical computed style are merged so `text-combine-upright`
+      /// behaves as if the DOM text nodes were a single text run (e.g. `1<!-- -->2`).
+      MergedText {
+        start: usize,
+        end: usize,
+        text: String,
+      },
+    }
+
+    let mut child_groups: Vec<InlineChildGroup> = Vec::with_capacity(box_node.children.len());
+    let mut group_start = 0usize;
+    while group_start < box_node.children.len() {
+      let child = &box_node.children[group_start];
+      if let BoxType::Text(text_box) = &child.box_type {
+        if is_vertical_typographic_mode(child.style.writing_mode)
+          && !matches!(child.style.text_combine_upright, TextCombineUpright::None)
+          && child.footnote_body.is_none()
+        {
+          let style_override = crate::layout::style_override::style_override_for(child.id);
+          let style_arc = style_override.unwrap_or_else(|| child.style.clone());
+          let mut end = group_start;
+          let mut merged_text = text_box.text.clone();
+
+          while end + 1 < box_node.children.len() {
+            let next = &box_node.children[end + 1];
+            if next.footnote_body.is_some() {
+              break;
+            }
+            let BoxType::Text(next_text) = &next.box_type else {
+              break;
+            };
+            let next_override = crate::layout::style_override::style_override_for(next.id);
+            let next_style = next_override.unwrap_or_else(|| next.style.clone());
+            if !Arc::ptr_eq(&style_arc, &next_style) {
+              break;
+            }
+            if !is_vertical_typographic_mode(next_style.writing_mode)
+              || matches!(next_style.text_combine_upright, TextCombineUpright::None)
+            {
+              break;
+            }
+            merged_text.push_str(&next_text.text);
+            end += 1;
+          }
+
+          if end > group_start {
+            child_groups.push(InlineChildGroup::MergedText {
+              start: group_start,
+              end,
+              text: merged_text,
+            });
+            group_start = end + 1;
+            continue;
+          }
+        }
+      }
+
+      child_groups.push(InlineChildGroup::Single(group_start));
+      group_start += 1;
+    }
+
+    for group in child_groups {
+      let (idx, group_end, merged_text) = match group {
+        InlineChildGroup::Single(idx) => (idx, idx, None),
+        InlineChildGroup::MergedText { start, end, text } => (start, end, Some(text)),
+      };
+      let child = &box_node.children[idx];
+      let merged_text = merged_text.as_deref();
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut deadline_counter, 32, RenderStage::Layout)
       {
@@ -1570,60 +1640,79 @@ impl InlineFormattingContext {
 
       match &child.box_type {
         BoxType::Text(text_box) => {
+          let raw_text = merged_text.unwrap_or(&text_box.text);
           if dump_text_enabled() {
-            eprintln!("ifc text: \"{}\"", truncate_text(&text_box.text, 80));
+            eprintln!("ifc text: \"{}\"", truncate_text(raw_text, 80));
           }
           let mut inherited_boundary = CombineBoundary::default();
           if Some(idx) == first_combinable {
             inherited_boundary.prev = boundary.prev;
           }
-          if Some(idx) == last_combinable {
+          if Some(group_end) == last_combinable {
             inherited_boundary.next = boundary.next;
           }
           let boundary = if is_vertical_typographic_mode(child.style.writing_mode)
             && !matches!(child.style.text_combine_upright, TextCombineUpright::None)
           {
-            let mut b =
-              compute_combine_boundary(&box_node.children, idx, child.style.text_combine_upright);
-            b.prev |= inherited_boundary.prev;
-            b.next |= inherited_boundary.next;
-            b
+            let mode = child.style.text_combine_upright;
+            if group_end == idx {
+              let mut b = compute_combine_boundary(&box_node.children, idx, mode);
+              b.prev |= inherited_boundary.prev;
+              b.next |= inherited_boundary.next;
+              b
+            } else {
+              let first = compute_combine_boundary(&box_node.children, idx, mode);
+              let last = compute_combine_boundary(&box_node.children, group_end, mode);
+              CombineBoundary {
+                prev: first.prev | inherited_boundary.prev,
+                next: last.next | inherited_boundary.next,
+              }
+            }
           } else {
             inherited_boundary
           };
           let style_override = crate::layout::style_override::style_override_for(child.id);
           let style_arc = style_override.unwrap_or_else(|| child.style.clone());
           let style = style_arc.as_ref();
+          let use_cache = merged_text.is_none() && group_end == idx;
           let epoch = intrinsic_cache_epoch();
           let style_hash = text_inline_item_cache_style_hash(style);
           let font_generation = self.font_context.font_generation();
-          let cache_key = TextInlineItemCacheKey::new(
-            ensure_box_id(child),
-            text_inline_item_cache_style_variant(child.id),
-            base_direction,
-            bidi_stack,
-            false,
-            boundary,
-          );
+          let cache_key = use_cache.then(|| {
+            TextInlineItemCacheKey::new(
+              ensure_box_id(child),
+              text_inline_item_cache_style_variant(child.id),
+              base_direction,
+              bidi_stack,
+              false,
+              boundary,
+            )
+          });
 
-          if let Some(cached) =
-            text_inline_item_cache_get(cache_key, epoch, style_hash, font_generation)
-          {
-            if cached.leading_collapsible {
-              whitespace.note_collapsible_whitespace(style_arc.clone(), cached.allow_soft_wrap);
+          if let Some(cache_key) = cache_key {
+            if let Some(cached) =
+              text_inline_item_cache_get(cache_key, epoch, style_hash, font_generation)
+            {
+              if cached.leading_collapsible {
+                whitespace.note_collapsible_whitespace(style_arc.clone(), cached.allow_soft_wrap);
+              }
+              if !cached.items.is_empty() {
+                let produced = cached.items.as_ref().clone();
+                self.append_inline_items_with_whitespace(
+                  whitespace,
+                  &mut current_items,
+                  produced,
+                )?;
+              }
+              if cached.trailing_collapsible {
+                whitespace.note_collapsible_whitespace(style_arc.clone(), cached.allow_soft_wrap);
+              }
+              continue;
             }
-            if !cached.items.is_empty() {
-              let produced = cached.items.as_ref().clone();
-              self.append_inline_items_with_whitespace(whitespace, &mut current_items, produced)?;
-            }
-            if cached.trailing_collapsible {
-              whitespace.note_collapsible_whitespace(style_arc.clone(), cached.allow_soft_wrap);
-            }
-            continue;
           }
 
           let transformed = apply_text_transform(
-            &text_box.text,
+            raw_text,
             style.text_transform,
             style.white_space,
             &style.language,
@@ -1635,8 +1724,9 @@ impl InlineFormattingContext {
             whitespace.note_collapsible_whitespace(style_arc.clone(), normalized.allow_soft_wrap);
           }
 
-          let cached_items = if !normalized.text.is_empty() || !normalized.forced_breaks.is_empty()
-          {
+          let store_in_cache = cache_key.is_some();
+          let mut cached_items = Arc::new(Vec::new());
+          if !normalized.text.is_empty() || !normalized.forced_breaks.is_empty() {
             let produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
@@ -1645,31 +1735,32 @@ impl InlineFormattingContext {
               bidi_stack,
               boundary,
             )?;
-            let cached_items = Arc::new(produced.clone());
+            if store_in_cache {
+              cached_items = Arc::new(produced.clone());
+            }
             self.append_inline_items_with_whitespace(whitespace, &mut current_items, produced)?;
-            cached_items
-          } else {
-            Arc::new(Vec::new())
-          };
+          }
 
           if normalized.trailing_collapsible {
             whitespace.note_collapsible_whitespace(style_arc.clone(), normalized.allow_soft_wrap);
           }
 
-          text_inline_item_cache_store(
-            cache_key,
-            TextInlineItemCacheEntry {
-              epoch,
-              style_hash,
-              font_generation,
-              value: TextInlineItemCacheValue {
-                leading_collapsible: normalized.leading_collapsible,
-                trailing_collapsible: normalized.trailing_collapsible,
-                allow_soft_wrap: normalized.allow_soft_wrap,
-                items: cached_items,
+          if let Some(cache_key) = cache_key {
+            text_inline_item_cache_store(
+              cache_key,
+              TextInlineItemCacheEntry {
+                epoch,
+                style_hash,
+                font_generation,
+                value: TextInlineItemCacheValue {
+                  leading_collapsible: normalized.leading_collapsible,
+                  trailing_collapsible: normalized.trailing_collapsible,
+                  allow_soft_wrap: normalized.allow_soft_wrap,
+                  items: cached_items,
+                },
               },
-            },
-          );
+            );
+          }
         }
         BoxType::Marker(marker_box) => match &marker_box.content {
           MarkerContent::Text(text) => {
@@ -5411,8 +5502,6 @@ impl InlineFormattingContext {
         // `TextItem` rather than cloning it again inside `create_text_item_from_normalized`.
         if !is_vertical_typographic_mode(style.writing_mode)
           || matches!(style.text_combine_upright, TextCombineUpright::None)
-          || segment_boundary.prev
-          || segment_boundary.next
         {
           let mut item = self.create_text_item_from_normalized(
             style,
@@ -5514,8 +5603,6 @@ impl InlineFormattingContext {
 
         if !is_vertical_typographic_mode(style.writing_mode)
           || matches!(style.text_combine_upright, TextCombineUpright::None)
-          || boundary.prev
-          || boundary.next
         {
           let mut item = self.create_text_item_from_normalized_owned(
             style,
@@ -5844,19 +5931,6 @@ impl InlineFormattingContext {
       return Ok(vec![InlineItem::Text(item)]);
     }
 
-    if boundary.prev || boundary.next {
-      let item = self.create_text_item_from_normalized(
-        style,
-        text,
-        forced_breaks,
-        allow_soft_wrap,
-        is_marker,
-        effective_base,
-        bidi_stack,
-      )?;
-      return Ok(vec![InlineItem::Text(item)]);
-    }
-
     let mut items = Vec::new();
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     if chars.is_empty() {
@@ -5893,7 +5967,23 @@ impl InlineFormattingContext {
         };
         let end_byte = chars.get(end).map(|p| p.0).unwrap_or_else(|| text.len());
         let sub_breaks = slice_breaks(&forced_breaks, byte_offset, end_byte);
-        if run_len >= min_len && run_len <= max_len {
+        // CSS Writing Modes 4 § “Text Run Rules” (at-risk) requires UAs to avoid combining only a
+        // portion of an otherwise-combinable sequence when it is split solely by inline box
+        // boundaries.
+        //
+        // We model this with `CombineBoundary`: when a combinable character touches the leading or
+        // trailing edge of this text run with no separating whitespace, `boundary.prev` / `next`
+        // indicate there is an adjacent combinable character immediately outside this run.
+        //
+        // If the run at the edge could have combined as part of a larger within-limit sequence
+        // (i.e. adding the adjacent character still fits the maximum length), suppress combining
+        // and lay it out normally. Otherwise, allow combining inside this box (common for markup
+        // boundaries like `<span>12</span><span>34</span>` with `digits 2`).
+        let adjacent =
+          (boundary.prev && idx == 0) as usize + (boundary.next && end == chars.len()) as usize;
+        let suppress_due_to_boundary = adjacent > 0 && run_len + adjacent <= max_len;
+
+        if run_len >= min_len && run_len <= max_len && !suppress_due_to_boundary {
           // Tate-chu-yoko (`text-combine-upright`) shapes the combined substring horizontally,
           // then packs it into a single 1em vertical cell.
           //
@@ -17439,10 +17529,18 @@ mod tests {
 
     // Ensure the combined `intrinsic_widths_for_children` path matches the single-probe API.
     let min_expected = ifc
-      .intrinsic_width_for_children(&container_style, &[&break_all], IntrinsicSizingMode::MinContent)
+      .intrinsic_width_for_children(
+        &container_style,
+        &[&break_all],
+        IntrinsicSizingMode::MinContent,
+      )
       .expect("min-content probe");
     let max_expected = ifc
-      .intrinsic_width_for_children(&container_style, &[&break_all], IntrinsicSizingMode::MaxContent)
+      .intrinsic_width_for_children(
+        &container_style,
+        &[&break_all],
+        IntrinsicSizingMode::MaxContent,
+      )
       .expect("max-content probe");
     assert!((min_break_all - min_expected).abs() < 0.01);
     assert!((max_break_all - max_expected).abs() < 0.01);
@@ -17512,8 +17610,10 @@ mod tests {
     breaking_style.font_size = 16.0;
     breaking_style.white_space = WhiteSpace::Normal;
     breaking_style.word_break = WordBreak::BreakAll;
-    let breaking_text =
-      BoxNode::new_text(Arc::new(breaking_style), "supercalifragilisticexpialidocious".to_string());
+    let breaking_text = BoxNode::new_text(
+      Arc::new(breaking_style),
+      "supercalifragilisticexpialidocious".to_string(),
+    );
 
     let mut inline_block_style = ComputedStyle::default();
     inline_block_style.display = Display::InlineBlock;
@@ -17537,18 +17637,10 @@ mod tests {
 
     // Validate combined min/max agree with the single-probe APIs.
     let min_expected = ifc
-      .intrinsic_width_for_children(
-        &container_style,
-        &children,
-        IntrinsicSizingMode::MinContent,
-      )
+      .intrinsic_width_for_children(&container_style, &children, IntrinsicSizingMode::MinContent)
       .expect("min-content probe");
     let max_expected = ifc
-      .intrinsic_width_for_children(
-        &container_style,
-        &children,
-        IntrinsicSizingMode::MaxContent,
-      )
+      .intrinsic_width_for_children(&container_style, &children, IntrinsicSizingMode::MaxContent)
       .expect("max-content probe");
     assert!((min_combined - min_expected).abs() < 0.01);
     assert!((max_combined - max_expected).abs() < 0.01);
@@ -20519,11 +20611,12 @@ mod tests {
   }
 
   #[test]
-  fn text_combine_does_not_cross_inline_boundaries_with_same_mode() {
+  fn text_combine_adjacent_elements_do_not_suppress_combining() {
     let ifc = InlineFormattingContext::new();
     let mut style = ComputedStyle::default();
     style.writing_mode = WritingMode::VerticalRl;
     style.text_combine_upright = TextCombineUpright::Digits(2);
+    style.font_size = 16.0;
     let style = Arc::new(style);
 
     let span1 = BoxNode::new_inline(
@@ -20537,25 +20630,104 @@ mod tests {
     let root = make_inline_container(vec![span1, span2]);
     let constraints = LayoutConstraints::definite_width(200.0);
 
-    fn collect_text_compression(node: &FragmentNode, compressed: &mut Vec<bool>) {
-      if let FragmentContent::Text {
-        shaped: Some(runs), ..
-      } = &node.content
-      {
-        compressed.push(runs.iter().any(|r| (r.scale - 1.0).abs() > 1e-6));
-      }
-      for child in node.children.iter() {
-        collect_text_compression(child, compressed);
+    let mut positioned = Vec::new();
+    let items = ifc
+      .collect_inline_items_with_base(
+        &root,
+        constraints.available_width.or_else(f32::INFINITY),
+        constraints.available_height.to_option(),
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect inline items");
+
+    fn collect_texts(items: &[InlineItem], out: &mut Vec<(String, f32)>) {
+      for item in items {
+        match item {
+          InlineItem::Text(t) => out.push((t.text.clone(), t.advance_for_layout)),
+          InlineItem::InlineBox(b) => collect_texts(&b.children, out),
+          InlineItem::Ruby(r) => {
+            for seg in &r.segments {
+              collect_texts(&seg.base_items, out);
+            }
+          }
+          _ => {}
+        }
       }
     }
 
-    let fragment = ifc.layout(&root, &constraints).expect("layout");
-    let mut compressed = Vec::new();
-    collect_text_compression(fragment.children.first().expect("line"), &mut compressed);
-    assert_eq!(compressed.len(), 2, "two separate text fragments expected");
+    let mut texts = Vec::new();
+    collect_texts(&items, &mut texts);
+    let digit_runs: Vec<_> = texts
+      .iter()
+      .filter(|(t, _)| t.chars().all(|c| c.is_ascii_digit()))
+      .collect();
+    assert_eq!(digit_runs.len(), 2, "expected two digit runs");
     assert!(
-      compressed.iter().all(|c| !*c),
-      "neither fragment should be compressed when the combinable run crosses inline boundaries"
+      digit_runs.iter().all(|(_, a)| *a <= style.font_size + 0.01),
+      "each element's digit run should still combine to a single 1em cell (advances {:?})",
+      texts
+    );
+  }
+
+  #[test]
+  fn text_combine_single_element_multiple_text_nodes_still_combine() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.writing_mode = WritingMode::VerticalRl;
+    style.text_combine_upright = TextCombineUpright::Digits(2);
+    style.font_size = 16.0;
+    let style = Arc::new(style);
+
+    // Simulate `1<!-- -->2` (two adjacent text nodes) inside a single element.
+    let span = BoxNode::new_inline(
+      style.clone(),
+      vec![
+        BoxNode::new_text(style.clone(), "1".into()),
+        BoxNode::new_text(style.clone(), "2".into()),
+      ],
+    );
+    let root = make_inline_container(vec![span]);
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let mut positioned = Vec::new();
+    let items = ifc
+      .collect_inline_items_with_base(
+        &root,
+        constraints.available_width.or_else(f32::INFINITY),
+        constraints.available_height.to_option(),
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect inline items");
+
+    fn collect_texts(items: &[InlineItem], out: &mut Vec<(String, f32)>) {
+      for item in items {
+        match item {
+          InlineItem::Text(t) => out.push((t.text.clone(), t.advance_for_layout)),
+          InlineItem::InlineBox(b) => collect_texts(&b.children, out),
+          InlineItem::Ruby(r) => {
+            for seg in &r.segments {
+              collect_texts(&seg.base_items, out);
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+
+    let mut texts = Vec::new();
+    collect_texts(&items, &mut texts);
+    let digit_runs: Vec<_> = texts
+      .iter()
+      .filter(|(t, _)| t.chars().all(|c| c.is_ascii_digit()))
+      .collect();
+    assert_eq!(digit_runs.len(), 1, "expected one combined digit run");
+    assert_eq!(digit_runs[0].0, "12");
+    assert!(
+      digit_runs[0].1 <= style.font_size + 0.01,
+      "combined run should occupy a single 1em cell (advances {:?})",
+      texts
     );
   }
 
@@ -27253,7 +27425,11 @@ mod tests {
         .expect("first inline layout");
     let mid_stats = crate::layout::formatting_context::layout_cache_stats();
     assert_eq!(
-      (mid_stats.0 - before_stats.0, mid_stats.1 - before_stats.1, mid_stats.2 - before_stats.2),
+      (
+        mid_stats.0 - before_stats.0,
+        mid_stats.1 - before_stats.1,
+        mid_stats.2 - before_stats.2
+      ),
       (1, 0, 1),
       "expected 1 lookup, 0 hits, 1 store on first layout"
     );
@@ -27263,7 +27439,11 @@ mod tests {
         .expect("second inline layout");
     let after_stats = crate::layout::formatting_context::layout_cache_stats();
     assert_eq!(
-      (after_stats.0 - mid_stats.0, after_stats.1 - mid_stats.1, after_stats.2 - mid_stats.2),
+      (
+        after_stats.0 - mid_stats.0,
+        after_stats.1 - mid_stats.1,
+        after_stats.2 - mid_stats.2
+      ),
       (1, 1, 0),
       "expected 1 lookup, 1 hit, 0 stores on second layout"
     );
@@ -27299,19 +27479,21 @@ mod tests {
     let text_style = Arc::new(text_style);
     let text = BoxNode::new_text(text_style, "text after float".to_string());
 
-    let root = BoxNode::new_block(root_style, FormattingContextType::Inline, vec![float_node, text]);
+    let root = BoxNode::new_block(
+      root_style,
+      FormattingContextType::Inline,
+      vec![float_node, text],
+    );
     let tree = crate::tree::box_tree::BoxTree::new(root);
     let root = &tree.root;
 
     let ifc = InlineFormattingContext::new();
     let constraints = LayoutConstraints::definite_width(240.0);
 
-    let _ =
-      crate::layout::auto_scrollbars::with_bypass(root, || ifc.layout(root, &constraints))
-        .expect("first inline layout with float");
-    let _ =
-      crate::layout::auto_scrollbars::with_bypass(root, || ifc.layout(root, &constraints))
-        .expect("second inline layout with float");
+    let _ = crate::layout::auto_scrollbars::with_bypass(root, || ifc.layout(root, &constraints))
+      .expect("first inline layout with float");
+    let _ = crate::layout::auto_scrollbars::with_bypass(root, || ifc.layout(root, &constraints))
+      .expect("second inline layout with float");
 
     assert_eq!(
       crate::layout::formatting_context::layout_cache_stats(),
