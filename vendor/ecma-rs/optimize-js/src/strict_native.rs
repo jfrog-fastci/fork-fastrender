@@ -231,19 +231,37 @@ fn resolves_to_proto_key(arg: &Arg, vars: &HashMap<u32, ValueState>) -> bool {
   )
 }
 
+fn is_banned_root_call(path: &str, root: &str) -> bool {
+  let Some(rest) = path.strip_prefix(root) else {
+    return false;
+  };
+  // Ban `root` itself and anything directly under it (e.g. `eval.call`).
+  rest.is_empty() || rest.starts_with('.')
+}
+
+fn is_banned_function_constructor_call(path: &str, root: &str) -> bool {
+  let Some(rest) = path.strip_prefix(root) else {
+    return false;
+  };
+  // `Function.prototype.*` is used for normal function invocation; banning it at the strict-native
+  // IL layer is too broad. We still ban invoking `Function` itself (including `Function.call`,
+  // `Function.apply`, etc), since that can be used to synthesize code dynamically.
+  if rest.starts_with(".prototype.") {
+    return false;
+  }
+  rest.is_empty() || rest.starts_with('.')
+}
+
 fn is_banned_builtin_call(path: &str) -> bool {
   // Keep this list small and conservative: false positives here are painful.
-  matches!(
-    path,
-    "eval"
-      | "Function"
-      | "Proxy"
-      | "Reflect.setPrototypeOf"
-      | "Object.setPrototypeOf"
-      | "globalThis.eval"
-      | "globalThis.Function"
-      | "globalThis.Proxy"
-  )
+  is_banned_root_call(path, "eval")
+    || is_banned_function_constructor_call(path, "Function")
+    || is_banned_root_call(path, "Proxy")
+    || is_banned_root_call(path, "Reflect.setPrototypeOf")
+    || is_banned_root_call(path, "Object.setPrototypeOf")
+    || is_banned_root_call(path, "globalThis.eval")
+    || is_banned_function_constructor_call(path, "globalThis.Function")
+    || is_banned_root_call(path, "globalThis.Proxy")
 }
 
 fn is_banned_constructor(path: &str) -> bool {
@@ -262,11 +280,13 @@ fn banned_known_api_call(api: hir_js::ApiId) -> Option<&'static str> {
       "eval",
       "Function",
       "Proxy",
+      "Proxy.revocable",
       "Reflect.setPrototypeOf",
       "Object.setPrototypeOf",
       "globalThis.eval",
       "globalThis.Function",
       "globalThis.Proxy",
+      "globalThis.Proxy.revocable",
     ]
     .into_iter()
     .map(|name| (hir_js::ApiId::from_name(name), name))

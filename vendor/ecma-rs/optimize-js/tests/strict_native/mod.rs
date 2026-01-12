@@ -72,6 +72,89 @@ fn rejects_eval_calls_even_when_indirect() {
 }
 
 #[test]
+fn rejects_eval_call_via_function_call_property() {
+  let src = r#"
+    eval.call(null, "1 + 1");
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("eval.call should be rejected");
+
+  assert!(
+    err.iter().any(|d| d.code == "OPTN0005" && d.message.contains("eval.call")),
+    "expected OPTN0005 diagnostic mentioning eval.call, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_function_call_indirection() {
+  let src = r#"
+    Function.call(null, "return 1");
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("Function.call should be rejected");
+
+  assert!(
+    err.iter().any(|d| d.code == "OPTN0005" && d.message.contains("Function.call")),
+    "expected OPTN0005 diagnostic mentioning Function.call, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_proxy_revocable_calls() {
+  let src = r#"
+    Proxy.revocable({}, {});
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("Proxy.revocable should be rejected");
+
+  assert!(
+    err
+      .iter()
+      .any(|d| d.code == "OPTN0005" && d.message.contains("Proxy.revocable")),
+    "expected OPTN0005 diagnostic mentioning Proxy.revocable, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_set_prototype_of_call_indirection() {
+  let src = r#"
+    const value: object = {};
+    Object.setPrototypeOf.call(Object, value, {});
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("Object.setPrototypeOf.call should be rejected");
+
+  assert!(
+    err.iter().any(|d| d.code == "OPTN0005" && d.message.contains("Object.setPrototypeOf.call")),
+    "expected OPTN0005 diagnostic mentioning Object.setPrototypeOf.call, got {err:?}"
+  );
+}
+
+#[test]
 fn accepts_constant_property_access() {
   let src = r#"
     let out = 0;
