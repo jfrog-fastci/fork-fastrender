@@ -458,8 +458,18 @@ fn decode_literal(raw: &str, allow_line_terminators: bool) -> Result<String, Lit
           len: ch.len_utf8(),
         });
       }
-      norm.push(ch);
-      offset += ch.len_utf8();
+      // When line terminators are allowed (template literals and similar contexts),
+      // ECMAScript normalizes CR and CRLF to a single LF code point.
+      if allow_line_terminators && ch == '\r' {
+        norm.push('\n');
+        offset += ch.len_utf8();
+        if raw[offset..].starts_with('\n') {
+          offset += '\n'.len_utf8();
+        }
+      } else {
+        norm.push(ch);
+        offset += ch.len_utf8();
+      }
     }
   }
   Ok(norm)
@@ -496,13 +506,50 @@ fn decode_literal_utf16(raw: &str, allow_line_terminators: bool) -> Result<Vec<u
           len: ch.len_utf8(),
         });
       }
-      let mut buf = [0u16; 2];
-      let encoded = ch.encode_utf16(&mut buf);
-      norm.extend_from_slice(encoded);
-      offset += ch.len_utf8();
+      // When line terminators are allowed (template literals and similar contexts),
+      // ECMAScript normalizes CR and CRLF to a single LF code point.
+      if allow_line_terminators && ch == '\r' {
+        norm.push(0x0a);
+        offset += ch.len_utf8();
+        if raw[offset..].starts_with('\n') {
+          offset += '\n'.len_utf8();
+        }
+      } else {
+        let mut buf = [0u16; 2];
+        let encoded = ch.encode_utf16(&mut buf);
+        norm.extend_from_slice(encoded);
+        offset += ch.len_utf8();
+      }
     }
   }
   Ok(norm)
+}
+
+fn encode_template_raw_utf16(raw: &str) -> Box<[u16]> {
+  // Template raw strings include backslashes and escape sequences verbatim, but
+  // line terminator sequences are normalized: CR and CRLF become LF.
+  let mut norm = Vec::<u16>::new();
+  let mut offset = 0;
+  while offset < raw.len() {
+    let mut iter = raw[offset..].char_indices();
+    let (rel, ch) = iter.next().unwrap();
+    debug_assert_eq!(rel, 0);
+
+    if ch == '\r' {
+      norm.push(0x0a);
+      offset += ch.len_utf8();
+      if raw[offset..].starts_with('\n') {
+        offset += '\n'.len_utf8();
+      }
+      continue;
+    }
+
+    let mut buf = [0u16; 2];
+    let encoded = ch.encode_utf16(&mut buf);
+    norm.extend_from_slice(encoded);
+    offset += ch.len_utf8();
+  }
+  norm.into_boxed_slice()
 }
 
 fn find_legacy_escape_sequence(raw: &str) -> Option<(usize, usize)> {
@@ -1729,7 +1776,7 @@ impl<'a> Parser<'a> {
     let raw = self.bytes(t.loc);
     let (content_offset, first_content) =
       template_content(raw, is_end).ok_or_else(|| t.error(SyntaxErrorType::UnexpectedEnd))?;
-    let first_raw = first_content.encode_utf16().collect::<Vec<_>>().into_boxed_slice();
+    let first_raw = encode_template_raw_utf16(first_content);
     raw_parts.push(first_raw);
     let first_legacy_escape = find_legacy_escape_sequence(first_content);
     if !tagged {
@@ -1793,7 +1840,7 @@ impl<'a> Parser<'a> {
         let raw = self.bytes(string.loc);
         let (offset, content) = template_content(raw, string_is_end)
           .ok_or_else(|| string.error(SyntaxErrorType::UnexpectedEnd))?;
-        let raw_part = content.encode_utf16().collect::<Vec<_>>().into_boxed_slice();
+        let raw_part = encode_template_raw_utf16(content);
         raw_parts.push(raw_part);
         let legacy_escape = find_legacy_escape_sequence(content);
         if !tagged {

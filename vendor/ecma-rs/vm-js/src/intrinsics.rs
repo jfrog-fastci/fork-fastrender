@@ -287,6 +287,26 @@ fn install_object_static_methods(
     roots,
     function_prototype,
     object_constructor,
+    "getOwnPropertyDescriptor",
+    2,
+    builtins::object_get_own_property_descriptor,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "getOwnPropertyNames",
+    1,
+    builtins::object_get_own_property_names,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
     "defineProperty",
     3,
     builtins::object_define_property,

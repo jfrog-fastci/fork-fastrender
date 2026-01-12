@@ -55,3 +55,19 @@ fn tagged_template_valid_escape_preserves_raw_and_cooked_utf16() {
 fn untagged_template_invalid_escape_is_syntax_error() {
   assert!(parse("`\\u{10FFFFF}`").is_err());
 }
+
+#[test]
+fn template_raw_normalizes_cr_and_crlf_to_lf() {
+  // This mirrors test262 `built-ins/String/raw/special-characters.js` which expects CR and CRLF
+  // line terminators to be normalized to a single LF in template raw strings.
+  let parts = template_parts_of_first_expr_statement("tag`\\\r\\\r\n\\\n`");
+  assert_eq!(parts.raw.len(), 1);
+  assert_eq!(
+    parts.raw[0].as_ref(),
+    &[b'\\' as u16, 0x0a, b'\\' as u16, 0x0a, b'\\' as u16, 0x0a][..]
+  );
+
+  // Cooked template strings treat line continuations as empty.
+  assert_eq!(parts.cooked.len(), 1);
+  assert_eq!(parts.cooked[0].as_deref(), Some(&[][..]));
+}

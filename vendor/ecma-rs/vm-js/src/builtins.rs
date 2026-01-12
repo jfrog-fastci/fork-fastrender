@@ -493,6 +493,86 @@ pub fn object_create(
   Ok(Value::Object(obj))
 }
 
+/// `Object.getOwnPropertyDescriptor(O, P)` (ECMA-262).
+pub fn object_get_own_property_descriptor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.getownpropertydescriptor
+  let mut scope = scope.reborrow();
+
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let Some(desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let desc_obj = crate::property_descriptor_ops::from_property_descriptor(&mut scope, desc)?;
+  Ok(Value::Object(desc_obj))
+}
+
+/// `Object.getOwnPropertyNames(O)` (ECMA-262).
+pub fn object_get_own_property_names(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.getownpropertynames
+  let mut scope = scope.reborrow();
+
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut names: Vec<crate::GcString> = Vec::new();
+  names
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, key) in own_keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let PropertyKey::String(key_str) = key else {
+      continue;
+    };
+    names.push(key_str);
+  }
+
+  let len = u32::try_from(names.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, &mut scope, len)?;
+  scope.push_root(Value::Object(array))?;
+
+  for (i, name) in names.iter().copied().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let mut idx_scope = scope.reborrow();
+    idx_scope.push_roots(&[Value::Object(array), Value::String(name)])?;
+
+    let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
+    idx_scope.define_property(array, key, data_desc(Value::String(name), true, true, true))?;
+  }
+
+  Ok(Value::Object(array))
+}
+
 pub fn object_keys(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
