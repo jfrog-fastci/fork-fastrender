@@ -2127,7 +2127,7 @@ fn is_decorative_img(node: &StyledNode, ctx: &BuildContext<'_, '_>) -> bool {
     return false;
   }
 
-  let parsed_role = parse_aria_role_attr(&node.node);
+  let parsed_role = parse_aria_role_attr(&node.node, &[]);
 
   if let Some(ParsedRole::Explicit(_)) = parsed_role {
     return false;
@@ -2221,16 +2221,16 @@ fn is_html_element(node: &DomNode) -> bool {
 // scoped within other landmarks or sectioning contexts. Sectioning roots also bound these scopes,
 // and forms only become landmarks when they are explicitly named.
 fn has_landmark_ancestor(ancestors: &[&DomNode]) -> bool {
-  ancestors.iter().any(|ancestor| {
+  for (idx, ancestor) in ancestors.iter().enumerate() {
     if matches!(ancestor.node_type, DomNodeType::ShadowRoot { .. }) {
       return true;
     }
 
     if !is_html_element(ancestor) {
-      return false;
+      continue;
     }
 
-    if let Some(parsed) = parse_aria_role_attr(ancestor) {
+    if let Some(parsed) = parse_aria_role_attr(ancestor, &ancestors[..idx]) {
       if let ParsedRole::Explicit(role) = parsed {
         if is_landmark_role(&role) {
           return true;
@@ -2239,7 +2239,7 @@ fn has_landmark_ancestor(ancestors: &[&DomNode]) -> bool {
     }
 
     let Some(tag) = ancestor.tag_name().map(|t| t.to_ascii_lowercase()) else {
-      return false;
+      continue;
     };
 
     if matches!(
@@ -2260,8 +2260,8 @@ fn has_landmark_ancestor(ancestors: &[&DomNode]) -> bool {
       return true;
     }
 
-    false
-  })
+  }
+  false
 }
 
 enum ParsedRole {
@@ -2347,13 +2347,13 @@ fn is_supported_role(role: &str) -> bool {
   )
 }
 
-fn parse_aria_role_attr(node: &DomNode) -> Option<ParsedRole> {
+fn parse_aria_role_attr(node: &DomNode, ancestors: &[&DomNode]) -> Option<ParsedRole> {
   let raw_role = node.get_attribute_ref("role")?;
 
   for token in raw_role.split_ascii_whitespace() {
     let role = token.to_ascii_lowercase();
     if role == "none" || role == "presentation" {
-      if should_honor_presentational(node) {
+      if should_honor_presentational(node, ancestors) {
         return Some(ParsedRole::Presentational);
       }
       continue;
@@ -2399,8 +2399,13 @@ fn has_global_aria_attributes(node: &DomNode) -> bool {
   })
 }
 
-fn focusable_for_presentational_role(node: &DomNode) -> bool {
+fn focusable_for_presentational_role(node: &DomNode, ancestors: &[&DomNode]) -> bool {
   if !node.is_element() {
+    return false;
+  }
+
+  // Disabled form controls are not focusable, even if `tabindex` is set.
+  if ElementRef::with_ancestors(node, ancestors).accessibility_disabled() {
     return false;
   }
 
@@ -2428,13 +2433,10 @@ fn focusable_for_presentational_role(node: &DomNode) -> bool {
   }
 
   if matches!(tag.as_str(), "button" | "select" | "textarea") {
-    return node.get_attribute_ref("disabled").is_none();
+    return true;
   }
 
   if tag == "input" {
-    if node.get_attribute_ref("disabled").is_some() {
-      return false;
-    }
     let input_type = node
       .get_attribute_ref("type")
       .map(|t| t.to_ascii_lowercase())
@@ -2443,7 +2445,7 @@ fn focusable_for_presentational_role(node: &DomNode) -> bool {
   }
 
   if tag == "option" {
-    return node.get_attribute_ref("disabled").is_none();
+    return true;
   }
 
   node
@@ -2452,8 +2454,8 @@ fn focusable_for_presentational_role(node: &DomNode) -> bool {
     .unwrap_or(false)
 }
 
-fn should_honor_presentational(node: &DomNode) -> bool {
-  !has_global_aria_attributes(node) && !focusable_for_presentational_role(node)
+fn should_honor_presentational(node: &DomNode, ancestors: &[&DomNode]) -> bool {
+  !has_global_aria_attributes(node) && !focusable_for_presentational_role(node, ancestors)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2465,7 +2467,7 @@ enum TableContext {
 }
 
 fn table_context_for_descendant(ancestors: &[&DomNode]) -> Option<TableContext> {
-  let Some(table) = ancestors.iter().rev().find(|ancestor| {
+  let Some((idx, table)) = ancestors.iter().enumerate().rev().find(|(_, ancestor)| {
     is_html_element(ancestor)
       && ancestor
         .tag_name()
@@ -2474,7 +2476,7 @@ fn table_context_for_descendant(ancestors: &[&DomNode]) -> Option<TableContext> 
     return None;
   };
 
-  match parse_aria_role_attr(table) {
+  match parse_aria_role_attr(table, &ancestors[..idx]) {
     Some(ParsedRole::Presentational) => Some(TableContext::Presentational),
     Some(ParsedRole::Explicit(role)) => match role.as_str() {
       "grid" => Some(TableContext::Grid),
@@ -2494,7 +2496,7 @@ enum ListContext {
 }
 
 fn list_context_for_container(node: &DomNode) -> ListContext {
-  match parse_aria_role_attr(node) {
+  match parse_aria_role_attr(node, &[]) {
     Some(ParsedRole::Presentational) => ListContext::Presentational,
     Some(ParsedRole::Explicit(role)) => {
       if role == "list" {
@@ -2531,7 +2533,7 @@ fn compute_role(
 ) -> (Option<String>, bool, bool) {
   let dom_node = &node.node;
 
-  if let Some(parsed) = parse_aria_role_attr(dom_node) {
+  if let Some(parsed) = parse_aria_role_attr(dom_node, ancestors) {
     match parsed {
       ParsedRole::Explicit(role) => return (Some(role), false, true),
       ParsedRole::Presentational => {
@@ -4363,5 +4365,71 @@ mod tests {
     }
 
     assert!(build_accessibility_tree(&root, None).is_ok());
+  }
+
+  #[test]
+  fn aria_presentation_is_honored_for_controls_disabled_by_fieldset() {
+    let fieldset = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "fieldset".to_string(),
+        namespace: String::new(),
+        attributes: vec![("disabled".to_string(), String::new())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "input".to_string(),
+          namespace: String::new(),
+          attributes: vec![
+            ("role".to_string(), "presentation".to_string()),
+            ("tabindex".to_string(), "0".to_string()),
+          ],
+        },
+        children: Vec::new(),
+      }],
+    };
+
+    let input = &fieldset.children[0];
+    let ancestors: [&DomNode; 1] = [&fieldset];
+    assert!(
+      matches!(
+        parse_aria_role_attr(input, &ancestors),
+        Some(ParsedRole::Presentational)
+      ),
+      "controls disabled by <fieldset disabled> should not be treated as focusable when deciding whether to honor role=presentation"
+    );
+  }
+
+  #[test]
+  fn aria_presentation_is_not_honored_for_controls_in_first_legend_of_disabled_fieldset() {
+    let fieldset = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "fieldset".to_string(),
+        namespace: String::new(),
+        attributes: vec![("disabled".to_string(), String::new())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "legend".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "input".to_string(),
+            namespace: String::new(),
+            attributes: vec![("role".to_string(), "presentation".to_string())],
+          },
+          children: Vec::new(),
+        }],
+      }],
+    };
+
+    let legend = &fieldset.children[0];
+    let input = &legend.children[0];
+    let ancestors: [&DomNode; 2] = [&fieldset, legend];
+    assert!(
+      parse_aria_role_attr(input, &ancestors).is_none(),
+      "fieldset first-legend exception should keep controls focusable; role=presentation must be ignored in that case"
+    );
   }
 }
