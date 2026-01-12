@@ -1236,6 +1236,20 @@ mod tests {
   }
 
   #[test]
+  fn text_delete_range_for_key_is_total_for_unexpected_key_actions() {
+    // Ensure we never panic if some unrelated KeyAction is routed into the text delete handler.
+    let selection = Some((1, 3));
+    assert_eq!(
+      text_delete_range_for_key(KeyAction::Enter, "abcd", 2, selection),
+      None
+    );
+    assert_eq!(
+      text_delete_range_for_key(KeyAction::ArrowLeft, "abcd", 2, None),
+      None
+    );
+  }
+
+  #[test]
   fn undo_redo_restores_value_and_selection() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"abcd\"></body></html>").expect("parse");
@@ -2333,6 +2347,40 @@ fn next_grapheme_cluster(text: &str, caret: usize) -> Option<(usize, usize)> {
     .saturating_sub(1)
     .min(boundaries.len().saturating_sub(2));
   Some((boundaries[idx], boundaries[idx + 1]))
+}
+
+fn text_delete_range_for_key(
+  key: KeyAction,
+  current: &str,
+  caret: usize,
+  selection: Option<(usize, usize)>,
+) -> Option<(usize, usize, usize)> {
+  if !matches!(
+    key,
+    KeyAction::Backspace | KeyAction::Delete | KeyAction::WordBackspace | KeyAction::WordDelete
+  ) {
+    return None;
+  }
+
+  let (start, end) = if let Some(selection) = selection {
+    selection
+  } else {
+    match key {
+      KeyAction::Backspace => prev_grapheme_cluster(current, caret)?,
+      KeyAction::Delete => next_grapheme_cluster(current, caret)?,
+      KeyAction::WordBackspace => {
+        let word_chars = word_char_classes(current);
+        word_backspace_range(&word_chars, caret)?
+      }
+      KeyAction::WordDelete => {
+        let word_chars = word_char_classes(current);
+        word_delete_range(&word_chars, caret)?
+      }
+      _ => return None,
+    }
+  };
+
+  Some((start, end, start))
 }
 
 fn shape_text_runs_for_interaction(
@@ -5132,38 +5180,10 @@ impl InteractionEngine {
           let prev_affinity = edit.caret_affinity;
           let selection = edit.selection();
 
-          let (delete_start, delete_end, next_caret) = if let Some((start, end)) = selection {
-            (start, end, start)
-          } else {
-            match key {
-              KeyAction::Backspace => {
-                let Some((start, end)) = prev_grapheme_cluster(&current, edit.caret) else {
-                  return changed;
-                };
-                (start, end, start)
-              }
-              KeyAction::Delete => {
-                let Some((start, end)) = next_grapheme_cluster(&current, edit.caret) else {
-                  return changed;
-                };
-                (start, end, start)
-              }
-              KeyAction::WordBackspace => {
-                let word_chars = word_char_classes(&current);
-                let Some((start, end)) = word_backspace_range(&word_chars, edit.caret) else {
-                  return changed;
-                };
-                (start, end, start)
-              }
-              KeyAction::WordDelete => {
-                let word_chars = word_char_classes(&current);
-                let Some((start, end)) = word_delete_range(&word_chars, edit.caret) else {
-                  return changed;
-                };
-                (start, end, start)
-              }
-              _ => unreachable!(),
-            }
+          let Some((delete_start, delete_end, next_caret)) =
+            text_delete_range_for_key(key, &current, edit.caret, selection)
+          else {
+            return changed;
           };
 
           if delete_start >= delete_end {
