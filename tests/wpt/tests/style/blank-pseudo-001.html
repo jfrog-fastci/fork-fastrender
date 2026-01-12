@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Selectors 4 :blank matches empty/whitespace-only controls</title>
+<link rel="match" href="blank-pseudo-001-ref.html">
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 60px 60px;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  input,
+  textarea {
+    width: 60px;
+    height: 60px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    resize: none;
+    overflow: hidden;
+    font-size: 0;
+    line-height: 0;
+    color: transparent;
+  }
+
+  input:blank,
+  textarea:blank {
+    background: rgb(0, 255, 0);
+  }
+
+  input:not(:blank),
+  textarea:not(:blank) {
+    background: rgb(255, 0, 0);
+  }
+</style>
+<div class="grid">
+  <input type="text" value="">
+  <input type="text" value="x">
+  <textarea> </textarea>
+  <textarea>x</textarea>
+</div>

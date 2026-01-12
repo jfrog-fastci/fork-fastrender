@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference: Selectors 4 :blank</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 60px 60px;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  input,
+  textarea {
+    width: 60px;
+    height: 60px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    resize: none;
+    overflow: hidden;
+    font-size: 0;
+    line-height: 0;
+    color: transparent;
+  }
+
+  .is-blank {
+    background: rgb(0, 255, 0);
+  }
+
+  .is-not-blank {
+    background: rgb(255, 0, 0);
+  }
+</style>
+<div class="grid">
+  <input class="is-blank" type="text" value="">
+  <input class="is-not-blank" type="text" value="x">
+  <textarea class="is-blank"> </textarea>
+  <textarea class="is-not-blank">x</textarea>
+</div>
