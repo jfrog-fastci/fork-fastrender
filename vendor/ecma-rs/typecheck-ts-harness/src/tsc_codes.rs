@@ -55,7 +55,10 @@ pub(crate) fn mapped_tsc_codes_for_rust_code(raw: &str) -> Option<&'static [u32]
     // `typecheck-ts` also reuses this code for missing triple-slash reference
     // directives (`/// <reference path="..." />` and `types="..."`), which tsc
     // reports as TS6053 / TS2688 respectively.
-    // TS2792 is used in Classic module resolution mode.
+    //
+    // Newer versions of TypeScript can report missing-module errors as TS2792
+    // (a TS2307 variant that includes a moduleResolution/paths hint). This can
+    // show up in Classic module resolution mode.
     "TC1001" => Some(&[2307, 2792, 6053, 2688]),
     // Module '"..."' has no exported member '...'.
     "TC1002" => Some(&[2305]),
@@ -118,6 +121,7 @@ mod tests {
 
     assert!(rust_code_matches_tsc("TC0008", 2339));
     assert!(rust_code_matches_tsc("TC1001", 2307));
+    assert!(rust_code_matches_tsc("TC1001", 2792));
     assert!(rust_code_matches_tsc("TC1001", 6053));
     assert!(rust_code_matches_tsc("TC1001", 2688));
     assert!(rust_code_matches_tsc("TC1002", 2305));

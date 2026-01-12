@@ -47,6 +47,12 @@ const INDEX_FILES: [&str; 11] = [
 /// TypeScript's `moduleResolution` modes that affect package.json resolution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ModuleResolutionMode {
+  /// TypeScript's legacy "classic" resolution algorithm.
+  ///
+  /// This mode does **not** search `node_modules/` or consult package.json
+  /// `exports`/`imports` maps for bare specifiers. See `resolve_non_relative`
+  /// for the classic algorithm implementation.
+  Classic,
   #[default]
   Node10,
   Node16,
@@ -320,7 +326,7 @@ impl<F: ResolveFs> Resolver<F> {
         ResolutionKind::Require => &CONDITIONS_NODE16_REQUIRE,
       },
       ModuleResolutionMode::Bundler => &CONDITIONS_BUNDLER,
-      ModuleResolutionMode::Node10 => match kind {
+      ModuleResolutionMode::Classic | ModuleResolutionMode::Node10 => match kind {
         ResolutionKind::Import => &CONDITIONS_NODE10_IMPORT,
         ResolutionKind::Require => &CONDITIONS_NODE10_REQUIRE,
       },
@@ -349,7 +355,7 @@ impl<F: ResolveFs> Resolver<F> {
     match self.options.module_resolution {
       ModuleResolutionMode::Node16 => ResolutionKind::Require,
       ModuleResolutionMode::NodeNext | ModuleResolutionMode::Bundler => ResolutionKind::Import,
-      ModuleResolutionMode::Node10 => ResolutionKind::Import,
+      ModuleResolutionMode::Classic | ModuleResolutionMode::Node10 => ResolutionKind::Import,
     }
   }
 
@@ -400,6 +406,9 @@ impl<F: ResolveFs> Resolver<F> {
     let mut resolve_scratch = String::new();
 
     if specifier.starts_with('#') {
+      if self.options.module_resolution == ModuleResolutionMode::Classic {
+        return None;
+      }
       if !self.options.package_imports {
         return None;
       }
@@ -420,6 +429,10 @@ impl<F: ResolveFs> Resolver<F> {
       ) {
         return Some(found);
       }
+    }
+
+    if self.options.module_resolution == ModuleResolutionMode::Classic {
+      return self.resolve_non_relative_classic(from, specifier);
     }
 
     if !self.options.node_modules {
@@ -534,6 +547,35 @@ impl<F: ResolveFs> Resolver<F> {
     None
   }
 
+  fn resolve_non_relative_classic(&self, from: &str, specifier: &str) -> Option<PathBuf> {
+    let needs_normalization = subpath_needs_normalization(specifier);
+    let mut dir = virtual_parent_dir_str(from);
+    let mut candidate = String::new();
+    let mut normalized = String::new();
+    let mut scratch = String::new();
+
+    loop {
+      virtual_join_into(&mut candidate, dir, specifier);
+      let found = if needs_normalization {
+        normalize_ts_path_into(&candidate, &mut normalized);
+        self.resolve_as_file_or_directory_no_package_json_normalized_with_scratch(&normalized, &mut scratch)
+      } else {
+        self.resolve_as_file_or_directory_no_package_json_normalized_with_scratch(&candidate, &mut scratch)
+      };
+      if found.is_some() {
+        return found;
+      }
+
+      let parent = virtual_parent_dir_str(dir);
+      if parent == dir {
+        break;
+      }
+      dir = parent;
+    }
+
+    None
+  }
+
   fn resolve_imports_specifier(
     &self,
     from: &str,
@@ -590,12 +632,31 @@ impl<F: ResolveFs> Resolver<F> {
     )
   }
 
+  fn resolve_as_file_or_directory_no_package_json_normalized_with_scratch(
+    &self,
+    base_candidate: &str,
+    scratch: &mut String,
+  ) -> Option<PathBuf> {
+    self.resolve_as_file_or_directory_impl(base_candidate, 0, scratch, &[], false)
+  }
+
   fn resolve_as_file_or_directory_normalized_with_scratch(
     &self,
     base_candidate: &str,
     depth: usize,
     scratch: &mut String,
     conditions: &[&str],
+  ) -> Option<PathBuf> {
+    self.resolve_as_file_or_directory_impl(base_candidate, depth, scratch, conditions, true)
+  }
+
+  fn resolve_as_file_or_directory_impl(
+    &self,
+    base_candidate: &str,
+    depth: usize,
+    scratch: &mut String,
+    conditions: &[&str],
+    use_package_json: bool,
   ) -> Option<PathBuf> {
     if depth > 16 {
       return None;
@@ -673,7 +734,7 @@ impl<F: ResolveFs> Resolver<F> {
       }
     }
 
-    if !base_is_source_root && self.options.node_modules {
+    if use_package_json && !base_is_source_root && self.options.node_modules {
       virtual_join_into(scratch, base_candidate, "package.json");
       if self.fs.is_file(Path::new(scratch.as_str())) {
         if let Some(parsed) = self.package_json(scratch.as_str()) {
@@ -1789,5 +1850,45 @@ mod tests {
       resolved,
       PathBuf::from("/node_modules/@types/scope__pkg/index.d.ts")
     );
+  }
+
+  #[test]
+  fn classic_does_not_search_node_modules() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert("/src/node_modules/pkg/index.d.ts", "export {};\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        package_imports: true,
+        module_resolution: ModuleResolutionMode::Classic,
+        ..ResolveOptions::default()
+      },
+    );
+    assert!(
+      resolver.resolve(Path::new("/src/app.ts"), "pkg").is_none(),
+      "classic resolution should not resolve packages from node_modules"
+    );
+  }
+
+  #[test]
+  fn classic_searches_up_parent_directories() {
+    let mut fs = FakeFs::default();
+    fs.insert("/project/nested/app.ts", "");
+    fs.insert("/project/utils.ts", "export const value = 1;\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        module_resolution: ModuleResolutionMode::Classic,
+        ..ResolveOptions::default()
+      },
+    );
+    let resolved = resolver
+      .resolve(Path::new("/project/nested/app.ts"), "utils")
+      .expect("classic should resolve utils.ts from a parent directory");
+    assert_eq!(resolved, PathBuf::from("/project/utils.ts"));
   }
 }

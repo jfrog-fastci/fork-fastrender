@@ -535,9 +535,9 @@ impl HarnessFileSet {
     &self,
     from: &FileKey,
     specifier: &str,
-    module_resolution: Option<&str>,
+    compiler_options: &CompilerOptions,
   ) -> Option<FileKey> {
-    resolve_module_specifier(self, from, specifier, module_resolution)
+    resolve_module_specifier(self, from, specifier, compiler_options)
   }
 
   pub(crate) fn name_for_key<'a>(&self, key: &'a FileKey) -> Option<&'a str> {
@@ -1784,7 +1784,7 @@ impl Host for HarnessHost {
     let resolved = self.files.resolve_import(
       from,
       specifier,
-      self.compiler_options.module_resolution.as_deref(),
+      &self.compiler_options,
     );
     if let Some(trace) = self.resolution_trace.as_ref() {
       trace.push(ResolutionTraceEntry {

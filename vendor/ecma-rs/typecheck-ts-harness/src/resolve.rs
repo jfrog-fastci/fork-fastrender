@@ -1,55 +1,28 @@
 use std::path::{Path, PathBuf};
 
 use diagnostics::paths::normalize_ts_path;
+use typecheck_ts::lib_support::{CompilerOptions, ModuleKind};
 use typecheck_ts::resolve::{ModuleResolutionMode, ResolveFs, ResolveOptions, Resolver};
 use typecheck_ts::FileKey;
 
 use crate::runner::HarnessFileSet;
 
-fn resolve_options_for_module_resolution(module_resolution: Option<&str>) -> ResolveOptions {
-  let normalized = module_resolution.map(|value| value.trim().to_ascii_lowercase());
-  match normalized.as_deref() {
-    None | Some("") | Some("classic") => ResolveOptions {
-      node_modules: false,
-      package_imports: false,
-      module_resolution: ModuleResolutionMode::Node10,
-      ..Default::default()
-    },
-    Some("node") | Some("nodejs") | Some("node10") => ResolveOptions {
-      node_modules: true,
-      package_imports: false,
-      module_resolution: ModuleResolutionMode::Node10,
-      ..Default::default()
-    },
-    // TypeScript's Node16/NodeNext/Bundler resolvers support `package.json` exports/imports
-    // maps. Keep the resolver configuration aligned so Rust and `tsc` observe the same
-    // resolution behaviour.
-    Some("node16") => ResolveOptions {
-      node_modules: true,
-      package_imports: true,
-      module_resolution: ModuleResolutionMode::Node16,
-      ..Default::default()
-    },
-    Some("nodenext") => ResolveOptions {
-      node_modules: true,
-      package_imports: true,
-      module_resolution: ModuleResolutionMode::NodeNext,
-      ..Default::default()
-    },
-    Some("bundler") => ResolveOptions {
-      node_modules: true,
-      package_imports: true,
-      module_resolution: ModuleResolutionMode::Bundler,
-      ..Default::default()
-    },
-    // Fall back to Classic semantics for unknown values so we don't accidentally
-    // enable `node_modules` lookups in misconfigured tests.
-    Some(_) => ResolveOptions {
-      node_modules: false,
-      package_imports: false,
-      module_resolution: ModuleResolutionMode::Node10,
-      ..Default::default()
-    },
+fn resolve_options_for_compiler_options(compiler_options: &CompilerOptions) -> ResolveOptions {
+  let module_resolution = module_resolution_from_compiler_options(compiler_options);
+  let (node_modules, package_imports) = match module_resolution {
+    ModuleResolutionMode::Classic => (false, false),
+    // TypeScript's legacy `node` resolver does not support `package.json` imports maps.
+    ModuleResolutionMode::Node10 => (true, false),
+    // Node16/NodeNext/Bundler support `package.json` exports/imports maps.
+    ModuleResolutionMode::Node16 | ModuleResolutionMode::NodeNext | ModuleResolutionMode::Bundler => (true, true),
+  };
+
+  ResolveOptions {
+    node_modules,
+    package_imports,
+    module_resolution,
+    module_kind: compiler_options.module,
+    ..Default::default()
   }
 }
 
@@ -101,7 +74,7 @@ pub(crate) fn resolve_module_specifier(
   files: &HarnessFileSet,
   from: &FileKey,
   specifier: &str,
-  module_resolution: Option<&str>,
+  compiler_options: &CompilerOptions,
 ) -> Option<FileKey> {
   if specifier.starts_with('/') || specifier.starts_with('\\') || specifier.starts_with("./") {
     // `typecheck_ts::resolve` already handles absolute/relative specifiers.
@@ -133,7 +106,7 @@ pub(crate) fn resolve_module_specifier(
   let fs = HarnessResolveFs {
     files: files.clone(),
   };
-  let mut resolve_options = resolve_options_for_module_resolution(module_resolution);
+  let mut resolve_options = resolve_options_for_compiler_options(compiler_options);
   // TypeScript resolves `/// <reference types="..." />` and `compilerOptions.types`
   // through the `@types/*` lookup regardless of the `moduleResolution` setting.
   //
@@ -170,4 +143,40 @@ pub(crate) fn resolve_module_specifier(
     return None;
   }
   files.resolve(&resolved)
+}
+
+fn module_resolution_from_compiler_options(options: &CompilerOptions) -> ModuleResolutionMode {
+  if let Some(raw) = options.module_resolution.as_deref() {
+    let trimmed = raw.trim();
+    if !trimmed.is_empty() {
+      return parse_module_resolution_mode(trimmed).unwrap_or(ModuleResolutionMode::Classic);
+    }
+  }
+  infer_default_module_resolution_mode(options.module)
+}
+
+fn parse_module_resolution_mode(raw: &str) -> Option<ModuleResolutionMode> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "classic" => Some(ModuleResolutionMode::Classic),
+    // TypeScript treats `node` as the legacy Node10 resolver.
+    "node" | "nodejs" | "node10" => Some(ModuleResolutionMode::Node10),
+    "node16" => Some(ModuleResolutionMode::Node16),
+    "nodenext" => Some(ModuleResolutionMode::NodeNext),
+    "bundler" => Some(ModuleResolutionMode::Bundler),
+    _ => None,
+  }
+}
+
+fn infer_default_module_resolution_mode(module: Option<ModuleKind>) -> ModuleResolutionMode {
+  // Best-effort mirror of `tsc`'s default `moduleResolution` selection when the
+  // option is not explicitly specified.
+  //
+  // TypeScript's exact defaults also depend on other flags (notably `target`),
+  // but the harness only tracks the `module` option today.
+  match module {
+    Some(ModuleKind::Node16) => ModuleResolutionMode::Node16,
+    Some(ModuleKind::NodeNext) => ModuleResolutionMode::NodeNext,
+    Some(ModuleKind::CommonJs) => ModuleResolutionMode::Node10,
+    _ => ModuleResolutionMode::Classic,
+  }
 }

@@ -7,7 +7,6 @@
       "lib": [
         "lib.es5.d.ts"
       ],
-      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": true,
       "noUncheckedIndexedAccess": false,

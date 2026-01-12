@@ -4,6 +4,7 @@
     "typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
+      "moduleResolution": 1,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -19,25 +20,14 @@
   "type_facts": {
     "exports": [
       {
-        "file": "lib.d.ts",
-        "name": "f",
-        "type": "{ (number) => 2; (string) => 1 }"
-      }
-    ],
-    "markers": [
-      {
-        "file": "main.ts",
-        "offset": 37,
-        "line": 2,
-        "column": 9,
-        "type": "any"
+        "file": "nested/main.ts",
+        "name": "out",
+        "type": "123"
       },
       {
-        "file": "main.ts",
-        "offset": 67,
-        "line": 4,
-        "column": 9,
-        "type": "any"
+        "file": "utils.ts",
+        "name": "value",
+        "type": "123"
       }
     ]
   }
