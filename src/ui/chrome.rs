@@ -34,6 +34,18 @@ pub enum ChromeAction {
   /// `ChromeState::request_focus_address_bar` / `request_select_all_address_bar`).
   FocusAddressBar,
   OpenFindInPage,
+  /// Begin/update an active "find in page" query for a tab.
+  FindQuery {
+    tab_id: TabId,
+    query: String,
+    case_sensitive: bool,
+  },
+  /// Jump to the next match for the active find query.
+  FindNext(TabId),
+  /// Jump to the previous match for the active find query.
+  FindPrev(TabId),
+  /// Close the find bar for a tab and clear highlights/results.
+  CloseFindInPage(TabId),
   NewTab,
   CloseTab(TabId),
   ReopenClosedTab,
@@ -1072,6 +1084,122 @@ pub fn chrome_ui_with_bookmarks(
       });
     });
 
+    // ---------------------------------------------------------------------------
+    // Find in page bar (Ctrl/Cmd+F)
+    // ---------------------------------------------------------------------------
+    if open_find_in_page {
+      if let Some(tab) = app.active_tab_mut() {
+        tab.find.open = true;
+      }
+    }
+
+    if let Some(tab) = app.active_tab_mut() {
+      if tab.find.open {
+        let tab_id = tab.id;
+
+        ui.separator();
+        ui.horizontal(|ui| {
+          ui.spacing_mut().item_spacing.x = 8.0;
+          ui.label(egui::RichText::new("Find").strong());
+
+          let find_id = ui.make_persistent_id(("find_bar_input", tab_id));
+          let egui_focus = ctx.memory(|mem| mem.has_focus(find_id));
+          let show_text_edit = egui_focus || open_find_in_page;
+
+          // Apply focus/select-all requests before building the `TextEdit` so Ctrl/Cmd+F followed by
+          // immediate typing works reliably (no extra frame required).
+          if open_find_in_page {
+            ui.memory_mut(|mem| mem.request_focus(find_id));
+            let end = tab.find.query.chars().count();
+            let mut state =
+              egui::text_edit::TextEditState::load(ctx, find_id).unwrap_or_default();
+            state.set_ccursor_range(Some(egui::text::CCursorRange::two(
+              egui::text::CCursor::new(0),
+              egui::text::CCursor::new(end),
+            )));
+            state.store(ctx, find_id);
+          }
+
+          // Consume keyboard actions (Enter/Escape) when the find bar is focused so they don't leak
+          // to page input.
+          let mut key_enter = false;
+          let mut key_shift_enter = false;
+          let mut key_escape = false;
+          if show_text_edit {
+            ui.input_mut(|i| {
+              key_shift_enter = i.consume_key(
+                egui::Modifiers {
+                  shift: true,
+                  ..Default::default()
+                },
+                egui::Key::Enter,
+              );
+              key_enter = i.consume_key(Default::default(), egui::Key::Enter);
+              key_escape = i.consume_key(Default::default(), egui::Key::Escape);
+            });
+          }
+
+          let response = ui.add(
+            egui::TextEdit::singleline(&mut tab.find.query)
+              .id(find_id)
+              .desired_width(220.0)
+              .hint_text("Find in page…"),
+          );
+          response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Find in page")
+          });
+
+          let match_count = tab.find.match_count;
+          let active_idx = tab.find.active_match_index.map(|i| i + 1).unwrap_or(0);
+          ui.label(format!("{active_idx}/{match_count}"));
+
+          let prev_enabled = !tab.find.query.trim().is_empty() && match_count > 0;
+          let next_enabled = prev_enabled;
+
+          if ui
+            .add_enabled(prev_enabled, egui::Button::new("↑"))
+            .on_hover_text("Previous match (Shift+Enter)")
+            .clicked()
+          {
+            actions.push(ChromeAction::FindPrev(tab_id));
+          }
+          if ui
+            .add_enabled(next_enabled, egui::Button::new("↓"))
+            .on_hover_text("Next match (Enter)")
+            .clicked()
+          {
+            actions.push(ChromeAction::FindNext(tab_id));
+          }
+
+          if key_shift_enter && prev_enabled {
+            actions.push(ChromeAction::FindPrev(tab_id));
+          } else if key_enter && next_enabled {
+            actions.push(ChromeAction::FindNext(tab_id));
+          }
+
+          let case_toggle = ui
+            .toggle_value(&mut tab.find.case_sensitive, "Aa")
+            .on_hover_text("Case sensitive");
+          let case_changed = case_toggle.changed();
+
+          if response.changed() || case_changed {
+            actions.push(ChromeAction::FindQuery {
+              tab_id,
+              query: tab.find.query.clone(),
+              case_sensitive: tab.find.case_sensitive,
+            });
+          }
+
+          let close_clicked = ui.button("✕").on_hover_text("Close (Esc)").clicked();
+          if close_clicked || (key_escape && show_text_edit) {
+            tab.find = crate::ui::browser_app::FindInPageState::default();
+            actions.push(ChromeAction::CloseFindInPage(tab_id));
+            response.surrender_focus();
+          }
+        });
+      }
+    }
+
     if let Some(bookmarks) = omnibox_bookmarks {
       let mut has_any = false;
       for id in &bookmarks.roots {
@@ -1738,6 +1866,54 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::OpenFindInPage)),
       "expected ChromeAction::OpenFindInPage, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_f_opens_find_bar_and_immediate_typing_emits_find_query() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+
+    let events = vec![
+      egui::Event::Key {
+        key: egui::Key::F,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+          command: true,
+          ..Default::default()
+        },
+      },
+      egui::Event::Text("x".to_string()),
+    ];
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, events);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      app.active_tab().is_some_and(|tab| tab.find.open),
+      "expected find bar to be open"
+    );
+    assert_eq!(
+      app.active_tab().map(|tab| tab.find.query.as_str()),
+      Some("x")
+    );
+    assert!(
+      actions.iter().any(|action| matches!(action, ChromeAction::OpenFindInPage)),
+      "expected ChromeAction::OpenFindInPage, got {actions:?}"
+    );
+    assert!(
+      actions.iter().any(|action| matches!(
+        action,
+        ChromeAction::FindQuery { tab_id: id, query, case_sensitive } if *id == tab_id && query == "x" && !*case_sensitive
+      )),
+      "expected ChromeAction::FindQuery for {tab_id:?}, got {actions:?}"
     );
   }
 

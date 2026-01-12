@@ -5503,10 +5503,26 @@ impl App {
           // Escape should:
           // - dismiss popups (handled above for `<select>`; handled elsewhere for context menus),
           // - cancel address bar editing (handled inside the egui frame),
+          // - close the find-in-page bar when it's open,
           // - otherwise act as "Stop loading" when a navigation is in-flight.
           //
           // Only trigger stop when egui is not actively editing text and when no popups are open,
           // matching typical browser UX.
+          if let Some(tab_id) = self.browser_state.active_tab_id() {
+            if self
+              .browser_state
+              .tab(tab_id)
+              .is_some_and(|tab| tab.find.open)
+            {
+              if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+                tab.find = fastrender::ui::FindInPageState::default();
+              }
+              self.send_worker_msg(fastrender::ui::UiToWorker::FindStop { tab_id });
+              self.window.request_redraw();
+              return;
+            }
+          }
+
           if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
             // Let the context menu consume Escape (close it), rather than interpreting it as stop.
             self.close_context_menu();
@@ -5916,6 +5932,27 @@ impl App {
           self.window.request_redraw();
         }
         ChromeAction::OpenFindInPage => {}
+        ChromeAction::FindQuery {
+          tab_id,
+          query,
+          case_sensitive,
+        } => {
+          self.send_worker_msg(UiToWorker::FindQuery {
+            tab_id,
+            query,
+            case_sensitive,
+          });
+        }
+        ChromeAction::FindNext(tab_id) => {
+          self.send_worker_msg(UiToWorker::FindNext { tab_id });
+        }
+        ChromeAction::FindPrev(tab_id) => {
+          self.send_worker_msg(UiToWorker::FindPrev { tab_id });
+        }
+        ChromeAction::CloseFindInPage(tab_id) => {
+          self.send_worker_msg(UiToWorker::FindStop { tab_id });
+          self.window.request_redraw();
+        }
         ChromeAction::AddressBarFocusChanged(has_focus) => {
           // Treat address bar focus as the only "chrome text input" focus surface for now.
           //
