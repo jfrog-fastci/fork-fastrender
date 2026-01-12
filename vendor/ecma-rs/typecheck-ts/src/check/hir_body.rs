@@ -4016,6 +4016,9 @@ impl<'a> Checker<'a> {
     contextual_return: Option<TypeId>,
   ) -> TypeId {
     let prim = self.store.primitive_ids();
+    // `super(...)` is a special-case: even though `super` expressions in instance
+    // members are typed as the base instance type (for `super.prop`), `super()`
+    // calls must resolve against the base class constructor signatures.
     if matches!(call.stx.callee.stx.as_ref(), AstExpr::Super(_)) {
       return self.check_super_call_expr(call, contextual_return);
     }
