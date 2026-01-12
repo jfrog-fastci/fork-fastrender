@@ -25,6 +25,10 @@ fn hir_codegen_supports_multi_hop_reexport_chains() {
     eprintln!("skipping: clang not found");
     return;
   };
+  let Some(runtime_native_a) = native_js::link::find_runtime_native_staticlib() else {
+    eprintln!("skipping: runtime-native staticlib not found");
+    return;
+  };
 
   let a_key = FileKey::new("a.ts");
   let b_key = FileKey::new("b.ts");
@@ -96,16 +100,23 @@ export function main(): number {
   std::fs::write(&ll_path, ir).expect("write ir");
 
   let exe_path = td.path().join("out");
-  let status = Command::new(clang)
+  let mut cmd = Command::new(clang);
+  cmd
     .arg("-Wno-override-module")
     .arg("-x")
     .arg("ir")
     .arg(&ll_path)
+    // Reset language so archive inputs are not treated as IR.
+    .arg("-x")
+    .arg("none")
     .arg("-O0")
-    .arg("-o")
-    .arg(&exe_path)
-    .status()
-    .expect("clang");
+    .arg(&runtime_native_a);
+  // `runtime-native` is a Rust `staticlib`, so we need to explicitly provide the system libraries
+  // rustc would normally inject when it is the final linker driver.
+  if cfg!(target_os = "linux") {
+    cmd.args(["-lpthread", "-ldl", "-lm", "-lrt"]);
+  }
+  let status = cmd.arg("-o").arg(&exe_path).status().expect("clang");
   assert!(status.success(), "clang failed with {status}");
 
   let out = Command::new(&exe_path).output().expect("run exe");
