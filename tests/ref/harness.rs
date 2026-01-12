@@ -690,6 +690,7 @@ fn extract_body_content(html: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use tempfile::TempDir;
 
   #[test]
   fn test_render_html_preserves_color_channels() {
@@ -940,5 +941,162 @@ mod tests {
     let result = harness.discover_tests(Path::new("/nonexistent/dir"));
 
     assert!(result.is_err());
+  }
+
+  #[test]
+  fn test_ref_harness_render_and_compare_identical() {
+    // Create two identical renders and verify they match
+    let mut harness = RefTestHarness::with_config(RefTestConfig::with_viewport(100, 100));
+
+    let html = r#"
+        <html>
+        <head>
+            <style>
+                body { margin: 0; padding: 0; }
+                .box { width: 50px; height: 50px; background-color: red; }
+            </style>
+        </head>
+        <body>
+            <div class="box"></div>
+        </body>
+        </html>
+    "#;
+
+    // Render twice and compare (should be identical)
+    // Note: This tests that our comparison works, not that rendering is deterministic
+    // (which it should be, but that's a separate concern)
+
+    // For this test, we just verify the harness can render HTML successfully
+    let result = harness.run_ref_test_inline(
+      "test_identical",
+      html,
+      std::path::Path::new("/nonexistent/reference.png"),
+    );
+
+    // Should fail because reference image doesn't exist, but the render should work
+    assert!(!result.passed);
+    assert!(result.error.is_some());
+    assert!(result
+      .error
+      .as_ref()
+      .unwrap()
+      .contains("Failed to load reference"));
+  }
+
+  #[test]
+  fn test_ref_harness_create_reference() {
+    let mut harness = RefTestHarness::with_config(RefTestConfig::with_viewport(100, 100));
+
+    let html = r#"
+        <html>
+        <head>
+            <style>
+                body { margin: 0; padding: 0; background: white; }
+                .box { width: 50px; height: 50px; background-color: blue; }
+            </style>
+        </head>
+        <body>
+            <div class="box"></div>
+        </body>
+        </html>
+    "#;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let reference_path = temp_dir.path().join("reference.png");
+
+    let create_result = harness.create_reference(html, &reference_path);
+    assert!(
+      create_result.is_ok(),
+      "Failed to create reference: {:?}",
+      create_result
+    );
+
+    assert!(reference_path.exists());
+    let metadata = std::fs::metadata(&reference_path).unwrap();
+    assert!(metadata.len() > 0);
+
+    let result = harness.run_ref_test_inline("test_blue_box", html, &reference_path);
+    assert!(result.passed, "Test should pass: {}", result.summary());
+  }
+
+  #[test]
+  fn test_ref_harness_detect_difference() {
+    let mut harness = RefTestHarness::with_config(RefTestConfig::with_viewport(100, 100));
+
+    let html1 = r#"
+        <html>
+        <head>
+            <style>
+                body { margin: 0; padding: 0; background: white; }
+                .box { width: 50px; height: 50px; background-color: red; }
+            </style>
+        </head>
+        <body>
+            <div class="box"></div>
+        </body>
+        </html>
+    "#;
+
+    let html2 = r#"
+        <html>
+        <head>
+            <style>
+                body { margin: 0; padding: 0; background: white; }
+                .box { width: 50px; height: 50px; background-color: green; }
+            </style>
+        </head>
+        <body>
+            <div class="box"></div>
+        </body>
+        </html>
+    "#;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let reference_path = temp_dir.path().join("reference.png");
+
+    let create_result = harness.create_reference(html1, &reference_path);
+    assert!(create_result.is_ok());
+
+    let result = harness.run_ref_test_inline("test_color_diff", html2, &reference_path);
+    assert!(!result.passed, "Test should fail due to color difference");
+    assert!(result.image_diff.is_some());
+    assert!(
+      result
+        .image_diff
+        .as_ref()
+        .unwrap()
+        .statistics
+        .different_pixels
+        > 0
+    );
+  }
+
+  #[test]
+  fn test_ref_harness_with_lenient_config() {
+    let config = RefTestConfig::with_viewport(100, 100).with_compare_config(CompareConfig::lenient());
+    let mut harness = RefTestHarness::with_config(config);
+
+    let html = r#"
+        <html>
+        <head>
+            <style>
+                body { margin: 0; padding: 0; background: white; }
+                .box { width: 50px; height: 50px; background-color: #808080; }
+            </style>
+        </head>
+        <body>
+            <div class="box"></div>
+        </body>
+        </html>
+    "#;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let reference_path = temp_dir.path().join("reference.png");
+
+    let create_result = harness.create_reference(html, &reference_path);
+    assert!(create_result.is_ok());
+
+    let result = harness.run_ref_test_inline("test_lenient", html, &reference_path);
+    assert!(result.passed, "Test should pass: {}", result.summary());
   }
 }

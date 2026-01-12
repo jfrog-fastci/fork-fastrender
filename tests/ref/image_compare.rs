@@ -198,3 +198,85 @@ pub fn compare_pngs(
 
   Err(message)
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::r#ref::test_utils::EnvVarGuard;
+
+  #[test]
+  fn compare_config_from_env_supports_fixture_ignore_alpha_and_perceptual_distance() {
+    let _env = EnvVarGuard::new(&[
+      "FIXTURE_FUZZY",
+      "FIXTURE_TOLERANCE",
+      "FIXTURE_MAX_DIFFERENT_PERCENT",
+      "FIXTURE_IGNORE_ALPHA",
+      "FIXTURE_MAX_PERCEPTUAL_DISTANCE",
+    ]);
+
+    let config = compare_config_from_env(CompareEnvVars::fixtures()).expect("config");
+    assert!(config.compare_alpha);
+    assert!(config.max_perceptual_distance.is_none());
+
+    std::env::set_var("FIXTURE_IGNORE_ALPHA", "1");
+    let config = compare_config_from_env(CompareEnvVars::fixtures()).expect("config");
+    assert!(!config.compare_alpha);
+
+    std::env::remove_var("FIXTURE_IGNORE_ALPHA");
+    std::env::set_var("FIXTURE_MAX_PERCEPTUAL_DISTANCE", "0.123");
+    let config = compare_config_from_env(CompareEnvVars::fixtures()).expect("config");
+    let parsed = config
+      .max_perceptual_distance
+      .expect("max perceptual distance");
+    assert!((parsed - 0.123).abs() < 1e-12);
+
+    std::env::set_var("FIXTURE_FUZZY", "1");
+    std::env::set_var("FIXTURE_MAX_PERCEPTUAL_DISTANCE", "0.01");
+    let config = compare_config_from_env(CompareEnvVars::fixtures()).expect("config");
+    let parsed = config
+      .max_perceptual_distance
+      .expect("max perceptual distance");
+    assert!((parsed - 0.01).abs() < 1e-12);
+    assert!(!config.compare_alpha);
+  }
+
+  #[test]
+  fn compare_config_from_env_supports_pages_ignore_alpha_and_perceptual_distance() {
+    let _env = EnvVarGuard::new(&[
+      "PAGES_FUZZY",
+      "PAGES_TOLERANCE",
+      "PAGES_MAX_DIFFERENT_PERCENT",
+      "PAGES_IGNORE_ALPHA",
+      "PAGES_MAX_PERCEPTUAL_DISTANCE",
+    ]);
+
+    let config = compare_config_from_env(CompareEnvVars::pages()).expect("config");
+    assert!(config.compare_alpha);
+    assert!(config.max_perceptual_distance.is_none());
+
+    std::env::set_var("PAGES_IGNORE_ALPHA", "1");
+    std::env::set_var("PAGES_MAX_PERCEPTUAL_DISTANCE", "0.2");
+    let config = compare_config_from_env(CompareEnvVars::pages()).expect("config");
+    assert!(!config.compare_alpha);
+    let parsed = config
+      .max_perceptual_distance
+      .expect("max perceptual distance");
+    assert!((parsed - 0.2).abs() < 1e-12);
+  }
+
+  #[test]
+  fn compare_config_from_env_rejects_invalid_perceptual_distance() {
+    let _env = EnvVarGuard::new(&[
+      "FIXTURE_FUZZY",
+      "FIXTURE_TOLERANCE",
+      "FIXTURE_MAX_DIFFERENT_PERCENT",
+      "FIXTURE_IGNORE_ALPHA",
+      "FIXTURE_MAX_PERCEPTUAL_DISTANCE",
+    ]);
+
+    std::env::set_var("FIXTURE_MAX_PERCEPTUAL_DISTANCE", "not-a-number");
+    let err = compare_config_from_env(CompareEnvVars::fixtures())
+      .expect_err("invalid perceptual distance should fail");
+    assert!(err.contains("FIXTURE_MAX_PERCEPTUAL_DISTANCE"), "{err}");
+  }
+}

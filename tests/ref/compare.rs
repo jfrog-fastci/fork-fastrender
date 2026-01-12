@@ -128,11 +128,17 @@ mod tests {
 
   #[test]
   fn compare_identical_images() {
+    let config = CompareConfig::strict();
     let pixmap1 = create_solid_pixmap(4, 4, 255, 0, 0, 255).unwrap();
     let pixmap2 = create_solid_pixmap(4, 4, 255, 0, 0, 255).unwrap();
 
-    let diff = compare_images(&pixmap1, &pixmap2, &CompareConfig::strict());
+    let diff = compare_images(&pixmap1, &pixmap2, &config);
     assert!(diff.is_match());
+    assert!(diff.dimensions_match);
+    assert_eq!(diff.statistics.different_pixels, 0);
+    assert_eq!(diff.statistics.different_percent, 0.0);
+    assert_eq!(diff.statistics.max_channel_diff(config.compare_alpha), 0);
+    assert!(diff.statistics.psnr.is_infinite());
     assert!(diff.statistics.perceptual_distance < 0.0001);
   }
 
@@ -143,24 +149,28 @@ mod tests {
 
     let diff = compare_images(&pixmap1, &pixmap2, &CompareConfig::strict());
     assert!(!diff.is_match());
+    assert!(diff.dimensions_match);
     assert_eq!(diff.statistics.different_pixels, 4);
+    assert_eq!(diff.statistics.different_percent, 100.0);
+    assert_eq!(diff.statistics.max_red_diff, 255);
+    assert_eq!(diff.statistics.max_green_diff, 255);
     assert!(diff.statistics.perceptual_distance > 0.1);
     assert!(diff.diff_image.is_some());
   }
 
   #[test]
   fn compare_with_tolerance_and_percent() {
-    let mut pixmap = create_solid_pixmap(10, 10, 100, 100, 100, 255).unwrap();
-    pixmap.data_mut()[0] = 0;
+    let expected = create_solid_pixmap(10, 10, 100, 100, 100, 255).unwrap();
+    let mut actual = create_solid_pixmap(10, 10, 100, 100, 100, 255).unwrap();
+    actual.data_mut()[0] = 0;
+
+    let strict = compare_images(&actual, &expected, &CompareConfig::strict());
+    assert!(!strict.is_match());
 
     let config = CompareConfig::strict()
       .with_channel_tolerance(5)
       .with_max_different_percent(1.1);
-    let diff = compare_images(
-      &pixmap,
-      &create_solid_pixmap(10, 10, 100, 100, 100, 255).unwrap(),
-      &config,
-    );
+    let diff = compare_images(&actual, &expected, &config);
 
     assert!(diff.is_match());
     assert_eq!(diff.statistics.different_pixels, 1);
@@ -168,8 +178,20 @@ mod tests {
 
   #[test]
   fn config_presets_include_perceptual_limits() {
-    assert!(CompareConfig::lenient().max_perceptual_distance.is_some());
-    assert!(CompareConfig::fuzzy().max_perceptual_distance.is_some());
+    let strict = CompareConfig::strict();
+    assert_eq!(strict.channel_tolerance, 0);
+    assert_eq!(strict.max_different_percent, 0.0);
+
+    let lenient = CompareConfig::lenient();
+    assert_eq!(lenient.channel_tolerance, 5);
+    assert_eq!(lenient.max_different_percent, 0.1);
+    assert!(lenient.max_perceptual_distance.is_some());
+
+    let fuzzy = CompareConfig::fuzzy();
+    assert_eq!(fuzzy.channel_tolerance, 10);
+    assert_eq!(fuzzy.max_different_percent, 1.0);
+    assert!(!fuzzy.compare_alpha);
+    assert!(fuzzy.max_perceptual_distance.is_some());
   }
 
   #[test]
@@ -180,5 +202,110 @@ mod tests {
     let loaded = load_png_from_bytes(&buffer).expect("failed to load png");
     let diff = compare_images(&pixmap, &loaded, &CompareConfig::strict());
     assert!(diff.is_match());
+  }
+
+  #[test]
+  fn compare_different_dimensions() {
+    let pixmap1 = create_solid_pixmap(10, 10, 255, 0, 0, 255).unwrap();
+    let pixmap2 = create_solid_pixmap(20, 20, 255, 0, 0, 255).unwrap();
+
+    let diff = compare_images(&pixmap1, &pixmap2, &CompareConfig::strict());
+
+    assert!(!diff.is_match());
+    assert!(!diff.dimensions_match);
+    assert_eq!(diff.actual_dimensions, (10, 10));
+    assert_eq!(diff.expected_dimensions, (20, 20));
+  }
+
+  #[test]
+  fn diff_image_generation_respects_flag() {
+    let pixmap1 = create_solid_pixmap(10, 10, 255, 0, 0, 255).unwrap();
+    let pixmap2 = create_solid_pixmap(10, 10, 0, 255, 0, 255).unwrap();
+
+    let config_with_diff = CompareConfig::default().with_generate_diff_image(true);
+    let diff = compare_images(&pixmap1, &pixmap2, &config_with_diff);
+    assert!(diff.diff_image.is_some());
+
+    let config_without_diff = CompareConfig::default().with_generate_diff_image(false);
+    let diff2 = compare_images(&pixmap1, &pixmap2, &config_without_diff);
+    assert!(diff2.diff_image.is_none());
+  }
+
+  #[test]
+  fn diff_summary_mentions_dimension_mismatch() {
+    let pixmap1 = create_solid_pixmap(10, 10, 255, 0, 0, 255).unwrap();
+    let pixmap2 = create_solid_pixmap(10, 10, 255, 0, 0, 255).unwrap();
+
+    let diff = compare_images(&pixmap1, &pixmap2, &CompareConfig::strict());
+    assert_eq!(
+      diff.summary(),
+      "Images match (0.0000% different, perceptual distance 0.0000)"
+    );
+
+    let pixmap3 = create_solid_pixmap(20, 20, 255, 0, 0, 255).unwrap();
+    let diff2 = compare_images(&pixmap1, &pixmap3, &CompareConfig::strict());
+    assert!(diff2.summary().contains("Dimension mismatch"));
+  }
+
+  #[test]
+  fn create_solid_pixmap_preserves_premultiplied_rgba() {
+    let pixmap = create_solid_pixmap(5, 5, 128, 64, 32, 255).unwrap();
+
+    assert_eq!(pixmap.width(), 5);
+    assert_eq!(pixmap.height(), 5);
+
+    let data = pixmap.data();
+    assert_eq!(data[0], 128);
+    assert_eq!(data[1], 64);
+    assert_eq!(data[2], 32);
+    assert_eq!(data[3], 255);
+  }
+
+  #[test]
+  fn psnr_calculation_matches_identical_vs_different() {
+    let pixmap1 = create_solid_pixmap(10, 10, 128, 128, 128, 255).unwrap();
+    let pixmap2 = create_solid_pixmap(10, 10, 128, 128, 128, 255).unwrap();
+
+    let diff = compare_images(&pixmap1, &pixmap2, &CompareConfig::strict());
+    assert!(diff.statistics.psnr.is_infinite());
+
+    let pixmap3 = create_solid_pixmap(10, 10, 0, 0, 0, 255).unwrap();
+    let diff2 = compare_images(&pixmap1, &pixmap3, &CompareConfig::strict());
+    assert!(diff2.statistics.psnr.is_finite());
+    assert!(diff2.statistics.psnr > 0.0);
+  }
+
+  #[test]
+  fn mse_calculation_matches_identical_vs_different() {
+    let pixmap1 = create_solid_pixmap(10, 10, 128, 128, 128, 255).unwrap();
+    let pixmap2 = create_solid_pixmap(10, 10, 128, 128, 128, 255).unwrap();
+
+    let diff = compare_images(&pixmap1, &pixmap2, &CompareConfig::strict());
+    assert_eq!(diff.statistics.mse, 0.0);
+
+    let pixmap3 = create_solid_pixmap(10, 10, 0, 0, 0, 255).unwrap();
+    let diff2 = compare_images(&pixmap1, &pixmap3, &CompareConfig::strict());
+    assert!(diff2.statistics.mse > 0.0);
+  }
+
+  #[test]
+  fn statistics_max_channel_diff_includes_alpha_when_requested() {
+    let stats = DiffStatistics {
+      total_pixels: 100,
+      different_pixels: 10,
+      different_percent: 10.0,
+      max_red_diff: 50,
+      max_green_diff: 100,
+      max_blue_diff: 25,
+      max_alpha_diff: 75,
+      mse: 0.0,
+      psnr: 0.0,
+      perceptual_similarity: 0.0,
+      perceptual_distance: 0.0,
+      first_mismatch: None,
+      first_mismatch_rgba: None,
+    };
+
+    assert_eq!(stats.max_channel_diff(true), 100);
   }
 }

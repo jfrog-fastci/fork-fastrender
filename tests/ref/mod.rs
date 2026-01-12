@@ -158,6 +158,11 @@ pub mod harness;
 #[allow(dead_code)]
 pub mod image_compare;
 
+#[cfg(test)]
+mod fixtures_tests;
+#[cfg(test)]
+mod test_utils;
+
 // Re-export main types for convenience
 // Note: These are public API for external test consumers
 #[allow(unused_imports)]
