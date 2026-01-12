@@ -4871,7 +4871,16 @@ impl App {
           (DateTimeInputKind::Date, DateTimePickerState::Date { year, month, selected_day }) => {
             let header = format!("{:04}-{:02}", *year, *month);
             ui.horizontal(|ui| {
-              if ui.button("◀").clicked() {
+              let prev_resp = fastrender::ui::icon_button(
+                ui,
+                fastrender::ui::BrowserIcon::Back,
+                "Previous month",
+                true,
+              );
+              prev_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Previous month")
+              });
+              if prev_resp.clicked() {
                 if *month <= 1 {
                   *month = 12;
                   *year -= 1;
@@ -4880,7 +4889,16 @@ impl App {
                 }
               }
               ui.label(header);
-              if ui.button("▶").clicked() {
+              let next_resp = fastrender::ui::icon_button(
+                ui,
+                fastrender::ui::BrowserIcon::Forward,
+                "Next month",
+                true,
+              );
+              next_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Next month")
+              });
+              if next_resp.clicked() {
                 if *month >= 12 {
                   *month = 1;
                   *year += 1;
