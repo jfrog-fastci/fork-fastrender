@@ -5260,11 +5260,11 @@ impl BrowserTab {
       PointerButton::None | PointerButton::Other(_) => (-1i16, 0u16),
     };
     let mouse = MouseEvent {
+      detail: 1,
       client_x: pos_css.0 as f64,
       client_y: pos_css.1 as f64,
       button: dom_button,
       buttons: dom_buttons,
-      detail: 1,
       ctrl_key: modifiers.ctrl(),
       shift_key: modifiers.shift(),
       alt_key: modifiers.alt(),

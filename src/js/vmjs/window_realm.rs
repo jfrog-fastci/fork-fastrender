@@ -37015,6 +37015,7 @@ mod tests {
     );
     event.is_trusted = true;
     event.mouse = Some(web_events::MouseEvent {
+      detail: 1,
       client_x: 12.5,
       client_y: 34.0,
       button: 0,
