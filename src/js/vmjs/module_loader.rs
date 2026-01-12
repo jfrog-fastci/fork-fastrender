@@ -638,7 +638,18 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       url.to_string(),
       source_text.to_string(),
     ));
-    let record = vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
+    let record = match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source) {
+      Ok(record) => record,
+      Err(VmError::Syntax(diags)) => {
+        let msg = vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
+        return Err(self.throw_syntax_error(
+          vm,
+          scope,
+          &format!("failed to parse module {url}: {msg}"),
+        ));
+      }
+      Err(err) => return Err(err),
+    };
     let id = modules.add_module(record);
 
     self.module_id_by_url.insert(url.to_string(), id);
@@ -789,7 +800,18 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       effective_url_owned.clone(),
       source_text,
     ));
-    let record = vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
+    let record = match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source) {
+      Ok(record) => record,
+      Err(VmError::Syntax(diags)) => {
+        let msg = vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
+        return Err(self.throw_syntax_error(
+          vm,
+          scope,
+          &format!("failed to parse module {effective_url}: {msg}"),
+        ));
+      }
+      Err(err) => return Err(err),
+    };
     let id = modules.add_module(record);
 
     self.module_id_by_url.insert(url.to_string(), id);
@@ -1367,6 +1389,61 @@ mod tests {
     assert!(
       msg.contains(entry_url),
       "expected stack trace to include module URL {entry_url:?}; got {msg:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_surfaces_dependency_parse_errors_as_syntaxerror() -> Result<()> {
+    let entry_url = "https://example.com/entry.js";
+    let dep_url = "https://example.com/dep.js";
+    let document_url = "https://example.com/index.html";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "import './dep.js';\n".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        // A simple syntax error.
+        "break;\n".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
+    let err = loader
+      .evaluate_module_url(&mut host, &mut event_loop, entry_url)
+      .expect_err("expected module loading to fail");
+
+    let msg = err.to_string();
+    assert_ne!(
+      msg.trim(),
+      "undefined",
+      "expected SyntaxError message, got {msg:?}"
+    );
+    assert!(
+      msg.to_lowercase().contains("syntax error"),
+      "expected syntax error message, got {msg:?}"
+    );
+    assert!(
+      msg.contains("dep.js"),
+      "expected message to mention dep.js, got {msg:?}"
     );
     Ok(())
   }
