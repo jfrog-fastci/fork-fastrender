@@ -5999,7 +5999,6 @@ mod tests {
     ) -> Result<ModuleScriptExecutionStatus> {
       Ok(ModuleScriptExecutionStatus::Completed)
     }
-
     fn after_microtask_checkpoint(
       &mut self,
       _document: &mut BrowserDocumentDom2,

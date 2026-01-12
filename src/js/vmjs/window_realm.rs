@@ -11461,12 +11461,12 @@ fn document_create_element_native(
       "document.createElement requires a DOM-backed document",
     ))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_mut() };
+  let dom_mut = unsafe { dom_ptr.as_mut() };
   // DOM: createElement() uses the HTML namespace only for HTML documents; XML documents default to
   // the null namespace.
-  let namespace = if dom.is_html_document() { "" } else { dom2::NULL_NAMESPACE };
-  let node_id = dom.create_element(&tag_name, namespace);
-
+  let namespace = if dom_mut.is_html_document() { "" } else { dom2::NULL_NAMESPACE };
+  let node_id = dom_mut.create_element(&tag_name, namespace);
+  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -11744,9 +11744,8 @@ fn document_create_text_node_native(
       "document.createTextNode requires a DOM-backed document",
     ))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_mut() };
-  let node_id = dom.create_text(&data);
-
+  let node_id = unsafe { dom_ptr.as_mut() }.create_text(&data);
+  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -11773,11 +11772,13 @@ fn document_create_comment_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let document_id = gc_object_id(document_obj);
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
     "document.createComment requires a DOM-backed document",
   ))?;
-  let node_id = dom.create_comment(&data);
-
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let node_id = unsafe { dom_ptr.as_mut() }.create_comment(&data);
+  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -11835,11 +11836,13 @@ fn document_create_document_fragment_native(
     ));
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let document_id = gc_object_id(document_obj);
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
     "document.createDocumentFragment requires a DOM-backed document",
   ))?;
-  let node_id = dom.create_document_fragment();
-
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let node_id = unsafe { dom_ptr.as_mut() }.create_document_fragment();
+  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -18282,64 +18285,62 @@ fn resolve_dom_event_target(
     ));
   };
 
+  // Resolve the active DOM for this call turn. When there is no embedder DOM (dummy `VmHost`), fall
+  // back to the realm-owned document so `window`/`document` events work in minimal realms.
+  let host_dom_ptr = dom_ptr_for_event_registry(host);
   let fallback_dom_ptr = NonNull::from(&mut data.events_dom_fallback);
+  let window_dom_ptr = host_dom_ptr.unwrap_or(fallback_dom_ptr);
 
-  // Resolve both:
-  // - which kind of DOM EventTarget this object represents (window / document / node), and
-  // - which JS `Document` wrapper owns it (used for listener rooting + multi-document registries).
-  let (target_id, owning_document_obj) = if target_obj == window_obj {
-    (web_events::EventTargetId::Window, realm_document_obj)
-  } else {
+  if target_obj == window_obj {
+    return Ok((
+      ResolvedDomEventTarget {
+        window_obj,
+        document_obj: realm_document_obj,
+        target_id: web_events::EventTargetId::Window,
+      },
+      window_dom_ptr,
+    ));
+  }
+
+  if target_obj == realm_document_obj {
+    return Ok((
+      ResolvedDomEventTarget {
+        window_obj,
+        document_obj: realm_document_obj,
+        target_id: web_events::EventTargetId::Document,
+      },
+      window_dom_ptr,
+    ));
+  }
+
+  // Node/document-backed targets: pick the correct per-document event registry.
+  let node_key = {
     let platform = data.dom_platform.as_mut().ok_or_else(|| {
       VmError::InvariantViolation("WindowRealm is missing required DomPlatform for events")
     })?;
-    let target_id = platform.event_target_id_for_value(scope.heap(), Value::Object(target_obj))?;
-    match target_id {
-      web_events::EventTargetId::Window | web_events::EventTargetId::Opaque(_) => {
-        return Err(VmError::TypeError("Illegal invocation"))
-      }
-      // The owning document for a `Document` target is the `Document` wrapper itself.
-      web_events::EventTargetId::Document => (target_id, target_obj),
-      web_events::EventTargetId::Node(_) => {
-        let key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-        let document_obj = match scope
-          .heap()
-          .object_get_own_data_property_value(target_obj, &key)?
-        {
-          Some(Value::Object(obj)) => obj,
-          _ => return Err(VmError::TypeError("Illegal invocation")),
-        };
-        (target_id, document_obj)
-      }
-    }
+    platform.require_node_handle(scope.heap(), Value::Object(target_obj))?
   };
+  let target_id = web_events::EventTargetId::Node(node_key.node_id).normalize();
 
-  // Resolve the correct `dom2::Document` that owns the event registry for this target.
-  let dom_ptr = if owning_document_obj == realm_document_obj {
-    // `window.document`: prefer the embedder DOM (if present). When there is no embedder DOM (dummy
-    // `VmHost`), fall back to the realm-owned document so `window`/`document` events work in minimal
-    // realms.
-    dom_ptr_for_event_registry(host).unwrap_or(fallback_dom_ptr)
+  let document_obj = node_wrapper_document_obj(scope, target_obj, node_key.node_id)?;
+  let realm_document_id = gc_object_id(realm_document_obj);
+
+  let dom_ptr = if node_key.document_id == realm_document_id {
+    // Host DOM-backed node.
+    host_dom_ptr.ok_or_else(|| VmError::TypeError("Illegal invocation"))?
   } else {
-    // Other documents are realm-owned `dom2::Document` instances that are not backed by the embedder
-    // host DOM.
-    let document_id = gc_object_id(owning_document_obj);
-    let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
-    let dom = owned_dom2_documents
-      .get_mut(&document_id)
-      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    // Realm-owned document node.
+    let dom = data
+      .owned_dom2_documents
+      .get_mut(&node_key.document_id)
+      .ok_or_else(|| VmError::TypeError("Illegal invocation"))?;
     NonNull::from(dom.as_mut())
   };
-
-  // Preserve minimal-realm behavior: node-backed targets require a real DOM backing.
-  if matches!(target_id, web_events::EventTargetId::Node(_)) && dom_ptr == fallback_dom_ptr {
-    return Err(VmError::TypeError("Illegal invocation"));
-  }
 
   Ok((
     ResolvedDomEventTarget {
       window_obj,
-      document_obj: owning_document_obj,
+      document_obj,
       target_id,
     },
     dom_ptr,
@@ -41157,147 +41158,50 @@ mod tests {
   }
 
   #[test]
-  fn dom_event_target_shims_are_multi_document_aware() -> Result<(), VmError> {
+  fn dom_event_targets_route_to_correct_document_event_registry() -> Result<(), VmError> {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
-    // Create a second JS-owned `Document` + wrappers for nodes with the same `NodeId` index in each
-    // document.
-    {
-      let (vm, realm, heap) = realm.vm_realm_and_heap_mut();
-      let mut scope = heap.scope();
-      let global = realm.global_object();
-      scope.push_root(Value::Object(global))?;
-
-      let Some(doc1_obj) = vm
-        .user_data::<WindowRealmUserData>()
-        .and_then(|data| data.document_obj)
-      else {
-        return Err(VmError::InvariantViolation(
-          "WindowRealmUserData is missing required document object",
-        ));
-      };
-      scope.push_root(Value::Object(doc1_obj))?;
-
-      let doc2_obj = scope.alloc_object()?;
-      scope.push_root(Value::Object(doc2_obj))?;
-
-      let (doc2_dom_ptr, node2_id) = {
-        let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-          return Err(VmError::InvariantViolation(
-            "WindowRealm is missing required VM user data",
-          ));
-        };
-        let Some(platform) = data.dom_platform.as_mut() else {
-          return Err(VmError::InvariantViolation(
-            "WindowRealm is missing required DomPlatform for owned document test",
-          ));
-        };
-
-        scope.heap_mut().object_set_prototype(
-          doc2_obj,
-          Some(platform.prototype_for(DomInterface::Document)),
-        )?;
-
-        // Register a unique document id so wrapper caching is document-aware. Document IDs are
-        // derived from the JS Document wrapper identity.
-        let doc2_id = gc_object_id(doc2_obj);
-        let doc2_key = vm_js::WeakGcObject::from(doc2_obj);
-        platform.register_wrapper(
-          scope.heap(),
-          doc2_obj,
-          doc2_key,
-          NodeId::from_index(0),
-          DomInterface::Document,
-        );
-
-        let mut dom2 = dom2::Document::new(QuirksMode::NoQuirks);
-        let node2_id = dom2.create_element("div", "");
-        let mut dom2_box = Box::new(dom2);
-        let dom2_ptr = NonNull::from(dom2_box.as_mut());
-        data
-          .owned_dom2_documents
-          .borrow_mut()
-          .insert(doc2_id, dom2_box);
-        (dom2_ptr, node2_id)
-      };
-
-      let node1_id = host.dom().node_id_from_index(1).map_err(|_| {
-        VmError::InvariantViolation("expected host document to have a node at index 1")
-      })?;
-      assert_eq!(
-        node1_id.index(),
-        node2_id.index(),
-        "expected both documents to use the same NodeId index for this test"
-      );
-
-      let node1_obj =
-        match get_or_create_node_wrapper(vm, &mut scope, doc1_obj, Some(host.dom()), node1_id)? {
-          Value::Object(obj) => obj,
-          _ => {
-            return Err(VmError::InvariantViolation(
-              "expected get_or_create_node_wrapper to return an object",
-            ))
-          }
-        };
-      scope.push_root(Value::Object(node1_obj))?;
-
-      // SAFETY: `doc2_dom_ptr` points at the boxed `dom2::Document` owned by `WindowRealmUserData`.
-      let doc2_dom = unsafe { doc2_dom_ptr.as_ref() };
-      let node2_obj =
-        match get_or_create_node_wrapper(vm, &mut scope, doc2_obj, Some(doc2_dom), node2_id)? {
-          Value::Object(obj) => obj,
-          _ => {
-            return Err(VmError::InvariantViolation(
-              "expected get_or_create_node_wrapper to return an object",
-            ))
-          }
-        };
-      scope.push_root(Value::Object(node2_obj))?;
-
-      let doc2_key = alloc_key(&mut scope, "__doc2")?;
-      scope.define_property(global, doc2_key, data_desc(Value::Object(doc2_obj)))?;
-      let node1_key = alloc_key(&mut scope, "__node1")?;
-      scope.define_property(global, node1_key, data_desc(Value::Object(node1_obj)))?;
-      let node2_key = alloc_key(&mut scope, "__node2")?;
-      scope.define_property(global, node2_key, data_desc(Value::Object(node2_obj)))?;
-    }
-
-    let ok = exec_script_with_dom_host(
+    let counts = exec_script_with_dom_host(
       &mut realm,
       &mut host,
       "(() => {\n\
-        const node1 = globalThis.__node1;\n\
-        const node2 = globalThis.__node2;\n\
-        const doc2 = globalThis.__doc2;\n\
-        if (node1 === node2) return false;\n\
-        if (node2.ownerDocument !== doc2) return false;\n\
-        if (node1.ownerDocument === doc2) return false;\n\
-        let ok = true;\n\
-        let fired1 = 0;\n\
-        let fired2 = 0;\n\
-        node1.addEventListener('x', function (e) {\n\
-          fired1++;\n\
-          if (this !== node1) ok = false;\n\
-          if (e.target !== node1) ok = false;\n\
-          if (e.currentTarget !== node1) ok = false;\n\
-        });\n\
-        node2.addEventListener('x', function (e) {\n\
-          fired2++;\n\
-          if (this !== node2) ok = false;\n\
-          if (e.target !== node2) ok = false;\n\
-          if (e.currentTarget !== node2) ok = false;\n\
-        });\n\
-        node1.dispatchEvent(new Event('x'));\n\
-        if (fired1 !== 1 || fired2 !== 0) ok = false;\n\
-        node2.dispatchEvent(new Event('x'));\n\
-        if (fired1 !== 1 || fired2 !== 1) ok = false;\n\
-        return ok;\n\
+        const doc2 = document.implementation.createHTMLDocument();\n\
+\n\
+        // Use both existing nodes (documentElement) and freshly created nodes (createElement) so\n\
+        // multi-document EventTarget resolution works consistently.\n\
+        const hostEl = document.documentElement;\n\
+        const ownedEl = doc2.documentElement;\n\
+        const hostDiv = document.createElement('div');\n\
+        const ownedDiv = doc2.createElement('div');\n\
+\n\
+        let hostElCount = 0;\n\
+        let ownedElCount = 0;\n\
+        let hostDocCount = 0;\n\
+        let ownedDocCount = 0;\n\
+        let hostDivCount = 0;\n\
+        let ownedDivCount = 0;\n\
+\n\
+        hostEl.addEventListener('x', () => { hostElCount++; });\n\
+        ownedEl.addEventListener('x', () => { ownedElCount++; });\n\
+        document.addEventListener('x', () => { hostDocCount++; });\n\
+        doc2.addEventListener('x', () => { ownedDocCount++; });\n\
+        hostDiv.addEventListener('x', () => { hostDivCount++; });\n\
+        ownedDiv.addEventListener('x', () => { ownedDivCount++; });\n\
+\n\
+        hostEl.dispatchEvent(new Event('x'));\n\
+        ownedEl.dispatchEvent(new Event('x'));\n\
+        document.dispatchEvent(new Event('x'));\n\
+        doc2.dispatchEvent(new Event('x'));\n\
+        hostDiv.dispatchEvent(new Event('x'));\n\
+        ownedDiv.dispatchEvent(new Event('x'));\n\
+\n\
+        return hostElCount + ',' + ownedElCount + ',' + hostDocCount + ',' + ownedDocCount + ',' + hostDivCount + ',' + ownedDivCount;\n\
       })()",
     )?;
-    assert_eq!(ok, Value::Bool(true));
+    assert_eq!(get_string(realm.heap(), counts), "1,1,1,1,1,1");
     Ok(())
   }
 
