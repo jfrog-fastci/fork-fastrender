@@ -3591,6 +3591,10 @@ pub enum CodegenError {
   TypeError { message: String, loc: Loc },
 }
 
-pub fn emit_llvm_module(ast: &Node<TopLevel>, opts: CompileOptions) -> Result<String, CodegenError> {
-  llvm::emit_llvm_module(ast, opts)
+pub fn emit_llvm_module(
+  ast: &Node<TopLevel>,
+  source: &str,
+  opts: CompileOptions,
+) -> Result<String, CodegenError> {
+  llvm::emit_llvm_module(ast, source, opts)
 }

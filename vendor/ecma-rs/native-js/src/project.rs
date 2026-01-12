@@ -7,6 +7,7 @@ use parse_js::ast::stmt::Stmt;
 use parse_js::ast::type_expr::TypeExpr;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 use typecheck_ts::{DefId, DefKind, FileId, FileKey, Host, ImportTarget, Program, TextRange};
 
 #[derive(Debug, Default, Clone)]
@@ -552,6 +553,7 @@ pub fn compile_project_to_llvm_ir(
   // local function definitions and initializer bodies deterministically.
   let mut asts: BTreeMap<FileId, Node<parse_js::ast::stx::TopLevel>> = BTreeMap::new();
   let mut local_fn_sigs: BTreeMap<FileId, BTreeMap<String, (Vec<Ty>, Ty)>> = BTreeMap::new();
+  let mut sources: BTreeMap<FileId, Arc<str>> = BTreeMap::new();
   for file in all_files.iter().copied() {
     let source = program
       .file_text(file)
@@ -559,6 +561,7 @@ pub fn compile_project_to_llvm_ir(
         file: file_label(program, file),
         reason: "Program::file_text returned None".into(),
       })?;
+    sources.insert(file, source.clone());
 
     let key = file_key_or_fallback(program, file);
     let kind = host.file_kind(&key);
@@ -665,16 +668,19 @@ pub fn compile_project_to_llvm_ir(
           });
         }
 
-        let def = resolve_export_def(program, binding.dep, &binding.export_name).ok_or_else(|| {
-          NativeJsError::UnsupportedExport {
+        let def =
+          resolve_export_def(program, binding.dep, &binding.export_name).ok_or_else(|| {
+            NativeJsError::UnsupportedExport {
+              file: file_label(program, binding.dep),
+              export: binding.export_name.clone(),
+            }
+          })?;
+        let local = program
+          .def_name(def)
+          .ok_or_else(|| NativeJsError::UnsupportedExport {
             file: file_label(program, binding.dep),
             export: binding.export_name.clone(),
-          }
-        })?;
-        let local = program.def_name(def).ok_or_else(|| NativeJsError::UnsupportedExport {
-          file: file_label(program, binding.dep),
-          export: binding.export_name.clone(),
-        })?;
+          })?;
         let (params, ret) = local_fn_sigs
           .get(&def.file())
           .and_then(|m| m.get(&local))
@@ -744,8 +750,17 @@ pub fn compile_project_to_llvm_ir(
 
   // Emit LLVM IR.
   let mut builder = LlvmModuleBuilder::new(opts);
+  let entry_key = file_key_or_fallback(program, entry_file);
+  let entry_source = sources
+    .get(&entry_file)
+    .expect("entry file source should be loaded");
+  builder.set_entry_file(entry_key.as_str(), entry_source);
 
   for file in all_files.iter().copied() {
+    let key = file_key_or_fallback(program, file);
+    let source = sources.get(&file).expect("source loaded for file");
+    builder.set_source_file(key.as_str(), source);
+
     let ast = asts.get(&file).expect("AST parsed for file");
     let targets = call_targets.get(&file).expect("call targets for file");
 
@@ -813,6 +828,8 @@ pub fn compile_project_to_llvm_ir(
   // Build `main`: run initializers in topo order (runtime graph only), then optionally invoke the
   // configured entry function.
   let init_symbols: Vec<String> = init_order.iter().copied().map(llvm_init_symbol).collect();
+  // `main` is synthetic; tie it to the entry file for debugging.
+  builder.set_source_file(entry_key.as_str(), entry_source);
   builder
     .add_main(&init_symbols, entry_call.as_ref())
     .map_err(|error| NativeJsError::CodegenFile {

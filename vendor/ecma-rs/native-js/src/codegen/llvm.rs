@@ -14,6 +14,234 @@ use std::collections::{BTreeMap, HashMap};
 use super::builtins::{recognize_builtin, BuiltinCall};
 use super::CodegenError;
 
+const SYNTHETIC_INPUT_FILE: &str = "<input>.ts";
+
+fn llvm_escape_metadata_string(s: &str) -> String {
+  // LLVM IR uses a C-like string literal format in metadata nodes.
+  s.replace('\\', "\\\\").replace('\"', "\\\"")
+}
+
+fn compute_line_starts(source: &str) -> Vec<u32> {
+  // `parse-js` locations are UTF-8 byte offsets; keep the mapping in bytes too.
+  let mut starts = vec![0u32];
+  for (idx, &b) in source.as_bytes().iter().enumerate() {
+    if b == b'\n' {
+      let next = idx.saturating_add(1);
+      let next = next.min(u32::MAX as usize) as u32;
+      starts.push(next);
+    }
+  }
+  starts
+}
+
+fn line_col_for_offset(line_starts: &[u32], offset: u32) -> (u32, u32) {
+  if line_starts.is_empty() {
+    return (1, 1);
+  }
+  // Find the last line start <= offset.
+  let idx = line_starts
+    .partition_point(|&start| start <= offset)
+    .saturating_sub(1);
+  let line_start = line_starts[idx];
+  let line = (idx as u32).saturating_add(1);
+  let col = offset.saturating_sub(line_start).saturating_add(1);
+  (line, col)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DebugPos {
+  line: u32,
+  col: u32,
+}
+
+struct DebugFile {
+  di_file: u32,
+  line_starts: Vec<u32>,
+  len: u32,
+}
+
+struct DebugInfo {
+  next_id: u32,
+  defs: Vec<String>,
+
+  // Common metadata nodes.
+  empty_list: u32,
+  dwarf_version_flag: u32,
+  debug_info_version_flag: u32,
+
+  // Module-level compilation unit.
+  cu: Option<u32>,
+
+  files: HashMap<String, DebugFile>,
+  subroutine_types: HashMap<usize, u32>,
+}
+
+impl DebugInfo {
+  fn new() -> Self {
+    let mut this = Self {
+      next_id: 0,
+      defs: Vec::new(),
+      empty_list: 0,
+      dwarf_version_flag: 0,
+      debug_info_version_flag: 0,
+      cu: None,
+      files: HashMap::new(),
+      subroutine_types: HashMap::new(),
+    };
+
+    // Common metadata nodes that we always reference when debug is enabled.
+    this.empty_list = this.alloc();
+    this.defs.push(format!("!{} = !{{}}", this.empty_list));
+
+    this.dwarf_version_flag = this.alloc();
+    this.defs.push(format!(
+      "!{} = !{{i32 2, !\"Dwarf Version\", i32 5}}",
+      this.dwarf_version_flag
+    ));
+
+    this.debug_info_version_flag = this.alloc();
+    this.defs.push(format!(
+      "!{} = !{{i32 2, !\"Debug Info Version\", i32 3}}",
+      this.debug_info_version_flag
+    ));
+
+    this
+  }
+
+  fn alloc(&mut self) -> u32 {
+    let id = self.next_id;
+    self.next_id += 1;
+    id
+  }
+
+  fn ensure_file(&mut self, filename: &str, source: &str) -> u32 {
+    if let Some(info) = self.files.get(filename) {
+      return info.di_file;
+    }
+
+    let di_file = self.alloc();
+    let escaped = llvm_escape_metadata_string(filename);
+    self.defs.push(format!(
+      "!{di_file} = !DIFile(filename: \"{escaped}\", directory: \"\")"
+    ));
+
+    let line_starts = compute_line_starts(source);
+    let len = source.len().min(u32::MAX as usize) as u32;
+    self.files.insert(
+      filename.to_string(),
+      DebugFile {
+        di_file,
+        line_starts,
+        len,
+      },
+    );
+
+    di_file
+  }
+
+  fn ensure_compile_unit(&mut self, main_file: u32) -> u32 {
+    if let Some(cu) = self.cu {
+      return cu;
+    }
+
+    let cu = self.alloc();
+    // The language is mostly cosmetic; pick a DWARF language that debuggers understand well.
+    self.defs.push(format!(
+      "!{cu} = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !{main_file}, producer: \"native-js\", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly, enums: !{}, globals: !{}, splitDebugInlining: false, nameTableKind: None)",
+      self.empty_list, self.empty_list
+    ));
+    self.cu = Some(cu);
+    cu
+  }
+
+  fn set_main_file(&mut self, filename: &str, source: &str) {
+    let file_id = self.ensure_file(filename, source);
+    self.ensure_compile_unit(file_id);
+  }
+
+  fn file_info(&self, filename: &str) -> Option<&DebugFile> {
+    self.files.get(filename)
+  }
+
+  fn subroutine_type(&mut self, param_count: usize) -> u32 {
+    if let Some(existing) = self.subroutine_types.get(&param_count) {
+      return *existing;
+    }
+
+    // Debug line tables only need function names/locations, but LLVM's verifier expects a
+    // `DISubprogram` to reference a `DISubroutineType`. We use `null` for all types and only match
+    // the parameter *arity*.
+    let list_id = self.alloc();
+    let mut tys = Vec::with_capacity(param_count + 1);
+    for _ in 0..=param_count {
+      tys.push("null");
+    }
+    self
+      .defs
+      .push(format!("!{list_id} = !{{{}}}", tys.join(", ")));
+
+    let ty_id = self.alloc();
+    self
+      .defs
+      .push(format!("!{ty_id} = !DISubroutineType(types: !{list_id})"));
+
+    self.subroutine_types.insert(param_count, ty_id);
+    ty_id
+  }
+
+  fn new_subprogram(
+    &mut self,
+    name: &str,
+    linkage_name: &str,
+    file: u32,
+    line: u32,
+    param_count: usize,
+  ) -> u32 {
+    let cu = self.ensure_compile_unit(file);
+
+    let subprogram = self.alloc();
+    let name = llvm_escape_metadata_string(name);
+    let linkage_name = llvm_escape_metadata_string(linkage_name);
+    let ty = self.subroutine_type(param_count);
+    self.defs.push(format!(
+      "!{subprogram} = distinct !DISubprogram(name: \"{name}\", linkageName: \"{linkage_name}\", scope: !{file}, file: !{file}, line: {line}, type: !{ty}, scopeLine: {line}, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !{cu}, retainedNodes: !{})",
+      self.empty_list
+    ));
+    subprogram
+  }
+
+  fn new_location(&mut self, line: u32, col: u32, scope: u32) -> u32 {
+    let loc = self.alloc();
+    self.defs.push(format!(
+      "!{loc} = !DILocation(line: {line}, column: {col}, scope: !{scope})"
+    ));
+    loc
+  }
+
+  fn render(&self) -> String {
+    let Some(cu) = self.cu else {
+      return String::new();
+    };
+
+    let mut out = String::new();
+    out.push_str("\n!llvm.dbg.cu = !{!");
+    out.push_str(&cu.to_string());
+    out.push_str("}\n");
+    out.push_str("!llvm.module.flags = !{!");
+    out.push_str(&self.dwarf_version_flag.to_string());
+    out.push_str(", !");
+    out.push_str(&self.debug_info_version_flag.to_string());
+    out.push_str("}\n");
+
+    for def in &self.defs {
+      out.push_str(def);
+      out.push('\n');
+    }
+
+    out
+  }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Ty {
   Number,
@@ -102,6 +330,11 @@ struct Codegen {
   function_sigs: HashMap<String, FunctionSig>,
   function_llvm_names: HashMap<String, String>,
   function_defs: Vec<String>,
+  dbg: Option<DebugInfo>,
+  dbg_current_file: Option<String>,
+  dbg_current_scope: Option<u32>,
+  dbg_current_pos: Option<DebugPos>,
+  dbg_main_subprogram: Option<u32>,
   tmp_counter: usize,
   block_counter: usize,
   vars: HashMap<String, (Ty, String)>,
@@ -115,11 +348,16 @@ struct Codegen {
 impl Codegen {
   fn new(opts: CompileOptions) -> Self {
     Self {
+      dbg: opts.debug.then_some(DebugInfo::new()),
       opts,
       strings: StringPool::default(),
       function_sigs: HashMap::new(),
       function_llvm_names: HashMap::new(),
       function_defs: Vec::new(),
+      dbg_current_file: None,
+      dbg_current_scope: None,
+      dbg_current_pos: None,
+      dbg_main_subprogram: None,
       tmp_counter: 0,
       block_counter: 0,
       vars: HashMap::new(),
@@ -142,18 +380,64 @@ impl Codegen {
   }
 
   fn emit(&mut self, line: impl Into<String>) {
-    let line = line.into();
+    let mut line = line.into();
+    let trimmed = line.trim();
+
+    // Attach debug locations to executable instructions (not basic block labels).
+    if !trimmed.is_empty() && !trimmed.ends_with(':') {
+      if let (Some(dbg), Some(scope), Some(pos)) = (
+        self.dbg.as_mut(),
+        self.dbg_current_scope,
+        self.dbg_current_pos,
+      ) {
+        let loc = dbg.new_location(pos.line, pos.col, scope);
+        line.push_str(&format!(", !dbg !{loc}"));
+      }
+    }
+
     let trimmed = line.trim();
     // Basic block labels always end with `:`.
     if trimmed.ends_with(':') {
       self.block_terminated = false;
     } else {
       let inst = trimmed.trim_start();
-      if inst.starts_with("br ") || inst.starts_with("ret ") || inst == "unreachable" {
+      if inst.starts_with("br ") || inst.starts_with("ret ") || inst.starts_with("unreachable") {
         self.block_terminated = true;
       }
     }
     self.body.push(line);
+  }
+
+  fn set_debug_main_file(&mut self, filename: &str, source: &str) {
+    let Some(dbg) = self.dbg.as_mut() else {
+      return;
+    };
+    dbg.set_main_file(filename, source);
+    self.dbg_current_file = Some(filename.to_string());
+  }
+
+  fn set_debug_current_file(&mut self, filename: &str, source: &str) {
+    let Some(dbg) = self.dbg.as_mut() else {
+      return;
+    };
+    dbg.ensure_file(filename, source);
+    self.dbg_current_file = Some(filename.to_string());
+  }
+
+  fn dbg_current_file_id(&self) -> Option<u32> {
+    let dbg = self.dbg.as_ref()?;
+    let name = self.dbg_current_file.as_deref()?;
+    Some(dbg.file_info(name)?.di_file)
+  }
+
+  fn dbg_pos_for_loc(&self, loc: Loc) -> Option<DebugPos> {
+    let dbg = self.dbg.as_ref()?;
+    let name = self.dbg_current_file.as_deref()?;
+    let info = dbg.file_info(name)?;
+
+    let offset = loc.0.min(info.len as usize) as u32;
+    let (line, col) = line_col_for_offset(&info.line_starts, offset);
+    Some(DebugPos { line, col })
   }
 
   fn llvm_type_of(ty: Ty) -> &'static str {
@@ -452,10 +736,7 @@ impl Codegen {
       Ty::String => {
         // JS truthiness: the empty string is falsy; all other strings are truthy.
         let first = self.tmp();
-        self.emit(format!(
-          "  {first} = load i8, ptr {}, align 1",
-          value.ir
-        ));
+        self.emit(format!("  {first} = load i8, ptr {}, align 1", value.ir));
         let out = self.tmp();
         self.emit(format!("  {out} = icmp ne i8 {first}, 0"));
         Ok(out)
@@ -469,182 +750,193 @@ impl Codegen {
   }
 
   fn compile_stmt(&mut self, stmt: &Node<Stmt>) -> Result<(), CodegenError> {
-    // Never emit instructions after a terminator. If we do, LLVM will reject the IR.
-    // Instead, start a fresh (unreachable) basic block.
-    if self.block_terminated {
-      let cont = self.fresh_block("after.term");
-      self.emit(format!("{cont}:"));
-    }
+    let saved_dbg_pos = self.dbg_current_pos;
+    self.dbg_current_pos = self.dbg_pos_for_loc(stmt.loc);
 
-    match stmt.stx.as_ref() {
-      Stmt::Block(block) => {
-        for stmt in &block.stx.body {
-          self.compile_stmt(stmt)?;
-        }
-        Ok(())
+    let result = (|| {
+      // Never emit instructions after a terminator. If we do, LLVM will reject the IR.
+      // Instead, start a fresh (unreachable) basic block.
+      if self.block_terminated {
+        let cont = self.fresh_block("after.term");
+        self.emit(format!("{cont}:"));
       }
-      Stmt::Empty(_) => Ok(()),
-      Stmt::Expr(expr_stmt) => {
-        let _ = self.compile_expr(&expr_stmt.stx.expr)?;
-        Ok(())
-      }
-      Stmt::If(if_stmt) => {
-        let cond = self.compile_expr(&if_stmt.stx.test)?;
-        let cond_bool = self.emit_truthy_to_bool(cond, if_stmt.stx.test.loc)?;
 
-        let then_label = self.fresh_block("if.then");
-        let else_label = self.fresh_block("if.else");
-        let end_label = self.fresh_block("if.end");
-
-        let false_label = if if_stmt.stx.alternate.is_some() {
-          else_label.as_str()
-        } else {
-          end_label.as_str()
-        };
-
-        self.emit(format!(
-          "  br i1 {}, label %{then_label}, label %{false_label}",
-          cond_bool
-        ));
-
-        self.emit(format!("{then_label}:"));
-        self.compile_stmt(&if_stmt.stx.consequent)?;
-        if !self.block_terminated {
-          self.emit(format!("  br label %{end_label}"));
+      match stmt.stx.as_ref() {
+        Stmt::Block(block) => {
+          for stmt in &block.stx.body {
+            self.compile_stmt(stmt)?;
+          }
+          Ok(())
         }
+        Stmt::Empty(_) => Ok(()),
+        Stmt::Expr(expr_stmt) => {
+          let _ = self.compile_expr(&expr_stmt.stx.expr)?;
+          Ok(())
+        }
+        Stmt::If(if_stmt) => {
+          let cond = self.compile_expr(&if_stmt.stx.test)?;
+          let cond_bool = self.emit_truthy_to_bool(cond, if_stmt.stx.test.loc)?;
 
-        if let Some(alt) = if_stmt.stx.alternate.as_ref() {
-          self.emit(format!("{else_label}:"));
-          self.compile_stmt(alt)?;
+          let then_label = self.fresh_block("if.then");
+          let else_label = self.fresh_block("if.else");
+          let end_label = self.fresh_block("if.end");
+
+          let false_label = if if_stmt.stx.alternate.is_some() {
+            else_label.as_str()
+          } else {
+            end_label.as_str()
+          };
+
+          self.emit(format!(
+            "  br i1 {}, label %{then_label}, label %{false_label}",
+            cond_bool
+          ));
+
+          self.emit(format!("{then_label}:"));
+          self.compile_stmt(&if_stmt.stx.consequent)?;
           if !self.block_terminated {
             self.emit(format!("  br label %{end_label}"));
           }
-        }
 
-        self.emit(format!("{end_label}:"));
-        Ok(())
-      }
-      Stmt::While(while_stmt) => {
-        let cond_label = self.fresh_block("while.cond");
-        let body_label = self.fresh_block("while.body");
-        let end_label = self.fresh_block("while.end");
-
-        self.emit(format!("  br label %{cond_label}"));
-
-        self.emit(format!("{cond_label}:"));
-        let cond = self.compile_expr(&while_stmt.stx.condition)?;
-        let cond_bool = self.emit_truthy_to_bool(cond, while_stmt.stx.condition.loc)?;
-        self.emit(format!(
-          "  br i1 {}, label %{body_label}, label %{end_label}",
-          cond_bool
-        ));
-
-        self.emit(format!("{body_label}:"));
-        self.compile_stmt(&while_stmt.stx.body)?;
-        if !self.block_terminated {
-          self.emit(format!("  br label %{cond_label}"));
-        }
-
-        self.emit(format!("{end_label}:"));
-        Ok(())
-      }
-      Stmt::Return(ret) => {
-        let Some(expected) = self.current_return_ty else {
-          return Err(CodegenError::TypeError {
-            message: "`return` is not allowed at the top level".to_string(),
-            loc: ret.loc,
-          });
-        };
-
-        match (expected, ret.stx.value.as_ref()) {
-          (Ty::Void, None) => {
-            self.emit("  ret void".to_string());
-            Ok(())
-          }
-          (Ty::Void, Some(_)) => Err(CodegenError::TypeError {
-            message: "cannot return a value from a `void` function".to_string(),
-            loc: ret.loc,
-          }),
-          (expected, Some(expr)) => {
-            let value = self.compile_expr(expr)?;
-            if value.ty == Ty::Void {
-              return Err(CodegenError::TypeError {
-                message: "cannot return a void expression".to_string(),
-                loc: expr.loc,
-              });
+          if let Some(alt) = if_stmt.stx.alternate.as_ref() {
+            self.emit(format!("{else_label}:"));
+            self.compile_stmt(alt)?;
+            if !self.block_terminated {
+              self.emit(format!("  br label %{end_label}"));
             }
-            if value.ty != expected {
-              return Err(CodegenError::TypeError {
-                message: format!(
-                  "return type mismatch: expected {expected:?}, got {got:?}",
-                  got = value.ty
-                ),
-                loc: expr.loc,
-              });
-            }
-
-            let llvm_ty = Self::llvm_type_of(expected);
-            let value_ir = match expected {
-              Ty::Null | Ty::Undefined => "0".to_string(),
-              _ => value.ir,
-            };
-            self.emit(format!("  ret {llvm_ty} {value_ir}"));
-            Ok(())
           }
-          (expected, None) => Err(CodegenError::TypeError {
-            message: format!("missing return value for function returning {expected:?}"),
-            loc: ret.loc,
-          }),
-        }
-      }
-      // `export { ... }` without a `from` clause is a runtime no-op. Allow it so callers can add
-      // `export {};` as a module marker without requiring project compilation.
-      Stmt::ExportList(export) => {
-        if export.stx.from.is_some() {
-          Err(CodegenError::UnsupportedStmt { loc: stmt.loc })
-        } else {
+
+          self.emit(format!("{end_label}:"));
           Ok(())
         }
-      }
-      // Top-level function declarations are compiled separately (hoisted). We don't model nested
-      // function declarations in the minimal emitter.
-      Stmt::FunctionDecl(_) => Ok(()),
-      Stmt::VarDecl(decl) => {
-        for declarator in &decl.stx.declarators {
-          let name = match declarator.pattern.stx.pat.stx.as_ref() {
-            Pat::Id(id) => id.stx.name.clone(),
-            _ => {
-              return Err(CodegenError::UnsupportedStmt {
-                loc: declarator.pattern.loc,
-              });
-            }
-          };
+        Stmt::While(while_stmt) => {
+          let cond_label = self.fresh_block("while.cond");
+          let body_label = self.fresh_block("while.body");
+          let end_label = self.fresh_block("while.end");
 
-          let value = if let Some(init) = declarator.initializer.as_ref() {
-            self.compile_expr(init)?
-          } else {
-            Value {
-              ty: Ty::Undefined,
-              ir: "0".to_string(),
-            }
-          };
+          self.emit(format!("  br label %{cond_label}"));
 
-          let slot = self.emit_alloca(value.ty, declarator.pattern.loc)?;
-          let store_val = match value.ty {
-            Ty::Null | Ty::Undefined => "0",
-            _ => value.ir.as_str(),
-          };
-          self.emit_store(value.ty, store_val, &slot)?;
-          self.vars.insert(name, (value.ty, slot));
+          self.emit(format!("{cond_label}:"));
+          let cond = self.compile_expr(&while_stmt.stx.condition)?;
+          let cond_bool = self.emit_truthy_to_bool(cond, while_stmt.stx.condition.loc)?;
+          self.emit(format!(
+            "  br i1 {}, label %{body_label}, label %{end_label}",
+            cond_bool
+          ));
+
+          self.emit(format!("{body_label}:"));
+          self.compile_stmt(&while_stmt.stx.body)?;
+          if !self.block_terminated {
+            self.emit(format!("  br label %{cond_label}"));
+          }
+
+          self.emit(format!("{end_label}:"));
+          Ok(())
         }
-        Ok(())
+        Stmt::Return(ret) => {
+          let Some(expected) = self.current_return_ty else {
+            return Err(CodegenError::TypeError {
+              message: "`return` is not allowed at the top level".to_string(),
+              loc: ret.loc,
+            });
+          };
+
+          match (expected, ret.stx.value.as_ref()) {
+            (Ty::Void, None) => {
+              self.emit("  ret void".to_string());
+              Ok(())
+            }
+            (Ty::Void, Some(_)) => Err(CodegenError::TypeError {
+              message: "cannot return a value from a `void` function".to_string(),
+              loc: ret.loc,
+            }),
+            (expected, Some(expr)) => {
+              let value = self.compile_expr(expr)?;
+              if value.ty == Ty::Void {
+                return Err(CodegenError::TypeError {
+                  message: "cannot return a void expression".to_string(),
+                  loc: expr.loc,
+                });
+              }
+              if value.ty != expected {
+                return Err(CodegenError::TypeError {
+                  message: format!(
+                    "return type mismatch: expected {expected:?}, got {got:?}",
+                    got = value.ty
+                  ),
+                  loc: expr.loc,
+                });
+              }
+
+              let llvm_ty = Self::llvm_type_of(expected);
+              let value_ir = match expected {
+                Ty::Null | Ty::Undefined => "0".to_string(),
+                _ => value.ir,
+              };
+              self.emit(format!("  ret {llvm_ty} {value_ir}"));
+              Ok(())
+            }
+            (expected, None) => Err(CodegenError::TypeError {
+              message: format!("missing return value for function returning {expected:?}"),
+              loc: ret.loc,
+            }),
+          }
+        }
+        // `export { ... }` without a `from` clause is a runtime no-op. Allow it so callers can add
+        // `export {};` as a module marker without requiring project compilation.
+        Stmt::ExportList(export) => {
+          if export.stx.from.is_some() {
+            Err(CodegenError::UnsupportedStmt { loc: stmt.loc })
+          } else {
+            Ok(())
+          }
+        }
+        // Top-level function declarations are compiled separately (hoisted). We don't model nested
+        // function declarations in the minimal emitter.
+        Stmt::FunctionDecl(_) => Ok(()),
+        Stmt::VarDecl(decl) => {
+          for declarator in &decl.stx.declarators {
+            let name = match declarator.pattern.stx.pat.stx.as_ref() {
+              Pat::Id(id) => id.stx.name.clone(),
+              _ => {
+                return Err(CodegenError::UnsupportedStmt {
+                  loc: declarator.pattern.loc,
+                });
+              }
+            };
+
+            let value = if let Some(init) = declarator.initializer.as_ref() {
+              self.compile_expr(init)?
+            } else {
+              Value {
+                ty: Ty::Undefined,
+                ir: "0".to_string(),
+              }
+            };
+
+            let slot = self.emit_alloca(value.ty, declarator.pattern.loc)?;
+            let store_val = match value.ty {
+              Ty::Null | Ty::Undefined => "0",
+              _ => value.ir.as_str(),
+            };
+            self.emit_store(value.ty, store_val, &slot)?;
+            self.vars.insert(name, (value.ty, slot));
+          }
+          Ok(())
+        }
+        _ => Err(CodegenError::UnsupportedStmt { loc: stmt.loc }),
       }
-      _ => Err(CodegenError::UnsupportedStmt { loc: stmt.loc }),
-    }
+    })();
+
+    self.dbg_current_pos = saved_dbg_pos;
+    result
   }
 
   fn compile_expr(&mut self, expr: &Node<Expr>) -> Result<Value, CodegenError> {
-    match expr.stx.as_ref() {
+    let saved_dbg_pos = self.dbg_current_pos;
+    self.dbg_current_pos = self.dbg_pos_for_loc(expr.loc);
+
+    let result = (|| match expr.stx.as_ref() {
       Expr::LitNum(num) => Ok(Value {
         ty: Ty::Number,
         ir: f64_to_llvm_const(num.stx.value.0),
@@ -1021,20 +1313,14 @@ impl Codegen {
             match bin.stx.operator {
               OperatorName::LogicalAnd => {
                 // false && rhs  => false (skip rhs)
-                self.emit(format!(
-                  "  br i1 {}, label %{rhs}, label %{short}",
-                  left.ir
-                ));
+                self.emit(format!("  br i1 {}, label %{rhs}, label %{short}", left.ir));
                 self.emit(format!("{short}:"));
                 self.emit_store(Ty::Bool, "0", &result_slot)?;
                 self.emit(format!("  br label %{cont}"));
               }
               OperatorName::LogicalOr => {
                 // true || rhs => true (skip rhs)
-                self.emit(format!(
-                  "  br i1 {}, label %{short}, label %{rhs}",
-                  left.ir
-                ));
+                self.emit(format!("  br i1 {}, label %{short}, label %{rhs}", left.ir));
                 self.emit(format!("{short}:"));
                 self.emit_store(Ty::Bool, "1", &result_slot)?;
                 self.emit(format!("  br label %{cont}"));
@@ -1060,10 +1346,7 @@ impl Codegen {
               ir: loaded,
             })
           }
-          other => Err(CodegenError::UnsupportedOperator {
-            op: other,
-            loc: bin.loc,
-          }),
+          other => Err(CodegenError::UnsupportedOperator { op: other, loc: bin.loc }),
         }
       }
 
@@ -1102,10 +1385,7 @@ impl Codegen {
               ir: out,
             })
           }
-          other => Err(CodegenError::UnsupportedOperator {
-            op: other,
-            loc: unary.loc,
-          }),
+          other => Err(CodegenError::UnsupportedOperator { op: other, loc: unary.loc }),
         }
       }
 
@@ -1129,9 +1409,7 @@ impl Codegen {
 
               let ok = self.fresh_block("assert.ok");
               let fail = self.fresh_block("assert.fail");
-              self.emit(format!(
-                "  br i1 {cond_bool}, label %{ok}, label %{fail}"
-              ));
+              self.emit(format!("  br i1 {cond_bool}, label %{ok}, label %{fail}"));
 
               self.emit(format!("{fail}:"));
               if let Some(msg) = msg {
@@ -1258,12 +1536,16 @@ impl Codegen {
       }
 
       _ => Err(CodegenError::UnsupportedExpr { loc: expr.loc }),
-    }
+    })();
+
+    self.dbg_current_pos = saved_dbg_pos;
+    result
   }
 }
 
 pub(super) fn emit_llvm_module(
   ast: &Node<TopLevel>,
+  source: &str,
   opts: CompileOptions,
 ) -> Result<String, CodegenError> {
   // The minimal parse-js-driven emitter is intended for single-module programs. Module-level
@@ -1290,19 +1572,39 @@ pub(super) fn emit_llvm_module(
       Stmt::ExportDefaultExpr(_)
       | Stmt::ExportAssignmentDecl(_)
       | Stmt::ExportAsNamespaceDecl(_)
-      | Stmt::ExportTypeDecl(_) => {
-        return Err(CodegenError::UnsupportedStmt { loc: stmt.loc });
-      }
+      | Stmt::ExportTypeDecl(_) => return Err(CodegenError::UnsupportedStmt { loc: stmt.loc }),
       _ => {}
     }
   }
 
   let mut cg = Codegen::new(opts);
+  if cg.dbg.is_some() {
+    cg.set_debug_main_file(SYNTHETIC_INPUT_FILE, source);
+  }
 
   cg.collect_function_signatures(ast)?;
   cg.compile_function_decls(ast)?;
 
   cg.reset_fn_ctx(None);
+
+  if cg.dbg.is_some() {
+    let file_id = cg.dbg_current_file_id();
+    let main_pos = ast
+      .stx
+      .body
+      .first()
+      .and_then(|stmt| cg.dbg_pos_for_loc(stmt.loc))
+      .unwrap_or(DebugPos { line: 1, col: 1 });
+    cg.dbg_main_subprogram = match (cg.dbg.as_mut(), file_id) {
+      (Some(dbg), Some(file_id)) => {
+        Some(dbg.new_subprogram("main", "main", file_id, main_pos.line, 0))
+      }
+      _ => None,
+    };
+    cg.dbg_current_scope = cg.dbg_main_subprogram;
+    cg.dbg_current_pos = Some(main_pos);
+  }
+
   cg.emit("entry:");
   for stmt in &ast.stx.body {
     cg.compile_stmt(stmt)?;
@@ -1338,13 +1640,21 @@ pub(super) fn emit_llvm_module(
   // - Disable tail calls so frames are not elided.
   //
   // See `native-js/docs/gc_stack_walking.md`.
-  out.push_str("define i32 @main() #0 {\n");
+  let dbg = cg
+    .dbg_main_subprogram
+    .map(|id| format!(" !dbg !{id}"))
+    .unwrap_or_default();
+  out.push_str(&format!("define i32 @main() #0{dbg} {{\n"));
   for line in &cg.body {
     out.push_str(line);
     out.push('\n');
   }
   out.push_str("}\n");
   out.push_str("\nattributes #0 = { \"frame-pointer\"=\"all\" \"disable-tail-calls\"=\"true\" }\n");
+
+  if let Some(dbg) = cg.dbg.as_ref() {
+    out.push_str(&dbg.render());
+  }
 
   Ok(out)
 }
@@ -1504,8 +1814,33 @@ impl Codegen {
       .expect("collected function signatures earlier")
       .clone();
 
+    let saved_dbg_scope = self.dbg_current_scope;
+    let saved_dbg_pos = self.dbg_current_pos;
+
     let saved = self.take_fn_ctx();
     self.reset_fn_ctx(Some(sig.ret));
+
+    let file_id = self.dbg_current_file_id();
+    let fn_pos = self.dbg_pos_for_loc(decl.loc);
+    let fn_line = fn_pos.map(|p| p.line).unwrap_or(1);
+    let subprogram = match (self.dbg.as_mut(), file_id) {
+      (Some(dbg), Some(file_id)) => Some(
+        dbg.new_subprogram(
+          &name,
+          self
+            .function_llvm_names
+            .get(&name)
+            .expect("collected function LLVM names earlier")
+            .trim_start_matches('@'),
+          file_id,
+          fn_line,
+          sig.params.len(),
+        ),
+      ),
+      _ => None,
+    };
+    self.dbg_current_scope = subprogram;
+    self.dbg_current_pos = fn_pos;
 
     // Emit function prologue.
     self.emit("entry:");
@@ -1584,8 +1919,11 @@ impl Codegen {
       .get(&name)
       .expect("collected function LLVM names earlier");
     let mut def = String::new();
+    let dbg = subprogram
+      .map(|id| format!(" !dbg !{id}"))
+      .unwrap_or_default();
     def.push_str(&format!(
-      "define {} {llvm_name}({}) #0 {{\n",
+      "define {} {llvm_name}({}) #0{dbg} {{\n",
       Self::llvm_type_of(sig.ret),
       param_decls.join(", ")
     ));
@@ -1597,6 +1935,8 @@ impl Codegen {
     self.function_defs.push(def);
 
     self.restore_fn_ctx(saved);
+    self.dbg_current_scope = saved_dbg_scope;
+    self.dbg_current_pos = saved_dbg_pos;
     Ok(())
   }
 }
@@ -1607,7 +1947,17 @@ pub(crate) struct LlvmModuleBuilder {
 
 impl LlvmModuleBuilder {
   pub(crate) fn new(opts: CompileOptions) -> Self {
-    Self { cg: Codegen::new(opts) }
+    Self {
+      cg: Codegen::new(opts),
+    }
+  }
+
+  pub(crate) fn set_entry_file(&mut self, filename: &str, source: &str) {
+    self.cg.set_debug_main_file(filename, source);
+  }
+
+  pub(crate) fn set_source_file(&mut self, filename: &str, source: &str) {
+    self.cg.set_debug_current_file(filename, source);
   }
 
   fn with_call_targets<T>(
@@ -1647,8 +1997,27 @@ impl LlvmModuleBuilder {
     call_targets: &BTreeMap<String, UserFunctionSig>,
   ) -> Result<(), CodegenError> {
     self.with_call_targets(call_targets, |cg| {
+      let saved_dbg_scope = cg.dbg_current_scope;
+      let saved_dbg_pos = cg.dbg_current_pos;
+
       let saved = cg.take_fn_ctx();
       cg.reset_fn_ctx(Some(Ty::Void));
+
+      let file_id = cg.dbg_current_file_id();
+      let fn_pos = stmts
+        .first()
+        .and_then(|stmt| cg.dbg_pos_for_loc(stmt.loc))
+        .unwrap_or(DebugPos { line: 1, col: 1 });
+      let subprogram = match (cg.dbg.as_mut(), file_id) {
+        (Some(dbg), Some(file_id)) => {
+          let name = llvm_name.trim_start_matches('@');
+          Some(dbg.new_subprogram(name, name, file_id, fn_pos.line, 0))
+        }
+        _ => None,
+      };
+      cg.dbg_current_scope = subprogram;
+      cg.dbg_current_pos = Some(fn_pos);
+
       cg.emit("entry:");
       for stmt in stmts {
         cg.compile_stmt(stmt)?;
@@ -1658,7 +2027,10 @@ impl LlvmModuleBuilder {
       }
 
       let mut def = String::new();
-      def.push_str(&format!("define void {llvm_name}() #0 {{\n"));
+      let dbg = subprogram
+        .map(|id| format!(" !dbg !{id}"))
+        .unwrap_or_default();
+      def.push_str(&format!("define void {llvm_name}() #0{dbg} {{\n"));
       for line in &cg.body {
         def.push_str(line);
         def.push('\n');
@@ -1667,6 +2039,8 @@ impl LlvmModuleBuilder {
       cg.function_defs.push(def);
 
       cg.restore_fn_ctx(saved);
+      cg.dbg_current_scope = saved_dbg_scope;
+      cg.dbg_current_pos = saved_dbg_pos;
       Ok(())
     })
   }
@@ -1686,14 +2060,30 @@ impl LlvmModuleBuilder {
     entry_call: Option<&UserFunctionSig>,
   ) -> Result<(), CodegenError> {
     self.cg.reset_fn_ctx(None);
+
+    if self.cg.dbg.is_some() {
+      let file_id = self.cg.dbg_current_file_id();
+      let main_pos = self
+        .cg
+        .dbg_pos_for_loc(Loc(0, 0))
+        .unwrap_or(DebugPos { line: 1, col: 1 });
+      self.cg.dbg_main_subprogram = match (self.cg.dbg.as_mut(), file_id) {
+        (Some(dbg), Some(file_id)) => {
+          Some(dbg.new_subprogram("main", "main", file_id, main_pos.line, 0))
+        }
+        _ => None,
+      };
+      self.cg.dbg_current_scope = self.cg.dbg_main_subprogram;
+      self.cg.dbg_current_pos = Some(main_pos);
+    }
+
     self.cg.emit("entry:");
     for init in init_symbols {
       self.cg.emit(format!("  call void {init}()"));
     }
     if let Some(entry) = entry_call {
       let ret = Codegen::llvm_type_of(entry.ret);
-      self.cg
-        .emit(format!("  call {ret} {}()", entry.llvm_name));
+      self.cg.emit(format!("  call {ret} {}()", entry.llvm_name));
     }
     self.cg.emit("  ret i32 0");
     Ok(())
@@ -1729,13 +2119,24 @@ impl LlvmModuleBuilder {
     // - Disable tail calls so frames are not elided.
     //
     // See `native-js/docs/gc_stack_walking.md`.
-    out.push_str("define i32 @main() #0 {\n");
+    let dbg = self
+      .cg
+      .dbg_main_subprogram
+      .map(|id| format!(" !dbg !{id}"))
+      .unwrap_or_default();
+    out.push_str(&format!("define i32 @main() #0{dbg} {{\n"));
     for line in &self.cg.body {
       out.push_str(line);
       out.push('\n');
     }
     out.push_str("}\n");
-    out.push_str("\nattributes #0 = { \"frame-pointer\"=\"all\" \"disable-tail-calls\"=\"true\" }\n");
+    out.push_str(
+      "\nattributes #0 = { \"frame-pointer\"=\"all\" \"disable-tail-calls\"=\"true\" }\n",
+    );
+
+    if let Some(dbg) = self.cg.dbg.as_ref() {
+      out.push_str(&dbg.render());
+    }
 
     out
   }

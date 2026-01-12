@@ -46,10 +46,10 @@
 //! back-to-back, while full LTO (`clang -flto`) tends to emit one merged blob. Runtime parsers must
 //! iterate `stackmaps[..]` and parse blobs until the end of the range. See `docs/stackmaps.md`.
 
-pub mod compiler;
 pub mod builtins;
 pub mod codegen;
 pub mod codes;
+pub mod compiler;
 pub mod emit;
 pub mod eval;
 pub mod gc;
@@ -62,10 +62,10 @@ pub mod resolve;
 pub mod runtime_abi;
 pub mod runtime_fn;
 pub mod strict;
-pub mod validate;
+pub mod tail_calls;
 pub mod toolchain;
 pub mod ts_ir;
-pub mod tail_calls;
+pub mod validate;
 
 mod error;
 mod stack_walking;
@@ -223,7 +223,10 @@ pub fn compile(
   options: &CompilerOptions,
 ) -> Result<CompilationOutput, NativeJsError> {
   let diagnostics = program.check();
-  if diagnostics.iter().any(|diag| diag.severity == Severity::Error) {
+  if diagnostics
+    .iter()
+    .any(|diag| diag.severity == Severity::Error)
+  {
     return Err(NativeJsError::TypecheckFailed { diagnostics });
   }
 
@@ -256,9 +259,7 @@ use native_js::compile_program(program, entry, opts) and pass an explicit FileId
   let artifact = compiler::compile_program_checked(program, entry, options)?;
   let llvm_ir = if options.emit == EmitKind::LlvmIr {
     let path = artifact.path.clone();
-    Some(
-      std::fs::read_to_string(&path).map_err(|source| NativeJsError::Io { path, source })?,
-    )
+    Some(std::fs::read_to_string(&path).map_err(|source| NativeJsError::Io { path, source })?)
   } else if let Some(path) = options.emit_ir.as_ref() {
     Some(
       std::fs::read_to_string(path).map_err(|source| NativeJsError::Io {
@@ -291,7 +292,7 @@ pub fn compile_typescript_to_llvm_ir(
       source_type: SourceType::Module,
     },
   )?;
-  Ok(codegen::emit_llvm_module(&ast, opts)?)
+  Ok(codegen::emit_llvm_module(&ast, source, opts)?)
 }
 
 /// Create a stable LLVM symbol name for a definition.
@@ -364,14 +365,8 @@ mod tests {
     let entry = context.append_basic_block(function, "entry");
     builder.position_at_end(entry);
 
-    let a = function
-      .get_nth_param(0)
-      .expect("param 0")
-      .into_int_value();
-    let b = function
-      .get_nth_param(1)
-      .expect("param 1")
-      .into_int_value();
+    let a = function.get_nth_param(0).expect("param 0").into_int_value();
+    let b = function.get_nth_param(1).expect("param 1").into_int_value();
 
     let sum = builder.build_int_add(a, b, "sum").expect("build add");
     builder.build_return(Some(&sum)).expect("build ret");
@@ -386,8 +381,8 @@ mod tests {
 
   #[test]
   fn compile_single_root_program() {
-    use crate::{compile, CompilerOptions, EmitKind};
     use crate::llvm_symbol_for_def;
+    use crate::{compile, CompilerOptions, EmitKind};
     use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use typecheck_ts::{FileKey, MemoryHost, Program};
 

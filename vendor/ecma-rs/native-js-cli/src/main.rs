@@ -59,6 +59,10 @@ struct Cli {
   #[arg(long, value_name = "PATH", global = true)]
   emit_llvm: Option<PathBuf>,
 
+  /// Emit DWARF debug info and keep intermediate build artifacts.
+  #[arg(long, global = true)]
+  debug: bool,
+
   /// Which compilation pipeline to use.
   ///
   /// - `project`: legacy `parse-js` based emitter (keeps compiling even with TS type errors).
@@ -214,6 +218,7 @@ fn run(cli: &Cli) -> i32 {
         opts.opt_level = OptLevel::O0;
         opts.emit = EmitKind::Executable;
         opts.pie = cli.pie;
+        opts.debug = cli.debug;
 
         if let Err(err) = compile_llvm_ir_to_artifact(&ir, opts, Some(output.clone())) {
           let diagnostics = diag::diagnostics_from_native_js_error(&err, FileId(0));
@@ -271,6 +276,7 @@ fn run(cli: &Cli) -> i32 {
         opts.opt_level = OptLevel::O0;
         opts.emit = EmitKind::Executable;
         opts.pie = cli.pie;
+        opts.debug = cli.debug;
 
         let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
           Ok(out) => out,
@@ -472,6 +478,7 @@ fn run(cli: &Cli) -> i32 {
             opts.opt_level = OptLevel::O0;
             opts.emit = EmitKind::Executable;
             opts.pie = cli.pie;
+            opts.debug = cli.debug;
 
             let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
               Ok(out) => out,
@@ -560,6 +567,7 @@ fn ensure_checked_pipeline_supported(cli: &Cli, flags: diag::DiagFlags) -> Resul
 fn compile_file_to_ir(cli: &Cli, input: &Path) -> Result<String, CliError> {
   let mut opts = CompileOptions::default();
   opts.builtins = !cli.no_builtins;
+  opts.debug = cli.debug;
 
   fn looks_like_module_source(source: &str) -> bool {
     fn starts_with_kw(line: &str, kw: &str) -> bool {
@@ -593,37 +601,37 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> Result<String, CliError> {
 
     // Module syntax (`import`/`export`) requires the project compiler for module graph construction
     // and deterministic init ordering.
-    if !looks_like_module_source(&source) {
-      match compile_typescript_to_llvm_ir(&source, opts.clone()) {
-        Ok(ir) => return Ok(ir),
-        Err(NativeJsError::Codegen(native_js::codegen::CodegenError::UnsupportedStmt { .. })) => {
-          // Likely uses `import`/`export` constructs; fall back to the project compiler.
-        }
-        Err(NativeJsError::Codegen(native_js::codegen::CodegenError::TypeError { message, .. }))
-          if message.contains("`main` is reserved") =>
-        {
-          // The project compiler namespaces user functions and supports exporting `main()` as an
-          // entrypoint; fall back to it.
-        }
-        Err(NativeJsError::Codegen(native_js::codegen::CodegenError::TypeError { message, .. }))
-          if message.contains("call to unknown function") =>
-        {
-          // The single-file emitter has no module graph, so imports show up as unknown functions.
-          // Fall back to the project compiler which supports multi-file module linking.
-        }
-        Err(err) => {
-          let diagnostics = diag::diagnostics_from_native_js_error(&err, FileId(0));
-          return Err(CliError::Source {
-            source: diag::SingleFileSource {
-              name: Some(input.display().to_string()),
-              text: Some(source),
-            },
-            diagnostics,
-          });
-        }
-      }
-    }
-  }
+         if !looks_like_module_source(&source) {
+           match compile_typescript_to_llvm_ir(&source, opts.clone()) {
+             Ok(ir) => return Ok(ir),
+             Err(NativeJsError::Codegen(native_js::codegen::CodegenError::UnsupportedStmt { .. })) => {
+               // Likely uses `import`/`export` constructs; fall back to the project compiler.
+             }
+             Err(NativeJsError::Codegen(native_js::codegen::CodegenError::TypeError { message, .. }))
+               if message.contains("`main` is reserved") =>
+             {
+               // The project compiler namespaces user functions and supports exporting `main()` as an
+               // entrypoint; fall back to it.
+             }
+             Err(NativeJsError::Codegen(native_js::codegen::CodegenError::TypeError { message, .. }))
+               if message.contains("call to unknown function") =>
+             {
+               // The single-file emitter has no module graph, so imports show up as unknown functions.
+               // Fall back to the project compiler which supports multi-file module linking.
+             }
+             Err(err) => {
+               let diagnostics = diag::diagnostics_from_native_js_error(&err, FileId(0));
+               return Err(CliError::Source {
+                 source: diag::SingleFileSource {
+                   name: Some(input.display().to_string()),
+                   text: Some(source),
+                 },
+                 diagnostics,
+               });
+             }
+           }
+         }
+       }
 
   let (program, entry_id) = project_load::load_program(
     cli.project.as_deref(),
@@ -680,6 +688,7 @@ fn compile_file_checked(
   opts.emit = emit;
   opts.output = output;
   opts.pie = cli.pie;
+  opts.debug = cli.debug;
   // `native-js` supports emitting an extra `.ll` file regardless of the primary `EmitKind`. Use
   // that for the checked pipeline so `--emit-llvm` does not require compiling twice.
   if emit != EmitKind::LlvmIr {
