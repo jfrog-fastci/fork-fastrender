@@ -1,6 +1,7 @@
 use fastrender::geometry::Rect;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::tree::fragment_tree::FragmentNode;
+use fastrender::ComputedStyle;
 use std::sync::Arc;
 
 #[test]
@@ -43,3 +44,50 @@ fn display_list_builder_deep_fragment_nesting_does_not_overflow_stack() {
   }
 }
 
+#[test]
+fn display_list_builder_deep_inline_fragment_nesting_does_not_overflow_stack() {
+  // This test targets stack safety for line decoration helper routines (e.g. style hinting) which
+  // historically walked fragment children recursively.
+  let depth = 20_000;
+  let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+
+  let style = Arc::new(ComputedStyle::default());
+
+  // Deep inline chain inside a single line fragment.
+  let mut leaf = FragmentNode::new_text(rect, "x", 0.0);
+  leaf.style = Some(style);
+  let mut node = leaf;
+  for _ in 0..depth {
+    node = FragmentNode::new_inline(rect, 0, vec![node]);
+  }
+  let line = FragmentNode::new_line(rect, 0.0, vec![node]);
+  let root = FragmentNode::new_block(rect, vec![line]);
+
+  let root = Arc::new(root);
+  let root_for_thread = Arc::clone(&root);
+  let handle = std::thread::Builder::new()
+    .name("paint_deep_inline_fragment_nesting".to_string())
+    .stack_size(256 * 1024)
+    .spawn(move || DisplayListBuilder::new().build_checked(&root_for_thread))
+    .expect("spawn deep-nesting paint thread");
+
+  let result = handle
+    .join()
+    .expect("deep-nesting paint thread panicked");
+  assert!(
+    result.is_ok(),
+    "expected deep-nesting build to succeed; got {result:?}"
+  );
+
+  // Drop the deeply nested fragment chain iteratively to avoid recursive drop overhead in the test
+  // harness.
+  let mut current = Arc::try_unwrap(root).expect("deep-nesting root unexpectedly shared");
+  loop {
+    let mut children = std::mem::take(&mut current.children).into_iter();
+    if let Some(child) = children.next() {
+      current = child;
+    } else {
+      break;
+    }
+  }
+}

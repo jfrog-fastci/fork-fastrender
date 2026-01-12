@@ -1142,65 +1142,73 @@ impl DisplayListBuilder {
         best_min: &mut Option<TextLeaf<'a>>,
         best_max: &mut Option<TextLeaf<'a>>,
       ) {
-        let rect = Rect::new(
-          offset.translate(fragment.bounds.origin),
-          fragment.bounds.size,
-        );
-        let (inline_start, inline_end) = if inline_vertical {
-          (rect.y(), rect.y() + rect.height())
-        } else {
-          (rect.x(), rect.x() + rect.width())
-        };
+        // This used to recurse directly on `fragment.children`, which meant adversarially deep
+        // inline fragment chains inside a line box could stack overflow. Use an explicit stack so
+        // traversal depth is bounded by heap memory, not the call stack.
+        let mut stack: Vec<(&'a FragmentNode, Point)> = vec![(fragment, offset)];
+        while let Some((fragment, offset)) = stack.pop() {
+          let rect = Rect::new(
+            offset.translate(fragment.bounds.origin),
+            fragment.bounds.size,
+          );
+          let (inline_start, inline_end) = if inline_vertical {
+            (rect.y(), rect.y() + rect.height())
+          } else {
+            (rect.x(), rect.x() + rect.width())
+          };
 
-        match fragment.content {
-          FragmentContent::Text { .. } => {
-            if let Some(existing) = best_min.as_ref() {
-              if inline_start < existing.inline_start {
+          match fragment.content {
+            FragmentContent::Text { .. } => {
+              if let Some(existing) = best_min.as_ref() {
+                if inline_start < existing.inline_start {
+                  *best_min = Some(TextLeaf {
+                    fragment,
+                    inline_start,
+                    inline_end,
+                  });
+                }
+              } else {
                 *best_min = Some(TextLeaf {
                   fragment,
                   inline_start,
                   inline_end,
                 });
               }
-            } else {
-              *best_min = Some(TextLeaf {
-                fragment,
-                inline_start,
-                inline_end,
-              });
-            }
 
-            if let Some(existing) = best_max.as_ref() {
-              if inline_end > existing.inline_end {
+              if let Some(existing) = best_max.as_ref() {
+                if inline_end > existing.inline_end {
+                  *best_max = Some(TextLeaf {
+                    fragment,
+                    inline_start,
+                    inline_end,
+                  });
+                }
+              } else {
                 *best_max = Some(TextLeaf {
                   fragment,
                   inline_start,
                   inline_end,
                 });
               }
-            } else {
-              *best_max = Some(TextLeaf {
-                fragment,
-                inline_start,
-                inline_end,
-              });
+              continue;
             }
-            return;
+            FragmentContent::Replaced { .. }
+            | FragmentContent::Line { .. }
+            | FragmentContent::RunningAnchor { .. } => continue,
+            _ => {}
           }
-          FragmentContent::Replaced { .. }
-          | FragmentContent::Line { .. }
-          | FragmentContent::RunningAnchor { .. } => return,
-          _ => {}
-        }
 
-        if fragment.style.as_deref().is_some_and(|style| {
-          style.display.is_inline_level() && style.display.establishes_formatting_context()
-        }) {
-          return;
-        }
+          if fragment.style.as_deref().is_some_and(|style| {
+            style.display.is_inline_level() && style.display.establishes_formatting_context()
+          }) {
+            continue;
+          }
 
-        for child in fragment.children.iter() {
-          visit(child, rect.origin, inline_vertical, best_min, best_max);
+          let child_offset = rect.origin;
+          // Preserve the original recursive DFS order: visit children left-to-right.
+          for child in fragment.children.iter().rev() {
+            stack.push((child, child_offset));
+          }
         }
       }
 
@@ -1294,12 +1302,16 @@ impl DisplayListBuilder {
   }
 
   fn line_style_hint(fragment: &FragmentNode) -> Option<&ComputedStyle> {
-    if let Some(style) = fragment.style.as_deref() {
-      return Some(style);
-    }
-    for child in fragment.children.iter() {
-      if let Some(style) = Self::line_style_hint(child) {
+    // This is used for line boxes, which often don't have their own style and need a hint from a
+    // descendant. Deeply nested inline fragments can be attacker-controlled, so avoid recursion.
+    let mut stack: Vec<&FragmentNode> = vec![fragment];
+    while let Some(fragment) = stack.pop() {
+      if let Some(style) = fragment.style.as_deref() {
         return Some(style);
+      }
+      // Preserve the original recursive DFS order: visit children left-to-right.
+      for child in fragment.children.iter().rev() {
+        stack.push(child);
       }
     }
     None
