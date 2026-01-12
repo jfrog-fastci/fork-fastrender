@@ -7,7 +7,7 @@ use llvm_sys::core::{
   LLVMGetNextInstruction, LLVMGetNextUse, LLVMGetNumArgOperands, LLVMGetNumOperands, LLVMGetOperand,
   LLVMGetParam, LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetUser, LLVMGetValueKind,
   LLVMGlobalGetValueType,
-  LLVMIsAAllocaInst, LLVMIsABitCastInst, LLVMIsAConstantExpr, LLVMIsAConstantInt,
+  LLVMIsAAllocaInst, LLVMIsABitCastInst, LLVMIsAConstantExpr, LLVMIsAConstantInt, LLVMIsAUser,
   LLVMIsAGetElementPtrInst, LLVMIsAGlobalVariable, LLVMPrintTypeToString, LLVMPrintValueToString,
   LLVMStructGetTypeAtIndex, LLVMTypeOf,
 };
@@ -609,6 +609,7 @@ unsafe fn scan_forbidden_constexprs(
   if value.is_null()
     || visited.contains(&value)
     || LLVMGetValueKind(value) == LLVMValueKind::LLVMMetadataAsValueValueKind
+    || LLVMIsAUser(value).is_null()
   {
     return;
   }
