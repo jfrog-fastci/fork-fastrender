@@ -10,6 +10,9 @@ publish = false
 # Enable falling back to the `optimize-js` decompiler when `ts-erase` or
 # `emit-js` cannot handle a particular TypeScript construct yet.
 optimize-js-fallback = ["dep:optimize-js"]
+# Enable running TS fixtures through `native-js` and comparing their stdout to the
+# `vm-js` oracle.
+native-js-runner = ["dep:native-js"]
 
 [dependencies]
 diagnostics = { workspace = true }
@@ -20,3 +23,8 @@ ts-erase = { workspace = true }
 vm-js = { workspace = true }
 
 optimize-js = { workspace = true, optional = true }
+native-js = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+wait-timeout = { workspace = true }
