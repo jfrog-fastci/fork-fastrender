@@ -1296,7 +1296,14 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let is_quiescent = self.is_event_loop_quiescent(event_loop);
     // Avoid double-counting when `after_microtask_checkpoint` is invoked from within an active task
     // (e.g. `BrowserTabHost::perform_microtask_checkpoint_and_notify_executor`).
-    let increment_turns = event_loop.currently_running_task().is_none();
+    //
+    // Note: `EventLoop` runs microtask checkpoint hooks while `currently_running_task` may still be
+    // set to the last drained microtask (implementation detail). Treat microtask checkpoints as
+    // "between tasks" for the purpose of the module-TLA task budget.
+    let increment_turns = match event_loop.currently_running_task() {
+      None => true,
+      Some(task) => task.is_microtask,
+    };
 
     if self.pending_module_evaluations.is_empty() {
       return Ok(());

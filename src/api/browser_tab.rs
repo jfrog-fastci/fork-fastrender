@@ -13244,6 +13244,60 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn module_top_level_await_that_never_settles_aborts_after_turn_budget_even_if_tasks_keep_running()
+  -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+    // Keep a very small budget so this test completes quickly.
+    js_options.event_loop_run_limits.max_tasks = 3;
+    js_options.event_loop_run_limits.max_microtasks = 1000;
+    js_options.event_loop_run_limits.max_wall_time = None;
+
+    let mut options = RenderOptions::default();
+    options.diagnostics_level = crate::api::DiagnosticsLevel::Basic;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          // Keep the event loop non-quiescent, and ensure each turn drains microtasks so we exercise
+          // the module TLA turn-budget accounting.
+          setInterval(() => Promise.resolve().then(() => {}), 0);
+          await new Promise(() => {});
+          document.body.setAttribute("data-never", "1");
+        </script>
+      </body>"#,
+      options,
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+
+    // Run a bounded number of tasks to avoid the interval hanging the test.
+    tab.run_event_loop_until_idle(RunLimits {
+      max_tasks: 20,
+      max_microtasks: 10_000,
+      max_wall_time: None,
+    })?;
+
+    let diagnostics = tab
+      .diagnostics
+      .as_ref()
+      .expect("diagnostics should be enabled")
+      .clone()
+      .into_inner();
+    assert!(
+      diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc
+          .message
+          .contains("module top-level await did not settle within the configured task budget")),
+      "expected async module evaluation failure due to turn budget, got js_exceptions={:?}",
+      diagnostics.js_exceptions
+    );
+    Ok(())
+  }
+
+  #[test]
   fn module_top_level_await_resumes_after_timer_task() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;
