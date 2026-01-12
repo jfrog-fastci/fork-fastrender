@@ -175,7 +175,7 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
 
 # Ignore known failures via manifest + allow-only-new-failures
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
-  --manifest typecheck-ts-harness/fixtures/ts-conformance-manifest.toml \
+  --manifest typecheck-ts-harness/fixtures/conformance_manifest.toml \
   --fail-on new
 ```
 
@@ -274,56 +274,6 @@ timeout -k 10 600 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --r
 case is blocked on missing checker support, include a reason + tracking issue, and
 remove the entry once it starts passing (CI treats XPASS as a failure under
 `--fail-on new`).
-
-## Upstream TypeScript conformance expectations manifest
-
-Nightly CI treats the upstream TypeScript conformance suite as a gate by running
-`conformance` with a checked-in expectations manifest:
-
-- `typecheck-ts-harness/fixtures/ts-conformance-manifest.toml`
-
-Expectation ids/globs are normalized to forward slashes and are relative to the
-suite root (`parse-js/tests/TypeScript/tests/cases/conformance`).
-
-This manifest tracks known failures explicitly and makes CI fail on both:
-
-- new/unexpected mismatches (regressions)
-- XPASS (stale `xfail`/`flaky` entries that now pass)
-
-To update the manifest:
-
-1. Run `conformance` and capture JSON output (use `--fail-on none` while
-   collecting results).
-2. Merge shard JSON files (see the `nightly.yaml` `ts-conformance-triage` job for
-   the `jq` command used in CI).
-3. Run `triage` on the merged report to identify new mismatches and stale
-   manifest entries.
-4. Edit + commit the manifest changes.
-
-Example (16 shards, then merge + triage):
-
-```
-# from `vendor/ecma-rs/`
-mkdir -p reports
-for shard in $(seq 0 15); do
-  bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
-    --shard ${shard}/16 \
-    --compare tsc \
-    --timeout-secs 20 \
-    --manifest typecheck-ts-harness/fixtures/ts-conformance-manifest.toml \
-    --fail-on none \
-    --json \
-    > reports/ts-conformance-${shard}.json
-done
-
-jq -s '{
-  compare_mode: (.[0].compare_mode),
-  results: ([.[].results[]] | sort_by(.id))
-}' reports/ts-conformance-*.json > reports/ts-conformance-merged.json
-
-bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage \
-  --input reports/ts-conformance-merged.json
-```
 
 ## Snapshot integrity (`verify-snapshots`)
 
