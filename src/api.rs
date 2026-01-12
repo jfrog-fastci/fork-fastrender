@@ -10720,6 +10720,12 @@ impl FastRender {
     options: RenderOptions,
     interaction_state: Option<&InteractionState>,
   ) -> Result<AccessibilityNode> {
+    let stage_alloc_budget = options
+      .stage_alloc_budget_bytes
+      .filter(|bytes| *bytes > 0)
+      .map(|bytes| Arc::new(crate::render_control::StageAllocationBudget::new(bytes)));
+    let _stage_alloc_budget_guard =
+      crate::render_control::StageAllocationBudgetGuard::install(stage_alloc_budget.as_ref());
     let (width, height) = options
       .viewport
       .unwrap_or((self.default_width, self.default_height));
@@ -23569,6 +23575,33 @@ mod tests {
       !accessibility_contains_id(&tree, "outside"),
       "expected inert nodes outside the modal dialog to be suppressed from the accessibility tree"
     );
+  }
+
+  #[test]
+  fn accessibility_tree_respects_stage_alloc_budget() {
+    let mut renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .unwrap();
+
+    let css = format!("/* accessibility_tree_respects_stage_alloc_budget */{}", ".a{color:red;}".repeat(128));
+    let html = format!("<!doctype html><style>{css}</style><div>Hello</div>");
+
+    let err = renderer
+      .accessibility_tree_html(
+        &html,
+        RenderOptions::new()
+          .with_viewport(200, 200)
+          .with_stage_alloc_budget_bytes(Some(1)),
+      )
+      .unwrap_err();
+
+    match err {
+      Error::Render(RenderError::StageAllocationBudgetExceeded { heartbeat, .. }) => {
+        assert_eq!(heartbeat, crate::render_control::StageHeartbeat::CssParse);
+      }
+      other => panic!("expected StageAllocationBudgetExceeded, got {other:?}"),
+    }
   }
 
   #[test]
