@@ -93,7 +93,7 @@ pub fn compile_file_native_ready(
   };
 
   // Populate per-instruction metadata and return side-table analyses for native backends.
-  let analyses = analysis::driver::annotate_program(&mut program);
+  let analyses = analysis::driver::annotate_program_typed(&mut program, &types);
 
   Ok(NativeReadyProgram {
     program,
@@ -101,4 +101,3 @@ pub fn compile_file_native_ready(
     types,
   })
 }
-

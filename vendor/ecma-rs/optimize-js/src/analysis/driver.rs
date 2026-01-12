@@ -488,14 +488,27 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
     }
   }
 
+  let effects = effect::compute_program_effects(program);
+  annotate_program_with_effects(program, &keys, &call_summaries, &effects, effect::annotate_cfg_effects)
+}
+
+fn annotate_program_with_effects<F>(
+  program: &mut Program,
+  keys: &[FunctionKey],
+  call_summaries: &[call_summary::FnSummary],
+  effects: &effect::FnEffectMap,
+  annotate_effects: F,
+) -> ProgramAnalyses
+where
+  F: Fn(&mut Cfg, &effect::FnEffectMap),
+{
   let mut analyses = ProgramAnalyses::default();
 
   // 1) effects
-  let effects = effect::compute_program_effects(program);
-  for &key in &keys {
-    effect::annotate_cfg_effects(cfg_for_key_deconstructed_mut(program, key), &effects);
+  for &key in keys {
+    annotate_effects(cfg_for_key_deconstructed_mut(program, key), effects);
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
-      effect::annotate_cfg_effects(cfg, &effects);
+      annotate_effects(cfg, effects);
     }
   }
   analyses
@@ -508,8 +521,8 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   }
 
   // 2) purity
-  let purities = purity::compute_program_purity(program, &effects);
-  for &key in &keys {
+  let purities = purity::compute_program_purity(program, effects);
+  for &key in keys {
     purity::annotate_cfg_purity(
       cfg_for_key_deconstructed_mut(program, key),
       &purities,
@@ -528,10 +541,10 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
 
   // 2.5) parallelizability of preserved semantic ops
   let callback_infos = parallelize::compute_callback_infos(program);
-  for &key in &keys {
+  for &key in keys {
     parallelize::annotate_cfg_parallelize(
       cfg_for_key_deconstructed_mut(program, key),
-      &effects,
+      effects,
       &purities,
       &callback_infos,
       effects.constant_foreign_fns(),
@@ -539,7 +552,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       parallelize::annotate_cfg_parallelize(
         cfg,
-        &effects,
+        effects,
         &purities,
         &callback_infos,
         effects.constant_foreign_fns(),
@@ -548,7 +561,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   }
 
   // 3) alias
-  for &key in &keys {
+  for &key in keys {
     analyses
       .alias
       .insert(key, alias::calculate_alias(cfg_for_key(program, key)));
@@ -557,12 +570,12 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   // 4) escape
   let escape_summaries = interproc_escape::compute_program_escape_summaries(program);
   let mut deconstructed_escapes = HashMap::default();
-  for &key in &keys {
+  for &key in keys {
     let escapes = escape::analyze_cfg_escapes_with_params_and_summaries(
       cfg_for_key(program, key),
       params_for_key(program, key),
       Some(&escape_summaries),
-      Some(&call_summaries),
+      Some(call_summaries),
     );
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       annotate_cfg_escape_states(cfg, &escapes);
@@ -573,14 +586,14 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
       cfg_for_key_deconstructed(program, key),
       params_for_key(program, key),
       Some(&escape_summaries),
-      Some(&call_summaries),
+      Some(call_summaries),
     );
     annotate_cfg_escape_states(cfg_for_key_deconstructed_mut(program, key), &deconstructed_escape);
     deconstructed_escapes.insert(key, deconstructed_escape);
   }
 
   // 5) ownership
-  for &key in &keys {
+  for &key in keys {
     let ownership_result = {
       let cfg = cfg_for_key(program, key);
       let params = params_for_key(program, key);
@@ -592,7 +605,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
         cfg,
         params,
         escapes,
-        Some(&call_summaries),
+        Some(call_summaries),
       )
     };
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
@@ -608,7 +621,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
       cfg_for_key_deconstructed(program, key),
       params_for_key(program, key),
       deconstructed_escape,
-      Some(&call_summaries),
+      Some(call_summaries),
     );
     {
       let cfg = cfg_for_key_deconstructed_mut(program, key);
@@ -618,7 +631,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   }
 
   // 6) nullability/range/encoding
-  for &key in &keys {
+  for &key in keys {
     analyses.nullability.insert(
       key,
       nullability::calculate_nullability(cfg_for_key(program, key)),
@@ -634,12 +647,50 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
     encoding::annotate_cfg_encoding(cfg_for_key_mut(program, key), &encoding_result);
     // `encoding_result` is computed against the analyzed CFG (usually SSA-form), so
     // we need a separate analysis pass to annotate the SSA-deconstructed CFG.
-    let deconstructed_encoding = encoding::analyze_cfg_encoding(cfg_for_key_deconstructed(program, key));
-    encoding::annotate_cfg_encoding(cfg_for_key_deconstructed_mut(program, key), &deconstructed_encoding);
+    let deconstructed_encoding =
+      encoding::analyze_cfg_encoding(cfg_for_key_deconstructed(program, key));
+    encoding::annotate_cfg_encoding(
+      cfg_for_key_deconstructed_mut(program, key),
+      &deconstructed_encoding,
+    );
     analyses.encoding.insert(key, encoding_result);
   }
 
   analyses
+}
+
+/// Typed entry point for [`annotate_program`].
+///
+/// This enables strict-native field-level effect modeling when the provided `types` context carries
+/// a `typecheck-ts` program (see `analysis/effect.rs`).
+#[cfg(feature = "typed")]
+pub fn annotate_program_typed(
+  program: &mut Program,
+  types: &crate::types::TypeContext,
+) -> ProgramAnalyses {
+  let Some(type_program) = types.program.as_deref() else {
+    return annotate_program(program);
+  };
+
+  let keys = function_keys(program);
+  let call_summaries = call_summary::summarize_program(program);
+
+  // Clear any stale metadata before annotating.
+  for &key in &keys {
+    reset_cfg_meta(cfg_for_key_deconstructed_mut(program, key));
+    if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
+      reset_cfg_meta(cfg);
+    }
+  }
+
+  let effects = effect::compute_program_effects_typed(program, type_program);
+  annotate_program_with_effects(
+    program,
+    &keys,
+    &call_summaries,
+    &effects,
+    |cfg, effects| effect::annotate_cfg_effects_typed(cfg, effects, type_program),
+  )
 }
 
 #[cfg(test)]

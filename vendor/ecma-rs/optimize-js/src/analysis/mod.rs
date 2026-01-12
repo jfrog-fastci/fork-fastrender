@@ -34,7 +34,7 @@ pub use driver::{
 };
 
 #[cfg(feature = "typed")]
-pub use driver::{analyze_cfg_typed, analyze_program_function_typed};
+pub use driver::{analyze_cfg_typed, analyze_program_function_typed, annotate_program_typed};
 
 #[cfg(test)]
 mod tests;
