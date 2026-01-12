@@ -16,8 +16,8 @@ fn assert_module_syntax_error(source: &str) {
 fn rejects_duplicate_top_level_function_decls() {
   assert_module_syntax_error(
     r#"
-      function f() {}
-      function f() {}
+      function x() {}
+      function x() {}
     "#,
   );
 }
@@ -26,8 +26,8 @@ fn rejects_duplicate_top_level_function_decls() {
 fn rejects_duplicate_top_level_generator_function_decls() {
   assert_module_syntax_error(
     r#"
-      function* f() {}
-      function* f() {}
+      function x() {}
+      function* x() {}
     "#,
   );
 }
@@ -36,8 +36,8 @@ fn rejects_duplicate_top_level_generator_function_decls() {
 fn rejects_duplicate_top_level_async_function_decls() {
   assert_module_syntax_error(
     r#"
-      async function f() {}
-      async function f() {}
+      function x() {}
+      async function x() {}
     "#,
   );
 }
@@ -46,9 +46,8 @@ fn rejects_duplicate_top_level_async_function_decls() {
 fn rejects_duplicate_top_level_async_generator_function_decls() {
   assert_module_syntax_error(
     r#"
-      async function* f() {}
-      async function* f() {}
+      function x() {}
+      async function* x() {}
     "#,
   );
 }
-
