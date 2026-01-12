@@ -610,3 +610,95 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_global_heap_lock() {
   handle.join().unwrap();
   threading::unregister_current_thread();
 }
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_global_weak_handles_mutex() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let hold = runtime_native::gc::weak::debug_hold_global_weak_handles_lock();
+
+  let (tx_id, rx_id) = mpsc::channel();
+  let (tx_handle, rx_handle) = mpsc::channel();
+  let started = Arc::new(Barrier::new(2));
+
+  let started_worker = started.clone();
+  let handle = std::thread::spawn(move || {
+    let id = threading::register_current_thread(ThreadKind::Worker);
+    tx_id.send(id.get()).unwrap();
+
+    started_worker.wait();
+
+    // Contend on the process-global weak-handle table lock deterministically.
+    let weak = runtime_native::rt_weak_add(0x1234usize as *mut u8);
+    tx_handle.send(weak).unwrap();
+
+    threading::unregister_current_thread();
+  });
+
+  let worker_id = rx_id.recv().unwrap();
+  started.wait();
+
+  wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+  runtime_native::rt_gc_request_stop_the_world();
+  let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+  runtime_native::rt_gc_resume_world();
+  assert!(
+    stopped,
+    "world did not stop while worker thread was blocked on the global weak-handle table mutex"
+  );
+
+  drop(hold);
+  let weak = rx_handle.recv().unwrap();
+  handle.join().unwrap();
+  runtime_native::rt_weak_remove(weak);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_web_timers_mutex() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let hold = runtime_native::debug_hold_web_timers_lock();
+
+  let (tx_id, rx_id) = mpsc::channel();
+  let (tx_timer, rx_timer) = mpsc::channel();
+  let started = Arc::new(Barrier::new(2));
+
+  let started_worker = started.clone();
+  let handle = std::thread::spawn(move || {
+    let id = threading::register_current_thread(ThreadKind::Worker);
+    tx_id.send(id.get()).unwrap();
+
+    started_worker.wait();
+
+    // Contend on the global `setTimeout`/`setInterval` registry lock deterministically.
+    let timer = runtime_native::rt_set_timeout(noop_task, std::ptr::null_mut(), 60_000);
+    tx_timer.send(timer).unwrap();
+
+    threading::unregister_current_thread();
+  });
+
+  let worker_id = rx_id.recv().unwrap();
+  started.wait();
+
+  wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+  runtime_native::rt_gc_request_stop_the_world();
+  let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+  runtime_native::rt_gc_resume_world();
+  assert!(
+    stopped,
+    "world did not stop while worker thread was blocked on the web timer registry mutex"
+  );
+
+  drop(hold);
+  let timer = rx_timer.recv().unwrap();
+  handle.join().unwrap();
+  runtime_native::rt_clear_timer(timer);
+
+  threading::unregister_current_thread();
+}
