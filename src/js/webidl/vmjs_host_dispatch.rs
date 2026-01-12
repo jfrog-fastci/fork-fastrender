@@ -2836,7 +2836,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
             let any = host.as_any_mut();
             if let Some(host) = any.downcast_mut::<DocumentHostState>() {
-              Ok(DomHost::mutate_dom(host, |dom| match dom.set_element_id(element_id, &value) {
+              Ok(host.mutate_dom(|dom| match dom.set_element_id(element_id, &value) {
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
               }))
@@ -2845,10 +2845,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
               }))
-              } else {
-                Err(VmError::TypeError("DOM host not available"))
-              }
-            })?;
+            } else {
+              Err(VmError::TypeError("DOM host not available"))
+            }
+          })?;
           match result {
             Ok(()) => Ok(Value::Undefined),
             Err(err) => {
@@ -2880,7 +2880,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
             let any = host.as_any_mut();
             if let Some(host) = any.downcast_mut::<DocumentHostState>() {
-              Ok(DomHost::mutate_dom(host, |dom| match dom.set_element_class_name(element_id, &value) {
+              Ok(host.mutate_dom(|dom| match dom.set_element_class_name(element_id, &value) {
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
               }))
@@ -2889,10 +2889,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
               }))
-              } else {
-                Err(VmError::TypeError("DOM host not available"))
-              }
-            })?;
+            } else {
+              Err(VmError::TypeError("DOM host not available"))
+            }
+          })?;
           match result {
             Ok(()) => Ok(Value::Undefined),
             Err(err) => {

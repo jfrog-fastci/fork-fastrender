@@ -195,3 +195,6 @@ mod visual_keywords_case_insensitive_test;
 mod webkit_text_stroke_test;
 mod will_change_global_keywords_test;
 mod writing_mode_inheritance_top_test;
+mod normalize_language_tag_test;
+
+mod css_font_feature_values_test;
