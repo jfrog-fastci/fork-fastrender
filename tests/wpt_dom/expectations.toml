@@ -19,6 +19,16 @@ status = "xfail"
 reason = "Intentional failing .window.js smoke test used to validate WPT report payload plumbing."
 
 [[expectations]]
+id = "smoke/assert_throws_js.window.js"
+status = "xfail"
+reason = "Intentional failing smoke test (mismatched constructor) used to validate exception assertion reporting."
+
+[[expectations]]
+id = "smoke/assert_throws_dom.window.js"
+status = "xfail"
+reason = "Intentional failing smoke test (mismatched DOMException name) used to validate exception assertion reporting."
+
+[[expectations]]
 id = "smoke/uncaught-exception.html"
 status = "xfail"
 reason = "Intentional harness-level error used to validate uncaught exception classification."

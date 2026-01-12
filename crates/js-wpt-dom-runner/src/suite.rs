@@ -210,14 +210,37 @@ pub fn run_suite(config: &SuiteConfig) -> Result<Report> {
     discover_tests(fs.tests_root()).context("discover WPT DOM tests from corpus")?;
   discovered.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.kind.cmp(&b.kind)));
 
-  let filter = build_filter(config.filter.as_deref())?;
+  let filter_pattern = config.filter.as_deref();
+  let filter = build_filter(filter_pattern)?;
   let mut selected: Vec<TestCase> = discovered
-    .into_iter()
+    .iter()
     .filter(|t| filter.matches(&t.id))
+    .cloned()
     .collect();
 
   if selected.is_empty() {
-    bail!("suite selected zero tests");
+    // `--filter` is documented as "glob or regex" (with glob tried first). This means that a bare
+    // substring like `--filter assert_throws` is treated as a glob that only matches the *entire*
+    // test id, which is surprising and easy to trip over.
+    //
+    // If the glob matched zero tests, fall back to treating the pattern as a regex. This keeps the
+    // exact-id glob behavior working when there *is* an exact match while enabling the more common
+    // "substring match" workflow for bare filters.
+    if let (Some(raw), Filter::Glob(_)) = (filter_pattern, &filter) {
+      let raw = raw.trim();
+      if !raw.is_empty() {
+        if let Ok(re) = Regex::new(raw) {
+          selected = discovered
+            .iter()
+            .filter(|t| re.is_match(&t.id))
+            .cloned()
+            .collect();
+        }
+      }
+    }
+    if selected.is_empty() {
+      bail!("suite selected zero tests");
+    }
   }
 
   selected.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.kind.cmp(&b.kind)));

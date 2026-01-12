@@ -168,6 +168,65 @@ function __mark_script_done() {
 // ---------------------------------------------------------------------------
 // Assertions (minimal subset used by the curated corpus).
 //
+function __safe_string(value) {
+  // Avoid relying on a global `String(...)` binding (not provided by the vm-js backend).
+  try {
+    return ["", value].join("");
+  } catch (_e) {
+    try {
+      return "[unstringifiable]";
+    } catch (_e2) {
+      return "";
+    }
+  }
+}
+//
+function __format_assertion_message(user_message, auto_message) {
+  if (user_message === undefined || user_message === null || user_message === "") {
+    return auto_message;
+  }
+  return [__safe_string(user_message), ": ", auto_message].join("");
+}
+//
+function __function_name(fn) {
+  try {
+    if (fn && typeof fn === "function" && typeof fn.name === "string" && fn.name !== "") {
+      return fn.name;
+    }
+  } catch (_e) {}
+  return null;
+}
+//
+function __exception_name(err) {
+  try {
+    if (err && typeof err === "object") {
+      if (typeof err.name === "string" && err.name !== "") return err.name;
+      if (
+        err.constructor &&
+        typeof err.constructor.name === "string" &&
+        err.constructor.name !== ""
+      ) {
+        return err.constructor.name;
+      }
+    }
+  } catch (_e) {}
+  try {
+    return typeof err;
+  } catch (_e2) {
+    return "error";
+  }
+}
+//
+function __is_array_like(value) {
+  try {
+    if (value === null || value === undefined) return false;
+    // Allow Arrays, NodeLists, and typed arrays (shallow `length` + index access).
+    return typeof value.length === "number";
+  } catch (_e) {
+    return false;
+  }
+}
+//
 function assert_true(value, message) {
   if (value !== true) {
     throw Error(message || "assert_true");
@@ -184,6 +243,175 @@ function assert_equals(actual, expected, message) {
   if (!__same_value(actual, expected)) {
     throw Error(message || "assert_equals");
   }
+}
+//
+function assert_not_equals(actual, expected, message) {
+  if (__same_value(actual, expected)) {
+    throw Error(
+      message ||
+        ["assert_not_equals: got unexpectedly equal values (", __safe_string(actual), ")"].join(
+          ""
+        )
+    );
+  }
+}
+//
+function assert_array_equals(actual, expected, message) {
+  if (!__is_array_like(actual) || !__is_array_like(expected)) {
+    throw Error(message || "assert_array_equals: arguments must be array-like");
+  }
+  if (actual.length !== expected.length) {
+    throw Error(
+      message ||
+        [
+          "assert_array_equals: length mismatch (expected ",
+          expected.length,
+          ", got ",
+          actual.length,
+          ")",
+        ].join("")
+    );
+  }
+  for (var i = 0; i !== expected.length; i++) {
+    if (!__same_value(actual[i], expected[i])) {
+      throw Error(
+        message ||
+          [
+            "assert_array_equals: mismatch at index ",
+            i,
+            " (expected ",
+            __safe_string(expected[i]),
+            ", got ",
+            __safe_string(actual[i]),
+            ")",
+          ].join("")
+      );
+    }
+  }
+}
+//
+function assert_throws(expected, func, message) {
+  if (typeof expected === "function") {
+    return assert_throws_js(expected, func, message);
+  }
+  if (typeof expected === "string") {
+    return assert_throws_dom(expected, func, message);
+  }
+  throw Error(message || "assert_throws: expected must be a constructor or DOMException name");
+}
+//
+function assert_throws_js(constructor, func, message) {
+  if (typeof constructor !== "function") {
+    throw Error(message || "assert_throws_js: expected constructor is not a function");
+  }
+  if (typeof func !== "function") {
+    throw Error(message || "assert_throws_js: function is not callable");
+  }
+  //
+  var threw = false;
+  var thrown = null;
+  try {
+    func();
+  } catch (e) {
+    threw = true;
+    thrown = e;
+  }
+  //
+  var expected_name = __function_name(constructor);
+  if (expected_name === null) expected_name = "Error";
+  //
+  if (threw !== true) {
+    throw Error(
+      __format_assertion_message(
+        message,
+        [
+          "assert_throws_js: expected ",
+          expected_name,
+          " to be thrown, but no exception was thrown",
+        ].join("")
+      )
+    );
+  }
+  //
+  var ok = false;
+  try {
+    ok = thrown instanceof constructor;
+  } catch (_e2) {
+    ok = false;
+  }
+  if (ok !== true) {
+    var actual_name = __exception_name(thrown);
+    throw Error(
+      __format_assertion_message(
+        message,
+        ["assert_throws_js: expected ", expected_name, ", got ", actual_name].join("")
+      )
+    );
+  }
+  return thrown;
+}
+//
+function assert_throws_dom(name, func, message) {
+  if (typeof name !== "string") {
+    throw Error(message || "assert_throws_dom: expected DOMException name must be a string");
+  }
+  if (typeof func !== "function") {
+    throw Error(message || "assert_throws_dom: function is not callable");
+  }
+  //
+  var threw = false;
+  var thrown = null;
+  try {
+    func();
+  } catch (e) {
+    threw = true;
+    thrown = e;
+  }
+  //
+  if (threw !== true) {
+    throw Error(
+      __format_assertion_message(
+        message,
+        [
+          "assert_throws_dom: expected DOMException \"",
+          name,
+          "\", but no exception was thrown",
+        ].join("")
+      )
+    );
+  }
+  //
+  var thrown_name = null;
+  try {
+    if (thrown && typeof thrown === "object") {
+      if (typeof thrown.name === "string") {
+        thrown_name = thrown.name;
+      }
+    }
+  } catch (_e2) {
+    thrown_name = null;
+  }
+  //
+  if (thrown_name !== name) {
+    var actual_name = thrown_name;
+    if (actual_name === null) {
+      actual_name = __exception_name(thrown);
+    }
+    throw Error(
+      __format_assertion_message(
+        message,
+        [
+          "assert_throws_dom: expected DOMException \"",
+          name,
+          "\", got \"",
+          __safe_string(actual_name),
+          "\"",
+        ].join("")
+      )
+    );
+  }
+  //
+  return thrown;
 }
 //
 function assert_unreached(message) {
