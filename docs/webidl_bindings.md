@@ -7,6 +7,9 @@ upstream WHATWG WebIDL that downstream binding/codegen work can build on.
 This doc is contributor-facing: it explains how the snapshot is produced, why it is committed, and
 how to update it.
 
+For an overview of the consolidated WebIDL crate layout (and where new code belongs), see
+[`docs/webidl_stack.md`](webidl_stack.md).
+
 ## What’s in the repo today
 
 - **Runtime WebIDL “world” representation**: `src/webidl/mod.rs`
@@ -182,8 +185,8 @@ world:
     into the embedder via `webidl_vm_js::WebIdlBindingsHost` (retrieved from
     `webidl_vm_js::host_from_hooks`, backed by a `webidl_vm_js::WebIdlBindingsHostSlot` exposed
     through `VmHostHooks::as_any_mut`).
-   - Controlled by an explicit allowlist: `tools/webidl/window_bindings_allowlist.toml` (typo-guarded
-     against the committed snapshot world).
+- Controlled by an explicit allowlist: `tools/webidl/window_bindings_allowlist.toml` (typo-guarded
+    against the committed snapshot world).
 - **Legacy heap-only runtime bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
   `src/js/webidl/bindings/generated_legacy.rs`
   - Backed by `fastrender::js::webidl::legacy` (vendored in `vendor/ecma-rs/webidl-runtime`).

@@ -38,6 +38,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - LLVM 18 statepoint StackMap ABI assumptions (regression-tested): [llvm_statepoint_stackmap_abi.md](llvm_statepoint_stackmap_abi.md)
 - HTML `<script>` processing model (spec-mapped): [html_script_processing.md](html_script_processing.md)
 - Import maps (spec-mapped parsing + merge/register + resolution): [import_maps.md](import_maps.md)
+- WebIDL stack layout (crates + ownership boundaries): [webidl_stack.md](webidl_stack.md)
 - WebIDL bindings/codegen pipeline: [webidl_bindings.md](webidl_bindings.md)
 - Running the renderer: [running.md](running.md)
 - CLI tools & workflows: [cli.md](cli.md)
