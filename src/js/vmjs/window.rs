@@ -1135,6 +1135,20 @@ mod tests {
 
     let out = host.exec_script(
       "(() => {\n\
+        return Object.prototype.hasOwnProperty.call(document, 'addEventListener');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        return document.addEventListener === EventTarget.prototype.addEventListener;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script(
+      "(() => {\n\
         const el = document.createElement('div');\n\
         return Object.prototype.hasOwnProperty.call(el, 'addEventListener');\n\
       })()",

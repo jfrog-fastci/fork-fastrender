@@ -23084,11 +23084,13 @@ fn init_window_globals(
     add_event_listener_key,
     data_desc(Value::Object(add_event_listener_global_func)),
   )?;
-  scope.define_property(
-    document_obj,
-    add_event_listener_key,
-    data_desc(Value::Object(add_event_listener_func)),
-  )?;
+  if !proto_chain_has_own_property(scope.heap(), document_obj, &add_event_listener_key)? {
+    scope.define_property(
+      document_obj,
+      add_event_listener_key,
+      data_desc(Value::Object(add_event_listener_func)),
+    )?;
+  }
   let remove_event_listener_key = alloc_key(&mut scope, "removeEventListener")?;
   scope.define_property(
     event_target_proto,
@@ -23100,11 +23102,13 @@ fn init_window_globals(
     remove_event_listener_key,
     data_desc(Value::Object(remove_event_listener_global_func)),
   )?;
-  scope.define_property(
-    document_obj,
-    remove_event_listener_key,
-    data_desc(Value::Object(remove_event_listener_func)),
-  )?;
+  if !proto_chain_has_own_property(scope.heap(), document_obj, &remove_event_listener_key)? {
+    scope.define_property(
+      document_obj,
+      remove_event_listener_key,
+      data_desc(Value::Object(remove_event_listener_func)),
+    )?;
+  }
   let dispatch_event_key = alloc_key(&mut scope, "dispatchEvent")?;
   scope.define_property(
     event_target_proto,
@@ -23116,11 +23120,13 @@ fn init_window_globals(
     dispatch_event_key,
     data_desc(Value::Object(dispatch_event_global_func)),
   )?;
-  scope.define_property(
-    document_obj,
-    dispatch_event_key,
-    data_desc(Value::Object(dispatch_event_func)),
-  )?;
+  if !proto_chain_has_own_property(scope.heap(), document_obj, &dispatch_event_key)? {
+    scope.define_property(
+      document_obj,
+      dispatch_event_key,
+      data_desc(Value::Object(dispatch_event_func)),
+    )?;
+  }
 
   let event_target_ctor_call_id = vm.register_native_call(event_target_constructor_native)?;
   let event_target_ctor_construct_id =
