@@ -28,6 +28,7 @@
 
 pub mod elf;
 pub mod stackmap;
+pub mod verify;
 
 pub use stackmap::{
     stackmaps_bytes, Callsite, GcRootPair, LiveOut, Location, LocationKind, ParseError,
