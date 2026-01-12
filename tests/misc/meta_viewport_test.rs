@@ -67,7 +67,7 @@ fn render_with_meta(meta_content: Option<&str>, width: u32, height: u32) -> Pixm
 
 #[test]
 fn meta_viewport_alters_layout_viewport_dimensions() {
-  let _lock = crate::common::env::global_test_lock();
+  let _lock = crate::common::global_test_lock();
   let mut renderer =
     FastRender::with_config(FastRenderConfig::new().with_meta_viewport(true)).unwrap();
 
@@ -116,7 +116,7 @@ fn meta_viewport_alters_layout_viewport_dimensions() {
 
 #[test]
 fn meta_viewport_drives_vw_vh_and_media_queries() {
-  let _lock = crate::common::env::global_test_lock();
+  let _lock = crate::common::global_test_lock();
   let cases = [
     ("narrow red", "width=320", (400, 300), (255, 0, 0, 255)),
     (
@@ -171,7 +171,7 @@ fn meta_viewport_drives_vw_vh_and_media_queries() {
 
 #[test]
 fn meta_viewport_width_or_height_derived_zoom_preserves_output_dimensions() {
-  let _lock = crate::common::env::global_test_lock();
+  let _lock = crate::common::global_test_lock();
   let mut renderer =
     FastRender::with_config(FastRenderConfig::new().with_meta_viewport(true)).unwrap();
 
