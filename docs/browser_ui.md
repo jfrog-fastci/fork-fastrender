@@ -161,14 +161,22 @@ Interaction with rendered pages:
 
 ### Persistence (session file)
 
-The browser persists a lightweight session file on exit (open tabs + active tab + per-tab zoom):
+The browser uses a lightweight session file for restoring state across restarts.
 
 - Default location: a per-user config directory (via `directories`), e.g.
   `~/.config/fastrender/fastrender_session.json` on Linux.
 - Override: `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json`.
 
-At the time of writing, appearance settings are not persisted in the session file; only tabs and
-zoom are.
+The session file format is versioned (currently v2) and includes:
+
+- One or more windows (each with tabs + active tab index)
+- Per-tab zoom
+- Best-effort window geometry (position/size/maximized) when available
+- A crash marker (`did_exit_cleanly`) for detecting unclean exits
+
+Note: the `browser` binary currently writes the session file on clean shutdown. The UI module also
+exposes `SessionAutosave` (`src/ui/session_autosave.rs`) for background autosave + crash-marker
+plumbing, but it is not wired into the `browser` entrypoint yet.
 
 ## Platform polish (window icon, sizing, system theme)
 
