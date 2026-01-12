@@ -925,12 +925,12 @@ impl<'a> Scope<'a> {
   }
 
   /// ECMAScript `[[HasProperty]]` for ordinary objects.
-  pub fn ordinary_has_property(&mut self, obj: GcObject, key: PropertyKey) -> Result<bool, VmError> {
+  pub fn ordinary_has_property(&self, obj: GcObject, key: PropertyKey) -> Result<bool, VmError> {
     self.ordinary_has_property_with_tick(obj, key, || Ok(()))
   }
 
   pub fn ordinary_has_property_with_tick(
-    &mut self,
+    &self,
     obj: GcObject,
     key: PropertyKey,
     mut tick: impl FnMut() -> Result<(), VmError>,
