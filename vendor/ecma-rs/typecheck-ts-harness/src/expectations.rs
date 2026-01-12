@@ -642,4 +642,37 @@ status = "xfail"
       );
     }
   }
+
+  #[test]
+  fn upstream_manifest_has_no_duplicate_matchers() {
+    use std::collections::BTreeSet;
+
+    let path =
+      Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/conformance-upstream/manifest.toml");
+    let raw = std::fs::read_to_string(&path).expect("read upstream manifest");
+    let value: toml::Value = toml::from_str(&raw).expect("manifest parses as TOML");
+    let entries = value
+      .get("expectations")
+      .and_then(|v| v.as_array())
+      .expect("manifest has expectations array");
+
+    let mut ids = BTreeSet::new();
+    let mut globs = BTreeSet::new();
+    let mut regexes = BTreeSet::new();
+    for entry in entries {
+      let table = entry.as_table().expect("expectation is a table");
+      if let Some(id) = table.get("id").and_then(|v| v.as_str()) {
+        assert!(ids.insert(id.to_string()), "duplicate manifest id: {id}");
+      }
+      if let Some(glob) = table.get("glob").and_then(|v| v.as_str()) {
+        assert!(globs.insert(glob.to_string()), "duplicate manifest glob: {glob}");
+      }
+      if let Some(regex) = table.get("regex").and_then(|v| v.as_str()) {
+        assert!(
+          regexes.insert(regex.to_string()),
+          "duplicate manifest regex: {regex}"
+        );
+      }
+    }
+  }
 }
