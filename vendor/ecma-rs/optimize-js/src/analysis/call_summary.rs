@@ -439,6 +439,24 @@ fn summarize_function(
           }
         }
       }
+      #[cfg(feature = "semantic-ops")]
+      InstTyp::KnownApiCall { .. } => {
+        let (_tgt, _api, args) = inst.as_known_api_call();
+        // Conservatively treat known-api calls as unknown calls until we have
+        // `knowledge-base`-aware summaries for them.
+        for arg in args.iter() {
+          let origin = resolve_arg_origin(
+            arg,
+            &param_to_index,
+            &defs,
+            callee_summaries,
+            &mut Vec::new(),
+          );
+          if let Origin::Param(p) = origin {
+            param_escape[p] = EscapeState::GlobalEscape;
+          }
+        }
+      }
       InstTyp::ForeignStore | InstTyp::UnknownStore => {
         let value = inst.args.get(0).expect("store has one arg");
         let origin = resolve_arg_origin(

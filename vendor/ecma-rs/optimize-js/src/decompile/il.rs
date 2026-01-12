@@ -725,6 +725,36 @@ pub fn lower_call_inst<V: VarNamer, F: FnEmitter>(
   }
 }
 
+#[cfg(feature = "semantic-ops")]
+pub fn lower_known_api_call_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+  target_init: VarInit,
+) -> Option<Node<Stmt>> {
+  let InstTyp::KnownApiCall { api } = &inst.t else {
+    return None;
+  };
+  let (tgt, _api, args) = inst.as_known_api_call();
+
+  // The decompiler does not have access to an API database, so emit a stable placeholder callee.
+  let callee = identifier(format!("__known_api_{:x}", api.0));
+  let arg_exprs: Vec<_> = args
+    .iter()
+    .map(|a| lower_arg(var_namer, fn_emitter, a))
+    .collect();
+  let call_expr = node(Expr::Call(node(CallExpr {
+    optional_chaining: false,
+    callee,
+    arguments: call_args(arg_exprs, &[]),
+  })));
+
+  match tgt {
+    Some(tgt) => Some(var_binding(var_namer, tgt, call_expr, target_init)),
+    None => Some(node(Stmt::Expr(node(ExprStmt { expr: call_expr })))),
+  }
+}
+
 pub fn lower_return_inst<V: VarNamer, F: FnEmitter>(
   var_namer: &V,
   fn_emitter: &F,
@@ -880,6 +910,8 @@ pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
     InstTyp::ForeignStore => lower_foreign_store_inst(var_namer, fn_emitter, inst),
     InstTyp::UnknownStore => lower_unknown_store_inst(var_namer, fn_emitter, inst),
     InstTyp::Call => lower_call_inst(var_namer, fn_emitter, inst, None, None, None, init),
+    #[cfg(feature = "semantic-ops")]
+    InstTyp::KnownApiCall { .. } => lower_known_api_call_inst(var_namer, fn_emitter, inst, init),
     #[cfg(feature = "native-async-ops")]
     InstTyp::Await => lower_await_inst(var_namer, fn_emitter, inst, init),
     #[cfg(feature = "native-async-ops")]
@@ -1157,6 +1189,26 @@ fn handle_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<
   )
 }
 
+#[cfg(feature = "semantic-ops")]
+fn handle_known_api_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<u32>) {
+  let (tgt, api, args) = inst.as_known_api_call();
+  let callee_expr = FlatExpr::Identifier(format!("__known_api_{:x}", api.0));
+  let args_exprs = args
+    .iter()
+    .map(|arg| FlatCallArg {
+      expr: expr_from_arg(arg, env),
+      spread: false,
+    })
+    .collect();
+  (
+    FlatExpr::Call {
+      callee: Box::new(callee_expr),
+      args: args_exprs,
+    },
+    tgt,
+  )
+}
+
 /// Decompiles IL into a flat list of JS statements.
 ///
 /// This is intentionally limited today: it only supports straight-line control
@@ -1257,6 +1309,23 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
         }
         InstTyp::Call => {
           let (call_expr, tgt) = handle_call(inst, &env);
+          if let Some(tgt) = tgt {
+            let lhs = FlatExpr::Identifier(temp_name(tgt));
+            stmts.push(assignment_stmt(lhs.clone(), call_expr));
+            env.insert(
+              tgt,
+              VarValue {
+                expr: lhs,
+                origin: ValueOrigin::Other,
+              },
+            );
+          } else {
+            stmts.push(expr_stmt(call_expr));
+          }
+        }
+        #[cfg(feature = "semantic-ops")]
+        InstTyp::KnownApiCall { .. } => {
+          let (call_expr, tgt) = handle_known_api_call(inst, &env);
           if let Some(tgt) = tgt {
             let lhs = FlatExpr::Identifier(temp_name(tgt));
             stmts.push(assignment_stmt(lhs.clone(), call_expr));
@@ -1582,6 +1651,14 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       this_: lowered_arg(&inst.args[1]),
       args: inst.args[2..].iter().map(lowered_arg).collect(),
       spreads: inst.spreads.clone(),
+    },
+    #[cfg(feature = "semantic-ops")]
+    InstTyp::KnownApiCall { api } => LoweredInst::Call {
+      tgt: inst.tgts.get(0).copied(),
+      callee: LoweredArg::Ident(format!("__known_api_{:x}", api.0)),
+      this_: LoweredArg::Const(Const::Undefined),
+      args: inst.args.iter().map(lowered_arg).collect(),
+      spreads: Vec::new(),
     },
     #[cfg(feature = "native-async-ops")]
     InstTyp::PromiseAll => LoweredInst::PromiseAll {

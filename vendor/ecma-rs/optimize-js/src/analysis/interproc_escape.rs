@@ -180,6 +180,13 @@ fn collect_local_summary_facts(cfg: &Cfg) -> LocalSummaryFacts {
             first_spread_arg: spreads.iter().copied().min().map(|idx| idx.saturating_sub(2)),
           });
         }
+        #[cfg(feature = "semantic-ops")]
+        InstTyp::KnownApiCall { .. } => {
+          let (tgt, _api, _args) = inst.as_known_api_call();
+          if let Some(tgt) = tgt {
+            facts.external_defs.insert(tgt);
+          }
+        }
         #[cfg(feature = "native-async-ops")]
         InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
           // These ops conceptually go through builtin/VM machinery (thenables / promises), so treat
@@ -569,6 +576,17 @@ fn compute_cfg_escape_summary(
               for idx in params_for_arg(&var_params, arg) {
                 summary.param_escape[idx] = summary.param_escape[idx].join(EscapeState::GlobalEscape);
               }
+            }
+          }
+        }
+        #[cfg(feature = "semantic-ops")]
+        InstTyp::KnownApiCall { .. } => {
+          // Conservatively treat known-api calls as unknown calls until we have
+          // `knowledge-base`-aware modeling for them.
+          for arg in inst.args.iter() {
+            for idx in params_for_arg(&var_params, arg) {
+              summary.param_escape[idx] =
+                summary.param_escape[idx].join(EscapeState::GlobalEscape);
             }
           }
         }

@@ -40,6 +40,8 @@ use self::il::{
   lower_arg, lower_bin_expr, lower_call_inst, lower_prop_assign_inst, node, FnEmitter, VarInit,
   VarNamer,
 };
+#[cfg(feature = "semantic-ops")]
+use self::il::lower_known_api_call_inst;
 
 #[derive(Debug)]
 pub enum ProgramToJsError {
@@ -596,6 +598,17 @@ impl<'a> FunctionDecompiler<'a> {
           .unwrap_or(VarInit::Assign);
         let stmt = lower_call_inst(self, self, inst, None, None, None, init)
           .expect("call inst should lower");
+        Ok(Some(stmt))
+      }
+      #[cfg(feature = "semantic-ops")]
+      InstTyp::KnownApiCall { .. } => {
+        self.ensure_supported_args(inst.args.iter())?;
+        let (tgt, _api, _args) = inst.as_known_api_call();
+        let init = tgt
+          .map(|t| self.target_init_for(t))
+          .unwrap_or(VarInit::Assign);
+        let stmt = lower_known_api_call_inst(self, self, inst, init)
+          .expect("known api call inst should lower");
         Ok(Some(stmt))
       }
       #[cfg(feature = "native-async-ops")]

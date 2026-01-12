@@ -9,6 +9,8 @@ fn is_consume_site(inst: &crate::il::inst::Inst, arg_idx: usize) -> bool {
     InstTyp::VarAssign => arg_idx == 0,
     InstTyp::PropAssign => arg_idx == 2,
     InstTyp::Call => arg_idx >= 1, // this + call args; callee is always borrowed
+    #[cfg(feature = "semantic-ops")]
+    InstTyp::KnownApiCall { .. } => true,
     InstTyp::Return | InstTyp::Throw => arg_idx == 0,
     InstTyp::ForeignStore | InstTyp::UnknownStore => arg_idx == 0,
     _ => false,

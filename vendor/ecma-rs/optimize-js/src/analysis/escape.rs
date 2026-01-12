@@ -361,6 +361,14 @@ fn collect_local_alloc_flow_facts(
 
           facts.external_defs.insert(tgt);
         }
+        #[cfg(feature = "semantic-ops")]
+        InstTyp::KnownApiCall { .. } => {
+          let (tgt, _api, _args) = inst.as_known_api_call();
+          if let Some(tgt) = tgt {
+            // Treat known-api calls as returning an external value (not a local allocation) for now.
+            facts.external_defs.insert(tgt);
+          }
+        }
         #[cfg(feature = "native-async-ops")]
         InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
           // These ops go through builtin/VM machinery (thenables / promises), so treat their
@@ -867,6 +875,16 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
               for alloc in allocs_for_arg(&var_allocs, arg) {
                 join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
               }
+            }
+          }
+        }
+        #[cfg(feature = "semantic-ops")]
+        InstTyp::KnownApiCall { .. } => {
+          // Conservatively treat known-api calls as unknown calls until we have
+          // `knowledge-base`-aware modeling for them.
+          for arg in inst.args.iter() {
+            for alloc in allocs_for_arg(&var_allocs, arg) {
+              join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
             }
           }
         }

@@ -199,6 +199,14 @@ pub enum InstTyp {
   /// Throw from the current body (function or top-level). `args[0]` is the thrown value.
   Throw,
   Call,       // tgts.at(0)? = args[0](this=args[1], ...args[2..])
+  #[cfg(feature = "semantic-ops")]
+  /// Call to a statically-known API (identified by a stable [`hir_js::ApiId`]).
+  ///
+  /// Calling convention matches `Call`, except:
+  /// - the callee is encoded in the instruction type (`api`)
+  /// - `this` is implicitly `undefined` for now (see `hir_js::ExprKind::KnownApiCall`)
+  /// - `args` contains only call arguments (no callee/this prefix)
+  KnownApiCall { api: hir_js::ApiId },
   /// Await a promise-like value.
   ///
   /// When `tgts` is non-empty, `tgts[0] = await(args[0])`.
@@ -483,6 +491,16 @@ impl Inst {
     }
   }
 
+  #[cfg(feature = "semantic-ops")]
+  pub fn known_api_call(tgt: impl Into<Option<u32>>, api: hir_js::ApiId, args: Vec<Arg>) -> Self {
+    Self {
+      t: InstTyp::KnownApiCall { api },
+      tgts: tgt.into().into_iter().collect(),
+      args,
+      ..Default::default()
+    }
+  }
+
   #[cfg(feature = "native-async-ops")]
   pub fn await_(tgt: impl Into<Option<u32>>, value: Arg, known_resolved: bool) -> Self {
     let mut inst = Self {
@@ -620,6 +638,14 @@ impl Inst {
       &self.args[2..],
       &self.spreads,
     )
+  }
+
+  #[cfg(feature = "semantic-ops")]
+  pub fn as_known_api_call(&self) -> (Option<u32>, hir_js::ApiId, &[Arg]) {
+    let InstTyp::KnownApiCall { api } = &self.t else {
+      panic!("not a known api call");
+    };
+    (self.tgts.get(0).copied(), *api, &self.args)
   }
 
   pub fn as_foreign_load(&self) -> (u32, SymbolId) {

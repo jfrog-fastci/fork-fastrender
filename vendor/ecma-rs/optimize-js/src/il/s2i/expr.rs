@@ -2264,13 +2264,7 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin(format!("known_api:{}", api.0)),
-            Arg::Const(Const::Undefined),
-            compiled_args,
-            Vec::new(),
-          ),
+          Inst::known_api_call(tmp, *api, compiled_args),
         );
         Ok(Arg::Var(tmp))
       }

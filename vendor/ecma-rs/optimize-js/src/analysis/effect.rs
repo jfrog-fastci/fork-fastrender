@@ -321,6 +321,12 @@ fn inst_local_effect_with_value_types(inst: &Inst, value_types: Option<&ValueTyp
         .insert(EffectLocation::Unknown(inst.unknown.clone()));
       effects.summary.throws = ThrowBehavior::Maybe;
     }
+    #[cfg(feature = "semantic-ops")]
+    InstTyp::KnownApiCall { .. } => {
+      // Until we integrate `knowledge-base`-aware effect modeling for known APIs,
+      // treat these as unknown calls.
+      effects.mark_unknown();
+    }
     InstTyp::Call => {
       let (_, callee, _, args, _) = inst.as_call();
       match callee {

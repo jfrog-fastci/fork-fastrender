@@ -6,6 +6,19 @@ use crate::opt::PassResult;
 use ahash::HashSet;
 use ahash::HashSetExt;
 
+fn is_call_like(inst: &crate::il::inst::Inst) -> bool {
+  if inst.t == InstTyp::Call {
+    return true;
+  }
+  #[cfg(feature = "semantic-ops")]
+  {
+    if matches!(&inst.t, InstTyp::KnownApiCall { .. }) {
+      return true;
+    }
+  }
+  false
+}
+
 pub fn optpass_trivial_dce(cfg: &mut Cfg) -> PassResult {
   let mut used = HashSet::new();
   for (_, bblock) in cfg.bblocks.all() {
@@ -25,37 +38,40 @@ pub fn optpass_trivial_dce(cfg: &mut Cfg) -> PassResult {
       let should_delete =
         !bblock[i].tgts.is_empty() && bblock[i].tgts.iter().all(|var| !used.contains(var));
       if should_delete {
-        match bblock[i].t.clone() {
-          InstTyp::Call => {
-            // Calls are only removable when we know the callee has no observable effects.
-            //
-            // When purity metadata is present (via `analysis::purity::annotate_cfg_purity`), we can
-            // eliminate unused pure calls. Otherwise stay conservative and only remove the unused
-            // target.
-            if matches!(
-              bblock[i].meta.callee_purity,
-              Purity::Pure | Purity::ReadOnly | Purity::Allocating
-            ) {
-              bblock.remove(i);
-            } else {
-              bblock[i].tgts.clear();
-              // The call still executes for side effects, but it no longer produces an SSA value, so
-              // clear any result-only metadata (type/ownership/etc).
-              bblock[i].meta.clear_result_var_metadata();
-            }
-          }
-          #[cfg(feature = "native-async-ops")]
-          InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
-            // Async semantic ops are always treated as potentially effectful, even when their
-            // result is unused (e.g. `await p;` must still suspend, and `Promise.all([...])` can
-            // observe unhandled rejections). Drop the SSA target but keep the instruction.
+        #[cfg(feature = "native-async-ops")]
+        let is_async_semantic_op = matches!(
+          &bblock[i].t,
+          InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace
+        );
+        #[cfg(not(feature = "native-async-ops"))]
+        let is_async_semantic_op = false;
+
+        if is_async_semantic_op {
+          // Async semantic ops are always treated as potentially effectful, even when their
+          // result is unused (e.g. `await p;` must still suspend, and `Promise.all([...])` can
+          // observe unhandled rejections). Drop the SSA target but keep the instruction.
+          bblock[i].tgts.clear();
+          bblock[i].meta.clear_result_var_metadata();
+        } else if is_call_like(&bblock[i]) {
+          // Calls are only removable when we know the callee has no observable effects.
+          //
+          // When purity metadata is present (via `analysis::purity::annotate_cfg_purity`), we can
+          // eliminate unused pure calls. Otherwise stay conservative and only remove the unused
+          // target.
+          if matches!(
+            bblock[i].meta.callee_purity,
+            Purity::Pure | Purity::ReadOnly | Purity::Allocating
+          ) {
+            bblock.remove(i);
+          } else {
             bblock[i].tgts.clear();
+            // The call still executes for side effects, but it no longer produces an SSA value, so
+            // clear any result-only metadata (type/ownership/etc).
             bblock[i].meta.clear_result_var_metadata();
           }
-          _ => {
-            bblock.remove(i);
-          }
-        };
+        } else {
+          bblock.remove(i);
+        }
         result.mark_changed();
       };
     }

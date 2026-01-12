@@ -205,6 +205,10 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
     InstTyp::Call => {
       inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
     }
+    #[cfg(feature = "semantic-ops")]
+    InstTyp::KnownApiCall { .. } => {
+      inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
+    }
     InstTyp::Assume => false,
     #[cfg(feature = "native-async-ops")]
     InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => false,

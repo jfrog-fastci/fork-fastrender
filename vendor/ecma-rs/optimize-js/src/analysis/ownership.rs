@@ -201,11 +201,17 @@ fn collect_borrowed_defs(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTr
         InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
           borrowed.insert(tgt);
         }
+        #[cfg(feature = "semantic-ops")]
+        InstTyp::KnownApiCall { .. } => {
+          // KnownApiCall has no callee expression in IL and is conservatively treated as an
+          // unknown call for ownership purposes.
+          borrowed.insert(tgt);
+        }
         InstTyp::Call => {
           if is_allocation_inst(inst) {
             continue;
           }
- 
+
           match call_return_kind(inst, call_summaries) {
             ReturnKind::FreshAlloc | ReturnKind::Const => {}
             ReturnKind::AliasParam(i) => {
@@ -346,6 +352,8 @@ fn is_consume_site(inst: &Inst, arg_idx: usize) -> bool {
     InstTyp::VarAssign => arg_idx == 0,
     InstTyp::PropAssign => arg_idx == 2,
     InstTyp::Call => arg_idx >= 1, // this + call args; callee is always borrowed
+    #[cfg(feature = "semantic-ops")]
+    InstTyp::KnownApiCall { .. } => true,
     InstTyp::Return | InstTyp::Throw => arg_idx == 0,
     InstTyp::ForeignStore | InstTyp::UnknownStore => arg_idx == 0,
     _ => false,

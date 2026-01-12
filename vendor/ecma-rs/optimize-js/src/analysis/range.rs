@@ -1079,6 +1079,13 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
           self.set_var(state, tgt, IntRange::Unknown);
         }
       }
+      #[cfg(feature = "semantic-ops")]
+      InstTyp::KnownApiCall { .. } => {
+        let (tgt, _api, _args) = inst.as_known_api_call();
+        if let Some(tgt) = tgt {
+          self.set_var(state, tgt, IntRange::Unknown);
+        }
+      }
       #[cfg(feature = "native-async-ops")]
       InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
         if let Some(&tgt) = inst.tgts.get(0) {

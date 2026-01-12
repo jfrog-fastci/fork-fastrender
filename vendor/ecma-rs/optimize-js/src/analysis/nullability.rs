@@ -617,6 +617,14 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
           self.set_value_result(inst, state, tgt, mask);
         }
       }
+      #[cfg(feature = "semantic-ops")]
+      InstTyp::KnownApiCall { .. } => {
+        let (tgt, _api, _args) = inst.as_known_api_call();
+        if let Some(tgt) = tgt {
+          // Without an API database, treat known API calls as producing an unknown value.
+          self.set_value_result(inst, state, tgt, NullabilityMask::TOP);
+        }
+      }
       InstTyp::ForeignLoad => {
         let (tgt, _foreign) = inst.as_foreign_load();
         self.set_value_result(inst, state, tgt, NullabilityMask::TOP);

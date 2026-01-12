@@ -470,3 +470,63 @@ fn parameter_temps_follow_parameter_order() {
   assert_eq!(first.functions[0].params, vec![0, 1]);
   assert_eq!(second.functions[0].params, vec![0, 1]);
 }
+
+#[cfg(feature = "semantic-ops")]
+#[test]
+fn known_api_call_lowers_to_structured_il_inst() {
+  use hir_js::{lower_from_source_with_kind, ExprKind, FileKind, StmtKind};
+  use std::sync::Arc;
+
+  let src = "JSON.parse(x);";
+  let lowered = lower_from_source_with_kind(FileKind::Js, src).expect("lower");
+
+  // Rewrite the first expression statement to a semantic-ops KnownApiCall.
+  let body_id = lowered.root_body();
+  let body = lowered.body(body_id).expect("root body");
+  let stmt_id = *body.root_stmts.first().expect("root stmt");
+  let stmt = &body.stmts[stmt_id.0 as usize];
+  let expr_id = match stmt.kind {
+    StmtKind::Expr(expr) => expr,
+    _ => panic!("expected expression statement"),
+  };
+
+  let ExprKind::Call(call) = &body.exprs[expr_id.0 as usize].kind else {
+    panic!("expected Call expression");
+  };
+  let args = call.args.iter().map(|arg| arg.expr).collect();
+  let api = hir_js::ApiId::from_name("JSON.parse");
+
+  let mut rewritten = lowered.clone();
+  let body_idx = *rewritten.body_index.get(&body_id).expect("root body index");
+  let mut new_body = rewritten.bodies[body_idx].as_ref().clone();
+  new_body.exprs[expr_id.0 as usize].kind = ExprKind::KnownApiCall { api, args };
+  rewritten.bodies[body_idx] = Arc::new(new_body);
+
+  let program = Program::compile_lowered(src, rewritten, TopLevelMode::Module, false)
+    .expect("compile lowered KnownApiCall");
+
+  // Assert IL uses the structured KnownApiCall instruction and preserves the ApiId.
+  let expected_api = hir_js::ApiId::from_name("JSON.parse");
+  let mut found = false;
+  for (_, block) in program.top_level.body.bblocks.all() {
+    for inst in block.iter() {
+      if let InstTyp::KnownApiCall { api } = &inst.t {
+        assert_eq!(*api, expected_api);
+        found = true;
+      }
+      for arg in inst.args.iter() {
+        if let Arg::Builtin(name) = arg {
+          assert!(
+            !name.starts_with("known_api:"),
+            "KnownApiCall should not be encoded as a stringly builtin: {name:?}"
+          );
+        }
+      }
+    }
+  }
+  assert!(
+    found,
+    "expected to find a KnownApiCall instruction, got {:?}",
+    inst_types(&program.top_level)
+  );
+}

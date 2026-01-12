@@ -1,5 +1,7 @@
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, InstTyp};
+#[cfg(feature = "semantic-ops")]
+use crate::il::inst::Const;
 use ahash::HashMap;
 use ahash::HashMapExt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,6 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub enum CallSiteCallee {
   DirectBuiltin(String),
   DirectFn(usize),
+  #[cfg(feature = "semantic-ops")]
+  KnownApi(hir_js::ApiId),
   Member { receiver: Arg, property: Arg },
   Indirect,
 }
@@ -87,38 +91,49 @@ pub fn analyze_callsites(cfg: &Cfg) -> CallSiteMap {
   let mut memo = HashMap::<u32, Option<(Arg, Arg)>>::new();
   for label in cfg.graph.labels_sorted() {
     for (inst_idx, inst) in cfg.bblocks.get(label).iter().enumerate() {
-      if inst.t != InstTyp::Call {
-        continue;
-      }
-
-      let (_tgt, callee, this_arg, _args, _spreads) = inst.as_call();
-      let callee = match callee {
-        Arg::Builtin(path) => CallSiteCallee::DirectBuiltin(path.clone()),
-        Arg::Fn(id) => CallSiteCallee::DirectFn(*id),
-        Arg::Var(v) => {
-          let mut visiting = BTreeSet::new();
-          if let Some((receiver, property)) =
-            resolve_getprop_origin(*v, &getprop_origin, &aliases, &mut memo, &mut visiting)
-          {
-            if &receiver == this_arg {
-              CallSiteCallee::Member { receiver, property }
-            } else {
-              CallSiteCallee::Indirect
+      match inst.t {
+        InstTyp::Call => {
+          let (_tgt, callee, this_arg, _args, _spreads) = inst.as_call();
+          let callee = match callee {
+            Arg::Builtin(path) => CallSiteCallee::DirectBuiltin(path.clone()),
+            Arg::Fn(id) => CallSiteCallee::DirectFn(*id),
+            Arg::Var(v) => {
+              let mut visiting = BTreeSet::new();
+              if let Some((receiver, property)) =
+                resolve_getprop_origin(*v, &getprop_origin, &aliases, &mut memo, &mut visiting)
+              {
+                if &receiver == this_arg {
+                  CallSiteCallee::Member { receiver, property }
+                } else {
+                  CallSiteCallee::Indirect
+                }
+              } else {
+                CallSiteCallee::Indirect
+              }
             }
-          } else {
-            CallSiteCallee::Indirect
-          }
-        }
-        _ => CallSiteCallee::Indirect,
-      };
+            _ => CallSiteCallee::Indirect,
+          };
 
-      callsites.insert(
-        (label, inst_idx),
-        CallSiteInfo {
-          callee,
-          this_arg: this_arg.clone(),
-        },
-      );
+          callsites.insert(
+            (label, inst_idx),
+            CallSiteInfo {
+              callee,
+              this_arg: this_arg.clone(),
+            },
+          );
+        }
+        #[cfg(feature = "semantic-ops")]
+        InstTyp::KnownApiCall { api } => {
+          callsites.insert(
+            (label, inst_idx),
+            CallSiteInfo {
+              callee: CallSiteCallee::KnownApi(api),
+              this_arg: Arg::Const(Const::Undefined),
+            },
+          );
+        }
+        _ => {}
+      }
     }
   }
 

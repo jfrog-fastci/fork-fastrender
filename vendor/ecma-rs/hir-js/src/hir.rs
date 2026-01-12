@@ -743,6 +743,7 @@ pub enum ArrayChainOp {
 
 #[cfg(feature = "semantic-ops")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ApiId(pub u64);
 
 #[cfg(feature = "semantic-ops")]

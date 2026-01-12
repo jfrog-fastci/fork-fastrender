@@ -17,6 +17,7 @@ serde = [
   "ahash/serde",
   "dashmap/serde",
   "effect-model/serde",
+  "hir-js/serde",
   "num-bigint/serde",
   "parse-js/serde",
   "typecheck-ts?/serde",
