@@ -33,7 +33,7 @@ extern "C" fn await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         let log = &*(*coro).log;
         log.lock().unwrap().push(b'B');
         runtime_native::rt_promise_resolve_legacy(
-          (*coro).header.promise,
+          PromiseRef((*coro).header.promise.cast()),
           core::ptr::null_mut::<core::ffi::c_void>(),
         );
         RtCoroStatus::Done
@@ -57,7 +57,7 @@ fn queue_microtask_then_promise_wakeup_runs_in_fifo_order() {
   let mut coro = Box::new(AwaitCoro {
     header: RtCoroutineHeader {
       resume: await_resume,
-      promise: PromiseRef::null(),
+      promise: core::ptr::null_mut(),
       state: 0,
       await_is_error: 0,
       await_value: core::ptr::null_mut(),
@@ -93,7 +93,7 @@ fn promise_wakeup_then_queue_microtask_runs_in_fifo_order() {
   let mut coro = Box::new(AwaitCoro {
     header: RtCoroutineHeader {
       resume: await_resume,
-      promise: PromiseRef::null(),
+      promise: core::ptr::null_mut(),
       state: 0,
       await_is_error: 0,
       await_value: core::ptr::null_mut(),
@@ -150,7 +150,7 @@ fn microtask_enqueues_coroutine_and_callback_in_fifo_order() {
   let mut coro = Box::new(AwaitCoro {
     header: RtCoroutineHeader {
       resume: await_resume,
-      promise: PromiseRef::null(),
+      promise: core::ptr::null_mut(),
       state: 0,
       await_is_error: 0,
       await_value: core::ptr::null_mut(),

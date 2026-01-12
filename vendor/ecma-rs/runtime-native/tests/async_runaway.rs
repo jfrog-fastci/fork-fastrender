@@ -41,7 +41,7 @@ fn async_runaway_is_detected() {
   let mut coro = Box::new(RunawayCoro {
     header: RtCoroutineHeader {
       resume: runaway_resume,
-      promise: PromiseRef::null(),
+      promise: std::ptr::null_mut(),
       state: 0,
       await_is_error: 0,
       await_value: std::ptr::null_mut(),
@@ -66,4 +66,3 @@ fn async_runaway_is_detected() {
   // use-after-free during the TestRuntimeGuard cleanup path.
   rt_async_cancel_all();
 }
-

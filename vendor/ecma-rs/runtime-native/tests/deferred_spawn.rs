@@ -56,7 +56,10 @@ extern "C" fn counter_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
   assert!(!coro.is_null());
   unsafe {
     (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
-    runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+    runtime_native::rt_promise_resolve_legacy(
+      PromiseRef((*coro).header.promise.cast()),
+      core::ptr::null_mut::<core::ffi::c_void>(),
+    );
   }
   RtCoroStatus::Done
 }
@@ -71,7 +74,7 @@ fn spawn_vs_deferred_spawn_immediacy() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: counter_resume,
-    promise: PromiseRef::null(),
+    promise: core::ptr::null_mut(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -81,7 +84,7 @@ fn spawn_vs_deferred_spawn_immediacy() {
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert_eq!(counter.load(Ordering::SeqCst), 1);
-  assert_eq!(promise, coro.header.promise);
+  assert_eq!(promise.0, coro.header.promise.cast());
 
   // `rt_async_spawn_deferred_legacy` only enqueues; no resume until `rt_async_poll_legacy`.
   let counter = AtomicUsize::new(0);
@@ -89,7 +92,7 @@ fn spawn_vs_deferred_spawn_immediacy() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: counter_resume,
-    promise: PromiseRef::null(),
+    promise: core::ptr::null_mut(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -99,7 +102,7 @@ fn spawn_vs_deferred_spawn_immediacy() {
 
   let promise = runtime_native::rt_async_spawn_deferred_legacy(&mut coro.header);
   assert_eq!(counter.load(Ordering::SeqCst), 0);
-  assert_eq!(promise, coro.header.promise);
+  assert_eq!(promise.0, coro.header.promise.cast());
 
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -129,7 +132,10 @@ extern "C" fn yield_once_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
 
         *(*coro).completed = true;
-        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        runtime_native::rt_promise_resolve_legacy(
+          PromiseRef((*coro).header.promise.cast()),
+          core::ptr::null_mut::<core::ffi::c_void>(),
+        );
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -148,7 +154,7 @@ fn deferred_spawn_registers_waiter_when_polled() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: yield_once_resume,
-    promise: PromiseRef::null(),
+    promise: core::ptr::null_mut(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -159,7 +165,7 @@ fn deferred_spawn_registers_waiter_when_polled() {
   coro.awaited = awaited;
 
   let promise = runtime_native::rt_async_spawn_deferred_legacy(&mut coro.header);
-  assert_eq!(promise, coro.header.promise);
+  assert_eq!(promise.0, coro.header.promise.cast());
   assert!(!started);
   assert!(!completed);
 

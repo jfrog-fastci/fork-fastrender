@@ -63,7 +63,10 @@ extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         completed.store(true, Ordering::SeqCst);
 
         // Resolve the coroutine's own promise to mimic JS async function semantics.
-        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        runtime_native::rt_promise_resolve_legacy(
+          PromiseRef((*coro).header.promise.cast()),
+          core::ptr::null_mut::<core::ffi::c_void>(),
+        );
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -85,7 +88,7 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: test_resume,
-    promise: PromiseRef::null(),
+    promise: core::ptr::null_mut(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),

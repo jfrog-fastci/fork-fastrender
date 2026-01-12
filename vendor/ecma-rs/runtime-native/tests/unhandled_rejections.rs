@@ -68,7 +68,7 @@ extern "C" fn propagating_await_resume(coro: *mut RtCoroutineHeader) -> RtCoroSt
       1 => {
         assert_eq!((*coro).header.await_is_error, 1);
         runtime_native::rt_promise_reject_legacy(
-          (*coro).header.promise,
+          PromiseRef((*coro).header.promise.cast()),
           (*coro).header.await_error,
         );
         RtCoroStatus::Done
@@ -90,7 +90,7 @@ fn awaited_rejection_is_not_reported_as_unhandled() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: propagating_await_resume,
-    promise: PromiseRef::null(),
+    promise: core::ptr::null_mut(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -129,7 +129,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: propagating_await_resume,
-    promise: PromiseRef::null(),
+    promise: core::ptr::null_mut(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),

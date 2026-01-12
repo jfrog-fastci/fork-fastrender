@@ -1,3 +1,4 @@
+use crate::abi::LegacyPromiseRef;
 use crate::abi::PromiseRef;
 use crate::abi::PromiseResolveInput;
 use crate::abi::PromiseResolveKind;
@@ -157,13 +158,14 @@ pub(crate) fn async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
 
   unsafe {
     if (*coro).promise.is_null() {
-      (*coro).promise = promise_new();
+      (*coro).promise = promise_new().0.cast::<runtime_native_abi::RtPromise>();
     }
   }
 
   run_coroutine(coro);
 
-  unsafe { (*coro).promise }
+  let promise: LegacyPromiseRef = unsafe { (*coro).promise };
+  PromiseRef(promise.cast())
 }
 
 pub(crate) fn async_spawn_deferred(coro: *mut RtCoroutineHeader) -> PromiseRef {
@@ -175,13 +177,14 @@ pub(crate) fn async_spawn_deferred(coro: *mut RtCoroutineHeader) -> PromiseRef {
 
   unsafe {
     if (*coro).promise.is_null() {
-      (*coro).promise = promise_new();
+      (*coro).promise = promise_new().0.cast::<runtime_native_abi::RtPromise>();
     }
   }
 
   schedule_resume_microtask(coro);
 
-  unsafe { (*coro).promise }
+  let promise: LegacyPromiseRef = unsafe { (*coro).promise };
+  PromiseRef(promise.cast())
 }
 
 pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
@@ -243,8 +246,8 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
 pub(crate) fn coro_await_value(coro: *mut RtCoroutineHeader, awaited: PromiseResolveInput, next_state: u32) {
   match awaited.kind {
     PromiseResolveKind::Promise => {
-      let p = unsafe { awaited.payload.promise };
-      coro_await(coro, p, next_state);
+      let p: LegacyPromiseRef = unsafe { awaited.payload.promise };
+      coro_await(coro, PromiseRef(p.cast()), next_state);
     }
     PromiseResolveKind::Value | PromiseResolveKind::Thenable => {
       // Await semantics are equivalent to `PromiseResolve` + `then`.

@@ -57,7 +57,7 @@ extern "C" fn resume_await_once(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
 
         (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
-        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
+        runtime_native::rt_promise_resolve_legacy(PromiseRef((*coro).header.promise.cast()), core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -76,7 +76,7 @@ fn cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: resume_await_once,
-    promise: PromiseRef::null(),
+    promise: core::ptr::null_mut(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -114,7 +114,7 @@ fn many_waiters_are_all_woken() {
     let coro = unsafe { &mut (*coro_obj).payload };
     coro.header = RtCoroutineHeader {
       resume: resume_await_once,
-      promise: PromiseRef::null(),
+      promise: core::ptr::null_mut(),
       state: 0,
       await_is_error: 0,
       await_value: core::ptr::null_mut(),

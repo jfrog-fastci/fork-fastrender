@@ -1,9 +1,8 @@
 use core::ffi::c_void;
 
 pub use runtime_native_abi::{
-  Coroutine, CoroutineId, InternedId, Microtask, PromiseRef, RtGcConfig, RtGcLimits, RtParallelForBodyFn,
-  RtShapeDescriptor, RtShapeId, RtThreadKind,
-  RtTaskFn, StringRef, TaskId,
+  Coroutine, CoroutineId, InternedId, LegacyPromiseRef, Microtask, PromiseRef, RtGcConfig, RtGcLimits,
+  RtParallelForBodyFn, RtShapeDescriptor, RtShapeId, RtThreadKind, RtTaskFn, StringRef, TaskId,
 };
 
 /// Identifier for a timer returned by `rt_set_timeout` / `rt_set_interval`.
@@ -81,7 +80,7 @@ pub struct ThenableRef {
 #[derive(Clone, Copy)]
 pub union PromiseResolvePayload {
   pub value: ValueRef,
-  pub promise: PromiseRef,
+  pub promise: LegacyPromiseRef,
   pub thenable: ThenableRef,
 }
 
@@ -103,7 +102,7 @@ impl PromiseResolveInput {
   }
 
   #[inline]
-  pub const fn promise(promise: PromiseRef) -> Self {
+  pub const fn promise(promise: LegacyPromiseRef) -> Self {
     Self {
       kind: PromiseResolveKind::Promise,
       payload: PromiseResolvePayload { promise },
@@ -174,7 +173,7 @@ pub struct RtCoroutineHeader {
   /// Entry point for resuming the coroutine.
   pub resume: extern "C" fn(*mut RtCoroutineHeader) -> RtCoroStatus,
   /// Promise returned to the caller from `rt_async_spawn`.
-  pub promise: PromiseRef,
+  pub promise: LegacyPromiseRef,
   /// Program counter/state used by the generated state machine.
   pub state: u32,
   /// Whether the awaited promise rejected (0 = fulfilled, 1 = rejected).
@@ -227,8 +226,8 @@ const _: () = {
   // `RtCoroutineHeader` layout is part of the compiler/runtime ABI contract.
   const RESUME_SIZE: usize = size_of::<extern "C" fn(*mut RtCoroutineHeader) -> RtCoroStatus>();
   const RESUME_ALIGN: usize = align_of::<extern "C" fn(*mut RtCoroutineHeader) -> RtCoroStatus>();
-  const PROMISE_SIZE: usize = size_of::<PromiseRef>();
-  const PROMISE_ALIGN: usize = align_of::<PromiseRef>();
+  const PROMISE_SIZE: usize = size_of::<LegacyPromiseRef>();
+  const PROMISE_ALIGN: usize = align_of::<LegacyPromiseRef>();
   const U32_SIZE: usize = size_of::<u32>();
   const U32_ALIGN: usize = align_of::<u32>();
   const VALUE_SIZE: usize = size_of::<ValueRef>();

@@ -1,7 +1,7 @@
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
-use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
+use crate::abi::{LegacyPromiseRef, PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
@@ -1252,8 +1252,11 @@ pub(crate) fn promise_resolve_into(dst: PromiseRef, input: PromiseResolveInput) 
       promise_resolve(dst, value);
     }
     PromiseResolveKind::Promise => {
-      let src = unsafe { input.payload.promise };
-      promise_resolve_promise(dst, src);
+      let src: LegacyPromiseRef = unsafe { input.payload.promise };
+      // `LegacyPromiseRef` points at an `RtPromise`, which embeds a `PromiseHeader` at offset 0.
+      // Convert explicitly so we don't accidentally pass a native async-ABI `PromiseRef` into legacy
+      // promise adoption paths (which cast to `RtPromise`).
+      promise_resolve_promise(dst, PromiseRef(src.cast()));
     }
     PromiseResolveKind::Thenable => {
       let thenable = unsafe { input.payload.thenable };
