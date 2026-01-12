@@ -594,6 +594,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
     # stackmaps/faultmaps payload into the standard `.data.rel.ro` output section (after rewriting
     # the *input* sections to `.data.rel.ro.llvm_*`). It anchors at `.dynamic` so the payload stays
     # covered by `PT_GNU_RELRO` without triggering lld's RELRO contiguity errors.
+    must_have_stackmaps_in_relro "${tmp}/a_policy_lld_pie"
 
     echo "[stackmaps] link: lld (pie, full RELRO) => EXPECTED OK"
     # Rust's default Linux hardening flags include full RELRO (`-z relro -z now`).

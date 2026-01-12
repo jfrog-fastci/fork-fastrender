@@ -1,13 +1,18 @@
-/* Backwards-compatibility entrypoint for `link/stackmaps.ld`.
+/* Backwards-compatibility linker script fragment for LLVM stackmaps.
  *
- * NOTE: Prefer `runtime-native/link/stackmaps.ld`. This file is kept for
- * backwards compatibility with older build scripts and external link commands.
+ * Prefer `runtime-native/link/stackmaps.ld` (this file exists for older build
+ * scripts / external link commands that refer to `runtime-native/stackmaps.ld`).
  *
- * It exports the same boundary symbols as `link/stackmaps.ld`, but the exact
- * section placement may differ; prefer `link/stackmaps.ld` for the canonical
- * lld-oriented PIE/DSO behavior.
+ * Keep this fragment semantically equivalent to `link/stackmaps.ld`.
  *
- * Keep this file as a thin wrapper so it stays in sync with the real script.
+ * Note: We intentionally duplicate the fragment instead of using:
+ *
+ *   INCLUDE link/stackmaps.ld
+ *
+ * because lld resolves `INCLUDE` paths relative to the *current working
+ * directory*, not the script's directory. That makes an `INCLUDE` wrapper
+ * brittle when users pass this script via an absolute `-T /abs/path/...` from a
+ * different cwd.
  */
 
 SECTIONS {
@@ -27,11 +32,12 @@ SECTIONS {
     __fastr_stackmaps_start = .;
     __stackmaps_start = .;
     __llvm_stackmaps_start = .;
+
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
-    /* Legacy: older LLVM/object files may still emit `.llvm_stackmaps`. */
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
+
     . = ALIGN(8);
     __stop_llvm_stackmaps = .;
     __fastr_stackmaps_end = .;
@@ -44,15 +50,11 @@ SECTIONS {
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
-    /* Legacy: older LLVM/object files may still emit `.llvm_faultmaps`. */
     KEEP(*(.llvm_faultmaps))
     KEEP(*(.llvm_faultmaps.*))
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-/* Insert immediately before `.bss` (outside the RELRO range) to avoid lld's
- * RELRO contiguity errors when injecting custom output sections.
- *
- * `.bss` is reliably present even for minimal links (lld may omit `.data` /
- * `.dynamic` entirely when empty). */
+/* Insert immediately before `.bss`: it is reliably present even for minimal
+ * links (lld may omit optional output sections like `.dynamic` when empty). */
 } INSERT BEFORE .bss;
