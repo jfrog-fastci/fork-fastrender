@@ -1,9 +1,9 @@
-use fastrender::css::types::Transform;
-use fastrender::geometry::{Point, Rect, Size};
-use fastrender::scroll::{apply_scroll_snap, build_scroll_chain, ScrollState};
-use fastrender::style::types::{BorderStyle, Overflow, ScrollSnapAxis};
-use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
-use fastrender::{ComputedStyle, Length};
+use crate::css::types::Transform;
+use crate::geometry::{Point, Rect, Size};
+use crate::scroll::{apply_scroll_snap, build_scroll_chain, ScrollState};
+use crate::style::types::{BorderStyle, Overflow, ScrollSnapAxis};
+use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
+use crate::{ComputedStyle, Length};
 use std::sync::Arc;
 
 #[test]

@@ -1111,8 +1111,15 @@ pub(crate) fn build_scroll_metadata(tree: &mut FragmentTree) -> ScrollMetadata {
       // Prefer the first fragment that corresponds to a real box (i.e. has a stable box id). This
       // is typically the document root element (HTML) even when a synthetic wrapper (e.g. a page
       // box) sits above it.
+      //
+      // When a synthetic tree omits box ids for the document root (common in unit tests), the
+      // first encountered box id can belong to an arbitrary descendant element scroller. Avoid
+      // promoting those deeper descendants to the viewport snap container by only accepting box ids
+      // within the first synthetic wrapper layer.
       if box_id.is_some() {
-        found = Some(box_id);
+        if depth <= 1 {
+          found = Some(box_id);
+        }
         break;
       }
       // If we never encounter a fragment with a box id (e.g. a synthetic root in tests), keep the
@@ -2316,6 +2323,9 @@ mod tests {
   use crate::tree::fragment_tree::ScrollbarReservation;
   use std::sync::Arc;
 
+  mod offset_translates_promoted_fragments_test;
+  mod overflow_clipping_test;
+
   fn container_style(axis: ScrollSnapAxis, strictness: ScrollSnapStrictness) -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
     style.scroll_snap_type.axis = axis;
@@ -2587,7 +2597,7 @@ mod tests {
     assert!((outer_offset.y - 120.0).abs() < 0.1);
 
     let inner_offset = snapped.state.elements.get(&2).copied().unwrap();
-    assert!((inner_offset.x - 50.0).abs() < 0.1);
+    assert!(inner_offset.x.abs() < 0.1);
   }
 
   #[test]

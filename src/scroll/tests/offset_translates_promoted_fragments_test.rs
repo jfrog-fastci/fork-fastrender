@@ -1,12 +1,12 @@
-use fastrender::geometry::{Point, Rect};
-use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::paint::display_list_renderer::DisplayListRenderer;
-use fastrender::scroll::ScrollState;
-use fastrender::style::position::Position;
-use fastrender::style::types::Overflow;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{ComputedStyle, Rgba};
+use crate::geometry::{Point, Rect};
+use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::paint::display_list_renderer::DisplayListRenderer;
+use crate::scroll::ScrollState;
+use crate::style::position::Position;
+use crate::style::types::Overflow;
+use crate::text::font_loader::FontContext;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{ComputedStyle, Rgba};
 use std::collections::HashMap;
 use std::sync::Arc;
 
