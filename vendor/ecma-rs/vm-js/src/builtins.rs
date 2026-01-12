@@ -6119,6 +6119,34 @@ fn vec_try_extend_from_slice<T: Copy>(buf: &mut Vec<T>, slice: &[T]) -> Result<(
   Ok(())
 }
 
+fn vec_try_extend_from_slice_u16_with_ticks(
+  vm: &mut Vm,
+  buf: &mut Vec<u16>,
+  slice: &[u16],
+) -> Result<(), VmError> {
+  // Budget large `O(n)` copies by extending in chunks and ticking between chunks.
+  const TICK_EVERY: usize = 4096;
+  let needed = slice
+    .len()
+    .saturating_sub(buf.capacity().saturating_sub(buf.len()));
+  if needed > 0 {
+    buf.try_reserve(needed).map_err(|_| VmError::OutOfMemory)?;
+  }
+
+  let mut start = 0usize;
+  while start < slice.len() {
+    let end = slice
+      .len()
+      .min(start.saturating_add(TICK_EVERY));
+    buf.extend_from_slice(&slice[start..end]);
+    start = end;
+    if start < slice.len() {
+      vm.tick()?;
+    }
+  }
+  Ok(())
+}
+
 fn alloc_string_from_utf8_with_ticks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -8799,6 +8827,9 @@ pub fn string_from_char_code(
   //
   // This is intentionally minimal: it covers the common case (`String.fromCharCode(97) === "a"`)
   // and is sufficient for exercising async `await` in call arguments.
+  //
+  // Pre-check heap limits so an attacker cannot force large non-GC-tracked allocations.
+  scope.ensure_can_alloc_string_units(args.len())?;
   let mut units: Vec<u16> = Vec::new();
   units
     .try_reserve_exact(args.len())
@@ -8841,11 +8872,6 @@ pub fn string_from_code_point(
   //
   // Validate each argument as a code point in [0, 0x10FFFF], then UTF-16 encode.
   let mut out: Vec<u16> = Vec::new();
-  let cap = args
-    .len()
-    .checked_mul(2)
-    .ok_or(VmError::OutOfMemory)?;
-  out.try_reserve_exact(cap).map_err(|_| VmError::OutOfMemory)?;
 
   for (i, &arg) in args.iter().enumerate() {
     if i % 1024 == 0 {
@@ -8863,12 +8889,16 @@ pub fn string_from_code_point(
 
     let cp = next as u32;
     if cp <= 0xFFFF {
+      let new_len = out.len().checked_add(1).ok_or(VmError::OutOfMemory)?;
+      scope.ensure_can_alloc_string_units(new_len)?;
       out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       out.push(cp as u16);
     } else {
       let cp = cp - 0x10000;
       let high = 0xD800 + ((cp >> 10) as u16);
       let low = 0xDC00 + ((cp & 0x3FF) as u16);
+      let new_len = out.len().checked_add(2).ok_or(VmError::OutOfMemory)?;
+      scope.ensure_can_alloc_string_units(new_len)?;
       out.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
       out.push(high);
       out.push(low);
@@ -8950,22 +8980,31 @@ pub fn string_raw(
       iter_scope.push_root(next_seg)?;
       let next_seg_s = iter_scope.to_string(vm, host, hooks, next_seg)?;
       iter_scope.push_root(Value::String(next_seg_s))?;
-      let units = {
+      let next_len = {
         let js = iter_scope.heap().get_string(next_seg_s)?;
-        js.as_code_units()
+        js.len_code_units()
       };
-      vec_try_extend_from_slice(&mut out, units)?;
+      let new_len = out
+        .len()
+        .checked_add(next_len)
+        .ok_or(VmError::OutOfMemory)?;
+      iter_scope.ensure_can_alloc_string_units(new_len)?;
+      let units = { iter_scope.heap().get_string(next_seg_s)?.as_code_units() };
+      vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, units)?;
 
       // If this is not the last literal segment, append the substitution (if any).
       if i + 1 != literal_segments {
         if let Some(sub) = substitutions.get(i) {
           let sub_s = iter_scope.to_string(vm, host, hooks, *sub)?;
           iter_scope.push_root(Value::String(sub_s))?;
-          let sub_units = {
-            let js = iter_scope.heap().get_string(sub_s)?;
-            js.as_code_units()
-          };
-          vec_try_extend_from_slice(&mut out, sub_units)?;
+          let sub_len = { iter_scope.heap().get_string(sub_s)?.len_code_units() };
+          let new_len = out
+            .len()
+            .checked_add(sub_len)
+            .ok_or(VmError::OutOfMemory)?;
+          iter_scope.ensure_can_alloc_string_units(new_len)?;
+          let sub_units = { iter_scope.heap().get_string(sub_s)?.as_code_units() };
+          vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, sub_units)?;
         }
       }
     }
@@ -9309,19 +9348,19 @@ fn string_pad_impl(
           vm.tick()?;
         }
         let take = (fill_needed - produced).min(fill_units.len());
-        out.extend_from_slice(&fill_units[..take]);
+        vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, &fill_units[..take])?;
         produced += take;
       }
-      out.extend_from_slice(s_units);
+      vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, s_units)?;
     } else {
-      out.extend_from_slice(s_units);
+      vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, s_units)?;
       let mut produced = 0usize;
       while produced < fill_needed {
         if produced % 1024 == 0 {
           vm.tick()?;
         }
         let take = (fill_needed - produced).min(fill_units.len());
-        out.extend_from_slice(&fill_units[..take]);
+        vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, &fill_units[..take])?;
         produced += take;
       }
     }
