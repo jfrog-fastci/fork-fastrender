@@ -220,6 +220,8 @@ function __exception_name(err) {
 function __is_array_like(value) {
   try {
     if (value === null || value === undefined) return false;
+    var ty = typeof value;
+    if (ty !== "object") return false;
     // Allow Arrays, NodeLists, and typed arrays (shallow `length` + index access).
     return typeof value.length === "number";
   } catch (_e) {
@@ -260,19 +262,30 @@ function assert_array_equals(actual, expected, message) {
   if (!__is_array_like(actual) || !__is_array_like(expected)) {
     throw Error(message || "assert_array_equals: arguments must be array-like");
   }
-  if (actual.length !== expected.length) {
+  var actual_length = actual.length;
+  var expected_length = expected.length;
+  if (actual_length !== actual_length || expected_length !== expected_length) {
+    throw Error(message || "assert_array_equals: invalid length");
+  }
+  if (actual_length === Infinity || expected_length === Infinity) {
+    throw Error(message || "assert_array_equals: invalid length");
+  }
+  if (actual_length < 0 || expected_length < 0) {
+    throw Error(message || "assert_array_equals: invalid length");
+  }
+  if (!__same_value(actual_length, expected_length)) {
     throw Error(
       message ||
         [
           "assert_array_equals: length mismatch (expected ",
-          expected.length,
+          expected_length,
           ", got ",
-          actual.length,
+          actual_length,
           ")",
         ].join("")
     );
   }
-  for (var i = 0; i !== expected.length; i++) {
+  for (var i = 0; i < expected_length; i++) {
     if (!__same_value(actual[i], expected[i])) {
       throw Error(
         message ||
