@@ -1227,6 +1227,7 @@ pub fn check_body(
     None,
     None,
     None,
+    None,
   )
 }
 
@@ -1257,6 +1258,7 @@ pub fn check_body_with_expander(
   no_implicit_any: bool,
   jsx_mode: Option<JsxMode>,
   jsx_import_source: Option<String>,
+  def_spans: Option<&HashMap<(FileId, TextRange), DefId>>,
   cancelled: Option<&Arc<AtomicBool>>,
 ) -> BodyCheckResult {
   if let Some(flag) = cancelled {
