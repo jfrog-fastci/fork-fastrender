@@ -75,6 +75,8 @@ mod click_events;
 mod document;
 mod document2;
 mod dynamic_script_insertion;
+mod csp_script_enforcement;
+mod script_crossorigin_cors;
 mod history_navigation;
 mod js_diagnostics;
 #[cfg(feature = "quickjs")]
