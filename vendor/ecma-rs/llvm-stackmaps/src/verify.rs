@@ -225,27 +225,27 @@ fn verify_callsites_sorted_and_unique(
 ) {
     let callsites = maps.callsites();
     for w in callsites.windows(2) {
-        let a = w[0].pc;
-        let b = w[1].pc;
-        if a > b {
+        let a = w[0];
+        let b = w[1];
+        if a.pc > b.pc {
             report.failures.push(VerificationFailure {
                 kind: "callsites_unsorted",
-                message: format!("callsites are not sorted: 0x{a:x} > 0x{b:x}"),
-                offset: None,
-                pc: Some(a),
-                function_address: None,
-                record_index: None,
+                message: format!("callsites are not sorted: 0x{:x} > 0x{:x}", a.pc, b.pc),
+                offset: record_offsets.as_ref().and_then(|v| v.get(a.record_index).copied()),
+                pc: Some(a.pc),
+                function_address: Some(a.function_address),
+                record_index: Some(a.record_index),
             });
             break;
         }
-        if a == b {
+        if a.pc == b.pc {
             report.failures.push(VerificationFailure {
                 kind: "duplicate_callsite_pc",
-                message: format!("duplicate callsite pc in index: 0x{a:x}"),
-                offset: None,
-                pc: Some(a),
-                function_address: None,
-                record_index: None,
+                message: format!("duplicate callsite pc in index: 0x{:x}", a.pc),
+                offset: record_offsets.as_ref().and_then(|v| v.get(a.record_index).copied()),
+                pc: Some(a.pc),
+                function_address: Some(a.function_address),
+                record_index: Some(a.record_index),
             });
             break;
         }
@@ -257,7 +257,7 @@ fn verify_callsites_sorted_and_unique(
             report.failures.push(VerificationFailure {
                 kind: "callsite_lookup_failed",
                 message: format!("binary search lookup failed for callsite pc 0x{:x}", c.pc),
-                offset: None,
+                offset: record_offsets.as_ref().and_then(|v| v.get(c.record_index).copied()),
                 pc: Some(c.pc),
                 function_address: Some(c.function_address),
                 record_index: Some(c.record_index),
@@ -265,9 +265,6 @@ fn verify_callsites_sorted_and_unique(
             break;
         }
     }
-
-    // Avoid unused warning when record_offsets isn't used in this function (for future expansion).
-    let _ = record_offsets;
 }
 
 fn verify_callsite_record_linkage(
