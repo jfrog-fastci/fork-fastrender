@@ -229,12 +229,16 @@ Manual verification checklist (macOS):
 
 ### Windows (best-effort titlebar theming)
 
-On Windows the browser requests `winit::window::Theme::Dark` when creating the window. On supported
-Windows versions this enables a dark titlebar that better matches the (currently dark) egui chrome.
+On Windows the browser passes a `winit::window::Theme` override to `winit` **only** when the browser
+theme is explicitly overridden (for example via `FASTR_BROWSER_THEME=dark`). When no override is set,
+the window theme is left as `None` so the native titlebar follows the system light/dark preference.
+
+On supported Windows versions, requesting `Theme::Dark` enables a dark titlebar that better matches
+the browser’s dark chrome.
 
 ### Linux (X11 + Wayland)
 
-The browser also requests `Theme::Dark` on Linux:
+The browser uses the same `Theme` behaviour on Linux (only override when explicitly requested):
 
 - **X11:** winit uses the `_GTK_THEME_VARIANT=dark` hint (best-effort; depends on the window manager).
 - **Wayland:** applies to client-side decorations (CSD) where supported by the compositor.

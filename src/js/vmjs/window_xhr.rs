@@ -1703,9 +1703,10 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       return Ok(());
     }
 
-    // The timeout path performs the fetch on a worker thread; preserve the request URL so we can
-    // still build a fallback `responseURL` when the fetcher doesn't report a final URL.
-    let request_url_for_final = request.url.clone();
+    // `request` may be moved into the fetch worker thread when enforcing timeouts; keep a copy of
+    // the original request URL so we can still compute a response URL fallback after the fetch
+    // completes.
+    let request_url_fallback = request.url.clone();
     let recv_result: Result<crate::error::Result<FetchedResource>, mpsc::RecvTimeoutError> =
       if timeout_ms > 0 {
         let (tx, rx) = mpsc::channel::<crate::error::Result<FetchedResource>>();
@@ -1777,7 +1778,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       Ok(Ok(res)) => {
         let final_url = res
           .final_url
-          .unwrap_or_else(|| request_url_for_final.clone());
+          .unwrap_or_else(|| request_url_fallback.clone());
         bytes = res.bytes;
         if bytes.len() > limits.max_response_body_bytes {
           is_error = true;

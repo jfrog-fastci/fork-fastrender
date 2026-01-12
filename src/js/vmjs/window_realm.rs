@@ -17497,7 +17497,8 @@ fn alloc_intersection_observer_entries_array(
   }
   for (idx, entry) in entries.iter().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
-    let obj = alloc_intersection_observer_entry_object_from_dom(vm, scope, global, document_obj, dom, entry)?;
+    let obj =
+      alloc_intersection_observer_entry_object_from_dom(vm, scope, global, document_obj, dom, entry)?;
     scope.define_property(array, key, data_desc(Value::Object(obj)))?;
   }
   let length_key = alloc_key(scope, "length")?;
@@ -18050,7 +18051,8 @@ fn alloc_resize_observer_entries_array(
   }
   for (idx, entry) in entries.iter().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
-    let obj = alloc_resize_observer_entry_object_from_dom(vm, scope, global, document_obj, dom, entry)?;
+    let obj =
+      alloc_resize_observer_entry_object_from_dom(vm, scope, global, document_obj, dom, entry)?;
     scope.define_property(array, key, data_desc(Value::Object(obj)))?;
   }
   let length_key = alloc_key(scope, "length")?;

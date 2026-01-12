@@ -6291,8 +6291,7 @@ impl App {
           // Typeahead uses `WindowEvent::ReceivedCharacter` (so we get the actual typed character
           // for the current keyboard layout). Do not dismiss the dropdown for plain alphanumeric key
           // presses without modifiers.
-          let has_command_modifiers =
-            self.modifiers.ctrl() || self.modifiers.logo() || self.modifiers.alt();
+          let has_command_modifiers = self.modifiers.ctrl() || self.modifiers.logo() || self.modifiers.alt();
           if !has_command_modifiers
             && matches!(
               key,
@@ -7464,7 +7463,6 @@ impl App {
         .max(TRAFFIC_LIGHTS_LEFT_INSET_POINTS);
       ctx.set_style(style);
     }
-
     let zoom_before = self.browser_state.active_tab().map(|t| t.zoom);
     // -----------------------------------------------------------------------------
     // Top menu bar (browser-style)
@@ -7612,7 +7610,8 @@ impl App {
       ctx.set_style(original_style);
     }
 
-    if self.browser_state.chrome.address_bar_has_focus && self.browser_state.chrome.address_bar_editing {
+    if self.browser_state.chrome.address_bar_has_focus && self.browser_state.chrome.address_bar_editing
+    {
       if let Ok(fastrender::ui::OmniboxInputResolution::Search { query, .. }) =
         fastrender::ui::resolve_omnibox_input(&self.browser_state.chrome.address_bar_text)
       {
@@ -7625,7 +7624,6 @@ impl App {
         }
       }
     }
-
     session_dirty |= zoom_before != zoom_after;
     session_dirty |= appearance_before != appearance_after;
     session_dirty |= self.handle_chrome_actions(chrome_actions);
