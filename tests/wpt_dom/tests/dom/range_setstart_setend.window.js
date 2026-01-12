@@ -130,14 +130,14 @@ test(() => {
     "START_TO_START should return 1 when this.start is after source.start"
   );
   assert_equals(
-    r1.compareBoundaryPoints(Range.END_TO_START, r2),
+    r1.compareBoundaryPoints(Range.START_TO_END, r2),
     0,
-    "END_TO_START compares this.end to source.start"
+    "START_TO_END compares this.end to source.start"
   );
   assert_equals(
-    r1.compareBoundaryPoints(Range.START_TO_END, r2),
+    r1.compareBoundaryPoints(Range.END_TO_START, r2),
     -1,
-    "START_TO_END compares this.start to source.end"
+    "END_TO_START compares this.start to source.end"
   );
   assert_equals(
     r2.compareBoundaryPoints(Range.END_TO_END, r1),
@@ -145,4 +145,3 @@ test(() => {
     "END_TO_END compares this.end to source.end"
   );
 }, "Range.compareBoundaryPoints constants and ordering");
-
