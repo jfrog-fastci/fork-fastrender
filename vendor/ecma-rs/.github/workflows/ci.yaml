@@ -241,6 +241,87 @@ jobs:
           name: typecheck-conformance-mini
           path: typecheck-conformance-mini.json
 
+  typecheck-ts-bench-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    env:
+      # `typecheck-ts` uses rayon internally. Keep the bench harness bounded on GitHub-hosted runners.
+      RAYON_NUM_THREADS: 2
+      TYPECHECK_TS_BENCH_JSON: "1"
+      # Increase scale to shrink iteration counts (the benches divide by this value).
+      TYPECHECK_TS_BENCH_ITERS_SCALE: "100"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: typecheck-ts bench smoke (JSON + determinism)
+        run: |
+          set -euo pipefail
+
+          mkdir -p reports
+
+          timeout -k 10 900 cargo bench -p typecheck-ts-bench --bench pipeline --locked --jobs 2 > reports/typecheck-ts-bench-run1.json
+          timeout -k 10 900 cargo bench -p typecheck-ts-bench --bench pipeline --locked --jobs 2 > reports/typecheck-ts-bench-run2.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          def normalize(path: str) -> None:
+            data = json.loads(Path(path).read_text())
+            for bench in data.get("benches", []):
+              # Timing fields naturally vary between runs; strip them so we can
+              # compare the logical shape of the bench output.
+              bench.pop("total_nanos", None)
+
+              details = bench.get("details")
+              if not isinstance(details, dict):
+                continue
+
+              metrics = details.get("metrics")
+              if isinstance(metrics, dict):
+                for key in list(metrics.keys()):
+                  if key.endswith("_ms") or key.endswith("_ns") or key.endswith("_nanos"):
+                    metrics.pop(key, None)
+                if not metrics:
+                  details.pop("metrics", None)
+
+              counters = details.get("counters")
+              if isinstance(counters, dict) and not counters:
+                details.pop("counters", None)
+
+              if not details:
+                bench.pop("details", None)
+
+            Path(path.replace(".json", ".normalized.json")).write_text(
+              json.dumps(data, sort_keys=True, indent=2) + "\n"
+            )
+
+          normalize("reports/typecheck-ts-bench-run1.json")
+          normalize("reports/typecheck-ts-bench-run2.json")
+          PY
+
+          if ! diff -u \
+            reports/typecheck-ts-bench-run1.normalized.json \
+            reports/typecheck-ts-bench-run2.normalized.json \
+            > reports/typecheck-ts-bench.normalized.diff; then
+            cat reports/typecheck-ts-bench.normalized.diff >&2
+            exit 1
+          fi
+
+      - name: Upload benchmark smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-ts-bench-smoke
+          path: reports
+
   difftsc:
     runs-on: ubuntu-24.04
     needs: test
