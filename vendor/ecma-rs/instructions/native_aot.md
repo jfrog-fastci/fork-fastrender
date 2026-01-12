@@ -2572,6 +2572,16 @@ Closure Inlining:
   - Inline closure body, replace captured vars with actual values
 ```
 
+Implementation note (current `types-ts-interned` native layout model):
+
+- `TypeKind::Callable` lowers to a **GC-managed pointer** (`PtrKind::GcObject`) to a canonical
+  16-byte closure payload:
+  - `fn_ptr` @ offset 0: opaque code pointer (non-GC)
+  - `env` @ offset 8: GC-managed pointer (`PtrKind::GcAny`, traceable as a GC slot)
+- Object types with call/construct signatures (and callable-like intersections such as
+  `((x: T) => U) & { foo: string }`) use the same `fn_ptr` + `env` header as a prefix before
+  regular properties so "callables with properties" are representable.
+
 ---
 
 ## Phase 5: Runtime
