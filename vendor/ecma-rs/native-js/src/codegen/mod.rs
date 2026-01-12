@@ -1404,54 +1404,8 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
   }
 
   fn dbg_value_locals_from_slots(&self, span: TextRange) {
-    let Some(debug) = self.cg.debug.as_ref() else {
-      return;
-    };
-    if !debug.optimized() {
-      return;
-    }
-    // Emit `dbg.value` only for currently visible locals (per lexical scopes in `self.env`), to
-    // avoid producing debug loads for out-of-scope variables.
-    //
-    // NOTE: Keep emission order deterministic by sorting on `NameId`. The underlying `HashMap`
-    // iteration order is intentionally randomized and would otherwise produce unstable IR.
-    let mut seen_names: HashSet<NameId> = HashSet::new();
-    let mut visible: Vec<(NameId, BindingId)> = Vec::new();
-    for scope in self.env.scopes.iter().rev() {
-      for (&name, &binding) in scope.iter() {
-        if seen_names.insert(name) {
-          visible.push((name, binding));
-        }
-      }
-    }
-    visible.sort_by_key(|(name, _binding)| *name);
-
-    for (_name, binding) in visible {
-      if !self.debug_vars.contains_key(&binding) {
-        continue;
-      }
-      let Some(slot) = self.locals.get(&binding).copied() else {
-        continue;
-      };
-      let loaded = match slot.kind {
-        TsAbiKind::Number => NativeValue::Number(
-          self
-            .builder
-            .build_load(self.cg.f64_ty, slot.ptr, "dbg.load")
-            .expect("failed to build dbg load")
-            .into_float_value(),
-        ),
-        TsAbiKind::Boolean => NativeValue::Boolean(
-          self
-            .builder
-            .build_load(self.cg.i1_ty, slot.ptr, "dbg.load")
-            .expect("failed to build dbg load")
-            .into_int_value(),
-        ),
-        TsAbiKind::Void => continue,
-      };
-      self.dbg_value(binding, loaded, span);
-    }
+    // NOTE: Intentionally omitted. See `dbg_declare_param` for rationale.
+    let _ = span;
   }
 
   fn with_body<R>(
