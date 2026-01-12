@@ -1,13 +1,13 @@
 use base64::Engine as _;
-use fastrender::api::FastRender;
-use fastrender::geometry::{Point, Rect};
-use fastrender::image_loader::ImageCache;
-use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::paint::display_list_renderer::DisplayListRenderer;
-use fastrender::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
-use fastrender::scroll::ScrollState;
-use fastrender::style::color::Rgba;
-use fastrender::{DisplayItem, DisplayListOptimizer, FontContext, PaintParallelism};
+use crate::api::FastRender;
+use crate::geometry::{Point, Rect};
+use crate::image_loader::ImageCache;
+use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::paint::display_list_renderer::DisplayListRenderer;
+use crate::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
+use crate::scroll::ScrollState;
+use crate::style::color::Rgba;
+use crate::{DisplayItem, DisplayListOptimizer, FontContext, PaintParallelism};
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
 

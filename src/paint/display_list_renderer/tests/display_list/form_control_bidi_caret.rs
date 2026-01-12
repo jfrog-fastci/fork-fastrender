@@ -1,9 +1,9 @@
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::dom::{enumerate_dom_ids, DomNode};
-use fastrender::interaction::state::TextEditPaintState;
-use fastrender::interaction::InteractionState;
-use fastrender::text::caret::CaretAffinity;
-use fastrender::{BrowserDocument, FastRender, FastRenderConfig, RenderOptions};
+use crate::debug::runtime::RuntimeToggles;
+use crate::dom::{enumerate_dom_ids, DomNode};
+use crate::interaction::state::TextEditPaintState;
+use crate::interaction::InteractionState;
+use crate::text::caret::CaretAffinity;
+use crate::{BrowserDocument, FastRender, FastRenderConfig, RenderOptions};
 use std::collections::HashMap;
 use tiny_skia::Pixmap;
 

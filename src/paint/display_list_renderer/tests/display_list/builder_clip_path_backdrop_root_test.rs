@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use fastrender::paint::display_list::{ClipItem, ClipShape, DisplayItem};
-use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::style::types::{BasicShape, ClipPath, FillRule};
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::Rect;
+use crate::paint::display_list::{ClipItem, ClipShape, DisplayItem};
+use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::style::types::{BasicShape, ClipPath, FillRule};
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::fragment_tree::FragmentNode;
+use crate::Rect;
 
 #[test]
 fn clip_path_establishes_backdrop_root_even_when_resolved_none() {

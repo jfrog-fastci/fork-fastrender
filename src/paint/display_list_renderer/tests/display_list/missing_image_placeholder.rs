@@ -1,6 +1,6 @@
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
-use fastrender::{FastRender, FastRenderConfig};
+use crate::debug::runtime::RuntimeToggles;
+use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+use crate::{FastRender, FastRenderConfig};
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, RgbaImage};
 use std::collections::HashMap;
@@ -46,15 +46,15 @@ impl MapFetcher {
 }
 
 impl ResourceFetcher for MapFetcher {
-  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+  fn fetch(&self, url: &str) -> crate::Result<FetchedResource> {
     self
       .entries
       .get(url)
       .cloned()
-      .ok_or_else(|| fastrender::Error::Other(format!("unexpected fetch: {url}")))
+      .ok_or_else(|| crate::Error::Other(format!("unexpected fetch: {url}")))
   }
 
-  fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> crate::Result<FetchedResource> {
     // Ensure tests fail loudly if the request is not for an image.
     assert!(
       matches!(
@@ -206,13 +206,13 @@ fn display_list_img_marked_placeholder_png_renders_ua_broken_image_icon() {
   let bytes = encode_single_pixel_png([0, 0, 0, 0]);
   assert_ne!(
     bytes.as_slice(),
-    fastrender::resource::offline_placeholder_png_bytes(),
+    crate::resource::offline_placeholder_png_bytes(),
     "test requires non-canonical placeholder bytes"
   );
 
   let mut res = FetchedResource::new(
     bytes,
-    Some(fastrender::resource::offline_placeholder_png_content_type().to_string()),
+    Some(crate::resource::offline_placeholder_png_content_type().to_string()),
   );
   res.status = Some(200);
   res.final_url = Some(url.to_string());
@@ -253,7 +253,7 @@ fn display_list_img_unmarked_transparent_png_does_not_render_ua_broken_image_ico
   let bytes = encode_single_pixel_png([0, 0, 0, 0]);
   assert_ne!(
     bytes.as_slice(),
-    fastrender::resource::offline_placeholder_png_bytes(),
+    crate::resource::offline_placeholder_png_bytes(),
     "test requires non-canonical placeholder bytes"
   );
 

@@ -1,4 +1,4 @@
-//! Display list tests consolidated from tests/display_list_*.rs
+//! Display list backend regression suite.
 
 mod background_clip_text_rtl;
 mod background_tiling_viewport;

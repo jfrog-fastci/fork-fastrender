@@ -1,6 +1,6 @@
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::{DiagnosticsLevel, DisplayItem, FastRender, RenderArtifactRequest, RenderOptions};
+use crate::debug::runtime::RuntimeToggles;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::{DiagnosticsLevel, DisplayItem, FastRender, RenderArtifactRequest, RenderOptions};
 use std::collections::HashMap;
 
 #[test]

@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose, Engine as _};
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::{DiagnosticsLevel, FastRender, RenderOptions};
+use crate::debug::runtime::RuntimeToggles;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::{DiagnosticsLevel, FastRender, RenderOptions};
 use std::collections::HashMap;
 
 fn run_with_large_stack(f: impl FnOnce() + Send + 'static) {
@@ -119,7 +119,10 @@ fn display_list_outline_cache_reused_across_font_sizes() {
     // would (correctly) make outlines differ between sizes. Disable optical sizing so both sizes
     // share the same variation coordinates and can reuse the cached outline.
     let font_base64 =
-      general_purpose::STANDARD.encode(include_bytes!("../fonts/RobotoFlex-VF.ttf"));
+      general_purpose::STANDARD.encode(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fonts/RobotoFlex-VF.ttf"
+      )));
     let html = format!(
       "<style>@font-face{{font-family:\"RobotoFlex\";src:url(\"data:font/ttf;base64,{font_base64}\") \
        format(\"truetype\");}}body{{margin:0;font-family:\"RobotoFlex\";font-optical-sizing:none;}}</style>\
@@ -161,7 +164,10 @@ fn display_list_reports_color_glyph_rasters() {
     )]));
 
     let font_base64 =
-      general_purpose::STANDARD.encode(include_bytes!("../fonts/ColorBitmapTest.ttf"));
+      general_purpose::STANDARD.encode(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fonts/ColorBitmapTest.ttf"
+      )));
     let html = format!(
       r#"
         <style>

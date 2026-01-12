@@ -1,6 +1,6 @@
-use fastrender::api::FastRenderConfig;
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{DiagnosticsLevel, FastRender, RenderOptions, Rgba};
+use crate::api::FastRenderConfig;
+use crate::debug::runtime::RuntimeToggles;
+use crate::{DiagnosticsLevel, FastRender, RenderOptions, Rgba};
 use std::collections::HashMap;
 
 fn run_with_large_stack(f: impl FnOnce() + Send + 'static) {

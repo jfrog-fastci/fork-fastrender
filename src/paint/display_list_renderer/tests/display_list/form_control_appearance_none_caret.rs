@@ -1,7 +1,7 @@
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::dom::{enumerate_dom_ids, DomNode};
-use fastrender::interaction::InteractionState;
-use fastrender::{
+use crate::debug::runtime::RuntimeToggles;
+use crate::dom::{enumerate_dom_ids, DomNode};
+use crate::interaction::InteractionState;
+use crate::{
   BrowserDocument, FastRender, FastRenderConfig, RenderArtifactRequest, RenderOptions,
 };
 use std::collections::HashMap;

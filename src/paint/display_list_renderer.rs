@@ -21382,6 +21382,8 @@ mod tests {
   use std::sync::Arc;
   use std::time::Duration;
 
+  mod display_list;
+
   #[test]
   fn rgba_bytes_rejects_overflow() {
     assert_eq!(rgba_bytes(2, 3), Some(24));

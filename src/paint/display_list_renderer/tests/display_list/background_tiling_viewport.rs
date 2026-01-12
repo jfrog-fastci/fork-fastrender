@@ -1,5 +1,5 @@
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{DiagnosticsLevel, FastRender, RenderOptions};
+use crate::debug::runtime::RuntimeToggles;
+use crate::{DiagnosticsLevel, FastRender, RenderOptions};
 use std::collections::HashMap;
 
 const DATA_URL_1X1_PNG: &str =
