@@ -123,6 +123,7 @@ include = [
   "rt_weak_get",
   "rt_weak_remove",
   "rt_string_concat",
+  "rt_string_free",
   "rt_string_intern",
   "rt_string_pin_interned",
   "rt_parallel_spawn",

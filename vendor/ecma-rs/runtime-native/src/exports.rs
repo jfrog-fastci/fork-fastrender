@@ -555,8 +555,20 @@ pub extern "C" fn rt_gc_set_config(cfg: *const crate::abi::RtGcConfig) -> bool {
     if (cfg as usize) % core::mem::align_of::<crate::abi::RtGcConfig>() != 0 {
       trap::rt_trap_invalid_arg("rt_gc_set_config: cfg was misaligned");
     }
-    let config = crate::gc::config::HeapConfig::try_from(*cfg)
-      .unwrap_or_else(|msg| trap::rt_trap_invalid_arg(msg));
+    // Avoid reading the full `RtGcConfig` object by value: it contains padding bytes, and C callers
+    // are not required to initialize padding. Read fields individually instead.
+    let config = crate::gc::config::HeapConfig {
+      nursery_size_bytes: core::ptr::addr_of!((*cfg).nursery_size_bytes).read(),
+      los_threshold_bytes: core::ptr::addr_of!((*cfg).los_threshold_bytes).read(),
+      minor_gc_nursery_used_percent: core::ptr::addr_of!((*cfg).minor_gc_nursery_used_percent).read(),
+      major_gc_old_bytes_threshold: core::ptr::addr_of!((*cfg).major_gc_old_bytes_threshold).read(),
+      major_gc_old_blocks_threshold: core::ptr::addr_of!((*cfg).major_gc_old_blocks_threshold).read(),
+      major_gc_external_bytes_threshold: core::ptr::addr_of!((*cfg).major_gc_external_bytes_threshold).read(),
+      promote_after_minor_survivals: core::ptr::addr_of!((*cfg).promote_after_minor_survivals).read(),
+    };
+    if let Err(msg) = config.validate() {
+      trap::rt_trap_invalid_arg(msg);
+    }
     crate::rt_alloc::try_set_global_heap_config(config)
   })
 }
@@ -574,8 +586,13 @@ pub extern "C" fn rt_gc_set_limits(limits: *const crate::abi::RtGcLimits) -> boo
     if (limits as usize) % core::mem::align_of::<crate::abi::RtGcLimits>() != 0 {
       trap::rt_trap_invalid_arg("rt_gc_set_limits: limits was misaligned");
     }
-    let limits = crate::gc::config::HeapLimits::try_from(*limits)
-      .unwrap_or_else(|msg| trap::rt_trap_invalid_arg(msg));
+    let limits = crate::gc::config::HeapLimits {
+      max_heap_bytes: core::ptr::addr_of!((*limits).max_heap_bytes).read(),
+      max_total_bytes: core::ptr::addr_of!((*limits).max_total_bytes).read(),
+    };
+    if let Err(msg) = limits.validate() {
+      trap::rt_trap_invalid_arg(msg);
+    }
     crate::rt_alloc::try_set_global_heap_limits(limits)
   })
 }

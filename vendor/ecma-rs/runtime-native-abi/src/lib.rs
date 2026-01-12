@@ -657,6 +657,7 @@ extern "C" {
 
   // Strings
   pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
+  pub fn rt_string_free(s: StringRef);
   pub fn rt_stringref_free(s: StringRef);
   pub fn rt_string_new_utf8(bytes: *const u8, len: usize) -> GcPtr;
   pub fn rt_string_concat_gc(a: GcPtr, b: GcPtr) -> GcPtr;
@@ -1241,6 +1242,7 @@ mod tests {
       "rt_weak_get(",
       "rt_weak_remove(",
       "rt_string_concat(",
+      "rt_string_free(",
       "rt_string_intern(",
       "rt_string_pin_interned(",
       "rt_parallel_spawn(",
