@@ -12,16 +12,27 @@ fn string_code_points() {
   let value = rt
     .exec_script(
       r#"
-      var poop = "\uD83D\uDCA9";
-      String.fromCodePoint(0x61) === "a" &&
-      String.fromCodePoint(0x1F4A9) === poop &&
-      String.fromCodePoint(0xD800).charCodeAt(0) === 0xD800 &&
-      String.fromCodePoint(NaN).charCodeAt(0) === 0 &&
-      (function () {
-        try { String.fromCodePoint(0x110000); return false; }
-        catch (e) { return e.name === "RangeError"; }
-      })() &&
-      (function () {
+       var poop = "\uD83D\uDCA9";
+       String.fromCodePoint(0x61) === "a" &&
+       String.fromCodePoint(0x1F4A9) === poop &&
+       String.fromCodePoint(0xD800).charCodeAt(0) === 0xD800 &&
+       (function () {
+         try { String.fromCodePoint(NaN); return false; }
+         catch (e) { return e.name === "RangeError"; }
+       })() &&
+       (function () {
+         try { String.fromCodePoint(undefined); return false; }
+         catch (e) { return e.name === "RangeError"; }
+       })() &&
+       (function () {
+         try { String.fromCodePoint(3.14); return false; }
+         catch (e) { return e.name === "RangeError"; }
+       })() &&
+       (function () {
+         try { String.fromCodePoint(0x110000); return false; }
+         catch (e) { return e.name === "RangeError"; }
+       })() &&
+       (function () {
         try { String.fromCodePoint(Infinity); return false; }
         catch (e) { return e.name === "RangeError"; }
       })() &&

@@ -7767,9 +7767,11 @@ pub fn string_from_code_point(
     if i % 1024 == 0 {
       vm.tick()?;
     }
-    let next = scope.to_integer_or_infinity(vm, host, hooks, arg)?;
-
-    if !next.is_finite() || next < 0.0 || next > 0x10FFFF as f64 {
+    let next = scope.to_number(vm, host, hooks, arg)?;
+    // `nextCP` must be an *integral* number and within Unicode scalar range.
+    //
+    // `String.fromCodePoint(undefined)` must throw because `ToNumber(undefined) === NaN`.
+    if !next.is_finite() || next.trunc() != next || next < 0.0 || next > 0x10FFFF as f64 {
       let intr = require_intrinsics(vm)?;
       let err = crate::new_range_error(scope, intr, "Invalid code point")?;
       return Err(VmError::Throw(err));
