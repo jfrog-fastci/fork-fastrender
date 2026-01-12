@@ -233,3 +233,11 @@ pub fn perf_criterion() -> Criterion {
     .measurement_time(Duration::from_secs(1))
     .configure_from_args()
 }
+
+// -----------------------------------------------------------------------------
+// Bench safety helpers
+// -----------------------------------------------------------------------------
+pub use fastrender::system::bench_limits::{
+  bench_limits, bench_print_config_once, bench_verbose, env_byte_limit, env_flag, env_usize,
+  parse_byte_size, read_fixture_bytes_skip, read_fixture_bytes_truncate, BenchLimits,
+};

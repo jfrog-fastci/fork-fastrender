@@ -3,6 +3,8 @@
 //! Keep this module dependency-free (std only) so binaries and `xtask` can share logic without
 //! duplicating platform quirks.
 
+pub mod bench_limits;
+
 use std::path::Path;
 use std::sync::OnceLock;
 
