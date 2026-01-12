@@ -24,7 +24,7 @@ Run `bash scripts/cargo_agent.sh xtask js wpt-dom --help` for the full CLI. Comm
 - `--suite <curated|smoke|all>`
   - Select which preset suite to run.
   - `curated` (default) runs the green subset (excludes harness bring-up intentional failures).
-    - Filter: `dom/**,domparsing/**,event*/**,url/**`
+    - Filter: `dom/**,domparsing/**,html/**,event*/**,url/**`
 - `--wpt-root <DIR>`
   - Defaults to `tests/wpt_dom`.
 - `--manifest <PATH>`

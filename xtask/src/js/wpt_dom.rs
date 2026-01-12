@@ -33,7 +33,7 @@ impl WptDomBackend {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum WptDomSuite {
-  /// Run the curated DOM + event-loop subset (defaults to `dom/**,domparsing/**,event*/**,url/**`).
+  /// Run the curated DOM + HTML + event-loop subset (defaults to `dom/**,domparsing/**,html/**,event*/**,url/**`).
   Curated,
   /// Run the harness bring-up smoke subset (`smoke/**`).
   Smoke,
@@ -46,7 +46,7 @@ impl WptDomSuite {
     match self {
       // The smoke subset contains intentional failures for harness validation; keep it out of the
       // default "curated" run so `xtask js wpt-dom` stays green.
-      Self::Curated => Some("dom/**,domparsing/**,event*/**,url/**"),
+      Self::Curated => Some("dom/**,domparsing/**,html/**,event*/**,url/**"),
       Self::Smoke => Some("smoke/**"),
       Self::All => None,
     }

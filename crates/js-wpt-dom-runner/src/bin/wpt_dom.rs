@@ -31,13 +31,13 @@ impl SuitePreset {
     match self {
       // Curated suite selection depends on which backends are available:
       // - QuickJS-only builds do not expose the full DOM/EventTarget surface yet, so they run only
-      //   the `event_loop/**` + `url/**` coverage.
-      // - vm-js builds run the full curated corpus (`dom/**` + `domparsing/**` + `event_loop/**` + `events/**` + `url/**`).
+      //   the `event_loop/**` + `url/**` + `html/**` coverage.
+      // - vm-js builds run the full curated corpus (`dom/**` + `domparsing/**` + `html/**` + `event_loop/**` + `events/**` + `url/**`).
       SuitePreset::Curated => {
         if cfg!(feature = "vmjs") {
-          Some("dom/**,domparsing/**,event*/**,url/**")
+          Some("dom/**,domparsing/**,html/**,event*/**,url/**")
         } else {
-          Some("event_loop/**,url/**")
+          Some("event_loop/**,url/**,html/**")
         }
       }
       SuitePreset::Smoke => Some("smoke/**"),

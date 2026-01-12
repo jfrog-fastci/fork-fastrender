@@ -51,6 +51,8 @@ tests/wpt_dom/
       *.window.js
     domparsing/            # Curated DOMParsing tests (innerHTML/outerHTML)
       *.window.js
+    html/                  # Curated HTML element + form control tests (HTMLElement, HTMLInputElement, etc.)
+      *.window.js
     event_loop/            # Curated event loop ordering tests
       *.window.js
     events/                # Curated EventTarget/Event semantics tests
