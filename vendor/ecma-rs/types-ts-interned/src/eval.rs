@@ -2441,7 +2441,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         // In TypeScript, arrays and tuples always have a `length` property.
         // Our indexed-access evaluator already special-cases `length`, so include it
         // in `keyof`/mapped-key enumeration as well.
-        let length = self.store.intern_name("length");
+        let length = self.store.intern_name_ref("length");
         keys.push(Key::Literal(PropKey::String(length)));
         for (idx, elem) in elems.iter().enumerate() {
           keys.push(Key::Literal(PropKey::Number(idx as i64)));
@@ -2460,7 +2460,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         KeySet::known(keys, &self.store)
       }
       TypeKind::Array { .. } => {
-        let length = self.store.intern_name("length");
+        let length = self.store.intern_name_ref("length");
         KeySet::known(
           vec![Key::Literal(PropKey::String(length)), Key::Number],
           &self.store,

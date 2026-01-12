@@ -56,7 +56,7 @@ fn union_with_conditional_pointers_is_tagged_union_trace() {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
 
-  let name_x = store.intern_name("x");
+  let name_x = store.intern_name_ref("x");
   let mut shape = Shape::new();
   shape.properties.push(Property {
     key: PropKey::String(name_x),
@@ -135,7 +135,7 @@ fn gc_trace_is_deterministic_across_stores() {
     let store = TypeStore::new();
     let prim = store.primitive_ids();
 
-    let name_x = store.intern_name("x");
+    let name_x = store.intern_name_ref("x");
     let mut shape = Shape::new();
     shape.properties.push(Property {
       key: PropKey::String(name_x),

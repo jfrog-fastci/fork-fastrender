@@ -2033,8 +2033,8 @@ fn template_literal_number_atom_is_constrained() {
   let primitives = store.primitive_ids();
   let ctx = RelateCtx::new(store.clone(), default_options());
 
-  let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name("100%")));
-  let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo%")));
+  let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("100%")));
+  let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo%")));
 
   // TypeScript treats `${number}` as constrained to number-like strings rather
   // than a wildcard (unlike `${string}`).
@@ -2051,7 +2051,7 @@ fn template_literal_number_atom_is_constrained() {
 
   // We choose to reject leading zeros for multi-digit decimals, which matches
   // JS/TS decimal literal grammar under strict mode.
-  let leading_zero = store.intern_type(TypeKind::StringLiteral(store.intern_name("01%")));
+  let leading_zero = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("01%")));
   assert!(!ctx.is_assignable(leading_zero, template));
 }
 
@@ -2061,8 +2061,8 @@ fn template_literal_boolean_atom_matches_true_or_false() {
   let primitives = store.primitive_ids();
   let ctx = RelateCtx::new(store.clone(), default_options());
 
-  let yes = store.intern_type(TypeKind::StringLiteral(store.intern_name("true")));
-  let nope = store.intern_type(TypeKind::StringLiteral(store.intern_name("nope")));
+  let yes = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("true")));
+  let nope = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("nope")));
 
   let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
     head: "".into(),
@@ -2082,8 +2082,8 @@ fn template_literal_bigint_atom_is_constrained() {
   let primitives = store.primitive_ids();
   let ctx = RelateCtx::new(store.clone(), default_options());
 
-  let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name("10")));
-  let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name("10n")));
+  let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("10")));
+  let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("10n")));
 
   let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
     head: "".into(),

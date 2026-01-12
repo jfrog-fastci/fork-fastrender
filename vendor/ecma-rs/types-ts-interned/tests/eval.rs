@@ -3911,7 +3911,7 @@ fn keyof_array_includes_length_and_number() {
   let keyof_array = store.intern_type(TypeKind::KeyOf(array_ty));
   let result = store.evaluate(keyof_array);
 
-  let length_key = store.intern_type(TypeKind::StringLiteral(store.intern_name("length")));
+  let length_key = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("length")));
   let TypeKind::Union(keys) = store.type_kind(result) else {
     panic!("expected union, got {:?}", store.type_kind(result));
   };
@@ -3942,11 +3942,11 @@ fn keyof_tuple_includes_length_numeric_keys_and_canonical_string_indices() {
   let keyof_tuple = store.intern_type(TypeKind::KeyOf(tuple_ty));
   let result = store.evaluate(keyof_tuple);
 
-  let length_key = store.intern_type(TypeKind::StringLiteral(store.intern_name("length")));
+  let length_key = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("length")));
   let idx_0_num = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(0.0)));
   let idx_1_num = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0)));
-  let idx_0_str = store.intern_type(TypeKind::StringLiteral(store.intern_name("0")));
-  let idx_1_str = store.intern_type(TypeKind::StringLiteral(store.intern_name("1")));
+  let idx_0_str = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("0")));
+  let idx_1_str = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("1")));
 
   let TypeKind::Union(keys) = store.type_kind(result) else {
     panic!("expected union, got {:?}", store.type_kind(result));

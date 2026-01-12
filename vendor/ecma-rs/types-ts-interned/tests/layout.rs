@@ -329,7 +329,7 @@ fn callable_object_shapes_include_closure_header_fields() {
 
   let sig = store.intern_signature(Signature::new(Vec::new(), primitives.number));
 
-  let name_x = store.intern_name("x");
+  let name_x = store.intern_name_ref("x");
   let mut shape = Shape::new();
   shape.call_signatures.push(sig);
   shape.properties.push(Property {
@@ -384,8 +384,8 @@ fn callable_object_layout_is_deterministic_across_stores() {
 
     let sig = store.intern_signature(Signature::new(Vec::new(), primitives.number));
 
-    let name_a = store.intern_name("a");
-    let name_b = store.intern_name("b");
+    let name_a = store.intern_name_ref("a");
+    let name_b = store.intern_name_ref("b");
     let mut shape = Shape::new();
     shape.call_signatures.push(sig);
     // Intentionally unsorted insertion order.
@@ -473,7 +473,7 @@ fn ref_types_can_lower_to_concrete_object_layouts_via_expansion() {
     args: Vec::new(),
   });
 
-  let name = store.intern_name("x");
+  let name = store.intern_name_ref("x");
   let mut shape = Shape::new();
   shape.properties.push(Property {
     key: PropKey::String(name),
@@ -529,7 +529,7 @@ fn gc_ptr_offsets_include_pointers_common_to_all_union_variants() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name = store.intern_name("x");
+  let name = store.intern_name_ref("x");
   let mut shape = Shape::new();
   shape.properties.push(Property {
     key: PropKey::String(name),
