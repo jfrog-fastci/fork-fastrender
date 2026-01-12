@@ -602,6 +602,10 @@ unsafe fn scan_forbidden_constexprs(
   visited: &mut HashSet<LLVMValueRef>,
   violations: &mut Vec<LintViolation>,
 ) {
+  // `llvm.dbg.*` intrinsics pass `metadata` operands through the normal LLVM IR operand list via
+  // `MetadataAsValue`. These are not `User`s (do not have operands), so calling `LLVMGetNumOperands`
+  // / `LLVMGetOperand` on them can segfault. Treat metadata values as leaves for the purposes of
+  // constant-expression scanning.
   if value.is_null()
     || visited.contains(&value)
     || LLVMGetValueKind(value) == LLVMValueKind::LLVMMetadataAsValueValueKind
@@ -609,16 +613,6 @@ unsafe fn scan_forbidden_constexprs(
     return;
   }
   visited.insert(value);
-
-  // DWARF debug intrinsics (e.g. `llvm.dbg.declare`) use `metadata` arguments, which surface in the
-  // C API as `MetadataAsValue`. These are not normal SSA values and do not support operand
-  // traversal via `LLVMGetNumOperands`/`LLVMGetOperand` (and can segfault if treated as such).
-  //
-  // The GC pointer discipline lint is only concerned with actual pointer/integer SSA values, so
-  // skip metadata operands entirely.
-  if LLVMGetValueKind(value) == LLVMValueKind::LLVMMetadataAsValueValueKind {
-    return;
-  }
 
   if !LLVMIsAConstantExpr(value).is_null() {
     let opcode = LLVMGetConstOpcode(value);

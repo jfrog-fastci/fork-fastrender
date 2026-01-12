@@ -116,8 +116,8 @@ enum TsAbiKind {
   Void,
   /// GC-managed pointer value (`ptr addrspace(1)`).
   ///
-  /// Used for local/global bindings of array/tuple types in the checked pipeline.
-  /// (Functions may not take/return this kind yet.)
+  /// Used for local/global bindings of GC-managed types (arrays/tuples/objects) in the checked
+  /// pipeline. (Functions may not take/return this kind yet.)
   GcPtr,
 }
 
@@ -126,7 +126,10 @@ impl TsAbiKind {
     match kind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
-      TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. } => Some(Self::GcPtr),
+      TypeKindSummary::Object
+      | TypeKindSummary::EmptyObject
+      | TypeKindSummary::Array { .. }
+      | TypeKindSummary::Tuple { .. } => Some(Self::GcPtr),
       TypeKindSummary::Void | TypeKindSummary::Undefined | TypeKindSummary::Never => Some(Self::Void),
       _ => None,
     }
@@ -305,6 +308,8 @@ struct ProgramCodegen<'ctx, 'p> {
   resolver: Resolver<'p>,
   exported_defs: HashSet<DefId>,
   globals: HashMap<DefId, GlobalSlot<'ctx>>,
+  /// Globals that store GC-managed pointers (`ptr addrspace(1)`) and must be registered as global
+  /// roots with the runtime.
   gc_root_globals: Vec<GlobalValue<'ctx>>,
   functions: HashMap<DefId, FunctionValue<'ctx>>,
   function_sigs: HashMap<DefId, TsFunctionSigKind>,
@@ -572,7 +577,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       let ty = match p {
         TsAbiKind::Number => self.f64_ty.into(),
         TsAbiKind::Boolean => self.i1_ty.into(),
-        TsAbiKind::GcPtr => unreachable!("gc pointers are not a valid parameter ABI kind"),
+        TsAbiKind::GcPtr => unreachable!("GC pointer parameters are not supported by native-js ABI yet"),
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
       };
       params.push(ty);
@@ -581,8 +586,8 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let fn_ty = match sig.ret {
       TsAbiKind::Number => self.f64_ty.fn_type(&params, false),
       TsAbiKind::Boolean => self.i1_ty.fn_type(&params, false),
+      TsAbiKind::GcPtr => unreachable!("GC pointer returns are not supported by native-js ABI yet"),
       TsAbiKind::Void => self.context.void_type().fn_type(&params, false),
-      TsAbiKind::GcPtr => unreachable!("gc pointers are not a valid return ABI kind"),
     };
 
     let linkage = if self.exported_defs.contains(&def) {
@@ -830,7 +835,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           cg.builder.build_store(slot, v).expect("store param");
           NativeValue::Boolean(v)
         }
-        TsAbiKind::GcPtr => unreachable!("gc pointers are not a valid parameter ABI kind"),
+        TsAbiKind::GcPtr => unreachable!("GC pointer parameters are not supported by native-js ABI yet"),
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
       };
 
@@ -935,22 +940,6 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       .map_err(|e| vec![diagnostics::ice(ice_span, format!("failed to build call to rt_thread_init: {e}"))])?;
     crate::stack_walking::mark_call_notail(call);
 
-    // Register all GC pointer globals as roots so the runtime can trace/relocate them.
-    //
-    // (The native runtime does not scan arbitrary global memory; roots must be registered
-    // explicitly.)
-    for global in &self.gc_root_globals {
-      let call = builder
-        .build_call(rt_global_root_register, &[global.as_pointer_value().into()], "rt.global_root_register")
-        .map_err(|e| {
-          vec![diagnostics::ice(
-            ice_span,
-            format!("failed to build call to rt_global_root_register: {e}"),
-          )]
-        })?;
-      crate::stack_walking::mark_call_notail(call);
-    }
-
     // Shape table registration hook.
     //
     // Future work: once the native-js backend emits object shapes, it should also emit a
@@ -959,6 +948,30 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     //
     // For now, native-js does not emit any shapes (so registration would be a no-op) and the
     // runtime rejects `len == 0`, so we intentionally skip calling `rt_register_shape_table`.
+
+    // Register global root slots for any module globals that store GC pointers. This must happen
+    // after thread init and before module initializers run so that any GC that occurs after global
+    // initialization can trace/relocate those references safely.
+    if !self.gc_root_globals.is_empty() {
+      let mut roots = self.gc_root_globals.clone();
+      roots.sort_by(|a, b| a.get_name().to_string_lossy().cmp(&b.get_name().to_string_lossy()));
+
+      for global in roots {
+        let slot_ptr = global.as_pointer_value();
+        let call = builder
+          .build_call(rt_global_root_register, &[slot_ptr.into()], "rt.global_root_register")
+          .map_err(|e| {
+            vec![diagnostics::ice(
+              ice_span,
+              format!(
+                "failed to build call to rt_global_root_register for `{}`: {e}",
+                global.get_name().to_string_lossy()
+              ),
+            )]
+          })?;
+        crate::stack_walking::mark_call_notail(call);
+      }
+    }
 
     for file in init_order {
       if let Some(init) = self.file_inits.get(file).copied() {
@@ -1045,7 +1058,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         let Some(abi_kind) = TsAbiKind::from_value_type_kind(&ts_kind) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
             format!(
-              "unsupported global type for native-js ABI (expected number|boolean): {}",
+              "unsupported global type for native-js ABI (expected number|boolean|gc pointer): {}",
               self.program.display_type(ts_ty)
             ),
             span,
@@ -1114,6 +1127,9 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         typecheck_ts::ImportTarget::File(target_file) => {
           let target = self.resolve_export_def(target_file, import.original.as_str(), span)?;
           let slot = self.ensure_global_var(target, span)?;
+          // Memoize the import binding so later loads/stores can reuse the resolved global slot
+          // without re-traversing the export chain.
+          self.globals.insert(def, slot);
           Ok(slot)
         }
         _ => Err(vec![codes::HIR_CODEGEN_UNRESOLVED_IMPORT_BINDING.error(
@@ -1730,10 +1746,8 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .builder
         .build_float_compare(FloatPredicate::ONE, v, self.cg.f64_ty.const_float(0.0), "truthy")
         .expect("failed to build truthy compare"),
-      NativeValue::GcPtr(v) => {
-        let is_null = self.builder.build_is_null(v, "isnull").expect("build isnull");
-        self.builder.build_not(is_null, "truthy").expect("build not")
-      }
+      // Objects are truthy; we treat null pointers as falsy.
+      NativeValue::GcPtr(v) => self.builder.build_is_not_null(v, "truthy").expect("isnotnull"),
       // `undefined` is falsy in JS; we treat `void` expressions similarly when used in a truthy
       // context.
       NativeValue::Void => self.cg.i1_ty.const_int(0, false),
@@ -2293,7 +2307,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Void => {
         if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `GcPtr && GcPtr`",
+            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `gcptr && gcptr`",
             span,
           )]);
         }
@@ -2302,7 +2316,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Number => {
         let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `GcPtr && GcPtr`",
+            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `gcptr && gcptr`",
             span,
           )]);
         };
@@ -2316,7 +2330,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Boolean => {
         let (NativeValue::Boolean(lhs), NativeValue::Boolean(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`&&` currently only supports `void && void`, `number && number`, or `boolean && boolean`",
+            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `gcptr && gcptr`",
             span,
           )]);
         };
@@ -2330,7 +2344,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::GcPtr => {
         let (NativeValue::GcPtr(lhs), NativeValue::GcPtr(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `GcPtr && GcPtr`",
+            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `gcptr && gcptr`",
             span,
           )]);
         };
@@ -2387,7 +2401,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Void => {
         if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `GcPtr || GcPtr`",
+            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `gcptr || gcptr`",
             span,
           )]);
         }
@@ -2396,7 +2410,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Number => {
         let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `GcPtr || GcPtr`",
+            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `gcptr || gcptr`",
             span,
           )]);
         };
@@ -2410,7 +2424,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Boolean => {
         let (NativeValue::Boolean(lhs), NativeValue::Boolean(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`||` currently only supports `void || void`, `number || number`, or `boolean || boolean`",
+            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `gcptr || gcptr`",
             span,
           )]);
         };
@@ -2424,7 +2438,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::GcPtr => {
         let (NativeValue::GcPtr(lhs), NativeValue::GcPtr(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `GcPtr || GcPtr`",
+            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `gcptr || gcptr`",
             span,
           )]);
         };
@@ -2965,10 +2979,22 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     };
     let _dbg = self.debug_location_guard(span.range);
     match kind {
-      ExprKind::TypeAssertion { expr, .. }
-      | ExprKind::NonNull { expr }
-      | ExprKind::Instantiation { expr, .. }
-      | ExprKind::Satisfies { expr, .. } => self.codegen_expr(expr),
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::Satisfies { expr: inner, .. } => {
+        // Type assertions are rejected in the checked strict-subset pipeline, but the HIR codegen
+        // backend is also used by tests that bypass validation. If the asserted type is a
+        // GC-managed pointer, materialize a null `ptr addrspace(1)` placeholder value.
+        let expected_kind = self.expr_abi_kind(expr, span)?;
+        if matches!(expected_kind, TsAbiKind::GcPtr) {
+          let _ = self.codegen_expr(inner)?;
+          let ptr = crate::llvm::gc::gc_ptr_type(self.cg.context).const_null();
+          Ok(NativeValue::GcPtr(ptr))
+        } else {
+          self.codegen_expr(inner)
+        }
+      }
 
       ExprKind::Literal(Literal::Number(raw)) => {
         let Some(number) = JsNumber::from_literal(&raw).map(|n| n.0) else {
@@ -3881,7 +3907,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .expect("non-void call should return a value")
               .into_int_value(),
           )),
-          TsAbiKind::GcPtr => unreachable!("gc pointers are not a valid return ABI kind"),
+          TsAbiKind::GcPtr => unreachable!("GC pointer returns are not supported by native-js ABI yet"),
         }
       }
 

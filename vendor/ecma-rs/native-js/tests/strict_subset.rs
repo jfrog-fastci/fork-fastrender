@@ -452,6 +452,21 @@ fn rejects_nested_function_declaration() {
 }
 
 #[test]
+fn rejects_void_module_global() {
+  let err = validate(
+    r#"
+      function f(): void {
+      }
+      const x = f();
+      x;
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0010");
+}
+
+#[test]
 fn accepts_basic_numeric_function() {
   let ok = validate(
     r#"

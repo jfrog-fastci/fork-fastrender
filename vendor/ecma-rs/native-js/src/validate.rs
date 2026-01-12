@@ -750,6 +750,40 @@ fn validate_body_types(
   let mut nullish_cache: HashMap<typecheck_ts::TypeId, bool> = HashMap::new();
   let mut nullish_visiting: HashSet<typecheck_ts::TypeId> = HashSet::new();
 
+  // Module globals of type `void`/`undefined`/`never` are not representable as storage locations in
+  // the current native-js codegen (they have no value), but TypeScript can still infer/allow such
+  // bindings (e.g. `const x = f();` where `f(): void`).
+  //
+  // Reject them here so the validator stays in sync with codegen's global handling.
+  for stmt in hir.stmts.iter() {
+    let StmtKind::Var(decl) = &stmt.kind else {
+      continue;
+    };
+    for declarator in decl.declarators.iter() {
+      let Some(binding) = file_resolver.resolve_pat_ident(hir, declarator.pat) else {
+        continue;
+      };
+      let BindingId::Def(def) = binding else {
+        continue;
+      };
+      let ty = program.type_of_def_interned(def);
+      let kind = program.type_kind(ty);
+       if matches!(kind, TypeKindSummary::Void | TypeKindSummary::Undefined | TypeKindSummary::Never) {
+         let pat_span = hir
+           .pats
+           .get(declarator.pat.0 as usize)
+           .map(|p| p.span)
+           .unwrap_or(stmt.span);
+         out.push(
+           codes::STRICT_SUBSET_UNSUPPORTED_TYPE.error(
+             "module-level variables must not have type `void`/`undefined`/`never` in the native-js strict subset",
+             Span::new(file, pat_span),
+           ),
+         );
+       }
+    }
+  }
+
   // The strict subset validator generally rejects callable/reference types. However, direct calls such as `foo(1)`
   // require the callee identifier to have a callable type, and in the direct-call lowering path we never materialize
   // the function value (codegen resolves the callee as a symbol).
