@@ -5,15 +5,15 @@ use runtime_native::StringRef;
 fn string_concat_roundtrip_and_free() {
   let _rt = TestRuntimeGuard::new();
 
-  let a = b"hello";
-  let b = b" world";
+  let a = b"foo";
+  let b = b"bar";
 
   let s = runtime_native::rt_string_concat(a.as_ptr(), a.len(), b.as_ptr(), b.len());
   assert_eq!(s.len, a.len() + b.len());
 
   unsafe {
     let bytes = std::slice::from_raw_parts(s.ptr, s.len);
-    assert_eq!(bytes, b"hello world");
+    assert_eq!(bytes, b"foobar");
   }
 
   runtime_native::rt_string_free(s);
@@ -36,4 +36,3 @@ fn string_concat_roundtrip_and_free() {
   assert_eq!(empty.len, 0);
   runtime_native::rt_string_free(empty);
 }
-

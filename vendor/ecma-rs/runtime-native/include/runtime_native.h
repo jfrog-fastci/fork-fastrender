@@ -649,12 +649,12 @@ void rt_thread_set_parked(bool parked);
 // -----------------------------------------------------------------------------
 // Concatenate two UTF-8 byte strings into a new allocation.
 //
-// Ownership: the returned `StringRef` is allocated by the runtime and must be freed via
+// Ownership: the returned `StringRef` is allocated by the runtime and must be freed exactly once via
 // `rt_string_free` (or the compatibility alias `rt_stringref_free`) when no longer needed.
 StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);
 // Free an owned `StringRef` allocated by `rt_string_concat` or `rt_string_to_owned_utf8`.
 //
-// This is a no-op for empty string references (`len == 0`).
+// This is a no-op for empty string references (`len == 0`), including `{ptr=NULL, len=0}`.
 void rt_string_free(StringRef s);
 // Free an owned `StringRef` allocated by `rt_string_concat` or `rt_string_to_owned_utf8`.
 //
@@ -688,6 +688,8 @@ void rt_string_pin_interned(InternedId id);
 //   this returns false.
 // - On success, `out->ptr..out->ptr+out->len` points to non-GC memory owned by the interner and is
 //   stable for the lifetime of the process.
+// - The returned `StringRef` is borrowed and must NOT be freed (do not call `rt_string_free` /
+//   `rt_stringref_free` on it).
 // - Returns false if `id` is invalid, was reclaimed, or is not pinned.
 //
 // Contract:
