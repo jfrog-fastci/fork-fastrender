@@ -14,7 +14,7 @@
     "layout": 32.02408493680297,
     "paint": 63.04741721933085
   },
-  "notes": "",
+  "notes": "Visually good. Remaining pixel diffs vs Chrome are overwhelmingly text rasterization/hinting differences (tiny-skia outline fill; no FreeType hinting/subpixel AA) plus minor per-pixel differences from blur/box-shadow and image/gradient sampling; no missing paint primitives identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 157550,
