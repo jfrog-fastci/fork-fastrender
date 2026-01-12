@@ -9216,6 +9216,46 @@ mod tests {
   }
 
   #[test]
+  fn browser_tab_rust_dom_event_dispatch_invokes_window_onstorage() -> Result<()> {
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <script>
+            globalThis.__seen = null;
+            window.onstorage = (e) => { globalThis.__seen = e.type; };
+          </script>
+        </body>
+      </html>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(html, RenderOptions::default())?;
+
+    let mut event = Event::new(
+      "storage",
+      EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let _default_not_prevented = tab.host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Window,
+      event,
+      &mut tab.event_loop,
+    )?;
+
+    let realm = tab
+      .host
+      .executor
+      .window_realm_mut()
+      .expect("expected vm-js WindowRealm");
+    let seen = realm
+      .exec_script("globalThis.__seen")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert_eq!(value_to_string(realm, seen), "storage");
+    Ok(())
+  }
+
+  #[test]
   fn js_document_write_inserts_html_before_following_markup_and_affects_render() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let executor = WindowRealmExecutor::new(Rc::clone(&log))?;
