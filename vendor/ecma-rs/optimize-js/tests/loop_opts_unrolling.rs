@@ -284,3 +284,83 @@ fn strength_reduction_rewrites_uses_on_loop_exit() {
     "expected exit use to be rewritten to derived phi %{sr_phi}, got {exit:?}"
   );
 }
+
+#[test]
+fn strength_reduction_is_disabled_outside_safe_integer_range() {
+  // Ensure the strength-reduction rewrite is conservative about JS numeric semantics and does not
+  // rewrite `i * const` when the result can exceed the safe integer range (2^53 - 1).
+  //
+  // Trip count is 16 (> MAX_FULL_UNROLL_TRIP_COUNT) so the loop is not unrolled.
+  let init_i = 4_503_599_627_370_496.0; // 2^52
+  let bound_i = 4_503_599_627_370_512.0; // init + 16
+
+  let mut graph = CfgGraph::default();
+  graph.connect(0, 1);
+  graph.connect(1, 2);
+  graph.connect(1, 3);
+  graph.connect(2, 1);
+  graph.ensure_label(3);
+
+  let mut bblocks = CfgBBlocks::default();
+  bblocks.add(0, vec![]);
+
+  // i = phi { 0: init_i, 2: i_next }
+  let mut phi = Inst::phi_empty(0);
+  phi.insert_phi(0, Arg::Const(Const::Num(JsNumber(init_i))));
+  phi.insert_phi(2, Arg::Var(2));
+
+  // t = i * 3  (may exceed safe integer range)
+  // cond = i < bound_i
+  bblocks.add(
+    1,
+    vec![
+      phi,
+      Inst::bin(
+        4,
+        Arg::Var(0),
+        BinOp::Mul,
+        Arg::Const(Const::Num(JsNumber(3.0))),
+      ),
+      Inst::bin(
+        1,
+        Arg::Var(0),
+        BinOp::Lt,
+        Arg::Const(Const::Num(JsNumber(bound_i))),
+      ),
+      Inst::cond_goto(Arg::Var(1), 2, 3),
+    ],
+  );
+
+  // i_next = i + 1
+  bblocks.add(
+    2,
+    vec![Inst::bin(
+      2,
+      Arg::Var(0),
+      BinOp::Add,
+      Arg::Const(Const::Num(JsNumber(1.0))),
+    )],
+  );
+
+  bblocks.add(3, vec![]);
+
+  let mut cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let pass = optpass_loop_opts(&mut cfg);
+  assert!(
+    !pass.changed,
+    "expected loop opts to avoid strength reduction outside safe integer range, got {pass:?}"
+  );
+
+  let header = cfg.bblocks.get(1);
+  assert!(
+    header
+      .iter()
+      .any(|inst| inst.t == optimize_js::il::inst::InstTyp::Bin && inst.bin_op == BinOp::Mul),
+    "expected Mul to remain in the loop header, got {header:?}"
+  );
+}

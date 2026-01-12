@@ -9,6 +9,7 @@ use parse_js::num::JsNumber;
 use std::collections::BTreeSet;
 
 const MAX_FULL_UNROLL_TRIP_COUNT: usize = 8;
+const MAX_SAFE_INT_I128: i128 = 9_007_199_254_740_991; // 2^53 - 1
 
 fn next_unused_label(cfg: &Cfg) -> u32 {
   let max = cfg.graph.labels().max().unwrap_or(cfg.entry);
@@ -132,6 +133,55 @@ fn invert_cmp(op: BinOp) -> Option<BinOp> {
     BinOp::Geq => Some(BinOp::Lt),
     _ => None,
   }
+}
+
+fn safe_strength_reduction_mul_range(init: i64, trip_count: u64, step: i64, k: i64) -> bool {
+  // For a counted loop, the header is evaluated `trip_count + 1` times:
+  //   i = init + step * iter, for iter = 0..=trip_count
+  //
+  // Strength reduction inserts a derived induction phi in the header and rewrites all uses,
+  // including those on the loop-exit edge. Therefore, we must ensure `i` and `i * k` stay within
+  // JS' safe integer range for the *entire* header evaluation range (including the final exit
+  // check).
+  let init_i = init as i128;
+  let step_i = step as i128;
+  let Some(delta) = step_i.checked_mul(trip_count as i128) else {
+    return false;
+  };
+  let Some(final_i) = init_i.checked_add(delta) else {
+    return false;
+  };
+
+  let (min_i, max_i) = if init_i <= final_i {
+    (init_i, final_i)
+  } else {
+    (final_i, init_i)
+  };
+
+  let Some(abs_min_i) = min_i.checked_abs() else {
+    return false;
+  };
+  let Some(abs_max_i) = max_i.checked_abs() else {
+    return false;
+  };
+  if abs_min_i.max(abs_max_i) > MAX_SAFE_INT_I128 {
+    return false;
+  }
+
+  let k_i = k as i128;
+  let Some(first_mul) = init_i.checked_mul(k_i) else {
+    return false;
+  };
+  let Some(last_mul) = final_i.checked_mul(k_i) else {
+    return false;
+  };
+  let Some(abs_first_mul) = first_mul.checked_abs() else {
+    return false;
+  };
+  let Some(abs_last_mul) = last_mul.checked_abs() else {
+    return false;
+  };
+  abs_first_mul.max(abs_last_mul) <= MAX_SAFE_INT_I128
 }
 
 #[derive(Debug, Clone)]
@@ -427,6 +477,136 @@ fn infer_counted_loop(
   })
 }
 
+fn infer_trip_count_for_strength_reduction(
+  cfg: &Cfg,
+  header: u32,
+  loop_nodes: &HashSet<u32>,
+  range: &RangeResult,
+) -> Option<(InductionVarInfo, i64, u64)> {
+  let induction = find_induction_var(cfg, header, loop_nodes)?;
+
+  let preheader = induction.preheader;
+  let latch = induction.latch;
+
+  // Require a simple latch (single successor back to the header). This also ensures there is no
+  // explicit terminator instruction (e.g. CondGoto) that we'd have to insert before.
+  if cfg.graph.children_sorted(latch) != vec![header] {
+    return None;
+  }
+
+  let header_bb = cfg.bblocks.get(header);
+  let term = header_bb.last()?;
+  if term.t != InstTyp::CondGoto {
+    return None;
+  }
+  let (cond, t, f) = term.as_cond_goto();
+  let inside = loop_nodes.contains(&t) as u8 + loop_nodes.contains(&f) as u8;
+  if inside != 1 {
+    return None;
+  }
+  let (_body, _exit, continue_when_true) = if loop_nodes.contains(&t) {
+    (t, f, true)
+  } else {
+    (f, t, false)
+  };
+
+  // Locate comparison defining the branch condition.
+  let cond_var = cond.maybe_var()?;
+  let cmp_inst = header_bb
+    .iter()
+    .rev()
+    .skip(1) // skip CondGoto itself
+    .find(|inst| inst.tgts.first() == Some(&cond_var))?;
+  if cmp_inst.t != InstTyp::Bin {
+    return None;
+  }
+  let (_cmp_tgt, left, op, right) = cmp_inst.as_bin();
+  let op = match op {
+    BinOp::Lt | BinOp::Leq | BinOp::Gt | BinOp::Geq => op,
+    _ => return None,
+  };
+
+  // Canonicalize to `i <op> bound`.
+  let (mut cmp_op, bound_arg) = match (left, right) {
+    (Arg::Var(v), bound) if *v == induction.var => (op, bound.clone()),
+    (bound, Arg::Var(v)) if *v == induction.var => {
+      let flipped = match op {
+        BinOp::Lt => BinOp::Gt,
+        BinOp::Leq => BinOp::Geq,
+        BinOp::Gt => BinOp::Lt,
+        BinOp::Geq => BinOp::Leq,
+        _ => return None,
+      };
+      (flipped, bound.clone())
+    }
+    _ => return None,
+  };
+
+  if !continue_when_true {
+    cmp_op = invert_cmp(cmp_op)?;
+  }
+
+  // The range analysis provides singleton values when they are provably constant.
+  let init_i64 = arg_i64_on_edge(range, preheader, header, &induction.init)?;
+  let bound_i64 = arg_i64_at_entry(range, header, &bound_arg)?;
+  let step = induction.step;
+
+  let trip_count_i128: i128 = match cmp_op {
+    BinOp::Lt => {
+      if step <= 0 {
+        return None;
+      }
+      if (init_i64 as i128) >= (bound_i64 as i128) {
+        0
+      } else {
+        let diff = (bound_i64 as i128) - (init_i64 as i128);
+        let step = step as i128;
+        (diff + step - 1) / step
+      }
+    }
+    BinOp::Leq => {
+      if step <= 0 {
+        return None;
+      }
+      if (init_i64 as i128) > (bound_i64 as i128) {
+        0
+      } else {
+        let diff = (bound_i64 as i128) - (init_i64 as i128);
+        let step = step as i128;
+        diff / step + 1
+      }
+    }
+    BinOp::Gt => {
+      if step >= 0 {
+        return None;
+      }
+      if (init_i64 as i128) <= (bound_i64 as i128) {
+        0
+      } else {
+        let diff = (init_i64 as i128) - (bound_i64 as i128);
+        let step = (-step) as i128;
+        (diff + step - 1) / step
+      }
+    }
+    BinOp::Geq => {
+      if step >= 0 {
+        return None;
+      }
+      if (init_i64 as i128) < (bound_i64 as i128) {
+        0
+      } else {
+        let diff = (init_i64 as i128) - (bound_i64 as i128);
+        let step = (-step) as i128;
+        diff / step + 1
+      }
+    }
+    _ => return None,
+  };
+
+  let trip_count: u64 = trip_count_i128.try_into().ok()?;
+  Some((induction, init_i64, trip_count))
+}
+
 fn remap_meta_vars(
   meta: &mut crate::il::meta::InstMeta,
   var_map: &HashMap<u32, u32>,
@@ -622,9 +802,17 @@ fn strength_reduce_mul_by_const(
   cfg: &mut Cfg,
   loop_nodes: &HashSet<u32>,
   induction: &InductionVarInfo,
+  init_i64: i64,
+  trip_count: u64,
   next_var: &mut u32,
 ) -> PassResult {
   let mut result = PassResult::default();
+
+  // Avoid strength reduction when the loop is trivially empty or executes at most once. (When the
+  // trip count is small, full unrolling is generally a better option.)
+  if trip_count < 2 {
+    return result;
+  }
 
   let preheader = induction.preheader;
   let header = induction.header;
@@ -668,9 +856,13 @@ fn strength_reduce_mul_by_const(
   let mut replace_vars = HashMap::<u32, u32>::new();
 
   for &k in multipliers.iter() {
-    let Some(k_const) = i64_to_const(k) else {
+    // Only apply strength reduction when we can prove the multiplication stays within JS' safe
+    // integer range for all iterations. This avoids changing floating-point rounding behavior for
+    // very large loops (e.g. values near/above 2^53).
+    if !safe_strength_reduction_mul_range(init_i64, trip_count, induction.step, k) {
       continue;
     };
+
     let step_k_i128 = (induction.step as i128) * (k as i128);
     let Ok(step_k_i64) = i64::try_from(step_k_i128) else {
       continue;
@@ -684,23 +876,15 @@ fn strength_reduce_mul_by_const(
     let sr_phi = alloc_var(next_var);
     let sr_next = alloc_var(next_var);
 
-    // Preheader init: sr_init = init * k
-    let init_inst = match &induction.init {
-      Arg::Const(c) => {
-        let Some(init_i) = maybe_i64_const(c) else {
-          continue;
-        };
-        let init_k_i128 = (init_i as i128) * (k as i128);
-        let Ok(init_k_i64) = i64::try_from(init_k_i128) else {
-          continue;
-        };
-        let Some(init_k_const) = i64_to_const(init_k_i64) else {
-          continue;
-        };
-        Inst::var_assign(sr_init, Arg::Const(init_k_const))
-      }
-      other => Inst::bin(sr_init, other.clone(), BinOp::Mul, Arg::Const(k_const.clone())),
+    // Preheader init: sr_init = init_i64 * k (constant).
+    let init_k_i128 = (init_i64 as i128) * (k as i128);
+    let Ok(init_k_i64) = i64::try_from(init_k_i128) else {
+      continue;
     };
+    let Some(init_k_const) = i64_to_const(init_k_i64) else {
+      continue;
+    };
+    let init_inst = Inst::var_assign(sr_init, Arg::Const(init_k_const));
 
     cfg.bblocks.get_mut(preheader).push(init_inst);
 
@@ -888,12 +1072,14 @@ pub fn optpass_loop_opts(cfg: &mut Cfg) -> PassResult {
     // Strength reduction for remaining loops (does not change CFG).
     for header in headers.iter().copied() {
       let loop_nodes = loops.get(&header).expect("loop header missing from map");
-      let Some(induction) = find_induction_var(cfg, header, loop_nodes) else {
+      let Some((induction, init_i64, trip_count)) =
+        infer_trip_count_for_strength_reduction(cfg, header, loop_nodes, &range)
+      else {
         continue;
       };
 
-      // Only handle loops with a canonical preheader as detected by `find_induction_var`.
-      let sr = strength_reduce_mul_by_const(cfg, loop_nodes, &induction, &mut next_var);
+      let sr =
+        strength_reduce_mul_by_const(cfg, loop_nodes, &induction, init_i64, trip_count, &mut next_var);
       if sr.changed {
         result.merge(sr);
       }
