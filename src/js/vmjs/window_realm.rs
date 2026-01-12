@@ -5948,6 +5948,12 @@ fn get_or_create_node_wrapper(
   };
   scope.push_root(Value::Object(wrapper))?;
 
+  let is_html_element = dom
+    .map(|dom| {
+      DomInterface::primary_for_node_kind(&dom.node(node_id).kind).implements(DomInterface::HTMLElement)
+    })
+    .unwrap_or(false);
+
   let element_query_selector = {
     let key = alloc_key(scope, ELEMENT_QUERY_SELECTOR_KEY)?;
     scope
@@ -6611,75 +6617,77 @@ fn get_or_create_node_wrapper(
     }
   }
 
-  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (title_get, title_set) {
-    let key = alloc_key(scope, "title")?;
-    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
-      scope.define_property(
-        wrapper,
-        key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(get),
-            set: Value::Object(set),
+  if is_html_element {
+    if let (Some(Value::Object(get)), Some(Value::Object(set))) = (title_get, title_set) {
+      let key = alloc_key(scope, "title")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Object(set),
+            },
           },
-        },
-      )?;
+        )?;
+      }
     }
-  }
 
-  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (lang_get, lang_set) {
-    let key = alloc_key(scope, "lang")?;
-    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
-      scope.define_property(
-        wrapper,
-        key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(get),
-            set: Value::Object(set),
+    if let (Some(Value::Object(get)), Some(Value::Object(set))) = (lang_get, lang_set) {
+      let key = alloc_key(scope, "lang")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Object(set),
+            },
           },
-        },
-      )?;
+        )?;
+      }
     }
-  }
 
-  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (dir_get, dir_set) {
-    let key = alloc_key(scope, "dir")?;
-    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
-      scope.define_property(
-        wrapper,
-        key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(get),
-            set: Value::Object(set),
+    if let (Some(Value::Object(get)), Some(Value::Object(set))) = (dir_get, dir_set) {
+      let key = alloc_key(scope, "dir")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Object(set),
+            },
           },
-        },
-      )?;
+        )?;
+      }
     }
-  }
 
-  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (hidden_get, hidden_set) {
-    let key = alloc_key(scope, "hidden")?;
-    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
-      scope.define_property(
-        wrapper,
-        key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(get),
-            set: Value::Object(set),
+    if let (Some(Value::Object(get)), Some(Value::Object(set))) = (hidden_get, hidden_set) {
+      let key = alloc_key(scope, "hidden")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Object(set),
+            },
           },
-        },
-      )?;
+        )?;
+      }
     }
   }
 
@@ -20720,6 +20728,336 @@ fn dom_ptr_for_document_id_mut(
   Some(dom_ptr)
 }
 
+fn html_element_handle_from_this(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  this: Value,
+) -> Result<(ElementHandle, NonNull<dom2::Document>), VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let handle = element_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let iface = DomInterface::primary_for_node_kind(&dom.node(handle.node_id).kind);
+  if !iface.implements(DomInterface::HTMLElement) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  Ok((handle, dom_ptr))
+}
+
+fn html_element_title_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (handle, dom_ptr) = html_element_handle_from_this(vm, scope, host, this)?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  Ok(Value::String(
+    scope.alloc_string(dom.element_title(handle.node_id))?,
+  ))
+}
+
+fn html_element_title_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (handle, _) = html_element_handle_from_this(vm, scope, host, this)?;
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  if is_host_document_id(vm, handle.document_id) {
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      let node_id = handle.node_id;
+      let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+        match dom.set_element_title(node_id, &new_value) {
+          Ok(changed) => {
+            let needs_microtask = dom.take_mutation_observer_microtask_needed();
+            ((Ok(changed), needs_microtask), changed)
+          }
+          Err(err) => ((Err(err), false), false),
+        }
+      });
+      let _changed = result.map_err(|_| VmError::TypeError("failed to set HTMLElement.title"))?;
+      maybe_queue_mutation_observer_microtask(
+        vm,
+        scope,
+        host,
+        hooks,
+        handle.document_obj,
+        needs_microtask,
+      )?;
+      return Ok(Value::Undefined);
+    }
+  }
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  dom
+    .set_element_title(handle.node_id, &new_value)
+    .map_err(|_| VmError::TypeError("failed to set HTMLElement.title"))?;
+  let needs_microtask = dom.take_mutation_observer_microtask_needed();
+  if !is_host_document_id(vm, handle.document_id) {
+    // Owned documents: skip MutationObserver microtask scheduling.
+    return Ok(Value::Undefined);
+  }
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
+fn html_element_lang_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (handle, dom_ptr) = html_element_handle_from_this(vm, scope, host, this)?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  Ok(Value::String(
+    scope.alloc_string(dom.element_lang(handle.node_id))?,
+  ))
+}
+
+fn html_element_lang_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (handle, _) = html_element_handle_from_this(vm, scope, host, this)?;
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  if is_host_document_id(vm, handle.document_id) {
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      let node_id = handle.node_id;
+      let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+        match dom.set_element_lang(node_id, &new_value) {
+          Ok(changed) => {
+            let needs_microtask = dom.take_mutation_observer_microtask_needed();
+            ((Ok(changed), needs_microtask), changed)
+          }
+          Err(err) => ((Err(err), false), false),
+        }
+      });
+      let _changed = result.map_err(|_| VmError::TypeError("failed to set HTMLElement.lang"))?;
+      maybe_queue_mutation_observer_microtask(
+        vm,
+        scope,
+        host,
+        hooks,
+        handle.document_obj,
+        needs_microtask,
+      )?;
+      return Ok(Value::Undefined);
+    }
+  }
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  dom
+    .set_element_lang(handle.node_id, &new_value)
+    .map_err(|_| VmError::TypeError("failed to set HTMLElement.lang"))?;
+  let needs_microtask = dom.take_mutation_observer_microtask_needed();
+  if !is_host_document_id(vm, handle.document_id) {
+    // Owned documents: skip MutationObserver microtask scheduling.
+    return Ok(Value::Undefined);
+  }
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
+fn html_element_dir_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (handle, dom_ptr) = html_element_handle_from_this(vm, scope, host, this)?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  Ok(Value::String(
+    scope.alloc_string(dom.element_dir(handle.node_id))?,
+  ))
+}
+
+fn html_element_dir_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (handle, _) = html_element_handle_from_this(vm, scope, host, this)?;
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  if is_host_document_id(vm, handle.document_id) {
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      let node_id = handle.node_id;
+      let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+        match dom.set_element_dir(node_id, &new_value) {
+          Ok(changed) => {
+            let needs_microtask = dom.take_mutation_observer_microtask_needed();
+            ((Ok(changed), needs_microtask), changed)
+          }
+          Err(err) => ((Err(err), false), false),
+        }
+      });
+      let _changed = result.map_err(|_| VmError::TypeError("failed to set HTMLElement.dir"))?;
+      maybe_queue_mutation_observer_microtask(
+        vm,
+        scope,
+        host,
+        hooks,
+        handle.document_obj,
+        needs_microtask,
+      )?;
+      return Ok(Value::Undefined);
+    }
+  }
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  dom
+    .set_element_dir(handle.node_id, &new_value)
+    .map_err(|_| VmError::TypeError("failed to set HTMLElement.dir"))?;
+  let needs_microtask = dom.take_mutation_observer_microtask_needed();
+  if !is_host_document_id(vm, handle.document_id) {
+    // Owned documents: skip MutationObserver microtask scheduling.
+    return Ok(Value::Undefined);
+  }
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
+fn html_element_hidden_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (handle, dom_ptr) = html_element_handle_from_this(vm, scope, host, this)?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  Ok(Value::Bool(dom.element_hidden(handle.node_id)))
+}
+
+fn html_element_hidden_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (handle, _) = html_element_handle_from_this(vm, scope, host, this)?;
+  let present_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let present = scope.heap().to_boolean(present_value)?;
+
+  if is_host_document_id(vm, handle.document_id) {
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      let node_id = handle.node_id;
+      let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+        match dom.set_element_hidden(node_id, present) {
+          Ok(changed) => {
+            let needs_microtask = dom.take_mutation_observer_microtask_needed();
+            ((Ok(changed), needs_microtask), changed)
+          }
+          Err(err) => ((Err(err), false), false),
+        }
+      });
+      let _changed = result.map_err(|_| VmError::TypeError("failed to set HTMLElement.hidden"))?;
+      maybe_queue_mutation_observer_microtask(
+        vm,
+        scope,
+        host,
+        hooks,
+        handle.document_obj,
+        needs_microtask,
+      )?;
+      return Ok(Value::Undefined);
+    }
+  }
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  dom
+    .set_element_hidden(handle.node_id, present)
+    .map_err(|_| VmError::TypeError("failed to set HTMLElement.hidden"))?;
+  let needs_microtask = dom.take_mutation_observer_microtask_needed();
+  if !is_host_document_id(vm, handle.document_id) {
+    // Owned documents: skip MutationObserver microtask scheduling.
+    return Ok(Value::Undefined);
+  }
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
 fn element_class_name_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -29775,6 +30113,9 @@ fn init_window_globals(
   let element_proto = dom_platform
     .as_ref()
     .map(|platform| platform.prototype_for(DomInterface::Element));
+  let html_element_proto = dom_platform
+    .as_ref()
+    .map(|platform| platform.prototype_for(DomInterface::HTMLElement));
   if let Some(element_proto) = element_proto {
     let key = alloc_key(&mut scope, "getBoundingClientRect")?;
     scope.define_property(
@@ -29799,6 +30140,148 @@ fn init_window_globals(
       element_proto,
       key,
       data_desc(Value::Object(remove_attribute_func)),
+    )?;
+  }
+
+  // HTMLElement global attributes (`title`/`lang`/`dir`/`hidden`) must be defined on
+  // `HTMLElement.prototype` (not per-instance) and enforce a strict brand check.
+  if let Some(html_element_proto) = html_element_proto {
+    let title_get_call_id = vm.register_native_call(html_element_title_get_native)?;
+    let title_get_name = scope.alloc_string("get title")?;
+    scope.push_root(Value::String(title_get_name))?;
+    let title_get_func = scope.alloc_native_function(title_get_call_id, None, title_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      title_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(title_get_func))?;
+
+    let title_set_call_id = vm.register_native_call(html_element_title_set_native)?;
+    let title_set_name = scope.alloc_string("set title")?;
+    scope.push_root(Value::String(title_set_name))?;
+    let title_set_func = scope.alloc_native_function(title_set_call_id, None, title_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      title_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(title_set_func))?;
+
+    let title_key = alloc_key(&mut scope, "title")?;
+    scope.define_property(
+      html_element_proto,
+      title_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(title_get_func),
+          set: Value::Object(title_set_func),
+        },
+      },
+    )?;
+
+    let lang_get_call_id = vm.register_native_call(html_element_lang_get_native)?;
+    let lang_get_name = scope.alloc_string("get lang")?;
+    scope.push_root(Value::String(lang_get_name))?;
+    let lang_get_func = scope.alloc_native_function(lang_get_call_id, None, lang_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      lang_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(lang_get_func))?;
+
+    let lang_set_call_id = vm.register_native_call(html_element_lang_set_native)?;
+    let lang_set_name = scope.alloc_string("set lang")?;
+    scope.push_root(Value::String(lang_set_name))?;
+    let lang_set_func = scope.alloc_native_function(lang_set_call_id, None, lang_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      lang_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(lang_set_func))?;
+
+    let lang_key = alloc_key(&mut scope, "lang")?;
+    scope.define_property(
+      html_element_proto,
+      lang_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(lang_get_func),
+          set: Value::Object(lang_set_func),
+        },
+      },
+    )?;
+
+    let dir_get_call_id = vm.register_native_call(html_element_dir_get_native)?;
+    let dir_get_name = scope.alloc_string("get dir")?;
+    scope.push_root(Value::String(dir_get_name))?;
+    let dir_get_func = scope.alloc_native_function(dir_get_call_id, None, dir_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      dir_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(dir_get_func))?;
+
+    let dir_set_call_id = vm.register_native_call(html_element_dir_set_native)?;
+    let dir_set_name = scope.alloc_string("set dir")?;
+    scope.push_root(Value::String(dir_set_name))?;
+    let dir_set_func = scope.alloc_native_function(dir_set_call_id, None, dir_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      dir_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(dir_set_func))?;
+
+    let dir_key = alloc_key(&mut scope, "dir")?;
+    scope.define_property(
+      html_element_proto,
+      dir_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(dir_get_func),
+          set: Value::Object(dir_set_func),
+        },
+      },
+    )?;
+
+    let hidden_get_call_id = vm.register_native_call(html_element_hidden_get_native)?;
+    let hidden_get_name = scope.alloc_string("get hidden")?;
+    scope.push_root(Value::String(hidden_get_name))?;
+    let hidden_get_func =
+      scope.alloc_native_function(hidden_get_call_id, None, hidden_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      hidden_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(hidden_get_func))?;
+
+    let hidden_set_call_id = vm.register_native_call(html_element_hidden_set_native)?;
+    let hidden_set_name = scope.alloc_string("set hidden")?;
+    scope.push_root(Value::String(hidden_set_name))?;
+    let hidden_set_func =
+      scope.alloc_native_function(hidden_set_call_id, None, hidden_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      hidden_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(hidden_set_func))?;
+
+    let hidden_key = alloc_key(&mut scope, "hidden")?;
+    scope.define_property(
+      html_element_proto,
+      hidden_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(hidden_get_func),
+          set: Value::Object(hidden_set_func),
+        },
+      },
     )?;
   }
 
@@ -31916,6 +32399,49 @@ mod tests {
       0
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn html_element_global_attributes_reflect_and_brand_check() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      "<!doctype html><html><head></head><body></body></html>",
+      RenderOptions::default(),
+    )
+    .expect("BrowserDocumentDom2::from_html should succeed");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+         const el = document.createElement('div');\n\
+         el.title = 'x';\n\
+         if (el.getAttribute('title') !== 'x') return false;\n\
+         el.lang = 'en';\n\
+         if (el.getAttribute('lang') !== 'en') return false;\n\
+         el.dir = 'rtl';\n\
+         if (el.getAttribute('dir') !== 'rtl') return false;\n\
+         el.hidden = true;\n\
+         if (!el.hasAttribute('hidden')) return false;\n\
+         el.hidden = false;\n\
+         if (el.hasAttribute('hidden')) return false;\n\
+\n\
+         const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'title');\n\
+         if (!desc || typeof desc.get !== 'function') return false;\n\
+         try {\n\
+           desc.get.call(document);\n\
+           return false;\n\
+         } catch (e) {\n\
+           if (!(e instanceof TypeError)) return false;\n\
+           if (e.message !== 'Illegal invocation') return false;\n\
+         }\n\
+         return true;\n\
+       })()",
+    )?;
+    assert_eq!(value, Value::Bool(true));
     Ok(())
   }
 
