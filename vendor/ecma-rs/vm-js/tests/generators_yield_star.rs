@@ -2,7 +2,10 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Generator support (and the test262-style delegation wrapper) allocates a non-trivial amount of
+  // runtime state. Use a larger heap limit than the default 1MiB used by many unit tests so this
+  // test exercises yield* semantics rather than heap pressure.
+  let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -83,25 +86,7 @@ fn yield_star_over_array_delegates_values() -> Result<(), VmError> {
     ok1 && ok2
   "#;
 
-  match rt.exec_script(script) {
-    Ok(v) => {
-      assert_eq!(v, Value::Bool(true));
-      Ok(())
-    }
-    // Generators are still under development in vm-js. Once generator functions/yield* land, this
-    // test will begin exercising delegation semantics (including array iterator acquisition).
-    Err(VmError::Unimplemented(
-      "generator functions"
-      | "async generator functions"
-      | "generator function call"
-      | "async generator function call"
-      | "yield*"
-      | "GeneratorResume"
-      | "GeneratorResumeAbrupt"
-      | "Generator.prototype.next"
-      | "Generator.prototype.return"
-      | "Generator.prototype.throw",
-    )) => Ok(()),
-    Err(err) => Err(err),
-  }
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
 }

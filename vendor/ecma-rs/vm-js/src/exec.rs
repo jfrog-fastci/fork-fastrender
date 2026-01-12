@@ -9037,6 +9037,14 @@ enum AsyncFrame {
 
   /// Continue evaluating a unary `await` after its operand expression completes (nested await).
   AwaitAfterOperand,
+  /// Continue evaluating a delegated `yield*` after its operand expression completes.
+  YieldStarAfterOperand,
+  /// Continue delegated `yield*` iteration after yielding a value from the delegate iterator.
+  YieldStar {
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
+  },
   /// Continue evaluating a non-`await` unary expression after its operand completes.
   UnaryAfterArgument {
     expr: *const UnaryExpr,
@@ -9425,6 +9433,14 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
       heap.remove_root(*iterator_root);
       heap.remove_root(*next_method_root);
       heap.remove_root(*v_root);
+    }
+    AsyncFrame::YieldStar {
+      iterator_root,
+      next_method_root,
+      ..
+    } => {
+      heap.remove_root(*iterator_root);
+      heap.remove_root(*next_method_root);
     }
     AsyncFrame::ForAwaitOfAfterRhs { v_root, .. } => heap.remove_root(*v_root),
     AsyncFrame::ForAwaitOfAfterNext {
@@ -15108,6 +15124,106 @@ fn async_switch_after_body_completion(
   )
 }
 
+fn async_yield_star_begin(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  iterable: Value,
+) -> Result<AsyncEval<Value>, VmError> {
+  // `yield*` delegates via the iterator protocol, even for Arrays. Use the protocol-only iterator
+  // acquisition API to avoid any internal fast paths that might skip `@@iterator`.
+  let mut iter_scope = scope.reborrow();
+  iter_scope.push_root(iterable)?;
+
+  let mut iterator_record = iterator::get_iterator_protocol(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut iter_scope,
+    iterable,
+  )
+  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err))?;
+
+  let (iterator_root, next_method_root) = {
+    let mut root_scope = iter_scope.reborrow();
+    root_scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+    let iterator_root = root_scope.heap_mut().add_root(iterator_record.iterator)?;
+    let next_method_root = root_scope.heap_mut().add_root(iterator_record.next_method)?;
+    (iterator_root, next_method_root)
+  };
+
+  // Spec: `yield*` forwards the sent value to the delegate iterator. The initial value is always
+  // `undefined` (the argument to the first `.next()` call is ignored).
+  let iter_result = match iterator::iterator_next(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut iter_scope,
+    &mut iterator_record,
+    Some(Value::Undefined),
+  ) {
+    Ok(v) => v,
+    Err(err) => {
+      iter_scope.heap_mut().remove_root(iterator_root);
+      iter_scope.heap_mut().remove_root(next_method_root);
+      return Err(coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err));
+    }
+  };
+
+  let done = match iterator::iterator_complete(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut iter_scope,
+    iter_result,
+  ) {
+    Ok(b) => b,
+    Err(err) => {
+      iter_scope.heap_mut().remove_root(iterator_root);
+      iter_scope.heap_mut().remove_root(next_method_root);
+      return Err(coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err));
+    }
+  };
+  let value = match iterator::iterator_value(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut iter_scope,
+    iter_result,
+  ) {
+    Ok(v) => v,
+    Err(err) => {
+      iter_scope.heap_mut().remove_root(iterator_root);
+      iter_scope.heap_mut().remove_root(next_method_root);
+      return Err(coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err));
+    }
+  };
+
+  if done {
+    iter_scope.heap_mut().remove_root(iterator_root);
+    iter_scope.heap_mut().remove_root(next_method_root);
+    return Ok(AsyncEval::Complete(value));
+  }
+
+  let mut suspend = AsyncSuspend {
+    await_value: value,
+    frames: VecDeque::new(),
+  };
+  if let Err(_) = async_frames_push(
+    &mut suspend.frames,
+    AsyncFrame::YieldStar {
+      iterator_record,
+      iterator_root,
+      next_method_root,
+    },
+  ) {
+    iter_scope.heap_mut().remove_root(iterator_root);
+    iter_scope.heap_mut().remove_root(next_method_root);
+    return Err(VmError::OutOfMemory);
+  }
+
+  Ok(AsyncEval::Suspend(suspend))
+}
+
 fn async_eval_expr(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -15130,7 +15246,13 @@ fn async_eval_expr(
       ) =>
     {
       match unary.stx.operator {
-        OperatorName::YieldDelegated => Err(VmError::Unimplemented("yield*")),
+        OperatorName::YieldDelegated => match async_eval_expr(evaluator, scope, &unary.stx.argument)? {
+          AsyncEval::Complete(iterable) => async_yield_star_begin(evaluator, scope, iterable),
+          AsyncEval::Suspend(mut suspend) => {
+            async_frames_push(&mut suspend.frames, AsyncFrame::YieldStarAfterOperand)?;
+            Ok(AsyncEval::Suspend(suspend))
+          }
+        },
         OperatorName::Yield => {
           // `parse-js` currently represents `yield;` as `yield undefined` with a synthetic
           // `IdExpr("undefined")`. That is incorrect if `undefined` is shadowed. Detect this shape
@@ -18724,6 +18846,238 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "await operand frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::YieldStarAfterOperand => match state {
+        AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
+          Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+          Ok(AsyncEval::Suspend(mut suspend)) => {
+            suspend.frames.append(&mut frames);
+            return Ok(AsyncBodyResult::Await {
+              await_value: suspend.await_value,
+              frames: suspend.frames,
+            });
+          }
+          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+          Err(err) => return Err(err),
+        },
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "yield* operand frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::YieldStar {
+        mut iterator_record,
+        iterator_root,
+        next_method_root,
+      } => match state {
+        AsyncState::Expr(resume_res) => {
+          // A normal resumption value is forwarded to `iterator.next(value)`.
+          // A throw completion (from `Generator.prototype.throw`) is forwarded to `iterator.throw`
+          // when present; otherwise the iterator is closed and the throw is rethrown.
+          let iter_result = match resume_res {
+            Ok(received) => match iterator::iterator_next(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              &mut iterator_record,
+              Some(received),
+            ) {
+              Ok(v) => v,
+              Err(err) => {
+                scope.heap_mut().remove_root(iterator_root);
+                scope.heap_mut().remove_root(next_method_root);
+                let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+                match err {
+                  VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                  other => return Err(other),
+                }
+              }
+            },
+            Err(err) => {
+              if !err.is_throw_completion() {
+                scope.heap_mut().remove_root(iterator_root);
+                scope.heap_mut().remove_root(next_method_root);
+                return Err(err);
+              }
+              let Some(reason) = err.thrown_value() else {
+                scope.heap_mut().remove_root(iterator_root);
+                scope.heap_mut().remove_root(next_method_root);
+                return Err(err);
+              };
+
+              // Root the thrown reason across property-key allocation and method invocation.
+              if let Err(root_err) = scope.push_root(reason) {
+                scope.heap_mut().remove_root(iterator_root);
+                scope.heap_mut().remove_root(next_method_root);
+                return Err(root_err);
+              }
+
+              let throw_key_s = match scope.alloc_string("throw") {
+                Ok(s) => s,
+                Err(alloc_err) => {
+                  scope.heap_mut().remove_root(iterator_root);
+                  scope.heap_mut().remove_root(next_method_root);
+                  return Err(alloc_err);
+                }
+              };
+              if let Err(root_err) = scope.push_root(Value::String(throw_key_s)) {
+                scope.heap_mut().remove_root(iterator_root);
+                scope.heap_mut().remove_root(next_method_root);
+                return Err(root_err);
+              }
+              let throw_key = PropertyKey::from_string(throw_key_s);
+
+              let throw_method = match crate::spec_ops::get_method_with_host_and_hooks(
+                evaluator.vm,
+                scope,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                iterator_record.iterator,
+                throw_key,
+              ) {
+                Ok(m) => m,
+                Err(get_err) => {
+                  scope.heap_mut().remove_root(iterator_root);
+                  scope.heap_mut().remove_root(next_method_root);
+                  let get_err = coerce_error_to_throw_for_async(evaluator.vm, scope, get_err);
+                  match get_err {
+                    VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+                      state = AsyncState::Expr(Err(get_err));
+                      continue;
+                    }
+                    other => return Err(other),
+                  }
+                }
+              };
+
+              let Some(throw_method) = throw_method else {
+                // No `throw` method: close the iterator, then rethrow the original reason.
+                if let Err(close_err) = iterator::iterator_close(
+                  evaluator.vm,
+                  &mut *evaluator.host,
+                  &mut *evaluator.hooks,
+                  scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::Throw,
+                ) {
+                  scope.heap_mut().remove_root(iterator_root);
+                  scope.heap_mut().remove_root(next_method_root);
+                  return Err(close_err);
+                }
+                scope.heap_mut().remove_root(iterator_root);
+                scope.heap_mut().remove_root(next_method_root);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              };
+
+              let call_args = [reason];
+              match evaluator.vm.call_with_host_and_hooks(
+                &mut *evaluator.host,
+                scope,
+                &mut *evaluator.hooks,
+                throw_method,
+                iterator_record.iterator,
+                &call_args,
+              ) {
+                Ok(v) => v,
+                Err(call_err) => {
+                  scope.heap_mut().remove_root(iterator_root);
+                  scope.heap_mut().remove_root(next_method_root);
+                  let call_err = coerce_error_to_throw_for_async(evaluator.vm, scope, call_err);
+                  match call_err {
+                    VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+                      state = AsyncState::Expr(Err(call_err));
+                      continue;
+                    }
+                    other => return Err(other),
+                  }
+                }
+              }
+            }
+          };
+
+          let done = match iterator::iterator_complete(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              scope.heap_mut().remove_root(iterator_root);
+              scope.heap_mut().remove_root(next_method_root);
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              match err {
+                VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+                  state = AsyncState::Expr(Err(err));
+                  continue;
+                }
+                other => return Err(other),
+              }
+            }
+          };
+          let value = match iterator::iterator_value(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              scope.heap_mut().remove_root(iterator_root);
+              scope.heap_mut().remove_root(next_method_root);
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              match err {
+                VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+                  state = AsyncState::Expr(Err(err));
+                  continue;
+                }
+                other => return Err(other),
+              }
+            }
+          };
+
+          if done {
+            scope.heap_mut().remove_root(iterator_root);
+            scope.heap_mut().remove_root(next_method_root);
+            state = AsyncState::Expr(Ok(value));
+            continue;
+          }
+
+          let mut out_frames: VecDeque<AsyncFrame> = VecDeque::new();
+          if let Err(_) = async_frames_push(
+            &mut out_frames,
+            AsyncFrame::YieldStar {
+              iterator_record,
+              iterator_root,
+              next_method_root,
+            },
+          ) {
+            scope.heap_mut().remove_root(iterator_root);
+            scope.heap_mut().remove_root(next_method_root);
+            return Err(VmError::OutOfMemory);
+          }
+          out_frames.append(&mut frames);
+          return Ok(AsyncBodyResult::Await {
+            await_value: value,
+            frames: out_frames,
+          });
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "yield* frame received completion state",
           ))
         }
       },
