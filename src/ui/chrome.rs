@@ -418,38 +418,42 @@ fn tab_search_overlay_ui(
 ) {
   let overlay_id = egui::Id::new("tab_search_overlay");
   let was_open_id = overlay_id.with("was_open");
-  if !app.chrome.tab_search.open {
+  let motion = UiMotion::from_ctx(ctx);
+  let open_t = motion.animate_bool(
+    ctx,
+    overlay_id.with("popup_open"),
+    app.chrome.tab_search.open,
+    motion.durations.popup_open,
+  );
+  let open_opacity = open_t.clamp(0.0, 1.0);
+
+  if app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    app.chrome.tab_search.open = false;
+    actions.push(ChromeAction::CloseTabSearch);
+    // Ensure the fade-out animation renders even if nothing else triggers a repaint.
+    ctx.request_repaint();
+  }
+
+  if !app.chrome.tab_search.open && open_opacity <= 0.0 {
     ctx.data_mut(|d| {
       d.insert_temp(was_open_id, false);
     });
     return;
   }
 
-  let motion = UiMotion::from_ctx(ctx);
   let was_open = ctx.data(|d| d.get_temp::<bool>(was_open_id)).unwrap_or(false);
   ctx.data_mut(|d| {
     d.insert_temp(was_open_id, true);
   });
-  let opening = !was_open;
-  let open_t = motion.animate_bool(
-    ctx,
-    overlay_id.with("popup_open"),
-    true,
-    motion.durations.popup_open,
-  );
-  let open_opacity = open_t.clamp(0.0, 1.0);
+  let opening = app.chrome.tab_search.open && !was_open;
 
-  if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-    app.chrome.tab_search.open = false;
-    actions.push(ChromeAction::CloseTabSearch);
-    return;
-  }
-
-  let area = egui::Area::new(egui::Id::new("tab_search_overlay"))
+  let area = egui::Area::new(overlay_id)
     .order(egui::Order::Foreground)
-    .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0));
+    .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
+    .interactable(app.chrome.tab_search.open);
 
   let inner = area.show(ctx, |ui| {
+      ui.set_enabled(app.chrome.tab_search.open);
       ui.visuals_mut().override_text_color =
         Some(with_alpha(ui.visuals().text_color(), open_opacity));
       let mut frame = egui::Frame::popup(ui.style());
@@ -469,9 +473,11 @@ fn tab_search_overlay_ui(
           egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search tabs")
         });
         // Keep focus in the search box while the overlay is open.
-        input.request_focus();
+        if app.chrome.tab_search.open {
+          input.request_focus();
+        }
 
-        let query_changed = input.changed();
+        let query_changed = app.chrome.tab_search.open && input.changed();
 
         ui.separator();
 
@@ -490,8 +496,8 @@ fn tab_search_overlay_ui(
           app.chrome.tab_search.selected = matches.len() - 1;
         }
 
-        let down = ctx.input(|i| i.key_pressed(egui::Key::ArrowDown));
-        let up = ctx.input(|i| i.key_pressed(egui::Key::ArrowUp));
+        let down = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::ArrowDown));
+        let up = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::ArrowUp));
         if down {
           app.chrome.tab_search.selected =
             (app.chrome.tab_search.selected + 1).min(matches.len() - 1);
@@ -499,7 +505,7 @@ fn tab_search_overlay_ui(
           app.chrome.tab_search.selected = app.chrome.tab_search.selected.saturating_sub(1);
         }
 
-        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let enter = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::Enter));
         if enter {
           let tab_id = matches[app.chrome.tab_search.selected].tab_id;
           return Some(tab_id);
@@ -625,10 +631,10 @@ fn tab_search_overlay_ui(
                 });
               });
 
-              if response.hovered() && !(down || up) {
+              if app.chrome.tab_search.open && response.hovered() && !(down || up) {
                 app.chrome.tab_search.selected = idx;
               }
-              if response.clicked() {
+              if app.chrome.tab_search.open && response.clicked() {
                 clicked = Some(tab.id);
               }
             }
@@ -649,24 +655,28 @@ fn tab_search_overlay_ui(
   //
   // Note that we do not attempt to "consume" the click: closing the overlay on a tab click should
   // still activate that tab, matching typical menu dismissal behaviour.
-  let overlay_rect = inner.response.rect;
-  let clicked_outside = ctx.input(|i| {
-    i.events.iter().any(|event| match event {
-      egui::Event::PointerButton { pos, pressed: true, .. } => !overlay_rect.contains(*pos),
-      _ => false,
-    })
-  });
-  if clicked_outside {
-    app.chrome.tab_search.open = false;
-    actions.push(ChromeAction::CloseTabSearch);
-    return;
-  }
+  if app.chrome.tab_search.open {
+    let overlay_rect = inner.response.rect;
+    let clicked_outside = ctx.input(|i| {
+      i.events.iter().any(|event| match event {
+        egui::Event::PointerButton { pos, pressed: true, .. } => !overlay_rect.contains(*pos),
+        _ => false,
+      })
+    });
+    if clicked_outside {
+      app.chrome.tab_search.open = false;
+      actions.push(ChromeAction::CloseTabSearch);
+      ctx.request_repaint();
+      return;
+    }
 
-  if let Some(tab_id) = action {
-    app.chrome.tab_search.open = false;
-    actions.push(ChromeAction::ActivateTab(tab_id));
-    actions.push(ChromeAction::CloseTabSearch);
-    return;
+    if let Some(tab_id) = action {
+      app.chrome.tab_search.open = false;
+      actions.push(ChromeAction::ActivateTab(tab_id));
+      actions.push(ChromeAction::CloseTabSearch);
+      ctx.request_repaint();
+      return;
+    }
   }
 }
 
