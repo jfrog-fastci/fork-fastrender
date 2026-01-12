@@ -252,7 +252,7 @@ jobs:
             triage \
             --input reports/ts-conformance-merged.json \
             --json \
-            > reports/ts-conformance-triage.json
+            > reports/ts-conformance-triage.json 2> >(tee reports/ts-conformance-triage.stderr.log >&2)
 
       - name: Emit manifest suggestions (TOML snippet)
         run: |
@@ -271,4 +271,5 @@ jobs:
           path: |
             reports/ts-conformance-merged.json
             reports/ts-conformance-triage.json
+            reports/ts-conformance-triage.stderr.log
             reports/ts-conformance-suggestions.toml
