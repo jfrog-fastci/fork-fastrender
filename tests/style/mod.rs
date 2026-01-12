@@ -131,6 +131,7 @@ mod star_hack_declaration_recovery_test;
 mod string_set_test;
 mod style_containment_counters_test;
 mod style_containment_quotes_test;
+mod style_properties_no_panic_regression_test;
 mod styled_node_shallow_dom_clone;
 mod supports_rule_test;
 mod supports_selector_forgiving_list_test;

@@ -2863,7 +2863,11 @@ fn parse_min_max_time<'i, 't>(
     return Err(input.new_custom_error(()));
   }
   if values.len() == 1 {
-    return Ok(values.pop().expect("checked len"));
+    if let Some(value) = values.pop() {
+      return Ok(value);
+    }
+    debug_assert!(false, "min()/max() values unexpectedly empty after length check");
+    return Err(input.new_custom_error(()));
   }
 
   let location = input.current_source_location();
@@ -3402,7 +3406,16 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
       if end >= xs.len() {
         break;
       }
-      let end_x = xs[end].unwrap();
+      let end_x = match xs.get(end).copied().flatten() {
+        Some(v) => v,
+        None => {
+          debug_assert!(
+            false,
+            "linear() stop interpolation found missing end position after skipping None stops"
+          );
+          return None;
+        }
+      };
       if end_x < start_x {
         return None;
       }
@@ -7490,11 +7503,13 @@ pub(crate) fn apply_property_from_source(
           BackgroundPosition::Position { x, .. } => *x,
         })
         .collect();
+      let default_x = match BackgroundLayer::default().position {
+        BackgroundPosition::Position { x, .. } => x,
+      };
       if xs.is_empty() {
-        xs.push(match BackgroundLayer::default().position {
-          BackgroundPosition::Position { x, .. } => x,
-        });
+        xs.push(default_x);
       }
+      let fallback_x = xs.last().copied().unwrap_or(default_x);
       styles.ensure_background_lists();
       let layer_count = xs.len().max(styles.background_positions.len()).max(1);
       let mut positions = Vec::with_capacity(layer_count);
@@ -7505,7 +7520,7 @@ pub(crate) fn apply_property_from_source(
           .get(source_idx)
           .copied()
           .unwrap_or_else(|| BackgroundLayer::default().position);
-        let x_comp = xs.get(idx).copied().unwrap_or_else(|| *xs.last().unwrap());
+        let x_comp = xs.get(idx).copied().unwrap_or(fallback_x);
         let BackgroundPosition::Position { y, .. } = source_pos;
         positions.push(BackgroundPosition::Position { x: x_comp, y });
       }
@@ -7520,11 +7535,13 @@ pub(crate) fn apply_property_from_source(
           BackgroundPosition::Position { y, .. } => *y,
         })
         .collect();
+      let default_y = match BackgroundLayer::default().position {
+        BackgroundPosition::Position { y, .. } => y,
+      };
       if ys.is_empty() {
-        ys.push(match BackgroundLayer::default().position {
-          BackgroundPosition::Position { y, .. } => y,
-        });
+        ys.push(default_y);
       }
+      let fallback_y = ys.last().copied().unwrap_or(default_y);
       styles.ensure_background_lists();
       let layer_count = ys.len().max(styles.background_positions.len()).max(1);
       let mut positions = Vec::with_capacity(layer_count);
@@ -7535,7 +7552,7 @@ pub(crate) fn apply_property_from_source(
           .get(source_idx)
           .copied()
           .unwrap_or_else(|| BackgroundLayer::default().position);
-        let y_comp = ys.get(idx).copied().unwrap_or_else(|| *ys.last().unwrap());
+        let y_comp = ys.get(idx).copied().unwrap_or(fallback_y);
         let BackgroundPosition::Position { x, .. } = source_pos;
         positions.push(BackgroundPosition::Position { x, y: y_comp });
       }
@@ -9540,11 +9557,16 @@ fn apply_declaration_with_base_internal_with_order(
             }
             _ => false,
           });
-      let revert_layer_base = needs_revert_layer_base.then(|| {
-        revert_layer_custom_properties
-          .expect("checked Some above")
-          .clone()
-      });
+      let revert_layer_base = if needs_revert_layer_base {
+        let base = revert_layer_custom_properties.cloned();
+        debug_assert!(
+          base.is_some(),
+          "registered custom property needs revert-layer base, but none was provided"
+        );
+        base
+      } else {
+        None
+      };
 
       Arc::make_mut(&mut styles.custom_property_declarations).insert(
         Arc::clone(custom_name),
@@ -14748,10 +14770,17 @@ fn apply_declaration_with_base_internal_with_order(
 
       if let Some(mut sides) = sides {
         if sides.len() == 1 {
-          styles.text_overflow = TextOverflow {
-            inline_start: TextOverflowSide::Clip,
-            inline_end: sides.pop().unwrap(),
-          };
+          if let Some(inline_end) = sides.pop() {
+            styles.text_overflow = TextOverflow {
+              inline_start: TextOverflowSide::Clip,
+              inline_end,
+            };
+          } else {
+            debug_assert!(
+              false,
+              "text-overflow sides unexpectedly empty after length check"
+            );
+          }
         } else if sides.len() == 2 {
           styles.text_overflow = TextOverflow {
             inline_start: sides[0].clone(),
@@ -15933,6 +15962,16 @@ fn apply_declaration_with_base_internal_with_order(
         styles.ensure_background_lists();
         let horizontal_inline = inline_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().size;
+        let fallback_inline_value = match values.last().copied() {
+          Some(v) => v,
+          None => {
+            debug_assert!(
+              false,
+              "background-size-inline list unexpectedly empty after parsing"
+            );
+            return;
+          }
+        };
         let layer_count = values.len().max(styles.background_sizes.len()).max(1);
         let mut sizes = Vec::with_capacity(layer_count);
         for idx in 0..layer_count {
@@ -15945,7 +15984,7 @@ fn apply_declaration_with_base_internal_with_order(
           let inline_value = values
             .get(idx)
             .copied()
-            .unwrap_or_else(|| values.last().copied().unwrap());
+            .unwrap_or(fallback_inline_value);
           let explicit = match source {
             BackgroundSize::Explicit(mut x, mut y) => {
               if horizontal_inline {
@@ -15974,6 +16013,16 @@ fn apply_declaration_with_base_internal_with_order(
         styles.ensure_background_lists();
         let horizontal_block = block_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().size;
+        let fallback_block_value = match values.last().copied() {
+          Some(v) => v,
+          None => {
+            debug_assert!(
+              false,
+              "background-size-block list unexpectedly empty after parsing"
+            );
+            return;
+          }
+        };
         let layer_count = values.len().max(styles.background_sizes.len()).max(1);
         let mut sizes = Vec::with_capacity(layer_count);
         for idx in 0..layer_count {
@@ -15986,7 +16035,7 @@ fn apply_declaration_with_base_internal_with_order(
           let block_value = values
             .get(idx)
             .copied()
-            .unwrap_or_else(|| values.last().copied().unwrap());
+            .unwrap_or(fallback_block_value);
           let explicit = match source {
             BackgroundSize::Explicit(mut x, mut y) => {
               if horizontal_block {
@@ -16034,6 +16083,16 @@ fn apply_declaration_with_base_internal_with_order(
       if let Some(values) = parse_layer_list(resolved_value, parse) {
         styles.ensure_background_lists();
         let default = BackgroundLayer::default().repeat;
+        let fallback_x_kw = match values.last().copied() {
+          Some(v) => v,
+          None => {
+            debug_assert!(
+              false,
+              "background-repeat-x list unexpectedly empty after parsing"
+            );
+            return;
+          }
+        };
         let layer_count = values.len().max(styles.background_repeats.len()).max(1);
         let mut repeats = Vec::with_capacity(layer_count);
         for idx in 0..layer_count {
@@ -16046,11 +16105,8 @@ fn apply_declaration_with_base_internal_with_order(
           let x_kw = values
             .get(idx)
             .copied()
-            .unwrap_or_else(|| values.last().copied().unwrap());
-          repeats.push(BackgroundRepeat {
-            x: x_kw,
-            y: source.y,
-          });
+            .unwrap_or(fallback_x_kw);
+          repeats.push(BackgroundRepeat { x: x_kw, y: source.y });
         }
         styles.background_repeats = repeats.into();
         styles.logical.background_repeat_order = order;
@@ -16068,6 +16124,16 @@ fn apply_declaration_with_base_internal_with_order(
       if let Some(values) = parse_layer_list(resolved_value, parse) {
         styles.ensure_background_lists();
         let default = BackgroundLayer::default().repeat;
+        let fallback_y_kw = match values.last().copied() {
+          Some(v) => v,
+          None => {
+            debug_assert!(
+              false,
+              "background-repeat-y list unexpectedly empty after parsing"
+            );
+            return;
+          }
+        };
         let layer_count = values.len().max(styles.background_repeats.len()).max(1);
         let mut repeats = Vec::with_capacity(layer_count);
         for idx in 0..layer_count {
@@ -16080,11 +16146,8 @@ fn apply_declaration_with_base_internal_with_order(
           let y_kw = values
             .get(idx)
             .copied()
-            .unwrap_or_else(|| values.last().copied().unwrap());
-          repeats.push(BackgroundRepeat {
-            x: source.x,
-            y: y_kw,
-          });
+            .unwrap_or(fallback_y_kw);
+          repeats.push(BackgroundRepeat { x: source.x, y: y_kw });
         }
         styles.background_repeats = repeats.into();
         styles.logical.background_repeat_order = order;
