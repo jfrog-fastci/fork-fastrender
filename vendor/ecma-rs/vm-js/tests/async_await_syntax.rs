@@ -135,6 +135,27 @@ fn async_throw_rejects_promise() -> Result<(), VmError> {
 }
 
 #[test]
+fn async_throw_await_rejects_promise() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() { throw await Promise.resolve("boom"); }
+      f().then(function () { out = "bad"; }, function (e) { out = e; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "boom");
+  Ok(())
+}
+
+#[test]
 fn return_expression_with_post_await_member_access() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
