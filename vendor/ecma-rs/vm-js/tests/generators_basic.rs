@@ -184,3 +184,47 @@ fn generator_throw_statement_value_can_yield() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_throw_is_catchable_inside_generator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        try { yield 1; }
+        catch (e) { return e; }
+      }
+      var it = g();
+      it.next();
+      var r = it.throw("boom");
+      var r2 = it.next();
+      r.value === "boom" && r.done === true &&
+      r2.done === true && r2.value === undefined
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_throw_triggers_finally_and_finally_can_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        try { yield 1; }
+        finally { yield 2; }
+      }
+      var it = g();
+      it.next();
+      var r1 = it.throw("boom");
+      var caught = false;
+      try { it.next(); } catch (e) { caught = (e === "boom"); }
+      r1.value === 2 && r1.done === false && caught === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
