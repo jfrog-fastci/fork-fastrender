@@ -1184,6 +1184,7 @@ pub fn check_body_with_expander(
     index: ast_index,
     value_defs,
     scopes: vec![Scope::default()],
+    var_scopes: vec![0],
     type_param_scopes: Vec::new(),
     namespace_scopes: HashMap::new(),
     expected_return: None,
@@ -1216,6 +1217,8 @@ pub fn check_body_with_expander(
   match body.kind {
     BodyKind::TopLevel => {
       checker.check_class_field_overwrites_base_properties();
+      checker.hoist_function_decls_in_stmt_list(&ast.stx.body);
+      checker.hoist_var_decls_in_stmt_tree(&ast.stx.body);
       checker.check_stmt_list(&ast.stx.body);
     }
     BodyKind::Function => {
@@ -1334,6 +1337,12 @@ struct Checker<'a> {
   index: &'a AstIndex,
   value_defs: &'a HashMap<DefId, DefId>,
   scopes: Vec<Scope>,
+  /// Index of the nearest "var scope" in `scopes`.
+  ///
+  /// `var` declarations are function-scoped (not block-scoped). We keep a stack
+  /// because the base checker can type-check nested function expressions (e.g.
+  /// contextual callback typing) using the same `Checker` instance.
+  var_scopes: Vec<usize>,
   type_param_scopes: Vec<Vec<TypeParamDecl>>,
   namespace_scopes: HashMap<String, Scope>,
   expected_return: Option<TypeId>,
@@ -1820,10 +1829,35 @@ impl<'a> Checker<'a> {
     }
   }
 
+  fn insert_binding_in_scope(
+    &mut self,
+    scope_index: usize,
+    name: String,
+    ty: TypeId,
+    type_params: Vec<TypeParamDecl>,
+  ) {
+    if let Some(scope) = self.scopes.get_mut(scope_index) {
+      scope.bindings.insert(name, Binding { ty, type_params });
+    }
+  }
+
+  fn current_var_scope_index(&self) -> usize {
+    self.var_scopes.last().copied().unwrap_or(0)
+  }
+
   fn lookup(&self, name: &str) -> Option<Binding> {
     for scope in self.scopes.iter().rev() {
       if let Some(binding) = scope.bindings.get(name) {
         return Some(binding.clone());
+      }
+    }
+    None
+  }
+
+  fn lookup_with_scope(&self, name: &str) -> Option<(usize, Binding)> {
+    for idx in (0..self.scopes.len()).rev() {
+      if let Some(binding) = self.scopes[idx].bindings.get(name) {
+        return Some((idx, binding.clone()));
       }
     }
     None
@@ -2386,6 +2420,8 @@ impl<'a> Checker<'a> {
   fn check_function_body(&mut self, func: &Node<Func>) {
     match &func.stx.body {
       Some(FuncBody::Block(block)) => {
+        self.hoist_function_decls_in_stmt_list(block);
+        self.hoist_var_decls_in_stmt_tree(block);
         self.check_stmt_list(block);
       }
       Some(FuncBody::Expression(expr)) => {
@@ -2412,7 +2448,192 @@ impl<'a> Checker<'a> {
     self.first_callable_signature(ty)
   }
 
+  fn bind_function_decl_name(&mut self, name_str: String, fn_ty: TypeId) {
+    if let Some(existing) = self.lookup(&name_str) {
+      let has_callables = !callable_signatures(self.store.as_ref(), existing.ty).is_empty();
+      let ty = if has_callables {
+        existing.ty
+      } else {
+        self.store.intersection(vec![existing.ty, fn_ty])
+      };
+      self.insert_binding(name_str, ty, Vec::new());
+    } else {
+      self.insert_binding(name_str, fn_ty, Vec::new());
+    }
+  }
+
+  fn hoist_function_decls_in_stmt_list(&mut self, stmts: &[Node<Stmt>]) {
+    for stmt in stmts {
+      let Stmt::FunctionDecl(func) = stmt.stx.as_ref() else {
+        continue;
+      };
+      let Some(name) = func.stx.name.as_ref() else {
+        continue;
+      };
+      let name_str = name.stx.name.clone();
+      let fn_ty = self.function_type(&func.stx.function);
+      self.bind_function_decl_name(name_str, fn_ty);
+    }
+  }
+
+  fn hoist_var_decls_in_stmt_tree(&mut self, stmts: &[Node<Stmt>]) {
+    let mut names: HashSet<String> = HashSet::new();
+    for (idx, stmt) in stmts.iter().enumerate() {
+      if idx % 128 == 0 {
+        self.check_cancelled();
+      }
+      self.collect_var_decl_names_in_stmt(stmt, &mut names);
+    }
+
+    let prim = self.store.primitive_ids();
+    let var_scope = self.current_var_scope_index();
+    for name in names {
+      if self
+        .scopes
+        .get(var_scope)
+        .is_some_and(|scope| scope.bindings.contains_key(&name))
+      {
+        continue;
+      }
+      self.insert_binding_in_scope(var_scope, name, prim.unknown, Vec::new());
+    }
+  }
+
+  fn collect_var_decl_names_in_stmt(&self, stmt: &Node<Stmt>, names: &mut HashSet<String>) {
+    match stmt.stx.as_ref() {
+      Stmt::Block(block) => {
+        for stmt in block.stx.body.iter() {
+          self.collect_var_decl_names_in_stmt(stmt, names);
+        }
+      }
+      Stmt::If(if_stmt) => {
+        self.collect_var_decl_names_in_stmt(&if_stmt.stx.consequent, names);
+        if let Some(alt) = if_stmt.stx.alternate.as_ref() {
+          self.collect_var_decl_names_in_stmt(alt, names);
+        }
+      }
+      Stmt::While(while_stmt) => {
+        self.collect_var_decl_names_in_stmt(&while_stmt.stx.body, names);
+      }
+      Stmt::DoWhile(do_while) => {
+        self.collect_var_decl_names_in_stmt(&do_while.stx.body, names);
+      }
+      Stmt::ForTriple(for_stmt) => {
+        use parse_js::ast::stmt::ForTripleStmtInit;
+        if let ForTripleStmtInit::Decl(decl) = &for_stmt.stx.init {
+          if matches!(decl.stx.mode, VarDeclMode::Var) {
+            for declarator in decl.stx.declarators.iter() {
+              self.collect_var_decl_names_in_pat(&declarator.pattern.stx.pat, names);
+            }
+          }
+        }
+        for stmt in for_stmt.stx.body.stx.body.iter() {
+          self.collect_var_decl_names_in_stmt(stmt, names);
+        }
+      }
+      Stmt::ForIn(for_in) => {
+        use parse_js::ast::stmt::ForInOfLhs;
+        if let ForInOfLhs::Decl((mode, decl)) = &for_in.stx.lhs {
+          if matches!(*mode, VarDeclMode::Var) {
+            self.collect_var_decl_names_in_pat(&decl.stx.pat, names);
+          }
+        }
+        for stmt in for_in.stx.body.stx.body.iter() {
+          self.collect_var_decl_names_in_stmt(stmt, names);
+        }
+      }
+      Stmt::ForOf(for_of) => {
+        use parse_js::ast::stmt::ForInOfLhs;
+        if let ForInOfLhs::Decl((mode, decl)) = &for_of.stx.lhs {
+          if matches!(*mode, VarDeclMode::Var) {
+            self.collect_var_decl_names_in_pat(&decl.stx.pat, names);
+          }
+        }
+        for stmt in for_of.stx.body.stx.body.iter() {
+          self.collect_var_decl_names_in_stmt(stmt, names);
+        }
+      }
+      Stmt::Switch(sw) => {
+        for branch in sw.stx.branches.iter() {
+          for stmt in branch.stx.body.iter() {
+            self.collect_var_decl_names_in_stmt(stmt, names);
+          }
+        }
+      }
+      Stmt::Try(tr) => {
+        for stmt in tr.stx.wrapped.stx.body.iter() {
+          self.collect_var_decl_names_in_stmt(stmt, names);
+        }
+        if let Some(catch) = tr.stx.catch.as_ref() {
+          for stmt in catch.stx.body.iter() {
+            self.collect_var_decl_names_in_stmt(stmt, names);
+          }
+        }
+        if let Some(finally) = tr.stx.finally.as_ref() {
+          for stmt in finally.stx.body.iter() {
+            self.collect_var_decl_names_in_stmt(stmt, names);
+          }
+        }
+      }
+      Stmt::Label(label) => self.collect_var_decl_names_in_stmt(&label.stx.statement, names),
+      Stmt::With(w) => {
+        self.collect_var_decl_names_in_stmt(&w.stx.body, names);
+      }
+      Stmt::VarDecl(decl) => {
+        if matches!(decl.stx.mode, VarDeclMode::Var) {
+          for declarator in decl.stx.declarators.iter() {
+            self.collect_var_decl_names_in_pat(&declarator.pattern.stx.pat, names);
+          }
+        }
+      }
+
+      // `var`-hoisting stops at function/class bodies and namespace blocks.
+      Stmt::FunctionDecl(_) | Stmt::ClassDecl(_) | Stmt::NamespaceDecl(_) => {}
+
+      Stmt::ModuleDecl(module) => {
+        if let Some(body) = module.stx.body.as_ref() {
+          for stmt in body.iter() {
+            self.collect_var_decl_names_in_stmt(stmt, names);
+          }
+        }
+      }
+      Stmt::GlobalDecl(global) => {
+        for stmt in global.stx.body.iter() {
+          self.collect_var_decl_names_in_stmt(stmt, names);
+        }
+      }
+
+      _ => {}
+    }
+  }
+
+  fn collect_var_decl_names_in_pat(&self, pat: &Node<AstPat>, names: &mut HashSet<String>) {
+    match pat.stx.as_ref() {
+      AstPat::Id(id) => {
+        names.insert(id.stx.name.clone());
+      }
+      AstPat::Arr(arr) => {
+        for elem in arr.stx.elements.iter().flatten() {
+          self.collect_var_decl_names_in_pat(&elem.target, names);
+        }
+        if let Some(rest) = &arr.stx.rest {
+          self.collect_var_decl_names_in_pat(rest, names);
+        }
+      }
+      AstPat::Obj(obj) => {
+        for prop in obj.stx.properties.iter() {
+          self.collect_var_decl_names_in_pat(&prop.stx.target, names);
+        }
+        if let Some(rest) = &obj.stx.rest {
+          self.collect_var_decl_names_in_pat(rest, names);
+        }
+      }
+      AstPat::AssignTarget(_) => {}
+    }
+  }
+
   fn check_stmt_list(&mut self, stmts: &[Node<Stmt>]) {
+    self.hoist_function_decls_in_stmt_list(stmts);
     for (idx, stmt) in stmts.iter().enumerate() {
       if idx % 128 == 0 {
         self.check_cancelled();
@@ -2502,8 +2723,14 @@ impl<'a> Checker<'a> {
           ForInOfLhs::Assign(pat) => {
             self.check_pat(pat, self.store.primitive_ids().unknown);
           }
-          ForInOfLhs::Decl((_, pat_decl)) => {
-            self.check_pat(&pat_decl.stx.pat, self.store.primitive_ids().unknown);
+          ForInOfLhs::Decl((mode, pat_decl)) => {
+            let ty = self.store.primitive_ids().unknown;
+            if matches!(mode, VarDeclMode::Var) {
+              let var_scope = self.current_var_scope_index();
+              self.bind_pattern_in_scope(&pat_decl.stx.pat, ty, var_scope);
+            } else {
+              self.check_pat(&pat_decl.stx.pat, ty);
+            }
           }
         }
         self.check_expr(&for_in.stx.rhs);
@@ -2517,8 +2744,14 @@ impl<'a> Checker<'a> {
           ForInOfLhs::Assign(pat) => {
             self.check_pat(pat, self.store.primitive_ids().unknown);
           }
-          ForInOfLhs::Decl((_, pat_decl)) => {
-            self.check_pat(&pat_decl.stx.pat, self.store.primitive_ids().unknown);
+          ForInOfLhs::Decl((mode, pat_decl)) => {
+            let ty = self.store.primitive_ids().unknown;
+            if matches!(mode, VarDeclMode::Var) {
+              let var_scope = self.current_var_scope_index();
+              self.bind_pattern_in_scope(&pat_decl.stx.pat, ty, var_scope);
+            } else {
+              self.check_pat(&pat_decl.stx.pat, ty);
+            }
           }
         }
         self.check_expr(&for_of.stx.rhs);
@@ -2570,17 +2803,7 @@ impl<'a> Checker<'a> {
         if let Some(name) = func.stx.name.as_ref() {
           let name_str = name.stx.name.clone();
           let fn_ty = self.function_type(&func.stx.function);
-          if let Some(existing) = self.lookup(&name_str) {
-            let has_callables = !callable_signatures(self.store.as_ref(), existing.ty).is_empty();
-            let ty = if has_callables {
-              existing.ty
-            } else {
-              self.store.intersection(vec![existing.ty, fn_ty])
-            };
-            self.insert_binding(name_str, ty, Vec::new());
-          } else {
-            self.insert_binding(name_str, fn_ty, Vec::new());
-          }
+          self.bind_function_decl_name(name_str, fn_ty);
         }
       }
       Stmt::ClassDecl(class_decl) => {
@@ -2711,7 +2934,12 @@ impl<'a> Checker<'a> {
           );
         }
       }
-      self.check_pat(&declarator.pattern.stx.pat, final_ty);
+      if matches!(decl.stx.mode, VarDeclMode::Var) {
+        let var_scope = self.current_var_scope_index();
+        self.bind_pattern_in_scope(&declarator.pattern.stx.pat, final_ty, var_scope);
+      } else {
+        self.check_pat(&declarator.pattern.stx.pat, final_ty);
+      }
     }
   }
 
@@ -2786,10 +3014,16 @@ impl<'a> Checker<'a> {
       }
 
       checker.scopes.push(scope);
+      checker.var_scopes.push(checker.scopes.len().saturating_sub(1));
       match &ns.stx.body {
-        NamespaceBody::Block(stmts) => checker.check_stmt_list(stmts),
+        NamespaceBody::Block(stmts) => {
+          checker.hoist_function_decls_in_stmt_list(stmts);
+          checker.hoist_var_decls_in_stmt_tree(stmts);
+          checker.check_stmt_list(stmts)
+        }
         NamespaceBody::Namespace(inner) => check_ns(checker, inner, path),
       }
+      checker.var_scopes.pop();
       let scope = checker.scopes.pop().unwrap_or_default();
       checker.namespace_scopes.insert(key, scope);
       path.pop();
@@ -7162,7 +7396,7 @@ impl<'a> Checker<'a> {
     let prim = self.store.primitive_ids();
     match left.stx.as_ref() {
       AstExpr::Id(id) => {
-        if let Some(binding) = self.lookup(&id.stx.name) {
+        if let Some((scope_idx, binding)) = self.lookup_with_scope(&id.stx.name) {
           let mut value_ty = if matches!(op, OperatorName::Assignment) {
             self.check_expr_with_expected(right, binding.ty)
           } else {
@@ -7198,7 +7432,7 @@ impl<'a> Checker<'a> {
               },
             ));
           }
-          self.insert_binding(id.stx.name.clone(), value_ty, binding.type_params);
+          self.insert_binding_in_scope(scope_idx, id.stx.name.clone(), value_ty, binding.type_params);
           return value_ty;
         } else {
           let value_ty = self.check_expr(right);
@@ -7207,7 +7441,7 @@ impl<'a> Checker<'a> {
         }
       }
       AstExpr::IdPat(id) => {
-        if let Some(binding) = self.lookup(&id.stx.name) {
+        if let Some((scope_idx, binding)) = self.lookup_with_scope(&id.stx.name) {
           let mut value_ty = if matches!(op, OperatorName::Assignment) {
             self.check_expr_with_expected(right, binding.ty)
           } else {
@@ -7243,7 +7477,7 @@ impl<'a> Checker<'a> {
               },
             ));
           }
-          self.insert_binding(id.stx.name.clone(), value_ty, binding.type_params);
+          self.insert_binding_in_scope(scope_idx, id.stx.name.clone(), value_ty, binding.type_params);
           return value_ty;
         } else {
           let value_ty = self.check_expr(right);
@@ -7467,8 +7701,10 @@ impl<'a> Checker<'a> {
       expected_sig.ret
     });
     self.scopes.push(Scope::default());
+    self.var_scopes.push(self.scopes.len().saturating_sub(1));
     self.bind_params(func, &[], Some(&expected_sig));
     self.check_function_body(func);
+    self.var_scopes.pop();
     self.scopes.pop();
 
     let prim = self.store.primitive_ids();
@@ -7698,6 +7934,10 @@ impl<'a> Checker<'a> {
     self.bind_pattern_with_type_params(pat, value, Vec::new());
   }
 
+  fn bind_pattern_in_scope(&mut self, pat: &Node<AstPat>, value: TypeId, scope_index: usize) {
+    self.bind_pattern_with_type_params_in_scope(pat, value, Vec::new(), scope_index);
+  }
+
   fn bind_pattern_with_type_params(
     &mut self,
     pat: &Node<AstPat>,
@@ -7711,6 +7951,35 @@ impl<'a> Checker<'a> {
       }
       AstPat::Arr(arr) => self.bind_array_pattern(arr, value, type_params),
       AstPat::Obj(obj) => self.bind_object_pattern(obj, value, type_params),
+      AstPat::AssignTarget(expr) => {
+        let target_ty = self.check_expr(expr);
+        if !self.relate.is_assignable(value, target_ty) {
+          self.diagnostics.push(codes::TYPE_MISMATCH.error(
+            "assignment type mismatch",
+            Span {
+              file: self.file,
+              range: loc_to_range(self.file, pat.loc),
+            },
+          ));
+        }
+      }
+    }
+  }
+
+  fn bind_pattern_with_type_params_in_scope(
+    &mut self,
+    pat: &Node<AstPat>,
+    value: TypeId,
+    type_params: Vec<TypeParamDecl>,
+    scope_index: usize,
+  ) {
+    self.record_pat_type(pat.loc, value);
+    match pat.stx.as_ref() {
+      AstPat::Id(id) => {
+        self.insert_binding_in_scope(scope_index, id.stx.name.clone(), value, type_params);
+      }
+      AstPat::Arr(arr) => self.bind_array_pattern_in_scope(arr, value, type_params, scope_index),
+      AstPat::Obj(obj) => self.bind_object_pattern_in_scope(obj, value, type_params, scope_index),
       AstPat::AssignTarget(expr) => {
         let target_ty = self.check_expr(expr);
         if !self.relate.is_assignable(value, target_ty) {
@@ -7782,6 +8051,61 @@ impl<'a> Checker<'a> {
     }
   }
 
+  fn bind_array_pattern_in_scope(
+    &mut self,
+    arr: &Node<ArrPat>,
+    value: TypeId,
+    type_params: Vec<TypeParamDecl>,
+    scope_index: usize,
+  ) {
+    let prim = self.store.primitive_ids();
+    let element_ty = match self.store.type_kind(value) {
+      TypeKind::Array { ty, .. } => ty,
+      TypeKind::Tuple(elems) => elems.first().map(|e| e.ty).unwrap_or(prim.unknown),
+      TypeKind::Any => prim.any,
+      _ => prim.unknown,
+    };
+    for (idx, elem) in arr.stx.elements.iter().enumerate() {
+      if let Some(elem) = elem {
+        let mut target_ty = match self.store.type_kind(value) {
+          TypeKind::Tuple(elems) => elems.get(idx).map(|e| e.ty).unwrap_or(element_ty),
+          _ => element_ty,
+        };
+        if let Some(default) = &elem.default_value {
+          let default_ty = self.check_expr(default);
+          target_ty = self.store.union(vec![target_ty, default_ty]);
+        }
+        self.bind_pattern_in_scope(&elem.target, target_ty, scope_index);
+      }
+    }
+    if let Some(rest) = &arr.stx.rest {
+      let rest_ty = match self.store.type_kind(value) {
+        TypeKind::Array { ty, readonly } => self.store.intern_type(TypeKind::Array { ty, readonly }),
+        TypeKind::Any => self.store.intern_type(TypeKind::Array {
+          ty: prim.any,
+          readonly: false,
+        }),
+        TypeKind::Tuple(elems) => {
+          let elems: Vec<TypeId> = elems.into_iter().map(|e| e.ty).collect();
+          let elem_ty = if elems.is_empty() {
+            prim.unknown
+          } else {
+            self.store.union(elems)
+          };
+          self.store.intern_type(TypeKind::Array {
+            ty: elem_ty,
+            readonly: false,
+          })
+        }
+        _ => self.store.intern_type(TypeKind::Array {
+          ty: prim.unknown,
+          readonly: false,
+        }),
+      };
+      self.bind_pattern_with_type_params_in_scope(rest, rest_ty, type_params.clone(), scope_index);
+    }
+  }
+
   fn bind_object_pattern(
     &mut self,
     obj: &Node<ObjPat>,
@@ -7805,6 +8129,33 @@ impl<'a> Checker<'a> {
     }
     if let Some(rest) = &obj.stx.rest {
       self.bind_pattern_with_type_params(rest, value, type_params);
+    }
+  }
+
+  fn bind_object_pattern_in_scope(
+    &mut self,
+    obj: &Node<ObjPat>,
+    value: TypeId,
+    type_params: Vec<TypeParamDecl>,
+    scope_index: usize,
+  ) {
+    let prim = self.store.primitive_ids();
+    let value_is_any = matches!(self.store.type_kind(value), TypeKind::Any);
+    for prop in obj.stx.properties.iter() {
+      let mut prop_ty = if value_is_any { prim.any } else { prim.unknown };
+      if !value_is_any {
+        if let ClassOrObjKey::Direct(direct) = &prop.stx.key {
+          prop_ty = self.member_type(value, &direct.stx.key);
+        }
+      }
+      if let Some(default) = &prop.stx.default_value {
+        let default_ty = self.check_expr(default);
+        prop_ty = self.store.union(vec![prop_ty, default_ty]);
+      }
+      self.bind_pattern_in_scope(&prop.stx.target, prop_ty, scope_index);
+    }
+    if let Some(rest) = &obj.stx.rest {
+      self.bind_pattern_with_type_params_in_scope(rest, value, type_params, scope_index);
     }
   }
 
@@ -9160,6 +9511,7 @@ struct BindingTable {
   expr_bindings: HashMap<ExprId, BindingKey>,
   pat_bindings: HashMap<PatId, BindingKey>,
   param_bindings: HashSet<BindingKey>,
+  var_bindings: HashSet<BindingKey>,
   flow_ids: HashMap<BindingKey, FlowBindingId>,
   flow_to_binding: HashMap<FlowBindingId, BindingKey>,
   next_flow_id: u64,
@@ -9307,6 +9659,9 @@ impl<'a> BindingCollector<'a> {
       if is_param {
         self.table.param_bindings.insert(existing);
       }
+      if hoist {
+        self.table.var_bindings.insert(existing);
+      }
       if let Some(id) = flow_binding {
         self.table.set_flow_binding(existing, id);
       } else {
@@ -9319,6 +9674,9 @@ impl<'a> BindingCollector<'a> {
     self.table.pat_bindings.insert(pat, key);
     if is_param {
       self.table.param_bindings.insert(key);
+    }
+    if hoist {
+      self.table.var_bindings.insert(key);
     }
     if let Some(id) = flow_binding {
       self.table.set_flow_binding(key, id);
@@ -9932,6 +10290,15 @@ impl<'a> FlowBodyChecker<'a> {
     for binding in self.param_bindings.iter() {
       if let Some(id) = self.bindings.flow_binding_for_key(*binding) {
         initial_env.push((id, *binding, self.binding_type(*binding)));
+      }
+    }
+    let prim = self.store.primitive_ids();
+    for binding in self.bindings.var_bindings.iter() {
+      if self.param_bindings.contains(binding) {
+        continue;
+      }
+      if let Some(id) = self.bindings.flow_binding_for_key(*binding) {
+        initial_env.push((id, *binding, prim.unknown));
       }
     }
     in_envs[cfg.entry.0] = Some(Env::with_initial(&initial_env));
