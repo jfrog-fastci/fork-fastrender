@@ -71,3 +71,29 @@ fn symbol_to_string_tag_is_installed() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn symbol_length_is_zero() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"Symbol.length === 0"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn symbol_to_primitive_is_non_writable() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var desc = Reflect.getOwnPropertyDescriptor(Symbol.prototype, Symbol.toPrimitive);
+        desc &&
+          desc.writable === false &&
+          desc.enumerable === false &&
+          desc.configurable === true &&
+          typeof desc.value === "function" &&
+          desc.value.name === "[Symbol.toPrimitive]" &&
+          desc.value.length === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

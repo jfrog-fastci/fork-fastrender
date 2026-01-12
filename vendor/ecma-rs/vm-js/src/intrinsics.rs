@@ -2061,7 +2061,8 @@ impl Intrinsics {
       scope.define_property(
         date_prototype,
         PropertyKey::Symbol(well_known_symbols.to_primitive),
-        data_desc(Value::Object(to_prim_fn), true, false, true),
+        // Per ECMA-262, `Date.prototype[@@toPrimitive]` is non-writable.
+        data_desc(Value::Object(to_prim_fn), false, false, true),
       )?;
     }
 
@@ -2150,7 +2151,7 @@ impl Intrinsics {
     let symbol_call = vm.register_native_call(builtins::symbol_constructor_call)?;
     let symbol_name = scope.alloc_string("Symbol")?;
     let symbol_constructor =
-      alloc_rooted_native_function(scope, roots, symbol_call, None, symbol_name, 1)?;
+      alloc_rooted_native_function(scope, roots, symbol_call, None, symbol_name, 0)?;
     scope
       .heap_mut()
       .object_set_prototype(symbol_constructor, Some(function_prototype))?;
@@ -2167,7 +2168,8 @@ impl Intrinsics {
     scope.define_property(
       symbol_constructor,
       common.length,
-      data_desc(Value::Number(1.0), false, false, true),
+      // Per ECMA-262, `Symbol([description])` has no required parameters.
+      data_desc(Value::Number(0.0), false, false, true),
     )?;
     scope.define_property(
       symbol_prototype,
@@ -2222,7 +2224,8 @@ impl Intrinsics {
       scope.define_property(
         symbol_prototype,
         PropertyKey::Symbol(well_known_symbols.to_primitive),
-        data_desc(Value::Object(to_prim_fn), true, false, true),
+        // Per ECMA-262, `Symbol.prototype[@@toPrimitive]` is non-writable.
+        data_desc(Value::Object(to_prim_fn), false, false, true),
       )?;
     }
 
