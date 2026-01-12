@@ -37494,6 +37494,7 @@ mod tests {
       client_y: 34.0,
       button: 0,
       buttons: 1,
+      detail: 1,
       ctrl_key: true,
       shift_key: false,
       alt_key: true,
@@ -41433,10 +41434,12 @@ mod tests {
         doc2_obj,
         Some(platform.prototype_for(DomInterface::Document)),
       )?;
+      let doc2_key = vm_js::WeakGcObject::from(doc2_obj);
       platform.register_wrapper(
         scope.heap(),
         doc2_obj,
-        DomNodeKey::new(doc2_id, NodeId::from_index(0)),
+        doc2_key,
+        NodeId::from_index(0),
         DomInterface::Document,
       );
 
