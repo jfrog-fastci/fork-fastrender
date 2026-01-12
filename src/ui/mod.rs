@@ -28,6 +28,7 @@ pub mod url;
 pub mod worker;
 pub mod zoom;
 pub mod motion;
+pub mod loading_overlay;
 // Viewport-change throttling is used only by the windowed browser UI, but we compile it for unit
 // tests even without `browser_ui` so it stays cheap to validate.
 #[cfg(any(test, feature = "browser_ui"))]

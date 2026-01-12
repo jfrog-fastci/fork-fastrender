@@ -4784,6 +4784,7 @@ name = "vm-js"
 version = "0.1.0"
 dependencies = [
  "diagnostics",
+ "fast-float",
  "hir-js",
  "parse-js",
  "ryu",

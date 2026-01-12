@@ -1115,6 +1115,12 @@ struct App {
   page_viewport_css: Option<(u32, u32)>,
   page_input_tab: Option<fastrender::ui::TabId>,
   page_input_mapping: Option<fastrender::ui::InputMapping>,
+  /// Whether the page-area loading overlay is currently blocking pointer events from reaching the
+  /// page worker.
+  ///
+  /// We block pointer interactions while a tab is loading a navigation but still showing the last
+  /// rendered frame to avoid interacting with stale content.
+  page_loading_overlay_blocks_input: bool,
   overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars,
   overlay_scrollbar_visibility: fastrender::ui::scrollbars::OverlayScrollbarVisibilityState,
   scrollbar_drag: Option<ScrollbarDrag>,
@@ -1443,6 +1449,7 @@ error: {err}",
       page_viewport_css: None,
       page_input_tab: None,
       page_input_mapping: None,
+      page_loading_overlay_blocks_input: false,
       overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars::default(),
       overlay_scrollbar_visibility: fastrender::ui::scrollbars::OverlayScrollbarVisibilityState::default(),
       scrollbar_drag: None,
@@ -1766,6 +1773,11 @@ error: {err}",
     let Some(msg) = self.pending_pointer_move.take() else {
       return;
     };
+    if self.page_loading_overlay_blocks_input {
+      // While the page-area loading overlay is active we intentionally suppress pointer-move
+      // updates so the render worker doesn't update hover state/cursor based on stale content.
+      return;
+    }
     if let Some(pos) = self.last_cursor_pos_points {
       if self
         .open_select_dropdown_rect
@@ -1785,7 +1797,7 @@ error: {err}",
     use fastrender::ui::CursorKind;
     use winit::window::CursorIcon;
 
-    let overlay_intercepts = self.last_cursor_pos_points.is_some_and(|pos| {
+    let popup_intercepts = self.last_cursor_pos_points.is_some_and(|pos| {
       self
         .open_select_dropdown_rect
         .is_some_and(|rect| rect.contains(pos))
@@ -1794,16 +1806,20 @@ error: {err}",
           .is_some_and(|rect| rect.contains(pos))
     });
 
-    if !self.cursor_in_page || overlay_intercepts {
+    if !self.cursor_in_page || popup_intercepts {
       self.page_cursor_override = None;
       return;
     }
 
-    let kind = self
-      .browser_state
-      .active_tab()
-      .map(|tab| tab.cursor)
-      .unwrap_or(CursorKind::Default);
+    let kind = if self.page_loading_overlay_blocks_input {
+      CursorKind::Default
+    } else {
+      self
+        .browser_state
+        .active_tab()
+        .map(|tab| tab.cursor)
+        .unwrap_or(CursorKind::Default)
+    };
     if self.page_cursor_override == Some(kind) {
       return;
     }
@@ -2345,6 +2361,7 @@ error: {err}",
           });
       });
   }
+
   fn render_context_menu(&mut self, ctx: &egui::Context) {
     use fastrender::ui::ChromeAction;
 
@@ -2847,6 +2864,10 @@ error: {err}",
     if !self.hover_sync_pending {
       return;
     }
+    if self.page_loading_overlay_blocks_input {
+      // Defer hover sync until loading finishes; we don't want to hit-test against stale content.
+      return;
+    }
 
     let Some(tab_id) = self.page_input_tab else {
       // We don't yet know where the page image is drawn (e.g. no frame uploaded). Retry on the
@@ -3136,6 +3157,13 @@ error: {err}",
           return;
         };
 
+        if self.page_loading_overlay_blocks_input && !self.pointer_captured {
+          // The rendered image is stale while a navigation is loading. Track whether the cursor is
+          // inside the page rect (for cursor overrides), but do not forward hover updates.
+          self.cursor_in_page = now_in_page;
+          return;
+        }
+
         // Send pointer moves for:
         // - hover updates while inside the page rect,
         // - a single sentinel move when leaving the page to clear hover,
@@ -3253,6 +3281,15 @@ error: {err}",
             // is in progress, ignore additional mouse button presses until the primary button is
             // released/cancelled.
             if self.pointer_captured {
+              return;
+            }
+            if self.page_loading_overlay_blocks_input
+              && self
+                .page_rect_points
+                .is_some_and(|page_rect| page_rect.contains(pos_points))
+            {
+              // While a navigation is loading we show a scrim/spinner over the last frame. Ignore
+              // new pointer interactions so users can't interact with stale content.
               return;
             }
 
@@ -4178,6 +4215,8 @@ error: {err}",
       self.page_viewport_css = None;
       self.page_input_tab = None;
       self.page_input_mapping = None;
+      let prev_loading_overlay_blocks_input = self.page_loading_overlay_blocks_input;
+      self.page_loading_overlay_blocks_input = false;
       self.overlay_scrollbars = fastrender::ui::scrollbars::OverlayScrollbars::default();
 
       let Some(active_tab) = self.browser_state.active_tab_id() else {
@@ -4201,7 +4240,17 @@ error: {err}",
         }
       }
 
+      let (tab_loading, tab_stage) = self
+        .browser_state
+        .tab(active_tab)
+        .map(|t| (t.loading, t.stage))
+        .unwrap_or((false, None));
+
       if let Some(tex) = self.tab_textures.get(&active_tab) {
+        let loading_ui =
+          fastrender::ui::loading_overlay::decide_page_loading_ui(true, tab_loading, tab_stage);
+        self.page_loading_overlay_blocks_input = loading_ui.intercept_pointer_events;
+
         let viewport_css_for_mapping = self
           .browser_state
           .tab(active_tab)
@@ -4226,6 +4275,34 @@ error: {err}",
         self.page_input_mapping = Some(mapping);
         if self.page_has_focus {
           response.request_focus();
+        }
+
+        if prev_loading_overlay_blocks_input != self.page_loading_overlay_blocks_input {
+          if self.page_loading_overlay_blocks_input {
+            // Loading overlay is now active: close any page-scoped UI (popups) and stop in-flight
+            // pointer drags so stale content can't be interacted with.
+            if self.open_select_dropdown.is_some() {
+              self.cancel_select_dropdown();
+            }
+            if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
+              self.close_context_menu();
+            }
+            if self.scrollbar_drag.is_some() {
+              self.cancel_scrollbar_drag();
+            }
+            if self.pointer_captured {
+              self.cancel_pointer_capture();
+            }
+            self.pending_pointer_move = None;
+            if let Some(tab) = self.browser_state.tab_mut(active_tab) {
+              tab.hovered_url = None;
+              tab.cursor = fastrender::ui::CursorKind::Default;
+            }
+          } else {
+            // Loading overlay is gone: re-sync hover state so cursor + hovered URL update
+            // immediately.
+            self.hover_sync_pending = true;
+          }
         }
 
         // Overlay scrollbars (visual only; interactions are handled by the winit event path so we
@@ -4423,7 +4500,33 @@ error: {err}",
           }
         }
 
-        if !wheel_events.is_empty() && !wheel_blocked_by_dropdown && response.hovered() {
+        if matches!(loading_ui.kind, fastrender::ui::loading_overlay::PageLoadingUiKind::Overlay) {
+          let painter = ui.painter();
+          let scrim = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 44);
+          painter.rect_filled(response.rect, egui::Rounding::same(0.0), scrim);
+
+          let center = response.rect.center();
+          egui::Area::new(egui::Id::new(("fastr_page_loading_overlay", active_tab.0)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(center.x - 19.0, center.y - 19.0))
+            .show(&ctx, |ui| {
+              let fill = ui.visuals().panel_fill;
+              let fill = egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 220);
+              egui::Frame::none()
+                .fill(fill)
+                .rounding(egui::Rounding::same(10.0))
+                .inner_margin(egui::Margin::same(10.0))
+                .show(ui, |ui| {
+                  ui.add(egui::Spinner::new().size(18.0));
+                });
+            });
+        }
+
+        if !wheel_events.is_empty()
+          && !wheel_blocked_by_dropdown
+          && response.hovered()
+          && !self.page_loading_overlay_blocks_input
+        {
           let Some(hover_pos) = response.hover_pos() else {
             return;
           };
@@ -4454,15 +4557,52 @@ error: {err}",
           }
         }
       } else {
-        let loading = self
-          .browser_state
-          .tab(active_tab)
-          .map(|t| t.loading)
-          .unwrap_or(false);
-        ui.label(if loading {
-          "Loading…"
-        } else {
-          "Waiting for first frame…"
+        let loading_ui =
+          fastrender::ui::loading_overlay::decide_page_loading_ui(false, tab_loading, tab_stage);
+
+        let size_points = logical_viewport_points.max(egui::Vec2::ZERO);
+        let (rect, _) = ui.allocate_exact_size(size_points, egui::Sense::hover());
+
+        let painter = ui.painter();
+        painter.rect_filled(rect, egui::Rounding::same(0.0), ui.visuals().panel_fill);
+
+        if loading_ui.show_skeleton {
+          let dark = ui.visuals().dark_mode;
+          let skeleton = if dark {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24)
+          } else {
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 24)
+          };
+          let margin_x = 32.0;
+          let line_h = 14.0;
+          let gap_y = 10.0;
+          let rounding = egui::Rounding::same(5.0);
+
+          let x = rect.left() + margin_x;
+          let max_w = (rect.width() - margin_x * 2.0).max(0.0);
+          let mut y = rect.top() + 48.0;
+          for frac in [0.55, 0.9, 0.8, 0.95, 0.6, 0.85] {
+            let w = (max_w * frac).max(0.0);
+            let line = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, line_h));
+            painter.rect_filled(line, rounding, skeleton);
+            y += line_h + gap_y;
+          }
+        }
+
+        ui.allocate_ui_at_rect(rect, |ui| {
+          ui.with_layout(
+            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+            |ui| {
+              ui.spacing_mut().item_spacing.y = 10.0;
+              ui.add(egui::Spinner::new().size(32.0));
+              if let Some(headline) = loading_ui.headline {
+                ui.label(egui::RichText::new(headline).strong().size(16.0));
+              }
+              if let Some(detail) = loading_ui.detail {
+                ui.label(egui::RichText::new(detail).small());
+              }
+            },
+          );
         });
       }
     });
