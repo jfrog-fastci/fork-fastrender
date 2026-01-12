@@ -114,8 +114,8 @@ fn script_load_listeners_can_schedule_microtasks_via_event_loop_web_apis() -> Re
 fn click_listener_registered_with_abort_signal_is_removed_when_signal_aborts() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
- <div id="target"></div>
- <script>
+  <div id="target"></div>
+  <script>
    var t = document.getElementById("target");
    var c = new AbortController();
    t.addEventListener("click", function () {
@@ -140,6 +140,43 @@ fn click_listener_registered_with_abort_signal_is_removed_when_signal_aborts() -
     tab.dom().get_attribute(target, "data-fired").unwrap(),
     None,
     "expected click listener to be removed when its AbortSignal aborts"
+  );
+  Ok(())
+}
+
+#[test]
+fn click_listener_receives_mouse_event_with_ui_event_detail() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let html = r#"<!doctype html>
+ <div id="target"></div>
+ <script>
+   var t = document.getElementById("target");
+   t.addEventListener("click", function (ev) {
+    t.setAttribute("data-is-mouse-event", String(ev instanceof MouseEvent));
+    t.setAttribute("data-detail", String(ev.detail));
+  });
+</script>
+"#;
+
+  let executor = VmJsBrowserTabExecutor::new();
+  let mut tab = BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+
+  let target = tab
+    .dom()
+    .get_element_by_id("target")
+    .expect("expected <div id=target> to be present");
+
+  tab.dispatch_click_event(target)?;
+  assert_eq!(
+    tab
+      .dom()
+      .get_attribute(target, "data-is-mouse-event")
+      .unwrap(),
+    Some("true")
+  );
+  assert_eq!(
+    tab.dom().get_attribute(target, "data-detail").unwrap(),
+    Some("1")
   );
   Ok(())
 }

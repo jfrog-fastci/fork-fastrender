@@ -1879,7 +1879,11 @@ const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
+const UI_EVENT_PROTOTYPE_KEY: &str = "__fastrender_ui_event_prototype";
 const MOUSE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_mouse_event_prototype";
+const KEYBOARD_EVENT_PROTOTYPE_KEY: &str = "__fastrender_keyboard_event_prototype";
+const FOCUS_EVENT_PROTOTYPE_KEY: &str = "__fastrender_focus_event_prototype";
+const INPUT_EVENT_PROTOTYPE_KEY: &str = "__fastrender_input_event_prototype";
 const POP_STATE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_pop_state_event_prototype";
 const HASH_CHANGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_hash_change_event_prototype";
 const STORAGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_storage_event_prototype";
@@ -13171,16 +13175,54 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     document_obj: GcObject,
     event: &web_events::Event,
   ) -> Result<GcObject, VmError> {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum EventInterface {
+      Event,
+      CustomEvent,
+      StorageEvent,
+      MouseEvent,
+      KeyboardEvent,
+      FocusEvent,
+      InputEvent,
+    }
+
     let wants_storage_event =
       event.storage.is_some() || (event.type_ == "storage" && event.detail.is_none());
-    let (kind, proto_key_name) = if event.mouse.is_some() {
-      (BrandedEventKind::Event, MOUSE_EVENT_PROTOTYPE_KEY)
-    } else if wants_storage_event {
-      (BrandedEventKind::StorageEvent, STORAGE_EVENT_PROTOTYPE_KEY)
+    let interface = if wants_storage_event {
+      EventInterface::StorageEvent
     } else if event.detail.is_some() {
-      (BrandedEventKind::CustomEvent, CUSTOM_EVENT_PROTOTYPE_KEY)
+      EventInterface::CustomEvent
+    } else if event.mouse.is_some()
+      || matches!(
+        event.type_.as_str(),
+        "click"
+          | "mousedown"
+          | "mouseup"
+          | "mousemove"
+          | "mouseenter"
+          | "mouseleave"
+          | "mouseover"
+          | "mouseout"
+      )
+    {
+      EventInterface::MouseEvent
     } else {
-      (BrandedEventKind::Event, EVENT_PROTOTYPE_KEY)
+      match event.type_.as_str() {
+        "keydown" | "keyup" | "keypress" => EventInterface::KeyboardEvent,
+        "focus" | "blur" | "focusin" | "focusout" => EventInterface::FocusEvent,
+        "input" => EventInterface::InputEvent,
+        _ => EventInterface::Event,
+      }
+    };
+
+    let (kind, proto_key_name) = match interface {
+      EventInterface::StorageEvent => (BrandedEventKind::StorageEvent, STORAGE_EVENT_PROTOTYPE_KEY),
+      EventInterface::CustomEvent => (BrandedEventKind::CustomEvent, CUSTOM_EVENT_PROTOTYPE_KEY),
+      EventInterface::MouseEvent => (BrandedEventKind::Event, MOUSE_EVENT_PROTOTYPE_KEY),
+      EventInterface::KeyboardEvent => (BrandedEventKind::Event, KEYBOARD_EVENT_PROTOTYPE_KEY),
+      EventInterface::FocusEvent => (BrandedEventKind::Event, FOCUS_EVENT_PROTOTYPE_KEY),
+      EventInterface::InputEvent => (BrandedEventKind::Event, INPUT_EVENT_PROTOTYPE_KEY),
+      EventInterface::Event => (BrandedEventKind::Event, EVENT_PROTOTYPE_KEY),
     };
     let proto_key = alloc_key(scope, proto_key_name)?;
     let mut proto = scope
@@ -13239,7 +13281,11 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         return Err(VmError::InvariantViolation(match proto_key_name {
           STORAGE_EVENT_PROTOTYPE_KEY => "document is missing required StorageEvent prototype",
           CUSTOM_EVENT_PROTOTYPE_KEY => "document is missing required CustomEvent prototype",
+          UI_EVENT_PROTOTYPE_KEY => "document is missing required UIEvent prototype",
           MOUSE_EVENT_PROTOTYPE_KEY => "document is missing required MouseEvent prototype",
+          KEYBOARD_EVENT_PROTOTYPE_KEY => "document is missing required KeyboardEvent prototype",
+          FOCUS_EVENT_PROTOTYPE_KEY => "document is missing required FocusEvent prototype",
+          INPUT_EVENT_PROTOTYPE_KEY => "document is missing required InputEvent prototype",
           _ => "document is missing required Event prototype",
         }))
       }
@@ -13280,9 +13326,28 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       data_desc(Value::Bool(event.composed)),
     )?;
 
-    if let Some(detail) = event.detail {
+    if interface == EventInterface::CustomEvent {
       let detail_key = alloc_key(scope, "detail")?;
+      let detail = event.detail.unwrap_or(Value::Null);
       scope.define_property(event_obj, detail_key, data_desc(detail))?;
+    } else if matches!(
+      interface,
+      EventInterface::MouseEvent
+        | EventInterface::KeyboardEvent
+        | EventInterface::FocusEvent
+        | EventInterface::InputEvent
+    ) {
+      let detail_key = alloc_key(scope, "detail")?;
+      let detail = if interface == EventInterface::MouseEvent && event.type_ == "click" {
+        1.0
+      } else {
+        0.0
+      };
+      scope.define_property(
+        event_obj,
+        detail_key,
+        read_only_data_desc(Value::Number(detail)),
+      )?;
     } else if wants_storage_event && event.storage.is_none() {
       // StorageEvent default fields for host-dispatched storage events without a payload.
       let key_key = alloc_key(scope, "key")?;
@@ -13301,6 +13366,115 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         storage_area_key,
         read_only_data_desc(Value::Null),
       )?;
+    }
+
+    match interface {
+      EventInterface::MouseEvent => {
+        let mouse = event.mouse.unwrap_or_default();
+
+        // WHATWG UI Events: minimal MouseEvent field surface used by common handlers.
+        let screen_x_key = alloc_key(scope, "screenX")?;
+        scope.define_property(event_obj, screen_x_key, read_only_data_desc(Value::Number(0.0)))?;
+        let screen_y_key = alloc_key(scope, "screenY")?;
+        scope.define_property(event_obj, screen_y_key, read_only_data_desc(Value::Number(0.0)))?;
+
+        let client_x_key = alloc_key(scope, "clientX")?;
+        scope.define_property(
+          event_obj,
+          client_x_key,
+          read_only_data_desc(Value::Number(mouse.client_x)),
+        )?;
+        let client_y_key = alloc_key(scope, "clientY")?;
+        scope.define_property(
+          event_obj,
+          client_y_key,
+          read_only_data_desc(Value::Number(mouse.client_y)),
+        )?;
+
+        let button_key = alloc_key(scope, "button")?;
+        scope.define_property(
+          event_obj,
+          button_key,
+          read_only_data_desc(Value::Number(mouse.button as f64)),
+        )?;
+        let buttons_key = alloc_key(scope, "buttons")?;
+        scope.define_property(
+          event_obj,
+          buttons_key,
+          read_only_data_desc(Value::Number(mouse.buttons as f64)),
+        )?;
+
+        let ctrl_key = alloc_key(scope, "ctrlKey")?;
+        scope.define_property(
+          event_obj,
+          ctrl_key,
+          read_only_data_desc(Value::Bool(mouse.ctrl_key)),
+        )?;
+        let shift_key = alloc_key(scope, "shiftKey")?;
+        scope.define_property(
+          event_obj,
+          shift_key,
+          read_only_data_desc(Value::Bool(mouse.shift_key)),
+        )?;
+        let alt_key = alloc_key(scope, "altKey")?;
+        scope.define_property(
+          event_obj,
+          alt_key,
+          read_only_data_desc(Value::Bool(mouse.alt_key)),
+        )?;
+        let meta_key = alloc_key(scope, "metaKey")?;
+        scope.define_property(
+          event_obj,
+          meta_key,
+          read_only_data_desc(Value::Bool(mouse.meta_key)),
+        )?;
+
+        let related_target_key = alloc_key(scope, "relatedTarget")?;
+        scope.define_property(
+          event_obj,
+          related_target_key,
+          read_only_data_desc(Value::Null),
+        )?;
+      }
+      EventInterface::KeyboardEvent => {
+        let empty = scope.alloc_string("")?;
+        scope.push_root(Value::String(empty))?;
+        let key_key = alloc_key(scope, "key")?;
+        scope.define_property(event_obj, key_key, read_only_data_desc(Value::String(empty)))?;
+        let code_key = alloc_key(scope, "code")?;
+        scope.define_property(event_obj, code_key, read_only_data_desc(Value::String(empty)))?;
+        for key in ["ctrlKey", "shiftKey", "altKey", "metaKey", "repeat"] {
+          let k = alloc_key(scope, key)?;
+          scope.define_property(event_obj, k, read_only_data_desc(Value::Bool(false)))?;
+        }
+      }
+      EventInterface::FocusEvent => {
+        let related_target_key = alloc_key(scope, "relatedTarget")?;
+        scope.define_property(
+          event_obj,
+          related_target_key,
+          read_only_data_desc(Value::Null),
+        )?;
+      }
+      EventInterface::InputEvent => {
+        let data_key = alloc_key(scope, "data")?;
+        scope.define_property(event_obj, data_key, read_only_data_desc(Value::Null))?;
+        let input_type_key = alloc_key(scope, "inputType")?;
+        let empty = scope.alloc_string("")?;
+        scope.push_root(Value::String(empty))?;
+        scope.define_property(
+          event_obj,
+          input_type_key,
+          read_only_data_desc(Value::String(empty)),
+        )?;
+        let is_composing_key = alloc_key(scope, "isComposing")?;
+        scope.define_property(
+          event_obj,
+          is_composing_key,
+          read_only_data_desc(Value::Bool(false)),
+        )?;
+      }
+      EventInterface::Event | EventInterface::CustomEvent | EventInterface::StorageEvent => {}
     }
 
     if let Some(storage) = event.storage.as_ref() {
@@ -23289,6 +23463,30 @@ fn init_window_globals(
     },
   )?;
 
+  let ui_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(ui_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(ui_event_proto, Some(event_proto))?;
+
+  let keyboard_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(keyboard_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(keyboard_event_proto, Some(ui_event_proto))?;
+
+  let focus_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(focus_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(focus_event_proto, Some(ui_event_proto))?;
+
+  let input_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(input_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(input_event_proto, Some(ui_event_proto))?;
+
   let custom_event_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(custom_event_proto))?;
   scope
@@ -23299,7 +23497,7 @@ fn init_window_globals(
   scope.push_root(Value::Object(mouse_event_proto))?;
   scope
     .heap_mut()
-    .object_set_prototype(mouse_event_proto, Some(event_proto))?;
+    .object_set_prototype(mouse_event_proto, Some(ui_event_proto))?;
 
   let init_custom_event_call_id = vm.register_native_call(custom_event_init_custom_event_native)?;
   let init_custom_event_name = scope.alloc_string("initCustomEvent")?;
@@ -23433,6 +23631,126 @@ fn init_window_globals(
       non_configurable_read_only_data_desc(Value::Number(value)),
     )?;
   }
+
+  let ui_event_ctor_name = scope.alloc_string("UIEvent")?;
+  scope.push_root(Value::String(ui_event_ctor_name))?;
+  let ui_event_ctor_func = scope.alloc_native_function(
+    event_ctor_call_id,
+    Some(event_ctor_construct_id),
+    ui_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    ui_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(ui_event_ctor_func))?;
+  scope.define_property(
+    ui_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(ui_event_proto)),
+  )?;
+  scope.define_property(
+    ui_event_proto,
+    constructor_key,
+    data_desc(Value::Object(ui_event_ctor_func)),
+  )?;
+  let ui_event_ctor_key = alloc_key(&mut scope, "UIEvent")?;
+  scope.define_property(
+    global,
+    ui_event_ctor_key,
+    data_desc(Value::Object(ui_event_ctor_func)),
+  )?;
+
+  let keyboard_event_ctor_name = scope.alloc_string("KeyboardEvent")?;
+  scope.push_root(Value::String(keyboard_event_ctor_name))?;
+  let keyboard_event_ctor_func = scope.alloc_native_function(
+    event_ctor_call_id,
+    Some(event_ctor_construct_id),
+    keyboard_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    keyboard_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(keyboard_event_ctor_func))?;
+  scope.define_property(
+    keyboard_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(keyboard_event_proto)),
+  )?;
+  scope.define_property(
+    keyboard_event_proto,
+    constructor_key,
+    data_desc(Value::Object(keyboard_event_ctor_func)),
+  )?;
+  let keyboard_event_ctor_key = alloc_key(&mut scope, "KeyboardEvent")?;
+  scope.define_property(
+    global,
+    keyboard_event_ctor_key,
+    data_desc(Value::Object(keyboard_event_ctor_func)),
+  )?;
+
+  let focus_event_ctor_name = scope.alloc_string("FocusEvent")?;
+  scope.push_root(Value::String(focus_event_ctor_name))?;
+  let focus_event_ctor_func = scope.alloc_native_function(
+    event_ctor_call_id,
+    Some(event_ctor_construct_id),
+    focus_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    focus_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(focus_event_ctor_func))?;
+  scope.define_property(
+    focus_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(focus_event_proto)),
+  )?;
+  scope.define_property(
+    focus_event_proto,
+    constructor_key,
+    data_desc(Value::Object(focus_event_ctor_func)),
+  )?;
+  let focus_event_ctor_key = alloc_key(&mut scope, "FocusEvent")?;
+  scope.define_property(
+    global,
+    focus_event_ctor_key,
+    data_desc(Value::Object(focus_event_ctor_func)),
+  )?;
+
+  let input_event_ctor_name = scope.alloc_string("InputEvent")?;
+  scope.push_root(Value::String(input_event_ctor_name))?;
+  let input_event_ctor_func = scope.alloc_native_function(
+    event_ctor_call_id,
+    Some(event_ctor_construct_id),
+    input_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    input_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(input_event_ctor_func))?;
+  scope.define_property(
+    input_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(input_event_proto)),
+  )?;
+  scope.define_property(
+    input_event_proto,
+    constructor_key,
+    data_desc(Value::Object(input_event_ctor_func)),
+  )?;
+  let input_event_ctor_key = alloc_key(&mut scope, "InputEvent")?;
+  scope.define_property(
+    global,
+    input_event_ctor_key,
+    data_desc(Value::Object(input_event_ctor_func)),
+  )?;
 
   let custom_event_ctor_call_id = vm.register_native_call(custom_event_constructor_native)?;
   let custom_event_ctor_construct_id =
@@ -23748,11 +24066,35 @@ fn init_window_globals(
     custom_event_proto_key,
     data_desc(Value::Object(custom_event_proto)),
   )?;
+  let ui_event_proto_key = alloc_key(&mut scope, UI_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    ui_event_proto_key,
+    data_desc(Value::Object(ui_event_proto)),
+  )?;
   let mouse_event_proto_key = alloc_key(&mut scope, MOUSE_EVENT_PROTOTYPE_KEY)?;
   scope.define_property(
     document_obj,
     mouse_event_proto_key,
     data_desc(Value::Object(mouse_event_proto)),
+  )?;
+  let keyboard_event_proto_key = alloc_key(&mut scope, KEYBOARD_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    keyboard_event_proto_key,
+    data_desc(Value::Object(keyboard_event_proto)),
+  )?;
+  let focus_event_proto_key = alloc_key(&mut scope, FOCUS_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    focus_event_proto_key,
+    data_desc(Value::Object(focus_event_proto)),
+  )?;
+  let input_event_proto_key = alloc_key(&mut scope, INPUT_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    input_event_proto_key,
+    data_desc(Value::Object(input_event_proto)),
   )?;
   let storage_event_proto_key = alloc_key(&mut scope, STORAGE_EVENT_PROTOTYPE_KEY)?;
   scope.define_property(
