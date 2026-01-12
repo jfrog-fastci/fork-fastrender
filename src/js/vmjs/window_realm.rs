@@ -14028,7 +14028,6 @@ fn mutation_observer_notify_native(
       dom_host.mutation_observer_take_deliveries()
     };
     (deliveries, dom_ptr_for_event_registry(host))
-    (deliveries, dom_ptr_for_event_registry(host))
   } else {
     let Some(mut dom_ptr) = (|| {
       let data = vm.user_data_mut::<WindowRealmUserData>()?;
