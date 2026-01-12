@@ -4,12 +4,6 @@ use crate::text::font_db::compute_font_size_adjusted_size;
 use crate::text::font_db::{FontStretch, FontStyle, FontWeight, LoadedFont};
 use std::sync::Arc;
 
-<<<<<<<< HEAD:src/text/tests/font_size_adjust_metrics.rs
-const MVAR_METRICS_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/mvar-metrics-test.ttf"));
-const NOTO_SANS_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/NotoSans-subset.ttf"));
-const NOTO_SANS_MONO_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/NotoSansMono-subset.ttf"));
-const NOTO_SANS_JP_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/NotoSansJP-subset.ttf"));
-========
 const MVAR_METRICS_FONT: &[u8] = include_bytes!(concat!(
   env!("CARGO_MANIFEST_DIR"),
   "/tests/fixtures/fonts/mvar-metrics-test.ttf"
@@ -26,7 +20,6 @@ const NOTO_SANS_JP_FONT: &[u8] = include_bytes!(concat!(
   env!("CARGO_MANIFEST_DIR"),
   "/tests/fixtures/fonts/NotoSansJP-subset.ttf"
 ));
->>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/font_size_adjust_metrics.rs
 
 fn loaded_font(data: &[u8], family: &str) -> LoadedFont {
   LoadedFont {

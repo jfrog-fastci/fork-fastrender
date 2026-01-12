@@ -1,15 +1,15 @@
 use crate::image_compare::{compare_images, decode_png, CompareConfig};
 use crate::paint::text_rasterize::{render_glyph, TextRasterizer};
 use crate::style::color::Rgba;
+use crate::testing::pixmap_to_rgba_image;
 use crate::text::font_db::{FontStretch, FontStyle, FontWeight, LoadedFont};
 use crate::text::pipeline::GlyphPosition;
-use std::path::Path;
 use std::sync::Arc;
 use tiny_skia::Pixmap;
 
 fn load_svg_color_font() -> LoadedFont {
-  let data =
-    std::fs::read("tests/fixtures/fonts/svg-color-glyph-test.ttf").expect("test font missing");
+  let path = crate::testing::fixtures_dir().join("fonts/svg-color-glyph-test.ttf");
+  let data = std::fs::read(&path).expect("test font missing");
   LoadedFont {
     id: None,
     data: Arc::new(data),
@@ -47,37 +47,6 @@ fn painted_bounds(pixmap: &Pixmap) -> Option<(u32, u32, u32, u32)> {
   } else {
     Some((min_x, max_x, min_y, max_y))
   }
-}
-
-fn pixmap_to_rgba_image(pixmap: &Pixmap) -> image::RgbaImage {
-  let width = pixmap.width();
-  let height = pixmap.height();
-  let mut rgba = image::RgbaImage::new(width, height);
-
-  for (dst, src) in rgba
-    .as_mut()
-    .chunks_exact_mut(4)
-    .zip(pixmap.data().chunks_exact(4))
-  {
-    // tiny-skia pixmaps store pixels as premultiplied RGBA.
-    let r = src[0];
-    let g = src[1];
-    let b = src[2];
-    let a = src[3];
-
-    if a == 0 {
-      dst.copy_from_slice(&[0, 0, 0, 0]);
-      continue;
-    }
-
-    let alpha = a as f32 / 255.0;
-    dst[0] = ((r as f32 / alpha).min(255.0)) as u8;
-    dst[1] = ((g as f32 / alpha).min(255.0)) as u8;
-    dst[2] = ((b as f32 / alpha).min(255.0)) as u8;
-    dst[3] = a;
-  }
-
-  rgba
 }
 
 #[test]
@@ -128,22 +97,24 @@ fn svg_glyph_resolves_current_color() {
     "text color should affect SVG glyphs"
   );
 
+  let golden_dir = crate::testing::fixtures_dir().join("golden");
+
   if std::env::var("UPDATE_GOLDEN").is_ok() {
     pixmap_to_rgba_image(&red_pixmap)
-      .save("tests/fixtures/golden/svg_color_glyph_red.png")
+      .save(golden_dir.join("svg_color_glyph_red.png"))
       .expect("failed to save red golden");
     pixmap_to_rgba_image(&blue_pixmap)
-      .save("tests/fixtures/golden/svg_color_glyph_blue.png")
+      .save(golden_dir.join("svg_color_glyph_blue.png"))
       .expect("failed to save blue golden");
   }
 
   let expected_red = decode_png(
-    &std::fs::read(Path::new("tests/fixtures/golden/svg_color_glyph_red.png"))
+    &std::fs::read(golden_dir.join("svg_color_glyph_red.png"))
       .expect("missing red golden"),
   )
   .expect("failed to decode red golden");
   let expected_blue = decode_png(
-    &std::fs::read(Path::new("tests/fixtures/golden/svg_color_glyph_blue.png"))
+    &std::fs::read(golden_dir.join("svg_color_glyph_blue.png"))
       .expect("missing blue golden"),
   )
   .expect("failed to decode blue golden");

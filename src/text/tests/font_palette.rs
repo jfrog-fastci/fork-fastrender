@@ -9,13 +9,11 @@ use crate::text::font_db::FontDatabase;
 use crate::text::font_instance::FontInstance;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapingPipeline;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 fn font_context() -> FontContext {
   let mut db = FontDatabase::empty();
-  let font_path =
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/PaletteTestCOLRv1.ttf");
+  let font_path = crate::testing::fixtures_dir().join("fonts/PaletteTestCOLRv1.ttf");
   let bytes = std::fs::read(&font_path).expect("fixture font should exist");
   db.load_font_data(bytes).expect("load fixture font");
   FontContext::with_database(Arc::new(db))
@@ -121,7 +119,7 @@ fn font_palette_selects_cpal_palettes_and_renders() {
     "palettes should produce distinct renders"
   );
 
-  let golden_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/golden");
+  let golden_dir = crate::testing::fixtures_dir().join("golden");
   let normal_path = golden_dir.join("font_palette_normal.png");
   let dark_path = golden_dir.join("font_palette_dark.png");
 
@@ -278,7 +276,7 @@ fn font_palette_overrides_recolor_colr_glyphs() {
     "currentColor overrides should respond to style color"
   );
 
-  let golden_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/golden");
+  let golden_dir = crate::testing::fixtures_dir().join("golden");
   let override_path_a = golden_dir.join("font_palette_override_current_color_a.png");
   let override_path_b = golden_dir.join("font_palette_override_current_color_b.png");
 

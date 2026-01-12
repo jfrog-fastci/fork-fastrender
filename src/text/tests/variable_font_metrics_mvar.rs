@@ -4,14 +4,10 @@ use rustybuzz::Variation;
 use std::sync::Arc;
 use ttf_parser::Tag;
 
-<<<<<<<< HEAD:src/text/tests/variable_font_metrics_mvar.rs
-const VAR_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/mvar-metrics-test.ttf"));
-========
 const VAR_FONT: &[u8] = include_bytes!(concat!(
   env!("CARGO_MANIFEST_DIR"),
   "/tests/fixtures/fonts/mvar-metrics-test.ttf"
 ));
->>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/variable_font_metrics_mvar.rs
 
 fn loaded_font() -> LoadedFont {
   LoadedFont {

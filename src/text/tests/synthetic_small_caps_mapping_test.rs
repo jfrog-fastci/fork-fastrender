@@ -8,10 +8,6 @@ use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapingPipeline;
 use crate::ComputedStyle;
 
-<<<<<<<< HEAD:src/text/tests/synthetic_small_caps_mapping_test.rs
-const DEJAVU_SANS_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/DejaVuSans-subset.ttf"));
-const NOTO_SANS_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/NotoSans-subset.ttf"));
-========
 const DEJAVU_SANS_FONT: &[u8] = include_bytes!(concat!(
   env!("CARGO_MANIFEST_DIR"),
   "/tests/fixtures/fonts/DejaVuSans-subset.ttf"
@@ -20,7 +16,6 @@ const NOTO_SANS_FONT: &[u8] = include_bytes!(concat!(
   env!("CARGO_MANIFEST_DIR"),
   "/tests/fixtures/fonts/NotoSans-subset.ttf"
 ));
->>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/synthetic_small_caps_mapping_test.rs
 
 #[test]
 fn synthetic_small_caps_preserves_original_byte_ranges() {

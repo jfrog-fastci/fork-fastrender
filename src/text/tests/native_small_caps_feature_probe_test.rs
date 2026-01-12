@@ -6,14 +6,10 @@ use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapingPipeline;
 use crate::ComputedStyle;
 
-<<<<<<<< HEAD:src/text/tests/native_small_caps_feature_probe_test.rs
-const NOTO_SANS_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/NotoSans-subset.ttf"));
-========
 const NOTO_SANS_FONT: &[u8] = include_bytes!(concat!(
   env!("CARGO_MANIFEST_DIR"),
   "/tests/fixtures/fonts/NotoSans-subset.ttf"
 ));
->>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/native_small_caps_feature_probe_test.rs
 
 #[test]
 fn all_small_caps_uses_native_features_when_available() {

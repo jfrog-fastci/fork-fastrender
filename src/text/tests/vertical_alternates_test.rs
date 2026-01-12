@@ -8,14 +8,10 @@ use crate::text::pipeline::ShapingPipeline;
 use crate::ComputedStyle;
 use ttf_parser::Tag;
 
-<<<<<<<< HEAD:src/text/tests/vertical_alternates_test.rs
-const VERT_FEATURE_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/vert-feature-test.ttf"));
-========
 const VERT_FEATURE_FONT: &[u8] = include_bytes!(concat!(
   env!("CARGO_MANIFEST_DIR"),
   "/tests/fixtures/fonts/vert-feature-test.ttf"
 ));
->>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/vertical_alternates_test.rs
 
 fn feature_enabled(run: &crate::text::pipeline::ShapedRun, tag: &[u8; 4]) -> bool {
   let tag = Tag::from_bytes(tag);

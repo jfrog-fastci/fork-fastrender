@@ -7,7 +7,6 @@ use crate::resource::{
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,8 +89,8 @@ impl ResourceFetcher for RecordingRequestFetcher {
 
 #[test]
 fn web_font_fetch_uses_stylesheet_referrer_but_document_origin() {
-  let font_path = Path::new("tests/fixtures/fonts/DejaVuSans-subset.ttf");
-  let font_bytes = fs::read(font_path).expect("read fixture font bytes");
+  let font_path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.ttf");
+  let font_bytes = fs::read(&font_path).expect("read fixture font bytes");
 
   let document_url = "https://a.test/page";
   let stylesheet_url = "https://b.test/style.css";
@@ -149,8 +148,8 @@ body {{ font-family: "TestFace"; }}
 
 #[test]
 fn web_font_fetch_uses_imported_stylesheet_referrer_but_document_origin() {
-  let font_path = Path::new("tests/fixtures/fonts/DejaVuSans-subset.ttf");
-  let font_bytes = fs::read(font_path).expect("read fixture font bytes");
+  let font_path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.ttf");
+  let font_bytes = fs::read(&font_path).expect("read fixture font bytes");
 
   let document_url = "https://a.test/page";
   let stylesheet_url = "https://b.test/style.css";
@@ -220,8 +219,8 @@ body {{ font-family: "TestFace"; }}
 
 #[test]
 fn web_font_fetch_uses_document_referrer_for_inline_styles_even_with_base_href() {
-  let font_path = Path::new("tests/fixtures/fonts/DejaVuSans-subset.ttf");
-  let font_bytes = fs::read(font_path).expect("read fixture font bytes");
+  let font_path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.ttf");
+  let font_bytes = fs::read(&font_path).expect("read fixture font bytes");
 
   let document_url = "https://a.test/page";
   let base_href = "https://b.test/base/";

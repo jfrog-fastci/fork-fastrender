@@ -6,7 +6,7 @@ use std::time::Instant;
 use url::Url;
 
 fn fixtures_dir() -> PathBuf {
-  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures")
+  crate::testing::tests_dir().join("pages/fixtures")
 }
 
 #[test]

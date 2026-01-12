@@ -132,6 +132,7 @@ migrations.
 | `tests/resource/` | resource fetching/cache/CORS tests | `tests/integration.rs::resource` | Uses net harness; stays integration for now. |
 | `tests/style/` | migrated (directory removed) | `src/style/**` | Suite moved into `src/style/tests/**` (unit tests). |
 | `tests/text/` | migrated (directory removed) | `src/text/**` | Suite moved into `src/text/tests/**` (unit tests). |
+| `tests/font/` | migrated (directory removed) | `src/text/**` | Font regressions migrated to unit tests under `src/text/tests/font/**` (and removed from `tests/integration.rs`). |
 | `tests/tooling/` | external tool integration (e.g. LLVM stackmaps) | `tests/integration.rs::tooling` | Tests that shell out to toolchains; should skip when tools absent. |
 | `tests/tree/` | migrated (stub module remains) | `src/tree/**` | Suite migrated to unit tests; `tests/tree/mod.rs` is currently an empty module referenced by `tests/integration.rs`. |
 | `tests/ui/` | browser UI protocol tests | `tests/integration.rs::ui` | Integration tests (feature-gated). |

@@ -3,9 +3,6 @@ use crate::FontDatabase;
 #[test]
 fn bundled_emoji_fixture_covers_pageset_observed_codepoints() {
   let mut db = FontDatabase::empty();
-<<<<<<<< HEAD:src/text/tests/bundled_emoji_glyph_coverage_test.rs
-  db.load_font_data(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/FastRenderEmoji.ttf")).to_vec())
-========
   db.load_font_data(
     include_bytes!(concat!(
       env!("CARGO_MANIFEST_DIR"),
@@ -13,7 +10,6 @@ fn bundled_emoji_fixture_covers_pageset_observed_codepoints() {
     ))
     .to_vec(),
   )
->>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/bundled_emoji_glyph_coverage_test.rs
     .expect("load FastRenderEmoji.ttf fixture");
 
   let emoji_face = db

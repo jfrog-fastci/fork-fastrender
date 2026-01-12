@@ -9,14 +9,10 @@ use crate::text::font_db::FontDatabase;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::{assign_fonts, Direction, ItemizedRun, Script};
 
-<<<<<<<< HEAD:src/text/tests/font_feature_values_test.rs
-const DEJAVU_SANS_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/DejaVuSans-subset.ttf"));
-========
 const DEJAVU_SANS_FONT: &[u8] = include_bytes!(concat!(
   env!("CARGO_MANIFEST_DIR"),
   "/tests/fixtures/fonts/DejaVuSans-subset.ttf"
 ));
->>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/font_feature_values_test.rs
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

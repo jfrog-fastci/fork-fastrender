@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,10 +13,7 @@ use crate::text::font_loader::{
 };
 
 fn fixture_font_bytes() -> Option<Vec<u8>> {
-  let path = Path::new("tests/fixtures/fonts/DejaVuSans-subset.ttf");
-  if !path.exists() {
-    return None;
-  }
+  let path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.ttf");
   fs::read(path).ok()
 }
 
