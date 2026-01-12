@@ -1424,8 +1424,9 @@ impl FontContext {
   ///
   /// Relative URLs are resolved against the declaring stylesheet's URL when available.
   ///
-  /// For inline styles (where [`FontFaceRule::source_stylesheet_url`] is `None`), relative URLs fall
-  /// back to resolving against `base_url` when provided.
+  /// For inline styles, FastRender may set [`FontFaceRule::source_stylesheet_url`] to the document
+  /// URL so nested font fetches emit the correct HTTP `Referer`. When that happens, relative
+  /// `url(...)` sources still resolve against `base_url` (honoring `<base href>`).
   pub fn load_web_fonts(
     &self,
     faces: &[FontFaceRule],
@@ -1483,9 +1484,14 @@ impl FontContext {
     let filter_by_codepoints = used_codepoints.is_some();
     let used_codepoints = used_codepoints.unwrap_or(&[]);
     let allow_remote = options.policy.permits_remote_fetch();
+    let document_url = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.document_url.as_deref());
     let selected_faces = Self::select_web_font_faces_for_load(
       faces,
       base_url,
+      document_url,
       allow_remote,
       filter_by_codepoints,
       used_codepoints,
@@ -1556,7 +1562,7 @@ impl FontContext {
       }
 
       if !allow_remote {
-        let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+        let face_base_url = Self::font_face_url_resolution_base(face, base_url, document_url);
         let has_non_http_source = face.sources.iter().any(|src| match src {
           FontFaceSource::Local(_) => true,
           FontFaceSource::Url(url_src) => {
@@ -1596,7 +1602,7 @@ impl FontContext {
       // involving background threads or network I/O, keeping deterministic output while matching
       // browser first-paint behavior (important for offline fixtures where web fonts are bundled as
       // `file:` URLs).
-      let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+      let face_base_url = Self::font_face_url_resolution_base(face, base_url, document_url);
       let has_http_source = face.sources.iter().any(|src| match src {
         FontFaceSource::Local(_) => false,
         FontFaceSource::Url(url_src) => {
@@ -1615,7 +1621,7 @@ impl FontContext {
       }
 
       let display_block = display_deadlines(display).0;
-      let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+      let face_base_url = Self::font_face_url_resolution_base(face, base_url, document_url);
       let local_swap_sources_only = matches!(display, FontDisplay::Swap)
         && face.sources.iter().all(|src| match src {
           FontFaceSource::Local(_) => true,
@@ -1917,9 +1923,25 @@ impl FontContext {
       .sum()
   }
 
+  #[inline]
+  fn font_face_url_resolution_base<'a>(
+    face: &'a FontFaceRule,
+    base_url: Option<&'a str>,
+    document_url: Option<&'a str>,
+  ) -> Option<&'a str> {
+    match (face.source_stylesheet_url.as_deref(), document_url, base_url) {
+      // Inline stylesheets can set `source_stylesheet_url` to the document URL (for referrer
+      // correctness), but relative font URLs must still resolve against the document base URL (which
+      // honors `<base href>`).
+      (Some(source), Some(document_url), Some(base_url)) if source == document_url => Some(base_url),
+      _ => face.source_stylesheet_url.as_deref().or(base_url),
+    }
+  }
+
   fn select_web_font_faces_for_load(
     faces: &[FontFaceRule],
     base_url: Option<&str>,
+    document_url: Option<&str>,
     allow_remote: bool,
     filter_by_codepoints: bool,
     used_codepoints: &[u32],
@@ -1931,7 +1953,7 @@ impl FontContext {
     }
 
     let face_has_non_http_source = |face: &FontFaceRule| {
-      let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+      let face_base_url = Self::font_face_url_resolution_base(face, base_url, document_url);
       face.sources.iter().any(|src| match src {
         FontFaceSource::Local(_) => true,
         FontFaceSource::Url(url_src) => {
@@ -2110,7 +2132,11 @@ impl FontContext {
     // many pageset fixtures reference web fonts via `file:` (or relative URLs that resolve to
     // `file:`) because they're bundled into the fixture directory; those loads behave like an
     // already-cached font in practice and should be eligible for optional usage.
-    let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+    let document_url = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.document_url.as_deref());
+    let face_base_url = Self::font_face_url_resolution_base(face, base_url, document_url);
     if matches!(display, FontDisplay::Optional)
       && !face.sources.iter().any(|src| match src {
         FontFaceSource::Local(_) => true,
@@ -6090,6 +6116,7 @@ mod tests {
     let selected = FontContext::select_web_font_faces_for_load(
       &faces,
       None,
+      None,
       true,
       true,
       &used_codepoints,
@@ -6116,6 +6143,7 @@ mod tests {
 
     let selected = FontContext::select_web_font_faces_for_load(
       &faces,
+      None,
       None,
       true,
       true,
@@ -6165,7 +6193,7 @@ mod tests {
     ];
 
     let selected =
-      FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 0, 2);
+      FontContext::select_web_font_faces_for_load(&faces, None, None, true, true, &used_codepoints, 0, 2);
     assert_eq!(selected, vec![0, 1]);
   }
 
@@ -6196,7 +6224,7 @@ mod tests {
     });
 
     let selected =
-      FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 0, 2);
+      FontContext::select_web_font_faces_for_load(&faces, None, None, true, true, &used_codepoints, 0, 2);
     assert_eq!(selected, vec![0, 100]);
   }
 

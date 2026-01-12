@@ -10443,8 +10443,6 @@ impl FastRender {
 
         match self {
           StylesheetTask::Inline { css } => {
-            let mut sheet =
-              parse_stylesheet_with_media(&css, media_ctx, Some(&mut local_media_cache))?;
             // Inline stylesheets don't have their own URL; use the owning document URL as the
             // referrer source for CSS subresource fetches (e.g. `@import` and web fonts). This
             // must remain distinct from the base URL used for resolving relative `url(...)`
@@ -10453,15 +10451,42 @@ impl FastRender {
               .as_ref()
               .and_then(|ctx| ctx.document_url.as_deref())
               .or_else(|| document_base_url.as_deref());
+            let stylesheet_error_url = stylesheet_referrer_url
+              .or_else(|| document_base_url.as_deref())
+              .unwrap_or("<inline stylesheet>");
             let referrer_policy = resource_context
               .as_ref()
               .map(|ctx| ctx.referrer_policy)
               .unwrap_or_default();
+            let mut sheet = match parse_stylesheet_with_media(
+              &css,
+              media_ctx,
+              Some(&mut local_media_cache),
+            ) {
+              Ok(sheet) => sheet,
+              Err(err) => {
+                if matches!(
+                  &err,
+                  Error::Render(RenderError::Timeout {
+                    stage: RenderStage::Css,
+                    ..
+                  })
+                ) {
+                  if let Some(diag) = diagnostics.as_ref() {
+                    if let Ok(mut guard) = diag.lock() {
+                      guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &err);
+                    }
+                  }
+                  return Ok((None, local_media_cache));
+                }
+                return Err(err);
+              }
+            };
             if let Some(url) = stylesheet_referrer_url {
               sheet.set_font_face_source_stylesheet_url(url);
             }
             sheet.set_font_face_source_referrer_policy(referrer_policy);
-            let resolved = if sheet.contains_imports() {
+            if sheet.contains_imports() {
               let loader = CssImportFetcher::new(
                 document_base_url.clone(),
                 None,
@@ -10470,17 +10495,36 @@ impl FastRender {
                 stylesheet_fetch_counter.clone(),
                 referrer_policy,
               );
-              sheet.resolve_imports_owned_with_cache_with_importer_url(
+              match sheet.clone().resolve_imports_owned_with_cache_with_importer_url(
                 &loader,
                 document_base_url.as_deref(),
                 stylesheet_referrer_url,
                 media_ctx,
                 Some(&mut local_media_cache),
-              )?
-            } else {
-              sheet
-            };
-            Ok((Some(resolved), local_media_cache))
+              ) {
+                Ok(resolved) => sheet = resolved,
+                Err(err) => {
+                  if matches!(
+                    &err,
+                    RenderError::Timeout {
+                      stage: RenderStage::Css,
+                      ..
+                    }
+                  ) {
+                    let wrapped = Error::Render(err.clone());
+                    if let Some(diag) = diagnostics.as_ref() {
+                      if let Ok(mut guard) = diag.lock() {
+                        guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &wrapped);
+                      }
+                    }
+                    FastRender::strip_import_rules(&mut sheet.rules);
+                  } else {
+                    return Err(Error::Render(err));
+                  }
+                }
+              }
+            }
+            Ok((Some(sheet), local_media_cache))
           }
           StylesheetTask::External {
             url,
@@ -10521,20 +10565,34 @@ impl FastRender {
             request = request.with_referrer_policy(request_referrer_policy);
             let resource = match fetcher.fetch_with_request(request) {
               Ok(resource) => resource,
-              Err(err @ Error::Render(_)) => {
-                // Render-control errors (deadline/cancellation) must abort the render; do not treat
-                // them as ignorable stylesheet fetch failures.
-                return Err(err);
-              }
-              Err(err) => {
-                // Per spec, stylesheet loads are best-effort. On failure, continue.
-                if let Some(diag) = diagnostics.as_ref() {
-                  if let Ok(mut guard) = diag.lock() {
-                    guard.record_error(ResourceKind::Stylesheet, &url, &err);
+              Err(err) => match &err {
+                Error::Render(RenderError::Timeout {
+                  stage: RenderStage::Css,
+                  ..
+                }) => {
+                  // Per spec, stylesheet loads are best-effort. If the CSS stage times out/cancels
+                  // while fetching, record a diagnostics entry and continue rendering.
+                  if let Some(diag) = diagnostics.as_ref() {
+                    if let Ok(mut guard) = diag.lock() {
+                      guard.record_error(ResourceKind::Stylesheet, &url, &err);
+                    }
                   }
+                  return Ok((None, local_media_cache));
                 }
-                return Ok((None, local_media_cache));
-              }
+                Error::Render(_) => {
+                  // Render-control errors must still abort in non-CSS stages.
+                  return Err(err);
+                }
+                _ => {
+                  // Per spec, stylesheet loads are best-effort. On failure, continue.
+                  if let Some(diag) = diagnostics.as_ref() {
+                    if let Ok(mut guard) = diag.lock() {
+                      guard.record_error(ResourceKind::Stylesheet, &url, &err);
+                    }
+                  }
+                  return Ok((None, local_media_cache));
+                }
+              },
             };
 
             if let Some(ctx) = resource_context.as_ref() {
@@ -10582,23 +10640,61 @@ impl FastRender {
 
             let sheet_base = resource.final_url.clone().unwrap_or_else(|| url.clone());
             let decoded = decode_css_bytes_cow(&resource.bytes, resource.content_type.as_deref());
-            let css_text = match absolutize_css_urls_cow(decoded.as_ref(), &sheet_base)? {
-              std::borrow::Cow::Borrowed(_) => decoded,
-              std::borrow::Cow::Owned(rewritten) => std::borrow::Cow::Owned(rewritten),
+            let css_text = match absolutize_css_urls_cow(decoded.as_ref(), &sheet_base) {
+              Ok(rewritten) => match rewritten {
+                std::borrow::Cow::Borrowed(_) => decoded,
+                std::borrow::Cow::Owned(rewritten) => std::borrow::Cow::Owned(rewritten),
+              },
+              Err(err) => {
+                if matches!(
+                  &err,
+                  RenderError::Timeout {
+                    stage: RenderStage::Css,
+                    ..
+                  }
+                ) {
+                  let wrapped = Error::Render(err.clone());
+                  if let Some(diag) = diagnostics.as_ref() {
+                    if let Ok(mut guard) = diag.lock() {
+                      guard.record_error(ResourceKind::Stylesheet, &url, &wrapped);
+                    }
+                  }
+                  return Ok((None, local_media_cache));
+                }
+                return Err(Error::Render(err));
+              }
             };
 
-            let sheet = parse_stylesheet_with_media(
+            let mut sheet = match parse_stylesheet_with_media(
               css_text.as_ref(),
               media_ctx,
               Some(&mut local_media_cache),
-            )?;
-            let mut sheet = sheet;
+            ) {
+              Ok(sheet) => sheet,
+              Err(err) => {
+                if matches!(
+                  &err,
+                  Error::Render(RenderError::Timeout {
+                    stage: RenderStage::Css,
+                    ..
+                  })
+                ) {
+                  if let Some(diag) = diagnostics.as_ref() {
+                    if let Ok(mut guard) = diag.lock() {
+                      guard.record_error(ResourceKind::Stylesheet, &url, &err);
+                    }
+                  }
+                  return Ok((None, local_media_cache));
+                }
+                return Err(err);
+              }
+            };
             sheet.set_font_face_source_stylesheet_url(&sheet_base);
             let effective_referrer_policy = resource
               .response_referrer_policy
               .unwrap_or(request_referrer_policy);
             sheet.set_font_face_source_referrer_policy(effective_referrer_policy);
-            let resolved = if sheet.contains_imports() {
+            if sheet.contains_imports() {
               let loader = CssImportFetcher::new(
                 Some(sheet_base.clone()),
                 cors_mode,
@@ -10607,16 +10703,35 @@ impl FastRender {
                 stylesheet_fetch_counter.clone(),
                 effective_referrer_policy,
               );
-              sheet.resolve_imports_owned_with_cache(
+              match sheet.clone().resolve_imports_owned_with_cache(
                 &loader,
                 Some(&sheet_base),
                 media_ctx,
                 Some(&mut local_media_cache),
-              )?
-            } else {
-              sheet
-            };
-            Ok((Some(resolved), local_media_cache))
+              ) {
+                Ok(resolved) => sheet = resolved,
+                Err(err) => {
+                  if matches!(
+                    &err,
+                    RenderError::Timeout {
+                      stage: RenderStage::Css,
+                      ..
+                    }
+                  ) {
+                    let wrapped = Error::Render(err.clone());
+                    if let Some(diag) = diagnostics.as_ref() {
+                      if let Ok(mut guard) = diag.lock() {
+                        guard.record_error(ResourceKind::Stylesheet, &url, &wrapped);
+                      }
+                    }
+                    FastRender::strip_import_rules(&mut sheet.rules);
+                  } else {
+                    return Err(Error::Render(err));
+                  }
+                }
+              }
+            }
+            Ok((Some(sheet), local_media_cache))
           }
         }
       }
@@ -10844,22 +10959,66 @@ impl FastRender {
             }
           }
 
-          let mut sheet =
-            parse_stylesheet_with_media(&inline.css, media_ctx, Some(media_query_cache))?;
           let stylesheet_referrer_url = self.document_url().or(self.base_url.as_deref());
+          let stylesheet_error_url = stylesheet_referrer_url.unwrap_or("<inline stylesheet>");
+          let mut sheet = match parse_stylesheet_with_media(
+            &inline.css,
+            media_ctx,
+            Some(media_query_cache),
+          ) {
+            Ok(sheet) => sheet,
+            Err(err) => {
+              if matches!(
+                &err,
+                Error::Render(RenderError::Timeout {
+                  stage: RenderStage::Css,
+                  ..
+                })
+              ) {
+                if let Some(diag) = &self.diagnostics {
+                  if let Ok(mut guard) = diag.lock() {
+                    guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &err);
+                  }
+                }
+                continue;
+              }
+              return Err(err);
+            }
+          };
           if let Some(url) = stylesheet_referrer_url {
             sheet.set_font_face_source_stylesheet_url(url);
           }
           sheet.set_font_face_source_referrer_policy(document_referrer_policy);
           if sheet.contains_imports() {
-            let resolved = sheet.resolve_imports_owned_with_cache_with_importer_url(
+            match sheet.clone().resolve_imports_owned_with_cache_with_importer_url(
               &inline_loader,
               self.base_url.as_deref(),
               stylesheet_referrer_url,
               media_ctx,
               Some(media_query_cache),
-            )?;
-            combined_rules.extend(resolved.rules);
+            ) {
+              Ok(resolved) => combined_rules.extend(resolved.rules),
+              Err(err) => {
+                if matches!(
+                  &err,
+                  RenderError::Timeout {
+                    stage: RenderStage::Css,
+                    ..
+                  }
+                ) {
+                  let wrapped = Error::Render(err.clone());
+                  if let Some(diag) = &self.diagnostics {
+                    if let Ok(mut guard) = diag.lock() {
+                      guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &wrapped);
+                    }
+                  }
+                  FastRender::strip_import_rules(&mut sheet.rules);
+                  combined_rules.extend(sheet.rules);
+                } else {
+                  return Err(Error::Render(err));
+                }
+              }
+            }
           } else {
             combined_rules.extend(sheet.rules);
           }
@@ -10977,13 +11136,55 @@ impl FastRender {
                 .clone()
                 .unwrap_or_else(|| stylesheet_url.clone());
               let decoded = decode_css_bytes_cow(&resource.bytes, resource.content_type.as_deref());
-              let css_text = match absolutize_css_urls_cow(decoded.as_ref(), &sheet_base)? {
-                std::borrow::Cow::Borrowed(_) => decoded,
-                std::borrow::Cow::Owned(rewritten) => std::borrow::Cow::Owned(rewritten),
+              let css_text = match absolutize_css_urls_cow(decoded.as_ref(), &sheet_base) {
+                Ok(rewritten) => match rewritten {
+                  std::borrow::Cow::Borrowed(_) => decoded,
+                  std::borrow::Cow::Owned(rewritten) => std::borrow::Cow::Owned(rewritten),
+                },
+                Err(err) => {
+                  if matches!(
+                    &err,
+                    RenderError::Timeout {
+                      stage: RenderStage::Css,
+                      ..
+                    }
+                  ) {
+                    let wrapped = Error::Render(err.clone());
+                    if let Some(diag) = &self.diagnostics {
+                      if let Ok(mut guard) = diag.lock() {
+                        guard.record_error(ResourceKind::Stylesheet, &stylesheet_url, &wrapped);
+                      }
+                    }
+                    continue;
+                  }
+                  return Err(Error::Render(err));
+                }
               };
 
-              let mut sheet =
-                parse_stylesheet_with_media(css_text.as_ref(), media_ctx, Some(media_query_cache))?;
+              let mut sheet = match parse_stylesheet_with_media(
+                css_text.as_ref(),
+                media_ctx,
+                Some(media_query_cache),
+              ) {
+                Ok(sheet) => sheet,
+                Err(err) => {
+                  if matches!(
+                    &err,
+                    Error::Render(RenderError::Timeout {
+                      stage: RenderStage::Css,
+                      ..
+                    })
+                  ) {
+                    if let Some(diag) = &self.diagnostics {
+                      if let Ok(mut guard) = diag.lock() {
+                        guard.record_error(ResourceKind::Stylesheet, &stylesheet_url, &err);
+                      }
+                    }
+                    continue;
+                  }
+                  return Err(err);
+                }
+              };
               sheet.set_font_face_source_stylesheet_url(&sheet_base);
               let effective_referrer_policy = resource
                 .response_referrer_policy
@@ -10998,31 +11199,66 @@ impl FastRender {
                   stylesheet_fetch_counter.clone(),
                   effective_referrer_policy,
                 );
-                let resolved = sheet.resolve_imports_owned_with_cache(
+                match sheet.clone().resolve_imports_owned_with_cache(
                   &loader,
                   Some(&sheet_base),
                   media_ctx,
                   Some(media_query_cache),
-                )?;
-                combined_rules.extend(resolved.rules);
+                ) {
+                  Ok(resolved) => combined_rules.extend(resolved.rules),
+                  Err(err) => {
+                    if matches!(
+                      &err,
+                      RenderError::Timeout {
+                        stage: RenderStage::Css,
+                        ..
+                      }
+                    ) {
+                      let wrapped = Error::Render(err.clone());
+                      if let Some(diag) = &self.diagnostics {
+                        if let Ok(mut guard) = diag.lock() {
+                          guard.record_error(ResourceKind::Stylesheet, &stylesheet_url, &wrapped);
+                        }
+                      }
+                      FastRender::strip_import_rules(&mut sheet.rules);
+                      combined_rules.extend(sheet.rules);
+                    } else {
+                      return Err(Error::Render(err));
+                    }
+                  }
+                }
               } else {
                 combined_rules.extend(sheet.rules);
               }
             }
-            Err(err @ Error::Render(_)) => {
-              // Render-control errors (deadline/cancellation) must abort the render; do not treat
-              // them as ignorable stylesheet fetch failures.
-              return Err(err);
-            }
-            Err(err) => {
-              // Per spec, stylesheet loads are best-effort. On failure, continue.
-              if let Some(diag) = &self.diagnostics {
-                if let Ok(mut guard) = diag.lock() {
-                  guard.record_error(ResourceKind::Stylesheet, &stylesheet_url, &err);
+            Err(err) => match &err {
+              Error::Render(RenderError::Timeout {
+                stage: RenderStage::Css,
+                ..
+              }) => {
+                // Per spec, stylesheet loads are best-effort. If the CSS stage times out/cancels
+                // while fetching, record a diagnostics entry and continue rendering.
+                if let Some(diag) = &self.diagnostics {
+                  if let Ok(mut guard) = diag.lock() {
+                    guard.record_error(ResourceKind::Stylesheet, &stylesheet_url, &err);
+                  }
                 }
+                continue;
               }
-              continue;
-            }
+              Error::Render(_) => {
+                // Render-control errors must still abort in non-CSS stages.
+                return Err(err);
+              }
+              _ => {
+                // Per spec, stylesheet loads are best-effort. On failure, continue.
+                if let Some(diag) = &self.diagnostics {
+                  if let Ok(mut guard) = diag.lock() {
+                    guard.record_error(ResourceKind::Stylesheet, &stylesheet_url, &err);
+                  }
+                }
+                continue;
+              }
+            },
           }
         }
       }
@@ -11044,6 +11280,36 @@ impl FastRender {
       namespaces: Default::default(),
       rules: combined_rules,
     })
+  }
+
+  fn strip_import_rules(rules: &mut Vec<crate::css::types::CssRule>) {
+    use crate::css::types::CssRule;
+
+    fn strip_import_rules_inner(rules: &mut Vec<CssRule>) {
+      for rule in rules.iter_mut() {
+        match rule {
+          CssRule::Style(rule) => strip_import_rules_inner(&mut rule.nested_rules),
+          CssRule::Media(rule) => strip_import_rules_inner(&mut rule.rules),
+          CssRule::Container(rule) => strip_import_rules_inner(&mut rule.rules),
+          CssRule::Supports(rule) => strip_import_rules_inner(&mut rule.rules),
+          CssRule::Layer(rule) => strip_import_rules_inner(&mut rule.rules),
+          CssRule::StartingStyle(rule) => strip_import_rules_inner(&mut rule.rules),
+          CssRule::Scope(rule) => strip_import_rules_inner(&mut rule.rules),
+          CssRule::Import(_)
+          | CssRule::FontFace(_)
+          | CssRule::Keyframes(_)
+          | CssRule::Property(_)
+          | CssRule::FontPaletteValues(_)
+          | CssRule::FontFeatureValues(_)
+          | CssRule::Page(_)
+          | CssRule::CounterStyle(_)
+          | CssRule::PositionTry(_) => {}
+        }
+      }
+      rules.retain(|rule| !matches!(rule, CssRule::Import(_)));
+    }
+
+    strip_import_rules_inner(rules);
   }
 
   fn stylesheet_type_is_css(type_attr: Option<&str>) -> bool {
@@ -31664,6 +31930,167 @@ mod tests {
     };
 
     assert_eq!(url, "https://example.com/app/images/bg.png");
+  }
+
+  #[test]
+  fn collect_document_style_set_matches_resolved_stylesheet_rules() {
+    struct MapLoader {
+      map: HashMap<String, String>,
+    }
+
+    impl MapLoader {
+      fn new(map: HashMap<String, String>) -> Self {
+        Self { map }
+      }
+    }
+
+    impl CssImportLoader for MapLoader {
+      fn load(&self, url: &str) -> crate::error::Result<String> {
+        self.map.get(url).cloned().ok_or_else(|| {
+          Error::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("missing resource: {url}"),
+          ))
+        })
+      }
+    }
+
+    let document_url = "https://example.com/index.html";
+    let inline_a_url = "https://example.com/inline_a.css";
+    let inline_b_url = "https://example.com/inline_b.css";
+    let external_url = "https://example.com/external.css";
+    let external_import_url = "https://example.com/external_import.css";
+    let skipped_print_url = "https://example.com/skip_print.css";
+    let skipped_supports_url = "https://example.com/skip_supports.css";
+
+    let inline_css = r#"
+      @import "inline_a.css";
+      #inline { color: rgb(1, 2, 3); }
+    "#;
+    let inline_a_css = r#"
+      @import "inline_b.css" supports((display: block));
+      .inline-a { color: rgb(10, 20, 30); }
+    "#;
+    let inline_b_css = ".inline-b { color: rgb(40, 50, 60); }";
+
+    let external_css = r#"
+      @import "external_import.css";
+      @import "skip_print.css" print;
+      @import "skip_supports.css" supports((not-a-real-prop: 1));
+      #external { color: rgb(4, 5, 6); }
+    "#;
+    let external_import_css = ".external-import { color: rgb(7, 8, 9); }";
+
+    let fetcher = Arc::new(
+      RecordingFetcher::default()
+        .with_entry(inline_a_url, inline_a_css)
+        .with_entry(inline_b_url, inline_b_css)
+        .with_entry(external_url, external_css)
+        .with_entry(external_import_url, external_import_css),
+    );
+    let runtime_toggles = RuntimeToggles::from_map(HashMap::new());
+
+    let renderer = FastRender::builder()
+      .base_url(document_url.to_string())
+      .fetcher(fetcher.clone() as Arc<dyn ResourceFetcher>)
+      .runtime_toggles(runtime_toggles)
+      .build()
+      .expect("renderer should build");
+
+    let html = format!(
+      r#"
+        <!doctype html>
+        <html>
+          <head>
+            <style>{inline_css}</style>
+            <link rel="stylesheet" href="external.css">
+          </head>
+          <body></body>
+        </html>
+      "#
+    );
+    let dom = renderer.parse_html(&html).expect("parse html");
+
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let mut pipeline_cache = MediaQueryCache::default();
+    let style_set = renderer
+      .collect_document_style_set(&dom, &media_ctx, &mut pipeline_cache, None)
+      .expect("collect document style set");
+
+    let mut loader_map = HashMap::new();
+    loader_map.insert(inline_a_url.to_string(), inline_a_css.to_string());
+    loader_map.insert(inline_b_url.to_string(), inline_b_css.to_string());
+    loader_map.insert(external_import_url.to_string(), external_import_css.to_string());
+    let loader = MapLoader::new(loader_map);
+
+    let mut expected_cache = MediaQueryCache::default();
+    let inline_sheet =
+      parse_stylesheet_with_media(inline_css, &media_ctx, Some(&mut expected_cache))
+        .expect("parse inline sheet");
+    let resolved_inline = if inline_sheet.contains_imports() {
+      inline_sheet
+        .resolve_imports_with_cache(
+          &loader,
+          Some(document_url),
+          &media_ctx,
+          Some(&mut expected_cache),
+        )
+        .expect("resolve inline imports")
+    } else {
+      inline_sheet
+    };
+
+    let external_sheet =
+      parse_stylesheet_with_media(external_css, &media_ctx, Some(&mut expected_cache))
+        .expect("parse external sheet");
+    let resolved_external = if external_sheet.contains_imports() {
+      external_sheet
+        .resolve_imports_with_cache(
+          &loader,
+          Some(external_url),
+          &media_ctx,
+          Some(&mut expected_cache),
+        )
+        .expect("resolve external imports")
+    } else {
+      external_sheet
+    };
+
+    let mut expected_rules = Vec::new();
+    expected_rules.extend(resolved_inline.rules);
+    expected_rules.extend(resolved_external.rules);
+    let expected = StyleSheet {
+      namespaces: Default::default(),
+      rules: expected_rules,
+    };
+
+    assert_eq!(format!("{:?}", style_set.document), format!("{expected:?}"));
+
+    let requests = fetcher.fetched_urls();
+    assert!(
+      requests.contains(&inline_a_url.to_string()),
+      "expected inline import to be fetched; got {requests:?}"
+    );
+    assert!(
+      requests.contains(&inline_b_url.to_string()),
+      "expected inline import chain to be fetched; got {requests:?}"
+    );
+    assert!(
+      requests.contains(&external_url.to_string()),
+      "expected external stylesheet to be fetched; got {requests:?}"
+    );
+    assert!(
+      requests.contains(&external_import_url.to_string()),
+      "expected external import to be fetched; got {requests:?}"
+    );
+    assert!(
+      !requests.contains(&skipped_print_url.to_string()),
+      "media-gated @import should not be fetched; got {requests:?}"
+    );
+    assert!(
+      !requests.contains(&skipped_supports_url.to_string()),
+      "supports-gated @import should not be fetched; got {requests:?}"
+    );
   }
 
   #[test]

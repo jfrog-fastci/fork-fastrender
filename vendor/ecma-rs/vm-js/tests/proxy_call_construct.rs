@@ -158,7 +158,7 @@ fn proxy_typeof_call_and_construct() -> Result<(), VmError> {
     scope.push_root(Value::Object(callable_target))?;
     let callable_handler = scope.alloc_object()?;
     scope.push_root(Value::Object(callable_handler))?;
-    let callable_proxy = scope.alloc_proxy(Some(callable_target), Some(callable_handler))?;
+    let callable_proxy = scope.alloc_proxy(callable_target, callable_handler)?;
     define_global(
       &mut scope,
       global,
@@ -187,7 +187,7 @@ fn proxy_typeof_call_and_construct() -> Result<(), VmError> {
     scope.push_root(Value::Object(ctor_target))?;
     let ctor_handler = scope.alloc_object()?;
     scope.push_root(Value::Object(ctor_handler))?;
-    let ctor_proxy = scope.alloc_proxy(Some(ctor_target), Some(ctor_handler))?;
+    let ctor_proxy = scope.alloc_proxy(ctor_target, ctor_handler)?;
     define_global(
       &mut scope,
       global,

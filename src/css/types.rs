@@ -2779,6 +2779,8 @@ mod tests {
   use cssparser::ToCss;
   use std::cell::RefCell;
   use std::collections::HashMap;
+  use std::io;
+  use std::sync::atomic::{AtomicUsize, Ordering};
   use std::time::Duration;
 
   const TAILWIND_V4_PROPERTIES_SUPPORTS: &str = "(((-webkit-hyphens:none)) and (not (margin-trim:inline))) or ((-moz-orient:inline) and (not (color:rgb(from red r g b))))";
@@ -3210,6 +3212,105 @@ mod tests {
   }
 
   #[test]
+  fn resolve_imports_owned_is_identity_without_imports() {
+    #[derive(Default)]
+    struct CountingLoader {
+      calls: AtomicUsize,
+    }
+
+    impl CountingLoader {
+      fn calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
+      }
+    }
+
+    impl CssImportLoader for CountingLoader {
+      fn load(&self, url: &str) -> crate::error::Result<String> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Err(Error::Io(io::Error::new(
+          io::ErrorKind::NotFound,
+          format!("unexpected import load for {url}"),
+        )))
+      }
+    }
+
+    let css = r#"
+      body { color: red; }
+      @layer base { .layered { color: blue; } }
+    "#;
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    let expected = format!("{sheet:?}");
+    let loader = CountingLoader::default();
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let resolved = sheet
+      .clone()
+      .resolve_imports_owned_with_cache(
+        &loader,
+        Some("https://example.com/style.css"),
+        &media_ctx,
+        None,
+      )
+      .expect("resolve imports");
+
+    assert_eq!(format!("{resolved:?}"), expected);
+    assert_eq!(loader.calls(), 0, "import loader should not run");
+  }
+
+  #[test]
+  fn resolve_imports_owned_matches_borrowed_resolver() {
+    struct MapLoader {
+      map: HashMap<String, String>,
+    }
+
+    impl MapLoader {
+      fn new(map: HashMap<String, String>) -> Self {
+        Self { map }
+      }
+    }
+
+    impl CssImportLoader for MapLoader {
+      fn load(&self, url: &str) -> crate::error::Result<String> {
+        self.map.get(url).cloned().ok_or_else(|| {
+          Error::Io(io::Error::new(io::ErrorKind::NotFound, url.to_string()))
+        })
+      }
+    }
+
+    let base_url = "https://example.com/dir/base.css";
+    let base_css = r#"
+      @layer base {
+        @import "a.css";
+        .in-layer { color: black; }
+      }
+      body { color: red; }
+    "#;
+    let a_css = r#"
+      @supports (display: block) {
+        @import "b.css";
+        .a { color: green; }
+      }
+    "#;
+    let b_css = ".b { color: blue; }";
+    let mut map = HashMap::new();
+    map.insert("https://example.com/dir/a.css".to_string(), a_css.to_string());
+    map.insert("https://example.com/dir/b.css".to_string(), b_css.to_string());
+    let loader = MapLoader::new(map);
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let sheet = parse_stylesheet(base_css).expect("parse base stylesheet");
+    let borrowed = sheet
+      .resolve_imports_with_cache(&loader, Some(base_url), &media_ctx, None)
+      .expect("resolve imports (borrowed)");
+    let owned = sheet
+      .clone()
+      .resolve_imports_owned_with_cache(&loader, Some(base_url), &media_ctx, None)
+      .expect("resolve imports (owned)");
+
+    assert_eq!(format!("{owned:?}"), format!("{borrowed:?}"));
+  }
+
+  #[test]
   fn import_ignored_when_appearing_after_style_rule() {
     let import_url = "https://example.com/import-after-style/a.css";
     let loader = RecordingLoader::new([(
@@ -3503,6 +3604,60 @@ mod tests {
       foo_layer.as_ref() < bar_layer.as_ref(),
       "expected failing @import layer(foo) to still declare foo before bar (foo={foo_layer:?} bar={bar_layer:?})"
     );
+  }
+
+  #[test]
+  fn css_import_resolution_times_out_with_deadline() {
+    use crate::render_control::with_deadline;
+    use crate::render_control::RenderDeadline;
+
+    struct SleepyImportLoader {
+      sleep: Duration,
+    }
+
+    impl CssImportLoader for SleepyImportLoader {
+      fn load(&self, url: &str) -> crate::error::Result<String> {
+        std::thread::sleep(self.sleep);
+        let depth = url
+          .rsplit('/')
+          .next()
+          .and_then(|part| part.strip_suffix(".css"))
+          .and_then(|num| num.parse::<usize>().ok())
+          .unwrap_or(0);
+        if depth == 0 {
+          Ok("body { color: black; }".to_string())
+        } else {
+          Ok(format!(
+            "@import \"https://example.com/{}.css\";",
+            depth.saturating_sub(1)
+          ))
+        }
+      }
+    }
+
+    let base_sheet = parse_stylesheet("@import \"https://example.com/25.css\";").unwrap();
+    let loader = SleepyImportLoader {
+      sleep: Duration::from_millis(10),
+    };
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let deadline = RenderDeadline::new(Some(Duration::from_millis(1)), None);
+
+    let result = with_deadline(Some(&deadline), || {
+      base_sheet.resolve_imports_with_cache(
+        &loader,
+        Some("https://example.com/index.html"),
+        &media_ctx,
+        None,
+      )
+    });
+
+    match result {
+      Err(RenderError::Timeout {
+        stage: RenderStage::Css,
+        ..
+      }) => {}
+      other => panic!("expected CSS timeout, got {:?}", other),
+    }
   }
 
   #[test]
