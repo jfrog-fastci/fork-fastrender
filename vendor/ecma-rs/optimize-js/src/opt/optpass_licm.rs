@@ -205,6 +205,9 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
     InstTyp::Call => {
       inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
     }
+    InstTyp::Assume => false,
+    #[cfg(feature = "native-async-ops")]
+    InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => false,
     // Observable reads/writes or control flow / SSA.
     InstTyp::ForeignLoad
     | InstTyp::UnknownLoad
