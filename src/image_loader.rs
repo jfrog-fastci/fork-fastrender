@@ -16189,6 +16189,59 @@ mod tests_inline {
   }
 
   #[test]
+  fn svg_style_import_chain_resolves_relative_to_import_final_url_after_redirect() {
+    let main_url = "https://example.test/main.svg";
+    let requested_url = "https://example.test/style.css";
+    let final_url = "https://example.test/assets/style.css";
+    let nested_url = "https://example.test/assets/nested.css";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><style>@import url("style.css");</style><rect class="r" width="1" height="1" fill="blue"/></svg>"#;
+
+    let mut redirected_res = FetchedResource::new(
+      b"@import \"nested.css\";".to_vec(),
+      Some("text/css".to_string()),
+    );
+    redirected_res.status = Some(200);
+    redirected_res.final_url = Some(final_url.to_string());
+
+    let mut nested_res = FetchedResource::new(
+      b".r{fill:red !important;}".to_vec(),
+      Some("text/css".to_string()),
+    );
+    nested_res.status = Some(200);
+    nested_res.final_url = Some(nested_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (requested_url.to_string(), redirected_res),
+      (nested_url.to_string(), nested_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(svg, 1, 1, main_url, 1.0)
+      .expect("rendered pixmap");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
+    );
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest, _)| url == requested_url && *dest == FetchDestination::Style),
+      "expected fetch for first imported stylesheet URL {requested_url}, got: {requests:?}"
+    );
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest, _)| url == nested_url && *dest == FetchDestination::Style),
+      "expected nested @import to resolve relative to final URL {final_url} (fetch {nested_url}), got: {requests:?}"
+    );
+  }
+
+  #[test]
   fn svg_style_import_wraps_media_list_in_output() {
     let main_url = "https://example.test/main.svg";
     let style_url = "https://example.test/style.css";
