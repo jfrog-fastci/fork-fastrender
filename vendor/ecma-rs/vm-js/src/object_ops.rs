@@ -531,9 +531,7 @@ impl<'a> Scope<'a> {
             "Proxy getOwnPropertyDescriptor trap returned undefined for a non-configurable target property",
           ));
         }
-        // Minimal `IsExtensible` semantics: `vm-js` does not yet implement the full Proxy
-        // `isExtensible` trap, but the invariants require observing the target's extensibility.
-        let extensible_target = scope.object_is_extensible(target)?;
+        let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
         if !extensible_target {
           return Err(VmError::TypeError(
             "Proxy getOwnPropertyDescriptor trap returned undefined for an existing property on a non-extensible target",
@@ -550,7 +548,7 @@ impl<'a> Scope<'a> {
 
       // Spec: `extensibleTarget = IsExtensible(target)` is evaluated before `ToPropertyDescriptor`
       // (which can invoke user code via accessors on the descriptor object).
-      let extensible_target = scope.object_is_extensible(target)?;
+      let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
 
       scope.push_root(Value::Object(desc_obj))?;
       let patch = crate::property_descriptor_ops::to_property_descriptor_with_host_and_hooks(
@@ -3466,53 +3464,11 @@ fn proxy_get_own_property_with_tick(
   hooks: &mut dyn VmHostHooks,
   proxy: GcObject,
   key: PropertyKey,
-  tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
+  _tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
 ) -> Result<Option<PropertyDescriptor>, VmError> {
-  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
-
-  let key_val = property_key_to_value(key);
-  let mut scope = scope.reborrow();
-  scope.push_roots(&[
-    Value::Object(proxy),
-    Value::Object(target),
-    Value::Object(handler),
-    key_val,
-  ])?;
-
-  let Some(trap) =
-    proxy_get_method(vm, &mut scope, host, hooks, handler, "getOwnPropertyDescriptor")?
-  else {
-    return scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, target, key, tick);
-  };
-
-  let trap_result = vm.call_with_host_and_hooks(
-    host,
-    &mut scope,
-    hooks,
-    trap,
-    Value::Object(handler),
-    &[Value::Object(target), key_val],
-  )?;
-
-  if matches!(trap_result, Value::Undefined) {
-    return Ok(None);
-  }
-  let Value::Object(desc_obj) = trap_result else {
-    return Err(VmError::TypeError(
-      "Proxy getOwnPropertyDescriptor trap returned non-object",
-    ));
-  };
-
-  let patch = crate::property_descriptor_ops::to_property_descriptor_with_host_and_hooks(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    desc_obj,
-  )?;
-  Ok(Some(crate::property_descriptor_ops::complete_property_descriptor(
-    patch,
-  )))
+  // Delegate to the spec-shaped `[[GetOwnProperty]]` wrapper, which implements Proxy trap
+  // invariants.
+  scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, proxy, key)
 }
 
 fn proxy_define_own_property_with_tick(
@@ -3600,7 +3556,7 @@ fn proxy_define_own_property_with_tick(
   let mut tick = Vm::tick;
   let target_desc =
     scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, target, key, &mut tick)?;
-  let extensible_target = scope.object_is_extensible(target)?;
+  let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
   let compatible = property_descriptor_ops::is_compatible_property_descriptor(
     extensible_target,
     desc,

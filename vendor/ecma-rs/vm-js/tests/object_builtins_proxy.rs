@@ -342,3 +342,30 @@ fn object_prototype_define_getter_invokes_proxy_trap() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn object_keys_enforces_proxy_get_own_property_descriptor_invariants() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var target = {};
+      Object.defineProperty(target, "x", { value: 1, enumerable: true, configurable: false, writable: true });
+
+      var p = new Proxy(target, {
+        ownKeys: function () { return ["x"]; },
+        // Claim the property does not exist even though it is non-configurable on the target.
+        // This must throw a TypeError due to Proxy invariants.
+        getOwnPropertyDescriptor: function () { return undefined; }
+      });
+
+      try {
+        Object.keys(p);
+        false;
+      } catch (e) {
+        e instanceof TypeError;
+      }
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
