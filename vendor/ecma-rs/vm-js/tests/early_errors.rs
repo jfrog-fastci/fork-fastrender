@@ -81,6 +81,20 @@ fn await_outside_async_is_syntax_error() {
 }
 
 #[test]
+fn await_in_async_function_params_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("async function f(a = await 1) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn yield_in_generator_function_params_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("function* g(a = yield 1) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn eval_early_errors_are_catchable_syntax_error() {
   let mut rt = new_runtime();
   let value = rt
@@ -109,4 +123,3 @@ fn function_constructor_early_errors_are_catchable_syntax_error() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-

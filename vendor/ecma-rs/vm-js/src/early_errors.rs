@@ -830,12 +830,27 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       arguments_allowed,
     );
 
+    // `await`/`yield` expressions are early errors in formal parameter initializers, even for
+    // async/generator functions (ECMA-262 `ContainsAwaitExpression` / `ContainsYieldExpression`).
+    //
+    // Example:
+    // - `async function f(a = await 0) {}` is a Syntax Error.
+    // - `function* g(a = yield 0) {}` is a Syntax Error.
+    //
+    // This restriction applies only to the parameter list; `await`/`yield` remain valid in the
+    // function body for async/generator functions.
+    let saved_param_await_allowed = ctx.await_allowed;
+    let saved_param_yield_allowed = ctx.yield_allowed;
+    ctx.await_allowed = false;
+    ctx.yield_allowed = false;
     for param in params {
       self.visit_pat(ctx, &param.stx.pattern.stx.pat, PatRole::Binding)?;
       if let Some(default_value) = &param.stx.default_value {
         self.visit_expr(ctx, default_value)?;
       }
     }
+    ctx.await_allowed = saved_param_await_allowed;
+    ctx.yield_allowed = saved_param_yield_allowed;
 
     match &func.stx.body {
       Some(FuncBody::Block(stmts)) => self.visit_stmt_list(ctx, stmts)?,
