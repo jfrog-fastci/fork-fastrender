@@ -1285,13 +1285,15 @@ impl Heap {
   /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
   /// out-of-bounds write semantics).
   ///
-  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of
-  /// bounds.
+  /// If the backing `ArrayBuffer` is detached, this returns a `TypeError`.
+  ///
+  /// If the view is out of bounds, this returns `Ok(0)` (defensive no-op), matching typed array
+  /// out-of-bounds element write behaviour.
   ///
   /// # Errors
   ///
   /// Returns an error if `obj` is not a live `Uint8Array` object or if its backing `ArrayBuffer` is
-  /// detached or if the view is out of bounds.
+  /// detached.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length) = {
@@ -1327,7 +1329,7 @@ impl Heap {
       data.len()
     };
     if view_end > buf_len {
-      return Err(VmError::TypeError("Uint8Array view out of bounds"));
+      return Ok(0);
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
