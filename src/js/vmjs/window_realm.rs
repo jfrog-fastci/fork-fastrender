@@ -1822,6 +1822,13 @@ const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
+
+const WINDOW_REALM_GLOBAL_OBJECT_HOST_TAG: u64 = u64::from_be_bytes(*b"WINDOW__");
+const WINDOW_REALM_DOCUMENT_HOST_TAG: u64 = u64::from_be_bytes(*b"DOCUMENT");
+const WINDOW_REALM_LOCATION_HOST_TAG: u64 = u64::from_be_bytes(*b"LOCATION");
+const WINDOW_REALM_HISTORY_HOST_TAG: u64 = u64::from_be_bytes(*b"HISTORY_");
+const WINDOW_REALM_CONSOLE_HOST_TAG: u64 = u64::from_be_bytes(*b"CONSOLE_");
+
 // Host-slot `b` tag for DOMTokenList wrappers (`Element.classList`).
 const DOM_TOKEN_LIST_HOST_TAG: u64 = 3;
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
@@ -20637,6 +20644,13 @@ fn init_window_globals(
 ) -> Result<(Option<u64>, Option<u64>, GcObject, GcString), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
+  scope.heap_mut().object_set_host_slots(
+    global,
+    HostSlots {
+      a: WINDOW_REALM_GLOBAL_OBJECT_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Ensure `DOMException` exists early: many real-world libraries use it for quota errors, token
   // validation, etc.
@@ -20681,6 +20695,13 @@ fn init_window_globals(
 
   let location_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(location_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    location_obj,
+    HostSlots {
+      a: WINDOW_REALM_LOCATION_HOST_TAG,
+      b: 0,
+    },
+  )?;
   // Keep the document URL on the location object so the href getter can access it.
   let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
   scope.define_property(location_obj, location_url_key, data_desc(url_v))?;
@@ -21072,6 +21093,13 @@ fn init_window_globals(
 
   let document_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(document_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    document_obj,
+    HostSlots {
+      a: WINDOW_REALM_DOCUMENT_HOST_TAG,
+      b: 0,
+    },
+  )?;
   if let Some(platform) = dom_platform.as_mut() {
     let document_id = gc_object_id(document_obj);
     scope.heap_mut().object_set_prototype(
@@ -25315,6 +25343,13 @@ fn init_window_globals(
 
   let console_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(console_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    console_obj,
+    HostSlots {
+      a: WINDOW_REALM_CONSOLE_HOST_TAG,
+      b: 0,
+    },
+  )?;
   let console_call_id = vm.register_native_call(console_call_native)?;
   let console_trace_call_id = vm.register_native_call(console_trace_native)?;
   let console_group_call_id = vm.register_native_call(console_group_native)?;
@@ -25467,6 +25502,13 @@ fn init_window_globals(
   // `location.href`/`document.URL` so URL-derived routing logic works.
   let history_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(history_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    history_obj,
+    HostSlots {
+      a: WINDOW_REALM_HISTORY_HOST_TAG,
+      b: 0,
+    },
+  )?;
   let history_key = alloc_key(&mut scope, "history")?;
   let history_state_key = alloc_key(&mut scope, "state")?;
   let history_length_key = alloc_key(&mut scope, "length")?;

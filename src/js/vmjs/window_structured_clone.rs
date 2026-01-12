@@ -2128,6 +2128,27 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_rejects_window_realm_platform_objects() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    for expr in [
+      "globalThis",
+      "document",
+      "location",
+      "history",
+      "console",
+      "localStorage",
+      "sessionStorage",
+    ] {
+      let script = format!("try {{ structuredClone({expr}); 'no' }} catch (e) {{ e.name }}");
+      let v = realm.exec_script(&script)?;
+      assert_eq!(get_string(&realm, v), "DataCloneError", "structuredClone({expr})");
+    }
+
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_clones_blob() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
