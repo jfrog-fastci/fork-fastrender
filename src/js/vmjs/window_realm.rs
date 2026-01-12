@@ -3897,6 +3897,13 @@ fn window_scroll_to_native(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  if host
+    .as_any_mut()
+    .downcast_mut::<BrowserDocumentDom2>()
+    .is_none()
+  {
+    return Ok(Value::Undefined);
+  }
   let (x, y) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
 
   let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
@@ -3920,6 +3927,13 @@ fn window_scroll_by_native(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  if host
+    .as_any_mut()
+    .downcast_mut::<BrowserDocumentDom2>()
+    .is_none()
+  {
+    return Ok(Value::Undefined);
+  }
   let (dx, dy) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
 
   let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
