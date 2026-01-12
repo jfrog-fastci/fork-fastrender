@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::text::font_db::{FontDatabase, FontStyle, FontWeight, GenericFamily, LoadedFont};
+use crate::debug::runtime::runtime_toggles;
 use crate::ui::high_contrast;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Style};
 use egui::epaint::Shadow;
@@ -42,8 +43,8 @@ pub fn ui_scale_from_str(raw: &str) -> Option<f32> {
 
 /// Returns `Some(scale)` when the env var is set to a valid float, otherwise `None`.
 pub fn ui_scale_from_env() -> Option<f32> {
-  let raw = std::env::var(ENV_UI_SCALE).ok()?;
-  ui_scale_from_str(&raw)
+  let raw = runtime_toggles().get(ENV_UI_SCALE)?;
+  ui_scale_from_str(raw)
 }
 
 pub fn resolve_ui_scale(env_override: Option<f32>, session: Option<f32>) -> f32 {
@@ -515,9 +516,9 @@ pub fn apply_browser_theme_with_ui_scale(ctx: &egui::Context, theme: &BrowserThe
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::sync::Mutex;
-
-  static ENV_LOCK: Mutex<()> = Mutex::new(());
+  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
+  use std::collections::HashMap;
+  use std::sync::Arc;
 
   #[test]
   fn parse_browser_theme_env() {
@@ -620,25 +621,38 @@ mod tests {
 
   #[test]
   fn ui_scale_from_env_parses_and_clamps() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    with_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+      assert_eq!(ui_scale_from_env(), None);
+    });
 
-    let original = std::env::var_os(ENV_UI_SCALE);
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        ENV_UI_SCALE.to_string(),
+        "1.5".to_string(),
+      )]))),
+      || {
+        assert_eq!(ui_scale_from_env(), Some(1.5));
+      },
+    );
 
-    std::env::remove_var(ENV_UI_SCALE);
-    assert_eq!(ui_scale_from_env(), None);
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        ENV_UI_SCALE.to_string(),
+        "1000".to_string(),
+      )]))),
+      || {
+        assert_eq!(ui_scale_from_env(), Some(MAX_UI_SCALE));
+      },
+    );
 
-    std::env::set_var(ENV_UI_SCALE, "1.5");
-    assert_eq!(ui_scale_from_env(), Some(1.5));
-
-    std::env::set_var(ENV_UI_SCALE, "1000");
-    assert_eq!(ui_scale_from_env(), Some(MAX_UI_SCALE));
-
-    std::env::set_var(ENV_UI_SCALE, "nope");
-    assert_eq!(ui_scale_from_env(), None);
-
-    match original {
-      Some(v) => std::env::set_var(ENV_UI_SCALE, v),
-      None => std::env::remove_var(ENV_UI_SCALE),
-    }
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        ENV_UI_SCALE.to_string(),
+        "nope".to_string(),
+      )]))),
+      || {
+        assert_eq!(ui_scale_from_env(), None);
+      },
+    );
   }
 }
