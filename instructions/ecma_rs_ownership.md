@@ -122,8 +122,8 @@ merged into ecma-rs (or deleted if legacy):
 | `webidl-bindings-core` (legacy crate) | `vendor/ecma-rs/webidl/` (merge) |
 | `webidl-vm-js` (legacy crate) | `vendor/ecma-rs/webidl-vm-js/` (merge) |
 | `webidl-js-runtime` (legacy crate) | `vendor/ecma-rs/webidl-runtime/` (new crate) |
-| `crates/js-dom-bindings/` | Delete (legacy QuickJS-era bindings; verify unused) |
-| `crates/js-dom-bindings-quickjs/` | Delete (legacy QuickJS-era bindings; verify unused) |
+| `js-dom-bindings` (legacy crate) | Delete (legacy QuickJS-era bindings; verify unused) |
+| `js-dom-bindings-quickjs` (legacy crate) | Delete (legacy QuickJS-era bindings; verify unused) |
 | `crates/js-wpt-dom-runner/` | Keep as FastRender-specific tool crate (NOT JS/WebIDL infra) |
 
 After migration, `crates/` must not contain any JS/WebIDL infrastructure crates.  
