@@ -43,6 +43,8 @@ mod webidl_bindings_codegen_toy_generated_vmjs {
 }
 
 #[cfg(test)]
+mod regression_tests;
+#[cfg(test)]
 mod webidl_union_record_tests;
 
 #[cfg(test)]
