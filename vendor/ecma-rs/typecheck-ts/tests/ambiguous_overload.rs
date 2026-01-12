@@ -1,10 +1,9 @@
-use diagnostics::TextRange;
 use std::sync::Arc;
 
 mod common;
 
 use typecheck_ts::lib_support::CompilerOptions;
-use typecheck_ts::{codes, FileKey, MemoryHost, Program};
+use typecheck_ts::{codes, FileKey, MemoryHost, Program, TextRange};
 
 #[test]
 fn ambiguous_overload_prefers_first_signature_and_reports_type_mismatch_at_assignment() {
