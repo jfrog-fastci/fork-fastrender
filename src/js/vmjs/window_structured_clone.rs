@@ -27,6 +27,7 @@ use vm_js::{
   GcObject, GcString, GcSymbol, Intrinsics, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
   RealmId, RegExpFlags, RegExpProgram, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
+use vm_js::iterator::{get_iterator, iterator_step_value};
 
 /// Native slot index for the `structuredClone` function's realm global object.
 pub(crate) const STRUCTURED_CLONE_GLOBAL_SLOT: usize = 0;
@@ -527,91 +528,83 @@ fn parse_transfer_list(
     return Ok(Vec::new());
   }
 
-  let Value::Object(transfer_obj) = transfer_val else {
-    return Err(throw_data_clone_error(
-      vm,
-      scope,
-      global,
-      "structuredClone: transfer must be an array",
-    ));
-  };
-  let is_array = scope.heap().object_is_array(transfer_obj)?;
-  if !is_array {
-    return Err(throw_data_clone_error(
-      vm,
-      scope,
-      global,
-      "structuredClone: transfer must be an array",
-      ));
-  }
+  // `transfer_val` can be an arbitrary iterable. Root it (and the iterator record) for the
+  // duration of parsing so GC during `vm.tick()` can't collect the iterator mid-iteration.
+  let mut iter_scope = scope.reborrow();
+  iter_scope.push_root(transfer_val)?;
 
-  let length_key = alloc_key(scope, "length")?;
-  let len_val = vm.get_with_host_and_hooks(host, scope, hooks, transfer_obj, length_key)?;
-  let Value::Number(len_n) = len_val else {
-    return Err(throw_data_clone_error(
-      vm,
-      scope,
-      global,
-      "structuredClone: transfer array has invalid length",
-    ));
-  };
-  if !len_n.is_finite() || len_n < 0.0 || len_n.fract() != 0.0 || len_n > (u32::MAX as f64) {
-    return Err(throw_data_clone_error(
-      vm,
-      scope,
-      global,
-      "structuredClone: transfer array has invalid length",
-    ));
-  }
-  let len = len_n as usize;
+  let mut iter = get_iterator(vm, host, hooks, &mut iter_scope, transfer_val)?;
+  // Root iterator record values, since the Rust stack isn't traced by the GC.
+  iter_scope.push_roots(&[iter.iterator, iter.next_method])?;
 
   let mut seen: HashSet<GcObject> = HashSet::new();
   let mut out: Vec<GcObject> = Vec::new();
-  out.try_reserve(len).map_err(|_| VmError::OutOfMemory)?;
 
-  for i in 0..len {
-    if i % 1024 == 0 {
+  let mut count: usize = 0;
+  loop {
+    // Tick before pulling the next value so we don't hold an unrooted entry across a potential GC.
+    if count % 1024 == 0 {
       vm.tick()?;
     }
 
-    let key_s = scope.alloc_string(&i.to_string())?;
-    scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
-    let entry = vm.get_with_host_and_hooks(host, scope, hooks, transfer_obj, key)?;
-
-    let Value::Object(obj) = entry else {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        global,
-        "structuredClone: transfer list contains non-ArrayBuffer",
-      ));
+    let Some(entry) = iterator_step_value(vm, host, hooks, &mut iter_scope, &mut iter)? else {
+      break;
     };
-    if !scope.heap().is_array_buffer_object(obj) {
-      return Err(throw_data_clone_error(
+
+    count = count.saturating_add(1);
+    if count > MAX_VISITED_NODES {
+      return Err(throw_range_error(
         vm,
-        scope,
-        global,
-        "structuredClone: transfer list contains non-ArrayBuffer",
+        &mut iter_scope,
+        "structuredClone: transfer list too large",
       ));
     }
-    let detached = scope.heap().is_detached_array_buffer(obj).unwrap_or(false);
-    if detached {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        global,
-        "structuredClone: transfer list contains detached ArrayBuffer",
-      ));
-    }
-    if !seen.insert(obj) {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        global,
-        "structuredClone: transfer list contains duplicates",
-      ));
-    }
+
+    // Root the yielded entry while validating it (error construction can allocate/GC).
+    let obj = {
+      let mut entry_scope = iter_scope.reborrow();
+      entry_scope.push_root(entry)?;
+
+      let Value::Object(obj) = entry else {
+        return Err(throw_data_clone_error(
+          vm,
+          &mut entry_scope,
+          global,
+          "structuredClone: transfer list contains non-ArrayBuffer",
+        ));
+      };
+      if !entry_scope.heap().is_array_buffer_object(obj) {
+        return Err(throw_data_clone_error(
+          vm,
+          &mut entry_scope,
+          global,
+          "structuredClone: transfer list contains non-ArrayBuffer",
+        ));
+      }
+      let detached = entry_scope.heap().is_detached_array_buffer(obj).unwrap_or(false);
+      if detached {
+        return Err(throw_data_clone_error(
+          vm,
+          &mut entry_scope,
+          global,
+          "structuredClone: transfer list contains detached ArrayBuffer",
+        ));
+      }
+      if !seen.insert(obj) {
+        return Err(throw_data_clone_error(
+          vm,
+          &mut entry_scope,
+          global,
+          "structuredClone: transfer list contains duplicates",
+        ));
+      }
+
+      obj
+    };
+
+    // Root accepted buffers for the duration of parsing so later `vm.tick()` calls can't collect
+    // them even if the iterator yields freshly-created objects.
+    iter_scope.push_root(Value::Object(obj))?;
     out.push(obj);
   }
 
@@ -1977,6 +1970,9 @@ mod tests {
          if (view.length !== 0) return false;\
          if (Object.prototype.toString.call(c) !== '[object ArrayBuffer]') return false;\
          if (Object.getPrototypeOf(c) !== ArrayBuffer.prototype) return false;\
+         let threw = false;\
+         try { new Uint8Array(ab); } catch (e) { threw = e.name === 'TypeError'; }\
+         if (!threw) return false;\
          if (c.byteLength !== 2) return false;\
          return new Uint8Array(c)[0] === 7;\
        })()",
@@ -2035,6 +2031,16 @@ mod tests {
     )?;
     assert_eq!(get_string(&realm, dup), "DataCloneError");
 
+    let detached = realm.exec_script(
+      "(() => {\
+         const ab = new ArrayBuffer(1);\
+         structuredClone(ab, { transfer: [ab] });\
+         try { structuredClone(ab, { transfer: [ab] }); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, detached), "DataCloneError");
+
     let non_ab = realm.exec_script(
       "(() => {\
          try { structuredClone(1, { transfer: [1] }); return 'no'; }\
@@ -2042,6 +2048,17 @@ mod tests {
        })()",
     )?;
     assert_eq!(get_string(&realm, non_ab), "DataCloneError");
+
+    let iterable = realm.exec_script(
+      "(() => {\
+         const ab = new ArrayBuffer(2);\
+         new Uint8Array(ab)[0] = 7;\
+         const transfer = { [Symbol.iterator]: function* () { yield ab; } };\
+         const c = structuredClone(ab, { transfer });\
+         return ab.byteLength === 0 && c.byteLength === 2 && new Uint8Array(c)[0] === 7;\
+       })()",
+    )?;
+    assert_eq!(iterable, Value::Bool(true));
 
     Ok(())
   }

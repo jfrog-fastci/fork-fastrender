@@ -53,7 +53,6 @@ const REQUEST_ID_KEY: &str = "__fastrender_request_id";
 const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
 
 // Hidden per-instance properties for stream wrappers.
-const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
 const READABLE_STREAM_ID_KEY: &str = "__fastrender_readable_stream_id";
 const READABLE_STREAM_READER_ID_KEY: &str = "__fastrender_readable_stream_reader_id";
@@ -2924,6 +2923,16 @@ fn request_clone_native(
     Value::Undefined => Value::Null,
     other => other,
   };
+
+  if request_body_stream_locked(env_id, request_id, scope.heap())? {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Request body is locked",
+    ));
+  }
 
   let cloned: Option<CoreRequest> = with_env_state(env_id, scope.heap(), |state| {
     let req = state
