@@ -370,6 +370,18 @@ fn tab_search_overlay_ui(
           .max_height(360.0)
           .auto_shrink([false, false])
           .show(ui, |ui| {
+            let row_height = ui.spacing().interact_size.y.max(28.0);
+            let rounding = egui::Rounding::same(4.0);
+            let inner_margin = egui::vec2(6.0, 4.0);
+            let selected_fill = ui.visuals().selection.bg_fill;
+            let hovered_fill = {
+              // Use a subtle text-colored scrim so hover remains visible even when the theme's
+              // hovered widget fill matches the popup background.
+              let base = ui.visuals().text_color();
+              let alpha = if ui.visuals().dark_mode { 24 } else { 14 };
+              egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
+            };
+
             for (idx, m) in matches.iter().enumerate() {
               let tab = &app.tabs[m.tab_index];
               let is_selected = idx == app.chrome.tab_search.selected;
@@ -377,50 +389,79 @@ fn tab_search_overlay_ui(
               let title = tab.display_title();
               let secondary = tab_search_secondary_text(tab);
 
-              let fill = if is_selected {
-                with_alpha(ui.visuals().selection.bg_fill, open_opacity)
-              } else {
-                egui::Color32::TRANSPARENT
-              };
+              let row_id = egui::Id::new(("tab_search_row", tab.id));
+              let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width().max(0.0), row_height),
+                egui::Sense::click(),
+              );
+              response.widget_info({
+                let label = title.clone();
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+              });
 
-              let row = egui::Frame::none()
-                .fill(fill)
-                .rounding(egui::Rounding::same(4.0))
-                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
-                .show(ui, |ui| {
-                  ui.horizontal(|ui| {
-                    let mut drew_favicon = false;
-                    if let Some(tex_id) = favicon_for_tab(tab.id) {
-                      if let Some(meta) = tab.favicon_meta {
-                        let (w, h) = meta.size_px;
-                        if w > 0 && h > 0 {
-                          let height_points = 16.0;
-                          let aspect = (w as f32) / (h as f32);
-                          let width_points = (height_points * aspect).clamp(8.0, 32.0);
-                          ui.add(egui::Image::new((
-                            tex_id,
-                            egui::vec2(width_points, height_points),
-                          )));
-                          drew_favicon = true;
-                        }
-                      }
-                      if !drew_favicon {
-                        ui.add(egui::Image::new((tex_id, egui::vec2(16.0, 16.0))));
+              let hover_t = motion.animate_bool(
+                ui.ctx(),
+                row_id.with("hover"),
+                response.hovered(),
+                motion.durations.hover_fade,
+              );
+              let selected_t = motion.animate_bool(
+                ui.ctx(),
+                row_id.with("selected"),
+                is_selected,
+                motion.durations.hover_fade,
+              );
+              if hover_t > 0.0 {
+                ui.painter().rect_filled(
+                  rect,
+                  rounding,
+                  with_alpha(hovered_fill, hover_t * open_opacity),
+                );
+              }
+              if selected_t > 0.0 {
+                ui.painter().rect_filled(
+                  rect,
+                  rounding,
+                  with_alpha(selected_fill, selected_t * open_opacity),
+                );
+              }
+
+              ui.allocate_ui_at_rect(rect.shrink2(inner_margin), |ui| {
+                ui.horizontal(|ui| {
+                  let mut drew_favicon = false;
+                  if let Some(tex_id) = favicon_for_tab(tab.id) {
+                    if let Some(meta) = tab.favicon_meta {
+                      let (w, h) = meta.size_px;
+                      if w > 0 && h > 0 {
+                        let height_points = 16.0;
+                        let aspect = (w as f32) / (h as f32);
+                        let width_points = (height_points * aspect).clamp(8.0, 32.0);
+                        ui.add(egui::Image::new((
+                          tex_id,
+                          egui::vec2(width_points, height_points),
+                        )));
                         drew_favicon = true;
                       }
                     }
                     if !drew_favicon {
-                      ui.add_space(16.0);
+                      ui.add(egui::Image::new((tex_id, egui::vec2(16.0, 16.0))));
+                      drew_favicon = true;
                     }
+                  }
+                  if !drew_favicon {
+                    ui.add_space(16.0);
+                  }
 
-                    ui.vertical(|ui| {
-                      ui.label(egui::RichText::new(title).strong());
-                      ui.label(egui::RichText::new(secondary).small().weak());
-                    });
+                  ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(title).strong());
+                    ui.label(egui::RichText::new(secondary).small().weak());
                   });
                 });
+              });
 
-              let response = row.response.interact(egui::Sense::click());
+              if response.hovered() {
+                app.chrome.tab_search.selected = idx;
+              }
               if response.clicked() {
                 clicked = Some(tab.id);
               }
