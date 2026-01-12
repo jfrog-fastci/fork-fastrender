@@ -1431,6 +1431,29 @@ mod tests {
   }
 
   #[test]
+  fn window_add_event_listener_identifier_call_defaults_this_in_strict_mode() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    // Web-compatible behavior: `addEventListener(...)` is callable as a global function even in
+    // strict mode.
+    let out = host.exec_script(
+      "(function () {\n\
+         'use strict';\n\
+         try {\n\
+           addEventListener('x', function () {});\n\
+           return true;\n\
+         } catch (e) {\n\
+           return e && e.name;\n\
+         }\n\
+       })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
   fn generated_vmjs_node_installer_can_patch_prototype_chain_after_event_target_install(
   ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);

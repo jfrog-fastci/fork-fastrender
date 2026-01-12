@@ -990,9 +990,17 @@ impl WindowRealm {
     let Value::Object(event_target_proto) = event_target_proto else {
       return Ok(());
     };
+    scope.push_root(Value::Object(event_target_proto))?;
 
-    if scope.object_get_prototype(global)? == Some(event_target_proto) {
-      return Ok(());
+    // `WindowRealm` initialization already wires up `Window.prototype -> EventTarget.prototype`;
+    // do not rewrite the global object's immediate prototype when `EventTarget.prototype` is
+    // already present in the prototype chain.
+    let mut cursor = Some(global);
+    while let Some(obj) = cursor {
+      if obj == event_target_proto {
+        return Ok(());
+      }
+      cursor = scope.object_get_prototype(obj)?;
     }
 
     scope
