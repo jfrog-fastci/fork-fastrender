@@ -54,6 +54,12 @@ struct RawCompilerOptions {
   #[serde(default)]
   module_resolution: Option<String>,
   #[serde(default)]
+  allow_js: Option<bool>,
+  #[serde(default)]
+  check_js: Option<bool>,
+  #[serde(default)]
+  module_detection: Option<String>,
+  #[serde(default)]
   skip_lib_check: Option<bool>,
   #[serde(default)]
   no_emit: Option<bool>,
@@ -373,6 +379,9 @@ fn merge_raw_compiler_options(base: RawCompilerOptions, overlay: RawCompilerOpti
     types: overlay.types.or(base.types),
     type_roots: overlay.type_roots.or(base.type_roots),
     module_resolution: overlay.module_resolution.or(base.module_resolution),
+    allow_js: overlay.allow_js.or(base.allow_js),
+    check_js: overlay.check_js.or(base.check_js),
+    module_detection: overlay.module_detection.or(base.module_detection),
     skip_lib_check: overlay.skip_lib_check.or(base.skip_lib_check),
     no_emit: overlay.no_emit.or(base.no_emit),
     no_emit_on_error: overlay.no_emit_on_error.or(base.no_emit_on_error),
@@ -439,6 +448,20 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
     if !module_resolution.is_empty() {
       options.module_resolution = Some(module_resolution.to_string());
     }
+  }
+
+  if let Some(module_detection) = raw.module_detection.as_deref() {
+    let module_detection = module_detection.trim();
+    if !module_detection.is_empty() {
+      options.module_detection = Some(module_detection.to_string());
+    }
+  }
+
+  if let Some(value) = raw.allow_js {
+    options.allow_js = value;
+  }
+  if let Some(value) = raw.check_js {
+    options.check_js = value;
   }
   if let Some(value) = raw.skip_lib_check {
     options.skip_lib_check = value;

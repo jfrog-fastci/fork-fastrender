@@ -302,6 +302,45 @@ fn locals_tables_resolve_object_literal_members() {
 }
 
 #[test]
+fn locals_tables_resolve_exported_function_references() {
+  let source = "export function add(a: number, b: number) { return a + b; }\nexport const value = add(1, 2);\n";
+  let mut ast_mut = parse(source).expect("parse exported reference fixture (mut)");
+  let locals_mut = bind_ts_locals(&mut ast_mut, FileId(0));
+  let ast_tables = parse(source).expect("parse exported reference fixture (tables)");
+  let (locals_tables, _tables) = bind_ts_locals_tables(&ast_tables, FileId(0));
+
+  let adds = positions(source, "add");
+  assert_eq!(
+    adds.len(),
+    2,
+    "expected declaration + call occurrences for add: {adds:?}"
+  );
+  let add_decl = adds[0];
+  let add_call = adds[1];
+
+  let decl_sym_mut = locals_mut
+    .resolve_expr_at_offset(add_decl)
+    .map(|(_, id)| id)
+    .expect("add declaration should resolve (mut)");
+  let call_sym_mut = locals_mut
+    .resolve_expr_at_offset(add_call)
+    .map(|(_, id)| id)
+    .expect("add call should resolve (mut)");
+  assert_eq!(decl_sym_mut, call_sym_mut);
+
+  let decl_sym_tables = locals_tables
+    .resolve_expr_at_offset(add_decl)
+    .map(|(_, id)| id)
+    .expect("add declaration should resolve (tables)");
+  let call_sym_tables = locals_tables
+    .resolve_expr_at_offset(add_call)
+    .map(|(_, id)| id)
+    .expect("add call should resolve (tables)");
+  assert_eq!(decl_sym_tables, call_sym_tables);
+  assert_eq!(decl_sym_mut, decl_sym_tables);
+}
+
+#[test]
 fn locals_resolve_template_literal_substitution() {
   let source = "const x = 1; const msg = `value=${x}`;";
   let mut ast = parse(source).expect("parse template literal");
