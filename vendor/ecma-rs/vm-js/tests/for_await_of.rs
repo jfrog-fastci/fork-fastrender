@@ -608,3 +608,261 @@ fn for_await_of_break_propagates_iterator_return_rejection() -> Result<(), VmErr
   assert_eq!(return_calls, Value::Number(1.0));
   Ok(())
 }
+
+#[test]
+fn for_await_of_break_forwards_completion_when_iterator_return_getter_is_null() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var iterationCount = 0;
+      var returnGets = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          get return() {
+            returnGets++;
+            return null;
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          iterationCount++;
+          break;
+        }
+        return "ok";
+      }
+
+      f().then(function (v) { out = v; }, function () { out = "bad"; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ok");
+
+  let iteration_count = rt.exec_script("iterationCount")?;
+  assert_eq!(iteration_count, Value::Number(1.0));
+
+  let return_gets = rt.exec_script("returnGets")?;
+  assert_eq!(return_gets, Value::Number(1.0));
+
+  Ok(())
+}
+
+#[test]
+fn for_await_of_break_propagates_getmethod_typeerror_when_iterator_return_is_non_callable() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var iterationCount = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          return: Symbol(),
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          iterationCount++;
+          break;
+        }
+      }
+
+      f().then(
+        function () { out = "resolved"; },
+        function (e) { out = e.constructor.name; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "TypeError");
+
+  let iteration_count = rt.exec_script("iterationCount")?;
+  assert_eq!(iteration_count, Value::Number(1.0));
+
+  Ok(())
+}
+
+#[test]
+fn for_await_of_break_propagates_getmethod_abrupt_when_iterator_return_getter_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var iterationCount = 0;
+      var returnGets = 0;
+      const innerError = { name: "inner error" };
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          get return() {
+            returnGets++;
+            throw innerError;
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          iterationCount++;
+          break;
+        }
+      }
+
+      f().then(
+        function () { out = "resolved"; },
+        function (e) { out = (e === innerError) ? "inner" : "other"; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "inner");
+
+  let iteration_count = rt.exec_script("iterationCount")?;
+  assert_eq!(iteration_count, Value::Number(1.0));
+
+  let return_gets = rt.exec_script("returnGets")?;
+  assert_eq!(return_gets, Value::Number(1.0));
+
+  Ok(())
+}
+
+#[test]
+fn for_await_of_throw_suppresses_getmethod_typeerror_when_iterator_return_is_non_callable() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var iterationCount = 0;
+      var returnGets = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          get return() {
+            returnGets++;
+            return true;
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          iterationCount++;
+          throw "body";
+        }
+      }
+
+      f().then(
+        function () { out = "resolved"; },
+        function (e) { out = (typeof e === "string") ? e : e.constructor.name; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "body");
+
+  let iteration_count = rt.exec_script("iterationCount")?;
+  assert_eq!(iteration_count, Value::Number(1.0));
+
+  let return_gets = rt.exec_script("returnGets")?;
+  assert_eq!(return_gets, Value::Number(1.0));
+
+  Ok(())
+}
+
+#[test]
+fn for_await_of_throw_suppresses_getmethod_abrupt_when_iterator_return_getter_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var iterationCount = 0;
+      var returnGets = 0;
+      const innerError = { name: "inner error" };
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          get return() {
+            returnGets++;
+            throw innerError;
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          iterationCount++;
+          throw "body";
+        }
+      }
+
+      f().then(
+        function () { out = "resolved"; },
+        function (e) { out = (typeof e === "string") ? e : e.name; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "body");
+
+  let iteration_count = rt.exec_script("iterationCount")?;
+  assert_eq!(iteration_count, Value::Number(1.0));
+
+  let return_gets = rt.exec_script("returnGets")?;
+  assert_eq!(return_gets, Value::Number(1.0));
+
+  Ok(())
+}
