@@ -805,6 +805,7 @@ impl Document {
     let node_id = node;
     self.node_checked(node_id)?;
 
+    #[derive(Clone, Copy)]
     enum ReplaceTarget {
       Text,
       Comment,
