@@ -172,3 +172,50 @@ fn accessibility_exports_selection_debug_fields() {
   );
 }
 
+#[test]
+fn interaction_engine_document_selection_flag_is_synced() {
+  use fastrender::geometry::{Point, Rect};
+  use fastrender::interaction::InteractionEngine;
+  use fastrender::scroll::ScrollState;
+  use fastrender::style::display::FormattingContextType;
+  use fastrender::style::ComputedStyle;
+  use fastrender::tree::box_tree::{BoxNode, BoxTree};
+  use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
+  use std::sync::Arc;
+
+  let renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <p>hello</p>
+      </body>
+    </html>
+  "##;
+  let mut dom = renderer.parse_html(html).expect("parse");
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![],
+  ));
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![],
+  ));
+  let scroll = ScrollState::default();
+
+  let mut engine = InteractionEngine::new();
+  assert!(!engine.interaction_state().document_has_selection);
+
+  assert!(engine.clipboard_select_all(&mut dom));
+  assert!(engine.interaction_state().document_has_selection);
+
+  assert!(engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(1.0, 1.0),
+  ));
+  assert!(!engine.interaction_state().document_has_selection);
+}
