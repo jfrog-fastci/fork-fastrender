@@ -1,8 +1,8 @@
 //! Guard against re-introducing stale references to the pre-consolidation WebIDL crate layout.
 //!
-//! WebIDL consolidation removed the old workspace-local `crates/webidl-*` stack. References to those
-//! paths in docs/scripts/source comments are misleading and tend to resurrect the old ownership
-//! model over time.
+//! WebIDL consolidation removed the old workspace-local WebIDL crates that lived under `crates/`.
+//! References to those old paths in docs/scripts/source comments are misleading and tend to
+//! resurrect the old ownership model over time.
 //!
 //! This guard checks the parts of the repo where contributors are most likely to add such
 //! references (source, scripts, and contributor-facing docs). It intentionally does *not* scan the
@@ -15,12 +15,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const STALE_WEBIDL_CRATE_PATHS: [&str; 4] = [
-  "crates/webidl-ir",
-  "crates/webidl-bindings-core",
-  "crates/webidl-vm-js",
-  "crates/webidl-js-runtime",
-];
+const CRATES_DIR: &str = "crates";
+const WEBIDL_CRATE_PREFIX: &str = "webidl-";
+const DELETED_WEBIDL_CRATE_SUFFIXES: [&str; 4] = ["ir", "bindings-core", "vm-js", "js-runtime"];
 
 #[test]
 fn no_stale_webidl_crates_paths_in_repo() {
@@ -53,7 +50,7 @@ fn no_stale_webidl_crates_paths_in_repo() {
 
   assert!(
     offenders.is_empty(),
-    "found stale references to removed `crates/webidl-*` crates. After WebIDL consolidation, the\n\
+    "found stale references to removed workspace-local WebIDL crates. After WebIDL consolidation, the\n\
      canonical WebIDL stack lives under `vendor/ecma-rs/webidl*`.\n\
      \n\
      Offenders:\n\
@@ -79,8 +76,9 @@ fn scan_file(repo_root: &Path, path: &Path, offenders: &mut Vec<String>) {
 
   for (line_idx, line) in contents.lines().enumerate() {
     let line_number = line_idx + 1;
-    for pattern in STALE_WEBIDL_CRATE_PATHS {
-      if line.contains(pattern) {
+    for suffix in DELETED_WEBIDL_CRATE_SUFFIXES {
+      let pattern = format!("{CRATES_DIR}/{WEBIDL_CRATE_PREFIX}{suffix}");
+      if line.contains(&pattern) {
         offenders.push(format!("{rel_path}:{line_number}: contains {pattern:?}"));
       }
     }
@@ -122,4 +120,3 @@ fn text_files(root: &Path) -> Vec<PathBuf> {
   files.sort();
   files
 }
-
