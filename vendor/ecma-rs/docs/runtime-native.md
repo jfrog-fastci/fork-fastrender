@@ -259,7 +259,8 @@ pub struct CoroutineId(pub u64);
 ///
 /// Note:
 /// - `StringRef` values returned by `rt_string_concat` / `rt_string_to_owned_utf8` are allocated
-///   **outside** the GC heap and must be freed via `rt_stringref_free`.
+///   **outside** the GC heap and must be freed via `rt_string_free` (or the compatibility alias
+///   `rt_stringref_free`).
 /// - `rt_string_as_utf8` returns a borrowed `StringRef` view into the GC heap that is only valid
 ///   until the next GC safepoint/collection (the string may be relocated).
 #[repr(C)]
@@ -348,6 +349,8 @@ pub fn rt_gc_collect();
 
 // Strings
 pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
+pub fn rt_string_free(s: StringRef);
+// Compatibility alias for older codegen/tests. Prefer `rt_string_free`.
 pub fn rt_stringref_free(s: StringRef);
 pub fn rt_string_new_utf8(bytes: *const u8, len: usize) -> GcPtr;
 pub fn rt_string_concat_gc(a: GcPtr, b: GcPtr) -> GcPtr;
@@ -422,13 +425,14 @@ around `MayGC` calls (the runtime may safepoint/collect and relocate nursery obj
 | `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
 | `rt_write_barrier_range` | NoGC | Conservative post-bulk-write barrier; must not allocate or safepoint. |
 | `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
-| `rt_string_concat` | MayGC | Allocates an owned UTF-8 `StringRef` outside the GC heap (must be freed via `rt_stringref_free`). |
-| `rt_stringref_free` | NoGC | Frees an owned `StringRef` allocated by `rt_string_concat` / `rt_string_to_owned_utf8`. |
+| `rt_string_concat` | MayGC | Allocates an owned UTF-8 `StringRef` outside the GC heap (must be freed via `rt_string_free` / `rt_stringref_free`). |
+| `rt_string_free` | NoGC | Frees an owned `StringRef` allocated by `rt_string_concat` / `rt_string_to_owned_utf8`. |
+| `rt_stringref_free` | NoGC | Compatibility alias for `rt_string_free`. |
 | `rt_string_new_utf8` | MayGC | Allocates a GC-managed string. |
 | `rt_string_concat_gc` | MayGC | Allocates a GC-managed string. |
 | `rt_string_len` | NoGC | Reads the string header. |
 | `rt_string_as_utf8` | NoGC | Returns a borrowed view into the GC heap (valid until next GC). |
-| `rt_string_to_owned_utf8` | NoGC | Allocates an owned UTF-8 `StringRef` outside the GC heap (must be freed via `rt_stringref_free`). |
+| `rt_string_to_owned_utf8` | NoGC | Allocates an owned UTF-8 `StringRef` outside the GC heap (must be freed via `rt_string_free` / `rt_stringref_free`). |
 | `rt_string_intern` | MayGC | May allocate/update interner tables. |
 | `rt_string_pin_interned` | MayGC | May allocate/promote and pin interned strings. |
 | `rt_parallel_spawn` | MayGC | May allocate task metadata / interact with scheduler. |
