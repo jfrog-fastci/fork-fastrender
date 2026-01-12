@@ -2009,18 +2009,34 @@ fn print_resolution_traces_for_mismatches(results: &[TestResult]) {
     if let Some(trace) = &result.rust_resolution_trace {
       eprintln!("rust resolve trace:");
       for entry in trace {
+        let kind = entry.kind.as_ref().map(|k| k.as_str()).unwrap_or("-");
+        let mode = entry.mode.as_str();
         match &entry.resolved {
-          Some(resolved) => eprintln!("  {} + {:?} -> {}", entry.from, entry.specifier, resolved),
-          None => eprintln!("  {} + {:?} -> <unresolved>", entry.from, entry.specifier),
+          Some(resolved) => eprintln!(
+            "  {} + {:?} -> {} (kind={kind} mode={mode})",
+            entry.from, entry.specifier, resolved
+          ),
+          None => eprintln!(
+            "  {} + {:?} -> <unresolved> (kind={kind} mode={mode})",
+            entry.from, entry.specifier
+          ),
         }
       }
     }
     if let Some(trace) = &result.tsc_resolution_trace {
       eprintln!("tsc resolve trace:");
       for entry in trace {
+        let kind = entry.kind.as_ref().map(|k| k.as_str()).unwrap_or("-");
+        let mode = entry.mode.as_str();
         match &entry.resolved {
-          Some(resolved) => eprintln!("  {} + {:?} -> {}", entry.from, entry.specifier, resolved),
-          None => eprintln!("  {} + {:?} -> <unresolved>", entry.from, entry.specifier),
+          Some(resolved) => eprintln!(
+            "  {} + {:?} -> {} (kind={kind} mode={mode})",
+            entry.from, entry.specifier, resolved
+          ),
+          None => eprintln!(
+            "  {} + {:?} -> <unresolved> (kind={kind} mode={mode})",
+            entry.from, entry.specifier
+          ),
         }
       }
     }

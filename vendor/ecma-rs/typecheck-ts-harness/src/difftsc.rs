@@ -669,11 +669,19 @@ fn print_human_summary(
       if let Some(trace) = &case.rust_resolution_trace {
         eprintln!("  rust resolve trace:");
         for entry in trace {
+          let kind = entry.kind.as_ref().map(|k| k.as_str()).unwrap_or("-");
+          let mode = entry.mode.as_str();
           match &entry.resolved {
             Some(resolved) => {
-              eprintln!("    {} + {:?} -> {}", entry.from, entry.specifier, resolved)
+              eprintln!(
+                "    {} + {:?} -> {} (kind={kind} mode={mode})",
+                entry.from, entry.specifier, resolved
+              )
             }
-            None => eprintln!("    {} + {:?} -> <unresolved>", entry.from, entry.specifier),
+            None => eprintln!(
+              "    {} + {:?} -> <unresolved> (kind={kind} mode={mode})",
+              entry.from, entry.specifier
+            ),
           }
         }
       }
@@ -681,11 +689,19 @@ fn print_human_summary(
         if !trace.is_empty() {
           eprintln!("  tsc resolve trace:");
           for entry in trace {
+            let kind = entry.kind.as_ref().map(|k| k.as_str()).unwrap_or("-");
+            let mode = entry.mode.as_str();
             match &entry.resolved {
               Some(resolved) => {
-                eprintln!("    {} + {:?} -> {}", entry.from, entry.specifier, resolved)
+                eprintln!(
+                  "    {} + {:?} -> {} (kind={kind} mode={mode})",
+                  entry.from, entry.specifier, resolved
+                )
               }
-              None => eprintln!("    {} + {:?} -> <unresolved>", entry.from, entry.specifier),
+              None => eprintln!(
+                "    {} + {:?} -> <unresolved> (kind={kind} mode={mode})",
+                entry.from, entry.specifier
+              ),
             }
           }
         }

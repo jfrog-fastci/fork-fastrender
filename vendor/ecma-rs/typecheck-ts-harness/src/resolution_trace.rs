@@ -12,11 +12,32 @@ pub enum ResolutionTraceMode {
   Bundler,
 }
 
+impl ResolutionTraceMode {
+  pub const fn as_str(&self) -> &'static str {
+    match self {
+      ResolutionTraceMode::Classic => "classic",
+      ResolutionTraceMode::Node10 => "node10",
+      ResolutionTraceMode::Node16 => "node16",
+      ResolutionTraceMode::NodeNext => "nodenext",
+      ResolutionTraceMode::Bundler => "bundler",
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResolutionTraceKind {
   Import,
   Require,
+}
+
+impl ResolutionTraceKind {
+  pub const fn as_str(&self) -> &'static str {
+    match self {
+      ResolutionTraceKind::Import => "import",
+      ResolutionTraceKind::Require => "require",
+    }
+  }
 }
 
 /// Structured module resolution trace entry.
