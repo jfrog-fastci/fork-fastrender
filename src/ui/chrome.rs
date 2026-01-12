@@ -1071,13 +1071,23 @@ pub fn chrome_ui_with_bookmarks(
       let downloads_hover = if downloads.active_count == 0 {
         "Show downloads".to_string()
       } else if let Some(total) = downloads.total_bytes {
+        let count = if downloads.active_count > 1 {
+          format!(" ({})", downloads.active_count)
+        } else {
+          String::new()
+        };
         format!(
-          "Downloading… {} / {}",
+          "Downloading…{count} {} / {}",
           format_bytes(downloads.received_bytes),
           format_bytes(total)
         )
       } else {
-        format!("Downloading… {}", format_bytes(downloads.received_bytes))
+        let count = if downloads.active_count > 1 {
+          format!(" ({})", downloads.active_count)
+        } else {
+          String::new()
+        };
+        format!("Downloading…{count} {}", format_bytes(downloads.received_bytes))
       };
 
       let back_tooltip = if cfg!(target_os = "macos") {
