@@ -12124,7 +12124,11 @@ impl<'a> FlowBodyChecker<'a> {
             ObjectKey::Ident(id) => PropKey::String(self.store.intern_name(self.hir_name(*id))),
             ObjectKey::String(s) => PropKey::String(self.store.intern_name_ref(s)),
             ObjectKey::Number(n) => PropKey::Number(n.parse::<i64>().unwrap_or(0)),
-            ObjectKey::Computed(_) => continue,
+            ObjectKey::Computed(expr) => {
+              let _ = self.eval_expr(*expr, env);
+              let _ = self.eval_expr(*value, env);
+              continue;
+            }
           };
           let ty = self.eval_expr(*value, env).0;
           let ty = if self.widen_object_literals {
@@ -12150,7 +12154,10 @@ impl<'a> FlowBodyChecker<'a> {
             ObjectKey::Ident(id) => PropKey::String(self.store.intern_name(self.hir_name(*id))),
             ObjectKey::String(s) => PropKey::String(self.store.intern_name_ref(s)),
             ObjectKey::Number(n) => PropKey::Number(n.parse::<i64>().unwrap_or(0)),
-            ObjectKey::Computed(_) => continue,
+            ObjectKey::Computed(expr) => {
+              let _ = self.eval_expr(*expr, env);
+              continue;
+            }
           };
           shape.properties.push(types_ts_interned::Property {
             key: prop_key,
