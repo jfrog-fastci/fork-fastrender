@@ -1052,8 +1052,17 @@ impl TypeStore {
       return id;
     }
 
+    // At this point we still hold the upgradable read lock, so no writer can
+    // insert concurrently. It's therefore safe to allocate the owned string
+    // (if needed) before upgrading, keeping the eventual write lock hold time
+    // minimal.
+    let owned = match name {
+      Cow::Borrowed(s) => s.to_owned(),
+      Cow::Owned(s) => s,
+    };
+
     let mut guard = RwLockUpgradableReadGuard::upgrade(guard);
-    guard.intern(name.into_owned())
+    guard.intern(owned)
   }
 
   pub fn intern_name_ref(&self, name: &str) -> NameId {
