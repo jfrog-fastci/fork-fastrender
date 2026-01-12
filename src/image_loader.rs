@@ -57,6 +57,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -1572,6 +1573,7 @@ struct SvgUseInlineElement {
   inner_range: Option<std::ops::Range<usize>>,
   view_box: Option<String>,
   preserve_aspect_ratio: Option<String>,
+  namespace_attrs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1668,6 +1670,50 @@ fn estimate_svg_subresource_cache_entry_bytes(key: &str, value: &SvgSubresourceC
     }
   }
   bytes
+}
+
+fn svg_xmlns_attributes_for_node(node: roxmltree::Node<'_, '_>) -> Vec<(String, String)> {
+  // Namespace declarations in SVG sprites are often on the root element (e.g.
+  // `<svg:svg xmlns:svg="http://www.w3.org/2000/svg">`). When we splice only a subtree into the
+  // parent document, those declarations can go out of scope and prefixed element/attribute names
+  // become invalid/ignored. Collect all `xmlns` declarations that are in scope for the referenced
+  // element so we can re-declare them on the injected wrapper.
+  const XMLNS_NS: &str = "http://www.w3.org/2000/xmlns/";
+
+  let mut out = Vec::new();
+  let mut seen: HashSet<String> = HashSet::new();
+
+  for ancestor in node.ancestors().filter(|n| n.is_element()) {
+    for attr in ancestor.attributes() {
+      let full_name: Option<Cow<'_, str>> = match attr.name() {
+        "xmlns" => Some(Cow::Borrowed("xmlns")),
+        name if name.starts_with("xmlns:") => Some(Cow::Borrowed(name)),
+        name if attr.namespace() == Some(XMLNS_NS) => {
+          // `roxmltree` can expose xmlns declarations via the XMLNS namespace with the prefix
+          // stripped (e.g. `xmlns:svg` becomes `{XMLNS_NS}svg`). Preserve the original `xmlns:*`
+          // spelling when we later re-emit it as raw markup.
+          if name.is_empty() {
+            None
+          } else {
+            Some(Cow::Owned(format!("xmlns:{name}")))
+          }
+        }
+        _ => None,
+      };
+
+      let Some(full_name) = full_name else {
+        continue;
+      };
+
+      if seen.contains(full_name.as_ref()) {
+        continue;
+      }
+      seen.insert(full_name.to_string());
+      out.push((full_name.to_string(), attr.value().to_string()));
+    }
+  }
+
+  out
 }
 
 /// Best-effort preprocessor that expands external SVG `<use>` references by fetching the
@@ -1967,6 +2013,7 @@ fn inline_svg_use_references<'a>(
           preserve_aspect_ratio: sprite_root
             .attribute("preserveAspectRatio")
             .map(|v| v.to_string()),
+          namespace_attrs: svg_xmlns_attributes_for_node(sprite_root),
         }
       });
 
@@ -2037,6 +2084,7 @@ fn inline_svg_use_references<'a>(
             preserve_aspect_ratio: sprite_node
               .attribute("preserveAspectRatio")
               .map(|v| v.to_string()),
+            namespace_attrs: svg_xmlns_attributes_for_node(sprite_node),
           }
         });
       }
@@ -2349,6 +2397,32 @@ fn inline_svg_use_references<'a>(
     }
 
     let mut wrapper_attrs = String::new();
+    // Ensure the injected wrapper is treated as SVG even when the document uses a prefixed SVG
+    // namespace (no default `xmlns` in scope).
+    const SVG_NS: &str = "http://www.w3.org/2000/svg";
+    let referenced_has_default_svg_ns = element
+      .namespace_attrs
+      .iter()
+      .any(|(name, value)| name == "xmlns" && value == SVG_NS);
+    if !referenced_has_default_svg_ns {
+      wrapper_attrs.push_str(" xmlns=\"http://www.w3.org/2000/svg\"");
+    }
+    for (name, value) in element.namespace_attrs.iter() {
+      if name == "xmlns" {
+        if value != SVG_NS {
+          continue;
+        }
+        if referenced_has_default_svg_ns {
+          wrapper_attrs.push_str(" xmlns=\"http://www.w3.org/2000/svg\"");
+        }
+        continue;
+      }
+      wrapper_attrs.push(' ');
+      wrapper_attrs.push_str(name);
+      wrapper_attrs.push_str("=\"");
+      wrapper_attrs.push_str(&escape_xml_attr_value(value));
+      wrapper_attrs.push('"');
+    }
     for attr in node.attributes() {
       // Only copy non-namespaced attributes; otherwise we might lose the prefix (`xml:*`,
       // `xlink:*`, etc) and produce invalid markup.
@@ -4290,7 +4364,9 @@ fn apply_svg_url_fragment<'a>(svg_content: &'a str, requested_url: &str) -> Cow<
   let escaped_id = escape_xml_attr_value(fragment);
   let mut out = String::with_capacity(svg_content.len().saturating_add(escaped_id.len() + 16));
   out.push_str(&svg_content[..insert_pos]);
-  out.push_str("<use href=\"#");
+  // Ensure the injected element is in the SVG namespace even when the document uses prefixed SVG
+  // elements (no default `xmlns` in scope).
+  out.push_str("<use xmlns=\"http://www.w3.org/2000/svg\" href=\"#");
   out.push_str(escaped_id.as_ref());
   out.push_str("\"/>");
   out.push_str(&svg_content[insert_pos..]);
@@ -15728,6 +15804,34 @@ mod tests_inline {
   }
 
   #[test]
+  fn svg_fragment_identifier_prefixed_defs_g_renders() {
+    let fetch_url = "https://example.test/sprite.svg";
+    let url = "https://example.test/sprite.svg#icon";
+
+    let sprite_svg = r#"<svg:svg xmlns:svg="http://www.w3.org/2000/svg" width="1" height="1"><svg:defs><svg:g id="icon"><svg:rect width="1" height="1" fill="red"/></svg:g></svg:defs></svg:svg>"#;
+
+    let mut res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    res.status = Some(200);
+    res.final_url = Some(fetch_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(fetch_url.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(url).expect("load svg fragment");
+    assert!(image.is_vector);
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "prefixed <g> sprite inside <defs> should render when fragment identifier is applied"
+    );
+  }
+
+  #[test]
   fn svg_external_use_sprite_renders() {
     let sprite_url = "https://example.test/sprite.svg";
     let main_url = "https://example.test/main.svg";
@@ -15762,6 +15866,44 @@ mod tests_inline {
       rgba.get_pixel(0, 0).0,
       [255, 0, 0, 255],
       "external <use href> sprite should inline and render red pixel"
+    );
+  }
+
+  #[test]
+  fn svg_external_use_sprite_prefixed_svg_renders() {
+    let sprite_url = "https://example.test/sprite.svg";
+    let main_url = "https://example.test/main.svg";
+
+    let sprite_svg = r#"<svg:svg xmlns:svg="http://www.w3.org/2000/svg"><svg:symbol id="icon" viewBox="0 0 1 1"><svg:rect width="1" height="1" fill="red"/></svg:symbol></svg:svg>"#;
+    let main_svg = r#"<svg:svg xmlns:svg="http://www.w3.org/2000/svg" width="1" height="1"><svg:use href="/sprite.svg#icon"/></svg:svg>"#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (sprite_url.to_string(), sprite_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(main_url).expect("load main svg");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "prefixed external <use href> sprite should inline and render red pixel"
     );
   }
 
