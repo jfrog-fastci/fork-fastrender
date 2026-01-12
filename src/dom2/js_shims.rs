@@ -5,7 +5,8 @@
 //! attributes without requiring scripts to fall back to `getAttribute`/`setAttribute`.
 
 use super::style_attr::{parse_style_attribute, serialize_style_attribute};
-use super::{Document, DomError, NodeId};
+use super::{Document, DomError, NodeId, NodeKind};
+use crate::dom::HTML_NAMESPACE;
 
 fn dataset_prop_to_attr(prop: &str) -> Option<String> {
   if prop.is_empty() {
@@ -350,6 +351,209 @@ impl Document {
 
   pub fn set_element_width(&mut self, element: NodeId, value: &str) -> Result<bool, DomError> {
     self.set_reflected_string(element, "width", value)
+  }
+
+  // --- HTMLElement global reflected attributes --------------------------------
+
+  pub fn element_hidden(&self, element: NodeId) -> bool {
+    self.reflected_bool(element, "hidden")
+  }
+
+  pub fn set_element_hidden(&mut self, element: NodeId, value: bool) -> Result<bool, DomError> {
+    self.set_reflected_bool(element, "hidden", value)
+  }
+
+  pub fn element_title(&self, element: NodeId) -> &str {
+    self.reflected_string(element, "title")
+  }
+
+  pub fn set_element_title(&mut self, element: NodeId, value: &str) -> Result<bool, DomError> {
+    self.set_reflected_string(element, "title", value)
+  }
+
+  pub fn element_lang(&self, element: NodeId) -> &str {
+    self.reflected_string(element, "lang")
+  }
+
+  pub fn set_element_lang(&mut self, element: NodeId, value: &str) -> Result<bool, DomError> {
+    self.set_reflected_string(element, "lang", value)
+  }
+
+  pub fn element_dir(&self, element: NodeId) -> &str {
+    self.reflected_string(element, "dir")
+  }
+
+  pub fn set_element_dir(&mut self, element: NodeId, value: &str) -> Result<bool, DomError> {
+    self.set_reflected_string(element, "dir", value)
+  }
+
+  // --- Form controls ----------------------------------------------------------
+
+  pub fn input_value(&self, input: NodeId) -> &str {
+    self.reflected_string(input, "value")
+  }
+
+  pub fn set_input_value(&mut self, input: NodeId, value: &str) -> Result<bool, DomError> {
+    self.set_reflected_string(input, "value", value)
+  }
+
+  pub fn input_checked(&self, input: NodeId) -> bool {
+    self.reflected_bool(input, "checked")
+  }
+
+  pub fn set_input_checked(&mut self, input: NodeId, value: bool) -> Result<bool, DomError> {
+    self.set_reflected_bool(input, "checked", value)
+  }
+
+  pub fn input_disabled(&self, input: NodeId) -> bool {
+    self.reflected_bool(input, "disabled")
+  }
+
+  pub fn set_input_disabled(&mut self, input: NodeId, value: bool) -> Result<bool, DomError> {
+    self.set_reflected_bool(input, "disabled", value)
+  }
+
+  fn subtree_text_content(&self, root: NodeId) -> (String, bool) {
+    let mut out = String::new();
+    let mut saw_text = false;
+    for id in self.subtree_preorder(root) {
+      let NodeKind::Text { content } = &self.node(id).kind else {
+        continue;
+      };
+      saw_text = true;
+      out.push_str(content);
+    }
+    (out, saw_text)
+  }
+
+  pub fn textarea_value(&self, textarea: NodeId) -> String {
+    let (content, saw_text) = self.subtree_text_content(textarea);
+    if saw_text {
+      content
+    } else {
+      self
+        .get_attribute(textarea, "value")
+        .ok()
+        .flatten()
+        .unwrap_or("")
+        .to_string()
+    }
+  }
+
+  pub fn set_textarea_value(&mut self, textarea: NodeId, value: &str) -> Result<bool, DomError> {
+    let current = self.textarea_value(textarea);
+    if current == value {
+      return Ok(false);
+    }
+
+    let existing_children = self.children(textarea)?.to_vec();
+    for child in existing_children {
+      // `remove_child` validates `child.parent == Some(textarea)`; in well-formed trees this will
+      // always succeed.
+      self.remove_child(textarea, child)?;
+    }
+
+    // Materialize the value as a single text node so subsequent `textarea_value()` calls observe
+    // the new state even if the element previously relied on the attribute fallback.
+    let text = self.create_text(value);
+    self.append_child(textarea, text)?;
+
+    Ok(true)
+  }
+
+  fn is_html_element_tag(&self, node: NodeId, tag: &str) -> bool {
+    let NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } = &self.node(node).kind
+    else {
+      return false;
+    };
+    (namespace.is_empty() || namespace == HTML_NAMESPACE) && tag_name.eq_ignore_ascii_case(tag)
+  }
+
+  pub fn select_options(&self, select: NodeId) -> Vec<NodeId> {
+    self
+      .subtree_preorder(select)
+      .filter(|&id| self.is_html_element_tag(id, "option"))
+      .collect()
+  }
+
+  pub fn select_selected_index(&self, select: NodeId) -> i32 {
+    for (idx, option) in self.select_options(select).into_iter().enumerate() {
+      if self.has_attribute(option, "selected").unwrap_or(false) {
+        return idx as i32;
+      }
+    }
+    -1
+  }
+
+  pub fn set_select_selected_index(&mut self, select: NodeId, index: i32) -> Result<bool, DomError> {
+    let options = self.select_options(select);
+    let mut changed = false;
+    if index < 0 || (index as usize) >= options.len() {
+      for option in options {
+        changed |= self.set_bool_attribute(option, "selected", false)?;
+      }
+      return Ok(changed);
+    }
+
+    let target = index as usize;
+    for (idx, option) in options.into_iter().enumerate() {
+      changed |= self.set_bool_attribute(option, "selected", idx == target)?;
+    }
+    Ok(changed)
+  }
+
+  fn option_value(&self, option: NodeId) -> String {
+    if let Some(value) = self.get_attribute(option, "value").ok().flatten() {
+      return value.to_string();
+    }
+    let (content, _) = self.subtree_text_content(option);
+    content
+  }
+
+  pub fn select_value(&self, select: NodeId) -> String {
+    for option in self.select_options(select) {
+      if self.has_attribute(option, "selected").unwrap_or(false) {
+        return self.option_value(option);
+      }
+    }
+    String::new()
+  }
+
+  pub fn set_select_value(&mut self, select: NodeId, value: &str) -> Result<bool, DomError> {
+    let options = self.select_options(select);
+    let target = options
+      .iter()
+      .enumerate()
+      .find_map(|(idx, &option)| (self.option_value(option) == value).then_some(idx));
+
+    let mut changed = false;
+    for (idx, option) in options.into_iter().enumerate() {
+      changed |= self.set_bool_attribute(option, "selected", Some(idx) == target)?;
+    }
+    Ok(changed)
+  }
+
+  pub fn form_elements(&self, form: NodeId) -> Vec<NodeId> {
+    self
+      .subtree_preorder(form)
+      .filter(|&id| {
+        self.is_html_element_tag(id, "input")
+          || self.is_html_element_tag(id, "select")
+          || self.is_html_element_tag(id, "textarea")
+      })
+      .collect()
+  }
+
+  pub fn form_submit(&mut self, _form: NodeId) -> Result<(), DomError> {
+    Ok(())
+  }
+
+  pub fn form_reset(&mut self, _form: NodeId) -> Result<(), DomError> {
+    Ok(())
   }
 }
 
