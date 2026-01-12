@@ -5038,7 +5038,6 @@ impl<'a> Scope<'a> {
     };
     Ok(GcObject(self.heap.alloc_unchecked(HeapObject::Object(obj), new_bytes)?))
   }
-
   /// Allocates an ordinary object with the provided `[[Prototype]]` and own properties.
   pub fn alloc_object_with_properties(
     &mut self,

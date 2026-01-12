@@ -886,6 +886,7 @@ pub fn discover_image_prefetch_requests(
 mod tests {
   use super::{
     discover_image_prefetch_requests, discover_image_prefetch_urls, ImagePrefetchLimits,
+    ImagePrefetchRequest,
   };
   use crate::dom::{parse_html, DomNode, DomNodeType};
   use crate::geometry::Size;
@@ -1550,6 +1551,31 @@ mod tests {
     assert_eq!(out.image_elements, 1);
     assert!(!out.limited);
     assert_eq!(out.urls, vec!["https://example.com/poster.jpg".to_string()]);
+  }
+
+  #[test]
+  fn image_prefetch_discovers_video_poster_from_wrapper_data_poster_url() {
+    let html = r#"
+      <div data-poster-url="red.svg">
+        <video></video>
+      </div>
+    "#;
+    let dom = parse_html(html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+
+    let urls = discover_image_prefetch_urls(&dom, ctx, ImagePrefetchLimits::default());
+    assert_eq!(urls.urls, vec!["https://example.com/red.svg".to_string()]);
+
+    let requests = discover_image_prefetch_requests(&dom, ctx, ImagePrefetchLimits::default());
+    assert_eq!(
+      requests.requests,
+      vec![ImagePrefetchRequest {
+        url: "https://example.com/red.svg".to_string(),
+        crossorigin: CrossOriginAttribute::None,
+      }]
+    );
   }
 
   #[test]
