@@ -236,3 +236,28 @@ reason = "Live Range updates for CharacterData replace-data are not implemented 
 id = "dom/nodeiterator_pre_remove.window.js"
 status = "xfail"
 reason = "NodeIterator pre-remove steps (live iterator updates on node removal) are not implemented yet."
+
+[[expectations]]
+id = "dom/range_basic.window.js"
+status = "xfail"
+reason = "Range is not implemented yet (document.createRange/new Range initial state)."
+
+[[expectations]]
+id = "dom/range_setstart_setend.window.js"
+status = "xfail"
+reason = "Range is not implemented yet (setStart/setEnd validation + compareBoundaryPoints)."
+
+[[expectations]]
+id = "dom/range_live_updates_insert_remove.window.js"
+status = "xfail"
+reason = "Range is not implemented yet (live updates on insert/remove)."
+
+[[expectations]]
+id = "dom/range_live_updates_characterdata.window.js"
+status = "xfail"
+reason = "Range is not implemented yet (live updates on CharacterData replacement)."
+
+[[expectations]]
+id = "dom/range_create_contextual_fragment.window.js"
+status = "xfail"
+reason = "Range is not implemented yet (createContextualFragment)."

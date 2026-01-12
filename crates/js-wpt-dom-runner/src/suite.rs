@@ -178,7 +178,22 @@ fn build_filter(pattern: Option<&str>) -> Result<Filter> {
         }
       }
 
-      if let Ok(glob) = Glob::new(raw) {
+      // Developer ergonomics: treat patterns without glob meta characters as substring globs.
+      //
+      // The CLI advertises `--filter` as "glob or regex". However, patterns like "range_" parse as a
+      // valid glob that matches only the exact id "range_", which is almost never what a caller
+      // intends. Mapping plain strings to `*{pattern}*` matches common expectations ("run tests whose
+      // id contains this substring") while keeping wildcard-heavy globs (e.g. `dom/**`) unchanged.
+      //
+      // Note: If the user provided a comma-separated list we intentionally do *not* apply this
+      // rewriting; each list segment has its own glob semantics above.
+      let raw = if raw.contains(',') || raw.contains('*') || raw.contains('?') || raw.contains('[') {
+        raw.to_string()
+      } else {
+        format!("*{raw}*")
+      };
+
+      if let Ok(glob) = Glob::new(raw.as_str()) {
         let mut builder = GlobSetBuilder::new();
         builder.add(glob);
         let set = builder
@@ -187,7 +202,7 @@ fn build_filter(pattern: Option<&str>) -> Result<Filter> {
         return Ok(Filter::Glob(set));
       }
 
-      let regex = Regex::new(raw).map_err(|err| anyhow!("invalid regex: {err}"))?;
+      let regex = Regex::new(raw.as_str()).map_err(|err| anyhow!("invalid regex: {err}"))?;
       Ok(Filter::Regex(regex))
     }
   }
