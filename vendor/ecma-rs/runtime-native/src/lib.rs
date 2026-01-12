@@ -680,6 +680,7 @@ mod tests {
 
   #[test]
   fn interned_lookup_roundtrip() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     crate::interner::with_test_lock(|| {
       let id = rt_string_intern(b"zap".as_ptr(), b"zap".len());
       let out = crate::interner::lookup(id).expect("interned string should be present");
@@ -691,6 +692,7 @@ mod tests {
 
   #[test]
   fn interning_is_thread_safe() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     crate::interner::with_test_lock(|| {
       const THREADS: usize = 8;
       const ITERS: usize = 1000;
@@ -719,15 +721,16 @@ mod tests {
 
   #[test]
   fn interner_prunes_unpinned_strings_but_keeps_pinned() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     crate::interner::with_test_lock(|| {
       let id_unpinned = rt_string_intern(b"temp".as_ptr(), b"temp".len());
       let id_pinned = rt_string_intern(b"perm".as_ptr(), b"perm".len());
 
       rt_string_pin_interned(id_pinned);
 
-      // Force a GC sweep of the interner's backing heap. Since the interner keeps only weak
-      // references to non-pinned entries, they should be collected and pruned.
-      crate::interner::collect_garbage_for_tests();
+      // Force a stop-the-world GC sweep. Since the interner keeps only weak references to
+      // non-pinned entries, they should be collected and pruned.
+      crate::rt_gc_collect();
 
       assert!(crate::interner::lookup(id_unpinned).is_none());
 

@@ -625,6 +625,34 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
   })
 }
 
+/// Allocate a GC object in the process-global heap using a custom [`TypeDescriptor`].
+///
+/// This is intended for runtime-native subsystems (like the string interner) that need dynamic
+/// object sizes that cannot be represented in the static shape table used by `rt_alloc`.
+///
+/// The object is always allocated in the old generation (Immix or LOS), matching the interner's
+/// expectation that interned byte storage has a stable address across minor collections.
+pub(crate) fn alloc_old_with_type_desc(desc: &'static TypeDescriptor) -> *mut u8 {
+  ensure_thread_registered_for_alloc();
+  crate::threading::safepoint_poll();
+  ensure_global_heap_init();
+
+  let global = global_heap();
+  let epoch = current_mark_epoch(global);
+  let size = desc.size;
+  let align = desc.align.max(OBJ_ALIGN);
+
+  if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
+    return with_heap_lock_mutator(|heap| {
+      let obj = heap.los.alloc(size, align);
+      unsafe { init_object(obj, size, desc, epoch, false) };
+      obj
+    });
+  }
+
+  alloc_old(size, align, desc, epoch)
+}
+
 fn alloc_old(size: usize, align: usize, desc: &'static TypeDescriptor, epoch: u8) -> *mut u8 {
   // Fast path: bump within the current thread-local Immix hole.
   match TLS_ALLOC.try_with(|alloc| unsafe {

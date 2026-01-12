@@ -13,6 +13,7 @@ use crate::abi::StringRef;
 use crate::gc;
 use crate::gc::ObjHeader;
 use crate::gc::TypeDescriptor;
+use crate::roots::RootScope;
 use crate::sync::GcAwareMutex;
 use crate::trap;
 
@@ -99,16 +100,27 @@ fn interned_desc_for_size(size: usize) -> &'static TypeDescriptor {
   desc
 }
 
-static INTERN_HEAP: Lazy<GcAwareMutex<gc::GcHeap>> =
-  Lazy::new(|| GcAwareMutex::new(gc::GcHeap::with_nursery_size(1024 * 1024)));
+#[inline]
+fn ensure_thread_registered() {
+  // The interner stores weak references to GC-managed objects. Any thread that reads from the
+  // interner must participate in stop-the-world GC; otherwise it could observe moved/freed objects.
+  crate::threading::register_current_thread(crate::threading::ThreadKind::External);
+}
 
 fn alloc_interned_object(bytes: &[u8]) -> (gc::WeakHandle, usize) {
   let len = bytes.len();
   let size = interned_object_size_for_len(len);
   let desc = interned_desc_for_size(size);
 
-  let mut heap = INTERN_HEAP.lock();
-  let obj = heap.alloc_old(desc);
+  // Allocate interned bytes in the process-global heap so global GC pressure can reclaim them and
+  // clear the corresponding global weak-handle slots.
+  let mut obj = crate::rt_alloc::alloc_old_with_type_desc(desc);
+
+  // Root the object while initializing and while installing its weak-handle slot. This prevents the
+  // object from being collected or moved if we block (e.g. on the global weak-handle lock) and a GC
+  // cycle runs concurrently.
+  let mut scope = RootScope::new();
+  scope.push(&mut obj as *mut *mut u8);
 
   // SAFETY: `obj` points to a valid allocation of `desc.size` bytes.
   unsafe {
@@ -124,7 +136,10 @@ fn alloc_interned_object(bytes: &[u8]) -> (gc::WeakHandle, usize) {
   }
 
   // Interner entries keep only a weak reference to the GC object.
-  let handle = crate::gc::weak::global_weak_add(obj);
+  //
+  // Read the pointer value from the rooted slot after acquiring the weak-handle lock so we observe
+  // any relocation that might have happened while contending on the lock.
+  let handle = unsafe { crate::gc::weak::global_weak_add_from_slot(&mut obj as *mut *mut u8) };
   (handle, len)
 }
 
@@ -263,6 +278,7 @@ fn interner_weak_cleanup(_heap: &mut gc::GcHeap) {
 ///
 /// Thread-safe and optimized for concurrent reads.
 pub(crate) fn intern(bytes: &[u8]) -> InternedId {
+  ensure_thread_registered();
   let hash = hash_bytes(bytes);
 
   {
@@ -298,6 +314,7 @@ pub(crate) fn intern(bytes: &[u8]) -> InternedId {
 /// Pinned strings are stored as owned `Arc<[u8]>` values and are treated as permanent roots within
 /// the interner (they never become weak/collectible again).
 pub(crate) fn pin_interned(id: InternedId) {
+  ensure_thread_registered();
   let _guard = INTERNER.write_lock.lock();
 
   let tables = INTERNER.tables.load_full();
@@ -336,6 +353,7 @@ pub(crate) fn pin_interned(id: InternedId) {
 /// Returns `None` if the ID is invalid or if the interned entry was reclaimed.
 #[allow(dead_code)] // Planned runtime API; currently used by tests and future debug tooling.
 pub(crate) fn lookup(id: InternedId) -> Option<StringRef> {
+  ensure_thread_registered();
   let tables = INTERNER.tables.load_full();
   let idx = usize::try_from(id.0).ok()?;
   match tables.entries.get(idx)? {
@@ -359,13 +377,4 @@ pub(crate) fn with_test_lock<T>(f: impl FnOnce() -> T) -> T {
   static TEST_LOCK: Lazy<parking_lot::Mutex<()>> = Lazy::new(|| parking_lot::Mutex::new(()));
   let _g = TEST_LOCK.lock();
   f()
-}
-
-/// Force a GC cycle for the interner's internal heap (test-only).
-#[cfg(test)]
-pub(crate) fn collect_garbage_for_tests() {
-  let mut heap = INTERN_HEAP.lock();
-  let mut roots = gc::RootStack::new();
-  let mut remembered = gc::SimpleRememberedSet::new();
-  heap.collect_major(&mut roots, &mut remembered).unwrap();
 }

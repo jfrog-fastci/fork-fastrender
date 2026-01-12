@@ -295,3 +295,14 @@ pub fn gc_set_young_range_for_heap(heap: &GcHeap) {
 pub fn set_current_thread_safepoint_context_for_tests(ctx: crate::arch::SafepointContext) {
   crate::threading::registry::set_current_thread_safepoint_context(ctx);
 }
+
+/// Debug/test helper: does the global string interner currently contain a live entry for `id`?
+///
+/// Returns `false` if the ID is invalid or if the interned bytes were reclaimed by GC and pruned by
+/// the interner's weak cleanup.
+///
+/// This is intentionally not stable API; it exists for integration tests.
+#[doc(hidden)]
+pub fn interner_lookup_exists(id: crate::abi::InternedId) -> bool {
+  crate::interner::lookup(id).is_some()
+}

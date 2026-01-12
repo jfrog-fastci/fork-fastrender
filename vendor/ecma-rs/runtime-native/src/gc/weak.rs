@@ -198,6 +198,18 @@ pub(crate) fn global_weak_remove(handle: WeakHandle) {
   GLOBAL_WEAK_HANDLES.lock().weak_remove(handle);
 }
 
+/// Debug/test helper: snapshot the global weak-handle table sizes.
+///
+/// Returns `(slots_len, free_list_len)`.
+///
+/// This is intentionally not part of the stable runtime-native ABI; it exists so integration tests
+/// can assert that weak handles are reclaimed and reused after GC cycles.
+#[doc(hidden)]
+pub fn debug_global_weak_handles_table_sizes() -> (usize, usize) {
+  let table = GLOBAL_WEAK_HANDLES.lock();
+  (table.slots.len(), table.free_list.len())
+}
+
 /// Debug/test helper: lock the process-global weak-handle table.
 ///
 /// This is used by integration tests to force lock contention while exercising stop-the-world GC
