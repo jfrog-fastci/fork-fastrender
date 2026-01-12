@@ -16,14 +16,5 @@
       "useDefineForClassFields": true
     }
   },
-  "diagnostics": [
-    {
-      "code": 2688,
-      "file": "broken.d.ts",
-      "start": 22,
-      "end": 35,
-      "category": "error",
-      "message": "Cannot find type definition file for 'missing-types'."
-    }
-  ]
+  "diagnostics": []
 }

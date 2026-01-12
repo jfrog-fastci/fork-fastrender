@@ -2,9 +2,9 @@
   "schema_version": 2,
   "metadata": {
     "typescript_version": "5.9.3",
+    "bundled_typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
-      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -16,14 +16,5 @@
       "useDefineForClassFields": true
     }
   },
-  "diagnostics": [
-    {
-      "code": 2307,
-      "file": "broken.d.ts",
-      "start": 20,
-      "end": 31,
-      "category": "error",
-      "message": "Cannot find module './missing' or its corresponding type declarations."
-    }
-  ]
+  "diagnostics": []
 }

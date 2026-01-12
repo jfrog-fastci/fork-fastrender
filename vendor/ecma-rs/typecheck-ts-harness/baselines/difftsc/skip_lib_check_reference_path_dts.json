@@ -16,14 +16,5 @@
       "useDefineForClassFields": true
     }
   },
-  "diagnostics": [
-    {
-      "code": 6053,
-      "file": "broken.d.ts",
-      "start": 21,
-      "end": 35,
-      "category": "error",
-      "message": "File '/missing.d.ts' not found."
-    }
-  ]
+  "diagnostics": []
 }
