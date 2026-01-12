@@ -470,3 +470,86 @@ fn gc_limits_env_overrides_do_not_override_explicit_setter() {
 
   assert!(status.success(), "expected child to exit successfully");
 }
+
+#[test]
+fn gc_set_config_invalid_aborts_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_SET_CONFIG_INVALID_CHILD").is_none() {
+    return;
+  }
+
+  // Invalid: nursery size must be non-zero.
+  let cfg = RtGcConfig {
+    nursery_size_bytes: 0,
+    los_threshold_bytes: 8 * 1024,
+    minor_gc_nursery_used_percent: 50,
+    major_gc_old_bytes_threshold: usize::MAX,
+    major_gc_old_blocks_threshold: usize::MAX,
+    major_gc_external_bytes_threshold: usize::MAX,
+    promote_after_minor_survivals: 1,
+  };
+
+  let _ = rt_gc_set_config(&cfg);
+}
+
+#[test]
+fn gc_set_config_invalid_aborts() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let output = Command::new(exe)
+    .env("RT_GC_SET_CONFIG_INVALID_CHILD", "1")
+    .arg("--exact")
+    .arg("gc_set_config_invalid_aborts_child")
+    .arg("--nocapture")
+    .output()
+    .expect("spawn child");
+
+  assert!(
+    !output.status.success(),
+    "expected invalid rt_gc_set_config call to abort"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("rt_gc_set_config: nursery_size_bytes must be non-zero"),
+    "expected stderr to mention invalid nursery_size_bytes, got:\n{stderr}"
+  );
+}
+
+#[test]
+fn gc_set_limits_invalid_aborts_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_SET_LIMITS_INVALID_CHILD").is_none() {
+    return;
+  }
+
+  // Invalid: max_total_bytes must be >= max_heap_bytes.
+  let limits = RtGcLimits {
+    max_heap_bytes: 16 * 1024 * 1024,
+    max_total_bytes: 8 * 1024 * 1024,
+  };
+
+  let _ = rt_gc_set_limits(&limits);
+}
+
+#[test]
+fn gc_set_limits_invalid_aborts() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let output = Command::new(exe)
+    .env("RT_GC_SET_LIMITS_INVALID_CHILD", "1")
+    .arg("--exact")
+    .arg("gc_set_limits_invalid_aborts_child")
+    .arg("--nocapture")
+    .output()
+    .expect("spawn child");
+
+  assert!(
+    !output.status.success(),
+    "expected invalid rt_gc_set_limits call to abort"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("rt_gc_set_limits: max_total_bytes must be >= max_heap_bytes"),
+    "expected stderr to mention invalid max_total_bytes, got:\n{stderr}"
+  );
+}
