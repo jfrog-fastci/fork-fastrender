@@ -2,6 +2,7 @@ use conformance_harness::{Expectations, TimeoutManager};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Mutex;
 use std::time::Duration;
 use tempfile::tempdir;
 use test262_semantic::discover::discover_tests;
@@ -10,8 +11,11 @@ use test262_semantic::harness::HarnessMode;
 use test262_semantic::report::TestOutcome;
 use test262_semantic::runner::{expand_cases, Filter};
 
+static VM_JS_SMOKE_LOCK: Mutex<()> = Mutex::new(());
+
 #[test]
 fn vm_js_executor_smoke_pass_and_timeout() {
+  let _guard = VM_JS_SMOKE_LOCK.lock().unwrap();
   let temp = tempdir().unwrap();
 
   // Minimal fake test262 checkout: harness + test directories.
@@ -78,6 +82,7 @@ fn vm_js_executor_smoke_pass_and_timeout() {
 
 #[test]
 fn vm_js_executor_module_smoke_imports_and_harness_globals() {
+  let _guard = VM_JS_SMOKE_LOCK.lock().unwrap();
   let temp = tempdir().unwrap();
 
   // Minimal fake test262 checkout: harness + test directories.
@@ -146,12 +151,9 @@ assert.sameValue(y, 1);
   assert_eq!(result.id, "mod.js");
   assert_eq!(result.variant, test262_semantic::report::Variant::Module);
 
-  match result.outcome {
-    TestOutcome::Passed => {}
-    // Until module execution lands in `VmJsExecutor`, module cases are expected to be skipped.
-    TestOutcome::Skipped => {
-      assert_eq!(result.skip_reason.as_deref(), Some("modules not supported"));
-    }
-    other => panic!("expected module case to pass (or be skipped until supported), got {other:?}: {result:#?}"),
-  }
+  assert_eq!(
+    result.outcome,
+    TestOutcome::Passed,
+    "expected module case to pass: {result:#?}"
+  );
 }
