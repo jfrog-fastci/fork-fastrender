@@ -865,27 +865,21 @@ impl Intrinsics {
     )?;
 
     {
-      let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
-      scope.push_root(Value::String(marker))?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = scope.heap_mut().ensure_internal_boolean_data_symbol()?;
       scope.define_property(
         boolean_prototype,
         PropertyKey::from_symbol(marker_sym),
         data_desc(Value::Bool(false), true, false, false),
       )?;
 
-      let marker = scope.alloc_string("vm-js.internal.NumberData")?;
-      scope.push_root(Value::String(marker))?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = scope.heap_mut().ensure_internal_number_data_symbol()?;
       scope.define_property(
         number_prototype,
         PropertyKey::from_symbol(marker_sym),
         data_desc(Value::Number(0.0), true, false, false),
       )?;
 
-      let marker = scope.alloc_string("vm-js.internal.StringData")?;
-      scope.push_root(Value::String(marker))?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = scope.heap_mut().ensure_internal_string_data_symbol()?;
       let empty_string = scope.alloc_string("")?;
       scope.push_root(Value::String(empty_string))?;
       scope.define_property(
@@ -2877,14 +2871,14 @@ impl Intrinsics {
     {
       // Internal symbols used to model `[[IteratedString]]` / `[[NextIndex]]` slots on string
       // iterator objects.
-      let iterated_key_s = scope.alloc_string("vm-js.internal.StringIteratorIteratedString")?;
-      scope.push_root(Value::String(iterated_key_s))?;
-      let iterated_sym = scope.heap_mut().symbol_for(iterated_key_s)?;
+      let iterated_sym = scope
+        .heap_mut()
+        .ensure_internal_string_iterator_iterated_string_symbol()?;
       scope.push_root(Value::Symbol(iterated_sym))?;
 
-      let next_index_key_s = scope.alloc_string("vm-js.internal.StringIteratorNextIndex")?;
-      scope.push_root(Value::String(next_index_key_s))?;
-      let next_index_sym = scope.heap_mut().symbol_for(next_index_key_s)?;
+      let next_index_sym = scope
+        .heap_mut()
+        .ensure_internal_string_iterator_next_index_symbol()?;
       scope.push_root(Value::Symbol(next_index_sym))?;
 
       // Shared `%StringIteratorPrototype%.next` builtin, parameterized by the internal symbol keys.
@@ -3115,29 +3109,29 @@ impl Intrinsics {
     // RegExp.prototype[@@matchAll]
     {
       // Internal slot keys for RegExpStringIterator objects.
-      let iterating_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorIteratingRegExp")?;
-      scope.push_root(Value::String(iterating_key_s))?;
-      let iterating_sym = scope.heap_mut().symbol_for(iterating_key_s)?;
+      let iterating_sym = scope
+        .heap_mut()
+        .ensure_internal_regexp_string_iterator_iterating_regexp_symbol()?;
       scope.push_root(Value::Symbol(iterating_sym))?;
 
-      let iterated_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorIteratedString")?;
-      scope.push_root(Value::String(iterated_key_s))?;
-      let iterated_sym = scope.heap_mut().symbol_for(iterated_key_s)?;
+      let iterated_sym = scope
+        .heap_mut()
+        .ensure_internal_regexp_string_iterator_iterated_string_symbol()?;
       scope.push_root(Value::Symbol(iterated_sym))?;
 
-      let global_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorGlobal")?;
-      scope.push_root(Value::String(global_key_s))?;
-      let global_sym = scope.heap_mut().symbol_for(global_key_s)?;
+      let global_sym = scope
+        .heap_mut()
+        .ensure_internal_regexp_string_iterator_global_symbol()?;
       scope.push_root(Value::Symbol(global_sym))?;
 
-      let unicode_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorUnicode")?;
-      scope.push_root(Value::String(unicode_key_s))?;
-      let unicode_sym = scope.heap_mut().symbol_for(unicode_key_s)?;
+      let unicode_sym = scope
+        .heap_mut()
+        .ensure_internal_regexp_string_iterator_unicode_symbol()?;
       scope.push_root(Value::Symbol(unicode_sym))?;
 
-      let done_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorDone")?;
-      scope.push_root(Value::String(done_key_s))?;
-      let done_sym = scope.heap_mut().symbol_for(done_key_s)?;
+      let done_sym = scope
+        .heap_mut()
+        .ensure_internal_regexp_string_iterator_done_symbol()?;
       scope.push_root(Value::Symbol(done_sym))?;
 
       // Shared iterator `next` method (captures internal symbols in native slots).

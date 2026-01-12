@@ -154,15 +154,33 @@ fn internal_symbols_are_hidden_from_own_property_keys() {
   let mut rt = new_runtime();
   let script = r#"
     (() => {
-      // Array iterator objects: should not expose internal symbol-keyed slots.
-      const arrIter = [1, 2][Symbol.iterator]();
-      if (Reflect.ownKeys(arrIter).length !== 0) return false;
-      if (Object.getOwnPropertySymbols(arrIter).length !== 0) return false;
+       // Array iterator objects: should not expose internal symbol-keyed slots.
+       const arrIter = [1, 2][Symbol.iterator]();
+       if (Reflect.ownKeys(arrIter).length !== 0) return false;
+       if (Object.getOwnPropertySymbols(arrIter).length !== 0) return false;
 
-      // String iterator objects: should not expose internal symbol-keyed slots.
-      const strIter = "ab"[Symbol.iterator]();
-      if (Reflect.ownKeys(strIter).length !== 0) return false;
-      if (Object.getOwnPropertySymbols(strIter).length !== 0) return false;
+       // Map iterator objects: should not expose internal symbol-keyed slots.
+       if (typeof Map === "function") {
+         const m = new Map();
+         m.set(1, 2);
+         const mapIter = m.entries();
+         if (Reflect.ownKeys(mapIter).length !== 0) return false;
+         if (Object.getOwnPropertySymbols(mapIter).length !== 0) return false;
+       }
+
+       // Set iterator objects: should not expose internal symbol-keyed slots.
+       if (typeof Set === "function") {
+         const s = new Set();
+         s.add(1);
+         const setIter = s.values();
+         if (Reflect.ownKeys(setIter).length !== 0) return false;
+         if (Object.getOwnPropertySymbols(setIter).length !== 0) return false;
+       }
+
+       // String iterator objects: should not expose internal symbol-keyed slots.
+       const strIter = "ab"[Symbol.iterator]();
+       if (Reflect.ownKeys(strIter).length !== 0) return false;
+       if (Object.getOwnPropertySymbols(strIter).length !== 0) return false;
 
       // RegExp matchAll iterator objects: should only expose the (temporary) iterable plumbing, not
       // internal slot markers.
@@ -171,6 +189,90 @@ fn internal_symbols_are_hidden_from_own_property_keys() {
       const syms = Object.getOwnPropertySymbols(reIter);
       return keys.length === 2 && keys[0] === "next" && keys[1] === Symbol.iterator &&
         syms.length === 1 && syms[0] === Symbol.iterator;
+    })()
+  "#;
+  let value = rt.exec_script(script).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn internal_symbols_are_not_accessible_via_symbol_for() {
+  let mut rt = new_runtime();
+  let script = r#"
+    (() => {
+      // Primitive wrapper internal slots must not be reachable via `Symbol.for`.
+      const stringData = Symbol.for("vm-js.internal.StringData");
+      const sObj = new String("x");
+      if (sObj[stringData] !== undefined) return false;
+      if (String.prototype[stringData] !== undefined) return false;
+      if (sObj.valueOf() !== "x") return false;
+      if (Object.prototype.toString.call(sObj) !== "[object String]") return false;
+
+      const booleanData = Symbol.for("vm-js.internal.BooleanData");
+      const bObj = new Boolean(true);
+      if (bObj[booleanData] !== undefined) return false;
+      if (Boolean.prototype[booleanData] !== undefined) return false;
+      if (bObj.valueOf() !== true) return false;
+      if (Object.prototype.toString.call(bObj) !== "[object Boolean]") return false;
+
+      const numberData = Symbol.for("vm-js.internal.NumberData");
+      const nObj = new Number(1);
+      if (nObj[numberData] !== undefined) return false;
+      if (Number.prototype[numberData] !== undefined) return false;
+      if (nObj.valueOf() !== 1) return false;
+      if (Object.prototype.toString.call(nObj) !== "[object Number]") return false;
+
+      // Iterator internal slots must not be reachable via `Symbol.for`.
+       const arrIter = [1, 2].values();
+       const iterated = Symbol.for("vm-js.internal.ArrayIteratorArray");
+       if (arrIter[iterated] !== undefined) return false;
+       const r0 = arrIter.next();
+       if (r0.value !== 1 || r0.done !== false) return false;
+
+       if (typeof Map === "function") {
+         const m = new Map();
+         m.set(1, 2);
+         const mapIter = m.entries();
+         const mapSlot = Symbol.for("vm-js.internal.MapIteratorMap");
+         if (mapIter[mapSlot] !== undefined) return false;
+       }
+
+       if (typeof Set === "function") {
+         const s = new Set();
+         s.add(1);
+         const setIter = s.values();
+         const setSlot = Symbol.for("vm-js.internal.SetIteratorSet");
+         if (setIter[setSlot] !== undefined) return false;
+       }
+
+       const strIter = "ab"[Symbol.iterator]();
+       const strIterSlot = Symbol.for("vm-js.internal.StringIteratorIteratedString");
+       if (strIter[strIterSlot] !== undefined) return false;
+
+      const reIter = /a/g[Symbol.matchAll]("a");
+      const reSlot = Symbol.for("vm-js.internal.RegExpStringIteratorIteratedString");
+      if (reIter[reSlot] !== undefined) return false;
+
+      return true;
+    })()
+  "#;
+  let value = rt.exec_script(script).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn user_symbols_with_internal_prefix_are_not_hidden() {
+  let mut rt = new_runtime();
+  let script = r#"
+    (() => {
+      // vm-js reserves a "vm-js.internal.*" namespace for engine-private symbols, but user code is
+      // still allowed to create symbols with the same description. They must not be hidden.
+      const s = Symbol("vm-js.internal.UserKey");
+      const o = {};
+      o[s] = 1;
+      const keys = Reflect.ownKeys(o);
+      const syms = Object.getOwnPropertySymbols(o);
+      return keys.length === 1 && keys[0] === s && syms.length === 1 && syms[0] === s;
     })()
   "#;
   let value = rt.exec_script(script).unwrap();

@@ -41,6 +41,48 @@ pub(crate) struct ProxyData {
   pub handler: Option<GcObject>,
 }
 
+/// Engine-private symbols used to model spec internal slots as hidden symbol-keyed properties.
+///
+/// These symbols must:
+/// - be **stable within a heap** (so objects can cross realms)
+/// - be **unreachable from user code** (i.e. *not* obtainable via `Symbol.for`)
+/// - be **unobservable via key enumeration** (see `OrdinaryOwnPropertyKeys` filtering)
+#[derive(Debug, Default, Clone, Copy)]
+struct InternalSymbols {
+  // Primitive wrapper internal slots (`[[StringData]]`, etc).
+  string_data: Option<GcSymbol>,
+  symbol_data: Option<GcSymbol>,
+  boolean_data: Option<GcSymbol>,
+  number_data: Option<GcSymbol>,
+  bigint_data: Option<GcSymbol>,
+
+  // Array iterator internal slots.
+  array_iterator_array: Option<GcSymbol>,
+  array_iterator_index: Option<GcSymbol>,
+  array_iterator_kind: Option<GcSymbol>,
+
+  // Map iterator internal slots.
+  map_iterator_map: Option<GcSymbol>,
+  map_iterator_index: Option<GcSymbol>,
+  map_iterator_kind: Option<GcSymbol>,
+
+  // Set iterator internal slots.
+  set_iterator_set: Option<GcSymbol>,
+  set_iterator_index: Option<GcSymbol>,
+  set_iterator_kind: Option<GcSymbol>,
+
+  // String iterator internal slots.
+  string_iterator_iterated_string: Option<GcSymbol>,
+  string_iterator_next_index: Option<GcSymbol>,
+
+  // RegExp string iterator (`/re/g[Symbol.matchAll](...)`) internal slots.
+  regexp_string_iterator_iterating_regexp: Option<GcSymbol>,
+  regexp_string_iterator_iterated_string: Option<GcSymbol>,
+  regexp_string_iterator_global: Option<GcSymbol>,
+  regexp_string_iterator_unicode: Option<GcSymbol>,
+  regexp_string_iterator_done: Option<GcSymbol>,
+}
+
 /// Minimum non-zero capacity for heap-internal vectors that can grow due to hostile input.
 ///
 /// Keeping a small floor avoids pathological "grow by 1" patterns while still being conservative
@@ -211,6 +253,12 @@ pub struct Heap {
   // interned symbols alive.
   symbol_registry: Vec<SymbolRegistryEntry>,
 
+  // Engine-private symbols used to model spec internal slots.
+  //
+  // These are **not** stored in the global symbol registry so scripts cannot obtain them via
+  // `Symbol.for("vm-js.internal.*")`.
+  internal_symbols: InternalSymbols,
+
   // Commonly-used property key strings (interned for memory efficiency).
   common_key_name: Option<GcString>,
   common_key_length: Option<GcString>,
@@ -308,6 +356,7 @@ impl Heap {
       persistent_env_roots: Vec::new(),
       persistent_env_roots_free: Vec::new(),
       symbol_registry: Vec::new(),
+      internal_symbols: InternalSymbols::default(),
       common_key_name: None,
       common_key_length: None,
       common_key_constructor: None,
@@ -645,6 +694,34 @@ impl Heap {
         // The registry roots both the key (string) and the interned symbol.
         tracer.trace_value(Value::String(entry.key));
         tracer.trace_value(Value::Symbol(entry.sym));
+      }
+      // Engine-private internal-slot symbols.
+      let internal = &self.internal_symbols;
+      let internal_syms = [
+        internal.string_data,
+        internal.symbol_data,
+        internal.boolean_data,
+        internal.number_data,
+        internal.bigint_data,
+        internal.array_iterator_array,
+        internal.array_iterator_index,
+        internal.array_iterator_kind,
+        internal.map_iterator_map,
+        internal.map_iterator_index,
+        internal.map_iterator_kind,
+        internal.set_iterator_set,
+        internal.set_iterator_index,
+        internal.set_iterator_kind,
+        internal.string_iterator_iterated_string,
+        internal.string_iterator_next_index,
+        internal.regexp_string_iterator_iterating_regexp,
+        internal.regexp_string_iterator_iterated_string,
+        internal.regexp_string_iterator_global,
+        internal.regexp_string_iterator_unicode,
+        internal.regexp_string_iterator_done,
+      ];
+      for sym in internal_syms.into_iter().flatten() {
+        tracer.trace_value(Value::Symbol(sym));
       }
       if let Some(s) = self.common_key_name {
         tracer.trace_value(Value::String(s));
@@ -5214,76 +5291,250 @@ impl Heap {
     }
   }
 
-  pub(crate) fn internal_string_data_symbol(&self) -> Option<GcSymbol> {
-    const STRING_DATA_KEY: [u16; 25] = [
-      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 83, 116, 114, 105,
-      110, 103, 68, 97, 116, 97,
-    ];
-
-    // The registry is kept sorted by key contents, so this can use binary search instead of an
-    // O(n) scan (important: scripts can grow the global symbol registry arbitrarily).
-    match self.symbol_registry_binary_search_code_units(&STRING_DATA_KEY) {
-      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
-      _ => None,
+  fn ensure_internal_symbol(
+    &mut self,
+    description: &'static str,
+    get: impl FnOnce(&InternalSymbols) -> Option<GcSymbol>,
+    set: impl FnOnce(&mut InternalSymbols, GcSymbol),
+  ) -> Result<GcSymbol, VmError> {
+    if let Some(sym) = get(&self.internal_symbols) {
+      return Ok(sym);
     }
+    // Allocate the symbol in a temporary rooting scope, then store it on the heap so it is traced
+    // by GC and stable across realms.
+    let mut scope = self.scope();
+    let desc = scope.alloc_string(description)?;
+    let sym = scope.new_symbol(Some(desc))?;
+    set(&mut scope.heap.internal_symbols, sym);
+    Ok(sym)
+  }
+
+  pub(crate) fn internal_string_data_symbol(&self) -> Option<GcSymbol> {
+    self.internal_symbols.string_data
+  }
+
+  pub(crate) fn ensure_internal_string_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.StringData",
+      |s| s.string_data,
+      |s, sym| s.string_data = Some(sym),
+    )
   }
 
   pub(crate) fn internal_symbol_data_symbol(&self) -> Option<GcSymbol> {
-    const SYMBOL_DATA_KEY: [u16; 25] = [
-      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 83, 121, 109, 98,
-      111, 108, 68, 97, 116, 97,
-    ];
+    self.internal_symbols.symbol_data
+  }
 
-    // The registry is kept sorted by key contents, so this can use binary search instead of an
-    // O(n) scan (important: scripts can grow the global symbol registry arbitrarily).
-    match self.symbol_registry_binary_search_code_units(&SYMBOL_DATA_KEY) {
-      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
-      _ => None,
-    }
+  pub(crate) fn ensure_internal_symbol_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.SymbolData",
+      |s| s.symbol_data,
+      |s, sym| s.symbol_data = Some(sym),
+    )
   }
 
   pub(crate) fn internal_boolean_data_symbol(&self) -> Option<GcSymbol> {
-    const BOOLEAN_DATA_KEY: [u16; 26] = [
-      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 66, 111, 111, 108,
-      101, 97, 110, 68, 97, 116, 97,
-    ];
-    match self.symbol_registry_binary_search_code_units(&BOOLEAN_DATA_KEY) {
-      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
-      _ => None,
-    }
+    self.internal_symbols.boolean_data
+  }
+
+  pub(crate) fn ensure_internal_boolean_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.BooleanData",
+      |s| s.boolean_data,
+      |s, sym| s.boolean_data = Some(sym),
+    )
   }
 
   pub(crate) fn internal_number_data_symbol(&self) -> Option<GcSymbol> {
-    const NUMBER_DATA_KEY: [u16; 25] = [
-      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 78, 117, 109, 98,
-      101, 114, 68, 97, 116, 97,
-    ];
-    match self.symbol_registry_binary_search_code_units(&NUMBER_DATA_KEY) {
-      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
-      _ => None,
-    }
+    self.internal_symbols.number_data
+  }
+
+  pub(crate) fn ensure_internal_number_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.NumberData",
+      |s| s.number_data,
+      |s, sym| s.number_data = Some(sym),
+    )
   }
 
   pub(crate) fn internal_bigint_data_symbol(&self) -> Option<GcSymbol> {
-    const BIGINT_DATA_KEY: [u16; 25] = [
-      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 66, 105, 103, 73,
-      110, 116, 68, 97, 116, 97,
-    ];
-    match self.symbol_registry_binary_search_code_units(&BIGINT_DATA_KEY) {
-      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
-      _ => None,
-    }
+    self.internal_symbols.bigint_data
   }
 
-  pub(crate) fn internal_generator_state_symbol(&self) -> Option<GcSymbol> {
-    const GENERATOR_STATE_KEY: [u16; 29] = [
-      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 71, 101, 110, 101,
-      114, 97, 116, 111, 114, 83, 116, 97, 116, 101,
-    ];
-    match self.symbol_registry_binary_search_code_units(&GENERATOR_STATE_KEY) {
-      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
-      _ => None,
-    }
+  pub(crate) fn ensure_internal_bigint_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.BigIntData",
+      |s| s.bigint_data,
+      |s, sym| s.bigint_data = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_array_iterator_array_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.ArrayIteratorArray",
+      |s| s.array_iterator_array,
+      |s, sym| s.array_iterator_array = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_array_iterator_index_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.ArrayIteratorIndex",
+      |s| s.array_iterator_index,
+      |s, sym| s.array_iterator_index = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_array_iterator_kind_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.ArrayIteratorKind",
+      |s| s.array_iterator_kind,
+      |s, sym| s.array_iterator_kind = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_map_iterator_map_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.MapIteratorMap",
+      |s| s.map_iterator_map,
+      |s, sym| s.map_iterator_map = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_map_iterator_index_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.MapIteratorIndex",
+      |s| s.map_iterator_index,
+      |s, sym| s.map_iterator_index = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_map_iterator_kind_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.MapIteratorKind",
+      |s| s.map_iterator_kind,
+      |s, sym| s.map_iterator_kind = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_set_iterator_set_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.SetIteratorSet",
+      |s| s.set_iterator_set,
+      |s, sym| s.set_iterator_set = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_set_iterator_index_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.SetIteratorIndex",
+      |s| s.set_iterator_index,
+      |s, sym| s.set_iterator_index = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_set_iterator_kind_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.SetIteratorKind",
+      |s| s.set_iterator_kind,
+      |s, sym| s.set_iterator_kind = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_string_iterator_iterated_string_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.StringIteratorIteratedString",
+      |s| s.string_iterator_iterated_string,
+      |s, sym| s.string_iterator_iterated_string = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_string_iterator_next_index_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.StringIteratorNextIndex",
+      |s| s.string_iterator_next_index,
+      |s, sym| s.string_iterator_next_index = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_regexp_string_iterator_iterating_regexp_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.RegExpStringIteratorIteratingRegExp",
+      |s| s.regexp_string_iterator_iterating_regexp,
+      |s, sym| s.regexp_string_iterator_iterating_regexp = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_regexp_string_iterator_iterated_string_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.RegExpStringIteratorIteratedString",
+      |s| s.regexp_string_iterator_iterated_string,
+      |s, sym| s.regexp_string_iterator_iterated_string = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_regexp_string_iterator_global_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.RegExpStringIteratorGlobal",
+      |s| s.regexp_string_iterator_global,
+      |s, sym| s.regexp_string_iterator_global = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_regexp_string_iterator_unicode_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.RegExpStringIteratorUnicode",
+      |s| s.regexp_string_iterator_unicode,
+      |s, sym| s.regexp_string_iterator_unicode = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_regexp_string_iterator_done_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.RegExpStringIteratorDone",
+      |s| s.regexp_string_iterator_done,
+      |s, sym| s.regexp_string_iterator_done = Some(sym),
+    )
+  }
+
+  fn is_internal_symbol(&self, sym: GcSymbol) -> bool {
+    let internal = &self.internal_symbols;
+    let sym = Some(sym);
+    sym == internal.string_data
+      || sym == internal.symbol_data
+      || sym == internal.boolean_data
+      || sym == internal.number_data
+      || sym == internal.bigint_data
+      || sym == internal.array_iterator_array
+      || sym == internal.array_iterator_index
+      || sym == internal.array_iterator_kind
+      || sym == internal.map_iterator_map
+      || sym == internal.map_iterator_index
+      || sym == internal.map_iterator_kind
+      || sym == internal.set_iterator_set
+      || sym == internal.set_iterator_index
+      || sym == internal.set_iterator_kind
+      || sym == internal.string_iterator_iterated_string
+      || sym == internal.string_iterator_next_index
+      || sym == internal.regexp_string_iterator_iterating_regexp
+      || sym == internal.regexp_string_iterator_iterated_string
+      || sym == internal.regexp_string_iterator_global
+      || sym == internal.regexp_string_iterator_unicode
+      || sym == internal.regexp_string_iterator_done
   }
 
   /// Gets an object's own property descriptor.
@@ -5382,28 +5633,6 @@ impl Heap {
       }
     }
 
-    // vm-js uses a reserved `"vm-js.internal.*"` symbol description prefix to model internal slots
-    // on some built-in exotic objects.
-    //
-    // These must not be observable via `[[OwnPropertyKeys]]` / `Reflect.ownKeys` / etc.
-    const INTERNAL_SYMBOL_PREFIX: [u16; 15] = [
-      b'v' as u16,
-      b'm' as u16,
-      b'-' as u16,
-      b'j' as u16,
-      b's' as u16,
-      b'.' as u16,
-      b'i' as u16,
-      b'n' as u16,
-      b't' as u16,
-      b'e' as u16,
-      b'r' as u16,
-      b'n' as u16,
-      b'a' as u16,
-      b'l' as u16,
-      b'.' as u16,
-    ];
-
     for (i, prop) in properties.iter().enumerate() {
       if i % TICK_EVERY == 0 {
         tick()?;
@@ -5411,11 +5640,10 @@ impl Heap {
       let PropertyKey::Symbol(sym) = prop.key else {
         continue;
       };
-      if let Some(desc) = self.get_symbol_description(sym)? {
-        let units = self.get_string(desc)?.as_code_units();
-        if units.starts_with(&INTERNAL_SYMBOL_PREFIX) {
-          continue;
-        }
+      // Internal slot marker symbols must not be observable from JS, otherwise scripts can obtain
+      // the symbol via `Reflect.ownKeys` and access/modify internal slot state.
+      if self.is_internal_symbol(sym) {
+        continue;
       }
       out.push(prop.key);
     }
@@ -6379,30 +6607,6 @@ impl Heap {
       let mid = low + (high - low) / 2;
       let mid_key = self.get_string(self.symbol_registry[mid].key)?;
       match mid_key.cmp(key) {
-        std::cmp::Ordering::Less => {
-          low = mid + 1;
-        }
-        std::cmp::Ordering::Greater => {
-          high = mid;
-        }
-        std::cmp::Ordering::Equal => return Ok(Ok(mid)),
-      }
-    }
-    Ok(Err(low))
-  }
-
-  fn symbol_registry_binary_search_code_units(
-    &self,
-    key: &[u16],
-  ) -> Result<Result<usize, usize>, VmError> {
-    // Manual binary search so we can compare by string contents (not by handle identity), without
-    // constructing a temporary `JsString`.
-    let mut low = 0usize;
-    let mut high = self.symbol_registry.len();
-    while low < high {
-      let mid = low + (high - low) / 2;
-      let mid_key = self.get_string(self.symbol_registry[mid].key)?;
-      match mid_key.as_code_units().cmp(key) {
         std::cmp::Ordering::Less => {
           low = mid + 1;
         }

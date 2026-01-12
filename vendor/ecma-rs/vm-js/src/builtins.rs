@@ -596,13 +596,7 @@ fn object_constructor_impl(
 
       let marker_sym = match scope.heap().internal_symbol_data_symbol() {
         Some(sym) => sym,
-        None => {
-          // If this is the first time we've created a boxed Symbol object, the internal marker
-          // symbol may not yet exist in the global registry. Create it with budget ticks while
-          // inserting into the sorted registry.
-          let marker = scope.alloc_string("vm-js.internal.SymbolData")?;
-          scope.heap_mut().symbol_for_with_tick(marker, || vm.tick())?
-        }
+        None => scope.heap_mut().ensure_internal_symbol_data_symbol()?,
       };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       scope.define_property(
@@ -622,8 +616,7 @@ fn object_constructor_impl(
         .heap_mut()
         .object_set_prototype(obj, Some(intr.bigint_prototype()))?;
 
-      let marker = scope.alloc_string("vm-js.internal.BigIntData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = scope.heap_mut().ensure_internal_bigint_data_symbol()?;
       let marker_key = PropertyKey::from_symbol(marker_sym);
       scope.define_property(
         obj,
@@ -9327,11 +9320,18 @@ fn get_array_length(
 }
 
 fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
-  // Root the marker string while interning it: `symbol_for` can allocate and trigger GC.
-  let mut scope = scope.reborrow();
-  let marker = scope.alloc_string(s)?;
-  scope.push_root(Value::String(marker))?;
-  let marker_sym = scope.heap_mut().symbol_for(marker)?;
+  let marker_sym = match s {
+    ARRAY_ITERATOR_ARRAY_MARKER => scope.heap_mut().ensure_internal_array_iterator_array_symbol()?,
+    ARRAY_ITERATOR_INDEX_MARKER => scope.heap_mut().ensure_internal_array_iterator_index_symbol()?,
+    ARRAY_ITERATOR_KIND_MARKER => scope.heap_mut().ensure_internal_array_iterator_kind_symbol()?,
+    MAP_ITERATOR_MAP_MARKER => scope.heap_mut().ensure_internal_map_iterator_map_symbol()?,
+    MAP_ITERATOR_INDEX_MARKER => scope.heap_mut().ensure_internal_map_iterator_index_symbol()?,
+    MAP_ITERATOR_KIND_MARKER => scope.heap_mut().ensure_internal_map_iterator_kind_symbol()?,
+    SET_ITERATOR_SET_MARKER => scope.heap_mut().ensure_internal_set_iterator_set_symbol()?,
+    SET_ITERATOR_INDEX_MARKER => scope.heap_mut().ensure_internal_set_iterator_index_symbol()?,
+    SET_ITERATOR_KIND_MARKER => scope.heap_mut().ensure_internal_set_iterator_kind_symbol()?,
+    _ => return Err(VmError::InvariantViolation("unknown internal symbol key")),
+  };
   Ok(PropertyKey::from_symbol(marker_sym))
 }
 
@@ -11817,8 +11817,7 @@ pub fn string_constructor_construct(
   scope.push_root(Value::Object(obj))?;
 
   // Store the primitive value on an internal symbol so `String.prototype.toString` can recover it.
-  let marker = scope.alloc_string("vm-js.internal.StringData")?;
-  let marker_sym = scope.heap_mut().symbol_for(marker)?;
+  let marker_sym = scope.heap_mut().ensure_internal_string_data_symbol()?;
   let marker_key = PropertyKey::from_symbol(marker_sym);
   scope.define_property(
     obj,
@@ -13229,7 +13228,7 @@ pub fn string_prototype_to_primitive(
   Ok(Value::String(s))
 }
 fn this_string_value(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   this: Value,
   method: &'static str,
@@ -13241,10 +13240,7 @@ fn this_string_value(
       scope.push_root(Value::Object(obj))?;
       let marker_sym = match scope.heap().internal_string_data_symbol() {
         Some(sym) => sym,
-        None => {
-          let marker = scope.alloc_string("vm-js.internal.StringData")?;
-          scope.heap_mut().symbol_for_with_tick(marker, || vm.tick())?
-        }
+        None => scope.heap_mut().ensure_internal_string_data_symbol()?,
       };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
@@ -13353,8 +13349,10 @@ pub fn string_prototype_char_code_at(
   let prim = match this {
     Value::String(s) => s,
     Value::Object(obj) => {
-      let marker = scope.alloc_string("vm-js.internal.StringData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = match scope.heap().internal_string_data_symbol() {
+        Some(sym) => sym,
+        None => scope.heap_mut().ensure_internal_string_data_symbol()?,
+      };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
         Some(Value::String(s)) => s,
@@ -15405,8 +15403,7 @@ pub fn number_constructor_construct(
   scope.push_root(Value::Object(obj))?;
 
   // Store the primitive value on an internal symbol so `Number.prototype.valueOf` can recover it.
-  let marker = scope.alloc_string("vm-js.internal.NumberData")?;
-  let marker_sym = scope.heap_mut().symbol_for(marker)?;
+  let marker_sym = scope.heap_mut().ensure_internal_number_data_symbol()?;
   let marker_key = PropertyKey::from_symbol(marker_sym);
   scope.define_property(
     obj,
@@ -15421,8 +15418,10 @@ fn this_number_value(scope: &mut Scope<'_>, this: Value, method: &'static str) -
   match this {
     Value::Number(n) => Ok(n),
     Value::Object(obj) => {
-      let marker = scope.alloc_string("vm-js.internal.NumberData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = match scope.heap().internal_number_data_symbol() {
+        Some(sym) => sym,
+        None => scope.heap_mut().ensure_internal_number_data_symbol()?,
+      };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       match scope
         .heap()
@@ -15440,8 +15439,10 @@ fn this_boolean_value(scope: &mut Scope<'_>, this: Value, method: &'static str) 
   match this {
     Value::Bool(b) => Ok(b),
     Value::Object(obj) => {
-      let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = match scope.heap().internal_boolean_data_symbol() {
+        Some(sym) => sym,
+        None => scope.heap_mut().ensure_internal_boolean_data_symbol()?,
+      };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       match scope
         .heap()
@@ -16193,8 +16194,7 @@ pub fn boolean_constructor_construct(
   scope.push_root(Value::Object(obj))?;
 
   // Store the primitive value on an internal symbol so `Boolean.prototype.valueOf` can recover it.
-  let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
-  let marker_sym = scope.heap_mut().symbol_for(marker)?;
+  let marker_sym = scope.heap_mut().ensure_internal_boolean_data_symbol()?;
   let marker_key = PropertyKey::from_symbol(marker_sym);
   scope.define_property(
     obj,
@@ -16341,7 +16341,7 @@ pub fn number_is_safe_integer(
 }
 
 fn this_bigint_value(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   this: Value,
   method: &'static str,
@@ -16351,13 +16351,7 @@ fn this_bigint_value(
     Value::Object(obj) => {
       let marker_sym = match scope.heap().internal_bigint_data_symbol() {
         Some(sym) => sym,
-        None => {
-          // Fall back to creating the marker symbol if it hasn't been interned yet (should be rare;
-          // primarily reachable if a host created a BigInt wrapper without going through
-          // `Object(1n)`).
-          let marker = scope.alloc_string("vm-js.internal.BigIntData")?;
-          scope.heap_mut().symbol_for_with_tick(marker, || vm.tick())?
-        }
+        None => scope.heap_mut().ensure_internal_bigint_data_symbol()?,
       };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       match scope
@@ -16661,7 +16655,7 @@ pub fn bigint_prototype_to_primitive(
 
 /// `Symbol.prototype.valueOf` (minimal).
 pub fn symbol_prototype_value_of(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -16674,13 +16668,7 @@ pub fn symbol_prototype_value_of(
     Value::Object(obj) => {
       let marker_sym = match scope.heap().internal_symbol_data_symbol() {
         Some(sym) => sym,
-        None => {
-          // Fall back to creating the marker symbol if it hasn't been interned yet (should be
-          // rare; primarily reachable if a host created a Symbol wrapper without going through
-          // `Object(Symbol(...))`).
-          let marker = scope.alloc_string("vm-js.internal.SymbolData")?;
-          scope.heap_mut().symbol_for_with_tick(marker, || vm.tick())?
-        }
+        None => scope.heap_mut().ensure_internal_symbol_data_symbol()?,
       };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       match scope
@@ -20368,9 +20356,12 @@ pub fn json_stringify(
 
   // --- Initialize wrapper marker keys for primitive wrapper detection ---
   fn marker_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
-    let marker = scope.alloc_string(name)?;
-    scope.push_root(Value::String(marker))?;
-    let sym = scope.heap_mut().symbol_for(marker)?;
+    let sym = match name {
+      "vm-js.internal.NumberData" => scope.heap_mut().ensure_internal_number_data_symbol()?,
+      "vm-js.internal.StringData" => scope.heap_mut().ensure_internal_string_data_symbol()?,
+      "vm-js.internal.BooleanData" => scope.heap_mut().ensure_internal_boolean_data_symbol()?,
+      _ => return Err(VmError::InvariantViolation("unknown wrapper marker key")),
+    };
     Ok(PropertyKey::from_symbol(sym))
   }
 
