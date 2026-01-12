@@ -4,6 +4,7 @@ use crate::js::window_timers::{
   SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR,
   SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
+use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
 use crate::js::window_realm::WindowRealmUserData;
 use std::cell::{Cell, RefCell};
@@ -315,6 +316,33 @@ fn url_search_params_error_to_vm_error(err: crate::js::UrlError) -> VmError {
     crate::js::UrlError::OutOfMemory => VmError::OutOfMemory,
     _ => VmError::TypeError("URLSearchParams error"),
   }
+}
+
+fn dom_exception_class(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  global: GcObject,
+) -> Result<DomExceptionClassVmJs, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::InvariantViolation("missing intrinsics"))?;
+  DomExceptionClassVmJs::install_for_global(vm, scope, global, intr)
+}
+
+fn throw_dom_exception(
+  scope: &mut Scope<'_>,
+  class: DomExceptionClassVmJs,
+  name: &str,
+  message: &str,
+) -> VmError {
+  match class.new_instance(scope, name, message) {
+    Ok(value) => VmError::Throw(value),
+    Err(_) => VmError::Throw(Value::Undefined),
+  }
+}
+
+fn throw_dom_error(scope: &mut Scope<'_>, class: DomExceptionClassVmJs, err: crate::dom2::DomError) -> VmError {
+  throw_dom_exception(scope, class, err.code(), "")
 }
 
 fn normalize_delay_ms(value: Value) -> u64 {
@@ -1816,10 +1844,14 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
 #[cfg(test)]
 mod window_document_tests {
   use super::*;
+  use crate::dom2::DomError;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::window_timers::VmJsEventLoopHooks;
   use crate::js::WindowHostState;
-  use vm_js::{PropertyDescriptor, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+  use vm_js::{
+    Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost,
+    VmHostHooks, VmOptions,
+  };
 
   fn window_document_getter_native(
     vm: &mut Vm,
@@ -1929,6 +1961,74 @@ mod window_document_tests {
       "typeof document === 'object' && document === globalThis.__fastrender_document_keepalive",
     )?;
     assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  fn get_own_string_property(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<String, VmError> {
+    // Root `obj` across string/key allocations.
+    scope.push_root(Value::Object(obj))?;
+    let key_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(obj, &key)?
+      .unwrap_or(Value::Undefined);
+    let Value::String(s) = value else {
+      return Err(VmError::TypeError("expected DOMException property to be a string"));
+    };
+    Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+  }
+
+  fn assert_dom_exception_name(scope: &mut Scope<'_>, thrown: Value, expected: &str) -> Result<(), VmError> {
+    scope.push_root(thrown)?;
+    let Value::Object(obj) = thrown else {
+      return Err(VmError::TypeError("expected thrown DOMException to be an object"));
+    };
+    assert_eq!(get_own_string_property(scope, obj, "name")?, expected);
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_host_dispatch_throw_dom_exception_produces_object_with_name() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let global = realm.global_object();
+
+    let mut scope = heap.scope();
+    let class = dom_exception_class(&mut vm, &mut scope, global)?;
+
+    let err = throw_dom_exception(&mut scope, class, "SyntaxError", "m");
+    let VmError::Throw(thrown) = err else {
+      return Err(VmError::TypeError("expected throw_dom_exception to return VmError::Throw"));
+    };
+    assert_dom_exception_name(&mut scope, thrown, "SyntaxError")?;
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_host_dispatch_throw_dom_error_maps_code_to_dom_exception_name() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let global = realm.global_object();
+
+    let mut scope = heap.scope();
+    let class = dom_exception_class(&mut vm, &mut scope, global)?;
+
+    let err = throw_dom_error(&mut scope, class, DomError::NotFoundError);
+    let VmError::Throw(thrown) = err else {
+      return Err(VmError::TypeError("expected throw_dom_error to return VmError::Throw"));
+    };
+    assert_dom_exception_name(&mut scope, thrown, "NotFoundError")?;
+
+    drop(scope);
+    realm.teardown(&mut heap);
     Ok(())
   }
 }
