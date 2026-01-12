@@ -1340,6 +1340,63 @@ fn export_star_conflict_reports_diagnostic() {
 }
 
 #[test]
+fn export_star_ambiguity_reports_on_export_statement_span() {
+  // Mirrors TypeScript's `conformance/es6/modules/exportStar.ts`.
+  let mut host = MemoryHost::default();
+  let key_t1 = fk(600);
+  let key_t2 = fk(601);
+  let key_t3 = fk(602);
+  let key_t4 = fk(603);
+  let key_main = fk(604);
+
+  host.insert(key_t1.clone(), "export var x = 1;\nexport var y = 2;\n");
+  host.insert(key_t2.clone(), "export default \"hello\";\nexport function foo() { }\n");
+  host.insert(
+    key_t3.clone(),
+    "var x = \"x\";\nvar y = \"y\";\nvar z = \"z\";\nexport { x, y, z };\n",
+  );
+  let t4_source = "export * from \"./t1\";\nexport * from \"./t2\";\nexport * from \"./t3\";\n";
+  host.insert(key_t4.clone(), t4_source);
+  host.insert(
+    key_main.clone(),
+    "import hello, { x, y, z, foo } from \"./t4\";\nhello;\nx;\ny;\nz;\nfoo;\n",
+  );
+
+  host.link(key_t4.clone(), "./t1", key_t1.clone());
+  host.link(key_t4.clone(), "./t2", key_t2.clone());
+  host.link(key_t4.clone(), "./t3", key_t3.clone());
+  host.link(key_main.clone(), "./t4", key_t4.clone());
+
+  let program = Program::new(host, vec![key_main.clone()]);
+  let diagnostics = program.check();
+
+  let file_t4 = program.file_id(&key_t4).expect("t4 file id");
+  let bind_1001: Vec<_> = diagnostics
+    .iter()
+    .filter(|diag| diag.code.as_str() == "BIND1001" && diag.primary.file == file_t4)
+    .collect();
+  assert_eq!(
+    bind_1001.len(),
+    2,
+    "expected two export-star ambiguity diagnostics in t4.ts, got {bind_1001:?}"
+  );
+
+  let needle = "export * from \"./t3\";";
+  let start = t4_source
+    .find(needle)
+    .expect("expected export-star statement for ./t3") as u32;
+  let end = start + needle.len() as u32;
+  let expected_span = TextRange::new(start, end);
+
+  for diag in bind_1001 {
+    assert_eq!(
+      diag.primary.range, expected_span,
+      "expected BIND1001 span to match the export-star statement span"
+    );
+  }
+}
+
+#[test]
 fn export_namespace_all_is_supported() {
   let mut host = MemoryHost::default();
   let key_a = fk(300);

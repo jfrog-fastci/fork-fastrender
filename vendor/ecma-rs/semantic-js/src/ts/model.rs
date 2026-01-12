@@ -294,6 +294,7 @@ pub struct NamedExport {
 pub struct ExportAll {
   pub specifier: String,
   pub is_type_only: bool,
+  pub span: TextRange,
   pub specifier_span: TextRange,
   pub alias: Option<String>,
   pub alias_span: Option<TextRange>,

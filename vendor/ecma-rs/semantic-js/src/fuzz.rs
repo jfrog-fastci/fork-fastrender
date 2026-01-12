@@ -558,6 +558,7 @@ fn gen_export(
       ts::Export::All(ts::ExportAll {
         specifier,
         is_type_only: cursor.next_bool(),
+        span: specifier_span,
         specifier_span,
         alias,
         alias_span,

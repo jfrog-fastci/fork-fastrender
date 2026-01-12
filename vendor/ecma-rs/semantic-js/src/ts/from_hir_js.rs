@@ -26,21 +26,21 @@ pub fn lower_to_ts_hir(ast: &Node<TopLevel>, lower: &LowerResult, source: &str) 
   let file_id = lower.hir.file;
   let item_ids: HashSet<DefId> = lower.hir.items.iter().copied().collect();
 
-  let imports_by_span: HashMap<_, _> = lower
+  let imports_by_start: HashMap<_, _> = lower
     .hir
     .imports
     .iter()
-    .map(|import| (import.span, import))
+    .map(|import| (import.span.start, import))
     .collect();
-  let exports_by_span: HashMap<_, _> = lower
+  let exports_by_start: HashMap<_, _> = lower
     .hir
     .exports
     .iter()
-    .map(|export| (export.span, export))
+    .map(|export| (export.span.start, export))
     .collect();
   let import_specifier_span = |range: TextRange| -> Option<TextRange> {
-    imports_by_span
-      .get(&range)
+    imports_by_start
+      .get(&range.start)
       .and_then(|import| match &import.kind {
         ImportKind::Es(es) => Some(es.specifier.span),
         ImportKind::ImportEquals(eq) => match &eq.target {
@@ -50,13 +50,16 @@ pub fn lower_to_ts_hir(ast: &Node<TopLevel>, lower: &LowerResult, source: &str) 
       })
   };
   let export_specifier_span = |range: TextRange| -> Option<TextRange> {
-    exports_by_span
-      .get(&range)
+    exports_by_start
+      .get(&range.start)
       .and_then(|export| match &export.kind {
         ExportKind::Named(named) => named.source.as_ref().map(|s| s.span),
         ExportKind::ExportAll(all) => Some(all.source.span),
         _ => None,
       })
+  };
+  let export_stmt_span = |range: TextRange| -> Option<TextRange> {
+    exports_by_start.get(&range.start).map(|export| export.span)
   };
 
   let module_kind = if ast_has_module_syntax(ast) {
@@ -66,13 +69,14 @@ pub fn lower_to_ts_hir(ast: &Node<TopLevel>, lower: &LowerResult, source: &str) 
   };
 
   let block = lower_block(
+    source,
     &ast.stx.body,
     lower,
     module_kind,
     Some(&item_ids),
     &import_specifier_span,
     &export_specifier_span,
-    source,
+    &export_stmt_span,
   );
 
   let finalized = finalize_block(block, lower, module_kind, source);
@@ -151,13 +155,14 @@ struct LoweredBlock {
 }
 
 fn lower_block(
+  source: &str,
   stmts: &[Node<Stmt>],
   lower: &LowerResult,
   outer_module_kind: ModuleKind,
   allowed_defs: Option<&HashSet<DefId>>,
   import_specifier_span: &impl Fn(TextRange) -> Option<TextRange>,
   export_specifier_span: &impl Fn(TextRange) -> Option<TextRange>,
-  source: &str,
+  export_stmt_span: &impl Fn(TextRange) -> Option<TextRange>,
 ) -> BlockResult {
   let targets = collect_def_targets(stmts);
   let local_defs = resolve_def_targets(&targets, lower, allowed_defs);
@@ -259,8 +264,11 @@ fn lower_block(
       Stmt::ExportList(list) => match &list.stx.names {
         ExportNames::All(alias) => {
           if let Some(specifier) = list.stx.from.clone() {
+            let span = export_stmt_span(stmt_range).unwrap_or(stmt_range);
+            let span = extend_statement_span_to_include_semicolon(source, span);
             result.exports.push(Export::All(ExportAll {
-              specifier_span: export_specifier_span(stmt_range).unwrap_or(stmt_range),
+              span,
+              specifier_span: export_specifier_span(stmt_range).unwrap_or(span),
               specifier,
               is_type_only: list.stx.type_only,
               alias: alias.as_ref().map(|a| a.stx.name.clone()),
@@ -555,13 +563,14 @@ fn lower_block(
             .then(|| export_modifier_span(source, stmt_range, name_span))
             .flatten();
           let nested = lower_block(
+            source,
             module.stx.body.as_deref().unwrap_or(&[]),
             lower,
             outer_module_kind,
             None,
             import_specifier_span,
             export_specifier_span,
-            source,
+            export_stmt_span,
           );
           let nested = finalize_block(nested, lower, outer_module_kind, source);
           result.ambient_modules.push(AmbientModule {
@@ -581,13 +590,14 @@ fn lower_block(
       },
       Stmt::GlobalDecl(global) => {
         let nested = lower_block(
+          source,
           &global.stx.body,
           lower,
           outer_module_kind,
           allowed_defs,
           import_specifier_span,
           export_specifier_span,
-          source,
+          export_stmt_span,
         );
         result.local_defs.extend(nested.local_defs);
         result.exported.extend(nested.exported);
@@ -985,6 +995,15 @@ fn entity_name_path(expr: &Node<Expr>) -> Option<Vec<String>> {
 
 fn to_range(loc: Loc) -> TextRange {
   TextRange::new(loc.start_u32(), loc.end_u32())
+}
+
+fn extend_statement_span_to_include_semicolon(source: &str, range: TextRange) -> TextRange {
+  let end = range.end as usize;
+  if end < source.len() && source.as_bytes()[end] == b';' {
+    TextRange::new(range.start, range.end.saturating_add(1))
+  } else {
+    range
+  }
 }
 
 fn span_for_name(loc: Loc, name: &str) -> TextRange {

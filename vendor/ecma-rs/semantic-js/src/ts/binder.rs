@@ -1214,7 +1214,8 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         }
         Export::All(all) => {
           let spec_span = Span::new(file_id, all.specifier_span);
-          first_export_span.get_or_insert(spec_span);
+          let stmt_span = Span::new(file_id, all.span);
+          first_export_span.get_or_insert(stmt_span);
           let target =
             self.resolve_spec(file_id, &all.specifier, spec_span, false, ambient_modules);
           if let ModuleRef::File(t) = &target {
@@ -1246,7 +1247,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               from: target.clone(),
               from_span: spec_span,
               type_only: all.is_type_only,
-              span: spec_span,
+              span: stmt_span,
             });
           }
           has_exports = true;

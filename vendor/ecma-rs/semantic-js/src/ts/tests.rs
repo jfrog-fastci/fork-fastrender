@@ -428,6 +428,7 @@ fn reexport_chain_uses_original_symbols() {
   c.exports.push(Export::All(ExportAll {
     specifier: "b".to_string(),
     is_type_only: false,
+    span: span(12),
     specifier_span: span(12),
     alias: None,
     alias_span: None,
@@ -485,6 +486,7 @@ fn export_all_as_namespace_adds_only_alias() {
   b.exports.push(Export::All(ExportAll {
     specifier: "a".to_string(),
     is_type_only: false,
+    span: span(10),
     specifier_span: span(10),
     alias: Some("NS".to_string()),
     alias_span: Some(span(11)),
@@ -536,6 +538,7 @@ fn circular_export_is_cycle_safe() {
   a.exports.push(Export::All(ExportAll {
     specifier: "b".to_string(),
     is_type_only: false,
+    span: span(20),
     specifier_span: span(20),
     alias: None,
     alias_span: None,
@@ -547,6 +550,7 @@ fn circular_export_is_cycle_safe() {
   b.exports.push(Export::All(ExportAll {
     specifier: "a".to_string(),
     is_type_only: false,
+    span: span(21),
     specifier_span: span(21),
     alias: None,
     alias_span: None,
@@ -617,6 +621,7 @@ fn export_all_cycle_includes_late_local_export_of_import() {
   a.exports.push(Export::All(ExportAll {
     specifier: "b".to_string(),
     is_type_only: false,
+    span: span(10),
     specifier_span: span(10),
     alias: None,
     alias_span: None,
@@ -634,6 +639,7 @@ fn export_all_cycle_includes_late_local_export_of_import() {
   b.exports.push(Export::All(ExportAll {
     specifier: "a".to_string(),
     is_type_only: false,
+    span: span(11),
     specifier_span: span(11),
     alias: None,
     alias_span: None,
@@ -727,6 +733,7 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
       Export::All(ExportAll {
         specifier: "b".to_string(),
         is_type_only: false,
+        span: span(11),
         specifier_span: span(11),
         alias: None,
         alias_span: None,
@@ -748,6 +755,7 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
     exports: vec![Export::All(ExportAll {
       specifier: "a".to_string(),
       is_type_only: false,
+      span: span(21),
       specifier_span: span(21),
       alias: None,
       alias_span: None,
@@ -1098,6 +1106,7 @@ fn module_graph_exposes_edges_for_imports_reexports_type_imports_and_augmentatio
   c.exports.push(Export::All(ExportAll {
     specifier: "b".to_string(),
     is_type_only: false,
+    span: span(21),
     specifier_span: span(21),
     alias: None,
     alias_span: None,
@@ -1226,6 +1235,7 @@ fn module_graph_is_deterministic_across_root_orders() {
   c.exports.push(Export::All(ExportAll {
     specifier: "b".to_string(),
     is_type_only: false,
+    span: span(21),
     specifier_span: span(21),
     alias: None,
     alias_span: None,
@@ -1812,6 +1822,7 @@ fn unresolved_import_export_have_spans() {
   hir.exports.push(Export::All(ExportAll {
     specifier: "missing".to_string(),
     is_type_only: false,
+    span: export_span,
     specifier_span: export_span,
     alias: None,
     alias_span: None,
@@ -2471,6 +2482,7 @@ fn resolve_export_handles_export_star_cycles() {
   a.exports.push(Export::All(ExportAll {
     specifier: "b".to_string(),
     is_type_only: false,
+    span: span(80),
     specifier_span: span(80),
     alias: None,
     alias_span: None,
@@ -2482,6 +2494,7 @@ fn resolve_export_handles_export_star_cycles() {
   b.exports.push(Export::All(ExportAll {
     specifier: "a".to_string(),
     is_type_only: false,
+    span: span(81),
     specifier_span: span(81),
     alias: None,
     alias_span: None,
@@ -2570,6 +2583,7 @@ fn binder_is_deterministic_across_orders_and_threads() {
   c.exports.push(Export::All(ExportAll {
     specifier: "b".to_string(),
     is_type_only: false,
+    span: span(17),
     specifier_span: span(17),
     alias: None,
     alias_span: None,
@@ -4622,6 +4636,7 @@ fn module_augmentation_rejects_imports_and_exports() {
     exports: vec![Export::All(ExportAll {
       specifier: "./dep".to_string(),
       is_type_only: false,
+      span: span(30),
       specifier_span: span(30),
       alias: None,
       alias_span: None,

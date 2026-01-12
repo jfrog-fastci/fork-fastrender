@@ -108,6 +108,7 @@ impl SemHirBuilder {
     self.exports.push(sem_ts::Export::All(sem_ts::ExportAll {
       specifier,
       is_type_only,
+      span: specifier_span,
       specifier_span,
       alias: alias.as_ref().map(|(name, _)| name.clone()),
       alias_span: alias.as_ref().map(|(_, span)| *span),

@@ -89,6 +89,8 @@ pub(crate) fn mapped_tsc_codes_for_rust_code(raw: &str) -> Option<&'static [u32]
     "TC3004" => Some(&[2636]),
     // `export =` combined with other exports.
     "BIND1005" => Some(&[2309]),
+    // Module has already exported a member named 'X' (export-star ambiguity).
+    "BIND1001" => Some(&[2308]),
     _ => None,
   }
 }
@@ -135,6 +137,7 @@ mod tests {
     assert!(rust_code_matches_tsc("TC3002", 2339));
     assert!(rust_code_matches_tsc("TC3003", 2503));
     assert!(rust_code_matches_tsc("TC3004", 2636));
+    assert!(rust_code_matches_tsc("BIND1001", 2308));
     assert!(rust_code_matches_tsc("BIND1005", 2309));
   }
 }
