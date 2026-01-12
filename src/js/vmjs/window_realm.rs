@@ -11420,6 +11420,20 @@ fn event_target_dispatch_event_native(
 
     let event_phase_key = alloc_key(scope, "eventPhase")?;
     scope.define_property(event_obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+
+    let time_stamp_key = alloc_key(scope, "timeStamp")?;
+    scope.define_property(
+      event_obj,
+      time_stamp_key,
+      data_desc(Value::Number(rust_event.time_stamp)),
+    )?;
+
+    let is_trusted_key = alloc_key(scope, "isTrusted")?;
+    scope.define_property(
+      event_obj,
+      is_trusted_key,
+      data_desc(Value::Bool(rust_event.is_trusted)),
+    )?;
   }
 
   // Reset per-dispatch propagation flags on the JS-visible object.
@@ -24420,6 +24434,140 @@ mod tests {
         return ok && called;\n\
       })()",
     )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn event_src_element_alias_and_dispatch_state_updates_during_dispatch() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const parent = new EventTarget();\n\
+        const child = new EventTarget(parent);\n\
+        const ev = new Event('x', { bubbles: true });\n\
+        const checks = [];\n\
+        parent.addEventListener('x', (e) => {\n\
+          checks.push(\n\
+            e.target === child &&\n\
+            e.target === e.srcElement &&\n\
+            e.currentTarget === parent &&\n\
+            e.eventPhase === 1 &&\n\
+            typeof e.timeStamp === 'number' &&\n\
+            typeof e.isTrusted === 'boolean'\n\
+          );\n\
+        }, { capture: true });\n\
+        child.addEventListener('x', (e) => {\n\
+          checks.push(\n\
+            e.target === child &&\n\
+            e.target === e.srcElement &&\n\
+            e.currentTarget === child &&\n\
+            e.eventPhase === 2 &&\n\
+            typeof e.timeStamp === 'number' &&\n\
+            typeof e.isTrusted === 'boolean'\n\
+          );\n\
+        });\n\
+        parent.addEventListener('x', (e) => {\n\
+          checks.push(\n\
+            e.target === child &&\n\
+            e.target === e.srcElement &&\n\
+            e.currentTarget === parent &&\n\
+            e.eventPhase === 3 &&\n\
+            typeof e.timeStamp === 'number' &&\n\
+            typeof e.isTrusted === 'boolean'\n\
+          );\n\
+        });\n\
+        child.dispatchEvent(ev);\n\
+        const after = (\n\
+          ev.target === child &&\n\
+          ev.target === ev.srcElement &&\n\
+          ev.currentTarget === null &&\n\
+          ev.eventPhase === 0 &&\n\
+          typeof ev.timeStamp === 'number' &&\n\
+          typeof ev.isTrusted === 'boolean'\n\
+        );\n\
+        return checks.length === 3 && checks.every(Boolean) && after;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn host_dom_event_dispatch_exposes_src_element_alias() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__checks = [];\n\
+       window.addEventListener('x', (e) => {\n\
+         __checks.push(\n\
+           e.target === document &&\n\
+           e.target === e.srcElement &&\n\
+           e.currentTarget === window &&\n\
+           e.eventPhase === 1\n\
+         );\n\
+       }, { capture: true });\n\
+       document.addEventListener('x', (e) => {\n\
+         __checks.push(\n\
+           e.target === document &&\n\
+           e.target === e.srcElement &&\n\
+           e.currentTarget === document &&\n\
+           e.eventPhase === 2\n\
+         );\n\
+       });\n\
+       window.addEventListener('x', (e) => {\n\
+         __checks.push(\n\
+           e.target === document &&\n\
+           e.target === e.srcElement &&\n\
+           e.currentTarget === window &&\n\
+           e.eventPhase === 3\n\
+         );\n\
+       });",
+    )?;
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+      }
+    }
+
+    let mut realm_slot = Some(realm);
+    let mut vm_host_ctx = ();
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
+    let mut invoker = WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+      &mut realm_slot,
+      &mut vm_host_slot,
+      &mut webidl_bindings_host_slot,
+    );
+
+    let mut event = web_events::Event::new(
+      "x",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    web_events::dispatch_event(
+      web_events::EventTargetId::Document,
+      &mut event,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("dispatch_event should succeed");
+
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    let ok = realm.exec_script("globalThis.__checks.length === 3 && globalThis.__checks.every(Boolean)")?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
