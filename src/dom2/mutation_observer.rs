@@ -289,16 +289,6 @@ impl Document {
       .mutation_observer_agent
       .borrow_mut()
       .remap_node_ids(mapping);
-
-    for node in &mut self.nodes {
-      for reg in &mut node.registered_observers {
-        if let Some(source) = reg.transient_source {
-          if let Some(&new_source) = mapping.get(&source) {
-            reg.transient_source = Some(new_source);
-          }
-        }
-      }
-    }
   }
 
   /// Move mutation observer registrations stored on `old` to `new`.
