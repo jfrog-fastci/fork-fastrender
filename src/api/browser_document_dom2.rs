@@ -409,6 +409,19 @@ impl BrowserDocumentDom2 {
       current = parent;
     }
 
+    // Fallback to the document scrolling element (CSSOM View).
+    //
+    // In quirks mode the scrolling element is usually `<body>`, otherwise it is the document
+    // element (`<html>`).
+    let quirks_mode = match &dom.node(dom.root()).kind {
+      crate::dom2::NodeKind::Document { quirks_mode } => *quirks_mode,
+      _ => selectors::context::QuirksMode::NoQuirks,
+    };
+    if quirks_mode == selectors::context::QuirksMode::Quirks {
+      if let Some(body) = dom.body() {
+        return Some(body);
+      }
+    }
     dom.document_element()
   }
 

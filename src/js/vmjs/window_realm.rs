@@ -48837,7 +48837,7 @@ mod tests {
   }
 
   #[test]
-  fn element_scroll_parent_falls_back_to_document_element() -> Result<(), VmError> {
+  fn element_scroll_parent_falls_back_to_scrolling_element() -> Result<(), VmError> {
     let html =
       r#"<!doctype html><html><head></head><body><div id="inner"></div></body></html>"#;
     let mut host = BrowserDocumentDom2::from_html(html, RenderOptions::new().with_viewport(64, 64))
@@ -48847,7 +48847,23 @@ mod tests {
     let ok = exec_script_with_dom_host(
       &mut realm,
       &mut host,
-      "document.getElementById('inner').scrollParent === document.documentElement",
+      "document.getElementById('inner').scrollParent === document.scrollingElement",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_scroll_parent_falls_back_to_body_in_quirks_mode() -> Result<(), VmError> {
+    let html = r#"<html><head></head><body><div id="inner"></div></body></html>"#;
+    let mut host = BrowserDocumentDom2::from_html(html, RenderOptions::new().with_viewport(64, 64))
+      .expect("BrowserDocumentDom2::from_html");
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.scrollingElement === document.body && document.getElementById('inner').scrollParent === document.body",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
