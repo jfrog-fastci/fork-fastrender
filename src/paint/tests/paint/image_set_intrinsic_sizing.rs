@@ -1,15 +1,17 @@
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine as _;
 use image::codecs::png::PngEncoder;
-use image::{ExtendedColorType, ImageEncoder};
+use image::ExtendedColorType;
+use image::ImageEncoder;
 use std::sync::Arc;
 
 use crate::css::types::{Declaration, PropertyValue};
 use crate::geometry::Rect;
+use crate::paint::display_list::DisplayItem;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::style::properties::{apply_declaration, with_image_set_dpr};
 use crate::tree::fragment_tree::FragmentNode;
-use crate::{ComputedStyle, DisplayItem};
+use crate::ComputedStyle;
 
 fn solid_png_data_url(width: u32, height: u32, rgba: [u8; 4]) -> String {
   let mut buf = Vec::new();
