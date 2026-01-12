@@ -149,6 +149,23 @@ fn data_desc(
   }
 }
 
+fn install_to_string_tag(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  to_string_tag: GcSymbol,
+  tag: &str,
+) -> Result<(), VmError> {
+  let tag_value = scope.alloc_string(tag)?;
+  scope.push_root(Value::String(tag_value))?;
+  scope.define_property(
+    obj,
+    PropertyKey::Symbol(to_string_tag),
+    // `@@toStringTag` is non-writable, non-enumerable, and typically configurable.
+    data_desc(Value::String(tag_value), false, false, true),
+  )?;
+  Ok(())
+}
+
 fn alloc_rooted_object(
   scope: &mut Scope<'_>,
   roots: &mut Vec<RootId>,
@@ -189,6 +206,7 @@ fn init_native_error(
   common: CommonKeys,
   constructor_prototype: GcObject,
   base_prototype: GcObject,
+  to_string_tag: GcSymbol,
   call: NativeFunctionId,
   construct: NativeConstructId,
   name: &str,
@@ -199,6 +217,11 @@ fn init_native_error(
   scope
     .heap_mut()
     .object_set_prototype(prototype, Some(base_prototype))?;
+
+  // `@@toStringTag` for native error prototypes is `"Error"` (ECMA-262).
+  //
+  // This ensures `Object.prototype.toString.call(new TypeError())` yields `"[object Error]"`.
+  install_to_string_tag(scope, prototype, to_string_tag, "Error")?;
 
   // Create (and store) the name string early so it is kept alive by the rooted objects before any
   // subsequent allocations/GC.
@@ -551,24 +574,75 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(weak_set_prototype, Some(object_prototype))?;
 
-    // WeakMap/WeakSet prototype @@toStringTag properties (ECMA-262).
-    {
-      let weak_map_tag = scope.alloc_string("WeakMap")?;
-      scope.push_root(Value::String(weak_map_tag))?;
-      scope.define_property(
-        weak_map_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(weak_map_tag), false, false, true),
-      )?;
-
-      let weak_set_tag = scope.alloc_string("WeakSet")?;
-      scope.push_root(Value::String(weak_set_tag))?;
-      scope.define_property(
-        weak_set_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(weak_set_tag), false, false, true),
-      )?;
-    }
+    // `@@toStringTag` on intrinsic prototypes (ECMA-262).
+    //
+    // These are consulted by `Object.prototype.toString` via `Get(O, @@toStringTag)`.
+    install_to_string_tag(
+      scope,
+      function_prototype,
+      well_known_symbols.to_string_tag,
+      "Function",
+    )?;
+    install_to_string_tag(scope, array_prototype, well_known_symbols.to_string_tag, "Array")?;
+    install_to_string_tag(scope, string_prototype, well_known_symbols.to_string_tag, "String")?;
+    install_to_string_tag(scope, number_prototype, well_known_symbols.to_string_tag, "Number")?;
+    install_to_string_tag(
+      scope,
+      boolean_prototype,
+      well_known_symbols.to_string_tag,
+      "Boolean",
+    )?;
+    install_to_string_tag(scope, bigint_prototype, well_known_symbols.to_string_tag, "BigInt")?;
+    install_to_string_tag(scope, date_prototype, well_known_symbols.to_string_tag, "Date")?;
+    install_to_string_tag(scope, symbol_prototype, well_known_symbols.to_string_tag, "Symbol")?;
+    install_to_string_tag(
+      scope,
+      array_buffer_prototype,
+      well_known_symbols.to_string_tag,
+      "ArrayBuffer",
+    )?;
+    install_to_string_tag(
+      scope,
+      uint8_array_prototype,
+      well_known_symbols.to_string_tag,
+      "Uint8Array",
+    )?;
+    install_to_string_tag(scope, int8_array_prototype, well_known_symbols.to_string_tag, "Int8Array")?;
+    install_to_string_tag(
+      scope,
+      uint8_clamped_array_prototype,
+      well_known_symbols.to_string_tag,
+      "Uint8ClampedArray",
+    )?;
+    install_to_string_tag(scope, int16_array_prototype, well_known_symbols.to_string_tag, "Int16Array")?;
+    install_to_string_tag(
+      scope,
+      uint16_array_prototype,
+      well_known_symbols.to_string_tag,
+      "Uint16Array",
+    )?;
+    install_to_string_tag(scope, int32_array_prototype, well_known_symbols.to_string_tag, "Int32Array")?;
+    install_to_string_tag(
+      scope,
+      uint32_array_prototype,
+      well_known_symbols.to_string_tag,
+      "Uint32Array",
+    )?;
+    install_to_string_tag(
+      scope,
+      float32_array_prototype,
+      well_known_symbols.to_string_tag,
+      "Float32Array",
+    )?;
+    install_to_string_tag(
+      scope,
+      float64_array_prototype,
+      well_known_symbols.to_string_tag,
+      "Float64Array",
+    )?;
+    install_to_string_tag(scope, data_view_prototype, well_known_symbols.to_string_tag, "DataView")?;
+    install_to_string_tag(scope, weak_map_prototype, well_known_symbols.to_string_tag, "WeakMap")?;
+    install_to_string_tag(scope, weak_set_prototype, well_known_symbols.to_string_tag, "WeakSet")?;
 
     // --- Common property keys used throughout the intrinsic graph ---
     //
@@ -594,10 +668,8 @@ impl Intrinsics {
     let object_prototype_to_string = vm.register_native_call(builtins::object_prototype_to_string)?;
     let object_prototype_has_own_property =
       vm.register_native_call(builtins::object_prototype_has_own_property)?;
-    let object_prototype_proto_get =
-      vm.register_native_call(builtins::object_prototype___proto___get)?;
-    let object_prototype_proto_set =
-      vm.register_native_call(builtins::object_prototype___proto___set)?;
+    let object_prototype_proto_get = vm.register_native_call(builtins::object_prototype___proto___get)?;
+    let object_prototype_proto_set = vm.register_native_call(builtins::object_prototype___proto___set)?;
     let function_prototype_call_method =
       vm.register_native_call(builtins::function_prototype_call_method)?;
     let function_prototype_apply_method =
@@ -835,12 +907,48 @@ impl Intrinsics {
         scope
           .heap_mut()
           .object_set_prototype(func, Some(function_prototype))?;
-      scope.define_property(
-        object_prototype,
-        key,
-        data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
+       scope.define_property(
+         object_prototype,
+         key,
+         data_desc(Value::Object(func), true, false, true),
+       )?;
+     }
+
+      // Annex B `Object.prototype.__proto__` (getter/setter).
+      {
+        let key_s = scope.alloc_string("__proto__")?;
+        scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+
+        let get_name = scope.alloc_string("get __proto__")?;
+        scope.push_root(Value::String(get_name))?;
+        let get = scope.alloc_native_function(object_prototype_proto_get, None, get_name, 0)?;
+        scope.push_root(Value::Object(get))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(get, Some(function_prototype))?;
+
+        let set_name = scope.alloc_string("set __proto__")?;
+        scope.push_root(Value::String(set_name))?;
+        let set = scope.alloc_native_function(object_prototype_proto_set, None, set_name, 1)?;
+        scope.push_root(Value::Object(set))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(set, Some(function_prototype))?;
+
+        scope.define_property(
+          object_prototype,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Object(set),
+            },
+          },
+        )?;
+      }
 
       // Object.prototype.hasOwnProperty
       {
@@ -859,40 +967,6 @@ impl Intrinsics {
          data_desc(Value::Object(func), true, false, true),
        )?;
      }
-
-    // Object.prototype.__proto__ (Annex B)
-    {
-      let key_s = scope.alloc_string("__proto__")?;
-      scope.push_root(Value::String(key_s))?;
-      let key = PropertyKey::from_string(key_s);
-
-      let get_name = scope.alloc_string("get __proto__")?;
-      let get = scope.alloc_native_function(object_prototype_proto_get, None, get_name, 0)?;
-      scope.push_root(Value::Object(get))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(get, Some(function_prototype))?;
-
-      let set_name = scope.alloc_string("set __proto__")?;
-      let set = scope.alloc_native_function(object_prototype_proto_set, None, set_name, 1)?;
-      scope.push_root(Value::Object(set))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(set, Some(function_prototype))?;
-
-      scope.define_property(
-        object_prototype,
-        key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(get),
-            set: Value::Object(set),
-          },
-        },
-      )?;
-    }
 
     // `%Function%`
     let function_call = vm.register_native_call(builtins::function_constructor_call)?;
@@ -4033,6 +4107,7 @@ impl Intrinsics {
       common,
       function_prototype,
       object_prototype,
+      well_known_symbols.to_string_tag,
       error_call,
       error_construct,
       "Error",
@@ -4080,6 +4155,7 @@ impl Intrinsics {
       common,
       error,
       error_prototype,
+      well_known_symbols.to_string_tag,
       error_call,
       error_construct,
       "TypeError",
@@ -4093,6 +4169,7 @@ impl Intrinsics {
       common,
       error,
       error_prototype,
+      well_known_symbols.to_string_tag,
       error_call,
       error_construct,
       "RangeError",
@@ -4106,6 +4183,7 @@ impl Intrinsics {
       common,
       error,
       error_prototype,
+      well_known_symbols.to_string_tag,
       error_call,
       error_construct,
       "ReferenceError",
@@ -4119,6 +4197,7 @@ impl Intrinsics {
       common,
       error,
       error_prototype,
+      well_known_symbols.to_string_tag,
       error_call,
       error_construct,
       "SyntaxError",
@@ -4132,6 +4211,7 @@ impl Intrinsics {
       common,
       error,
       error_prototype,
+      well_known_symbols.to_string_tag,
       error_call,
       error_construct,
       "EvalError",
@@ -4145,6 +4225,7 @@ impl Intrinsics {
       common,
       error,
       error_prototype,
+      well_known_symbols.to_string_tag,
       error_call,
       error_construct,
       "URIError",
@@ -4158,6 +4239,7 @@ impl Intrinsics {
       common,
       error,
       error_prototype,
+      well_known_symbols.to_string_tag,
       error_call,
       error_construct,
       "AggregateError",

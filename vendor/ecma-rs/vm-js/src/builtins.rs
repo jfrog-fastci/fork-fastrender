@@ -6870,6 +6870,150 @@ pub fn object_prototype_to_string(
   const TAG_STRING: [u16; 6] = [b'S' as u16, b't' as u16, b'r' as u16, b'i' as u16, b'n' as u16, b'g' as u16];
   const TAG_SYMBOL: [u16; 6] = [b'S' as u16, b'y' as u16, b'm' as u16, b'b' as u16, b'o' as u16, b'l' as u16];
   const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
+  const TAG_ARRAY_BUFFER: [u16; 11] = [
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+    b'B' as u16,
+    b'u' as u16,
+    b'f' as u16,
+    b'f' as u16,
+    b'e' as u16,
+    b'r' as u16,
+  ];
+  const TAG_DATA_VIEW: [u16; 8] = [
+    b'D' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'a' as u16,
+    b'V' as u16,
+    b'i' as u16,
+    b'e' as u16,
+    b'w' as u16,
+  ];
+  const TAG_INT8_ARRAY: [u16; 9] = [
+    b'I' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b'8' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_UINT8_ARRAY: [u16; 10] = [
+    b'U' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b'8' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_UINT8_CLAMPED_ARRAY: [u16; 17] = [
+    b'U' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b'8' as u16,
+    b'C' as u16,
+    b'l' as u16,
+    b'a' as u16,
+    b'm' as u16,
+    b'p' as u16,
+    b'e' as u16,
+    b'd' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_INT16_ARRAY: [u16; 10] = [
+    b'I' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b'1' as u16,
+    b'6' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_UINT16_ARRAY: [u16; 11] = [
+    b'U' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b'1' as u16,
+    b'6' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_INT32_ARRAY: [u16; 10] = [
+    b'I' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b'3' as u16,
+    b'2' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_UINT32_ARRAY: [u16; 11] = [
+    b'U' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b'3' as u16,
+    b'2' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_FLOAT32_ARRAY: [u16; 12] = [
+    b'F' as u16,
+    b'l' as u16,
+    b'o' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'3' as u16,
+    b'2' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_FLOAT64_ARRAY: [u16; 12] = [
+    b'F' as u16,
+    b'l' as u16,
+    b'o' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'6' as u16,
+    b'4' as u16,
+    b'A' as u16,
+    b'r' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b'y' as u16,
+  ];
+  const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
   const TAG_PROMISE: [u16; 7] = [b'P' as u16, b'r' as u16, b'o' as u16, b'm' as u16, b'i' as u16, b's' as u16, b'e' as u16];
   const TAG_GENERATOR: [u16; 9] = [
     b'G' as u16,
@@ -6882,7 +7026,6 @@ pub fn object_prototype_to_string(
     b'o' as u16,
     b'r' as u16,
   ];
-  const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
   const TAG_FUNCTION: [u16; 8] = [
     b'F' as u16,
     b'u' as u16,
@@ -6943,6 +7086,22 @@ pub fn object_prototype_to_string(
         &TAG_GENERATOR
       } else if scope.heap().is_date_object(o) {
         &TAG_DATE
+      } else if scope.heap().is_array_buffer_object(o) {
+        &TAG_ARRAY_BUFFER
+      } else if scope.heap().is_data_view_object(o) {
+        &TAG_DATA_VIEW
+      } else if scope.heap().is_typed_array_object(o) {
+        match scope.heap().typed_array_kind(o)? {
+          TypedArrayKind::Int8 => &TAG_INT8_ARRAY,
+          TypedArrayKind::Uint8 => &TAG_UINT8_ARRAY,
+          TypedArrayKind::Uint8Clamped => &TAG_UINT8_CLAMPED_ARRAY,
+          TypedArrayKind::Int16 => &TAG_INT16_ARRAY,
+          TypedArrayKind::Uint16 => &TAG_UINT16_ARRAY,
+          TypedArrayKind::Int32 => &TAG_INT32_ARRAY,
+          TypedArrayKind::Uint32 => &TAG_UINT32_ARRAY,
+          TypedArrayKind::Float32 => &TAG_FLOAT32_ARRAY,
+          TypedArrayKind::Float64 => &TAG_FLOAT64_ARRAY,
+        }
       } else if can_check_markers {
         let heap = scope.heap();
         let has_marker = |marker: Option<crate::GcSymbol>| -> Result<bool, VmError> {
@@ -7057,7 +7216,7 @@ pub fn object_prototype___proto___get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let obj = scope.to_object(vm, host, hooks, this)?;
-  match scope.heap().object_prototype(obj)? {
+  match scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)? {
     Some(proto) => Ok(Value::Object(proto)),
     None => Ok(Value::Null),
   }
@@ -7068,13 +7227,16 @@ pub fn object_prototype___proto___get(
 pub fn object_prototype___proto___set(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let obj = scope.to_object(vm, host, hooks, this)?;
+  // Per spec, the setter is a no-op (returns `undefined`) for non-object receivers.
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
   let proto_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let proto = match proto_arg {
     Value::Object(o) => Some(o),
@@ -7083,9 +7245,26 @@ pub fn object_prototype___proto___set(
     _ => return Ok(Value::Undefined),
   };
 
+  // Minimal Proxy forwarding: `[[SetPrototypeOf]]` trap semantics are not yet implemented, but we
+  // must avoid crashing on Proxy objects.
+  let mut current = obj;
+  let mut steps = 0usize;
+  while scope.heap().is_proxy_object(current) {
+    if steps != 0 && steps % 1024 == 0 {
+      vm.tick()?;
+    }
+    steps = steps.saturating_add(1);
+    let Some(target) = scope.heap().proxy_target(current)? else {
+      return Err(VmError::TypeError(
+        "Cannot perform 'setPrototypeOf' on a proxy that has been revoked",
+      ));
+    };
+    current = target;
+  }
+
   // Spec: `Object.prototype.__proto__` returns `undefined` even when setting the prototype fails.
   // We swallow known prototype mutation failures and only propagate unexpected VM errors.
-  match scope.heap_mut().object_set_prototype(obj, proto) {
+  match scope.heap_mut().object_set_prototype(current, proto) {
     Ok(()) => Ok(Value::Undefined),
     Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Undefined),
     Err(err) => Err(err),
