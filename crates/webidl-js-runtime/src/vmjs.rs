@@ -5,4 +5,3 @@
 //! keep a thin `vmjs` module that re-exports the canonical runtime type.
 
 pub use crate::ecma_runtime::VmJsRuntime;
-

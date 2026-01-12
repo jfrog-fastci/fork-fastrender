@@ -1758,6 +1758,7 @@ pub fn array_constructor_construct(
 ) -> Result<Value, VmError> {
   array_constructor_impl(vm, scope, args)
 }
+
 fn proxy_constructor_impl(
   scope: &mut Scope<'_>,
   target: Value,
@@ -1774,6 +1775,10 @@ fn proxy_constructor_impl(
   let proxy = proxy_scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
+
+/// `Proxy(..)` call behavior (ECMA-262).
+///
+/// The `Proxy` constructor is not callable without `new`.
 pub fn proxy_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -1787,6 +1792,7 @@ pub fn proxy_constructor_call(
   Err(VmError::TypeError("Proxy constructor requires 'new'"))
 }
 
+/// `new Proxy(target, handler)` (ECMA-262).
 pub fn proxy_constructor_construct(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,

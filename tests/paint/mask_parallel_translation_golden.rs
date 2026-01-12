@@ -1,11 +1,8 @@
-#[path = "../ref/mod.rs"]
-mod r#ref;
-
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::{DiagnosticsLevel, FastRender, RenderOptions};
-use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
+use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
