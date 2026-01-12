@@ -93,7 +93,6 @@ pub struct Intrinsics {
   math: GcObject,
   json: GcObject,
   reflect: GcObject,
-  proxy: GcObject,
 
   error: GcObject,
   error_prototype: GcObject,
@@ -4024,34 +4023,6 @@ impl Intrinsics {
       define_method("setPrototypeOf", reflect_set_prototype_of, 2)?;
     }
 
-    // `%Proxy%`
-    let proxy_name = scope.alloc_string("Proxy")?;
-    let proxy = alloc_rooted_native_function(
-      scope,
-      roots,
-      proxy_call,
-      Some(proxy_construct),
-      proxy_name,
-      2,
-    )?;
-    scope
-      .heap_mut()
-      .object_set_prototype(proxy, Some(function_prototype))?;
-
-    // Proxy.revocable
-    {
-      let revocable_name = scope.alloc_string("revocable")?;
-      let revocable = alloc_rooted_native_function(scope, roots, proxy_revocable, None, revocable_name, 2)?;
-      scope
-        .heap_mut()
-        .object_set_prototype(revocable, Some(function_prototype))?;
-      scope.define_property(
-        proxy,
-        PropertyKey::from_string(revocable_name),
-        data_desc(Value::Object(revocable), true, false, true),
-      )?;
-    }
-
     // --- Error + subclasses ---
     let error_call = vm.register_native_call(builtins::error_constructor_call)?;
     let error_construct = vm.register_native_construct(builtins::error_constructor_construct)?;
@@ -4571,7 +4542,6 @@ impl Intrinsics {
       math,
       json,
       reflect,
-      proxy,
       error,
       error_prototype,
       type_error,
@@ -4860,10 +4830,6 @@ impl Intrinsics {
 
   pub fn reflect(&self) -> GcObject {
     self.reflect
-  }
-
-  pub fn proxy(&self) -> GcObject {
-    self.proxy
   }
 
   pub fn error(&self) -> GcObject {
