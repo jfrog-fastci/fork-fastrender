@@ -1944,20 +1944,39 @@ impl<'a> Evaluator<'a> {
     &mut self,
     scope: &mut Scope<'_>,
     name: &str,
+    length: u32,
+    constructor_body: Option<GcObject>,
   ) -> Result<GcObject, VmError> {
     let intr = self
       .vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-    let name_s = scope.alloc_string(name)?;
-    let func_obj = scope.alloc_native_function(
+
+    // Root the optional constructor body function before allocating any strings/function objects in
+    // case those allocations trigger GC.
+    let mut init_scope = scope.reborrow();
+    if let Some(body) = constructor_body {
+      init_scope.push_root(Value::Object(body))?;
+    }
+
+    let name_s = init_scope.alloc_string(name)?;
+    let slots_buf;
+    let slots = if let Some(body) = constructor_body {
+      slots_buf = [Value::Object(body)];
+      &slots_buf[..]
+    } else {
+      &[][..]
+    };
+
+    let func_obj = init_scope.alloc_native_function_with_slots(
       intr.class_constructor_call(),
       Some(intr.class_constructor_construct()),
       name_s,
-      0,
+      length,
+      slots,
     )?;
-    let mut init_scope = scope.reborrow();
     init_scope.push_root(Value::Object(func_obj))?;
+
     init_scope
       .heap_mut()
       .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
@@ -2757,9 +2776,6 @@ impl<'a> Evaluator<'a> {
     if decl.stx.extends.is_some() {
       return Err(VmError::Unimplemented("class inheritance"));
     }
-    if !decl.stx.members.is_empty() {
-      return Err(VmError::Unimplemented("class members"));
-    }
     if !decl.stx.decorators.is_empty() {
       return Err(VmError::Unimplemented("class decorators"));
     }
@@ -2783,23 +2799,477 @@ impl<'a> Evaluator<'a> {
       None => "default",
     };
 
-    let func_obj = self.create_class_constructor_object(scope, func_name)?;
+    // Find an explicit `constructor(...) { ... }` method, if present.
+    let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
+    for member in &decl.stx.members {
+      self.tick()?;
+      if !member.stx.decorators.is_empty() {
+        return Err(VmError::Unimplemented("class member decorators"));
+      }
+      if member.stx.declare || member.stx.abstract_ {
+        return Err(VmError::Unimplemented("class member modifiers"));
+      }
+      if member.stx.readonly
+        || member.stx.accessor
+        || member.stx.optional
+        || member.stx.override_
+        || member.stx.definite_assignment
+      {
+        return Err(VmError::Unimplemented("class member modifiers"));
+      }
+      if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
+        return Err(VmError::Unimplemented("class member type annotations"));
+      }
 
-    if !scope
-      .heap()
-      .env_has_binding(self.env.lexical_env, binding_name)?
-    {
-      // Non-block statement contexts may not have performed lexical hoisting yet.
-      scope.env_create_mutable_binding(self.env.lexical_env, binding_name)?;
+      if member.stx.static_ {
+        continue;
+      }
+      let ClassOrObjKey::Direct(direct) = &member.stx.key else {
+        continue;
+      };
+      if direct.stx.key != "constructor" {
+        continue;
+      }
+
+      let ClassOrObjVal::Method(method) = &member.stx.val else {
+        continue;
+      };
+
+      if ctor_method.is_some() {
+        return Err(syntax_error(member.loc, "A class may only have one constructor"));
+      }
+      ctor_method = Some((&method.stx.func, direct.loc.start_u32(), member.loc));
     }
 
-    let mut init_scope = scope.reborrow();
-    init_scope.push_root(Value::Object(func_obj))?;
-    init_scope.heap_mut().env_initialize_binding(
-      self.env.lexical_env,
-      binding_name,
-      Value::Object(func_obj),
+    let mut ctor_length: u32 = 0;
+    let ctor_body_func = if let Some((func_node, key_loc_start, loc)) = ctor_method {
+      if func_node.stx.generator {
+        return Err(syntax_error(loc, "Class constructor may not be a generator"));
+      }
+
+      ctor_length = self.function_length(&func_node.stx)?;
+
+      let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+      let rel_end = func_node
+        .loc
+        .end_u32()
+        .saturating_sub(self.env.prefix_len());
+      let span_start = self.env.base_offset().saturating_add(rel_start);
+      let span_end = self.env.base_offset().saturating_add(rel_end);
+
+      let code = self.vm.register_ecma_function(
+        self.env.source(),
+        span_start,
+        span_end,
+        EcmaFunctionKind::ObjectMember,
+      )?;
+
+      // Class constructor bodies are always strict mode.
+      let is_strict = true;
+      let this_mode = if func_node.stx.arrow {
+        ThisMode::Lexical
+      } else {
+        ThisMode::Strict
+      };
+      let closure_env = Some(self.env.lexical_env);
+
+      let mut ctor_scope = scope.reborrow();
+      let name_string = ctor_scope.alloc_string("constructor")?;
+      let func_obj = ctor_scope.alloc_ecma_function(
+        code,
+        /* is_constructable */ true,
+        name_string,
+        ctor_length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?;
+
+      let intr = self
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      ctor_scope
+        .heap_mut()
+        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      ctor_scope
+        .heap_mut()
+        .set_function_realm(func_obj, self.env.global_object())?;
+      if let Some(realm) = self.vm.current_realm() {
+        ctor_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      }
+      Some(func_obj)
+    } else {
+      None
+    };
+
+    let func_obj =
+      self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+
+    {
+      // Root the class constructor object before performing any binding instantiation work, which may
+      // allocate and trigger GC in non-block statement contexts that did not perform lexical hoisting.
+      let mut init_scope = scope.reborrow();
+      init_scope.push_root(Value::Object(func_obj))?;
+
+      if !init_scope
+        .heap()
+        .env_has_binding(self.env.lexical_env, binding_name)?
+      {
+        // Non-block statement contexts may not have performed lexical hoisting yet.
+        init_scope.env_create_mutable_binding(self.env.lexical_env, binding_name)?;
+      }
+
+      init_scope.heap_mut().env_initialize_binding(
+        self.env.lexical_env,
+        binding_name,
+        Value::Object(func_obj),
+      )?;
+    }
+
+    // Extract the prototype object created by `make_constructor`.
+    let mut class_scope = scope.reborrow();
+    class_scope.push_root(Value::Object(func_obj))?;
+    let prototype_key_s = class_scope.alloc_string("prototype")?;
+    let prototype_key = PropertyKey::from_string(prototype_key_s);
+    let Some(prototype_desc) = class_scope.heap().get_own_property(func_obj, prototype_key)? else {
+      return Err(VmError::InvariantViolation(
+        "class constructor missing prototype property",
+      ));
+    };
+    let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not a data property",
+      ));
+    };
+    let Value::Object(prototype_obj) = value else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not an object",
+      ));
+    };
+    class_scope.push_root(Value::Object(prototype_obj))?;
+
+    // Per ECMAScript, class constructors have a non-writable `prototype` property.
+    class_scope.define_property_or_throw(
+      func_obj,
+      prototype_key,
+      PropertyDescriptorPatch {
+        writable: Some(false),
+        ..Default::default()
+      },
     )?;
+
+    // Define prototype and static methods.
+    for member in &decl.stx.members {
+      self.tick()?;
+
+      if !member.stx.decorators.is_empty() {
+        return Err(VmError::Unimplemented("class member decorators"));
+      }
+      if member.stx.declare || member.stx.abstract_ {
+        return Err(VmError::Unimplemented("class member modifiers"));
+      }
+      if member.stx.readonly
+        || member.stx.accessor
+        || member.stx.optional
+        || member.stx.override_
+        || member.stx.definite_assignment
+      {
+        return Err(VmError::Unimplemented("class member modifiers"));
+      }
+      if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
+        return Err(VmError::Unimplemented("class member type annotations"));
+      }
+
+      // Skip the actual `constructor(...) { ... }` method: it's represented by the class constructor
+      // object itself (and its hidden body function).
+      let is_constructor_method = !member.stx.static_
+        && matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.key == "constructor")
+        && matches!(&member.stx.val, ClassOrObjVal::Method(_));
+      if is_constructor_method {
+        continue;
+      }
+
+      let target_obj = if member.stx.static_ {
+        func_obj
+      } else {
+        prototype_obj
+      };
+
+      // Compute property key.
+      let key_loc_start = match &member.stx.key {
+        ClassOrObjKey::Direct(direct) => direct.loc.start_u32(),
+        ClassOrObjKey::Computed(expr) => expr.loc.start_u32(),
+      };
+
+      let mut member_scope = class_scope.reborrow();
+      member_scope.push_root(Value::Object(target_obj))?;
+
+      let key = match &member.stx.key {
+        ClassOrObjKey::Direct(direct) => {
+          let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
+            member_scope.alloc_string_from_code_units(units)?
+          } else if direct.stx.tt == TT::LiteralNumber {
+            let n = direct
+              .stx
+              .key
+              .parse::<f64>()
+              .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
+            member_scope.heap_mut().to_string(Value::Number(n))?
+          } else {
+            member_scope.alloc_string(&direct.stx.key)?
+          };
+          PropertyKey::from_string(key_s)
+        }
+        ClassOrObjKey::Computed(expr) => {
+          let value = self.eval_expr(&mut member_scope, expr)?;
+          member_scope.push_root(value)?;
+          self.to_property_key_operator(&mut member_scope, value)?
+        }
+      };
+
+      match key {
+        PropertyKey::String(s) => member_scope.push_root(Value::String(s))?,
+        PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
+      };
+
+      match &member.stx.val {
+        ClassOrObjVal::Method(method) => {
+          let func_node = &method.stx.func;
+          let length = self.function_length(&func_node.stx)?;
+
+          let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+          let rel_end = func_node
+            .loc
+            .end_u32()
+            .saturating_sub(self.env.prefix_len());
+          let span_start = self.env.base_offset().saturating_add(rel_start);
+          let span_end = self.env.base_offset().saturating_add(rel_end);
+
+          let code = self.vm.register_ecma_function(
+            self.env.source(),
+            span_start,
+            span_end,
+            EcmaFunctionKind::ObjectMember,
+          )?;
+
+          // Class methods are always strict mode.
+          let is_strict = true;
+          let this_mode = if func_node.stx.arrow {
+            ThisMode::Lexical
+          } else {
+            ThisMode::Strict
+          };
+          let closure_env = Some(self.env.lexical_env);
+
+          let name_string = match key {
+            PropertyKey::String(s) => s,
+            PropertyKey::Symbol(_) => member_scope.alloc_string("")?,
+          };
+
+          let func_obj = member_scope.alloc_ecma_function(
+            code,
+            /* is_constructable */ false,
+            name_string,
+            length,
+            this_mode,
+            is_strict,
+            closure_env,
+          )?;
+
+          let intr = self
+            .vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          member_scope
+            .heap_mut()
+            .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+          member_scope
+            .heap_mut()
+            .set_function_realm(func_obj, self.env.global_object())?;
+          if let Some(realm) = self.vm.current_realm() {
+            member_scope
+              .heap_mut()
+              .set_function_job_realm(func_obj, realm)?;
+          }
+          member_scope.push_root(Value::Object(func_obj))?;
+
+          // Methods use the property key as the function `name` if possible.
+          if !matches!(key, PropertyKey::String(_)) {
+            crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
+          }
+
+          member_scope.define_property_or_throw(
+            target_obj,
+            key,
+            PropertyDescriptorPatch {
+              value: Some(Value::Object(func_obj)),
+              writable: Some(true),
+              enumerable: Some(false),
+              configurable: Some(true),
+              ..Default::default()
+            },
+          )?;
+        }
+        ClassOrObjVal::Getter(getter) => {
+          let func_node = &getter.stx.func;
+          let length = self.function_length(&func_node.stx)?;
+
+          let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+          let rel_end = func_node
+            .loc
+            .end_u32()
+            .saturating_sub(self.env.prefix_len());
+          let span_start = self.env.base_offset().saturating_add(rel_start);
+          let span_end = self.env.base_offset().saturating_add(rel_end);
+
+          let code = self.vm.register_ecma_function(
+            self.env.source(),
+            span_start,
+            span_end,
+            EcmaFunctionKind::ObjectMember,
+          )?;
+
+          // Class accessors are always strict mode.
+          let is_strict = true;
+          let this_mode = if func_node.stx.arrow {
+            ThisMode::Lexical
+          } else {
+            ThisMode::Strict
+          };
+          let closure_env = Some(self.env.lexical_env);
+
+          let name_string = member_scope.alloc_string("")?;
+          let func_obj = member_scope.alloc_ecma_function(
+            code,
+            /* is_constructable */ false,
+            name_string,
+            length,
+            this_mode,
+            is_strict,
+            closure_env,
+          )?;
+
+          let intr = self
+            .vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          member_scope
+            .heap_mut()
+            .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+          member_scope
+            .heap_mut()
+            .set_function_realm(func_obj, self.env.global_object())?;
+          if let Some(realm) = self.vm.current_realm() {
+            member_scope
+              .heap_mut()
+              .set_function_job_realm(func_obj, realm)?;
+          }
+          member_scope.push_root(Value::Object(func_obj))?;
+
+          crate::function_properties::set_function_name(
+            &mut member_scope,
+            func_obj,
+            key,
+            Some("get"),
+          )?;
+
+          member_scope.define_property_or_throw(
+            target_obj,
+            key,
+            PropertyDescriptorPatch {
+              get: Some(Value::Object(func_obj)),
+              enumerable: Some(false),
+              configurable: Some(true),
+              ..Default::default()
+            },
+          )?;
+        }
+        ClassOrObjVal::Setter(setter) => {
+          let func_node = &setter.stx.func;
+          let length = self.function_length(&func_node.stx)?;
+
+          let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+          let rel_end = func_node
+            .loc
+            .end_u32()
+            .saturating_sub(self.env.prefix_len());
+          let span_start = self.env.base_offset().saturating_add(rel_start);
+          let span_end = self.env.base_offset().saturating_add(rel_end);
+
+          let code = self.vm.register_ecma_function(
+            self.env.source(),
+            span_start,
+            span_end,
+            EcmaFunctionKind::ObjectMember,
+          )?;
+
+          // Class accessors are always strict mode.
+          let is_strict = true;
+          let this_mode = if func_node.stx.arrow {
+            ThisMode::Lexical
+          } else {
+            ThisMode::Strict
+          };
+          let closure_env = Some(self.env.lexical_env);
+
+          let name_string = member_scope.alloc_string("")?;
+          let func_obj = member_scope.alloc_ecma_function(
+            code,
+            /* is_constructable */ false,
+            name_string,
+            length,
+            this_mode,
+            is_strict,
+            closure_env,
+          )?;
+
+          let intr = self
+            .vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          member_scope
+            .heap_mut()
+            .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+          member_scope
+            .heap_mut()
+            .set_function_realm(func_obj, self.env.global_object())?;
+          if let Some(realm) = self.vm.current_realm() {
+            member_scope
+              .heap_mut()
+              .set_function_job_realm(func_obj, realm)?;
+          }
+          member_scope.push_root(Value::Object(func_obj))?;
+
+          crate::function_properties::set_function_name(
+            &mut member_scope,
+            func_obj,
+            key,
+            Some("set"),
+          )?;
+
+          member_scope.define_property_or_throw(
+            target_obj,
+            key,
+            PropertyDescriptorPatch {
+              set: Some(Value::Object(func_obj)),
+              enumerable: Some(false),
+              configurable: Some(true),
+              ..Default::default()
+            },
+          )?;
+        }
+        ClassOrObjVal::Prop(_) => {
+          return Err(VmError::Unimplemented("class fields"));
+        }
+        ClassOrObjVal::IndexSignature(_) => {
+          return Err(VmError::Unimplemented("class index signature"));
+        }
+        ClassOrObjVal::StaticBlock(_) => {
+          return Err(VmError::Unimplemented("class static block"));
+        }
+      }
+    }
     Ok(Completion::empty())
   }
 

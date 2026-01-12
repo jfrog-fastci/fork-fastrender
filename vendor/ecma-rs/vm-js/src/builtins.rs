@@ -305,10 +305,41 @@ pub fn class_constructor_construct(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _args: &[Value],
+  callee: GcObject,
+  args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
+  // Class constructors are special:
+  // - calling them without `new` throws (handled by `class_constructor_call`)
+  // - constructing them runs the user-defined `constructor(...) { ... }` body when present
+  //
+  // `vm-js` represents user-defined class constructor bodies by storing an internal (hidden)
+  // constructable function object in the class constructor's native slots. When present, we
+  // delegate construction to that function, forwarding `new_target` so `new.target` inside the body
+  // observes the original `new` call's `newTarget`.
+  //
+  // When no constructor body is present (e.g. `class C {}`), fall back to a default constructor that
+  // just allocates the instance via `OrdinaryCreateFromConstructor`.
+  let ctor_body = {
+    // Extract slot values without holding a heap borrow across VM calls.
+    let func = scope.heap().get_function(callee)?;
+    func
+      .native_slots
+      .as_deref()
+      .and_then(|slots| slots.first().copied())
+  };
+
+  if let Some(Value::Object(body_func)) = ctor_body {
+    return vm.construct_with_host_and_hooks(
+      host,
+      scope,
+      hooks,
+      Value::Object(body_func),
+      args,
+      new_target,
+    );
+  }
+
   let intr = require_intrinsics(vm)?;
   let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
     vm,

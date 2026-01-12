@@ -375,3 +375,84 @@ fn try_catch_converts_prototype_chain_too_deep_into_type_error_object() {
     .unwrap();
   assert_value_is_utf8(&rt, value, "TypeError");
 }
+
+#[test]
+fn class_constructor_and_methods_execute() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        constructor(x) { this.x = x; }
+        m() { return this.x; }
+        static s() { return 7; }
+      }
+      new C(1).m() + C.s()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(8.0));
+}
+
+#[test]
+fn class_constructor_length_matches_explicit_constructor() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"class C { constructor(a, b) {} } C.length"#).unwrap();
+  assert_eq!(value, Value::Number(2.0));
+}
+
+#[test]
+fn class_constructor_is_not_callable_without_new() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"class C {} try { C(); "no" } catch(e) { e.name }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn class_prototype_property_is_not_writable() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      "use strict";
+      class C {}
+      try { C.prototype = {}; "no" } catch(e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn class_methods_are_not_enumerable() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C { m(){} static s(){} }
+      var a = "";
+      for (var k in C.prototype) { a = a + k; }
+      var b = "";
+      for (var k in C) { b = b + k; }
+      a + b
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "");
+}
+
+#[test]
+fn class_methods_are_strict_mode() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C { m(){ __class_strict_test__ = 1; } }
+      try { new C().m(); "no" } catch(e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
