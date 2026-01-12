@@ -793,6 +793,59 @@ impl JsRuntime {
     (vm, modules, heap)
   }
 
+  /// Discard all queued Promise jobs in the VM-owned microtask queue without running them.
+  ///
+  /// This is intended for embeddings that need to abandon any queued microtasks (for example when
+  /// aborting execution or returning early on an error) while still leaving the VM/heap in a
+  /// reusable state.
+  ///
+  /// This tears down jobs via [`MicrotaskQueue::teardown`](crate::MicrotaskQueue::teardown), which
+  /// calls [`Job::discard`](crate::Job::discard) for each queued job to ensure any persistent roots
+  /// owned by those jobs are unregistered.
+  pub fn teardown_microtasks(&mut self) {
+    struct TeardownCtx<'a> {
+      heap: &'a mut Heap,
+    }
+
+    impl VmJobContext for TeardownCtx<'_> {
+      fn call(
+        &mut self,
+        _hooks: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("TeardownCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _hooks: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("TeardownCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id)
+      }
+    }
+
+    let mut ctx = TeardownCtx {
+      heap: &mut self.heap,
+    };
+    let queue = self.vm.microtask_queue_mut();
+    queue.teardown(&mut ctx);
+    // Ensure the queue is reusable even if teardown happens while a checkpoint is in progress.
+    queue.end_checkpoint();
+  }
+
   pub fn heap(&self) -> &Heap {
     &self.heap
   }
