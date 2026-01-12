@@ -206,6 +206,7 @@ struct RelationKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GenRelationKey {
   gen: u64,
+  session: u64,
   key: RelationKey,
 }
 
@@ -223,6 +224,7 @@ struct GenRelationKey {
 pub struct RelationCache {
   generation: Arc<AtomicU64>,
   context_hash: Arc<AtomicU64>,
+  session: Arc<AtomicU64>,
   inner: Arc<ShardedCache<GenRelationKey, bool>>,
 }
 
@@ -243,12 +245,17 @@ impl RelationCache {
     Self {
       generation: Arc::new(AtomicU64::new(0)),
       context_hash: Arc::new(AtomicU64::new(0)),
+      session: Arc::new(AtomicU64::new(0)),
       inner: Arc::new(ShardedCache::new(config)),
     }
   }
 
   pub fn set_context_hash(&self, context_hash: u64) {
     self.ensure_context_hash(context_hash);
+  }
+
+  fn begin_session(&self) -> u64 {
+    self.session.fetch_add(1, Ordering::Relaxed) + 1
   }
 
   pub fn invalidate(&self) {
@@ -264,15 +271,19 @@ impl RelationCache {
     self.inner.len()
   }
 
-  fn get(&self, key: &RelationKey) -> Option<bool> {
+  fn get(&self, session: u64, key: &RelationKey) -> Option<bool> {
     let gen = self.generation.load(Ordering::Relaxed);
-    let key = GenRelationKey { gen, key: *key };
+    let key = GenRelationKey {
+      gen,
+      session,
+      key: *key,
+    };
     self.inner.get(&key)
   }
 
-  fn insert(&self, key: RelationKey, value: bool) {
+  fn insert(&self, session: u64, key: RelationKey, value: bool) {
     let gen = self.generation.load(Ordering::Relaxed);
-    self.inner.insert(GenRelationKey { gen, key }, value);
+    self.inner.insert(GenRelationKey { gen, session, key }, value);
   }
 
   pub fn clear(&self) {
@@ -338,6 +349,7 @@ pub struct RelateCtx<'a> {
   reason_budget: RefCell<ReasonBudget>,
   limits: RelationLimits,
   steps: Cell<usize>,
+  session: Cell<u64>,
 }
 
 impl<'a> fmt::Debug for RelateCtx<'a> {
@@ -462,6 +474,7 @@ impl<'a> RelateCtx<'a> {
       reason_budget: RefCell::new(ReasonBudget::default()),
       limits: RelationLimits::default(),
       steps: Cell::new(0),
+      session: Cell::new(0),
     }
   }
 
@@ -696,6 +709,9 @@ impl<'a> RelateCtx<'a> {
 
     if depth == 0 && self.limits.step_limit != RelationLimits::DEFAULT_STEP_LIMIT {
       self.steps.set(0);
+      self.session.set(self.cache.begin_session());
+    } else if depth == 0 {
+      self.session.set(0);
     }
 
     let key = RelationKey {
@@ -723,7 +739,7 @@ impl<'a> RelateCtx<'a> {
         ),
       };
     }
-    if let Some(hit) = self.cache.get(&key) {
+    if let Some(hit) = self.cache.get(self.session.get(), &key) {
       #[cfg(feature = "tracing")]
       {
         if depth == 0 {
@@ -859,7 +875,7 @@ impl<'a> RelateCtx<'a> {
       }
     };
 
-    self.cache.insert(key, outcome.result);
+    self.cache.insert(self.session.get(), key, outcome.result);
     self.in_progress.borrow_mut().remove(&key);
     outcome
   }
@@ -3429,7 +3445,13 @@ impl<'a> RelateCtx<'a> {
 
     let ctx = RelationCacheContext {
       options: self.options,
-      limits: self.limits,
+      limits: {
+        let mut limits = self.limits;
+        // `step_limit` is session-scoped (see `RelateCtx::relate_internal`), so
+        // it must not participate in the cache context hash.
+        limits.step_limit = RelationLimits::DEFAULT_STEP_LIMIT;
+        limits
+      },
       hook_id: self.hook_id,
     };
     self.cache.ensure_context_hash(stable_hash64(&ctx));
@@ -3447,7 +3469,11 @@ impl<'a> RelateCtx<'a> {
     let mut hasher = state.build_hasher();
     NormalizerHookContext {
       options: self.options,
-      limits: self.limits,
+      limits: {
+        let mut limits = self.limits;
+        limits.step_limit = RelationLimits::DEFAULT_STEP_LIMIT;
+        limits
+      },
       hook_id: self.hook_id,
     }
     .hash(&mut hasher);

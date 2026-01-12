@@ -109,6 +109,7 @@ impl Substitution {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct EvalKey {
   gen: u64,
+  session: u64,
   ty: TypeId,
   subst: Substitution,
 }
@@ -116,6 +117,7 @@ struct EvalKey {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RefKey {
   gen: u64,
+  session: u64,
   def: DefId,
   args: SmallVec<[TypeId; 4]>,
 }
@@ -261,6 +263,7 @@ pub struct EvaluatorCacheStats {
 pub struct EvaluatorCaches {
   generation: Arc<AtomicU64>,
   context_hash: Arc<AtomicU64>,
+  session: Arc<AtomicU64>,
   eval: Arc<ShardedCache<EvalKey, TypeId>>,
   refs: Arc<ShardedCache<RefKey, TypeId>>,
 }
@@ -308,6 +311,7 @@ impl EvaluatorCaches {
     Self {
       generation: Arc::new(AtomicU64::new(0)),
       context_hash: Arc::new(AtomicU64::new(0)),
+      session: Arc::new(AtomicU64::new(0)),
       eval: Arc::new(ShardedCache::new(config)),
       refs: Arc::new(ShardedCache::new(config)),
     }
@@ -315,6 +319,10 @@ impl EvaluatorCaches {
 
   pub fn set_context_hash(&self, context_hash: u64) {
     self.ensure_context_hash(context_hash);
+  }
+
+  fn begin_session(&self) -> u64 {
+    self.session.fetch_add(1, AtomicOrdering::Relaxed) + 1
   }
 
   pub fn invalidate(&self) {
@@ -332,6 +340,7 @@ impl EvaluatorCaches {
   pub fn get_ref(&self, def: DefId, args: &[TypeId]) -> Option<TypeId> {
     let key = RefKey {
       gen: self.generation.load(AtomicOrdering::Relaxed),
+      session: 0,
       def,
       args: SmallVec::from_slice(args),
     };
@@ -341,6 +350,7 @@ impl EvaluatorCaches {
   pub fn insert_ref(&self, def: DefId, args: &[TypeId], value: TypeId) {
     let key = RefKey {
       gen: self.generation.load(AtomicOrdering::Relaxed),
+      session: 0,
       def,
       args: SmallVec::from_slice(args),
     };
@@ -395,6 +405,7 @@ pub struct TypeEvaluator<'a, E: TypeExpander> {
   ref_in_progress: AHashSet<RefKey>,
   limits: EvaluatorLimits,
   steps: usize,
+  session: u64,
 }
 
 impl<'a, E: TypeExpander> std::fmt::Debug for TypeEvaluator<'a, E> {
@@ -578,6 +589,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       ref_in_progress: AHashSet::new(),
       limits: EvaluatorLimits::default(),
       steps: 0,
+      session: 0,
     }
   }
 
@@ -648,6 +660,11 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
   pub fn evaluate(&mut self, ty: TypeId) -> TypeId {
     self.steps = 0;
     self.ensure_cache_context();
+    if self.limits.step_limit == EvaluatorLimits::DEFAULT_STEP_LIMIT {
+      self.session = 0;
+    } else {
+      self.session = self.caches.begin_session();
+    }
     #[cfg(feature = "tracing")]
     {
       let before_stats = self.caches.stats();
@@ -692,6 +709,11 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     let subst = Substitution { bindings: pairs };
     self.steps = 0;
     self.ensure_cache_context();
+    if self.limits.step_limit == EvaluatorLimits::DEFAULT_STEP_LIMIT {
+      self.session = 0;
+    } else {
+      self.session = self.caches.begin_session();
+    }
     self.evaluate_with_subst(ty, &subst, 0)
   }
 
@@ -714,7 +736,13 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
 
     let ctx = EvaluatorCacheContext {
       options: self.store.options(),
-      limits: self.limits,
+      limits: {
+        let mut limits = self.limits;
+        // `step_limit` is session-scoped (see `TypeEvaluator::evaluate`), so it
+        // must not participate in the cache context hash.
+        limits.step_limit = EvaluatorLimits::DEFAULT_STEP_LIMIT;
+        limits
+      },
       hook_id: self.hook_id,
       conditional_assignability: self.conditional_assignability.is_some(),
     };
@@ -727,6 +755,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     }
     let key = EvalKey {
       gen: self.caches.generation.load(AtomicOrdering::Relaxed),
+      session: self.session,
       ty,
       subst: subst.clone(),
     };
@@ -914,6 +943,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       .collect();
     let key = RefKey {
       gen: self.caches.generation.load(AtomicOrdering::Relaxed),
+      session: self.session,
       def,
       args: evaluated_args,
     };
