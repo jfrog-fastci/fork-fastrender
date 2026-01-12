@@ -63,7 +63,40 @@ fn typed_array_set_receiver_semantics_match_spec() -> Result<(), VmError> {
         // is a no-op that still reports success.
         let ok_invalid = Reflect.set(u, "-1", 9, receiver) === true && receiver["-1"] === undefined;
 
-        ok_valid && ok_invalid
+        // `TypedArray.[[Set]]` only performs value conversion when `receiver === target`.
+        //
+        // This must not throw even though `1n` cannot be converted to Number, because `receiver !== target`
+        // and the index is invalid.
+        let ok_no_convert = (function () {
+          try {
+            return Reflect.set(u, "1.5", 1n, receiver) === true && receiver["1.5"] === undefined;
+          } catch (e) {
+            return false;
+          }
+        })();
+
+        // When `receiver === target`, `TypedArraySetElement` performs value conversion even for invalid indices.
+        let threw_non_integer = (function () {
+          "use strict";
+          try {
+            u["1.5"] = 1n;
+            return false;
+          } catch (e) {
+            return e instanceof TypeError;
+          }
+        })();
+
+        let threw_negative = (function () {
+          "use strict";
+          try {
+            u["-1"] = 1n;
+            return false;
+          } catch (e) {
+            return e instanceof TypeError;
+          }
+        })();
+
+        ok_valid && ok_invalid && ok_no_convert && threw_non_integer && threw_negative
       }
     "#,
   )?;

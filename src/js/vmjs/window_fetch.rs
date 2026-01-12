@@ -53,7 +53,6 @@ const REQUEST_ID_KEY: &str = "__fastrender_request_id";
 const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
 
 // Hidden per-instance properties for stream wrappers.
-const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
 
 // Internal helper keys for Promise capability construction via `new Promise(executor)`.
@@ -2743,6 +2742,16 @@ fn request_clone_native(
     other => other,
   };
   if request_wrapper_cached_body_stream_is_locked(vm, scope, &mut *host, host_hooks, original_obj)? {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Request body is locked",
+    ));
+  }
+
+  if request_body_stream_locked(env_id, request_id, scope.heap())? {
     return Err(throw_type_error(
       vm,
       scope,
