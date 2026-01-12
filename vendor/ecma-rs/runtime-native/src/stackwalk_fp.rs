@@ -399,8 +399,10 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
 ///
 /// ### Callsite SP derivation (critical correctness note)
 ///
-/// Stackmap locations are typically `Indirect [SP + off]`, where `SP` is the *caller* frame's stack
-/// pointer value at the callsite return address.
+/// Stackmap locations are typically `Indirect [SP/FP + off]`.
+///
+/// For `Indirect [SP + off]`, `SP` is the *caller* frame's stack pointer value at the callsite return
+/// address.
 ///
 /// For correctness we must interpret the `SP` used by the stackmap record, not the callee-entry
 /// stack pointer.
