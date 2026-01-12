@@ -360,6 +360,36 @@ mod tests {
   }
 }
 
+#[cfg(test)]
+mod viewport_throttle_integration_tests {
+  use std::time::{Duration, Instant};
+
+  #[test]
+  fn viewport_throttle_emits_leading_and_trailing_updates() {
+    let cfg = fastrender::ui::ViewportThrottleConfig {
+      max_hz: 60,
+      debounce: Duration::from_millis(50),
+    };
+    let mut throttle = fastrender::ui::ViewportThrottle::with_config(cfg);
+
+    let t0 = Instant::now();
+    let first = throttle
+      .push_desired(t0, (100, 80), 2.0)
+      .expect("leading update should emit immediately");
+    assert_eq!(first.viewport_css, (100, 80));
+    assert!((first.dpr() - 2.0).abs() < f32::EPSILON);
+
+    assert_eq!(throttle.push_desired(t0 + Duration::from_millis(5), (120, 90), 2.0), None);
+
+    assert_eq!(throttle.poll(t0 + Duration::from_millis(54)), None);
+    let second = throttle
+      .poll(t0 + Duration::from_millis(55))
+      .expect("trailing update should flush after debounce");
+    assert_eq!(second.viewport_css, (120, 90));
+    assert!((second.dpr() - 2.0).abs() < f32::EPSILON);
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 fn determine_startup_session(
   cli_url: Option<String>,
@@ -2783,6 +2813,17 @@ error: {err}",
       "clamped: {}",
       if viewport_clamped { "yes" } else { "no" }
     );
+
+    if let Some(deadline) = self.viewport_throttle.next_deadline() {
+      let due_in = deadline.saturating_duration_since(std::time::Instant::now());
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "viewport_throttle: pending (due in {}ms)",
+        due_in.as_millis()
+      );
+    } else {
+      let _ = writeln!(&mut hud.text_buf, "viewport_throttle: idle");
+    }
 
     egui::Area::new(egui::Id::new("fastr_browser_hud"))
       .order(egui::Order::Foreground)
