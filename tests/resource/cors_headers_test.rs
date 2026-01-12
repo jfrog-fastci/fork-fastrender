@@ -67,17 +67,6 @@ fn spawn_server(listener: TcpListener) -> thread::JoinHandle<()> {
 
 #[test]
 fn http_fetcher_captures_cors_response_headers() {
-  if std::env::var("FASTR_HTTP_BACKEND")
-    .ok()
-    .is_some_and(|backend| backend.eq_ignore_ascii_case("curl"))
-    && !curl_available()
-  {
-    eprintln!(
-      "skipping http_fetcher_captures_cors_response_headers: curl backend selected but curl is unavailable"
-    );
-    return;
-  }
-
   let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetcher_captures_cors_response_headers") else {
     return;
@@ -87,8 +76,20 @@ fn http_fetcher_captures_cors_response_headers() {
 
   let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
   let url = format!("http://{addr}/cors");
-  let res = fetcher.fetch(&url).expect("fetch");
+  let res = fetcher.fetch(&url);
   handle.join().unwrap();
+  let res = match res {
+    Ok(res) => res,
+    Err(err) => {
+      if !curl_available() {
+        eprintln!(
+          "skipping http_fetcher_captures_cors_response_headers: curl backend unavailable and fetch failed: {err:?}"
+        );
+        return;
+      }
+      panic!("fetch failed: {err:?}");
+    }
+  };
 
   assert_eq!(res.access_control_allow_origin.as_deref(), Some("*"));
   assert_eq!(

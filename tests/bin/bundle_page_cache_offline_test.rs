@@ -12,19 +12,15 @@ use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+// These tests rely on the disk cache namespace matching the CLI's HTTP header profile settings.
+// Avoid inheriting host FASTR_* env vars by forcing a deterministic value for the spawned
+// `bundle_page` binary and by computing expectations from the same constant.
+const HTTP_BROWSER_HEADERS_ENABLED: bool = true;
+
 fn disk_cache_namespace_for(user_agent: &str, accept_language: &str) -> String {
   let ua = normalize_user_agent_for_log(user_agent).trim();
   let lang = accept_language.trim();
-  let browser_headers_enabled = std::env::var("FASTR_HTTP_BROWSER_HEADERS")
-    .ok()
-    .map(|raw| {
-      !matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "0" | "false" | "no" | "off"
-      )
-    })
-    .unwrap_or(true);
-  if browser_headers_enabled {
+  if HTTP_BROWSER_HEADERS_ENABLED {
     format!("fetch-profile:contextual-v1\nuser-agent:{ua}\naccept-language:{lang}")
   } else {
     format!(
@@ -125,6 +121,10 @@ fn bundle_page_cache_captures_from_disk_cache_offline() {
   let bundle_dir = tmp.path().join("bundle");
   let status = Command::new(env!("CARGO_BIN_EXE_bundle_page"))
     .current_dir(tmp.path())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .args(["cache", stem, "--out"])
     .arg(bundle_dir.to_string_lossy().as_ref())
     .args(["--cache-dir"])

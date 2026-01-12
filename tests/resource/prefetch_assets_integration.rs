@@ -22,19 +22,15 @@ use tempfile::TempDir;
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 
+// These integration tests spawn the `prefetch_assets` binary. Ensure its behavior is deterministic
+// by explicitly configuring any FASTR_* env vars it consults, rather than inheriting the host
+// environment.
+const HTTP_BROWSER_HEADERS_ENABLED: bool = true;
+
 fn disk_cache_namespace() -> String {
   let ua = normalize_user_agent_for_log(DEFAULT_USER_AGENT).trim();
   let lang = DEFAULT_ACCEPT_LANGUAGE.trim();
-  let browser_headers_enabled = std::env::var("FASTR_HTTP_BROWSER_HEADERS")
-    .ok()
-    .map(|raw| {
-      !matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "0" | "false" | "no" | "off"
-      )
-    })
-    .unwrap_or(true);
-  if browser_headers_enabled {
+  if HTTP_BROWSER_HEADERS_ENABLED {
     format!("fetch-profile:contextual-v1\nuser-agent:{ua}\naccept-language:{lang}")
   } else {
     format!(
@@ -182,6 +178,10 @@ fn prefetch_assets_warms_disk_cache_with_imports_and_fonts() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -284,6 +284,10 @@ fn prefetch_assets_warms_disk_cache_with_layer_imports_and_fonts() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -383,6 +387,10 @@ fn prefetch_assets_warms_disk_cache_with_inline_style_import_and_fonts() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -462,6 +470,10 @@ fn prefetch_assets_warms_disk_cache_with_shadow_root_style_import() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -597,6 +609,10 @@ fn prefetch_assets_warms_disk_cache_with_html_images_iframes_and_embeds() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -724,6 +740,10 @@ fn prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -851,6 +871,10 @@ fn prefetch_assets_honors_base_href_for_html_discovery() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -958,6 +982,10 @@ fn prefetch_assets_selects_srcset_candidate_and_respects_max_urls_per_element() 
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -1080,6 +1108,10 @@ fn prefetch_assets_selects_preload_imagesrcset_candidate() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -1229,6 +1261,10 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -1373,6 +1409,10 @@ fn prefetch_assets_respects_max_images_per_page() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
@@ -1487,6 +1527,10 @@ fn prefetch_assets_selects_picture_source_by_media_and_dpr() {
   let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
     .current_dir(tmp.path())
     .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
     .arg("--jobs")
     .arg("1")
     .arg("--timeout")
