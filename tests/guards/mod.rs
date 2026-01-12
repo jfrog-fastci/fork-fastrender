@@ -11,6 +11,7 @@ mod docs_presence;
 mod ecma_rs_workspace_exclude_guard;
 mod fetch_and_render_exit_presence;
 mod js_runtime_consolidation_guard;
+mod pageset_js_failures_report_guard;
 mod no_deprecated_test_harness_names;
 mod no_extra_test_binaries;
 mod no_path_env_mutation;
