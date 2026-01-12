@@ -5,7 +5,7 @@ import { Graph } from "./Graph";
 import { SymbolsPanel } from "./SymbolsPanel";
 import "./App.css";
 import {
-  Program,
+  ProgramDumpV1,
   NormalizedStep,
   computeChangedBlocks,
   formatId,
@@ -34,7 +34,7 @@ const INIT_SOURCE = `
 
 export const App = () => {
   const [source, setSource] = useState(INIT_SOURCE);
-  const [data, setData] = useState<Program>();
+  const [data, setData] = useState<ProgramDumpV1>();
   const [curFnId, setCurFnId] = useState<number>();
   const [error, setError] = useState<string>();
   const [isGlobal, setIsGlobal] = useState(true);
@@ -42,6 +42,13 @@ export const App = () => {
   const [stepIdx, setStepIdx] = useState(0);
   const [view, setView] = useState<"cfg" | "symbols">("cfg");
   const [showDiff, setShowDiff] = useState(true);
+  const [showMetaEffects, setShowMetaEffects] = useState(false);
+  const [showMetaPurity, setShowMetaPurity] = useState(false);
+  const [showMetaEscape, setShowMetaEscape] = useState(false);
+  const [showMetaOwnership, setShowMetaOwnership] = useState(false);
+  const [showMetaTypeId, setShowMetaTypeId] = useState(false);
+  const [showMetaNativeLayout, setShowMetaNativeLayout] = useState(false);
+  const [showMetaParallelizable, setShowMetaParallelizable] = useState(false);
 
   useEffect(() => {
     const src = source.trim();
@@ -92,6 +99,26 @@ export const App = () => {
   const safeStepIdx =
     normalizedSteps.length === 0 ? 0 : Math.min(stepIdx, normalizedSteps.length - 1);
   const currentStep = normalizedSteps[safeStepIdx];
+  const overlays = useMemo(
+    () => ({
+      effects: showMetaEffects,
+      purity: showMetaPurity,
+      escape: showMetaEscape,
+      ownership: showMetaOwnership,
+      typeId: showMetaTypeId,
+      nativeLayout: showMetaNativeLayout,
+      parallelizable: showMetaParallelizable,
+    }),
+    [
+      showMetaEffects,
+      showMetaPurity,
+      showMetaEscape,
+      showMetaOwnership,
+      showMetaTypeId,
+      showMetaNativeLayout,
+      showMetaParallelizable,
+    ],
+  );
 
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
@@ -164,6 +191,63 @@ export const App = () => {
                 />
                 Symbols
               </label>
+              <span className="meta-label">Meta:</span>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={showMetaPurity}
+                  onChange={(e) => setShowMetaPurity(e.target.checked)}
+                />
+                Purity
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={showMetaEffects}
+                  onChange={(e) => setShowMetaEffects(e.target.checked)}
+                />
+                Effects
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={showMetaEscape}
+                  onChange={(e) => setShowMetaEscape(e.target.checked)}
+                />
+                Escape
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={showMetaOwnership}
+                  onChange={(e) => setShowMetaOwnership(e.target.checked)}
+                />
+                Ownership
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={showMetaTypeId}
+                  onChange={(e) => setShowMetaTypeId(e.target.checked)}
+                />
+                Type ID
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={showMetaNativeLayout}
+                  onChange={(e) => setShowMetaNativeLayout(e.target.checked)}
+                />
+                Native layout
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={showMetaParallelizable}
+                  onChange={(e) => setShowMetaParallelizable(e.target.checked)}
+                />
+                Parallelizable
+              </label>
               <input
                 type="search"
                 placeholder="Filter symbol/temp/label"
@@ -182,14 +266,15 @@ export const App = () => {
           </div>
 
           {view === "cfg" && currentStep && (
-            <Graph
-              step={currentStep}
-              stepNames={normalizedSteps.map((s) => s.name)}
-              symbolNames={symbolNames}
-              changed={showDiff ? diffs[safeStepIdx] : undefined}
-              filter={filter}
-            />
-          )}
+              <Graph
+                step={currentStep}
+                stepNames={normalizedSteps.map((s) => s.name)}
+                symbolNames={symbolNames}
+                changed={showDiff ? diffs[safeStepIdx] : undefined}
+                filter={filter}
+                overlays={overlays}
+              />
+            )}
           {view === "symbols" && <SymbolsPanel symbols={data?.symbols} filter={filter} />}
         </div>
         <div className="pane">

@@ -36,11 +36,79 @@
 
 .BBlocksExplorer .insts .inst > div {
   display: table-cell;
+  vertical-align: top;
 }
 
 .BBlocksExplorer .insts .inst > div:first-child {
   padding-right: 1.5rem;
   text-align: right;
+}
+
+.BBlocksExplorer .insts .inst > div.inst-meta {
+  padding-left: 1rem;
+  max-width: 18rem;
+}
+
+.BBlocksExplorer .inst-meta-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: flex-start;
+}
+
+.BBlocksExplorer .inst-meta-badge {
+  background: #eee;
+  color: #555;
+  padding: 0.05rem 0.35rem;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.BBlocksExplorer .inst-meta-badge.purity.pure,
+.BBlocksExplorer .inst-meta-badge.callee-purity.pure,
+.BBlocksExplorer .inst-meta-badge.parallelizable {
+  background: #e5f7e5;
+  color: #136a13;
+}
+
+.BBlocksExplorer .inst-meta-badge.purity.readonly,
+.BBlocksExplorer .inst-meta-badge.callee-purity.readonly {
+  background: #e6f0ff;
+  color: #0a3d91;
+}
+
+.BBlocksExplorer .inst-meta-badge.purity.allocating,
+.BBlocksExplorer .inst-meta-badge.callee-purity.allocating {
+  background: #fff3cd;
+  color: #7a5b00;
+}
+
+.BBlocksExplorer .inst-meta-badge.purity.impure,
+.BBlocksExplorer .inst-meta-badge.callee-purity.impure {
+  background: #f8d7da;
+  color: #842029;
+}
+
+.BBlocksExplorer .inst-meta-badge.effects {
+  background: #f2f2f2;
+  color: #444;
+}
+
+.BBlocksExplorer .inst-meta-badge.escape {
+  background: #efeaff;
+  color: #5033a6;
+}
+
+.BBlocksExplorer .inst-meta-badge.ownership {
+  background: #e9f5ff;
+  color: #0c4a6e;
+}
+
+.BBlocksExplorer .inst-meta-badge.type-id,
+.BBlocksExplorer .inst-meta-badge.native-layout {
+  background: #f4f4f4;
+  color: #444;
 }
 
 .BBlocksExplorer .insts .invalid-inst {
@@ -110,6 +178,11 @@
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+}
+
+.App .step-controls .meta-label {
+  color: #555;
+  font-size: 0.9rem;
 }
 
 .App .step-controls input[type="search"] {

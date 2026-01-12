@@ -46,6 +46,45 @@ export type StableInst = {
   unOp?: string;
   foreign?: StableId;
   unknown?: string;
+  meta?: StableInstMeta;
+};
+
+export type StableEffectLocation =
+  | { kind: "heap" }
+  | { kind: "foreign"; id: StableId }
+  | { kind: "unknown"; name: string };
+
+export type EffectSummary = {
+  flags: string;
+  throws: "never" | "maybe" | "always";
+};
+
+export type StableEffects = {
+  reads?: StableEffectLocation[];
+  writes?: StableEffectLocation[];
+  summary: EffectSummary;
+  unknown?: boolean;
+};
+
+export type StablePurity = "pure" | "read_only" | "allocating" | "impure";
+
+export type StableOwnershipState = "owned" | "borrowed" | "shared" | "unknown";
+
+export type StableEscapeState =
+  | { kind: "no_escape" }
+  | { kind: "arg_escape"; value: number }
+  | { kind: "return_escape" }
+  | { kind: "global_escape" }
+  | { kind: "unknown" };
+
+export type StableInstMeta = {
+  effects?: StableEffects;
+  purity?: StablePurity;
+  calleePurity?: StablePurity;
+  resultEscape?: StableEscapeState;
+  ownership?: StableOwnershipState;
+  typeId?: StableId;
+  nativeLayout?: StableId;
 };
 
 export type StableDebugStep = {
@@ -100,10 +139,15 @@ export type StableProgramSymbols = {
   scopes: StableScope[];
 };
 
-export type Program = {
+export type ProgramDumpV1 = {
   functions: StableFunction[];
   top_level: StableFunction;
   symbols?: StableProgramSymbols;
+};
+
+export type ProgramDump = {
+  version: "v1";
+  program: ProgramDumpV1;
 };
 
 class VObjectMapAsMap<K, V> extends Validator<Map<K, V>> {
@@ -151,6 +195,60 @@ const vArg = new VTagged("kind", {
   var: new VStruct({ value: new VInteger() }),
 });
 
+const vEffectLocation = new VTagged("kind", {
+  heap: new VStruct({}),
+  foreign: new VStruct({ id: vId }),
+  unknown: new VStruct({ name: new VString() }),
+});
+
+const vEffectSummary = new VStruct({
+  flags: new VString(),
+  throws: new VStringEnum({
+    never: "never",
+    maybe: "maybe",
+    always: "always",
+  }),
+});
+
+const vEffects = new VStruct({
+  reads: new VOptional(new VArray(vEffectLocation)),
+  writes: new VOptional(new VArray(vEffectLocation)),
+  summary: vEffectSummary,
+  unknown: new VOptional(new VBoolean()),
+});
+
+const vPurity = new VStringEnum({
+  pure: "pure",
+  read_only: "read_only",
+  allocating: "allocating",
+  impure: "impure",
+});
+
+const vOwnershipState = new VStringEnum({
+  owned: "owned",
+  borrowed: "borrowed",
+  shared: "shared",
+  unknown: "unknown",
+});
+
+const vEscapeState = new VTagged("kind", {
+  no_escape: new VStruct({}),
+  arg_escape: new VStruct({ value: new VInteger() }),
+  return_escape: new VStruct({}),
+  global_escape: new VStruct({}),
+  unknown: new VStruct({}),
+});
+
+const vInstMeta = new VStruct({
+  effects: new VOptional(vEffects),
+  purity: new VOptional(vPurity),
+  calleePurity: new VOptional(vPurity),
+  resultEscape: new VOptional(vEscapeState),
+  ownership: new VOptional(vOwnershipState),
+  typeId: new VOptional(vId),
+  nativeLayout: new VOptional(vId),
+});
+
 const vInst = new VStruct({
   t: new VString(),
   tgts: new VArray(new VInteger()),
@@ -161,6 +259,7 @@ const vInst = new VStruct({
   unOp: new VOptional(new VString()),
   foreign: new VOptional(vId),
   unknown: new VOptional(new VString()),
+  meta: new VOptional(vInstMeta),
 });
 
 const vDebugStep = new VStruct({
@@ -221,7 +320,14 @@ const vProgram = new VStruct({
   symbols: new VOptional(vProgramSymbols),
 });
 
-export const parseProgram = (raw: unknown): Program => vProgram.parseRoot(raw);
+const vProgramDump = new VStruct({
+  version: new VStringEnum({ v1: "v1" }),
+  program: vProgram,
+});
+
+export const parseProgramDump = (raw: unknown): ProgramDump => vProgramDump.parseRoot(raw);
+
+export const parseProgram = (raw: unknown): ProgramDumpV1 => parseProgramDump(raw).program;
 
 export const formatId = (id: StableId): string => id.value;
 
@@ -359,6 +465,7 @@ const instSignature = (inst: StableInst): string =>
     unOp: inst.unOp,
     foreign: inst.foreign ? formatId(inst.foreign) : undefined,
     unknown: inst.unknown,
+    meta: inst.meta,
   });
 
 export const computeChangedBlocks = (steps: NormalizedStep[]): Array<Set<number>> => {

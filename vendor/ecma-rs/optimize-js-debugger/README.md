@@ -2,6 +2,16 @@
 
 Developer UI for inspecting `optimize-js` optimizer output (CFG, debug steps, symbols).
 
+## Program dump schema
+
+`POST /compile` returns a MessagePack-encoded, versioned `ProgramDump` payload:
+
+```json
+{ "version": "v1", "program": { /* ProgramDumpV1 */ } }
+```
+
+Each instruction in the CFG/debug steps may include an optional `meta` field (effects/purity/escape/ownership/type/layout), which the UI can display via metadata toggles in the toolbar.
+
 ## Quickstart
 
 ### Install UI dependencies

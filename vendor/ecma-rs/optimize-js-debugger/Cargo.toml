@@ -5,10 +5,15 @@ authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2018"
 license.workspace = true
 repository.workspace = true
+ 
+[features]
+# Enable TypeScript type/layout metadata in ProgramDump output.
+typed = ["optimize-js/typed"]
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
 diagnostics = { workspace = true, features = ["serde"] }
+effect-model = { workspace = true, features = ["serde"] }
 optimize-js = { workspace = true, features = ["serde"] }
 rmp-serde = { workspace = true }
 serde = { workspace = true }

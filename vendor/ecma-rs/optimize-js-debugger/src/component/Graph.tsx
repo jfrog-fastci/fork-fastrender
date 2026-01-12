@@ -19,11 +19,24 @@ import {
   NormalizedStep,
   StableArg,
   StableConst,
+  StableEffectLocation,
+  StableEscapeState,
   StableInst,
+  StablePurity,
   argToLabel,
   blockMatchesQuery,
   formatId,
 } from "./schema";
+
+export type InstMetaOverlays = {
+  effects: boolean;
+  purity: boolean;
+  escape: boolean;
+  ownership: boolean;
+  typeId: boolean;
+  nativeLayout: boolean;
+  parallelizable: boolean;
+};
 
 export type BBlockNode = Node<
   {
@@ -65,12 +78,181 @@ const ArgElement = ({ arg }: { arg: StableArg }) => {
   }
 };
 
-const InstElement = ({
+const effectLocationLabel = (
+  loc: StableEffectLocation,
+  symbolNames?: Map<string, string>,
+): string => {
+  switch (loc.kind) {
+    case "heap":
+      return "heap";
+    case "foreign": {
+      const key = formatId(loc.id);
+      const name = symbolNames?.get(key);
+      return name ? `foreign ${key} (${name})` : `foreign ${key}`;
+    }
+    case "unknown":
+      return `unknown ${loc.name}`;
+  }
+};
+
+const escapeLabel = (state: StableEscapeState): string => {
+  switch (state.kind) {
+    case "no_escape":
+      return "no_escape";
+    case "arg_escape":
+      return `arg_escape(${state.value})`;
+    case "return_escape":
+      return "return_escape";
+    case "global_escape":
+      return "global_escape";
+    case "unknown":
+      return "unknown";
+  }
+};
+
+const purityLabel = (purity: StablePurity): string => {
+  switch (purity) {
+    case "pure":
+      return "pure";
+    case "read_only":
+      return "read_only";
+    case "allocating":
+      return "allocating";
+    case "impure":
+      return "impure";
+  }
+};
+
+const purityClass = (purity: StablePurity): string => {
+  switch (purity) {
+    case "pure":
+      return "pure";
+    case "read_only":
+      return "readonly";
+    case "allocating":
+      return "allocating";
+    case "impure":
+      return "impure";
+  }
+};
+
+const InstMetaBadges = ({
   inst,
+  overlays,
   symbolNames,
 }: {
   inst: StableInst;
+  overlays: InstMetaOverlays;
   symbolNames?: Map<string, string>;
+}) => {
+  const meta = inst.meta;
+
+  const badges: Array<JSX.Element> = [];
+
+  if (overlays.purity) {
+    const purity: StablePurity = meta?.purity ?? "pure";
+    badges.push(
+      <span key="purity" className={`inst-meta-badge purity ${purityClass(purity)}`}>
+        {purityLabel(purity)}
+      </span>,
+    );
+
+    if (inst.t === "Call") {
+      const calleePurity: StablePurity = meta?.calleePurity ?? "impure";
+      badges.push(
+        <span
+          key="callee-purity"
+          className={`inst-meta-badge callee-purity ${purityClass(calleePurity)}`}
+        >
+          callee:{purityLabel(calleePurity)}
+        </span>,
+      );
+    }
+  }
+
+  if (overlays.effects && meta?.effects) {
+    const reads = meta.effects.reads ?? [];
+    const writes = meta.effects.writes ?? [];
+    const summary = meta.effects.summary;
+    const details = [
+      `flags: ${summary.flags}`,
+      `throws: ${summary.throws}`,
+      reads.length ? `reads: ${reads.map((r) => effectLocationLabel(r, symbolNames)).join(", ")}` : "",
+      writes.length
+        ? `writes: ${writes.map((w) => effectLocationLabel(w, symbolNames)).join(", ")}`
+        : "",
+      meta.effects.unknown ? "unknown: true" : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    badges.push(
+      <span key="effects" className="inst-meta-badge effects" title={details}>
+        fx
+      </span>,
+    );
+  }
+
+  if (overlays.escape && meta?.resultEscape) {
+    badges.push(
+      <span key="escape" className="inst-meta-badge escape">
+        {escapeLabel(meta.resultEscape)}
+      </span>,
+    );
+  }
+
+  if (overlays.ownership && meta?.ownership) {
+    badges.push(
+      <span key="ownership" className="inst-meta-badge ownership">
+        {meta.ownership}
+      </span>,
+    );
+  }
+
+  if (overlays.typeId && meta?.typeId) {
+    badges.push(
+      <span key="typeId" className="inst-meta-badge type-id">
+        type:{formatId(meta.typeId)}
+      </span>,
+    );
+  }
+
+  if (overlays.nativeLayout && meta?.nativeLayout) {
+    badges.push(
+      <span key="nativeLayout" className="inst-meta-badge native-layout">
+        layout:{formatId(meta.nativeLayout)}
+      </span>,
+    );
+  }
+
+  if (overlays.parallelizable) {
+    const purity: StablePurity = meta?.purity ?? "pure";
+    const throws = meta?.effects?.summary.throws ?? "never";
+    const unknown = meta?.effects?.unknown ?? false;
+    const parallelizable = purity === "pure" && throws === "never" && !unknown;
+    if (parallelizable) {
+      badges.push(
+        <span key="parallel" className="inst-meta-badge parallelizable">
+          parallel
+        </span>,
+      );
+    }
+  }
+
+  if (badges.length === 0) {
+    return null;
+  }
+
+  return <div className="inst-meta-badges">{badges}</div>;
+};
+
+const InstElement = ({
+  inst,
+  symbolNames,
+  overlays,
+}: {
+  inst: StableInst;
+  symbolNames?: Map<string, string>;
+  overlays: InstMetaOverlays;
 }) => {
   const foreignLabel = () => {
     const key = inst.foreign ? formatId(inst.foreign) : "foreign";
@@ -90,6 +272,9 @@ const InstElement = ({
             <ArgElement arg={inst.args[0]} />
             <span> {inst.binOp} </span>
             <ArgElement arg={inst.args[1]} />
+          </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -114,6 +299,9 @@ const InstElement = ({
             ))}
             <span>)</span>
           </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+          </div>
         </>
       );
     case "CondGoto":
@@ -129,6 +317,9 @@ const InstElement = ({
             <span> else </span>
             <span className="label">:{inst.labels[1]}</span>
           </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+          </div>
         </>
       );
     case "ForeignLoad":
@@ -141,6 +332,9 @@ const InstElement = ({
           <div>
             <span className="foreign">{foreignLabel()}</span>
           </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+          </div>
         </>
       );
     case "ForeignStore":
@@ -152,6 +346,9 @@ const InstElement = ({
           </div>
           <div>
             <ArgElement arg={inst.args[0]} />
+          </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -171,8 +368,11 @@ const InstElement = ({
                 <span> ⇒ </span>
                 <ArgElement arg={inst.args[i]} />
               </Fragment>
-            ))}
+              ))}
             <span>)</span>
+          </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -189,6 +389,9 @@ const InstElement = ({
           <div>
             <ArgElement arg={inst.args[2]} />
           </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+          </div>
         </>
       );
     case "Un":
@@ -202,6 +405,9 @@ const InstElement = ({
             <span>{inst.unOp} </span>
             <ArgElement arg={inst.args[0]} />
           </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+          </div>
         </>
       );
     case "UnknownLoad":
@@ -213,6 +419,9 @@ const InstElement = ({
           </div>
           <div>
             <span className="unknown">unknown {inst.unknown}</span>
+          </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -226,6 +435,9 @@ const InstElement = ({
           <div>
             <ArgElement arg={inst.args[0]} />
           </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+          </div>
         </>
       );
     case "VarAssign":
@@ -238,6 +450,9 @@ const InstElement = ({
           <div>
             <ArgElement arg={inst.args[0]} />
           </div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+          </div>
         </>
       );
     default:
@@ -247,6 +462,9 @@ const InstElement = ({
             <span className="unknown">{inst.t}</span>
           </div>
           <div>{inst.args.map(argToLabel).join(", ")}</div>
+          <div className="inst-meta">
+            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+          </div>
         </>
       );
   }
@@ -256,10 +474,12 @@ const BBlockElement = ({
   data: { label, insts },
   symbolNames,
   changed,
+  overlays,
 }: {
   data: BBlockNode["data"];
   symbolNames?: Map<string, string>;
   changed?: boolean;
+  overlays: InstMetaOverlays;
 }) => {
   return (
     <>
@@ -269,7 +489,7 @@ const BBlockElement = ({
         <ol className="insts">
           {insts.map((s, i) => (
             <li key={i} className="inst">
-              <InstElement inst={s} symbolNames={symbolNames} />
+              <InstElement inst={s} symbolNames={symbolNames} overlays={overlays} />
             </li>
           ))}
         </ol>
@@ -317,12 +537,14 @@ export const Graph = ({
   symbolNames,
   changed,
   filter,
+  overlays,
 }: {
   stepNames: Array<string>;
   step: NormalizedStep;
   symbolNames?: Map<string, string>;
   changed?: Set<number>;
   filter: string;
+  overlays: InstMetaOverlays;
 }) => {
   const query = filter.trim().toLowerCase();
   const filteredBlocks: NormalizedBlock[] = useMemo(
@@ -371,10 +593,11 @@ export const Graph = ({
           {...props}
           symbolNames={symbolNames}
           changed={changed?.has(props.data.label)}
+          overlays={overlays}
         />
       ),
     }),
-    [symbolNames, changed],
+    [symbolNames, changed, overlays],
   );
 
   const GraphCanvas = () => {
