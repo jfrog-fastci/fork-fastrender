@@ -137,6 +137,87 @@ impl StackMapRecord {
     }
 }
 
+// -------------------------------------------------------------------------------------------------
+// Semantic equality helpers
+// -------------------------------------------------------------------------------------------------
+
+/// Return `true` if two records describe the same machine instruction / stackmap payload.
+///
+/// This is used to validate/perform callsite-PC deduplication in the presence of lld's identical
+/// code folding (`--icf=all`), where multiple logical functions can end up sharing the same machine
+/// code address and therefore the same callsite return address.
+pub(crate) fn records_semantically_equal(a: &StackMapRecord, b: &StackMapRecord) -> bool {
+    a.id == b.id
+        && a.instruction_offset == b.instruction_offset
+        && a.callsite_pc == b.callsite_pc
+        && locations_semantically_equal(&a.locations, &b.locations)
+        && a.live_outs == b.live_outs
+}
+
+pub(crate) fn locations_semantically_equal(a: &[Location], b: &[Location]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .all(|(a, b)| location_semantically_equal(a, b))
+}
+
+pub(crate) fn location_semantically_equal(a: &Location, b: &Location) -> bool {
+    use Location::*;
+    match (a, b) {
+        (Register { size: a_size, dwarf_reg: a_reg }, Register { size: b_size, dwarf_reg: b_reg }) => {
+            a_size == b_size && a_reg == b_reg
+        }
+        (
+            Direct {
+                size: a_size,
+                dwarf_reg: a_reg,
+                offset: a_off,
+            },
+            Direct {
+                size: b_size,
+                dwarf_reg: b_reg,
+                offset: b_off,
+            },
+        ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+        (
+            Indirect {
+                size: a_size,
+                dwarf_reg: a_reg,
+                offset: a_off,
+            },
+            Indirect {
+                size: b_size,
+                dwarf_reg: b_reg,
+                offset: b_off,
+            },
+        ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+        (Constant { size: a_size, value: a_val }, Constant { size: b_size, value: b_val }) => {
+            a_size == b_size && a_val == b_val
+        }
+        (
+            ConstantIndex {
+                size: a_size,
+                index: _,
+                value: a_val,
+            },
+            ConstantIndex {
+                size: b_size,
+                index: _,
+                value: b_val,
+            },
+        ) => a_size == b_size && a_val == b_val,
+        // A constant can be stored inline (`Constant`) or in the constants table (`ConstantIndex`).
+        // Treat them as equivalent if the resolved constant values match.
+        (Constant { size: a_size, .. }, ConstantIndex { size: b_size, .. })
+        | (ConstantIndex { size: a_size, .. }, Constant { size: b_size, .. }) => {
+            a_size == b_size && a.as_u64() == b.as_u64()
+        }
+        _ => false,
+    }
+}
+
 /// An index entry mapping callsite PC to a record.
 ///
 /// This also carries per-function metadata required by stack walkers:

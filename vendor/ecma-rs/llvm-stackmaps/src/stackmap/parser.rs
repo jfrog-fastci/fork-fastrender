@@ -1,6 +1,6 @@
 use std::{fmt, mem::size_of};
 
-use super::format::{Callsite, LiveOut, Location, StackMapRecord};
+use super::format::{records_semantically_equal, Callsite, LiveOut, Location, StackMapRecord};
 use super::statepoint::StatepointRecordView;
 
 const STACKMAP_VERSION: u8 = 3;
@@ -337,11 +337,7 @@ impl StackMaps {
                         .get(other.record_index)
                         .ok_or_else(|| ParseError::new(0, "callsite record_index out of bounds"))?;
 
-                    let same_record = base_rec.id == other_rec.id
-                        && base_rec.instruction_offset == other_rec.instruction_offset
-                        && base_rec.callsite_pc == other_rec.callsite_pc
-                        && locations_semantically_equal(&base_rec.locations, &other_rec.locations)
-                        && base_rec.live_outs == other_rec.live_outs;
+                    let same_record = records_semantically_equal(base_rec, other_rec);
                     if !same_record {
                         return Err(ParseError::new(0, format!("duplicate callsite pc 0x{:x}", base.pc)));
                     }
@@ -382,70 +378,6 @@ impl StackMaps {
     pub fn lookup_statepoint(&self, pc: u64) -> Option<StatepointRecordView<'_>> {
         let rec = self.lookup(pc)?;
         StatepointRecordView::decode(rec)
-    }
-}
-
-fn locations_semantically_equal(a: &[Location], b: &[Location]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter()
-        .zip(b.iter())
-        .all(|(a, b)| location_semantically_equal(a, b))
-}
-
-fn location_semantically_equal(a: &Location, b: &Location) -> bool {
-    use Location::*;
-    match (a, b) {
-        (Register { size: a_size, dwarf_reg: a_reg }, Register { size: b_size, dwarf_reg: b_reg }) => {
-            a_size == b_size && a_reg == b_reg
-        }
-        (
-            Direct {
-                size: a_size,
-                dwarf_reg: a_reg,
-                offset: a_off,
-            },
-            Direct {
-                size: b_size,
-                dwarf_reg: b_reg,
-                offset: b_off,
-            },
-        ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
-        (
-            Indirect {
-                size: a_size,
-                dwarf_reg: a_reg,
-                offset: a_off,
-            },
-            Indirect {
-                size: b_size,
-                dwarf_reg: b_reg,
-                offset: b_off,
-            },
-        ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
-        (Constant { size: a_size, value: a_val }, Constant { size: b_size, value: b_val }) => {
-            a_size == b_size && a_val == b_val
-        }
-        (
-            ConstantIndex {
-                size: a_size,
-                index: _,
-                value: a_val,
-            },
-            ConstantIndex {
-                size: b_size,
-                index: _,
-                value: b_val,
-            },
-        ) => a_size == b_size && a_val == b_val,
-        // A constant can be stored inline (`Constant`) or in the constants table (`ConstantIndex`).
-        // Treat them as equivalent if the resolved constant values match.
-        (Constant { size: a_size, .. }, ConstantIndex { size: b_size, .. })
-        | (ConstantIndex { size: a_size, .. }, Constant { size: b_size, .. }) => {
-            a_size == b_size && a.as_u64() == b.as_u64()
-        }
-        _ => false,
     }
 }
 
