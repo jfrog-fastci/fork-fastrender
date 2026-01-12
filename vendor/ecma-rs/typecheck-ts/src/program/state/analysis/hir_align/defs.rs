@@ -6,6 +6,7 @@ impl ProgramState {
     file: FileId,
     lowered: &LowerResult,
   ) -> HashMap<DefId, DefId> {
+    let hir_items: HashSet<_> = lowered.hir.items.iter().copied().collect();
     let is_file_level_binding = |def: &hir_js::DefData| -> bool {
       if def.in_global {
         // `declare global { ... }` members are injected into the program-wide
@@ -13,23 +14,7 @@ impl ProgramState {
         return false;
       }
 
-      // `hir-js` models variable declarations as a `VarDeclarator` container
-      // owning the initializer body plus one or more `Var` children for the
-      // bindings. Treat those `Var` defs as top-level when the declarator
-      // itself is top-level.
-      let mut parent = def.parent;
-      while let Some(parent_id) = parent {
-        let Some(parent_def) = lowered.def(parent_id) else {
-          return false;
-        };
-        if matches!(parent_def.path.kind, HirDefKind::VarDeclarator) {
-          parent = parent_def.parent;
-          continue;
-        }
-        return false;
-      }
-
-      matches!(
+      if !matches!(
         def.path.kind,
         HirDefKind::Var
           | HirDefKind::Function
@@ -41,7 +26,14 @@ impl ProgramState {
           | HirDefKind::Interface
           | HirDefKind::TypeAlias
           | HirDefKind::ExportAlias
-      )
+      ) {
+        return false;
+      }
+
+      // `hir-js` does not model block scopes in the definition tree (only in
+      // statement structure). Use the file's `items` list to distinguish true
+      // file/module bindings from bindings declared in top-level blocks.
+      hir_items.contains(&def.id)
     };
 
     let file_def_ids: HashSet<_> = self
