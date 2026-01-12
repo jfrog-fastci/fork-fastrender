@@ -60,6 +60,26 @@ fn find_node_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> {
   None
 }
 
+fn make_dom_div_target() -> (Document, NodeId) {
+  let root = DomNode {
+    node_type: DomNodeType::Document {
+      quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
+    },
+    children: vec![DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        attributes: vec![("id".to_string(), "target".to_string())],
+      },
+      children: vec![],
+    }],
+  };
+  let doc = Document::from_renderer_dom(&root);
+  let target = doc.node(doc.root()).children[0];
+  (doc, target)
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Action {
   None,
@@ -397,6 +417,253 @@ fn capture_and_bubble_ordering_across_tree() {
       "document_bubble",
       "window_bubble"
     ]
+  );
+}
+
+#[test]
+fn load_event_path_does_not_propagate_to_window() {
+  let (doc, target) = make_dom_div_target();
+  let registry = EventListenerRegistry::new();
+  let type_ = "load";
+
+  let id_window_capture = ListenerId::new(1);
+  let id_document_capture = ListenerId::new(2);
+  let id_document_bubble = ListenerId::new(3);
+  let id_window_bubble = ListenerId::new(4);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_bubble,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(target),
+    [
+      (
+        id_window_capture,
+        Behavior {
+          label: "window_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+      (
+        id_document_capture,
+        Behavior {
+          label: "document_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_document_bubble,
+        Behavior {
+          label: "document_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_window_bubble,
+        Behavior {
+          label: "window_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(target),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["document_capture", "document_bubble"]);
+}
+
+#[test]
+fn non_load_event_path_still_propagates_to_window() {
+  let (doc, target) = make_dom_div_target();
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+
+  let id_window_capture = ListenerId::new(1);
+  let id_document_capture = ListenerId::new(2);
+  let id_document_bubble = ListenerId::new(3);
+  let id_window_bubble = ListenerId::new(4);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_bubble,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(target),
+    [
+      (
+        id_window_capture,
+        Behavior {
+          label: "window_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+      (
+        id_document_capture,
+        Behavior {
+          label: "document_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_document_bubble,
+        Behavior {
+          label: "document_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_window_bubble,
+        Behavior {
+          label: "window_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(target),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(
+    invoker.calls.as_slice(),
+    &["window_capture", "document_capture", "document_bubble", "window_bubble"]
+  );
+}
+
+#[test]
+fn has_listeners_for_dispatch_respects_load_event_document_parent_special_case() {
+  let (doc, target) = make_dom_div_target();
+  let registry = EventListenerRegistry::new();
+
+  let id_window_capture_load = ListenerId::new(1);
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    "load",
+    id_window_capture_load,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    },
+  ));
+  assert!(
+    !registry.has_listeners_for_dispatch(EventTargetId::Node(target), "load", &doc, true, false),
+    "load events should not propagate from document to window"
+  );
+
+  let id_window_capture_x = ListenerId::new(2);
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    "x",
+    id_window_capture_x,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    },
+  ));
+  assert!(
+    registry.has_listeners_for_dispatch(EventTargetId::Node(target), "x", &doc, true, false),
+    "non-load events should still propagate from document to window"
   );
 }
 

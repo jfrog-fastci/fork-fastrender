@@ -475,11 +475,12 @@ impl EventListenerRegistry {
         .is_some_and(|listeners| listeners.iter().any(|l| l.options.capture == capture))
     }
 
+    let is_load_event = type_ == "load";
     let shadow_root_boundary = match target.normalize() {
       EventTargetId::Node(node_id) => dom.containing_shadow_root(node_id),
       _ => None,
     };
-    let path = build_event_path(target, dom, self, composed, shadow_root_boundary);
+    let path = build_event_path(target, dom, self, composed, shadow_root_boundary, is_load_event);
     if path.is_empty() {
       return false;
     }
@@ -730,10 +731,11 @@ fn event_target_parent(
   registry: &EventListenerRegistry,
   composed: bool,
   shadow_root_boundary: Option<dom2::NodeId>,
+  is_load_event: bool,
 ) -> Option<EventTargetId> {
   match target.normalize() {
     EventTargetId::Window => None,
-    EventTargetId::Document => Some(EventTargetId::Window),
+    EventTargetId::Document => (!is_load_event).then_some(EventTargetId::Window),
     EventTargetId::Node(node_id) => {
       // DOM: a shadow root's "get the parent" algorithm returns `null` when the event is not
       // composed and the shadow root is the tree root of the original target's node tree.
@@ -759,6 +761,7 @@ fn build_event_path(
   registry: &EventListenerRegistry,
   composed: bool,
   shadow_root_boundary: Option<dom2::NodeId>,
+  is_load_event: bool,
 ) -> Vec<EventPathEntry> {
   let mut rev: Vec<EventTargetId> = Vec::new();
   let mut seen: FxHashSet<EventTargetId> = FxHashSet::default();
@@ -771,7 +774,14 @@ fn build_event_path(
       break;
     }
     rev.push(current);
-    let Some(parent) = event_target_parent(current, dom, registry, composed, shadow_root_boundary) else {
+    let Some(parent) = event_target_parent(
+      current,
+      dom,
+      registry,
+      composed,
+      shadow_root_boundary,
+      is_load_event,
+    ) else {
       break;
     };
     current = parent.normalize();
@@ -840,11 +850,19 @@ pub fn dispatch_event(
   event.immediate_propagation_stopped = false;
   event.in_passive_listener = false;
 
+  let is_load_event = event.type_ == "load";
   let shadow_root_boundary = match target {
     EventTargetId::Node(node_id) => dom.containing_shadow_root(node_id),
     _ => None,
   };
-  event.path = build_event_path(target, dom, registry, event.composed, shadow_root_boundary);
+  event.path = build_event_path(
+    target,
+    dom,
+    registry,
+    event.composed,
+    shadow_root_boundary,
+    is_load_event,
+  );
   let dispatch_res = (|| {
     if event.path.is_empty() {
       return Ok(());
