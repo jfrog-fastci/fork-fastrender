@@ -50,19 +50,18 @@ Notes:
 - Rust's test harness runs tests in parallel threads by default. Many browser integration tests
   share process-global state. To avoid cross-test interference while still allowing the overall
   integration test suite to run with default libtest parallelism, tests that touch shared global
-  state should acquire `stage_listener_test_lock()` (see below) (or the shared lock in
-  `tests/common/global_state`).
+  state should acquire `stage_listener_test_lock()` (see below) or the shared
+  `crate::common::global_test_lock()` helper.
 - If you need fully single-threaded execution (e.g. when debugging a flaky global-state
   interaction), run with:
 
   ```bash
   bash scripts/cargo_agent.sh test -p fastrender --test integration browser_integration:: -- --test-threads 1
   ```
-- The browser integration harness prefers deterministic bundled fonts by default, setting
-  `FASTR_USE_BUNDLED_FONTS=1` unless explicitly opted out (`FASTR_USE_BUNDLED_FONTS=0`), but tests
-  should still be hermetic with respect to fonts: prefer `support::deterministic_renderer()` /
-  `support::deterministic_factory()` (or pass an explicit `FontConfig`, such as
-  `FontConfig::bundled_only()`) instead of mutating process-global env vars at runtime.
+- Browser integration tests should be hermetic with respect to fonts: prefer
+  `support::deterministic_renderer()` / `support::deterministic_factory()` (or pass an explicit
+  `FontConfig`) so text rendering does not depend on system-installed fonts. Avoid mutating
+  process-global env vars at runtime.
 
 ## Headless constraints (no winit/wgpu/egui)
 
@@ -124,8 +123,7 @@ It provides (among other things):
 
 Some browser integration tests use process-global test hooks (for example
 `render_control::set_test_render_delay_ms`) and other shared state. To avoid cross-test
-interference, acquire the global lock for the duration of the test (see also
-`tests/common/global_state` for the shared lock used across integration suites):
+interference, acquire the global lock for the duration of the test:
 
 ```rust
 let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
