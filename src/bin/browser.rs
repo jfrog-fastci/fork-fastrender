@@ -5916,6 +5916,15 @@ impl App {
           self.toggle_bookmark_for_active_tab();
           self.window.request_redraw();
         }
+        ChromeAction::ReorderBookmarksBar(order) => {
+          if let Err(err) = self.bookmarks.reorder_root(&order) {
+            eprintln!("failed to reorder bookmarks: {err:?}");
+            continue;
+          }
+          self.autosave_bookmarks();
+          self.sync_about_newtab_bookmarks_snapshot();
+          self.window.request_redraw();
+        }
         ChromeAction::ToggleHistoryPanel => {
           self.history_panel_open = !self.history_panel_open;
           if self.history_panel_open {

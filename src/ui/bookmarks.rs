@@ -706,6 +706,262 @@ fn remove_first(items: &mut Vec<BookmarkId>, needle: BookmarkId) -> bool {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Bookmarks bar (browser UI)
+// -----------------------------------------------------------------------------
+//
+// Keep the core `BookmarkStore` UI-framework agnostic. The bookmarks bar is only compiled for the
+// windowed egui UI.
+#[cfg(feature = "browser_ui")]
+mod bookmarks_bar_ui {
+  use super::{BookmarkId, BookmarkNode, BookmarkStore};
+  use egui::{Color32, Rect, Stroke};
+
+  #[derive(Debug, Default)]
+  pub struct BookmarksBarOutput {
+    pub navigate_to: Option<String>,
+    /// If `true`, the navigation should open in a new tab (like middle-click / Ctrl/Cmd+Click).
+    pub navigate_new_tab: bool,
+    /// If set, reorders the root list (bookmarks bar) to exactly this order.
+    pub reorder_roots: Option<Vec<BookmarkId>>,
+  }
+
+  #[derive(Debug, Default, Clone, Copy)]
+  struct DragState {
+    dragging: Option<BookmarkId>,
+    drop_index: Option<usize>,
+  }
+
+  fn move_before_id(
+    current: &[BookmarkId],
+    id: BookmarkId,
+    before_id: BookmarkId,
+  ) -> Option<Vec<BookmarkId>> {
+    if id == before_id {
+      return None;
+    }
+    let old = current.iter().position(|x| *x == id)?;
+    let mut out = current.to_vec();
+    out.remove(old);
+    let pos = out.iter().position(|x| *x == before_id)?;
+    out.insert(pos, id);
+    Some(out)
+  }
+
+  fn move_after_id(
+    current: &[BookmarkId],
+    id: BookmarkId,
+    after_id: BookmarkId,
+  ) -> Option<Vec<BookmarkId>> {
+    if id == after_id {
+      return None;
+    }
+    let old = current.iter().position(|x| *x == id)?;
+    let mut out = current.to_vec();
+    out.remove(old);
+    let pos = out.iter().position(|x| *x == after_id)?;
+    out.insert(pos + 1, id);
+    Some(out)
+  }
+
+  fn move_within_visible(
+    roots: &[BookmarkId],
+    visible: &[BookmarkId],
+    dragged: BookmarkId,
+    drop_index: usize,
+  ) -> Option<Vec<BookmarkId>> {
+    let visible_without: Vec<BookmarkId> = visible
+      .iter()
+      .copied()
+      .filter(|id| *id != dragged)
+      .collect();
+    if visible_without.is_empty() {
+      return None;
+    }
+    if drop_index == 0 {
+      move_before_id(roots, dragged, visible_without[0])
+    } else if drop_index >= visible_without.len() {
+      move_after_id(roots, dragged, visible_without[visible_without.len() - 1])
+    } else {
+      move_before_id(roots, dragged, visible_without[drop_index])
+    }
+  }
+
+  pub fn bookmarks_bar_ui(
+    ui: &mut egui::Ui,
+    bookmarks: &BookmarkStore,
+    max_items: usize,
+  ) -> BookmarksBarOutput {
+    let ctx = ui.ctx().clone();
+    let bar_id = ui.make_persistent_id("bookmarks_bar");
+    let drag_id = bar_id.with("drag_state");
+    let mut drag: DragState = ctx.data_mut(|d| d.get_persisted(drag_id).unwrap_or_default());
+
+    let mut out = BookmarksBarOutput::default();
+
+    let mut item_rects: Vec<(BookmarkId, Rect)> = Vec::new();
+    let mut drag_released: Option<BookmarkId> = None;
+
+    let mut visible_ids: Vec<BookmarkId> = Vec::new();
+    for &id in &bookmarks.roots {
+      if max_items > 0 && visible_ids.len() >= max_items {
+        break;
+      }
+      let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {
+        continue;
+      };
+      if entry.url.trim().is_empty() {
+        continue;
+      }
+      visible_ids.push(id);
+    }
+
+    let bar = ui.allocate_ui_with_layout(
+      egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+      egui::Layout::left_to_right(egui::Align::Center),
+      |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.set_min_height(ui.spacing().interact_size.y);
+
+        for &id in &visible_ids {
+          let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {
+            continue;
+          };
+
+          let url = entry.url.trim();
+          if url.is_empty() {
+            continue;
+          }
+
+          let title = entry
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+          let label = title
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::ui::url_display::truncate_url_middle(url, 36));
+
+          let button = egui::Button::new(label)
+            .small()
+            .sense(egui::Sense::click_and_drag());
+          let response = ui.add(button).on_hover_text(url);
+          item_rects.push((id, response.rect));
+
+          let open_new_tab =
+            response.middle_clicked() || (response.clicked() && ui.input(|i| i.modifiers.command));
+          if response.clicked() || response.middle_clicked() {
+            out.navigate_to = Some(url.to_string());
+            out.navigate_new_tab = open_new_tab;
+          }
+          if response.drag_started() {
+            drag.dragging = Some(id);
+            drag.drop_index = None;
+          }
+          if response.drag_released() {
+            drag_released = Some(id);
+          }
+
+          // Keyboard-accessible reorder.
+          response.context_menu(|ui| {
+            ui.set_min_width(140.0);
+            if let Some(idx) = visible_ids.iter().position(|x| *x == id) {
+              ui.add_enabled_ui(idx > 0, |ui| {
+                if ui.button("Move left").clicked() {
+                  if let Some(new_order) =
+                    move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
+                  {
+                    out.reorder_roots = Some(new_order);
+                  }
+                  ui.close_menu();
+                }
+              });
+              ui.add_enabled_ui(idx + 1 < visible_ids.len(), |ui| {
+                if ui.button("Move right").clicked() {
+                  if let Some(new_order) =
+                    move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
+                  {
+                    out.reorder_roots = Some(new_order);
+                  }
+                  ui.close_menu();
+                }
+              });
+            }
+          });
+        }
+      },
+    );
+
+    let bar_rect = bar.response.rect;
+
+    let pointer_x = ctx.input(|i| i.pointer.hover_pos().map(|p| p.x));
+    if let (Some(dragging_id), Some(pointer_x)) = (drag.dragging, pointer_x) {
+      ctx.request_repaint();
+
+      let others: Vec<Rect> = item_rects
+        .iter()
+        .filter_map(|(id, rect)| (*id != dragging_id).then_some(*rect))
+        .collect();
+
+      let drop_index = others
+        .iter()
+        .filter(|rect| pointer_x > rect.center().x)
+        .count();
+      drag.drop_index = Some(drop_index);
+
+      // Draw drop indicator.
+      let indicator_x = if others.is_empty() {
+        bar_rect.left() + 8.0
+      } else if drop_index == 0 {
+        others[0].left()
+      } else if drop_index >= others.len() {
+        others[others.len() - 1].right()
+      } else {
+        (others[drop_index - 1].right() + others[drop_index].left()) * 0.5
+      };
+
+      let y0 = bar_rect.top() + 4.0;
+      let y1 = bar_rect.bottom() - 4.0;
+      ui.painter().line_segment(
+        [egui::pos2(indicator_x, y0), egui::pos2(indicator_x, y1)],
+        Stroke::new(2.0, ui.visuals().selection.stroke.color),
+      );
+
+      // Highlight the dragged item (if visible).
+      if let Some((_, rect)) = item_rects.iter().find(|(id, _)| *id == dragging_id) {
+        ui.painter().rect_stroke(
+          rect.expand(1.0),
+          egui::Rounding::same(6.0),
+          Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
+        );
+      }
+    }
+
+    if let Some(released_id) = drag_released {
+      if let Some(drop_index) = drag.drop_index {
+        if let Some(new_order) =
+          move_within_visible(&bookmarks.roots, &visible_ids, released_id, drop_index)
+        {
+          if new_order != bookmarks.roots {
+            out.reorder_roots = Some(new_order);
+          }
+        }
+      }
+      drag.dragging = None;
+      drag.drop_index = None;
+    }
+
+    ctx.data_mut(|d| {
+      d.insert_persisted(drag_id, drag);
+    });
+
+    out
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+pub use bookmarks_bar_ui::{bookmarks_bar_ui, BookmarksBarOutput};
+
 #[cfg(test)]
 mod tests {
   use super::*;

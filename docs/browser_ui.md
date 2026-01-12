@@ -306,6 +306,7 @@ FastRender’s experimental desktop browser UI supports **bookmarks** and a basi
   - Click the **star** button in the toolbar (or press <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd>) to
     toggle a bookmark for the current page.
   - Bookmarks appear in the **bookmarks bar** for quick access.
+  - Drag bookmarks in the bar to **reorder** them (or use the per-bookmark menu to move left/right).
   - Use the **bookmarks manager** (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>) to
     browse/remove bookmarks.
 - **History**:

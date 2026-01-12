@@ -4,7 +4,7 @@ use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
 use crate::ui::browser_app::BrowserAppState;
-use crate::ui::BookmarkStore;
+use crate::ui::bookmarks::{bookmarks_bar_ui, BookmarkId, BookmarkStore};
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
@@ -48,6 +48,8 @@ pub enum ChromeAction {
   AddressBarFocusChanged(bool),
   /// Toggle a bookmark for the currently active tab.
   ToggleBookmarkForActiveTab,
+  /// Reorder the bookmarks bar (root node list) to the exact provided order.
+  ReorderBookmarksBar(Vec<BookmarkId>),
   /// Toggle visibility of the global history panel.
   ToggleHistoryPanel,
   /// Toggle visibility of the bookmarks manager UI.
@@ -1059,59 +1061,29 @@ pub fn chrome_ui_with_bookmarks(
       });
     });
 
-    // ---------------------------------------------------------------------------
-    // Bookmarks bar (simple row of root bookmark buttons)
-    // ---------------------------------------------------------------------------
     if let Some(bookmarks) = omnibox_bookmarks {
-      let mut shown = 0usize;
       let mut has_any = false;
       for id in &bookmarks.roots {
-        let Some(node) = bookmarks.nodes.get(id) else {
-          continue;
-        };
-        if matches!(node, crate::ui::BookmarkNode::Bookmark(_)) {
+        if matches!(
+          bookmarks.nodes.get(id),
+          Some(crate::ui::BookmarkNode::Bookmark(_))
+        ) {
           has_any = true;
           break;
         }
       }
       if has_any {
         ui.separator();
-        ui.horizontal_wrapped(|ui| {
-          ui.spacing_mut().item_spacing.x = 6.0;
-          for id in &bookmarks.roots {
-            if shown >= BOOKMARKS_BAR_MAX_ITEMS {
-              break;
-            }
-            let Some(crate::ui::BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(id) else {
-              continue;
-            };
-            let url = entry.url.trim();
-            if url.is_empty() {
-              continue;
-            }
-
-            let title = entry
-              .title
-              .as_deref()
-              .map(str::trim)
-              .filter(|t| !t.is_empty());
-            let label = title
-              .map(str::to_string)
-              .unwrap_or_else(|| url_display::truncate_url_middle(url, 36));
-            let resp = ui.small_button(label).on_hover_text(url);
-
-            let open_new_tab = resp.middle_clicked()
-              || (resp.clicked() && ui.input(|i| i.modifiers.command));
-            if resp.clicked() || resp.middle_clicked() {
-              if open_new_tab {
-                actions.push(ChromeAction::NewTab);
-              }
-              actions.push(ChromeAction::NavigateTo(url.to_string()));
-            }
-
-            shown += 1;
+        let bar = bookmarks_bar_ui(ui, bookmarks, BOOKMARKS_BAR_MAX_ITEMS);
+        if let Some(url) = bar.navigate_to {
+          if bar.navigate_new_tab {
+            actions.push(ChromeAction::NewTab);
           }
-        });
+          actions.push(ChromeAction::NavigateTo(url));
+        }
+        if let Some(order) = bar.reorder_roots {
+          actions.push(ChromeAction::ReorderBookmarksBar(order));
+        }
       }
     }
   });
