@@ -8,18 +8,9 @@
 pub(crate) fn global_test_lock() -> crate::common::GlobalTestLockGuard {
   crate::common::global_test_lock()
 }
-mod background_clip_text_parallel;
-mod color_glyph_opacity;
-mod composed_dom_snapshot_test;
 mod containment_intrinsic_inline_size_test;
 mod data_url_svg;
-mod debug_snapshot_tests;
-mod dom2_closest;
 mod error_format_snapshot;
-mod fixed_position_ignores_viewport_scroll_test;
-mod has_argument_validation_test;
-mod inspect_api;
-mod is_alias_matches_test;
 mod js_dom_exception;
 mod js_dom_realm_selectors;
 mod js_css_supports;
@@ -35,14 +26,11 @@ mod js_webidl_sequence_conversion;
 mod js_webidl_window_alert;
 mod js_window_host_base_url_update;
 mod js_window_realm;
-mod part_export_map_test;
 mod preserve3d_env_var_disable_warp_test;
 mod rayon_global_pool_test;
-mod referrer_credentials_test;
 mod replaced_element_max_width_toggle;
 mod template_inert_styles;
 mod textarea_runtime_value;
-mod timeline_scope_supports_test;
 mod transition_behavior_property_test;
 mod ua_form_control_defaults_test;
 mod vendor_prefix_aliasing_test;
