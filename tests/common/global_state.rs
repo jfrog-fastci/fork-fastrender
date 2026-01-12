@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Serialises tests that mutate process-global state (environment variables, current directory,
-/// stage listeners, etc).
+/// etc).
 pub fn global_test_lock() -> MutexGuard<'static, ()> {
   static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
   LOCK
@@ -171,7 +171,10 @@ impl Drop for CurrentDirGuard {
   }
 }
 
-/// RAII guard that installs a process-global stage listener and restores the previous listener on drop.
+/// RAII guard that installs a process-global stage listener and restores the previous listener on
+/// drop.
+///
+/// This is a thin wrapper around [`fastrender::render_control::GlobalStageListenerGuard`].
 #[must_use]
 pub(crate) struct StageListenerGuard {
   _guard: fastrender::render_control::GlobalStageListenerGuard,
