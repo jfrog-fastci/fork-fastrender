@@ -642,7 +642,7 @@ fn float_vertical_span(float: &FloatInfo) -> (f32, f32) {
 /// assert_eq!(left_edge, 0.0); // No float interference
 /// assert_eq!(available_width, 800.0); // Full width available
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FloatContext {
   /// Width of the containing block
   containing_block_width: f32,
@@ -688,6 +688,28 @@ pub struct FloatContext {
   /// Current Y position for float placement
   /// This tracks the "float ceiling" - the lowest point we've processed
   current_y: f32,
+}
+
+impl Clone for FloatContext {
+  fn clone(&self) -> Self {
+    let float_map = self.float_map.clone();
+    let events = self.events.clone();
+    Self {
+      containing_block_width: self.containing_block_width,
+      left_floats: self.left_floats.clone(),
+      right_floats: self.right_floats.clone(),
+      float_map,
+      events,
+      // Do not clone the sweep state / range cache; they can contain large heaps/vectors and are
+      // purely derived from `events`/`float_map`.
+      sweep_state: RefCell::new(FloatSweepState::new(self.float_map.len(), &self.events)),
+      range_cache: RefCell::new(FloatRangeCache::new()),
+      clearance_left_max_bottom: self.clearance_left_max_bottom,
+      clearance_right_max_bottom: self.clearance_right_max_bottom,
+      timeout_elapsed: Cell::new(self.timeout_elapsed.get()),
+      current_y: self.current_y,
+    }
+  }
 }
 
 impl FloatContext {
