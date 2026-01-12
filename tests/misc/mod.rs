@@ -42,7 +42,6 @@ mod js_dom_exception;
 #[cfg(feature = "quickjs")]
 mod js_dom_quickjs_bindings;
 mod js_dom_realm_selectors;
-mod js_dom_shims;
 mod js_css_supports;
 mod js_dom_wrapper_identity;
 mod js_event_loop_timers;
