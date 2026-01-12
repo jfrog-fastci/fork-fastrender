@@ -14,6 +14,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Duration;
+use vm_js::{Scope, Value, Vm, VmError};
+use webidl_vm_js::WebIdlBindingsHost;
 
 use super::browser_document::prepare_dom_inner;
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
@@ -1810,6 +1812,37 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
       self.dom.clear_mutations();
     }
     result
+  }
+}
+
+impl WebIdlBindingsHost for BrowserDocumentDom2 {
+  fn call_operation(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _receiver: Option<Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    Err(VmError::Unimplemented(
+      "WebIDL binding dispatch not implemented for operation",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> std::result::Result<Value, VmError> {
+    Err(VmError::Unimplemented(
+      "WebIDL binding dispatch not implemented for constructor",
+    ))
   }
 }
 
