@@ -167,6 +167,7 @@ mod source;
 mod spec_ops;
 mod string;
 mod symbol;
+mod tick;
 mod value;
 mod vm;
 

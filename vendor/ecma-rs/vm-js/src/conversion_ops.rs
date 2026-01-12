@@ -217,7 +217,7 @@ impl<'a> Scope<'a> {
     scope.push_root(prim)?;
     debug_assert!(!matches!(prim, Value::Object(_)), "ToPrimitive returned object");
 
-    scope.heap_mut().to_number(prim)
+    scope.heap_mut().to_number_with_tick(prim, || vm.tick())
   }
 
   /// ECMAScript `ToObject(argument)`.

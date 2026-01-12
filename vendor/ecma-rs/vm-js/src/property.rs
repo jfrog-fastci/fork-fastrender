@@ -278,6 +278,16 @@ impl Heap {
   pub fn to_number(&mut self, value: Value) -> Result<f64, VmError> {
     crate::ops::to_number(self, value)
   }
+
+  /// Budget-aware variant of [`Heap::to_number`].
+  pub fn to_number_with_tick(
+    &mut self,
+    value: Value,
+    tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<f64, VmError> {
+    let mut tick = tick;
+    crate::ops::to_number_with_tick(self, value, &mut tick)
+  }
 }
 
 // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-tostring

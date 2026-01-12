@@ -3,6 +3,7 @@ use crate::error_object::new_error;
 use crate::async_iterator;
 use crate::for_in::ForInEnumerator;
 use crate::iterator;
+use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
   EnvRootId, ExecutionContext, GcEnv, GcObject, GcString, Heap, JsBigInt, ModuleGraph, ModuleId,
   NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm,
@@ -3549,11 +3550,9 @@ impl<'a> Evaluator<'a> {
           let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
             member_scope.alloc_string_from_code_units(units)?
           } else if direct.stx.tt == TT::LiteralNumber {
-            let n = direct
-              .stx
-              .key
-              .parse::<f64>()
-              .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
+            let mut tick = || self.tick();
+            let n = crate::ops::parse_ascii_decimal_to_f64_str(&direct.stx.key, &mut tick)?
+              .ok_or(VmError::Unimplemented("numeric literal property name parse"))?;
             member_scope.heap_mut().to_string(Value::Number(n))?
           } else {
             member_scope.alloc_string(&direct.stx.key)?
@@ -5663,11 +5662,9 @@ impl<'a> Evaluator<'a> {
               let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
                 member_scope.alloc_string_from_code_units(units)?
               } else if direct.stx.tt == TT::LiteralNumber {
-                let n = direct
-                  .stx
-                  .key
-                  .parse::<f64>()
-                  .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
+                let mut tick = || self.tick();
+                let n = crate::ops::parse_ascii_decimal_to_f64_str(&direct.stx.key, &mut tick)?
+                  .ok_or(VmError::Unimplemented("numeric literal property name parse"))?;
                 member_scope.heap_mut().to_string(Value::Number(n))?
               } else {
                 member_scope.alloc_string(&direct.stx.key)?
@@ -7497,23 +7494,25 @@ impl<'a> Evaluator<'a> {
 
         // 3/4. Number/String.
         (Number(_), String(_)) => {
-          let n = scope.heap_mut().to_number(y)?;
+          let n = scope.heap_mut().to_number_with_tick(y, || self.tick())?;
           y = Number(n);
         }
         (String(_), Number(_)) => {
-          let n = scope.heap_mut().to_number(x)?;
+          let n = scope.heap_mut().to_number_with_tick(x, || self.tick())?;
           x = Number(n);
         }
 
         // 5/6. BigInt/String.
         (BigInt(ax), String(bs)) => {
-          let Some(bi) = string_to_bigint(scope.heap(), bs)? else {
+          let mut tick = || self.tick();
+          let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
             return Ok(false);
           };
           return Ok(ax == bi);
         }
         (String(as_), BigInt(by)) => {
-          let Some(bi) = string_to_bigint(scope.heap(), as_)? else {
+          let mut tick = || self.tick();
+          let Some(bi) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
             return Ok(false);
           };
           return Ok(bi == by);
@@ -7667,8 +7666,8 @@ impl<'a> Evaluator<'a> {
       units
         .try_reserve_exact(total_len)
         .map_err(|_| VmError::OutOfMemory)?;
-      units.extend_from_slice(left_units);
-      units.extend_from_slice(right_units);
+      vec_try_extend_from_slice_with_ticks(&mut units, left_units, || self.tick())?;
+      vec_try_extend_from_slice_with_ticks(&mut units, right_units, || self.tick())?;
 
       let s = add_scope.alloc_string_from_u16_vec(units)?;
       Ok(Value::String(s))
@@ -7700,59 +7699,120 @@ impl<'a> Evaluator<'a> {
     let prim = self.to_primitive(scope, value, ToPrimitiveHint::Number)?;
     match prim {
       Value::BigInt(b) => Ok(NumericValue::BigInt(b)),
-      other => match scope.heap_mut().to_number(other) {
+      other => match scope.heap_mut().to_number_with_tick(other, || self.tick()) {
         Ok(n) => Ok(NumericValue::Number(n)),
         Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, scope, msg)?),
         Err(err) => Err(err),
-      },
+      }
     }
   }
 }
 
-fn string_to_bigint(heap: &Heap, s: GcString) -> Result<Option<JsBigInt>, VmError> {
-  let raw = heap.get_string(s)?.to_utf8_lossy();
-  let trimmed = raw.trim_matches(crate::ops::is_ecma_whitespace);
+fn is_ecma_whitespace_unit(unit: u16) -> bool {
+  matches!(
+    unit,
+    // WhiteSpace (ECMA-262)
+    0x0009
+      | 0x000B
+      | 0x000C
+      | 0x0020
+      | 0x00A0
+      | 0x1680
+      | 0x202F
+      | 0x205F
+      | 0x3000
+      | 0xFEFF
+      // LineTerminator (ECMA-262)
+      | 0x000A
+      | 0x000D
+      | 0x2028
+      | 0x2029
+  ) || matches!(unit, 0x2000..=0x200A)
+}
+
+fn string_to_bigint(
+  heap: &Heap,
+  s: GcString,
+  tick: &mut impl FnMut() -> Result<(), VmError>,
+) -> Result<Option<JsBigInt>, VmError> {
+  let units = heap.get_string(s)?.as_code_units();
+
+  // TrimString (ECMA-262): trim ECMAScript WhiteSpace + LineTerminator.
+  let mut start = 0usize;
+  let mut steps = 0usize;
+  while start < units.len() && is_ecma_whitespace_unit(units[start]) {
+    if steps % 1024 == 0 {
+      tick()?;
+    }
+    steps += 1;
+    start += 1;
+  }
+  let mut end = units.len();
+  while end > start && is_ecma_whitespace_unit(units[end - 1]) {
+    if steps % 1024 == 0 {
+      tick()?;
+    }
+    steps += 1;
+    end -= 1;
+  }
+
+  let trimmed = &units[start..end];
   if trimmed.is_empty() {
     return Ok(None);
   }
 
-  let (negative, rest) = match trimmed.strip_prefix('-') {
-    Some(rest) => (true, rest),
-    None => match trimmed.strip_prefix('+') {
-      Some(rest) => (false, rest),
-      None => (false, trimmed),
-    },
-  };
-  if rest.is_empty() {
+  let mut negative = false;
+  let mut idx = 0usize;
+  if trimmed[idx] == b'+' as u16 {
+    idx += 1;
+  } else if trimmed[idx] == b'-' as u16 {
+    negative = true;
+    idx += 1;
+  }
+  if idx >= trimmed.len() {
     return Ok(None);
   }
 
-  let (radix, digits) = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-    (16u32, hex)
-  } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
-    (2u32, bin)
-  } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-    (8u32, oct)
-  } else {
-    (10u32, rest)
-  };
-  if digits.is_empty() {
+  let mut radix: u32 = 10;
+  if idx + 1 < trimmed.len() && trimmed[idx] == b'0' as u16 {
+    match trimmed[idx + 1] {
+      u if u == b'x' as u16 || u == b'X' as u16 => {
+        radix = 16;
+        idx += 2;
+      }
+      u if u == b'b' as u16 || u == b'B' as u16 => {
+        radix = 2;
+        idx += 2;
+      }
+      u if u == b'o' as u16 || u == b'O' as u16 => {
+        radix = 8;
+        idx += 2;
+      }
+      _ => {}
+    }
+  }
+  if idx >= trimmed.len() {
     return Ok(None);
   }
 
   let radix_bi = JsBigInt::from_u128(radix as u128);
   let mut out = JsBigInt::zero();
-  for b in digits.bytes() {
-    let digit = match b {
-      b'0'..=b'9' => (b - b'0') as u32,
-      b'a'..=b'z' => (b - b'a' + 10) as u32,
-      b'A'..=b'Z' => (b - b'A' + 10) as u32,
+  for (i, &u) in trimmed[idx..].iter().enumerate() {
+    if i % 1024 == 0 {
+      tick()?;
+    }
+    let digit = match u {
+      u if (b'0' as u16..=b'9' as u16).contains(&u) => (u - b'0' as u16) as u32,
+      u if (b'a' as u16..=b'z' as u16).contains(&u) => (u - b'a' as u16 + 10) as u32,
+      u if (b'A' as u16..=b'Z' as u16).contains(&u) => (u - b'A' as u16 + 10) as u32,
       _ => return Ok(None),
     };
     if digit >= radix {
       return Ok(None);
     }
-    out = out.checked_mul(radix_bi).ok_or(VmError::Unimplemented("BigInt parse overflow"))?;
+    out = out
+      .checked_mul(radix_bi)
+      .ok_or(VmError::Unimplemented("BigInt parse overflow"))?;
     out = out
       .checked_add(JsBigInt::from_u128(digit as u128))
       .ok_or(VmError::Unimplemented("BigInt parse overflow"))?;

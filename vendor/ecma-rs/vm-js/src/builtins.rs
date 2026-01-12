@@ -48,7 +48,11 @@ fn require_callable(this: Value) -> Result<GcObject, VmError> {
 }
 
 // https://tc39.es/ecma262/#sec-symboldescriptivestring
-fn symbol_descriptive_string(scope: &mut Scope<'_>, sym: crate::GcSymbol) -> Result<crate::GcString, VmError> {
+fn symbol_descriptive_string(
+  scope: &mut Scope<'_>,
+  sym: crate::GcSymbol,
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<crate::GcString, VmError> {
   // Determine the description length up-front so we can allocate the output buffer without holding
   // heap borrows across allocations (which can trigger GC).
   let desc = scope.heap().get_symbol_description(sym)?;
@@ -72,12 +76,10 @@ fn symbol_descriptive_string(scope: &mut Scope<'_>, sym: crate::GcSymbol) -> Res
   out
     .try_reserve_exact(total_len)
     .map_err(|_| VmError::OutOfMemory)?;
-  out.extend_from_slice(&PREFIX);
+  vec_try_extend_from_slice(&mut out, &PREFIX, || tick())?;
   if let Some(desc) = desc {
-    // Copy description code units into the output buffer, then drop the heap borrow before
-    // allocating the final JS string object.
     let units = scope.heap().get_string(desc)?.as_code_units();
-    out.extend_from_slice(units);
+    vec_try_extend_from_slice(&mut out, units, || tick())?;
   }
   out.push(b')' as u16);
 
@@ -1643,7 +1645,7 @@ pub fn array_buffer_prototype_slice(
     out
       .try_reserve_exact(slice.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    vec_try_extend_from_slice(&mut out, slice)?;
+    vec_try_extend_from_slice(&mut out, slice, || vm.tick())?;
     out
   };
 
@@ -2140,15 +2142,7 @@ pub fn typed_array_prototype_slice(
     out
       .try_reserve_exact(slice.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    out.resize(slice.len(), 0);
-    const TICK_EVERY: usize = 16 * 1024;
-    for (i, chunk) in slice.chunks(TICK_EVERY).enumerate() {
-      if i != 0 {
-        vm.tick()?;
-      }
-      let start = i * TICK_EVERY;
-      out[start..start + chunk.len()].copy_from_slice(chunk);
-    }
+    vec_try_extend_from_slice(&mut out, slice, || vm.tick())?;
     out
   };
 
@@ -6208,15 +6202,12 @@ fn vec_try_push<T>(buf: &mut Vec<T>, value: T) -> Result<(), VmError> {
   Ok(())
 }
 
-fn vec_try_extend_from_slice<T: Copy>(buf: &mut Vec<T>, slice: &[T]) -> Result<(), VmError> {
-  let needed = slice
-    .len()
-    .saturating_sub(buf.capacity().saturating_sub(buf.len()));
-  if needed > 0 {
-    buf.try_reserve(needed).map_err(|_| VmError::OutOfMemory)?;
-  }
-  buf.extend_from_slice(slice);
-  Ok(())
+fn vec_try_extend_from_slice<T: Copy>(
+  buf: &mut Vec<T>,
+  slice: &[T],
+  tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<(), VmError> {
+  crate::tick::vec_try_extend_from_slice_with_ticks(buf, slice, tick)
 }
 
 fn vec_try_extend_from_slice_u16_with_ticks(
@@ -7894,7 +7885,7 @@ pub fn array_prototype_join(
   sep_units
     .try_reserve_exact(sep_slice.len())
     .map_err(|_| VmError::OutOfMemory)?;
-  vec_try_extend_from_slice(&mut sep_units, sep_slice)?;
+  vec_try_extend_from_slice(&mut sep_units, sep_slice, || vm.tick())?;
 
   let empty = scope.alloc_string("")?;
   scope.push_root(Value::String(empty))?;
@@ -7911,7 +7902,7 @@ pub fn array_prototype_join(
       if JsString::heap_size_bytes_for_len(out.len().saturating_add(sep_units.len())) > max_bytes {
         return Err(VmError::OutOfMemory);
       }
-      vec_try_extend_from_slice(&mut out, &sep_units)?;
+      vec_try_extend_from_slice(&mut out, &sep_units, || vm.tick())?;
     }
 
     let key = PropertyKey::from_string(scope.alloc_string(&i.to_string())?);
@@ -7925,7 +7916,7 @@ pub fn array_prototype_join(
     if JsString::heap_size_bytes_for_len(out.len().saturating_add(units.len())) > max_bytes {
       return Err(VmError::OutOfMemory);
     }
-    vec_try_extend_from_slice(&mut out, units)?;
+    vec_try_extend_from_slice(&mut out, units, || vm.tick())?;
   }
 
   let s = scope.alloc_string_from_u16_vec(out)?;
@@ -8957,7 +8948,7 @@ pub fn string_constructor_call(
     None => scope.alloc_string("")?,
     // ECMA-262 `String ( value )` special-case: `String(Symbol("x"))` does not throw even though
     // `ToString(Symbol("x"))` would.
-    Some(Value::Symbol(sym)) => symbol_descriptive_string(scope, sym)?,
+    Some(Value::Symbol(sym)) => symbol_descriptive_string(scope, sym, || vm.tick())?,
     Some(v) => scope.to_string(vm, host, hooks, v)?,
   };
   Ok(Value::String(s))
@@ -9623,7 +9614,13 @@ pub fn string_prototype_slice(
 
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    js.as_code_units()[start..end].to_vec()
+    let slice = &js.as_code_units()[start..end];
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
   };
   let out = scope.alloc_string_from_u16_vec(units)?;
   Ok(Value::String(out))
@@ -9886,7 +9883,13 @@ pub fn string_prototype_trim(
 
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    js.as_code_units()[start..end].to_vec()
+    let slice = &js.as_code_units()[start..end];
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
   };
   let out = scope.alloc_string_from_u16_vec(units)?;
   Ok(Value::String(out))
@@ -9931,7 +9934,13 @@ pub fn string_prototype_trim_start(
 
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    js.as_code_units()[start..len].to_vec()
+    let slice = &js.as_code_units()[start..len];
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
   };
   let out = scope.alloc_string_from_u16_vec(units)?;
   Ok(Value::String(out))
@@ -9976,7 +9985,13 @@ pub fn string_prototype_trim_end(
 
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    js.as_code_units()[0..end].to_vec()
+    let slice = &js.as_code_units()[0..end];
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
   };
   let out = scope.alloc_string_from_u16_vec(units)?;
   Ok(Value::String(out))
@@ -10011,7 +10026,13 @@ pub fn string_prototype_substring(
 
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    js.as_code_units()[from..to].to_vec()
+    let slice = &js.as_code_units()[from..to];
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
   };
   let out = scope.alloc_string_from_u16_vec(units)?;
   Ok(Value::String(out))
@@ -10073,7 +10094,13 @@ pub fn string_prototype_substr(
 
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    js.as_code_units()[start..end].to_vec()
+    let slice = &js.as_code_units()[start..end];
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
   };
   let out = scope.alloc_string_from_u16_vec(units)?;
   Ok(Value::String(out))
@@ -10239,7 +10266,13 @@ pub fn string_prototype_split(
     } else {
       let units: Vec<u16> = {
         let js = iter_scope.heap().get_string(s)?;
-        js.as_code_units()[from..to].to_vec()
+        let slice = &js.as_code_units()[from..to];
+        let mut units: Vec<u16> = Vec::new();
+        units
+          .try_reserve_exact(slice.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+        units
       };
       iter_scope.alloc_string_from_u16_vec(units)?
     };
@@ -10302,7 +10335,13 @@ pub fn string_prototype_repeat(
 
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    js.as_code_units().to_vec()
+    let slice = js.as_code_units();
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
   };
   if units.is_empty() {
     return Ok(Value::String(scope.alloc_string("")?));
@@ -10326,7 +10365,7 @@ pub fn string_prototype_repeat(
     if i % 1024 == 0 {
       vm.tick()?;
     }
-    out.extend_from_slice(&units);
+    vec_try_extend_from_slice(&mut out, &units, || vm.tick())?;
   }
 
   let out = scope.alloc_string_from_u16_vec(out)?;
@@ -11085,7 +11124,7 @@ pub fn symbol_prototype_to_string(
     ));
   };
 
-  let s = symbol_descriptive_string(scope, sym)?;
+  let s = symbol_descriptive_string(scope, sym, || vm.tick())?;
   Ok(Value::String(s))
 }
 
@@ -11366,19 +11405,26 @@ fn is_ascii_digit_unit(unit: u16) -> bool {
   (b'0' as u16..=b'9' as u16).contains(&unit)
 }
 
-fn parse_ascii_digits_to_i64_with_limit(units: &[u16], max: i64) -> i64 {
+fn parse_ascii_digits_to_i64_with_limit(
+  units: &[u16],
+  max: i64,
+  tick: &mut impl FnMut() -> Result<(), VmError>,
+) -> Result<i64, VmError> {
   let mut v: i64 = 0;
-  for &u in units {
+  for (i, &u) in units.iter().enumerate() {
+    if i % 1024 == 0 {
+      tick()?;
+    }
     let d = (u - b'0' as u16) as i64;
     if v > max {
-      return max;
+      return Ok(max);
     }
     v = v.saturating_mul(10).saturating_add(d);
     if v > max {
-      return max;
+      return Ok(max);
     }
   }
-  v
+  Ok(v)
 }
 
 fn parse_float_from_str_decimal_literal_prefix(
@@ -11479,7 +11525,7 @@ fn parse_float_from_str_decimal_literal_prefix(
       i += 1;
     }
     // Remaining units are digits (prefix validation guarantees at least one).
-    exp_part = parse_ascii_digits_to_i64_with_limit(&prefix_units[i..], MAX_EXP_ABS);
+    exp_part = parse_ascii_digits_to_i64_with_limit(&prefix_units[i..], MAX_EXP_ABS, &mut tick)?;
     if exp_sign == -1 {
       exp_part = -exp_part;
     }
@@ -12818,15 +12864,19 @@ pub fn symbol_key_for(
   })
 }
 
-fn concat_with_colon_space(name: &[u16], message: &[u16]) -> Result<Vec<u16>, VmError> {
+fn concat_with_colon_space(
+  name: &[u16],
+  message: &[u16],
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<Vec<u16>, VmError> {
   let mut out: Vec<u16> = Vec::new();
   out
     .try_reserve(name.len().saturating_add(2).saturating_add(message.len()))
     .map_err(|_| VmError::OutOfMemory)?;
-  vec_try_extend_from_slice(&mut out, name)?;
+  vec_try_extend_from_slice(&mut out, name, || tick())?;
   vec_try_push(&mut out, b':' as u16)?;
   vec_try_push(&mut out, b' ' as u16)?;
-  vec_try_extend_from_slice(&mut out, message)?;
+  vec_try_extend_from_slice(&mut out, message, || tick())?;
   Ok(out)
 }
 
@@ -12895,7 +12945,7 @@ pub fn error_prototype_to_string(
     return Ok(Value::String(name));
   }
 
-  let out = concat_with_colon_space(name_units, message_units)?;
+  let out = concat_with_colon_space(name_units, message_units, || vm.tick())?;
   let s = scope.alloc_string_from_u16_vec(out)?;
   Ok(Value::String(s))
 }
@@ -13151,23 +13201,11 @@ impl<'a> JsonParser<'a> {
     }
 
     let end = self.pos;
-    let slice = &self.units[start..end];
-    let mut bytes: Vec<u8> = Vec::new();
-    bytes
-      .try_reserve_exact(slice.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-    for (i, &u) in slice.iter().enumerate() {
-      if i % 1024 == 0 {
-        vm.tick()?;
-      }
-      // Valid JSON numbers are ASCII-only.
-      if u > 0x7F {
-        return Err(json_syntax_error(vm, scope));
-      }
-      bytes.push(u as u8);
+    let mut tick = || vm.tick();
+    match crate::ops::parse_ascii_decimal_to_f64_units(&self.units[start..end], &mut tick)? {
+      Some(n) => Ok(n),
+      None => Err(json_syntax_error(vm, scope)),
     }
-    let s = std::str::from_utf8(&bytes).map_err(|_| json_syntax_error(vm, scope))?;
-    s.parse::<f64>().map_err(|_| json_syntax_error(vm, scope))
   }
 
   fn parse_array(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<Value, VmError> {
@@ -13292,18 +13330,13 @@ pub fn json_parse(
   scope.push_root(Value::String(s))?;
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
-    let src = js.as_code_units();
-    let mut out: Vec<u16> = Vec::new();
-    out
-      .try_reserve_exact(src.len())
+    let slice = js.as_code_units();
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    for (i, &u) in src.iter().enumerate() {
-      if i % 1024 == 0 {
-        vm.tick()?;
-      }
-      out.push(u);
-    }
-    out
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
   };
 
   let mut parser = JsonParser::new(&units);
@@ -13506,9 +13539,13 @@ pub fn json_stringify(
       Ok(())
     }
 
-    fn push_units(&mut self, units: &[u16]) -> Result<(), VmError> {
+    fn push_units(
+      &mut self,
+      units: &[u16],
+      tick: impl FnMut() -> Result<(), VmError>,
+    ) -> Result<(), VmError> {
       self.check_grow(units.len())?;
-      vec_try_extend_from_slice(&mut self.buf, units)
+      vec_try_extend_from_slice(&mut self.buf, units, tick)
     }
 
     fn push_hex_escape(&mut self, unit: u16) -> Result<(), VmError> {
@@ -13526,7 +13563,7 @@ pub fn json_stringify(
         *d = c as u16;
         n >>= 4;
       }
-      self.push_units(&digits)
+      self.push_units(&digits, || Ok(()))
     }
   }
 
@@ -13740,7 +13777,7 @@ pub fn json_stringify(
         }
         let s = scope.heap_mut().to_string(Value::Number(n))?;
         let units = scope.heap().get_string(s)?.as_code_units();
-        out.push_units(units)
+        out.push_units(units, || vm.tick())
       }
       Value::String(s) => quote_json_string(vm, scope, out, s),
       Value::Object(obj) => {
@@ -13771,7 +13808,7 @@ pub fn json_stringify(
     scope.push_root(Value::Object(obj))?;
 
     let stepback_len = state.indent.len();
-    vec_try_extend_from_slice(&mut state.indent, &state.gap)?;
+    vec_try_extend_from_slice(&mut state.indent, &state.gap, || Ok(()))?;
 
     // len = ToLength(Get(array, "length"))
     let len_value = crate::spec_ops::internal_get_with_host_and_hooks(
@@ -13814,14 +13851,14 @@ pub fn json_stringify(
       out.push_unit(b']' as u16)?;
     } else {
       out.push_unit(b'\n' as u16)?;
-      out.push_units(&state.indent)?;
+      out.push_units(&state.indent, || vm.tick())?;
       for i in 0..len {
         if i % 1024 == 0 {
           vm.tick()?;
         }
         if i > 0 {
           out.push_ascii(b",\n")?;
-          out.push_units(&state.indent)?;
+          out.push_units(&state.indent, || vm.tick())?;
         }
         let mut el_scope = scope.reborrow();
         let key_s = alloc_string_from_usize(&mut el_scope, i)?;
@@ -13833,7 +13870,7 @@ pub fn json_stringify(
         serialize_json_value(vm, &mut el_scope, host, hooks, state, out, element)?;
       }
       out.push_unit(b'\n' as u16)?;
-      out.push_units(&state.indent[..stepback_len])?;
+      out.push_units(&state.indent[..stepback_len], || vm.tick())?;
       out.push_unit(b']' as u16)?;
     }
 
@@ -13856,7 +13893,7 @@ pub fn json_stringify(
     scope.push_root(Value::Object(obj))?;
 
     let stepback_len = state.indent.len();
-    vec_try_extend_from_slice(&mut state.indent, &state.gap)?;
+    vec_try_extend_from_slice(&mut state.indent, &state.gap, || Ok(()))?;
 
     // Determine key list.
     //
@@ -13938,10 +13975,10 @@ pub fn json_stringify(
         p_scope.push_root(prop_value)?;
         if !wrote_any {
           out.push_unit(b'\n' as u16)?;
-          out.push_units(&state.indent)?;
+          out.push_units(&state.indent, || vm.tick())?;
         } else {
           out.push_ascii(b",\n")?;
-          out.push_units(&state.indent)?;
+          out.push_units(&state.indent, || vm.tick())?;
         }
         wrote_any = true;
         quote_json_string(vm, &mut p_scope, out, p)?;
@@ -13950,7 +13987,7 @@ pub fn json_stringify(
       }
       if wrote_any {
         out.push_unit(b'\n' as u16)?;
-        out.push_units(&state.indent[..stepback_len])?;
+        out.push_units(&state.indent[..stepback_len], || vm.tick())?;
       }
       out.push_unit(b'}' as u16)?;
     }

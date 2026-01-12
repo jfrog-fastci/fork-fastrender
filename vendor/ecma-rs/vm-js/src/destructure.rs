@@ -596,11 +596,9 @@ fn resolve_obj_pat_key(
       let s = if let Some(units) = literal_string_code_units(&direct.assoc) {
         scope.alloc_string_from_code_units(units)?
       } else if direct.stx.tt == TT::LiteralNumber {
-        let n = direct
-          .stx
-          .key
-          .parse::<f64>()
-          .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
+        let mut tick = || vm.tick();
+        let n = crate::ops::parse_ascii_decimal_to_f64_str(&direct.stx.key, &mut tick)?
+          .ok_or(VmError::Unimplemented("numeric literal property name parse"))?;
         scope.heap_mut().to_string(Value::Number(n))?
       } else {
         scope.alloc_string(&direct.stx.key)?
