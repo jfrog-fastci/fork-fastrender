@@ -268,6 +268,11 @@ pub(crate) struct WindowRealmUserData {
   pub(crate) module_graph: Option<Box<ModuleGraph>>,
   pub(crate) worker_registry: crate::js::window_worker::WorkerRegistry,
   dom_platform: Option<DomPlatform>,
+  /// Registry of realm-owned (non-host) `dom2::Document` instances keyed by their document ID.
+  ///
+  /// This is used for DOMs created from JS (e.g. `document.implementation.createHTMLDocument()`)
+  /// which are not backed by the embedder/renderer.
+  owned_dom2_documents: HashMap<NodeId, Box<dom2::Document>>,
   /// Deterministic per-realm PRNG state used by `window.crypto` RNG APIs.
   pub(crate) crypto_rng_state: u64,
   /// Fallback `dom2::Document` used for events when the realm is not backed by a host DOM.
@@ -350,6 +355,7 @@ impl WindowRealmUserData {
       module_graph: None,
       worker_registry: crate::js::window_worker::WorkerRegistry::default(),
       dom_platform: None,
+      owned_dom2_documents: HashMap::new(),
       crypto_rng_state,
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
       window_obj: None,
@@ -15877,8 +15883,108 @@ fn element_prefix_get_native(
   Ok(Value::String(scope.alloc_string(prefix)?))
 }
 
+#[derive(Clone, Copy)]
+struct ElementHandle {
+  document_id: NodeId,
+  node_id: NodeId,
+  document_obj: GcObject,
+}
+
+fn is_host_document_id(document_id: NodeId) -> bool {
+  // `dom2` always stores the host document node at index 0.
+  document_id.index() == 0
+}
+
+fn element_handle_from_wrapper_obj(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  wrapper_obj: GcObject,
+  error_message: &'static str,
+) -> Result<ElementHandle, VmError> {
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(error_message))?;
+  let node_id = platform
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))
+    .map_err(|_| VmError::TypeError(error_message))?;
+  let document_obj =
+    node_wrapper_document_obj(scope, wrapper_obj, node_id).map_err(|_| VmError::TypeError(error_message))?;
+  let document_id = platform
+    .require_document_id(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError(error_message))?;
+  Ok(ElementHandle {
+    document_id,
+    node_id,
+    document_obj,
+  })
+}
+
+fn element_handle_from_wrapper_obj_opt(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  wrapper_obj: GcObject,
+) -> Option<ElementHandle> {
+  let platform = dom_platform_mut(vm)?;
+  let node_id = platform
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))
+    .ok()?;
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id).ok()?;
+  let document_id = platform
+    .require_document_id(scope.heap(), Value::Object(document_obj))
+    .ok()?;
+  Some(ElementHandle {
+    document_id,
+    node_id,
+    document_obj,
+  })
+}
+
+fn owned_dom_ptr_for_document_id_read(
+  vm: &mut Vm,
+  document_id: NodeId,
+) -> Option<NonNull<dom2::Document>> {
+  let data = vm.user_data::<WindowRealmUserData>()?;
+  let dom = data.owned_dom2_documents.get(&document_id)?;
+  Some(NonNull::from(dom.as_ref()))
+}
+
+fn owned_dom_ptr_for_document_id_mut(
+  vm: &mut Vm,
+  document_id: NodeId,
+) -> Option<NonNull<dom2::Document>> {
+  let dom_ptr = {
+    let data = vm.user_data_mut::<WindowRealmUserData>()?;
+    let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+    NonNull::from(dom.as_mut())
+  };
+  Some(dom_ptr)
+}
+
+fn dom_for_document_id_read<'a>(
+  vm: &mut Vm,
+  host: &'a mut dyn VmHost,
+  document_id: NodeId,
+) -> Option<&'a dom2::Document> {
+  if is_host_document_id(document_id) {
+    return dom_from_vm_host(host);
+  }
+  let dom_ptr = owned_dom_ptr_for_document_id_read(vm, document_id)?;
+  // SAFETY: owned documents are stored in `WindowRealmUserData` for the lifetime of the realm, so
+  // the pointer remains valid for the duration of this native call.
+  Some(unsafe { dom_ptr.as_ref() })
+}
+
+fn dom_ptr_for_document_id_mut(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  document_id: NodeId,
+) -> Option<NonNull<dom2::Document>> {
+  if is_host_document_id(document_id) {
+    return dom_from_vm_host_mut(host).map(NonNull::from);
+  }
+  owned_dom_ptr_for_document_id_mut(vm, document_id)
+}
+
 fn element_class_name_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -15890,24 +15996,14 @@ fn element_class_name_get_native(
     return Ok(Value::Undefined);
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => return Ok(Value::Undefined),
-  };
-
-  let Some(dom) = dom_from_vm_host(host) else {
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, wrapper_obj) else {
     return Ok(Value::Undefined);
   };
-  let node_id = match dom.node_id_from_index(node_index) {
-    Ok(id) => id,
-    Err(_) => return Ok(Value::Undefined),
+  let Some(dom) = dom_for_document_id_read(vm, host, handle.document_id) else {
+    return Ok(Value::Undefined);
   };
 
-  let class_name = dom.element_class_name(node_id);
+  let class_name = dom.element_class_name(handle.node_id);
   let s = scope.alloc_string(class_name)?;
   Ok(Value::String(s))
 }
@@ -15925,22 +16021,8 @@ fn element_class_name_set_native(
     return Ok(Value::Undefined);
   };
 
-  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => return Ok(Value::Undefined),
-  };
-
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => return Ok(Value::Undefined),
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, wrapper_obj) else {
+    return Ok(Value::Undefined);
   };
 
   let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -15951,16 +16033,27 @@ fn element_class_name_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
+  if !is_host_document_id(handle.document_id) {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Ok(Value::Undefined);
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+    // access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    dom
+      .set_element_class_name(handle.node_id, &new_value)
+      .map_err(|_| VmError::TypeError("failed to set Element.className"))?;
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    return Ok(Value::Undefined);
+  }
+
   let host_dom_result: Option<(bool, bool)> = (|| -> Result<_, VmError> {
     let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
       return Ok(None);
     };
-    let node_id = match host_dom.node_id_from_index(node_index) {
-      Ok(id) => id,
-      Err(_) => return Ok(Some((false, false))),
-    };
     let changed = host_dom
-      .set_element_class_name(node_id, &new_value)
+      .set_element_class_name(handle.node_id, &new_value)
       .map_err(|_| VmError::TypeError("failed to set Element.className"))?;
     let needs_microtask = if changed {
       host_dom.take_mutation_observer_microtask_needed()
@@ -15971,31 +16064,37 @@ fn element_class_name_set_native(
   })()?;
   if let Some((changed, needs_microtask)) = host_dom_result {
     if changed {
-      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+      maybe_queue_mutation_observer_microtask(
+        vm,
+        scope,
+        host,
+        hooks,
+        handle.document_obj,
+        needs_microtask,
+      )?;
     }
     return Ok(Value::Undefined);
   }
 
-  let Some(dom) = dom_from_vm_host_mut(host) else {
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
-  let node_id = match dom.node_id_from_index(node_index) {
-    Ok(id) => id,
-    Err(_) => return Ok(Value::Undefined),
-  };
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
 
   dom
-    .set_element_class_name(node_id, &new_value)
+    .set_element_class_name(handle.node_id, &new_value)
     .map_err(|_| VmError::TypeError("failed to set Element.className"))?;
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
 
   Ok(Value::Undefined)
 }
 
 fn element_id_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -16007,24 +16106,14 @@ fn element_id_get_native(
     return Ok(Value::Undefined);
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => return Ok(Value::Undefined),
-  };
-
-  let Some(dom) = dom_from_vm_host(host) else {
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, wrapper_obj) else {
     return Ok(Value::Undefined);
   };
-  let node_id = match dom.node_id_from_index(node_index) {
-    Ok(id) => id,
-    Err(_) => return Ok(Value::Undefined),
+  let Some(dom) = dom_for_document_id_read(vm, host, handle.document_id) else {
+    return Ok(Value::Undefined);
   };
 
-  let id = dom.element_id(node_id);
+  let id = dom.element_id(handle.node_id);
   let s = scope.alloc_string(id)?;
   Ok(Value::String(s))
 }
@@ -16042,22 +16131,8 @@ fn element_id_set_native(
     return Ok(Value::Undefined);
   };
 
-  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => return Ok(Value::Undefined),
-  };
-
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => return Ok(Value::Undefined),
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, wrapper_obj) else {
+    return Ok(Value::Undefined);
   };
 
   let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -16068,20 +16143,34 @@ fn element_id_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let Some(dom) = dom_from_vm_host_mut(host) else {
+  if !is_host_document_id(handle.document_id) {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Ok(Value::Undefined);
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+    // access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    dom
+      .set_element_id(handle.node_id, &new_value)
+      .map_err(|_| VmError::TypeError("failed to set Element.id"))?;
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    return Ok(Value::Undefined);
+  }
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
-  let node_id = match dom.node_id_from_index(node_index) {
-    Ok(id) => id,
-    Err(_) => return Ok(Value::Undefined),
-  };
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
 
   dom
-    .set_element_id(node_id, &new_value)
+    .set_element_id(handle.node_id, &new_value)
     .map_err(|_| VmError::TypeError("failed to set Element.id"))?;
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
 
   Ok(Value::Undefined)
 }
@@ -16120,7 +16209,7 @@ fn dom_node_id_from_obj(
 }
 
 fn element_reflected_string_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -16133,14 +16222,14 @@ fn element_reflected_string_get_native(
   };
 
   let attr = native_slot_string(scope, callee)?;
-  let Some(dom) = dom_from_vm_host(host) else {
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, obj) else {
     return Ok(Value::Undefined);
   };
-  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+  let Some(dom) = dom_for_document_id_read(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
   let value = dom
-    .get_attribute(node_id, &attr)
+    .get_attribute(handle.node_id, &attr)
     .ok()
     .flatten()
     .unwrap_or("");
@@ -16160,20 +16249,35 @@ fn element_reflected_string_set_native(
     return Ok(Value::Undefined);
   };
 
-  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(obj, &document_obj_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => return Ok(Value::Undefined),
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, obj) else {
+    return Ok(Value::Undefined);
   };
 
   let attr = native_slot_string(scope, callee)?;
-  let Some(dom) = dom_from_vm_host_mut(host) else {
+  if !is_host_document_id(handle.document_id) {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Ok(Value::Undefined);
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+    // access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+    let new_value = scope.heap_mut().to_string(new_value)?;
+    let new_value = scope
+      .heap()
+      .get_string(new_value)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_default();
+
+    if let Err(err) = dom.set_attribute(handle.node_id, &attr, &new_value) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
     return Ok(Value::Undefined);
-  };
-  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+  }
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
 
@@ -16185,12 +16289,11 @@ fn element_reflected_string_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let mut dom_ptr = NonNull::from(&mut *dom);
-  if let Err(err) = dom.set_attribute(node_id, &attr, &new_value) {
+  if let Err(err) = unsafe { dom_ptr.as_mut() }.set_attribute(handle.node_id, &attr, &new_value) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
   let should_run_src_attribute_changed_steps =
-    attr.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id);
+    attr.eq_ignore_ascii_case("src") && is_html_script_element(unsafe { dom_ptr.as_ref() }, handle.node_id);
 
   if should_run_src_attribute_changed_steps {
     run_dynamic_script_src_attribute_changed_steps(
@@ -16198,19 +16301,26 @@ fn element_reflected_string_set_native(
       scope,
       host,
       hooks,
-      document_obj,
+      handle.document_obj,
       dom_ptr,
-      node_id,
+      handle.node_id,
     )?;
   }
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  maybe_queue_mutation_observer_microtask(
+    vm,
+    scope,
+    host,
+    hooks,
+    handle.document_obj,
+    needs_microtask,
+  )?;
 
   Ok(Value::Undefined)
 }
 
 fn element_reflected_bool_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -16223,19 +16333,19 @@ fn element_reflected_bool_get_native(
   };
 
   let attr = native_slot_string(scope, callee)?;
-  let Some(dom) = dom_from_vm_host(host) else {
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, obj) else {
     return Ok(Value::Undefined);
   };
-  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+  let Some(dom) = dom_for_document_id_read(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
-  if attr == "async" && is_html_script_element(dom, node_id) {
-    let force_async = dom.node(node_id).script_force_async;
-    let async_attr = dom.has_attribute(node_id, "async").unwrap_or(false);
+  if attr == "async" && is_html_script_element(dom, handle.node_id) {
+    let force_async = dom.node(handle.node_id).script_force_async;
+    let async_attr = dom.has_attribute(handle.node_id, "async").unwrap_or(false);
     return Ok(Value::Bool(force_async || async_attr));
   }
   Ok(Value::Bool(
-    dom.has_attribute(node_id, &attr).unwrap_or(false),
+    dom.has_attribute(handle.node_id, &attr).unwrap_or(false),
   ))
 }
 
@@ -16252,27 +16362,22 @@ fn element_reflected_bool_set_native(
     return Ok(Value::Undefined);
   };
 
-  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(obj, &document_obj_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => return Ok(Value::Undefined),
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, obj) else {
+    return Ok(Value::Undefined);
   };
 
   let attr = native_slot_string(scope, callee)?;
-  let Some(dom) = dom_from_vm_host_mut(host) else {
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
-  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
-    return Ok(Value::Undefined);
-  };
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
 
   let present_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let present = scope.heap().to_boolean(present_value)?;
 
-  if attr == "async" && is_html_script_element(dom, node_id) {
+  if attr == "async" && is_html_script_element(dom, handle.node_id) {
     // HTMLScriptElement.async setter:
     // - If value is true: ensure the `async` content attribute is present.
     // - If value is false: set the element's "force async" flag to false and remove the `async`
@@ -16281,21 +16386,26 @@ fn element_reflected_bool_set_native(
     // Note: adding the `async` content attribute clears the "force async" flag via dom2's attribute
     // mutation hooks, so we only need to explicitly clear it for the `false` path here.
     if !present {
-      if let Err(err) = dom.set_script_force_async(node_id, false) {
+      if let Err(err) = dom.set_script_force_async(handle.node_id, false) {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
     }
-    if let Err(err) = dom.set_bool_attribute(node_id, "async", present) {
+    if let Err(err) = dom.set_bool_attribute(handle.node_id, "async", present) {
       return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
     }
     return Ok(Value::Undefined);
   }
-  if let Err(err) = dom.set_bool_attribute(node_id, &attr, present) {
+  if let Err(err) = dom.set_bool_attribute(handle.node_id, &attr, present) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  if !is_host_document_id(handle.document_id) {
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    return Ok(Value::Undefined);
+  }
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
 
   Ok(Value::Undefined)
 }
@@ -18302,7 +18412,7 @@ fn element_class_list_replace_native(
 }
 
 fn element_get_attribute_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -18316,18 +18426,12 @@ fn element_get_attribute_native(
     ));
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.getAttribute must be called on an element object",
-      ));
-    }
-  };
+  let handle = element_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "Element.getAttribute must be called on an element object",
+  )?;
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let name_value = scope.heap_mut().to_string(name_value)?;
@@ -18337,14 +18441,11 @@ fn element_get_attribute_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+  let dom = dom_for_document_id_read(vm, host, handle.document_id).ok_or(VmError::TypeError(
     "Element.getAttribute requires a DOM-backed document",
   ))?;
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("Element.getAttribute must be called on an element object"))?;
 
-  match dom.get_attribute(node_id, &name) {
+  match dom.get_attribute(handle.node_id, &name) {
     Ok(Some(value)) => Ok(Value::String(scope.alloc_string(value)?)),
     Ok(None) => Ok(Value::Null),
     Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
@@ -18932,31 +19033,12 @@ fn element_set_attribute_native(
     ));
   };
 
-  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.setAttribute must be called on an element object",
-      ));
-    }
-  };
-
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.setAttribute must be called on an element object",
-      ));
-    }
-  };
+  let handle = element_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "Element.setAttribute must be called on an element object",
+  )?;
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let name_value = scope.heap_mut().to_string(name_value)?;
@@ -18974,56 +19056,65 @@ fn element_set_attribute_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
-    let node_id = document.dom().node_id_from_index(node_index).map_err(|_| {
-      VmError::TypeError("Element.setAttribute must be called on an element object")
-    })?;
-    let dom_ptr = document.dom_non_null();
-    let should_run_src_attribute_changed_steps =
-      name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
+  if is_host_document_id(handle.document_id) {
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      let node_id = handle.node_id;
+      let dom_ptr = document.dom_non_null();
+      let should_run_src_attribute_changed_steps =
+        name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
 
-    let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
-      match dom.set_attribute(node_id, &name, &value) {
-        Ok(changed) => {
-          let needs_microtask = dom.take_mutation_observer_microtask_needed();
-          ((Ok(changed), needs_microtask), changed)
+      let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+        match dom.set_attribute(node_id, &name, &value) {
+          Ok(changed) => {
+            let needs_microtask = dom.take_mutation_observer_microtask_needed();
+            ((Ok(changed), needs_microtask), changed)
+          }
+          Err(err) => ((Err(err), false), false),
         }
-        Err(err) => ((Err(err), false), false),
-      }
-    });
-    let changed = match result {
-      Ok(v) => v,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
-    };
+      });
+      let changed = match result {
+        Ok(v) => v,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      };
 
-    if changed && should_run_src_attribute_changed_steps {
-      run_dynamic_script_src_attribute_changed_steps(
+      if changed && should_run_src_attribute_changed_steps {
+        run_dynamic_script_src_attribute_changed_steps(
+          vm,
+          scope,
+          host,
+          hooks,
+          handle.document_obj,
+          dom_ptr,
+          node_id,
+        )?;
+      }
+      maybe_queue_mutation_observer_microtask(
         vm,
         scope,
         host,
         hooks,
-        document_obj,
-        dom_ptr,
-        node_id,
+        handle.document_obj,
+        needs_microtask,
       )?;
+      return Ok(Value::Undefined);
     }
-    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
-    return Ok(Value::Undefined);
   }
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id).ok_or(VmError::TypeError(
     "Element.setAttribute requires a DOM-backed document",
   ))?;
-  let mut dom_ptr = NonNull::from(&mut *dom);
-  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
-    VmError::TypeError("Element.setAttribute must be called on an element object")
-  })?;
-  let changed = match dom.set_attribute(node_id, &name, &value) {
+  let changed = match unsafe { dom_ptr.as_mut() }.set_attribute(handle.node_id, &name, &value) {
     Ok(v) => v,
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
-  let should_run_src_attribute_changed_steps =
-    name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id);
+  if !is_host_document_id(handle.document_id) {
+    // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
+    let _ = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+    return Ok(Value::Undefined);
+  }
+
+  let should_run_src_attribute_changed_steps = name.eq_ignore_ascii_case("src")
+    && is_html_script_element(unsafe { dom_ptr.as_ref() }, handle.node_id);
 
   if changed && should_run_src_attribute_changed_steps {
     run_dynamic_script_src_attribute_changed_steps(
@@ -19031,13 +19122,20 @@ fn element_set_attribute_native(
       scope,
       host,
       hooks,
-      document_obj,
+      handle.document_obj,
       dom_ptr,
-      node_id,
+      handle.node_id,
     )?;
   }
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  maybe_queue_mutation_observer_microtask(
+    vm,
+    scope,
+    host,
+    hooks,
+    handle.document_obj,
+    needs_microtask,
+  )?;
 
   Ok(Value::Undefined)
 }
@@ -19057,30 +19155,12 @@ fn element_remove_attribute_native(
     ));
   };
 
-  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.removeAttribute must be called on an element object",
-      ));
-    }
-  };
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.removeAttribute must be called on an element object",
-      ));
-    }
-  };
+  let handle = element_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "Element.removeAttribute must be called on an element object",
+  )?;
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let name_value = scope.heap_mut().to_string(name_value)?;
@@ -19090,57 +19170,65 @@ fn element_remove_attribute_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
-    let node_id = document.dom().node_id_from_index(node_index).map_err(|_| {
-      VmError::TypeError("Element.removeAttribute must be called on an element object")
-    })?;
-    let dom_ptr = document.dom_non_null();
-    let should_run_src_attribute_changed_steps =
-      name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
+  if is_host_document_id(handle.document_id) {
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      let node_id = handle.node_id;
+      let dom_ptr = document.dom_non_null();
+      let should_run_src_attribute_changed_steps =
+        name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
 
-    let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
-      match dom.remove_attribute(node_id, &name) {
-        Ok(changed) => {
-          let needs_microtask = dom.take_mutation_observer_microtask_needed();
-          ((Ok(changed), needs_microtask), changed)
+      let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+        match dom.remove_attribute(node_id, &name) {
+          Ok(changed) => {
+            let needs_microtask = dom.take_mutation_observer_microtask_needed();
+            ((Ok(changed), needs_microtask), changed)
+          }
+          Err(err) => ((Err(err), false), false),
         }
-        Err(err) => ((Err(err), false), false),
-      }
-    });
-    let changed = match result {
-      Ok(v) => v,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
-    };
+      });
+      let changed = match result {
+        Ok(v) => v,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      };
 
-    if changed && should_run_src_attribute_changed_steps {
-      run_dynamic_script_src_attribute_changed_steps(
+      if changed && should_run_src_attribute_changed_steps {
+        run_dynamic_script_src_attribute_changed_steps(
+          vm,
+          scope,
+          host,
+          hooks,
+          handle.document_obj,
+          dom_ptr,
+          node_id,
+        )?;
+      }
+      maybe_queue_mutation_observer_microtask(
         vm,
         scope,
         host,
         hooks,
-        document_obj,
-        dom_ptr,
-        node_id,
+        handle.document_obj,
+        needs_microtask,
       )?;
+      return Ok(Value::Undefined);
     }
-    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
-    return Ok(Value::Undefined);
   }
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id).ok_or(VmError::TypeError(
     "Element.removeAttribute requires a DOM-backed document",
   ))?;
-  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
-    VmError::TypeError("Element.removeAttribute must be called on an element object")
-  })?;
-  let mut dom_ptr = NonNull::from(&mut *dom);
-
-  let changed = match dom.remove_attribute(node_id, &name) {
+  let changed = match unsafe { dom_ptr.as_mut() }.remove_attribute(handle.node_id, &name) {
     Ok(v) => v,
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
-  let should_run_src_attribute_changed_steps =
-    name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id);
+  if !is_host_document_id(handle.document_id) {
+    // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
+    let _ = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+    return Ok(Value::Undefined);
+  }
+
+  let should_run_src_attribute_changed_steps = name.eq_ignore_ascii_case("src")
+    && is_html_script_element(unsafe { dom_ptr.as_ref() }, handle.node_id);
 
   if changed && should_run_src_attribute_changed_steps {
     run_dynamic_script_src_attribute_changed_steps(
@@ -19148,13 +19236,20 @@ fn element_remove_attribute_native(
       scope,
       host,
       hooks,
-      document_obj,
+      handle.document_obj,
       dom_ptr,
-      node_id,
+      handle.node_id,
     )?;
   }
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  maybe_queue_mutation_observer_microtask(
+    vm,
+    scope,
+    host,
+    hooks,
+    handle.document_obj,
+    needs_microtask,
+  )?;
 
   Ok(Value::Undefined)
 }
