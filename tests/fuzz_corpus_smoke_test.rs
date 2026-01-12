@@ -10,14 +10,16 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
- 
+
+mod common;
+
 const VIEWPORT: u32 = 256;
 const DPR: f32 = 1.0;
 const STYLESHEET_LIMIT: usize = 16;
 const CSS_PARSE_TIMEOUT: Duration = Duration::from_millis(200);
 const HTML_RENDER_TIMEOUT: Duration = Duration::from_millis(1500);
 const HTML_RENDER_TIMEOUT_STRESS: Duration = Duration::from_millis(3000);
- 
+
 const REQUIRED_CORPUS_FILES: &[&str] = &[
   "render_pipeline_minimal.html",
   "render_pipeline_stress.html",
@@ -148,6 +150,12 @@ fn corpus_file_name(path: &Path) -> String {
 
 #[test]
 fn fuzz_corpus_smoke_test() {
+  // Keep smoke runs deterministic and avoid spawning a large Rayon pool in CI.
+  //
+  // `fastrender` also disables layout/paint parallelism via per-render options, but initializing
+  // Rayon to a single thread keeps incidental parallel work (and stack usage) bounded.
+  crate::common::init_rayon_for_tests(1);
+
   let corpus_dir = corpus_dir();
   for file in REQUIRED_CORPUS_FILES {
     let path = corpus_dir.join(file);

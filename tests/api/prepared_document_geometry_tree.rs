@@ -5,19 +5,6 @@ use fastrender::interaction::absolute_bounds_for_box_id;
 use fastrender::scroll::ScrollState;
 use fastrender::text::font_db::FontConfig;
 use fastrender::tree::box_tree::BoxNode;
-use std::sync::Once;
-
-static INIT_ENV: Once = Once::new();
-
-fn ensure_test_env() {
-  INIT_ENV.call_once(|| {
-    // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count, which
-    // can exceed sandbox thread budgets and cause the global pool init to fail.
-    if std::env::var("RAYON_NUM_THREADS").is_err() {
-      std::env::set_var("RAYON_NUM_THREADS", "1");
-    }
-  });
-}
 
 fn find_dom_node_by_element_id<'a>(root: &'a DomNode, target_id: &str) -> Option<&'a DomNode> {
   let mut stack: Vec<&DomNode> = vec![root];
@@ -54,7 +41,8 @@ fn find_box_id_for_styled_node_id(box_node: &BoxNode, styled_node_id: usize) -> 
 
 #[test]
 fn prepared_document_fragment_tree_for_geometry_applies_sticky_offsets() -> fastrender::Result<()> {
-  ensure_test_env();
+  // Avoid CI flakes from Rayon's default "one thread per CPU" global pool configuration.
+  crate::common::init_rayon_for_tests(1);
 
   let html = r#"<!doctype html>
     <html>
@@ -116,4 +104,3 @@ fn prepared_document_fragment_tree_for_geometry_applies_sticky_offsets() -> fast
 
   Ok(())
 }
-

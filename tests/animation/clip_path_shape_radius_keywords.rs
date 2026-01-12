@@ -49,7 +49,10 @@ fn fragment_circle_radius_px(tree: &FragmentTree, box_id: usize) -> f32 {
 #[test]
 fn transitions_interpolate_circle_keyword_radius_over_time() {
   ensure_test_env();
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = FastRender::builder()
+    .font_sources(fastrender::FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
   let options = RenderOptions::new().with_viewport(200, 200);
   let html = r#"
     <style>

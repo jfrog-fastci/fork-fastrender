@@ -1,19 +1,12 @@
 use std::collections::HashMap;
-use std::sync::Once;
 
 use crate::api::FastRender;
 use crate::geometry::Rect;
 use crate::style::display::Display;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 
-static SET_RAYON_THREADS: Once = Once::new();
-
 fn ensure_rayon_threads() {
-  SET_RAYON_THREADS.call_once(|| {
-    if std::env::var("RAYON_NUM_THREADS").is_err() {
-      std::env::set_var("RAYON_NUM_THREADS", "4");
-    }
-  });
+  crate::common::rayon_test_util::init_rayon_for_tests(4);
 }
 
 #[derive(Debug, Clone)]

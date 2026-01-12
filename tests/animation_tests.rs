@@ -1,4 +1,5 @@
 mod animation;
+mod common;
 
 use std::collections::HashMap;
 use std::sync::Arc;

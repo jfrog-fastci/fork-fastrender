@@ -1679,10 +1679,6 @@ mod pageset_guardrails {
     thread::Builder::new()
       .stack_size(64 * 1024 * 1024)
       .spawn(move || {
-        if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
-          std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-        }
-
         for fixture in &manifest.fixtures {
           let html_path = fixtures_dir().join(&fixture.name).join("index.html");
           assert!(

@@ -8,7 +8,10 @@ use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use super::support::ensure_test_env;
 
 fn prepare(html: &str, width: u32, height: u32) -> (BoxTree, FragmentTree, StyledNode) {
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = FastRender::builder()
+    .font_sources(fastrender::FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
   let options = RenderOptions::new().with_viewport(width, height);
   let prepared = renderer.prepare_html(html, options).expect("prepare");
   (

@@ -10,12 +10,16 @@ use fastrender::style::types::{
 use fastrender::style::values::CustomPropertyTypedValue;
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
+use fastrender::FontConfig;
 use std::fs;
 use std::path::PathBuf;
 use svgtypes::{PathParser, PathSegment};
 
 fn prepare(html: &str, width: u32, height: u32) -> (BoxTree, FragmentTree, StyledNode) {
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
   let options = RenderOptions::new().with_viewport(width, height);
   let prepared = renderer.prepare_html(html, options).expect("prepare");
   (
@@ -2048,7 +2052,6 @@ fn transitions_interpolate_clip_path_path_over_time() {
 
 #[test]
 fn transition_starting_style_fixture_box_layout_is_untransformed() {
-  std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let html = fs::read_to_string(root.join("tests/fixtures/html/transition_starting_style.html"))
     .expect("fixture html");

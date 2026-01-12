@@ -1,25 +1,15 @@
 use crate::{
-  FastRender, FragmentContent, FragmentNode, FragmentTree, LayoutParallelism, RenderOptions,
-  ResourcePolicy,
+  FastRender, FontConfig, FragmentContent, FragmentNode, FragmentTree, LayoutParallelism,
+  RenderOptions, ResourcePolicy,
 };
 use parking_lot::Mutex;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::Once;
-
-static SET_BUNDLED_FONTS: Once = Once::new();
-
-fn ensure_bundled_fonts() {
-  SET_BUNDLED_FONTS.call_once(|| {
-    // Keep determinism tests consistent across machines by using the bundled font set.
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-  });
-}
 
 fn create_test_renderer() -> FastRender {
-  ensure_bundled_fonts();
   FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
     .resource_policy(ResourcePolicy::default().allow_http(false).allow_https(false))
     .build()
     .expect("renderer")

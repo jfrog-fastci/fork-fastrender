@@ -268,7 +268,6 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
     }
   });
   let render_thread = handle_a.thread().id();
-
   let _stage_listener = GlobalStageListenerGuard::new(Arc::new(move |stage| {
     if stage != StageHeartbeat::DomParse {
       return;
@@ -288,7 +287,7 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
     while !state.release {
       state = cv
         .wait(state)
-        .expect("diagnostics overlap blocker lock poisoned");
+      .expect("diagnostics overlap blocker lock poisoned");
     }
   }));
   a_start_tx.send(()).expect("expected thread A start signal send");

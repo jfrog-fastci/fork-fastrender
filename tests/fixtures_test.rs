@@ -36,26 +36,16 @@
 mod common;
 mod r#ref;
 
-use crate::common::stack::with_large_stack;
-use fastrender::FastRender;
+use crate::common::with_large_stack;
+use fastrender::{FastRender, FontConfig};
 use r#ref::compare::load_png_from_bytes;
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Once;
 
 /// Test configuration for fixtures
 const FIXTURE_WIDTH: u32 = 600;
 const FIXTURE_HEIGHT: u32 = 800;
-
-static SET_BUNDLED_FONTS: Once = Once::new();
-
-fn ensure_bundled_fonts() {
-  SET_BUNDLED_FONTS.call_once(|| {
-    // Keep fixture goldens deterministic across machines.
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-  });
-}
 
 /// Get the fixtures directory path
 fn fixtures_dir() -> PathBuf {
@@ -117,7 +107,6 @@ fn should_update_golden() -> bool {
 /// Returns true if test passes (either rendering succeeds and matches golden,
 /// or golden was updated).
 fn test_fixture(name: &str) -> Result<(), String> {
-  ensure_bundled_fonts();
   let name_owned = name.to_string();
   with_large_stack(move || {
     let compare_config = compare_config_from_env(CompareEnvVars::fixtures())?;
@@ -129,8 +118,11 @@ fn test_fixture(name: &str) -> Result<(), String> {
       .and_then(|bytes| load_png_from_bytes(bytes).ok())
       .map(|png| (png.width(), png.height()))
       .unwrap_or((FIXTURE_WIDTH, FIXTURE_HEIGHT));
-    let mut renderer =
-      FastRender::new().map_err(|e| format!("Failed to create renderer: {:?}", e))?;
+    crate::common::init_rayon_for_tests(2);
+    let mut renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .map_err(|e| format!("Failed to create renderer: {:?}", e))?;
 
     // Render the fixture
     let rendered = renderer
