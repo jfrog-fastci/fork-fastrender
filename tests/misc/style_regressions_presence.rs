@@ -1,107 +1,53 @@
 //! Guards against accidental deletion of critical style regression tests.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
+use walkdir::WalkDir;
+
+// Use a marker that is stable across file moves/renames: it should match the test function names
+// regardless of whether the regression lives under `tests/` or is migrated into `src/`.
 const NEEDLE: &str = "fn background_position_logical_";
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-  for entry in fs::read_dir(dir)? {
-    let entry = entry?;
-    let path = entry.path();
-    if path.is_dir() {
-      collect_rs_files(&path, out)?;
-      continue;
-    }
-    if path.extension().is_some_and(|ext| ext == "rs") {
-      out.push(path);
-    }
-  }
-  Ok(())
-}
-
-fn find_background_position_logical_test_in_src(root: &Path) -> Option<PathBuf> {
-  let src_style_dir = root.join("src").join("style");
-  if !src_style_dir.exists() {
-    return None;
-  }
-
-  let mut rs_files = Vec::new();
-  collect_rs_files(&src_style_dir, &mut rs_files).expect("walk src/style");
-
-  for path in rs_files {
-    let contents = fs::read_to_string(&path).expect("read src/style file");
-    if contents.contains(NEEDLE) {
-      return Some(path);
-    }
-  }
-  None
-}
-
-fn find_background_position_logical_test_in_tests(root: &Path) -> Option<PathBuf> {
-  let tests_dir = root.join("tests");
-  if !tests_dir.exists() {
-    return None;
-  }
-
-  fn find_in_dir(dir: &Path) -> Option<PathBuf> {
-    for entry in fs::read_dir(dir).expect("read_dir tests/") {
-      let entry = entry.expect("read_dir entry");
-      let path = entry.path();
-      if path.is_dir() {
-        if let Some(found) = find_in_dir(&path) {
-          return Some(found);
-        }
-        continue;
-      }
-      if !path.extension().is_some_and(|ext| ext == "rs") {
-        continue;
-      }
-      let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        continue;
-      };
-      if !file_name.contains("background_position_logical") {
-        continue;
-      }
-      let contents = fs::read_to_string(&path).expect("read candidate regression test source");
-      if contents.contains(NEEDLE) {
-        return Some(path);
-      }
-    }
-    None
-  }
-
-  find_in_dir(&tests_dir)
-}
 
 #[test]
 fn background_position_logical_regression_is_present() {
-  let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+  let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-  // After test cleanup, this regression should live as a unit test under `src/style`.
-  if let Some(path) = find_background_position_logical_test_in_src(root) {
-    let contents = fs::read_to_string(&path).expect("read unit test source");
-    assert!(
-      contents.contains(NEEDLE),
-      "expected {:?} to contain the background_position_logical regression test ({NEEDLE})",
-      path
-    );
-    return;
-  }
-
-  // Transitional location: an integration test module under `tests/`.
-  if let Some(path) = find_background_position_logical_test_in_tests(root) {
-    let contents = fs::read_to_string(&path).expect("read integration test source");
-    assert!(
-      contents.contains(NEEDLE),
-      "expected {:?} to contain the background_position_logical regression test ({NEEDLE})",
-      path
-    );
-    return;
-  }
-
-  panic!(
-    "background_position_logical regression must be present either as a unit test under src/style/ \
-     (containing {NEEDLE}) or as an integration test module under tests/"
+  let found = find_marker_in_rust_sources(&root, NEEDLE);
+  assert!(
+    found.is_some(),
+    "background-position logical regression test coverage must exist (searched src/**/*.rs and tests/**/*.rs for {NEEDLE:?})"
   );
+}
+
+fn find_marker_in_rust_sources(root: &Path, needle: &str) -> Option<PathBuf> {
+  let self_path = root.join(file!());
+  for dir in ["src", "tests"] {
+    let dir = root.join(dir);
+    if !dir.exists() {
+      continue;
+    }
+
+    for entry in WalkDir::new(&dir)
+      .into_iter()
+      .filter_map(std::result::Result::ok)
+      .filter(|entry| entry.file_type().is_file())
+    {
+      let path = entry.path();
+      if path == self_path {
+        continue;
+      }
+      if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        continue;
+      }
+
+      let Ok(source) = std::fs::read_to_string(path) else {
+        continue;
+      };
+      if source.contains(needle) {
+        return Some(path.strip_prefix(root).unwrap_or(path).to_path_buf());
+      }
+    }
+  }
+
+  None
 }

@@ -1,20 +1,50 @@
 //! Guard against accidental deletion of the fetch_and_render exit regression.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use walkdir::WalkDir;
 
 #[test]
 fn fetch_and_render_exit_regression_is_present() {
-  let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/bin/fetch_and_render_exit_test.rs");
+  let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let marker = "fetch_and_render_exits_non_zero_when_no_args";
+
+  let found = find_marker_in_rust_sources(&root, marker);
   assert!(
-    path.exists(),
-    "tests/bin/fetch_and_render_exit_test.rs must exist"
+    found.is_some(),
+    "fetch_and_render exit regression test coverage must exist (searched src/**/*.rs and tests/**/*.rs for {marker:?})"
   );
-  let len = path
-    .metadata()
-    .expect("stat tests/bin/fetch_and_render_exit_test.rs")
-    .len();
-  assert!(
-    len > 0,
-    "tests/bin/fetch_and_render_exit_test.rs should not be empty"
-  );
+}
+
+fn find_marker_in_rust_sources(root: &Path, marker: &str) -> Option<PathBuf> {
+  let self_path = root.join(file!());
+  for dir in ["src", "tests"] {
+    let dir = root.join(dir);
+    if !dir.exists() {
+      continue;
+    }
+
+    for entry in WalkDir::new(&dir)
+      .into_iter()
+      .filter_map(std::result::Result::ok)
+      .filter(|entry| entry.file_type().is_file())
+    {
+      let path = entry.path();
+      if path == self_path {
+        continue;
+      }
+      if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        continue;
+      }
+
+      let Ok(source) = std::fs::read_to_string(path) else {
+        continue;
+      };
+      if source.contains(marker) {
+        return Some(path.strip_prefix(root).unwrap_or(path).to_path_buf());
+      }
+    }
+  }
+
+  None
 }

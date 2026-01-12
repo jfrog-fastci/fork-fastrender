@@ -25,192 +25,15 @@ fn conformance_doc_links_to_real_code_and_tests() {
   let conformance_path = root.join("docs/conformance.md");
   let content = std::fs::read_to_string(&conformance_path).expect("read docs/conformance.md");
 
-  // Keep links in docs/conformance.md grounded in real modules and tests for each feature area.
-  //
-  // Test architecture note:
-  // - Unit tests live in `src/` alongside the implementation.
-  // - Integration tests live under `tests/` and are included by `tests/integration.rs`.
-  //
-  // This guardrail intentionally has a "pre-cleanup" and "post-cleanup" mode so it remains useful
-  // while the repository migrates. Once `tests/integration.rs` exists, we enforce the post-cleanup
-  // paths (and stop requiring the old `tests/{style,layout,paint,...}` files that are deleted).
-  let required_paths: &[&str] = if root.join("tests/integration.rs").exists() {
-    &[
-      // Source files (implementation + unit-test destinations).
-      "src/dom.rs",
-      "src/html/mod.rs",
-      "src/html/encoding.rs",
-      "src/html/viewport.rs",
-      "src/css/parser.rs",
-      "src/css/selectors.rs",
-      "src/css/types.rs",
-      "src/style/cascade.rs",
-      "src/style/media.rs",
-      "src/style/values.rs",
-      "src/style/color.rs",
-      "src/style/font_palette.rs",
-      "src/tree/box_generation.rs",
-      "src/tree/box_tree.rs",
-      "src/tree/table_fixup.rs",
-      "src/layout/table.rs",
-      "src/layout/contexts/block/mod.rs",
-      "src/layout/contexts/inline/mod.rs",
-      "src/layout/absolute_positioning.rs",
-      "src/layout/contexts/flex.rs",
-      "src/layout/contexts/grid.rs",
-      "src/layout/taffy_integration.rs",
-      "src/layout/fragmentation.rs",
-      "src/layout/pagination.rs",
-      "src/scroll.rs",
-      "src/paint/stacking.rs",
-      "src/paint/display_list.rs",
-      "src/paint/display_list_builder.rs",
-      "src/paint/clip_path.rs",
-      "src/paint/display_list_renderer.rs",
-      "src/paint/svg_filter.rs",
-      "src/paint/text_rasterize.rs",
-      "src/paint/text_shadow.rs",
-      "src/text/pipeline.rs",
-      "src/text/line_break.rs",
-      "src/text/hyphenation.rs",
-      "src/text/justify.rs",
-      "src/text/color_fonts/mod.rs",
-      "src/text/color_fonts/bitmap.rs",
-      "src/text/color_fonts/colr_v1.rs",
-      "src/animation/mod.rs",
-      "src/accessibility.rs",
-      "src/js/legacy/ecma_embed.rs",
-      "src/js/vmjs/window.rs",
-      "src/js/vmjs/window_realm.rs",
-      "src/js/event_loop.rs",
-      "src/js/html_script_processing.rs",
-      "src/js/webidl/mod.rs",
-      "src/js/legacy/vm_dom.rs",
-      "src/js/vmjs/window_timers.rs",
-      "src/js/url.rs",
-      "src/js/vmjs/window_url.rs",
-      "src/js/fetch.rs",
-      "src/js/vmjs/window_fetch.rs",
-      "src/js/legacy/quickjs/fetch.rs",
-      // Integration tests (kept in `tests/` and referenced by the support matrix).
-      "tests/integration.rs",
-      "tests/bin/fetch_and_render_js_test.rs",
-      "tests/bin/fetch_and_render_animation_time_test.rs",
-      "tests/js_harness/timers.rs",
-      "tests/wpt/tests/style/conditional/",
-      "tests/wpt/tests/style/container_queries/",
-    ]
-  } else {
-    &[
-      // Legacy (pre-cleanup) paths.
-      "src/dom.rs",
-      "src/html/mod.rs",
-      "src/html/encoding.rs",
-      "src/html/viewport.rs",
-      "src/css/parser.rs",
-      "src/css/selectors.rs",
-      "src/css/types.rs",
-      "src/style/cascade.rs",
-      "src/style/media.rs",
-      "src/style/values.rs",
-      "src/style/color.rs",
-      "src/tree/box_generation.rs",
-      "src/tree/box_tree.rs",
-      "src/tree/table_fixup.rs",
-      "src/layout/table.rs",
-      "src/layout/contexts/block/mod.rs",
-      "src/layout/contexts/inline/mod.rs",
-      "src/layout/absolute_positioning.rs",
-      "src/layout/contexts/flex.rs",
-      "src/layout/contexts/grid.rs",
-      "src/layout/taffy_integration.rs",
-      "src/layout/fragmentation.rs",
-      "src/layout/pagination.rs",
-      "src/scroll.rs",
-      "src/paint/stacking.rs",
-      "src/paint/display_list.rs",
-      "src/paint/clip_path.rs",
-      "src/paint/display_list_renderer.rs",
-      "src/paint/svg_filter.rs",
-      "src/paint/text_rasterize.rs",
-      "src/paint/text_shadow.rs",
-      "src/text/pipeline.rs",
-      "src/text/line_break.rs",
-      "src/text/hyphenation.rs",
-      "src/text/justify.rs",
-      "src/animation/mod.rs",
-      "src/accessibility.rs",
-      "src/js/legacy/ecma_embed.rs",
-      "src/js/vmjs/window.rs",
-      "src/js/vmjs/window_realm.rs",
-      "src/js/event_loop.rs",
-      "src/js/html_script_processing.rs",
-      "src/js/webidl/mod.rs",
-      "src/js/legacy/vm_dom.rs",
-      "src/js/vmjs/window_timers.rs",
-      "src/js/url.rs",
-      "src/js/vmjs/window_url.rs",
-      "src/js/fetch.rs",
-      "src/js/vmjs/window_fetch.rs",
-      "src/js/legacy/quickjs/fetch.rs",
-      // Legacy integration tests (pre-cleanup).
-      "tests/dom_integration/compatibility_test.rs",
-      "tests/tree/shadow_dom.rs",
-      "tests/css_integration/loader_tests.rs",
-      "tests/style/has_selector_test.rs",
-      "tests/style/layer_important_test.rs",
-      "tests/style/media_test.rs",
-      "tests/style/supports_rule_test.rs",
-      "tests/style/css_numeric_functions.rs",
-      "tests/paint/color_mix_display_list_test.rs",
-      "tests/tree/test_anonymous_boxes.rs",
-      "tests/tree/form_option_nonrendered.rs",
-      "tests/layout/table_columns_test.rs",
-      "tests/layout/test_inline_float.rs",
-      "tests/layout/test_positioned.rs",
-      "tests/layout/flex_box_sizing_test.rs",
-      "tests/layout/subgrid.rs",
-      "tests/layout/table_anonymous_inheritance.rs",
-      "tests/layout/multicol.rs",
-      "tests/layout/paged_media.rs",
-      "tests/layout/scrollbar_gutter.rs",
-      "tests/paint/stacking_test.rs",
-      "tests/paint/display_list_test.rs",
-      "tests/paint/display_list_renderer_test.rs",
-      "tests/paint/text_rasterize_test.rs",
-      "tests/paint/display_list_font_palette_overrides_test.rs",
-      "tests/text/pipeline_test.rs",
-      "tests/text/line_break_test.rs",
-      "tests/text/hyphenation_test.rs",
-      "tests/text/justify_test.rs",
-      "tests/animation/mod.rs",
-      "tests/bin/fetch_and_render_animation_time_test.rs",
-      "tests/accessibility/test.rs",
-      "tests/accessibility/name_computation.rs",
-      "tests/misc/integration_test.rs",
-      "tests/style/container_style_queries.rs",
-      "tests/html_script_processing.rs",
-      "tests/bin/fetch_and_render_js_test.rs",
-    ]
-  };
-
-  for path in required_paths {
-    let link_target = format!("../{path}");
-    assert!(
-      content.contains(path) || content.contains(&link_target),
-      "docs/conformance.md should mention {path} so the matrix stays tied to the code/tests"
-    );
-    assert!(
-      root.join(path).exists(),
-      "Documented path {path} should exist relative to the repo root"
-    );
-  }
+  let link_re =
+    regex::Regex::new(r"\[[^\]]*]\(([^)]+)\)").expect("regex for markdown links should compile");
 
   // Validate that the support matrix table is structurally parseable:
   // - header exists
   // - every row has 6 columns
   // - status column uses the legend markers
   let mut in_table = false;
+  let mut saw_data_row = false;
   for (idx, line) in content.lines().enumerate() {
     let trimmed = line.trim();
     if !in_table {
@@ -245,22 +68,43 @@ fn conformance_doc_links_to_real_code_and_tests() {
       continue;
     }
 
+    saw_data_row = true;
     let status = parts[3].trim(); // Stage | Feature | Status | ...
     assert!(
       matches!(status, "✅" | "⚠️" | "🚫"),
       "docs/conformance.md support matrix status must be ✅/⚠️/🚫 (got {status:?}) at line {}",
       idx + 1
     );
+
+    // Keep the matrix grounded in real code/tests without hardcoding specific paths.
+    // For supported/partial features, require at least one link in both the Implementation and
+    // Tests columns so the documentation stays tied to repo reality while allowing files to move.
+    if status != "🚫" {
+      let implementation = parts[4].trim();
+      let tests = parts[5].trim();
+      assert!(
+        link_re.is_match(implementation),
+        "docs/conformance.md support matrix row must include a markdown link in the Implementation column at line {} (got {implementation:?})",
+        idx + 1
+      );
+      assert!(
+        link_re.is_match(tests),
+        "docs/conformance.md support matrix row must include a markdown link in the Tests column at line {} (got {tests:?})",
+        idx + 1
+      );
+    }
   }
   assert!(
     in_table,
     "docs/conformance.md should contain a support matrix table starting with a `| Stage` header row"
   );
+  assert!(
+    saw_data_row,
+    "docs/conformance.md support matrix table should have at least one data row"
+  );
 
   // Validate that every markdown link target resolves to an existing path (relative to docs/).
   // This guards against doc drift when files are renamed/moved.
-  let link_re =
-    regex::Regex::new(r"\[[^\]]*]\(([^)]+)\)").expect("regex for markdown links should compile");
   let mut linked: HashSet<String> = HashSet::new();
   for cap in link_re.captures_iter(&content) {
     let raw_target = cap.get(1).expect("link target capture").as_str().trim();
