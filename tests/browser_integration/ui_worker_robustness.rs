@@ -95,6 +95,9 @@ fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
     }
     | WorkerToUi::SetClipboardText {
       tab_id: msg_tab, ..
+    }
+    | WorkerToUi::FindResult {
+      tab_id: msg_tab, ..
     } => *msg_tab == tab_id,
     WorkerToUi::DebugLog { .. } => false,
   }

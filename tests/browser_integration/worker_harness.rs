@@ -88,6 +88,13 @@ pub enum WorkerToUiEvent {
     hovered_url: Option<String>,
     cursor: CursorKind,
   },
+  FindResult {
+    tab_id: TabId,
+    query: String,
+    case_sensitive: bool,
+    match_count: usize,
+    active_match_index: Option<usize>,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +115,7 @@ pub enum WorkerEventKind {
   SelectDropdownClosed,
   ContextMenu,
   HoverChanged,
+  FindResult,
 }
 
 impl WorkerToUiEvent {
@@ -129,6 +137,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::SelectDropdownClosed { .. } => WorkerEventKind::SelectDropdownClosed,
       WorkerToUiEvent::ContextMenu { .. } => WorkerEventKind::ContextMenu,
       WorkerToUiEvent::HoverChanged { .. } => WorkerEventKind::HoverChanged,
+      WorkerToUiEvent::FindResult { .. } => WorkerEventKind::FindResult,
     }
   }
 }
@@ -230,6 +239,22 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
         tab_id,
         pos_css,
         link_url,
+      },
+      None,
+    ),
+    WorkerToUi::FindResult {
+      tab_id,
+      query,
+      case_sensitive,
+      match_count,
+      active_match_index,
+    } => (
+      WorkerToUiEvent::FindResult {
+        tab_id,
+        query,
+        case_sensitive,
+        match_count,
+        active_match_index,
       },
       None,
     ),

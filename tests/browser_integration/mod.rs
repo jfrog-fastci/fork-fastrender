@@ -52,6 +52,7 @@ mod browser_cli_help;
 mod browser_cli_start_url_scheme;
 mod browser_headless_smoke_test;
 mod browser_mem_limit_env;
+mod browser_bookmarks_history_restore;
 mod browser_session_restore;
 mod browser_tab_vmjs_smoke;
 mod browser_thread_base_url_across_navigations;

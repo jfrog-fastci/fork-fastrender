@@ -85,6 +85,8 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON=<json>` – **test-only** hook: override the restored session used by headless smoke mode with an explicit `BrowserSession` JSON value.
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON=<json>` – **test-only** hook: override the bookmarks snapshot used by headless smoke mode with an explicit JSON value.
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON=<json>` – **test-only** hook: override the global history snapshot used by headless smoke mode with an explicit JSON value.
 
 ### Appearance / accessibility / debugging (browser UX)
 
@@ -121,6 +123,18 @@ Not all builds implement all of these toggles yet; unsupported values are expect
 - `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` – override where the browser session file is stored.
   - Primary use case: tests/integration harnesses that need an isolated session file.
   - The default is a per-user config path (via `directories`) with a fallback to `./fastrender_session.json` in the current working directory.
+
+### Browser bookmarks file
+
+- `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/fastrender_bookmarks.json` – override where the browser bookmarks file is stored.
+  - Primary use case: tests/integration harnesses that need an isolated bookmarks file.
+  - The default is a per-user config path (via `directories`) with a fallback to `./fastrender_bookmarks.json` in the current working directory.
+
+### Browser global history file
+
+- `FASTR_BROWSER_HISTORY_PATH=/path/to/fastrender_history.json` – override where the browser global history file is stored.
+  - Primary use case: tests/integration harnesses that need an isolated history file.
+  - The default is a per-user config path (via `directories`) with a fallback to `./fastrender_history.json` in the current working directory.
 
 ## Compatibility toggles
 

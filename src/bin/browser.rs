@@ -870,6 +870,55 @@ fn run_headless_smoke_mode(
   let session_json = serde_json::to_string(&session).unwrap_or_else(|_| "<invalid>".to_string());
   println!("HEADLESS_SESSION source={source_label} {session_json}");
 
+  let bookmarks_path = fastrender::ui::bookmarks_persistence::bookmarks_path();
+  let history_path = fastrender::ui::history_persistence::history_path();
+
+  const BOOKMARKS_OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON";
+  let (bookmarks_source, bookmarks_snapshot) = match std::env::var(BOOKMARKS_OVERRIDE_ENV) {
+    Ok(raw) if !raw.trim().is_empty() => {
+      let snapshot: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("{BOOKMARKS_OVERRIDE_ENV}: invalid JSON: {err}"))?;
+      ("override", snapshot)
+    }
+    _ => match fastrender::ui::bookmarks_persistence::load_bookmarks(&bookmarks_path) {
+      Ok(Some(snapshot)) => ("disk", snapshot),
+      Ok(None) => ("empty", serde_json::Value::Array(Vec::new())),
+      Err(err) => {
+        eprintln!(
+          "failed to load bookmarks from {}: {err}",
+          bookmarks_path.display()
+        );
+        ("empty", serde_json::Value::Array(Vec::new()))
+      }
+    },
+  };
+  let bookmarks_json =
+    serde_json::to_string(&bookmarks_snapshot).unwrap_or_else(|_| "<invalid>".to_string());
+  println!("HEADLESS_BOOKMARKS source={bookmarks_source} {bookmarks_json}");
+
+  const HISTORY_OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON";
+  let (history_source, history_snapshot) = match std::env::var(HISTORY_OVERRIDE_ENV) {
+    Ok(raw) if !raw.trim().is_empty() => {
+      let snapshot: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("{HISTORY_OVERRIDE_ENV}: invalid JSON: {err}"))?;
+      ("override", snapshot)
+    }
+    _ => match fastrender::ui::history_persistence::load_history(&history_path) {
+      Ok(Some(snapshot)) => ("disk", snapshot),
+      Ok(None) => ("empty", serde_json::Value::Array(Vec::new())),
+      Err(err) => {
+        eprintln!(
+          "failed to load history from {}: {err}",
+          history_path.display()
+        );
+        ("empty", serde_json::Value::Array(Vec::new()))
+      }
+    },
+  };
+  let history_json =
+    serde_json::to_string(&history_snapshot).unwrap_or_else(|_| "<invalid>".to_string());
+  println!("HEADLESS_HISTORY source={history_source} {history_json}");
+
   // Keep the smoke test cheap and deterministic: when Rayon is allowed to auto-initialize its
   // global pool it may attempt to spawn one worker per detected CPU (which can be very large on
   // CI hosts). Explicitly pin the pool to a single thread unless the caller has overridden it.
@@ -994,6 +1043,25 @@ fn run_headless_smoke_mode(
     eprintln!(
       "failed to save session to {}: {err}",
       session_path.display()
+    );
+  }
+
+  if let Err(err) = fastrender::ui::bookmarks_persistence::save_bookmarks_atomic(
+    &bookmarks_path,
+    &bookmarks_snapshot,
+  ) {
+    eprintln!(
+      "failed to save bookmarks to {}: {err}",
+      bookmarks_path.display()
+    );
+  }
+
+  if let Err(err) =
+    fastrender::ui::history_persistence::save_history_atomic(&history_path, &history_snapshot)
+  {
+    eprintln!(
+      "failed to save history to {}: {err}",
+      history_path.display()
     );
   }
 

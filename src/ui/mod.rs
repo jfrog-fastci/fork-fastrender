@@ -54,6 +54,12 @@ pub mod theme;
 pub mod profile_autosave;
 
 #[cfg(feature = "browser_ui")]
+pub mod bookmarks_persistence;
+
+#[cfg(feature = "browser_ui")]
+pub mod history_persistence;
+
+#[cfg(feature = "browser_ui")]
 pub mod session;
 
 // CLI parsing and wgpu-adapter selection knobs for the `browser` binary.
