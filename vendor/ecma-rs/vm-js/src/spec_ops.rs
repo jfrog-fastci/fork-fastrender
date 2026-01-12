@@ -807,6 +807,101 @@ pub fn delete_property_or_throw(
   scope.delete_property_or_throw(obj, key)
 }
 
+/// `CopyDataProperties(target, source, excludedItems)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-copydataproperties>
+///
+/// This is the abstract operation used by:
+/// - object spread (`{...src}`),
+/// - object rest (`{a, ...rest}`),
+/// - and other spec algorithms like `Object.assign`.
+///
+/// This implementation is **Proxy-aware**: it uses the internal-method dispatch layer
+/// (`[[OwnPropertyKeys]]`, `[[GetOwnProperty]]`, `[[Get]]`) so Proxy traps are observed.
+pub fn copy_data_properties_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  target: GcObject,
+  source: Value,
+  excluded_items: &[PropertyKey],
+) -> Result<(), VmError> {
+  // Keep all temporary roots local to this operation.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(target))?;
+  scope.push_root(source)?;
+
+  // 1. If source is null or undefined, return target.
+  if matches!(source, Value::Undefined | Value::Null) {
+    return Ok(());
+  }
+
+  // 2. Let from be ! ToObject(source).
+  let from = scope.to_object(vm, host, hooks, source)?;
+  scope.push_root(Value::Object(from))?;
+
+  // 3. Let keys be ? from.[[OwnPropertyKeys]]().
+  let keys = scope.object_own_property_keys_with_host_and_hooks(vm, host, hooks, from)?;
+
+  // Root returned keys as values so they stay alive even if they are not otherwise reachable
+  // (notably: Proxy `ownKeys` traps can synthesize fresh String/Symbol values).
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(keys.len().saturating_add(excluded_items.len()))
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &keys {
+    key_roots.push(match key {
+      PropertyKey::String(s) => Value::String(*s),
+      PropertyKey::Symbol(s) => Value::Symbol(*s),
+    });
+  }
+  for key in excluded_items {
+    key_roots.push(match key {
+      PropertyKey::String(s) => Value::String(*s),
+      PropertyKey::Symbol(s) => Value::Symbol(*s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
+
+  for next_key in keys {
+    // Per-copied-property tick: spreading/rest-copying can iterate many keys without evaluating
+    // nested expressions.
+    vm.tick()?;
+
+    // 4a. If nextKey is in excludedItems, continue.
+    if excluded_items
+      .iter()
+      .any(|excluded| scope.heap().property_key_eq(excluded, &next_key))
+    {
+      continue;
+    }
+
+    // 4b. Let desc be ? from.[[GetOwnProperty]](nextKey).
+    let Some(desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, from, next_key)?
+    else {
+      continue;
+    };
+
+    // 4c. If desc.[[Enumerable]] is false, continue.
+    if !desc.enumerable {
+      continue;
+    }
+
+    // 4d. Let propValue be ? Get(from, nextKey).
+    let prop_value =
+      scope.get_with_host_and_hooks(vm, host, hooks, from, next_key, Value::Object(from))?;
+
+    // 4e. Perform ! CreateDataProperty(target, nextKey, propValue).
+    let ok = scope.create_data_property(target, next_key, prop_value)?;
+    if !ok {
+      return Err(VmError::Unimplemented("CreateDataProperty returned false"));
+    }
+  }
+
+  Ok(())
+}
+
 /// `GetMethod(V, P)` (ECMA-262) (partial).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-getmethod>

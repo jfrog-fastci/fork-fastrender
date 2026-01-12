@@ -819,7 +819,14 @@ impl RuntimeEnv {
 
     // Distinguish between a missing property (unbound identifier) and a present property whose
     // value is actually `undefined`.
-    if !key_scope.ordinary_has_property_with_tick(global_object, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut key_scope,
+      host,
+      hooks,
+      global_object,
+      key,
+    )? {
       return Ok(None);
     }
 
@@ -905,8 +912,14 @@ impl RuntimeEnv {
     key_scope.push_root(value)?;
     let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
 
-    let has_binding =
-      key_scope.ordinary_has_property_with_tick(global_object, key, || vm.tick())?;
+    let has_binding = crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut key_scope,
+      host,
+      hooks,
+      global_object,
+      key,
+    )?;
     if !has_binding {
       if strict {
         let msg =
@@ -946,8 +959,9 @@ impl RuntimeEnv {
         }
         PropertyKind::Accessor { .. } => {
           let receiver = Value::Object(global_object);
-          let ok = key_scope.ordinary_set_with_host_and_hooks(
+          let ok = crate::spec_ops::internal_set_with_host_and_hooks(
             vm,
+            &mut key_scope,
             host,
             hooks,
             global_object,
@@ -1020,8 +1034,9 @@ impl RuntimeEnv {
             }
             PropertyKind::Accessor { .. } => {
               let receiver = Value::Object(global_object);
-              let ok = key_scope.ordinary_set_with_host_and_hooks(
+              let ok = crate::spec_ops::internal_set_with_host_and_hooks(
                 vm,
+                &mut key_scope,
                 host,
                 hooks,
                 global_object,
@@ -6509,60 +6524,15 @@ impl<'a> Evaluator<'a> {
           let src_value = self.eval_expr(&mut member_scope, val)?;
           member_scope.push_root(src_value)?;
 
-          let src_obj = match src_value {
-            Value::Undefined | Value::Null => continue,
-            other => member_scope.to_object(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              other,
-            )?,
-          };
-          member_scope.push_root(Value::Object(src_obj))?;
-
-          let keys = member_scope.object_own_property_keys_with_host_and_hooks(
+          crate::spec_ops::copy_data_properties_with_host_and_hooks(
             self.vm,
+            &mut member_scope,
             &mut *self.host,
             &mut *self.hooks,
-            src_obj,
+            obj,
+            src_value,
+            &[],
           )?;
-          for key in keys {
-            // Per-copied-property tick: spreading a large object can be `O(N)` without evaluating
-            // nested expressions.
-            self.tick()?;
-
-            let mut key_scope = member_scope.reborrow();
-            key_scope.push_root(Value::Object(src_obj))?;
-            match key {
-              PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-              PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-            };
-
-            let Some(desc) = key_scope.object_get_own_property_with_host_and_hooks(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              src_obj,
-              key,
-            )?
-            else {
-              continue;
-            };
-            if !desc.enumerable {
-              continue;
-            }
-
-            let value = key_scope.get_with_host_and_hooks(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              src_obj,
-              key,
-              Value::Object(src_obj),
-            )?;
-            key_scope.push_root(value)?;
-            key_scope.create_data_property_or_throw(obj, key, value)?;
-          }
         }
       }
     }
@@ -6677,12 +6647,20 @@ impl<'a> Evaluator<'a> {
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
 
-          if !key_scope.ordinary_has_property_with_tick(global_object, key, || self.tick())? {
+          if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+            self.vm,
+            &mut key_scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            global_object,
+            key,
+          )? {
             return Ok(Value::Bool(true));
           }
 
-          Ok(Value::Bool(key_scope.ordinary_delete_with_host_and_hooks(
+          Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
             self.vm,
+            &mut key_scope,
             &mut *self.host,
             &mut *self.hooks,
             global_object,
@@ -6732,12 +6710,20 @@ impl<'a> Evaluator<'a> {
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
 
-          if !key_scope.ordinary_has_property_with_tick(global_object, key, || self.tick())? {
+          if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+            self.vm,
+            &mut key_scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            global_object,
+            key,
+          )? {
             return Ok(Value::Bool(true));
           }
 
-          Ok(Value::Bool(key_scope.ordinary_delete_with_host_and_hooks(
+          Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
             self.vm,
+            &mut key_scope,
             &mut *self.host,
             &mut *self.hooks,
             global_object,

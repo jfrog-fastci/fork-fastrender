@@ -385,28 +385,15 @@ fn bind_object_pattern(
   let rest_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
   scope.push_root(Value::Object(rest_obj))?;
 
-  let keys = scope.object_own_property_keys_with_host_and_hooks(vm, host, hooks, obj)?;
-  for key in keys {
-    // Budget rest-property copying: `...rest` can iterate many keys even for a small pattern.
-    vm.tick()?;
-    if excluded
-      .iter()
-      .any(|excluded_key| scope.heap().property_key_eq(excluded_key, &key))
-    {
-      continue;
-    }
-
-    let Some(desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
-      continue;
-    };
-    if !desc.enumerable {
-      continue;
-    }
-
-    // `CopyDataProperties` uses `Get` even though we already have the descriptor.
-    let v = scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-    scope.create_data_property_or_throw(rest_obj, key, v)?;
-  }
+  crate::spec_ops::copy_data_properties_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    rest_obj,
+    Value::Object(obj),
+    &excluded,
+  )?;
 
   bind_pattern(
     vm,
@@ -746,7 +733,16 @@ fn assign_to_property_key(
   // Root the boxed object so host hooks/accessors can allocate freely.
   set_scope.push_root(Value::Object(object))?;
 
-  let ok = set_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, object, key, value, base)?;
+  let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+    vm,
+    &mut set_scope,
+    host,
+    hooks,
+    object,
+    key,
+    value,
+    base,
+  )?;
   if ok {
     Ok(())
   } else if strict {
