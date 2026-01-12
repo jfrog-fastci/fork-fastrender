@@ -902,7 +902,6 @@ impl Document {
       .nodes
       .get(root.index())
       .is_some_and(|node| matches!(&node.kind, NodeKind::ShadowRoot { .. }));
-
     let mut remaining = self.nodes.len() + 1;
     let mut stack: Vec<NodeId> = vec![root];
     while let Some(node_id) = stack.pop() {
@@ -941,7 +940,9 @@ impl Document {
       if node.inert_subtree {
         continue;
       }
-      if matches!(&node.kind, NodeKind::ShadowRoot { .. }) && !(allow_root_shadow && node_id == root) {
+      if matches!(&node.kind, NodeKind::ShadowRoot { .. })
+        && !(allow_root_shadow && node_id == root)
+      {
         continue;
       }
 
@@ -2435,6 +2436,8 @@ mod selectors_detached_tests;
 mod xml_namespace_selector_tests;
 #[cfg(test)]
 mod shadow_boundary_tests;
+#[cfg(test)]
+mod shadow_root_boundary_tests;
 #[cfg(test)]
 mod xml_parse_tests;
 #[cfg(test)]
