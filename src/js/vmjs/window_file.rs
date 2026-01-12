@@ -298,7 +298,7 @@ fn file_ctor_construct(
     }
   };
 
-  let obj = window_blob::create_blob_with_proto(
+  let obj = create_file_with_proto(
     vm,
     &mut scope,
     callee,
@@ -307,31 +307,11 @@ fn file_ctor_construct(
       bytes,
       r#type: type_string,
     },
+    FileMeta {
+      name,
+      last_modified,
+    },
   )?;
-
-  // Expose read-only `name` and `lastModified`.
-  let name_key = alloc_key(&mut scope, "name")?;
-  let name_js = scope.alloc_string(&name)?;
-  scope.push_root(Value::String(name_js))?;
-  scope.define_property(obj, name_key, data_desc(Value::String(name_js), false))?;
-
-  let last_modified_key = alloc_key(&mut scope, "lastModified")?;
-  scope.define_property(
-    obj,
-    last_modified_key,
-    data_desc(Value::Number(last_modified as f64), false),
-  )?;
-
-  with_realm_state_mut(vm, &mut scope, callee, |state| {
-    state.files.insert(
-      WeakGcObject::from(obj),
-      FileMeta {
-        name,
-        last_modified,
-      },
-    );
-    Ok(())
-  })?;
 
   Ok(Value::Object(obj))
 }
@@ -380,19 +360,23 @@ pub(crate) fn create_file_with_proto(
 ) -> Result<GcObject, VmError> {
   let obj = window_blob::create_blob_with_proto(vm, scope, callee, proto, data)?;
 
-  let name_key = alloc_key(scope, "name")?;
+  // Root `obj` while allocating property keys/strings: these can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let name_key = alloc_key(&mut scope, "name")?;
   let name_js = scope.alloc_string(&meta.name)?;
   scope.push_root(Value::String(name_js))?;
   scope.define_property(obj, name_key, data_desc(Value::String(name_js), false))?;
 
-  let last_modified_key = alloc_key(scope, "lastModified")?;
+  let last_modified_key = alloc_key(&mut scope, "lastModified")?;
   scope.define_property(
     obj,
     last_modified_key,
     data_desc(Value::Number(meta.last_modified as f64), false),
   )?;
 
-  with_realm_state_mut(vm, scope, callee, |state| {
+  with_realm_state_mut(vm, &mut scope, callee, |state| {
     state.files.insert(WeakGcObject::from(obj), meta);
     Ok(())
   })?;
@@ -477,7 +461,11 @@ pub fn teardown_window_file_bindings_for_realm(realm_id: RealmId) {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::clock::VirtualClock;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use crate::js::WebTime;
+  use std::sync::Arc;
+  use std::time::Duration;
 
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
@@ -520,5 +508,25 @@ mod tests {
     realm.teardown();
     Ok(())
   }
-}
 
+  #[test]
+  fn file_default_last_modified_is_deterministic_and_ignores_date_now_override() -> Result<(), VmError> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(1234));
+    let config = WindowRealmConfig::new("https://example.com/")
+      .with_clock(clock)
+      .with_web_time(WebTime::new(1000));
+    let mut realm = WindowRealm::new(config)?;
+
+    let v = realm.exec_script(
+      "(() => {\
+        Date.now = () => 5;\
+        return new File(['hi'], 'x.txt').lastModified;\
+      })()",
+    )?;
+    assert_eq!(v, Value::Number(2234.0));
+
+    realm.teardown();
+    Ok(())
+  }
+}

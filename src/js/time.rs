@@ -500,10 +500,7 @@ fn date_constructor_construct_native(
   };
 
   if args.is_empty() {
-    let (web_time, clock) = with_time_context(scope, |ctx| (ctx.web_time, ctx.clock.clone()))?;
-    let now_ms = web_time
-      .time_origin_unix_ms
-      .saturating_add(duration_to_millis_i64(clock.now()));
+    let now_ms = date_now_ms(scope)?;
     let args = [Value::Number(now_ms as f64)];
     return vm.construct_with_host_and_hooks(
       host,
@@ -534,11 +531,7 @@ fn date_now_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (web_time, clock) = with_time_context(scope, |ctx| (ctx.web_time, ctx.clock.clone()))?;
-  let now = clock.now();
-  let ms = web_time
-    .time_origin_unix_ms
-    .saturating_add(duration_to_millis_i64(now));
+  let ms = date_now_ms(scope)?;
   Ok(Value::Number(ms as f64))
 }
 
@@ -792,6 +785,29 @@ mod tests {
 
     let _bindings = install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, web_time)
       .expect("install_time_bindings after dropping the previous bindings should succeed");
+
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn date_now_ms_matches_installed_time_bindings() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let web_time = WebTime::new(1_000);
+    let _bindings = install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, web_time)
+      .expect("install time bindings");
+
+    clock.set_now(Duration::from_millis(2_345));
+    {
+      let scope = heap.scope();
+      let ms = date_now_ms(&scope).expect("date_now_ms should succeed");
+      assert_eq!(ms, 3_345);
+    }
 
     realm.teardown(&mut heap);
   }

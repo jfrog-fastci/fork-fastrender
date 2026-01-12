@@ -1755,7 +1755,7 @@ fn encode_form_data_as_multipart(
         push_bytes_limited(&mut out, value.as_bytes(), max_len)?;
         push_bytes_limited(&mut out, b"\r\n", max_len)?;
       }
-      window_form_data::FormDataValue::Blob { data, filename } => {
+      window_form_data::FormDataValue::File { data, filename, .. } => {
         let escaped_filename = escape_multipart_quoted_string_value(filename);
         let header = format!(
           "Content-Disposition: form-data; name=\"{escaped_name}\"; filename=\"{escaped_filename}\"\r\n"
@@ -1869,6 +1869,7 @@ fn parse_content_disposition_form_data(
 fn parse_multipart_form_data(
   bytes: &[u8],
   boundary: &str,
+  file_last_modified_ms: i64,
 ) -> Result<Vec<window_form_data::FormDataEntry>, &'static str> {
   if boundary.is_empty() {
     return Err("multipart/form-data missing boundary");
@@ -1947,12 +1948,13 @@ fn parse_multipart_form_data(
           .as_deref()
           .map(normalize_content_type_for_blob)
           .unwrap_or_default();
-        window_form_data::FormDataValue::Blob {
+        window_form_data::FormDataValue::File {
           data: window_blob::BlobData {
             bytes: part_bytes.to_vec(),
             r#type,
           },
           filename,
+          last_modified: file_last_modified_ms,
         }
       }
       None => {
@@ -1980,15 +1982,15 @@ fn parse_urlencoded_form_data(bytes: &[u8]) -> Vec<window_form_data::FormDataEnt
 fn parse_form_data_entries_from_body(
   content_type: Option<&str>,
   bytes: &[u8],
+  file_last_modified_ms: i64,
 ) -> Result<Vec<window_form_data::FormDataEntry>, &'static str> {
   let content_type = content_type.ok_or("Body.formData requires a Content-Type header")?;
   let essence = normalize_content_type_for_blob(content_type);
   match essence.as_str() {
     "application/x-www-form-urlencoded" => Ok(parse_urlencoded_form_data(bytes)),
     "multipart/form-data" => {
-      let boundary =
-        extract_multipart_boundary(content_type).ok_or("multipart/form-data missing boundary")?;
-      parse_multipart_form_data(bytes, &boundary)
+      let boundary = extract_multipart_boundary(content_type).ok_or("multipart/form-data missing boundary")?;
+      parse_multipart_form_data(bytes, &boundary, file_last_modified_ms)
     }
     _ => Err("Body.formData unsupported Content-Type"),
   }
@@ -2783,7 +2785,17 @@ fn request_form_data_native(
 
   match (bytes_result, content_type_result) {
     (Ok(bytes), Ok(content_type)) => {
-      let entries = parse_form_data_entries_from_body(content_type.as_deref(), &bytes);
+      let file_last_modified_ms =
+        if content_type
+          .as_deref()
+          .is_some_and(|ct| normalize_content_type_for_blob(ct) == "multipart/form-data")
+        {
+          crate::js::time::date_now_ms(scope)?
+        } else {
+          0
+        };
+      let entries =
+        parse_form_data_entries_from_body(content_type.as_deref(), &bytes, file_last_modified_ms);
       match entries {
         Ok(entries) => {
           let form_data_result =
@@ -3520,7 +3532,17 @@ fn response_form_data_native(
 
   match (bytes_result, content_type_result) {
     (Ok(bytes), Ok(content_type)) => {
-      let entries = parse_form_data_entries_from_body(content_type.as_deref(), &bytes);
+      let file_last_modified_ms =
+        if content_type
+          .as_deref()
+          .is_some_and(|ct| normalize_content_type_for_blob(ct) == "multipart/form-data")
+        {
+          crate::js::time::date_now_ms(scope)?
+        } else {
+          0
+        };
+      let entries =
+        parse_form_data_entries_from_body(content_type.as_deref(), &bytes, file_last_modified_ms);
       match entries {
         Ok(entries) => {
           let form_data_result =
@@ -9739,7 +9761,7 @@ mod tests {
 
     assert_eq!(entries[1].name, "file");
     match &entries[1].value {
-      window_form_data::FormDataValue::Blob { data, filename } => {
+      window_form_data::FormDataValue::File { data, filename, .. } => {
         assert_eq!(filename, "f.txt");
         assert_eq!(data.r#type, "text/plain");
         assert_eq!(data.bytes.as_slice(), b"hi");

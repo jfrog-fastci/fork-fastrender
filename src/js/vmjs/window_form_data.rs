@@ -12,7 +12,7 @@ use vm_js::{
 };
 
 use crate::js::window_blob::{self, BlobData};
-use crate::js::window_file;
+use crate::js::{time, window_file};
 
 const REALM_ID_SLOT: usize = 0;
 const ITER_PROTO_SLOT: usize = 1;
@@ -22,7 +22,11 @@ const MAX_FORM_DATA_BYTES: usize = 10 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub(crate) enum FormDataValue {
   String(String),
-  Blob { data: BlobData, filename: String },
+  File {
+    data: BlobData,
+    filename: String,
+    last_modified: i64,
+  },
 }
 
 #[derive(Clone, Debug)]
@@ -38,7 +42,7 @@ struct FormDataRegistry {
 
 struct FormDataRealmState {
   form_data_proto: GcObject,
-  blob_proto: Option<GcObject>,
+  file_proto: Option<GcObject>,
   forms: HashMap<WeakGcObject, Vec<FormDataEntry>>,
   iterators: HashMap<WeakGcObject, FormDataIteratorState>,
   last_gc_runs: u64,
@@ -180,7 +184,7 @@ fn form_data_total_bytes(entries: &[FormDataEntry]) -> Result<usize, VmError> {
       FormDataValue::String(s) => {
         total = total.checked_add(s.len()).ok_or(VmError::OutOfMemory)?;
       }
-      FormDataValue::Blob { data, filename } => {
+      FormDataValue::File { data, filename, .. } => {
         total = total
           .checked_add(data.bytes.len())
           .and_then(|t| t.checked_add(filename.len()))
@@ -212,7 +216,7 @@ fn js_form_data_value_to_js(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   callee: GcObject,
-  blob_proto: Option<GcObject>,
+  file_proto: Option<GcObject>,
   value: &FormDataValue,
 ) -> Result<Value, VmError> {
   match value {
@@ -220,11 +224,25 @@ fn js_form_data_value_to_js(
       let v = scope.alloc_string(s)?;
       Ok(Value::String(v))
     }
-    FormDataValue::Blob { data, .. } => {
-      let proto = blob_proto.ok_or(VmError::Unimplemented(
-        "FormData Blob values require Blob to be installed",
+    FormDataValue::File {
+      data,
+      filename,
+      last_modified,
+    } => {
+      let proto = file_proto.ok_or(VmError::Unimplemented(
+        "FormData File values require File to be installed",
       ))?;
-      let obj = window_blob::create_blob_with_proto(vm, scope, callee, proto, data.clone())?;
+      let obj = window_file::create_file_with_proto(
+        vm,
+        scope,
+        callee,
+        proto,
+        data.clone(),
+        window_file::FileMeta {
+          name: filename.clone(),
+          last_modified: *last_modified,
+        },
+      )?;
       Ok(Value::Object(obj))
     }
   }
@@ -303,11 +321,13 @@ fn form_data_append_native(
   )?;
 
   let value_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let file_meta = window_file::clone_file_metadata_for_object(vm, scope.heap(), value_val)?;
   let blob = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), value_val)?;
   let value = if let Some(blob) = blob {
     let filename = match args.get(2).copied() {
-      None | Some(Value::Undefined) => window_file::clone_file_metadata_for_object(vm, scope.heap(), value_val)?
-        .map(|meta| meta.name)
+      None | Some(Value::Undefined) => file_meta
+        .as_ref()
+        .map(|m| m.name.clone())
         .unwrap_or_else(|| "blob".to_string()),
       Some(v) => js_value_to_string(
         vm,
@@ -318,9 +338,14 @@ fn form_data_append_native(
         "FormData filename exceeds maximum length",
       )?,
     };
-    FormDataValue::Blob {
+    let last_modified = file_meta
+      .as_ref()
+      .map(|m| m.last_modified)
+      .unwrap_or(time::date_now_ms(scope)?);
+    FormDataValue::File {
       data: blob,
       filename,
+      last_modified,
     }
   } else {
     let s = js_value_to_string(
@@ -368,11 +393,13 @@ fn form_data_set_native(
   )?;
 
   let value_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let file_meta = window_file::clone_file_metadata_for_object(vm, scope.heap(), value_val)?;
   let blob = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), value_val)?;
   let value = if let Some(blob) = blob {
     let filename = match args.get(2).copied() {
-      None | Some(Value::Undefined) => window_file::clone_file_metadata_for_object(vm, scope.heap(), value_val)?
-        .map(|meta| meta.name)
+      None | Some(Value::Undefined) => file_meta
+        .as_ref()
+        .map(|m| m.name.clone())
         .unwrap_or_else(|| "blob".to_string()),
       Some(v) => js_value_to_string(
         vm,
@@ -383,9 +410,14 @@ fn form_data_set_native(
         "FormData filename exceeds maximum length",
       )?,
     };
-    FormDataValue::Blob {
+    let last_modified = file_meta
+      .as_ref()
+      .map(|m| m.last_modified)
+      .unwrap_or(time::date_now_ms(scope)?);
+    FormDataValue::File {
       data: blob,
       filename,
+      last_modified,
     }
   } else {
     let s = js_value_to_string(
@@ -470,10 +502,10 @@ fn form_data_get_native(
     "FormData entry name exceeds maximum length",
   )?;
 
-  let blob_proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.blob_proto))?;
+  let file_proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.file_proto))?;
   for entry in entries {
     if entry.name == name {
-      return js_form_data_value_to_js(vm, scope, callee, blob_proto, &entry.value);
+      return js_form_data_value_to_js(vm, scope, callee, file_proto, &entry.value);
     }
   }
   Ok(Value::Null)
@@ -501,7 +533,7 @@ fn form_data_get_all_native(
     "FormData entry name exceeds maximum length",
   )?;
 
-  let blob_proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.blob_proto))?;
+  let file_proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.file_proto))?;
   let mut out: Vec<FormDataValue> = Vec::new();
   for entry in entries {
     if entry.name == name {
@@ -516,7 +548,7 @@ fn form_data_get_all_native(
     .object_set_prototype(arr, Some(intr.array_prototype()))?;
 
   for (i, v) in out.iter().enumerate() {
-    let js_val = js_form_data_value_to_js(vm, scope, callee, blob_proto, v)?;
+    let js_val = js_form_data_value_to_js(vm, scope, callee, file_proto, v)?;
     let key = alloc_key(scope, &i.to_string())?;
     scope.ordinary_set(vm, arr, key, js_val, Value::Object(arr))?;
   }
@@ -563,9 +595,9 @@ fn form_data_for_each_native(
   }
 
   let (form_obj, entries) = require_form_data(vm, scope, callee, this)?;
-  let blob_proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.blob_proto))?;
+  let file_proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.file_proto))?;
   for entry in entries {
-    let value = js_form_data_value_to_js(vm, scope, callee, blob_proto, &entry.value)?;
+    let value = js_form_data_value_to_js(vm, scope, callee, file_proto, &entry.value)?;
     let name_s = scope.alloc_string(&entry.name)?;
     scope.push_root(Value::String(name_s))?;
     vm.call_with_host_and_hooks(
@@ -671,14 +703,14 @@ fn iterator_next_native(
   let result_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
   scope.push_root(Value::Object(result_obj))?;
 
-  let (next, kind, blob_proto) = with_realm_state_mut(vm, scope, callee, |state| {
+  let (next, kind, file_proto) = with_realm_state_mut(vm, scope, callee, |state| {
     let iter = state
       .iterators
       .get_mut(&WeakGcObject::from(iter_obj))
       .ok_or(VmError::TypeError("FormData iterator: illegal invocation"))?;
     let kind = iter.kind;
     if iter.index >= iter.items.len() {
-      return Ok((None, kind, state.blob_proto));
+      return Ok((None, kind, state.file_proto));
     }
     let entry = iter
       .items
@@ -688,7 +720,7 @@ fn iterator_next_native(
         "FormData iterator index out of bounds",
       ))?;
     iter.index = iter.index.saturating_add(1);
-    Ok((Some(entry), kind, state.blob_proto))
+    Ok((Some(entry), kind, state.file_proto))
   })?;
 
   let data_desc = |value| PropertyDescriptor {
@@ -724,7 +756,7 @@ fn iterator_next_native(
           scope.define_property(pair, k0, data_desc(Value::String(name_s)))?;
 
           let k1 = alloc_key(scope, "1")?;
-          let value_js = js_form_data_value_to_js(vm, scope, callee, blob_proto, &entry.value)?;
+          let value_js = js_form_data_value_to_js(vm, scope, callee, file_proto, &entry.value)?;
           scope.define_property(pair, k1, data_desc(value_js))?;
 
           Value::Object(pair)
@@ -733,12 +765,8 @@ fn iterator_next_native(
           let name_s = scope.alloc_string(&entry.name)?;
           Value::String(name_s)
         }
-        ITER_KIND_VALUES => js_form_data_value_to_js(vm, scope, callee, blob_proto, &entry.value)?,
-        _ => {
-          return Err(VmError::InvariantViolation(
-            "FormData iterator invalid kind",
-          ))
-        }
+        ITER_KIND_VALUES => js_form_data_value_to_js(vm, scope, callee, file_proto, &entry.value)?,
+        _ => return Err(VmError::InvariantViolation("FormData iterator invalid kind")),
       };
 
       scope.define_property(result_obj, value_key, data_desc(out_value))?;
@@ -768,7 +796,7 @@ pub fn install_window_form_data_bindings(
   let intr = realm.intrinsics();
   let realm_id = realm.id();
 
-  let blob_proto = window_blob::blob_prototype_for_realm(realm_id);
+  let file_proto = window_file::file_prototype_for_realm(realm_id);
 
   let mut scope = heap.scope();
   let global = realm.global_object();
@@ -1069,7 +1097,7 @@ pub fn install_window_form_data_bindings(
     realm_id,
     FormDataRealmState {
       form_data_proto: proto,
-      blob_proto,
+      file_proto,
       forms: HashMap::new(),
       iterators: HashMap::new(),
       last_gc_runs: scope.heap().gc_runs(),
@@ -1138,7 +1166,11 @@ pub(crate) fn clone_form_data_entries_for_fetch(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::clock::VirtualClock;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use crate::js::WebTime;
+  use std::sync::Arc;
+  use std::time::Duration;
 
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
@@ -1194,6 +1226,29 @@ mod tests {
       })()",
     )?;
     assert_eq!(get_string(realm.heap(), v), "a=1&b=2&a=3");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn form_data_blob_values_are_files_with_deterministic_last_modified() -> Result<(), VmError> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(1234));
+    let config = WindowRealmConfig::new("https://example.com/")
+      .with_clock(clock)
+      .with_web_time(WebTime::new(1000));
+    let mut realm = WindowRealm::new(config)?;
+
+    let v = realm.exec_script(
+      "(() => {\
+        Date.now = () => 5;\
+        const fd = new FormData();\
+        fd.append('file', new Blob(['hi'], { type: 'text/plain' }), 'f.txt');\
+        return fd.get('file').lastModified;\
+      })()",
+    )?;
+    assert_eq!(v, Value::Number(2234.0));
 
     realm.teardown();
     Ok(())
