@@ -1505,7 +1505,7 @@ pub fn chrome_ui_with_bookmarks(
                   icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
                 icon_resp.widget_info({
                   let label = a11y_label.clone();
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
                 });
               })
               .response;
@@ -1557,7 +1557,7 @@ pub fn chrome_ui_with_bookmarks(
                 );
                 icon_resp.widget_info({
                   let label = a11y_label.clone();
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
                 });
               })
               .response;
@@ -1572,7 +1572,7 @@ pub fn chrome_ui_with_bookmarks(
             // full loading text to screen readers (hover text is not sufficient).
             resp.widget_info({
               let label = loading_text.clone();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
             });
             if !is_compact {
               let _ = ui
@@ -2340,7 +2340,7 @@ pub fn chrome_ui_with_bookmarks(
               );
               response.widget_info({
                 let label = omnibox_suggestion_a11y_label(suggestion);
-                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
               });
 
               let row_id = id.with(("row", idx));
