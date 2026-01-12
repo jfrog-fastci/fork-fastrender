@@ -43,6 +43,20 @@ const OBSERVE_SOURCE_NAME: &str = "<native-oracle-observe>";
 const CONSOLE_PRELUDE_SCRIPT: &str = "globalThis.console = { log: __native_print };";
 const CONSOLE_PRELUDE_SOURCE_NAME: &str = "<native-oracle-console-prelude>";
 const NATIVE_PRINT_NAME: &str = "__native_print";
+const NATIVE_BUILTINS_PRELUDE_SOURCE_NAME: &str = "<native-oracle-builtins>";
+const NATIVE_BUILTINS_PRELUDE_SCRIPT: &str = r#"
+globalThis.print = (...values) => __native_print(...values);
+globalThis.console = { log: (...values) => __native_print(...values) };
+globalThis.assert = (cond, msg) => {
+  if (!cond) throw new Error(msg === undefined ? "assertion failed" : String(msg));
+};
+globalThis.panic = (msg) => {
+  throw new Error(msg === undefined ? "panic" : String(msg));
+};
+globalThis.trap = () => {
+  throw new Error("trap");
+};
+"#;
 
 struct RootOnlyJobCtx<'a> {
   heap: &'a mut Heap,
@@ -828,6 +842,91 @@ pub fn run_fixture_capture_stdout_with_options(
   } else {
     run_js_source_capture_stdout_with_options(source_name, Arc::<str>::from(source_text), options)
   }
+}
+
+/// Execute JavaScript source with a deterministic set of native-style builtins enabled, capturing
+/// output written via `print(...)` / `console.log(...)`.
+///
+/// This API:
+/// - installs builtins via a short prelude script,
+/// - executes `source_text`,
+/// - performs a microtask checkpoint (so `Promise.then(...)` prints are observable),
+/// - and returns the captured stdout buffer.
+pub fn run_js_source_with_native_builtins_capture_stdout(
+  source_name: impl Into<Arc<str>>,
+  source_text: impl Into<Arc<str>>,
+) -> Result<String, OracleHarnessError> {
+  run_js_source_with_native_builtins_capture_stdout_with_options(
+    source_name,
+    source_text,
+    &OracleHarnessOptions::default(),
+  )
+}
+
+pub fn run_js_source_with_native_builtins_capture_stdout_with_options(
+  source_name: impl Into<Arc<str>>,
+  source_text: impl Into<Arc<str>>,
+  options: &OracleHarnessOptions,
+) -> Result<String, OracleHarnessError> {
+  let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
+    message: e.to_string(),
+  })?;
+  rt.vm.set_user_data(StdoutCapture::default());
+
+  let out = (|| {
+    rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)
+      .map_err(|err| map_vm_error(&mut rt, err))?;
+
+    rt.exec_script_source(Arc::new(SourceText::new(
+      NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
+      NATIVE_BUILTINS_PRELUDE_SCRIPT,
+    )))
+    .map_err(|err| map_vm_error(&mut rt, err))?;
+
+    rt.exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
+      .map_err(|err| map_vm_error(&mut rt, err))?;
+
+    rt.vm
+      .perform_microtask_checkpoint(&mut rt.heap)
+      .map_err(|err| map_vm_error(&mut rt, err))?;
+
+    let capture = rt
+      .vm
+      .take_user_data::<StdoutCapture>()
+      .ok_or_else(|| OracleHarnessError::Vm {
+        message: "stdout capture buffer missing".to_string(),
+      })?;
+    Ok(capture.buf)
+  })();
+
+  teardown_microtasks(&mut rt);
+  out
+}
+
+/// Execute a TypeScript snippet in the oracle VM with native builtins enabled, returning captured
+/// stdout.
+pub fn run_typescript_source_with_native_builtins_capture_stdout(
+  source_name: impl Into<Arc<str>>,
+  source_text: &str,
+) -> Result<String, OracleHarnessError> {
+  run_typescript_source_with_native_builtins_capture_stdout_with_options(
+    source_name,
+    source_text,
+    &OracleHarnessOptions::default(),
+  )
+}
+
+pub fn run_typescript_source_with_native_builtins_capture_stdout_with_options(
+  source_name: impl Into<Arc<str>>,
+  source_text: &str,
+  options: &OracleHarnessOptions,
+) -> Result<String, OracleHarnessError> {
+  let js = erase_typescript_to_js(source_text)?;
+  run_js_source_with_native_builtins_capture_stdout_with_options(
+    source_name,
+    Arc::<str>::from(js),
+    options,
+  )
 }
 
 fn value_to_fixture_string(
