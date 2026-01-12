@@ -3628,7 +3628,7 @@ impl DisplayListBuilder {
       //
       // Expand the visibility/culling rect by a conservative filter halo so offscreen contributors
       // are still emitted into the display list (see
-      // `tests/paint/filter_blur_bleeds_from_offscreen_source.rs`).
+      // `src/paint/tests/filter_blur_bleeds_from_offscreen_source.rs`).
       if let Some(visible) = context_visibility.rect {
         let filters_halo = filter_halo_outset_with_bounds(&filters, 1.0, Some(context.bounds));
         let backdrop_halo =

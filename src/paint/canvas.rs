@@ -2576,7 +2576,7 @@ impl Canvas {
     let transform = self.current_state.transform;
 
     // Pixel-snap *effectively opaque* axis-aligned fills to avoid fractional-edge seams between
-    // adjacent backgrounds (see `tests/paint/canvas_test.rs`).
+    // adjacent backgrounds (see `src/paint/tests/canvas_test.rs`).
     //
     // "Opaque" is determined after quantizing alpha using the same rounding logic as Skia/Chrome
     // (i.e. `round(alpha * 255)`), rather than requiring `color.a == 1.0` and

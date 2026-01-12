@@ -1,8 +1,7 @@
 //! Golden image tests for COLR color fonts.
 //!
-//! These tests used to live as integration tests under `tests/colr/`, but are
-//! unit tests now so they can directly exercise the color-font rasterization
-//! stack.
+//! These tests used to live as integration tests, but are unit tests now so they can directly
+//! exercise the color-font rasterization stack.
 
 mod colrv1_color_font_test {
   use crate::image_compare::{compare_images, decode_png, encode_png, CompareConfig};
