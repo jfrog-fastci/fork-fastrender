@@ -1,3 +1,15 @@
+//! Thread-local Web Storage backend (localStorage / sessionStorage).
+//!
+//! FastRender stores Web Storage state in a thread-local hub.
+//!
+//! ## Deterministic tests
+//!
+//! Rust's test harness may reuse worker threads between tests. Because the default hub is
+//! thread-local, storage state can leak between tests that happen to execute on the same thread.
+//! This module therefore exposes **test-only** helpers:
+//! - [`reset_default_web_storage_hub_for_tests`] resets all storage state for the current thread.
+//! - [`set_default_storage_quota_for_tests`] overrides the per-area quota for the current thread.
+
 use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -8,6 +20,19 @@ use std::sync::Arc;
 /// Web Storage quotas are implementation-defined. We pick a deterministic default so tests and
 /// render outputs are stable.
 pub const DEFAULT_STORAGE_QUOTA_BYTES: usize = 5 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageLimits {
+  pub max_bytes_per_area: usize,
+}
+
+impl Default for StorageLimits {
+  fn default() -> Self {
+    Self {
+      max_bytes_per_area: DEFAULT_STORAGE_QUOTA_BYTES,
+    }
+  }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageKind {
@@ -80,6 +105,10 @@ impl StorageArea {
       bytes_used: 0,
       quota_bytes,
     }
+  }
+
+  fn set_quota_bytes(&mut self, quota_bytes: usize) {
+    self.quota_bytes = quota_bytes;
   }
 
   pub fn get_item(&self, key: &str) -> Option<String> {
@@ -182,6 +211,7 @@ impl StorageArea {
 
 #[derive(Debug, Default)]
 pub struct WebStorageHub {
+  limits: StorageLimits,
   pub local_areas: HashMap<String, Arc<Mutex<StorageArea>>>,
   pub session_areas: HashMap<(SessionNamespaceId, String), Arc<Mutex<StorageArea>>>,
 }
@@ -191,11 +221,23 @@ impl WebStorageHub {
     Self::default()
   }
 
+  pub fn set_limits(&mut self, limits: StorageLimits) {
+    self.limits = limits;
+    let quota_bytes = limits.max_bytes_per_area;
+    for area in self.local_areas.values() {
+      area.lock().set_quota_bytes(quota_bytes);
+    }
+    for area in self.session_areas.values() {
+      area.lock().set_quota_bytes(quota_bytes);
+    }
+  }
+
   fn get_or_create_local_area(&mut self, origin: &str) -> Arc<Mutex<StorageArea>> {
     if let Some(area) = self.local_areas.get(origin) {
       return Arc::clone(area);
     }
-    let area = Arc::new(Mutex::new(StorageArea::new()));
+    let quota_bytes = self.limits.max_bytes_per_area;
+    let area = Arc::new(Mutex::new(StorageArea::new_with_quota(quota_bytes)));
     self.local_areas.insert(origin.to_string(), Arc::clone(&area));
     area
   }
@@ -209,7 +251,8 @@ impl WebStorageHub {
     if let Some(area) = self.session_areas.get(&key) {
       return Arc::clone(area);
     }
-    let area = Arc::new(Mutex::new(StorageArea::new()));
+    let quota_bytes = self.limits.max_bytes_per_area;
+    let area = Arc::new(Mutex::new(StorageArea::new_with_quota(quota_bytes)));
     self.session_areas.insert(key, Arc::clone(&area));
     area
   }
@@ -247,21 +290,52 @@ pub fn origin_key_from_document_url(url: &str) -> StorageOriginKey {
 pub fn get_local_area(origin: Option<&str>) -> Arc<Mutex<StorageArea>> {
   let Some(origin) = origin else {
     // Opaque origins get a fresh, non-persistent area on every request.
-    return Arc::new(Mutex::new(StorageArea::new()));
+    let quota_bytes = with_default_hub(|hub| hub.limits.max_bytes_per_area);
+    return Arc::new(Mutex::new(StorageArea::new_with_quota(quota_bytes)));
   };
   with_default_hub_mut(|hub| hub.get_or_create_local_area(origin))
 }
 
 pub fn get_session_area(session: SessionNamespaceId, origin: Option<&str>) -> Arc<Mutex<StorageArea>> {
   let Some(origin) = origin else {
-    return Arc::new(Mutex::new(StorageArea::new()));
+    let quota_bytes = with_default_hub(|hub| hub.limits.max_bytes_per_area);
+    return Arc::new(Mutex::new(StorageArea::new_with_quota(quota_bytes)));
   };
   with_default_hub_mut(|hub| hub.get_or_create_session_area(session, origin))
 }
 
+/// Reset the thread-local default Web Storage hub.
+///
+/// # WARNING
+/// This function is **test-only**. It clears all storage areas (and any listener registrations held
+/// by the hub) for the current thread.
+#[cfg(test)]
+pub fn reset_default_web_storage_hub_for_tests() {
+  DEFAULT_HUB.with(|hub| {
+    *hub.borrow_mut() = WebStorageHub::new();
+  });
+}
+
+/// Override the per-area storage quota for the thread-local default Web Storage hub.
+///
+/// # WARNING
+/// This function is **test-only**. It mutates global (thread-local) state and should not be used by
+/// production code.
+#[cfg(test)]
+pub fn set_default_storage_quota_for_tests(bytes: usize) {
+  with_default_hub_mut(|hub| {
+    hub.set_limits(StorageLimits {
+      max_bytes_per_area: bytes,
+    });
+  });
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{StorageArea, StorageError};
+  use super::{
+    get_local_area, reset_default_web_storage_hub_for_tests, set_default_storage_quota_for_tests,
+    StorageArea, StorageError,
+  };
 
   #[test]
   fn insertion_order_is_stable_on_update() {
@@ -323,5 +397,35 @@ mod tests {
     assert_eq!(err, StorageError::QuotaExceeded);
     assert_eq!(area.get_item("a").as_deref(), Some("12"));
     assert_eq!(area.bytes_used, 3);
+  }
+
+  #[test]
+  fn reset_and_quota_overrides_are_deterministic() {
+    reset_default_web_storage_hub_for_tests();
+
+    {
+      let area = get_local_area(Some("https://example.com"));
+      area.lock().set_item("a", "123").unwrap();
+    }
+
+    reset_default_web_storage_hub_for_tests();
+
+    {
+      let area = get_local_area(Some("https://example.com"));
+      assert_eq!(area.lock().get_item("a"), None);
+    }
+
+    // Prove that we can force a tiny quota without allocating huge values.
+    reset_default_web_storage_hub_for_tests();
+
+    let area = get_local_area(Some("https://example.com"));
+    area.lock().set_item("k", "0123456789").unwrap();
+
+    // Lower the quota enough that repeating a previously-valid set becomes invalid.
+    set_default_storage_quota_for_tests(4);
+
+    let err = area.lock().set_item("k", "9876543210").unwrap_err();
+    assert_eq!(err, StorageError::QuotaExceeded);
+    assert_eq!(area.lock().get_item("k").as_deref(), Some("0123456789"));
   }
 }

@@ -18171,6 +18171,7 @@ mod tests {
 
   #[test]
   fn window_storage_exists_and_round_trips() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     assert_eq!(
