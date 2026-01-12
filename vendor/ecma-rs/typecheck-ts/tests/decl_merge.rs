@@ -493,7 +493,7 @@ fn namespace_then_value_emits_ts2434_and_merges_members() {
 }
 
 #[test]
-fn namespace_not_merged_with_default_export_emits_single_ts2395() {
+fn namespace_not_merged_with_default_export_reports_ts2652() {
   let mut host = MemoryHost::default();
   let key = fk(9);
   host.insert(
@@ -503,12 +503,12 @@ fn namespace_not_merged_with_default_export_emits_single_ts2395() {
 
   let program = Program::new(host, vec![key.clone()]);
   let diagnostics = program.check();
-  let ts2395_count = diagnostics
+  let ts2652_count = diagnostics
     .iter()
-    .filter(|d| d.code.as_str() == "TS2395")
+    .filter(|d| d.code.as_str() == "TS2652")
     .count();
   assert_eq!(
-    ts2395_count, 1,
-    "expected exactly one TS2395 diagnostic, got {diagnostics:?}"
+    ts2652_count, 2,
+    "expected two TS2652 diagnostics, got {diagnostics:?}"
   );
 }
