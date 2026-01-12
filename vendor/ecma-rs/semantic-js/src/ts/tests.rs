@@ -1073,6 +1073,7 @@ fn module_graph_exposes_edges_for_imports_reexports_type_imports_and_augmentatio
   });
 
   let mut c = HirFile::module(file_c);
+  c.file_kind = FileKind::Dts;
   c.type_imports.push(TypeImport {
     specifier: "a".to_string(),
     specifier_span: span(20),
@@ -1087,6 +1088,8 @@ fn module_graph_exposes_edges_for_imports_reexports_type_imports_and_augmentatio
   c.ambient_modules.push(AmbientModule {
     name: "./a".to_string(),
     name_span: span(22),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -1098,6 +1101,8 @@ fn module_graph_exposes_edges_for_imports_reexports_type_imports_and_augmentatio
   c.ambient_modules.push(AmbientModule {
     name: "pkg".to_string(),
     name_span: span(30),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: vec![Import {
       specifier: "a".to_string(),
@@ -1213,6 +1218,7 @@ fn module_graph_is_deterministic_across_root_orders() {
   });
 
   let mut c = HirFile::module(file_c);
+  c.file_kind = FileKind::Dts;
   c.type_imports.push(TypeImport {
     specifier: "a".to_string(),
     specifier_span: span(20),
@@ -1227,6 +1233,8 @@ fn module_graph_is_deterministic_across_root_orders() {
   c.ambient_modules.push(AmbientModule {
     name: "./a".to_string(),
     name_span: span(22),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -1238,6 +1246,8 @@ fn module_graph_is_deterministic_across_root_orders() {
   c.ambient_modules.push(AmbientModule {
     name: "pkg".to_string(),
     name_span: span(30),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: vec![Import {
       specifier: "a".to_string(),
