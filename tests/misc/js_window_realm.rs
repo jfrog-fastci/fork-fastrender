@@ -2022,6 +2022,179 @@ child.dispatchEvent(new Event('x', { bubbles: true }));
 }
 
 #[test]
+fn event_constructors_are_new_only() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+
+  host.exec_script(
+    r#"
+globalThis.__event_call_err_name = "";
+globalThis.__event_call_err_msg = "";
+try {
+  Event("x");
+} catch (e) {
+  globalThis.__event_call_err_name = e && e.name;
+  globalThis.__event_call_err_msg = e && e.message;
+}
+globalThis.__event_new_type = new Event("x").type;
+
+globalThis.__custom_event_call_err_name = "";
+globalThis.__custom_event_call_err_msg = "";
+try {
+  CustomEvent("x");
+} catch (e) {
+  globalThis.__custom_event_call_err_name = e && e.name;
+  globalThis.__custom_event_call_err_msg = e && e.message;
+}
+globalThis.__custom_event_new_detail = new CustomEvent("x", { detail: 123 }).detail;
+
+globalThis.__pre_call_err_name = "";
+globalThis.__pre_call_err_msg = "";
+try {
+  PromiseRejectionEvent("unhandledrejection", {
+    promise: Promise.resolve("ok"),
+    reason: "bad",
+    cancelable: true,
+  });
+} catch (e) {
+  globalThis.__pre_call_err_name = e && e.name;
+  globalThis.__pre_call_err_msg = e && e.message;
+}
+
+const pr = new PromiseRejectionEvent("unhandledrejection", {
+  promise: Promise.resolve("ok"),
+  reason: "bad",
+  cancelable: true,
+});
+globalThis.__pre_new_cancelable = pr.cancelable;
+pr.preventDefault();
+globalThis.__pre_new_default_prevented = pr.defaultPrevented;
+globalThis.__pre_new_reason = pr.reason;
+globalThis.__pre_new_promise_is_promise = pr.promise instanceof Promise;
+
+try {
+  pr.reason = "changed";
+} catch (e) {}
+globalThis.__pre_reason_after_write = pr.reason;
+try {
+  pr.promise = null;
+} catch (e) {}
+globalThis.__pre_promise_after_write_is_promise = pr.promise instanceof Promise;
+"#,
+  )?;
+
+  let (
+    event_call_name,
+    event_call_msg,
+    event_type,
+    custom_call_name,
+    custom_call_msg,
+    custom_detail,
+    pre_call_name,
+    pre_call_msg,
+    pre_cancelable,
+    pre_default_prevented,
+    pre_reason,
+    pre_promise_is_promise,
+    pre_reason_after_write,
+    pre_promise_after_write_is_promise,
+  ) = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    (
+      get_data_prop(&mut scope, global, "__event_call_err_name"),
+      get_data_prop(&mut scope, global, "__event_call_err_msg"),
+      get_data_prop(&mut scope, global, "__event_new_type"),
+      get_data_prop(&mut scope, global, "__custom_event_call_err_name"),
+      get_data_prop(&mut scope, global, "__custom_event_call_err_msg"),
+      get_data_prop(&mut scope, global, "__custom_event_new_detail"),
+      get_data_prop(&mut scope, global, "__pre_call_err_name"),
+      get_data_prop(&mut scope, global, "__pre_call_err_msg"),
+      get_data_prop(&mut scope, global, "__pre_new_cancelable"),
+      get_data_prop(&mut scope, global, "__pre_new_default_prevented"),
+      get_data_prop(&mut scope, global, "__pre_new_reason"),
+      get_data_prop(&mut scope, global, "__pre_new_promise_is_promise"),
+      get_data_prop(&mut scope, global, "__pre_reason_after_write"),
+      get_data_prop(&mut scope, global, "__pre_promise_after_write_is_promise"),
+    )
+  };
+
+  let (
+    event_call_name,
+    event_call_msg,
+    event_type,
+    custom_call_name,
+    custom_call_msg,
+    pre_call_name,
+    pre_call_msg,
+    pre_reason,
+    pre_reason_after_write,
+  ) = {
+    let window = host.host_mut().window_mut();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    (
+      get_string(heap, event_call_name),
+      get_string(heap, event_call_msg),
+      get_string(heap, event_type),
+      get_string(heap, custom_call_name),
+      get_string(heap, custom_call_msg),
+      get_string(heap, pre_call_name),
+      get_string(heap, pre_call_msg),
+      get_string(heap, pre_reason),
+      get_string(heap, pre_reason_after_write),
+    )
+  };
+
+  assert_eq!(event_call_name, "TypeError");
+  assert!(
+    event_call_msg.contains("cannot be invoked without 'new'"),
+    "unexpected Event() error message: {event_call_msg}"
+  );
+  assert_eq!(event_type, "x");
+
+  assert_eq!(custom_call_name, "TypeError");
+  assert!(
+    custom_call_msg.contains("cannot be invoked without 'new'"),
+    "unexpected CustomEvent() error message: {custom_call_msg}"
+  );
+  assert!(
+    matches!(custom_detail, Value::Number(n) if n == 123.0),
+    "expected new CustomEvent(...).detail to be 123"
+  );
+
+  assert_eq!(pre_call_name, "TypeError");
+  assert!(
+    pre_call_msg.contains("cannot be invoked without 'new'"),
+    "unexpected PromiseRejectionEvent() error message: {pre_call_msg}"
+  );
+  assert!(
+    matches!(pre_cancelable, Value::Bool(true)),
+    "expected PromiseRejectionEvent.cancelable to be true"
+  );
+  assert!(
+    matches!(pre_default_prevented, Value::Bool(true)),
+    "expected PromiseRejectionEvent.preventDefault to set defaultPrevented"
+  );
+  assert_eq!(pre_reason, "bad");
+  assert_eq!(
+    pre_reason_after_write, "bad",
+    "expected PromiseRejectionEvent.reason to be read-only"
+  );
+  assert!(
+    matches!(pre_promise_is_promise, Value::Bool(true)),
+    "expected PromiseRejectionEvent.promise to be a Promise"
+  );
+  assert!(
+    matches!(pre_promise_after_write_is_promise, Value::Bool(true)),
+    "expected PromiseRejectionEvent.promise to be read-only"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn promise_rejection_event_tasks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
