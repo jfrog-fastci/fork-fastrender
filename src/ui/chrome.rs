@@ -419,6 +419,9 @@ fn tab_search_overlay_ui(
             .desired_width(f32::INFINITY)
             .hint_text("Search tabs…"),
         );
+        input.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search tabs")
+        });
         // Keep focus in the search box while the overlay is open.
         input.request_focus();
 

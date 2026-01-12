@@ -4010,11 +4010,14 @@ impl App {
           ui.separator();
 
           ui.label(egui::RichText::new("Filter:").small());
-          ui.add(
+          let filter_resp = ui.add(
             egui::TextEdit::singleline(&mut self.debug_log_filter)
               .hint_text("text")
               .desired_width(160.0),
           );
+          filter_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Debug log filter")
+          });
           if !self.debug_log_filter.is_empty() {
             let clear_filter = fastrender::ui::icon_button(
               ui,

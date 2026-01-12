@@ -117,6 +117,9 @@ pub fn bookmarks_manager_side_panel(
             .hint_text("Filter by title or URL…")
             .desired_width(f32::INFINITY),
         );
+        resp.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search bookmarks")
+        });
         if state.request_focus_search {
           resp.request_focus();
           state.request_focus_search = false;
