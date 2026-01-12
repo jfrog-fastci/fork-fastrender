@@ -3729,14 +3729,9 @@ pub fn error_constructor_construct(
       scope.push_root(Value::Object(options_obj))?;
 
       let cause_key = string_key(&mut scope, "cause")?;
-      let cause = scope.ordinary_get_with_host_and_hooks(
-        vm,
-        host,
-        hooks,
-        options_obj,
-        cause_key,
-        Value::Object(options_obj),
-      )?;
+      // `Get(options, "cause")` must be Proxy-aware.
+      let cause =
+        scope.get_with_host_and_hooks(vm, host, hooks, options_obj, cause_key, Value::Object(options_obj))?;
       if !matches!(cause, Value::Undefined) {
         scope.push_root(cause)?;
         scope.define_property(obj, cause_key, data_desc(cause, true, false, true))?;

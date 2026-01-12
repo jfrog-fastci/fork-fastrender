@@ -154,3 +154,47 @@ fn get_prototype_from_constructor_throws_on_revoked_proxy() -> Result<(), VmErro
 
   Ok(())
 }
+
+#[test]
+fn proxy_get_trap_observed_for_error_cause_option() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var sawCause = false;
+      var opts = { cause: 123 };
+      function getTrap(t, k, r) {
+        if (k === "cause") { sawCause = true; }
+        return Reflect.get(t, k, r);
+      }
+      var handler = { get: getTrap };
+    "#,
+  )?;
+
+  let opts = rt.exec_script("opts")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(opts_obj) = opts else {
+    panic!("expected opts to be an object, got {opts:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy options object as global `optsProxy`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(opts_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "optsProxy", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var e = new Error("msg", optsProxy);
+      e.cause === 123 && sawCause
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
