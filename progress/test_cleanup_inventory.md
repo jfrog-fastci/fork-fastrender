@@ -77,6 +77,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/container_scroll_state_queries_test.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/style/**`. | DONE |
 | `tests/container_style_queries.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/style/**`. | DONE |
 | `tests/content_visibility_tests.rs` | unit | `src/layout/contexts/*` | Migrated into layout context unit tests (block/flex/grid). | DONE |
+| `tests/csp_img_data_url.rs` | integration | `tests/api/csp_img_data_url.rs` | Top-level crate removed; tests now run via `tests/integration.rs::api`. | DONE |
 | `tests/clip_tests.rs` | unit | `src/paint/display_list_builder.rs` | Migrated clip-rect regression coverage into `src/paint/display_list_builder.rs` unit tests and removed `tests/clip_tests.rs`/`tests/clip/**`. | DONE |
 | `tests/display_list_tests.rs` | unit | `src/paint/display_list_renderer/tests/display_list/mod.rs` | Migrated the display-list backend regression suite into unit tests under `src/paint/display_list_renderer/tests/display_list/**` and removed the standalone test binary. | DONE |
 | `tests/flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |

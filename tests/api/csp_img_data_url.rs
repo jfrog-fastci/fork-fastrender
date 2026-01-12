@@ -1,3 +1,4 @@
+use crate::common::with_large_stack;
 use base64::{engine::general_purpose, Engine as _};
 use fastrender::{FastRender, RenderOptions, ResourceKind};
 use image::codecs::png::PngEncoder;
@@ -22,7 +23,7 @@ fn rgba_at(pixmap: &fastrender::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 
 #[test]
 fn csp_img_src_wildcard_blocks_data_url_images() {
-  crate::common::with_large_stack(|| {
+  with_large_stack(|| {
     let green_png = solid_color_png_data_url(20, 20, [0, 255, 0, 255]);
     let html = format!(
       r#"<!doctype html>
@@ -65,7 +66,7 @@ fn csp_img_src_wildcard_blocks_data_url_images() {
 
 #[test]
 fn csp_img_src_data_allows_data_url_images() {
-  crate::common::with_large_stack(|| {
+  with_large_stack(|| {
     let green_png = solid_color_png_data_url(20, 20, [0, 255, 0, 255]);
     let html = format!(
       r#"<!doctype html>
@@ -105,4 +106,3 @@ fn csp_img_src_data_allows_data_url_images() {
     );
   });
 }
-

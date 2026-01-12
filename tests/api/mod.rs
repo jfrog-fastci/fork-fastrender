@@ -4,6 +4,7 @@
 //! reaching into internal modules.
 mod cascade_diagnostics_env;
 mod clip_mask_diagnostics;
+mod csp_img_data_url;
 mod css_double_fetch;
 mod css_empty_url_no_fetch;
 mod css_import_referrer_semantics;
