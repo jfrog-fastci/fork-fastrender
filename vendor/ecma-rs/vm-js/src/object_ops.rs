@@ -1061,6 +1061,11 @@ impl<'a> Scope<'a> {
         return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
       };
 
+      // Root the Proxy's `[[ProxyTarget]]` and `[[ProxyHandler]]` while we look up and invoke the
+      // trap. `GetMethod(handler, "has")` can run user code via accessors which can revoke the
+      // Proxy and trigger a GC; the operation must still use the original `target` afterwards.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
       // trap = ? GetMethod(handler, "has")
       let trap_key = match has_trap_key {
         Some(k) => k,
@@ -1381,6 +1386,11 @@ impl<'a> Scope<'a> {
         ));
       };
 
+      // Root target/handler across trap lookup and invocation. `GetMethod(handler, "deleteProperty")`
+      // can run user code via accessors which can revoke the Proxy and trigger a GC; the operation
+      // must still use the original `target` afterwards.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
       // trap = ? GetMethod(handler, "deleteProperty")
       let trap_key = match delete_trap_key {
         Some(k) => k,
@@ -1458,6 +1468,11 @@ impl<'a> Scope<'a> {
         return Err(VmError::TypeError("Cannot perform 'ownKeys' on a revoked Proxy"));
       };
 
+      // Root target/handler across trap lookup and invocation. `GetMethod(handler, "ownKeys")` can
+      // run user code via accessors which can revoke the Proxy and trigger a GC; the operation must
+      // still use the original `target` afterwards.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
       // trap = ? GetMethod(handler, "ownKeys")
       let trap_key = match own_keys_trap_key {
         Some(k) => k,
@@ -1509,10 +1524,10 @@ impl<'a> Scope<'a> {
         if i != 0 && i % 1024 == 0 {
           vm.tick()?;
         }
-        match v {
-          Value::String(s) => out.push(PropertyKey::from_string(s)),
-          Value::Symbol(s) => out.push(PropertyKey::from_symbol(s)),
-          _ => {
+      match v {
+        Value::String(s) => out.push(PropertyKey::from_string(s)),
+        Value::Symbol(s) => out.push(PropertyKey::from_symbol(s)),
+        _ => {
             return Err(VmError::TypeError(
               "Proxy ownKeys trap returned a value that is not a string or symbol",
             ))
@@ -1570,6 +1585,11 @@ impl<'a> Scope<'a> {
           "Cannot perform 'getPrototypeOf' on a revoked Proxy",
         ));
       };
+
+      // Root target/handler across trap lookup and invocation. `GetMethod(handler, "getPrototypeOf")`
+      // can run user code via accessors which can revoke the Proxy and trigger a GC; the operation
+      // must still use the original `target` afterwards.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
       let trap_key = match get_proto_trap_key {
         Some(k) => k,
@@ -1762,6 +1782,11 @@ impl<'a> Scope<'a> {
           "Cannot perform 'preventExtensions' on a revoked Proxy",
         ));
       };
+
+      // Root target/handler across trap lookup and invocation. `GetMethod(handler, "preventExtensions")`
+      // can run user code via accessors which can revoke the Proxy and trigger a GC; the operation
+      // must still use the original `target` afterwards.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
       let trap_key = match prevent_ext_trap_key {
         Some(k) => k,
