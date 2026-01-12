@@ -2403,14 +2403,21 @@ impl FormattingContext for FlexFormattingContext {
                 }
               }
             }
-            // When the available inline size is intrinsic (min-/max-content), percentage
-            // widths/min/max can't be resolved (§10.5). Treat them as auto so intrinsic
-            // sizing uses content-driven sizes instead of forcing 100% of an unknown base.
+            // Taffy uses intrinsic available widths (min-/max-content) when probing flex items for
+            // intrinsic size contributions / flex base size. In these probes `avail.width` is not a
+            // definite pixel value, so percentage widths would normally be unresolvable (CSS 2.1
+            // §10.5) and should behave as `auto`.
+            //
+            // However, for *flex items* we can still know the correct percentage base: the flex
+            // container's definite content-box width. Preserve percentage widths when that base is
+            // known; only treat them as `auto` when the percentage base is genuinely indefinite.
             let avail_is_intrinsic = matches!(
               avail.width,
               AvailableSpace::MinContent | AvailableSpace::MaxContent
             );
-            if avail_is_intrinsic {
+            let has_definite_percentage_base =
+              flex_item_inline_percentage_base.is_some_and(|b| b.is_finite());
+            if avail_is_intrinsic && !has_definite_percentage_base {
               let style = cloned_style.get_or_insert_with(|| (*box_node.style).clone());
               if matches!(style.width, Some(len) if len.unit.is_percentage()) {
                 style.width = None;
@@ -14170,6 +14177,80 @@ mod tests {
       }
     }
     None
+  }
+
+  #[test]
+  fn flex_item_percentage_width_is_resolved_against_definite_container_during_max_content_probe() {
+    // Regression test (pageset: yahoo.com):
+    // The flex measure callback used to treat percentage widths as `auto` whenever Taffy passed an
+    // intrinsic available width (AvailableSpace::MaxContent/MinContent). This is correct when the
+    // percentage base is genuinely indefinite, but wrong for flex items in a flex container whose
+    // used width is definite: percentages must still resolve against the flex container's inner
+    // width.
+    //
+    // If percentages are incorrectly cleared during the max-content probe, the flex base size can
+    // collapse to the content size (often 0), producing incorrect shrink distribution.
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(10.0));
+    container_style.width_keyword = None;
+    container_style.height_keyword = None;
+
+    let percent_id = 2usize;
+    let fixed_id = 3usize;
+
+    let mut percent_style = ComputedStyle::default();
+    percent_style.display = Display::Block;
+    percent_style.width = Some(Length::percent(100.0));
+    percent_style.height = Some(Length::px(10.0));
+    percent_style.width_keyword = None;
+    percent_style.height_keyword = None;
+    // Only this item is allowed to shrink. If its flex base size collapses to 0, the layout would
+    // incorrectly leave it at 0px (free space instead of shrink).
+    percent_style.flex_shrink = 1.0;
+
+    let mut fixed_style = ComputedStyle::default();
+    fixed_style.display = Display::Block;
+    fixed_style.width = Some(Length::px(40.0));
+    fixed_style.height = Some(Length::px(10.0));
+    fixed_style.width_keyword = None;
+    fixed_style.height_keyword = None;
+    fixed_style.flex_shrink = 0.0;
+
+    let mut percent_item =
+      BoxNode::new_block(Arc::new(percent_style), FormattingContextType::Block, vec![]);
+    percent_item.id = percent_id;
+    let mut fixed_item =
+      BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
+    fixed_item.id = fixed_id;
+
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![percent_item, fixed_item],
+    );
+    container.id = 1usize;
+
+    let constraints = LayoutConstraints::definite(100.0, 10.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+    let percent_fragment =
+      find_fragment_by_box_id(&fragment, percent_id).expect("percent fragment");
+    let fixed_fragment = find_fragment_by_box_id(&fragment, fixed_id).expect("fixed fragment");
+
+    assert!(
+      (percent_fragment.bounds.width() - 60.0).abs() < 0.01,
+      "expected 100% flex item to shrink to 60px; got {}",
+      percent_fragment.bounds.width()
+    );
+    assert!(
+      (fixed_fragment.bounds.width() - 40.0).abs() < 0.01,
+      "expected fixed flex item to remain 40px; got {}",
+      fixed_fragment.bounds.width()
+    );
   }
 
   #[test]
