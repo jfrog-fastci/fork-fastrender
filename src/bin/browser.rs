@@ -5555,6 +5555,9 @@ impl App {
               | ShortcutAction::PrevTab
               | ShortcutAction::Reload
               | ShortcutAction::GoHome
+              | ShortcutAction::ToggleBookmark
+              | ShortcutAction::ShowHistory
+              | ShortcutAction::ShowBookmarksManager
               | ShortcutAction::ActivateTabNumber(_)
               | ShortcutAction::ZoomIn
               | ShortcutAction::ZoomOut
@@ -6364,45 +6367,129 @@ impl App {
             });
           });
           ui.separator();
+          ui.add(
+            egui::TextEdit::singleline(&mut self.browser_state.chrome.bookmarks_manager_search_text)
+              .hint_text("Search bookmarks…")
+              .desired_width(f32::INFINITY),
+          );
+          ui.separator();
 
           if self.bookmarks.roots.is_empty() {
             ui.label("No bookmarks.");
             return;
           }
 
+          let query = self
+            .browser_state
+            .chrome
+            .bookmarks_manager_search_text
+            .trim()
+            .to_ascii_lowercase();
+          let mut matches = 0usize;
+          let mut remove_bookmark_ids: Vec<fastrender::ui::BookmarkId> = Vec::new();
+
           egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+              fn node_matches_query(
+                store: &fastrender::ui::BookmarkStore,
+                id: fastrender::ui::BookmarkId,
+                query: &str,
+              ) -> bool {
+                if query.is_empty() {
+                  return true;
+                }
+
+                let Some(node) = store.nodes.get(&id) else {
+                  return false;
+                };
+
+                match node {
+                  fastrender::ui::BookmarkNode::Bookmark(entry) => {
+                    entry.url.to_ascii_lowercase().contains(query)
+                      || entry
+                        .title
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(query)
+                  }
+                  fastrender::ui::BookmarkNode::Folder(folder) => {
+                    folder.title.to_ascii_lowercase().contains(query)
+                      || folder
+                        .children
+                        .iter()
+                        .copied()
+                        .any(|child| node_matches_query(store, child, query))
+                  }
+                }
+              }
+
               fn render_nodes(
                 ui: &mut egui::Ui,
                 store: &fastrender::ui::BookmarkStore,
                 ids: &[fastrender::ui::BookmarkId],
+                query: &str,
+                matches: &mut usize,
+                remove_ids: &mut Vec<fastrender::ui::BookmarkId>,
                 panel_actions: &mut Vec<fastrender::ui::ChromeAction>,
               ) {
                 for id in ids {
+                  if !query.is_empty() && !node_matches_query(store, *id, query) {
+                    continue;
+                  }
+
                   let Some(node) = store.nodes.get(id) else {
                     continue;
                   };
+
                   match node {
                     fastrender::ui::BookmarkNode::Bookmark(entry) => {
-                      let label = entry
-                        .title
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|t| !t.is_empty())
-                        .unwrap_or(entry.url.as_str());
-                      if ui.button(label).clicked() {
-                        panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(
-                          entry.url.clone(),
-                        ));
-                      }
+                      *matches += 1;
+
+                      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                          .button("✕")
+                          .on_hover_text("Remove bookmark")
+                          .clicked()
+                        {
+                          remove_ids.push(*id);
+                        }
+
+                        let label = entry
+                          .title
+                          .as_deref()
+                          .map(str::trim)
+                          .filter(|t| !t.is_empty())
+                          .map(str::to_string)
+                          .unwrap_or_else(|| {
+                            fastrender::ui::url_display::truncate_url_middle(&entry.url, 64)
+                          });
+
+                        let resp = ui
+                          .add_sized([ui.available_width(), 0.0], egui::Button::new(label))
+                          .on_hover_text(&entry.url);
+                        if resp.clicked() {
+                          panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(
+                            entry.url.clone(),
+                          ));
+                        }
+                      });
                     }
                     fastrender::ui::BookmarkNode::Folder(folder) => {
                       egui::CollapsingHeader::new(folder.title.as_str())
                         .id_source(folder.id.0)
                         .default_open(true)
                         .show(ui, |ui| {
-                          render_nodes(ui, store, &folder.children, panel_actions);
+                          render_nodes(
+                            ui,
+                            store,
+                            &folder.children,
+                            query,
+                            matches,
+                            remove_ids,
+                            panel_actions,
+                          );
                         });
                     }
                   }
@@ -6413,9 +6500,28 @@ impl App {
                 ui,
                 &self.bookmarks,
                 &self.bookmarks.roots,
+                query.as_str(),
+                &mut matches,
+                &mut remove_bookmark_ids,
                 &mut panel_actions,
               );
             });
+
+          if !query.is_empty() && matches == 0 {
+            ui.label("No matching bookmarks.");
+          }
+
+          if !remove_bookmark_ids.is_empty() {
+            let mut changed = false;
+            for id in remove_bookmark_ids {
+              changed |= self.bookmarks.remove_by_id(id);
+            }
+            if changed {
+              self.autosave_bookmarks();
+              self.sync_about_newtab_bookmarks_snapshot();
+              self.window.request_redraw();
+            }
+          }
         });
     } else if self.history_panel_open {
       egui::SidePanel::right("fastr_history_panel")
@@ -6435,7 +6541,13 @@ impl App {
             });
           });
 
+          ui.separator();
           ui.horizontal(|ui| {
+            ui.add(
+              egui::TextEdit::singleline(&mut self.browser_state.chrome.history_search_text)
+                .hint_text("Search history…")
+                .desired_width(f32::INFINITY),
+            );
             if ui.button("Clear browsing data…").clicked() {
               open_clear_browsing_data_dialog = true;
             }
@@ -6448,20 +6560,67 @@ impl App {
             return;
           }
 
+          let query = self
+            .browser_state
+            .chrome
+            .history_search_text
+            .trim()
+            .to_ascii_lowercase();
+          let mut shown = 0usize;
+
           egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-              for entry in self.browser_state.history.entries.iter().rev().take(200) {
+              for entry in self.browser_state.history.entries.iter().rev() {
+                if shown >= 200 {
+                  break;
+                }
+
+                if !query.is_empty() {
+                  let title = entry.title.as_deref().unwrap_or("");
+                  if !entry.url.to_ascii_lowercase().contains(&query)
+                    && !title.to_ascii_lowercase().contains(&query)
+                  {
+                    continue;
+                  }
+                }
+                shown += 1;
+
                 let label = entry
                   .title
                   .as_deref()
                   .filter(|t| !t.trim().is_empty())
                   .unwrap_or(entry.url.as_str());
-                if ui.button(label).clicked() {
-                  panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(entry.url.clone()));
-                }
+
+                let ts = entry.visited_at_ms.and_then(|ms| {
+                  let ms = i64::try_from(ms).ok()?;
+                  chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                  if let Some(ts) = ts.as_deref() {
+                    ui.add(
+                      egui::Label::new(
+                        egui::RichText::new(ts).small().color(ui.visuals().weak_text_color()),
+                      )
+                      .wrap(false),
+                    );
+                  }
+
+                  let resp = ui
+                    .add_sized([ui.available_width(), 0.0], egui::Button::new(label))
+                    .on_hover_text(&entry.url);
+                  if resp.clicked() {
+                    panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(entry.url.clone()));
+                  }
+                });
               }
             });
+
+          if !query.is_empty() && shown == 0 {
+            ui.label("No matching history entries.");
+          }
         });
     }
 
@@ -7187,6 +7346,7 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::K => ShortcutKey::K,
     VirtualKeyCode::L => ShortcutKey::L,
     VirtualKeyCode::N => ShortcutKey::N,
+    VirtualKeyCode::O => ShortcutKey::O,
     VirtualKeyCode::LBracket => ShortcutKey::OpenBracket,
     VirtualKeyCode::RBracket => ShortcutKey::CloseBracket,
     VirtualKeyCode::R => ShortcutKey::R,
@@ -7194,6 +7354,7 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::V => ShortcutKey::V,
     VirtualKeyCode::W => ShortcutKey::W,
     VirtualKeyCode::X => ShortcutKey::X,
+    VirtualKeyCode::Y => ShortcutKey::Y,
     VirtualKeyCode::Insert => ShortcutKey::Insert,
     VirtualKeyCode::Delete => ShortcutKey::Delete,
     VirtualKeyCode::Tab => ShortcutKey::Tab,

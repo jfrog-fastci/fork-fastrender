@@ -20,6 +20,7 @@ use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
 
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
 const COMPACT_MODE_THRESHOLD_PX: f32 = 640.0;
+const BOOKMARKS_BAR_MAX_ITEMS: usize = 12;
 
 mod tab_strip;
 
@@ -86,11 +87,13 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::K => Key::K,
     egui::Key::L => Key::L,
     egui::Key::N => Key::N,
+    egui::Key::O => Key::O,
     egui::Key::R => Key::R,
     egui::Key::T => Key::T,
     egui::Key::V => Key::V,
     egui::Key::W => Key::W,
     egui::Key::X => Key::X,
+    egui::Key::Y => Key::Y,
     egui::Key::Tab => Key::Tab,
     egui::Key::ArrowLeft => Key::Left,
     egui::Key::ArrowRight => Key::Right,
@@ -209,6 +212,9 @@ pub fn chrome_ui_with_bookmarks(
     reopen_closed_tab,
     reload,
     home,
+    toggle_bookmark,
+    toggle_history_panel,
+    toggle_bookmarks_manager,
     tab_delta,
     tab_number,
     back,
@@ -224,6 +230,9 @@ pub fn chrome_ui_with_bookmarks(
     let mut reopen_closed_tab = false;
     let mut reload = false;
     let mut home = false;
+    let mut toggle_bookmark = false;
+    let mut toggle_history_panel = false;
+    let mut toggle_bookmarks_manager = false;
     let mut tab_delta: Option<isize> = None;
     let mut tab_number: Option<u8> = None;
     let mut back = false;
@@ -259,6 +268,9 @@ pub fn chrome_ui_with_bookmarks(
         ShortcutAction::ReopenClosedTab => reopen_closed_tab = true,
         ShortcutAction::Reload => reload = true,
         ShortcutAction::GoHome => home = true,
+        ShortcutAction::ToggleBookmark => toggle_bookmark = true,
+        ShortcutAction::ShowHistory => toggle_history_panel = true,
+        ShortcutAction::ShowBookmarksManager => toggle_bookmarks_manager = true,
         ShortcutAction::NextTab => tab_delta = Some(1),
         ShortcutAction::PrevTab => tab_delta = Some(-1),
         ShortcutAction::ActivateTabNumber(n) => tab_number = Some(n),
@@ -279,6 +291,9 @@ pub fn chrome_ui_with_bookmarks(
       reopen_closed_tab,
       reload,
       home,
+      toggle_bookmark,
+      toggle_history_panel,
+      toggle_bookmarks_manager,
       tab_delta,
       tab_number,
       back,
@@ -353,6 +368,15 @@ pub fn chrome_ui_with_bookmarks(
   }
   if home {
     actions.push(ChromeAction::Home);
+  }
+  if toggle_bookmark {
+    actions.push(ChromeAction::ToggleBookmarkForActiveTab);
+  }
+  if toggle_history_panel {
+    actions.push(ChromeAction::ToggleHistoryPanel);
+  }
+  if toggle_bookmarks_manager {
+    actions.push(ChromeAction::ToggleBookmarksManager);
   }
   if let Some(zoom_action) = zoom_action {
     if let Some(tab) = app.active_tab_mut() {
@@ -625,6 +649,32 @@ pub fn chrome_ui_with_bookmarks(
         // Right-to-left layout ensures the URL text doesn't consume the entire width before we get a
         // chance to place status indicators on the right edge.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+          // Bookmark star (optional: only available when the caller supplies a bookmarks store).
+          if let Some(bookmarks) = omnibox_bookmarks {
+            let can_toggle = !active_url.trim().is_empty();
+            let is_bookmarked = can_toggle && bookmarks.contains_url(active_url.trim());
+            let tooltip = if cfg!(target_os = "macos") {
+              "Bookmark this page (Cmd+D)"
+            } else {
+              "Bookmark this page (Ctrl+D)"
+            };
+            let icon = if is_bookmarked { "★" } else { "☆" };
+            let color = if is_bookmarked {
+              ui.visuals().selection.stroke.color
+            } else {
+              ui.visuals().weak_text_color()
+            };
+            let response = ui
+              .add_enabled(
+                can_toggle,
+                egui::Button::new(egui::RichText::new(icon).color(color)).frame(false),
+              )
+              .on_hover_text(tooltip);
+            if response.clicked() {
+              actions.push(ChromeAction::ToggleBookmarkForActiveTab);
+            }
+          }
+
           if loading {
             let _ = spinner(ui, ui.spacing().icon_width).on_hover_text(loading_text.clone());
             if !is_compact {
@@ -1007,6 +1057,62 @@ pub fn chrome_ui_with_bookmarks(
       }
       });
     });
+
+    // ---------------------------------------------------------------------------
+    // Bookmarks bar (simple row of root bookmark buttons)
+    // ---------------------------------------------------------------------------
+    if let Some(bookmarks) = omnibox_bookmarks {
+      let mut shown = 0usize;
+      let mut has_any = false;
+      for id in &bookmarks.roots {
+        let Some(node) = bookmarks.nodes.get(id) else {
+          continue;
+        };
+        if matches!(node, crate::ui::BookmarkNode::Bookmark(_)) {
+          has_any = true;
+          break;
+        }
+      }
+      if has_any {
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+          ui.spacing_mut().item_spacing.x = 6.0;
+          for id in &bookmarks.roots {
+            if shown >= BOOKMARKS_BAR_MAX_ITEMS {
+              break;
+            }
+            let Some(crate::ui::BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(id) else {
+              continue;
+            };
+            let url = entry.url.trim();
+            if url.is_empty() {
+              continue;
+            }
+
+            let title = entry
+              .title
+              .as_deref()
+              .map(str::trim)
+              .filter(|t| !t.is_empty());
+            let label = title
+              .map(str::to_string)
+              .unwrap_or_else(|| url_display::truncate_url_middle(url, 36));
+            let resp = ui.small_button(label).on_hover_text(url);
+
+            let open_new_tab = resp.middle_clicked()
+              || (resp.clicked() && ui.input(|i| i.modifiers.command));
+            if resp.clicked() || resp.middle_clicked() {
+              if open_new_tab {
+                actions.push(ChromeAction::NewTab);
+              }
+              actions.push(ChromeAction::NavigateTo(url.to_string()));
+            }
+
+            shown += 1;
+          }
+        });
+      }
+    }
   });
 
   // -----------------------------------------------------------------------------
@@ -1602,6 +1708,65 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::OpenFindInPage)),
       "expected ChromeAction::OpenFindInPage, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_d_emits_toggle_bookmark_for_active_tab_action() {
+    let mut app = BrowserAppState::new();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    let ctx = new_context_with_key(egui::Key::D, modifiers);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleBookmarkForActiveTab)),
+      "expected ChromeAction::ToggleBookmarkForActiveTab, got {actions:?}"
+    );
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  #[test]
+  fn ctrl_h_emits_toggle_history_panel_action() {
+    let mut app = BrowserAppState::new();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    let ctx = new_context_with_key(egui::Key::H, modifiers);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleHistoryPanel)),
+      "expected ChromeAction::ToggleHistoryPanel, got {actions:?}"
+    );
+  }
+
+  #[cfg(target_os = "macos")]
+  #[test]
+  fn cmd_y_emits_toggle_history_panel_action() {
+    let mut app = BrowserAppState::new();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    let ctx = new_context_with_key(egui::Key::Y, modifiers);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleHistoryPanel)),
+      "expected ChromeAction::ToggleHistoryPanel, got {actions:?}"
     );
   }
 

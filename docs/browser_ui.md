@@ -270,8 +270,8 @@ The browser also requests `Theme::Dark` on Linux:
 | Cmd+] (macOS) | Forward |
 | Ctrl/Cmd+R / F5 | Reload |
 | Ctrl/Cmd+D | Toggle bookmark for current page |
-| Ctrl+H (Win/Linux); Cmd+Y / Cmd+Shift+H (macOS) | Show history |
-| Ctrl/Cmd+Shift+O | Show bookmarks manager |
+| Ctrl+H (Win/Linux); Cmd+Y / Cmd+Shift+H (macOS) | Toggle history panel |
+| Ctrl/Cmd+Shift+O | Toggle bookmarks manager |
 | Ctrl/Cmd+Plus / Ctrl/Cmd+Equals | Zoom in |
 | Ctrl/Cmd+Minus | Zoom out |
 | Ctrl/Cmd+0 | Reset zoom |
@@ -307,7 +307,7 @@ FastRender’s experimental desktop browser UI supports **bookmarks** and a basi
     toggle a bookmark for the current page.
   - Bookmarks appear in the **bookmarks bar** for quick access.
   - Use the **bookmarks manager** (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>) to
-    browse/edit/remove bookmarks.
+    browse/remove bookmarks.
 - **History**:
   - Open the history panel with <kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux) or <kbd>Cmd</kbd>+<kbd>Y</kbd>
     / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS).

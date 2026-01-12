@@ -434,6 +434,14 @@ pub struct ChromeState {
   pub request_focus_address_bar: bool,
   /// One-frame request flag consumed by `chrome_ui` to select all text in the address bar.
   pub request_select_all_address_bar: bool,
+  /// Whether the chrome History side panel is currently visible.
+  pub history_panel_open: bool,
+  /// Search/filter query for the History panel.
+  pub history_search_text: String,
+  /// Whether the chrome Bookmarks Manager side panel is currently visible.
+  pub bookmarks_manager_open: bool,
+  /// Search/filter query for the Bookmarks Manager panel.
+  pub bookmarks_manager_search_text: String,
   /// Transient tab-strip drag state (used by the optional egui chrome).
   ///
   /// Kept behind the `browser_ui` feature gate so the core renderer does not depend on egui types.

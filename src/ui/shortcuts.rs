@@ -19,6 +19,12 @@ pub enum ShortcutAction {
   Reload,
   /// Navigate to the browser's configured home page.
   GoHome,
+  /// Toggle bookmarking for the current page (Ctrl/Cmd+D).
+  ToggleBookmark,
+  /// Show the global browsing history UI surface (Ctrl+H / Cmd+Y).
+  ShowHistory,
+  /// Show the bookmarks manager UI surface (Ctrl/Cmd+Shift+O).
+  ShowBookmarksManager,
   /// Activate a tab by its 1-based index (9 = last tab), matching typical browser shortcuts.
   ActivateTabNumber(u8),
   ZoomIn,
@@ -65,6 +71,7 @@ pub enum Key {
   K,
   L,
   N,
+  O,
   OpenBracket,
   CloseBracket,
   Minus,
@@ -74,6 +81,7 @@ pub enum Key {
   V,
   W,
   X,
+  Y,
   Insert,
   Delete,
   Tab,
@@ -151,6 +159,21 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     } else {
       match platform {
         Platform::Mac => modifiers.meta || modifiers.ctrl,
+        Platform::Other => modifiers.ctrl,
+      }
+    }
+  };
+
+  // "Primary" browser shortcut modifier: Ctrl on most platforms, Cmd on macOS.
+  //
+  // We intentionally do *not* treat macOS Ctrl as equivalent here because many macOS text controls
+  // use Ctrl+<letter> as Emacs-style editing commands (e.g. Ctrl+D = forward delete).
+  let primary_cmd = {
+    if modifiers.alt {
+      false
+    } else {
+      match platform {
+        Platform::Mac => modifiers.meta,
         Platform::Other => modifiers.ctrl,
       }
     }
@@ -247,6 +270,23 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
         ..
       },
     ) => Some(ShortcutAction::Reload),
+
+    // Bookmarks / history UI.
+    (Key::D, Modifiers { shift: false, .. }) if primary_cmd => Some(ShortcutAction::ToggleBookmark),
+    (Key::H, Modifiers { shift: false, .. })
+      if primary_cmd && matches!(platform, Platform::Other) =>
+    {
+      Some(ShortcutAction::ShowHistory)
+    }
+    // Chrome macOS shortcut for showing History.
+    (Key::Y, Modifiers { shift: false, .. }) if primary_cmd && matches!(platform, Platform::Mac) => {
+      Some(ShortcutAction::ShowHistory)
+    }
+    // Firefox macOS shortcut for showing History (keep both).
+    (Key::H, Modifiers { shift: true, .. }) if primary_cmd && matches!(platform, Platform::Mac) => {
+      Some(ShortcutAction::ShowHistory)
+    }
+    (Key::O, Modifiers { shift: true, .. }) if primary_cmd => Some(ShortcutAction::ShowBookmarksManager),
 
     // Ctrl/Cmd+1..9 switches tabs (9 = last tab).
     (Key::Num1, _) if cmd => Some(ShortcutAction::ActivateTabNumber(1)),
@@ -916,6 +956,84 @@ mod tests {
       map_shortcut_with_platform(
         KeyEvent::new(Key::T, Modifiers::new(false, false, false, true)),
         Platform::Other
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn ctrl_d_toggles_bookmark() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::D, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ToggleBookmark)
+    );
+  }
+
+  #[test]
+  fn ctrl_h_shows_history_on_other_platforms() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::H, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ShowHistory)
+    );
+  }
+
+  #[test]
+  fn ctrl_shift_o_shows_bookmarks_manager() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::O, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ShowBookmarksManager)
+    );
+  }
+
+  #[test]
+  fn mac_cmd_d_toggles_bookmark_and_ctrl_d_is_ignored() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::D, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleBookmark)
+    );
+    // Ctrl+D is commonly "forward delete" in macOS text controls; do not treat it as bookmark.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::D, Modifiers::new(true, false, false, false)),
+        Platform::Mac
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn mac_cmd_y_and_cmd_shift_h_show_history() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Y, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ShowHistory)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::H, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ShowHistory)
+    );
+    // Ctrl+H is a common macOS editing keybinding; do not treat it as History.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::H, Modifiers::new(true, false, false, false)),
+        Platform::Mac
       ),
       None
     );
