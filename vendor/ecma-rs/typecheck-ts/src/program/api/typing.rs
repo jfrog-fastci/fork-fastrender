@@ -1,6 +1,12 @@
 use super::*;
 
 impl Program {
+  #[doc(hidden)]
+  pub fn typecheck_db(&self) -> db::TypecheckDb {
+    let state = self.lock_state();
+    state.typecheck_db.clone()
+  }
+
   /// Type for a definition.
   pub fn type_of_def(&self, def: DefId) -> TypeId {
     match self.type_of_def_fallible(def) {
@@ -55,9 +61,13 @@ impl Program {
         state.body_check_context()
       };
       let db = BodyCheckDb::from_shared_context(context);
-      let res = db::queries::body_check::check_body(&db, body);
+      let computed = db::queries::body_check::check_body(&db, body);
       let mut state = self.lock_state();
-      state.body_results.insert(body, Arc::clone(&res));
+      let res = state
+        .body_results
+        .entry(body)
+        .or_insert_with(|| Arc::clone(&computed))
+        .clone();
       if !state.snapshot_loaded {
         state.typecheck_db.set_body_result(body, Arc::clone(&res));
       }
