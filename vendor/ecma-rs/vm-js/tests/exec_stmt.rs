@@ -475,6 +475,27 @@ fn class_expression_constructor_and_methods_execute() {
 }
 
 #[test]
+fn class_declaration_has_inner_immutable_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        static self() { return C; }
+        static assign() {
+          try { C = 1; return "no"; } catch(e) { return e.name; }
+        }
+      }
+      var D = C;
+      C = 1;
+      (D.self() === D) && (D.assign() === "TypeError") && (C === 1)
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn named_class_expression_creates_inner_const_binding() {
   let mut rt = new_runtime();
   let value = rt

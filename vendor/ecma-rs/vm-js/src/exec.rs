@@ -193,7 +193,6 @@ enum VarEnv {
 #[derive(Clone, Copy, Debug)]
 enum ClassBinding<'a> {
   None,
-  Mutable(&'a str),
   Immutable(&'a str),
 }
 
@@ -2758,11 +2757,6 @@ impl<'a> Evaluator<'a> {
     // reference it.
     match binding {
       ClassBinding::None => {}
-      ClassBinding::Mutable(name) => {
-        if !scope.heap().env_has_binding(class_env, name)? {
-          scope.env_create_mutable_binding(class_env, name)?;
-        }
-      }
       ClassBinding::Immutable(name) => {
         if scope.heap().env_has_binding(class_env, name)? {
           return Err(VmError::InvariantViolation(
@@ -2882,7 +2876,7 @@ impl<'a> Evaluator<'a> {
     // Initialize the requested binding now that the class constructor object exists.
     if let Some(binding_name) = match binding {
       ClassBinding::None => None,
-      ClassBinding::Mutable(name) | ClassBinding::Immutable(name) => Some(name),
+      ClassBinding::Immutable(name) => Some(name),
     } {
       // Root the class constructor object during initialization so if the operation grows the root
       // stack (and triggers GC) we don't collect the class constructor before it becomes reachable
@@ -3273,12 +3267,40 @@ impl<'a> Evaluator<'a> {
       None => "default",
     };
 
-    let _ = self.eval_class(
-      scope,
-      ClassBinding::Mutable(binding_name),
-      func_name,
-      &decl.stx.members,
-    )?;
+    // Per ECMAScript, class declarations are evaluated within a fresh lexical environment whose
+    // outer is the surrounding lexical environment. When the class has a name, that environment
+    // contains an immutable binding for the class name so class element functions can reference the
+    // class even if the outer binding is later reassigned.
+    let outer = self.env.lexical_env;
+    let class_env = scope.env_create(Some(outer))?;
+    self.env.set_lexical_env(scope.heap_mut(), class_env);
+
+    let result = (|| {
+      let inner_binding = match decl.stx.name.as_ref() {
+        Some(name) => ClassBinding::Immutable(name.stx.name.as_str()),
+        None => ClassBinding::None,
+      };
+      self.eval_class(scope, inner_binding, func_name, &decl.stx.members)
+    })();
+
+    // Restore outer environment regardless of how class evaluation completes.
+    self.env.set_lexical_env(scope.heap_mut(), outer);
+
+    let func_obj = result?;
+
+    // Initialize the outer (mutable) class binding in the surrounding environment.
+    //
+    // Root the class constructor object first: creating the binding may allocate and trigger GC.
+    let mut init_scope = scope.reborrow();
+    init_scope.push_root(Value::Object(func_obj))?;
+
+    if !init_scope.heap().env_has_binding(outer, binding_name)? {
+      // Non-block statement contexts may not have performed lexical hoisting yet.
+      init_scope.env_create_mutable_binding(outer, binding_name)?;
+    }
+    init_scope
+      .heap_mut()
+      .env_initialize_binding(outer, binding_name, Value::Object(func_obj))?;
     Ok(Completion::empty())
   }
 
