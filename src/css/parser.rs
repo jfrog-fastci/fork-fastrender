@@ -3360,7 +3360,7 @@ fn parse_page_block<'i, 't>(
             skip_at_rule(parser);
             continue;
           }
-
+ 
           let decls = parser
             .parse_nested_block(
               |nested| -> std::result::Result<

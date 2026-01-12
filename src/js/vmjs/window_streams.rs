@@ -420,6 +420,8 @@ fn with_realm_state_mut<R>(
       "ReadableStream bindings used before install_window_streams_bindings",
     ))?;
 
+  let heap = scope.heap();
+
   // Opportunistically sweep dead objects when GC has run.
   let gc_runs = heap.gc_runs();
   if gc_runs != state.last_gc_runs {
@@ -610,7 +612,6 @@ fn readable_stream_get_reader_native(
     stream_ref_key,
     data_desc(Value::Object(stream_obj), false),
   )?;
-
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state.readers.insert(
       WeakGcObject::from(reader_obj),
