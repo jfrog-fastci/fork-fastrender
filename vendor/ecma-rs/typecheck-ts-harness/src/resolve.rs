@@ -2,15 +2,50 @@ use std::path::{Path, PathBuf};
 
 use diagnostics::paths::normalize_ts_path;
 use serde_json::Value;
-use typecheck_ts::lib_support::{CompilerOptions, ModuleKind};
+use typecheck_ts::lib_support::{CompilerOptions, ModuleKind, ScriptTarget};
 use typecheck_ts::resolve::{ModuleResolutionMode, ResolveFs, ResolveOptions, Resolver};
 use typecheck_ts::FileKey;
 
 use crate::resolution_trace::ResolutionTraceMode;
 use crate::runner::HarnessFileSet;
 
+fn effective_module_kind(compiler_options: &CompilerOptions) -> ModuleKind {
+  compiler_options.module.unwrap_or_else(|| match compiler_options.target {
+    ScriptTarget::Es3 | ScriptTarget::Es5 => ModuleKind::CommonJs,
+    _ => ModuleKind::Es2015,
+  })
+}
+
+fn effective_module_resolution_mode(compiler_options: &CompilerOptions) -> ModuleResolutionMode {
+  let normalized = compiler_options
+    .module_resolution
+    .as_deref()
+    .map(|value| value.trim().to_ascii_lowercase());
+  match normalized.as_deref() {
+    Some("classic") => ModuleResolutionMode::Classic,
+    // TypeScript treats `node` as the legacy Node10 resolver.
+    Some("node") | Some("nodejs") | Some("node10") => ModuleResolutionMode::Node10,
+    Some("node16") => ModuleResolutionMode::Node16,
+    Some("nodenext") => ModuleResolutionMode::NodeNext,
+    Some("bundler") => ModuleResolutionMode::Bundler,
+    // `tsc` computes the default `moduleResolution` based on `module` when the option is unset.
+    None | Some("") => match effective_module_kind(compiler_options) {
+      ModuleKind::None | ModuleKind::Amd | ModuleKind::Umd | ModuleKind::System => {
+        ModuleResolutionMode::Classic
+      }
+      ModuleKind::Node16 => ModuleResolutionMode::Node16,
+      ModuleKind::NodeNext => ModuleResolutionMode::NodeNext,
+      // All other module kinds (including CommonJS, ES*, etc) default to Node10.
+      _ => ModuleResolutionMode::Node10,
+    },
+    // Fall back to Classic semantics for unknown values so we don't accidentally
+    // enable `node_modules` lookups in misconfigured tests.
+    Some(_) => ModuleResolutionMode::Classic,
+  }
+}
+
 fn resolve_options_for_compiler_options(compiler_options: &CompilerOptions) -> ResolveOptions {
-  let module_resolution = module_resolution_from_compiler_options(compiler_options);
+  let module_resolution = effective_module_resolution_mode(compiler_options);
   let (node_modules, package_imports) = match module_resolution {
     ModuleResolutionMode::Classic => (false, false),
     // TypeScript's legacy `node` resolver does not support `package.json` imports maps.
@@ -23,7 +58,7 @@ fn resolve_options_for_compiler_options(compiler_options: &CompilerOptions) -> R
     node_modules,
     package_imports,
     module_resolution,
-    module_kind: compiler_options.module,
+    module_kind: Some(effective_module_kind(compiler_options)),
     ..Default::default()
   }
 }
@@ -190,42 +225,6 @@ pub(crate) fn resolve_module_specifier(
     return None;
   }
   files.resolve(&resolved)
-}
-
-fn module_resolution_from_compiler_options(options: &CompilerOptions) -> ModuleResolutionMode {
-  if let Some(raw) = options.module_resolution.as_deref() {
-    let trimmed = raw.trim();
-    if !trimmed.is_empty() {
-      return parse_module_resolution_mode(trimmed).unwrap_or(ModuleResolutionMode::Classic);
-    }
-  }
-  infer_default_module_resolution_mode(options.module)
-}
-
-fn parse_module_resolution_mode(raw: &str) -> Option<ModuleResolutionMode> {
-  match raw.trim().to_ascii_lowercase().as_str() {
-    "classic" => Some(ModuleResolutionMode::Classic),
-    // TypeScript treats `node` as the legacy Node10 resolver.
-    "node" | "nodejs" | "node10" => Some(ModuleResolutionMode::Node10),
-    "node16" => Some(ModuleResolutionMode::Node16),
-    "nodenext" => Some(ModuleResolutionMode::NodeNext),
-    "bundler" => Some(ModuleResolutionMode::Bundler),
-    _ => None,
-  }
-}
-
-fn infer_default_module_resolution_mode(module: Option<ModuleKind>) -> ModuleResolutionMode {
-  // Best-effort mirror of `tsc`'s default `moduleResolution` selection when the
-  // option is not explicitly specified.
-  //
-  // TypeScript's exact defaults also depend on other flags (notably `target`),
-  // but the harness only tracks the `module` option today.
-  match module {
-    Some(ModuleKind::Node16) => ModuleResolutionMode::Node16,
-    Some(ModuleKind::NodeNext) => ModuleResolutionMode::NodeNext,
-    Some(ModuleKind::CommonJs) => ModuleResolutionMode::Node10,
-    _ => ModuleResolutionMode::Classic,
-  }
 }
 
 fn type_package_entry(files: &HarnessFileSet, dir: &str) -> Option<FileKey> {

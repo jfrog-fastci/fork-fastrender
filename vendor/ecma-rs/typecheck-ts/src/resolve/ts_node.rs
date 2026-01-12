@@ -434,8 +434,8 @@ impl<F: ResolveFs> Resolver<F> {
     if self.options.module_resolution == ModuleResolutionMode::Classic {
       // Classic module resolution does not search `node_modules/` for normal
       // package specifiers. It does, however, perform the classic upward file
-      // search (see `resolve_non_relative_classic`).
-      if let Some(found) = self.resolve_non_relative_classic(from, specifier) {
+      // search and `@types` fallback (see `resolve_non_relative_classic`).
+      if let Some(found) = self.resolve_non_relative_classic(from, specifier, conditions) {
         return Some(found);
       }
 
@@ -563,7 +563,17 @@ impl<F: ResolveFs> Resolver<F> {
     None
   }
 
-  fn resolve_non_relative_classic(&self, from: &str, specifier: &str) -> Option<PathBuf> {
+  fn resolve_non_relative_classic(
+    &self,
+    from: &str,
+    specifier: &str,
+    conditions: &[&str],
+  ) -> Option<PathBuf> {
+    // TypeScript's classic resolver does not support package.json `imports` maps.
+    if specifier.starts_with('#') {
+      return None;
+    }
+
     let needs_normalization = subpath_needs_normalization(specifier);
     let mut dir = virtual_parent_dir_str(from);
     let mut candidate = String::new();
@@ -580,6 +590,32 @@ impl<F: ResolveFs> Resolver<F> {
       };
       if found.is_some() {
         return found;
+      }
+
+      let parent = virtual_parent_dir_str(dir);
+      if parent == dir {
+        break;
+      }
+      dir = parent;
+    }
+
+    let types_specifier = types_fallback_specifier(specifier)?;
+    let mut dir = virtual_parent_dir_str(from);
+    let mut types_base = String::new();
+    loop {
+      virtual_join3_into(
+        &mut types_base,
+        dir,
+        "node_modules/@types",
+        types_specifier.as_ref(),
+      );
+      if let Some(found) = self.resolve_as_file_or_directory_normalized_with_scratch(
+        &types_base,
+        0,
+        &mut scratch,
+        conditions,
+      ) {
+        return Some(found);
       }
 
       let parent = virtual_parent_dir_str(dir);
@@ -750,7 +786,12 @@ impl<F: ResolveFs> Resolver<F> {
       }
     }
 
-    if use_package_json && !base_is_source_root && self.options.node_modules {
+    let allow_directory_resolution = match self.options.module_resolution {
+      ModuleResolutionMode::Classic => is_node_modules_at_types_path(base_candidate),
+      _ => self.options.node_modules,
+    };
+
+    if use_package_json && !base_is_source_root && allow_directory_resolution {
       virtual_join_into(scratch, base_candidate, "package.json");
       if self.fs.is_file(Path::new(scratch.as_str())) {
         if let Some(parsed) = self.package_json(scratch.as_str()) {
@@ -1324,6 +1365,20 @@ fn subpath_needs_normalization(subpath: &str) -> bool {
   false
 }
 
+fn is_node_modules_at_types_path(path: &str) -> bool {
+  let mut prev: Option<&str> = None;
+  for part in path.split('/') {
+    if part.is_empty() {
+      continue;
+    }
+    if prev == Some("node_modules") && part == "@types" {
+      return true;
+    }
+    prev = Some(part);
+  }
+  false
+}
+
 fn is_source_root(name: &str) -> bool {
   match name.as_bytes().last().copied() {
     Some(b's') => {
@@ -1534,8 +1589,9 @@ mod tests {
     let resolver = Resolver::with_fs(
       fs,
       ResolveOptions {
-        node_modules: false,
+        node_modules: true,
         package_imports: false,
+        module_resolution: ModuleResolutionMode::Classic,
         ..ResolveOptions::default()
       },
     );
@@ -1549,7 +1605,7 @@ mod tests {
   fn classic_mode_resolves_at_types_packages_when_node_modules_enabled() {
     let mut fs = FakeFs::default();
     fs.insert("/src/app.ts", "");
-    fs.insert("/node_modules/@types/foo/index.d.ts", "export {};\n");
+    fs.insert("/src/node_modules/@types/foo/index.d.ts", "export {};\n");
 
     let resolver = Resolver::with_fs(
       fs,
@@ -1564,11 +1620,9 @@ mod tests {
     let resolved = resolver
       .resolve(Path::new("/src/app.ts"), "@types/foo")
       .expect("@types package should resolve");
-    assert_eq!(resolved, PathBuf::from("/node_modules/@types/foo/index.d.ts"));
-
-    assert!(
-      resolver.resolve(Path::new("/src/app.ts"), "foo").is_none(),
-      "Classic module resolution should not consult node_modules for normal bare specifiers"
+    assert_eq!(
+      resolved,
+      PathBuf::from("/src/node_modules/@types/foo/index.d.ts")
     );
   }
 
@@ -1581,8 +1635,9 @@ mod tests {
     let resolver = Resolver::with_fs(
       fs,
       ResolveOptions {
-        node_modules: false,
+        node_modules: true,
         package_imports: false,
+        module_resolution: ModuleResolutionMode::Classic,
         ..ResolveOptions::default()
       },
     );
@@ -1602,8 +1657,9 @@ mod tests {
     let resolver = Resolver::with_fs(
       fs,
       ResolveOptions {
-        node_modules: false,
+        node_modules: true,
         package_imports: false,
+        module_resolution: ModuleResolutionMode::Classic,
         ..ResolveOptions::default()
       },
     );
@@ -1893,6 +1949,75 @@ mod tests {
       resolved,
       PathBuf::from("/node_modules/@types/scope__pkg/index.d.ts")
     );
+  }
+
+  #[test]
+  fn classic_mode_falls_back_to_at_types_packages() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert("/src/node_modules/@types/foo/index.d.ts", "export {};\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: false,
+        package_imports: false,
+        module_resolution: ModuleResolutionMode::Classic,
+        ..ResolveOptions::default()
+      },
+    );
+
+    let resolved = resolver
+      .resolve(Path::new("/src/app.ts"), "foo")
+      .expect("classic should fall back to @types packages");
+    assert_eq!(
+      resolved,
+      PathBuf::from("/src/node_modules/@types/foo/index.d.ts")
+    );
+  }
+
+  #[test]
+  fn classic_mode_does_not_resolve_package_json_exports_in_node_modules() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert(
+      "/node_modules/pkg/package.json",
+      r#"{ "exports": { ".": { "types": "./dist/index.d.ts" } } }"#,
+    );
+    fs.insert("/node_modules/pkg/dist/index.d.ts", "export {};\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        package_imports: true,
+        module_resolution: ModuleResolutionMode::Classic,
+        ..ResolveOptions::default()
+      },
+    );
+    assert!(
+      resolver.resolve(Path::new("/src/app.ts"), "pkg").is_none(),
+      "classic resolution should not consult node_modules package.json exports"
+    );
+  }
+
+  #[test]
+  fn classic_mode_resolves_non_relative_specifiers_via_ancestor_search() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/sub/app.ts", "");
+    fs.insert("/src/lib.d.ts", "export const x: number;\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        module_resolution: ModuleResolutionMode::Classic,
+        ..ResolveOptions::default()
+      },
+    );
+    let resolved = resolver
+      .resolve(Path::new("/src/sub/app.ts"), "lib")
+      .expect("classic should resolve lib.d.ts from an ancestor directory");
+    assert_eq!(resolved, PathBuf::from("/src/lib.d.ts"));
   }
 
   #[test]

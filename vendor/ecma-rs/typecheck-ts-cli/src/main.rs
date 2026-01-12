@@ -346,6 +346,7 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
     || matches!(options.module, Some(ModuleKind::Node16 | ModuleKind::NodeNext))
     || !options.types.is_empty();
   let module_resolution_mode = match module_resolution {
+    Some("classic") => ModuleResolutionMode::Classic,
     Some("node16") => ModuleResolutionMode::Node16,
     Some("nodenext") => ModuleResolutionMode::NodeNext,
     Some("bundler") => ModuleResolutionMode::Bundler,
