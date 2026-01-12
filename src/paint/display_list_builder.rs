@@ -2032,7 +2032,7 @@ impl DisplayListBuilder {
       count += 1;
       match &fragment.content {
         FragmentContent::RunningAnchor { snapshot, .. }
-        | FragmentContent::FootnoteAnchor { snapshot } => {
+        | FragmentContent::FootnoteAnchor { snapshot, .. } => {
           stack.push(snapshot);
         }
         _ => {}

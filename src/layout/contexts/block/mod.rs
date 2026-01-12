@@ -786,7 +786,11 @@ impl BlockFormattingContext {
     );
     let snapshot_fragment = fc.layout(&snapshot_node, &snapshot_constraints)?;
     let anchor_bounds = Rect::from_xywh(0.0, 0.0, 0.0, 0.01);
-    let mut anchor = FragmentNode::new_footnote_anchor(anchor_bounds, snapshot_fragment);
+    let mut anchor = FragmentNode::new_footnote_anchor(
+      anchor_bounds,
+      snapshot_fragment,
+      body.style.footnote_policy,
+    );
     anchor.style = Some(child.style.clone());
     fragment.children_mut().push(anchor);
     Ok(())
@@ -7221,7 +7225,7 @@ impl BlockFormattingContext {
     fragment.starting_style = None;
     match &mut fragment.content {
       FragmentContent::RunningAnchor { snapshot, .. }
-      | FragmentContent::FootnoteAnchor { snapshot } => {
+      | FragmentContent::FootnoteAnchor { snapshot, .. } => {
         Arc::make_mut(snapshot).translate_root_in_place(Point::new(dx, physical_dy));
       }
       _ => {}

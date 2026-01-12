@@ -9,7 +9,7 @@ fn count_line_fragments(fragment: &FragmentNode) -> usize {
 
   match &fragment.content {
     FragmentContent::RunningAnchor { snapshot, .. }
-    | FragmentContent::FootnoteAnchor { snapshot } => {
+    | FragmentContent::FootnoteAnchor { snapshot, .. } => {
       count += count_line_fragments(snapshot.as_ref());
     }
     _ => {}

@@ -271,6 +271,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "flex-wrap",
   "order",
   "float",
+  "footnote-policy",
   "font",
   "font-family",
   "font-feature-settings",

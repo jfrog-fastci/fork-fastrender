@@ -44,6 +44,7 @@ use crate::layout::inline::float_integration::LineSpaceOptions;
 use crate::render_control::check_active_periodic;
 use crate::style::display::Display;
 use crate::style::types::Direction;
+use crate::style::types::FootnotePolicy;
 use crate::style::types::LineBreak;
 use crate::style::types::ListStylePosition;
 use crate::style::types::OverflowWrap;
@@ -503,6 +504,7 @@ pub struct RunningInfo {
 #[derive(Debug, Clone)]
 pub struct FootnoteInfo {
   pub snapshot: FragmentNode,
+  pub policy: FootnotePolicy,
 }
 
 fn allows_soft_wrap(style: &ComputedStyle) -> bool {

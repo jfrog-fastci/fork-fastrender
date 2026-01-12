@@ -19333,7 +19333,7 @@ fn collect_fragment_sizes(
 
   match &fragment.content {
     FragmentContent::RunningAnchor { snapshot, .. }
-    | FragmentContent::FootnoteAnchor { snapshot } => {
+    | FragmentContent::FootnoteAnchor { snapshot, .. } => {
       collect_fragment_sizes(snapshot, sizes, scrollbars);
     }
     _ => {}
@@ -19996,7 +19996,7 @@ fn refresh_fragment_styles(
 
   match &mut fragment.content {
     FragmentContent::RunningAnchor { snapshot, .. }
-    | FragmentContent::FootnoteAnchor { snapshot } => {
+    | FragmentContent::FootnoteAnchor { snapshot, .. } => {
       refresh_fragment_styles(Arc::make_mut(snapshot), boxes, styles, None, false);
     }
     _ => {}
@@ -20418,7 +20418,7 @@ fn build_container_query_context(
 
       match &fragment.content {
         FragmentContent::RunningAnchor { snapshot, .. }
-        | FragmentContent::FootnoteAnchor { snapshot } => {
+        | FragmentContent::FootnoteAnchor { snapshot, .. } => {
           let viewport = Size::new(snapshot.bounds.width(), snapshot.bounds.height());
           collect_scroll_bounds(
             snapshot,
@@ -20550,9 +20550,11 @@ fn build_container_query_context(
           | (
             FragmentContent::FootnoteAnchor {
               snapshot: original_snapshot,
+              ..
             },
             FragmentContent::FootnoteAnchor {
               snapshot: adjusted_snapshot,
+              ..
             },
           ) => {
             collect_stuck_masks(original_snapshot, adjusted_snapshot, out);
@@ -22514,11 +22516,15 @@ mod tests {
     snapshot.style = Some(old_style);
 
     let mut anchor =
-      FragmentNode::new_footnote_anchor(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), snapshot);
+      FragmentNode::new_footnote_anchor(
+        Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+        snapshot,
+        crate::style::types::FootnotePolicy::Line,
+      );
     super::refresh_fragment_styles(&mut anchor, &box_map, &style_map, None, false);
 
     match &anchor.content {
-      FragmentContent::FootnoteAnchor { snapshot } => {
+      FragmentContent::FootnoteAnchor { snapshot, .. } => {
         assert!(
           Arc::ptr_eq(
             snapshot.style.as_ref().expect("snapshot style refreshed"),
@@ -23361,7 +23367,11 @@ mod tests {
 
     let snapshot =
       FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 50.0), body_id, vec![]);
-    let anchor = FragmentNode::new_footnote_anchor(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), snapshot);
+    let anchor = FragmentNode::new_footnote_anchor(
+      Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      snapshot,
+      crate::style::types::FootnotePolicy::Line,
+    );
     let fragments = FragmentTree::with_viewport(
       FragmentNode::new_block_with_id(
         Rect::from_xywh(0.0, 0.0, 800.0, 600.0),

@@ -34,7 +34,7 @@ use crate::style::content::{
 use crate::style::display::{Display, FormattingContextType};
 use crate::style::page::{resolve_page_style, PageSide, ResolvedPageStyle};
 use crate::style::position::Position;
-use crate::style::types::WritingMode;
+use crate::style::types::{FootnotePolicy, WritingMode};
 use crate::style::values::Length;
 use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal, ComputedStyle};
 use crate::text::font_loader::FontContext;
@@ -1400,7 +1400,7 @@ pub fn paginate_fragment_tree(
     // done *before* building the page root, because resolving the effective page name may require
     // re-laying out with a different @page style.
     let mut start = 0.0f32;
-    if !is_blank_page && pending_footnotes.is_empty() {
+    if !is_blank_page && !matches!(token, BreakToken::End) {
       start = match &token {
         BreakToken::Start => 0.0,
         BreakToken::End => total_height,
@@ -1532,10 +1532,19 @@ pub fn paginate_fragment_tree(
     let mut next_token = token.clone();
 
     if !is_blank_page {
-      if !pending_footnotes.is_empty() {
-        // When a footnote body overflows the page, render continuation pages that contain only the
-        // remaining footnote content. This ensures pagination makes forward progress instead of
-        // endlessly deferring the overflowing footnote call.
+      let page_block = if axis.block_is_horizontal {
+        page_style.content_size.width
+      } else {
+        page_style.content_size.height
+      }
+      .max(1.0);
+
+      // Simple, fixed separator rule: 1px solid currentColor.
+      let separator_block = 1.0;
+
+      if matches!(token, BreakToken::End) {
+        // When the main-flow content is exhausted but deferred/oversize footnote bodies remain,
+        // render continuation pages that contain only the remaining footnote content.
         page_running_elements =
           snapshot_running_elements_for_non_content_page(&mut running_element_state);
         let content_bounds = Rect::from_xywh(
@@ -1548,15 +1557,6 @@ pub fn paginate_fragment_tree(
           .children_mut()
           .push(FragmentNode::new_block(content_bounds, Vec::new()));
 
-        let page_block = if axis.block_is_horizontal {
-          page_style.content_size.width
-        } else {
-          page_style.content_size.height
-        }
-        .max(1.0);
-
-        // Simple, fixed separator rule: 1px solid currentColor.
-        let separator_block = 1.0;
         let mut remaining = (page_block - separator_block).max(0.0);
         let mut slices: Vec<FragmentNode> = Vec::new();
 
@@ -1663,22 +1663,38 @@ pub fn paginate_fragment_tree(
           document_wrapper.children_mut().push(footnote_area);
         }
       } else {
-        let page_block = if axis.block_is_horizontal {
-          page_style.content_size.width
-        } else {
-          page_style.content_size.height
+        let mut reserved_pending_block = 0.0f32;
+        if !pending_footnotes.is_empty() {
+          let mut budget = (page_block - separator_block).max(0.0);
+          for pending in pending_footnotes.iter() {
+            if budget <= EPSILON {
+              break;
+            }
+            let mut remaining_extent = pending.total_extent - pending.offset;
+            if !remaining_extent.is_finite() {
+              remaining_extent = 0.0;
+            }
+            remaining_extent = remaining_extent.max(0.0);
+            let take = remaining_extent.min(budget);
+            reserved_pending_block += take;
+            budget -= take;
+            if remaining_extent > take + EPSILON {
+              break;
+            }
+          }
         }
-        .max(1.0);
+
+        let page_block_for_content = (page_block - reserved_pending_block).max(1.0);
         let planner = break_planners
           .entry(key)
           .or_insert_with(|| PageBreakPlanner::new(layout, root_axes, page_block));
         let mut end_candidate = planner
-          .next_boundary(start, page_block, total_height)?
+          .next_boundary(start, page_block_for_content, total_height)?
           .min(total_height);
         if end_candidate <= start + EPSILON {
           // Guard against degenerate boundary selection. Pagination must always make progress; fall
           // back to the fragmentainer limit if the analyzer returns a non-advancing boundary.
-          end_candidate = (start + page_block).min(total_height);
+          end_candidate = (start + page_block_for_content).min(total_height);
           if end_candidate <= start + EPSILON {
             break;
           }
@@ -1697,7 +1713,7 @@ pub fn paginate_fragment_tree(
           page_index,
           0,
           FragmentationContext::Page,
-          page_block,
+          page_block_for_content,
           root_axes,
         )?;
         let mut page_footnotes: Vec<FootnoteOccurrence> = Vec::new();
@@ -1721,11 +1737,25 @@ pub fn paginate_fragment_tree(
             &axis,
           );
           let provisional_footnotes = collect_footnotes_for_page(&provisional, &axis);
+          let mut adjustment_footnotes = provisional_footnotes.clone();
+          if reserved_pending_block > EPSILON {
+            // Reserve room for the footnote separator when we know we'll be placing deferred
+            // footnote bodies from previous pages. This uses a synthetic zero-height occurrence so
+            // the adjustment logic can reuse the existing separator reservation path.
+            adjustment_footnotes.insert(
+              0,
+              FootnoteOccurrence {
+                pos: 0.0,
+                snapshot: FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), Vec::new()),
+                policy: FootnotePolicy::Line,
+              },
+            );
+          }
           let adjusted_end = adjust_end_for_footnotes(
             start,
             end_candidate,
-            page_block,
-            &provisional_footnotes,
+            page_block_for_content,
+            &adjustment_footnotes,
             &axis,
           );
           // Re-run boundary selection against the reduced main-flow block-size so widows/orphans and
@@ -1768,7 +1798,7 @@ pub fn paginate_fragment_tree(
             page_index,
             0,
             FragmentationContext::Page,
-            page_block,
+            page_block_for_content,
             root_axes,
           )?;
         }
@@ -1790,101 +1820,274 @@ pub fn paginate_fragment_tree(
           if page_footnotes.is_empty() {
             page_footnotes = collect_footnotes_for_page(&content, &axis);
           }
-          // Generate footnote body slices. Oversized footnotes are fragmented and continued on
-          // subsequent pages.
-          let separator_block = 1.0;
+          // Generate footnote body slices.
+          //
+          // Deferred footnote bodies (either because an earlier page couldn't fit them under
+          // `footnote-policy: auto`, or because an oversized footnote body is being fragmented)
+          // must be emitted in document order, and must never appear before their reference.
           let main_block = (end - start).max(0.0);
-          let mut available_for_oversize = (page_block - main_block - separator_block).max(0.0);
+          let mut remaining_for_bodies = (page_block - main_block - separator_block).max(0.0);
           let mut footnote_slices: Vec<FragmentNode> = Vec::new();
-          for occ in page_footnotes.iter() {
-            let mut snapshot = occ.snapshot.clone();
-            let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
-            snapshot.translate_root_in_place(offset);
 
-            let body_block = axis.block_size(&snapshot.bounds).max(0.0);
-            let is_oversize = body_block + separator_block > page_block + EPSILON;
-            if !is_oversize {
-              footnote_slices.push(snapshot);
-              continue;
-            }
-
-            if available_for_oversize <= EPSILON {
-              available_for_oversize = (page_block - separator_block).max(0.0);
-            }
-
+          // Helper to enqueue a deferred footnote body for placement on a later page.
+          fn enqueue_pending(
+            pending_footnotes: &mut VecDeque<PendingFootnote>,
+            snapshot: FragmentNode,
+            axes: FragmentAxes,
+            page_block: f32,
+          ) {
             let analyzer = FragmentationAnalyzer::new(
               &snapshot,
               FragmentationContext::Page,
-              root_axes,
+              axes,
               true,
               Some(page_block),
             );
             let total_extent = analyzer.content_extent().max(EPSILON);
-            let mut pending = PendingFootnote {
+            pending_footnotes.push_back(PendingFootnote {
               root: snapshot,
               analyzer,
               opportunity_cursor: 0,
               offset: 0.0,
               total_extent,
-            };
+            });
+          }
 
-            let next_candidate = pending.analyzer.next_boundary_with_cursor(
-              pending.offset,
-              available_for_oversize,
-              pending.total_extent,
-              &mut pending.opportunity_cursor,
-            )?;
-            let next = match resolve_pending_footnote_slice_boundary(
-              pending.offset,
-              available_for_oversize,
-              pending.total_extent,
-              next_candidate,
-            ) {
-              PendingFootnoteSliceBoundary::Advance(next) => next,
-              PendingFootnoteSliceBoundary::Complete => {
-                // If we can't advance (e.g. the footnote area is too small to hold even a single
-                // slice), do not enqueue a pending footnote with an unchanged offset (which can
-                // stall pagination).
+          // Place deferred footnote content before considering new footnote calls for this page.
+          if !pending_footnotes.is_empty() {
+            // If the page content box is too small to fit even a single fragment of footnote content
+            // (after accounting for the separator), we must still drain `pending_footnotes` to avoid
+            // emitting an infinite sequence of pages.
+            if remaining_for_bodies <= EPSILON {
+              pending_footnotes.pop_front();
+            }
+            while remaining_for_bodies > EPSILON {
+              let Some(pending) = pending_footnotes.front_mut() else {
+                break;
+              };
+
+              // Guard against pathological extents / offsets: treat non-finite extents as empty and
+              // drop the pending footnote so pagination can make progress.
+              if !pending.total_extent.is_finite() || pending.total_extent <= 0.0 {
+                pending.total_extent = 0.0;
+                pending.offset = 0.0;
+                pending_footnotes.pop_front();
                 continue;
               }
-            };
 
-            let root_block_size = axis.block_size(&pending.root.bounds);
-            if let Some(mut slice) = clip_node(
-              &pending.root,
-              &axis,
-              pending.offset,
-              next,
-              0.0,
-              pending.offset,
-              next,
-              root_block_size,
-              page_index,
-              0,
-              FragmentationContext::Page,
-              available_for_oversize,
-              root_axes,
-            )? {
-              let is_first_fragment = pending.offset <= EPSILON;
-              let is_last_fragment = next >= pending.total_extent - EPSILON;
-              let break_before_forced =
-                !is_first_fragment && pending.analyzer.is_forced_break_at(pending.offset);
-              let break_after_forced =
-                !is_last_fragment && pending.analyzer.is_forced_break_at(next);
-              normalize_fragment_margins(
-                &mut slice,
-                is_first_fragment,
-                is_last_fragment,
-                break_before_forced,
-                break_after_forced,
+              if !pending.offset.is_finite() {
+                pending.offset = 0.0;
+              }
+              pending.offset = pending.offset.max(0.0);
+              if pending.offset > pending.total_extent {
+                pending.offset = pending.total_extent;
+              }
+
+              if pending.offset >= pending.total_extent - EPSILON {
+                pending_footnotes.pop_front();
+                continue;
+              }
+
+              let next_candidate = pending.analyzer.next_boundary_with_cursor(
+                pending.offset,
+                remaining_for_bodies,
+                pending.total_extent,
+                &mut pending.opportunity_cursor,
+              )?;
+              let next = match resolve_pending_footnote_slice_boundary(
+                pending.offset,
+                remaining_for_bodies,
+                pending.total_extent,
+                next_candidate,
+              ) {
+                PendingFootnoteSliceBoundary::Advance(next) => next,
+                PendingFootnoteSliceBoundary::Complete => {
+                  // Force completion so pagination doesn't get stuck emitting continuation pages.
+                  pending.offset = pending.total_extent;
+                  pending_footnotes.pop_front();
+                  continue;
+                }
+              };
+
+              let root_block_size = axis.block_size(&pending.root.bounds);
+              if let Some(mut slice) = clip_node(
+                &pending.root,
                 &axis,
-              );
-              footnote_slices.push(slice);
-            }
+                pending.offset,
+                next,
+                0.0,
+                pending.offset,
+                next,
+                root_block_size,
+                page_index,
+                0,
+                FragmentationContext::Page,
+                remaining_for_bodies,
+                root_axes,
+              )? {
+                let is_first_fragment = pending.offset <= EPSILON;
+                let is_last_fragment = next >= pending.total_extent - EPSILON;
+                let break_before_forced =
+                  !is_first_fragment && pending.analyzer.is_forced_break_at(pending.offset);
+                let break_after_forced =
+                  !is_last_fragment && pending.analyzer.is_forced_break_at(next);
+                normalize_fragment_margins(
+                  &mut slice,
+                  is_first_fragment,
+                  is_last_fragment,
+                  break_before_forced,
+                  break_after_forced,
+                  &axis,
+                );
+                let slice_block = axis.block_size(&slice.bounds).max(0.0);
+                if slice_block > EPSILON {
+                  remaining_for_bodies -= slice_block;
+                  footnote_slices.push(slice);
+                }
+              }
 
-            pending.offset = next;
-            if pending.offset < pending.total_extent - EPSILON {
-              pending_footnotes.push_back(pending);
+              pending.offset = next;
+              if pending.offset >= pending.total_extent - EPSILON {
+                pending_footnotes.pop_front();
+              }
+            }
+          }
+
+          let mut defer_remaining = !pending_footnotes.is_empty();
+
+          // If a deferred footnote body is still pending, new footnotes may not overtake it.
+          // Enqueue all footnote bodies captured on this page for placement on later pages.
+          if defer_remaining {
+            for occ in page_footnotes.iter() {
+              let mut snapshot = occ.snapshot.clone();
+              let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
+              snapshot.translate_root_in_place(offset);
+              enqueue_pending(&mut pending_footnotes, snapshot, root_axes, page_block);
+            }
+          } else {
+            for occ in page_footnotes.iter() {
+              let mut snapshot = occ.snapshot.clone();
+              let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
+              snapshot.translate_root_in_place(offset);
+
+              if defer_remaining {
+                enqueue_pending(&mut pending_footnotes, snapshot, root_axes, page_block);
+                continue;
+              }
+
+              let body_block = axis.block_size(&snapshot.bounds).max(0.0);
+              let is_oversize = body_block + separator_block > page_block + EPSILON;
+              if is_oversize {
+                // Avoid mixing additional footnotes onto the same page once an oversize footnote has
+                // started fragmenting; later footnotes should not overtake its continuation.
+                if remaining_for_bodies <= EPSILON && !footnote_slices.is_empty() {
+                  enqueue_pending(&mut pending_footnotes, snapshot, root_axes, page_block);
+                  defer_remaining = true;
+                  continue;
+                }
+                if remaining_for_bodies <= EPSILON {
+                  remaining_for_bodies = (page_block - separator_block).max(0.0);
+                }
+
+                let analyzer = FragmentationAnalyzer::new(
+                  &snapshot,
+                  FragmentationContext::Page,
+                  root_axes,
+                  true,
+                  Some(page_block),
+                );
+                let total_extent = analyzer.content_extent().max(EPSILON);
+                let mut pending = PendingFootnote {
+                  root: snapshot,
+                  analyzer,
+                  opportunity_cursor: 0,
+                  offset: 0.0,
+                  total_extent,
+                };
+
+                let next_candidate = pending.analyzer.next_boundary_with_cursor(
+                  pending.offset,
+                  remaining_for_bodies,
+                  pending.total_extent,
+                  &mut pending.opportunity_cursor,
+                )?;
+                let next = match resolve_pending_footnote_slice_boundary(
+                  pending.offset,
+                  remaining_for_bodies,
+                  pending.total_extent,
+                  next_candidate,
+                ) {
+                  PendingFootnoteSliceBoundary::Advance(next) => next,
+                  PendingFootnoteSliceBoundary::Complete => {
+                    // If we can't advance (e.g. the footnote area is too small to hold even a single
+                    // slice), do not enqueue a pending footnote with an unchanged offset (which can
+                    // stall pagination).
+                    defer_remaining = true;
+                    continue;
+                  }
+                };
+
+                let root_block_size = axis.block_size(&pending.root.bounds);
+                if let Some(mut slice) = clip_node(
+                  &pending.root,
+                  &axis,
+                  pending.offset,
+                  next,
+                  0.0,
+                  pending.offset,
+                  next,
+                  root_block_size,
+                  page_index,
+                  0,
+                  FragmentationContext::Page,
+                  remaining_for_bodies,
+                  root_axes,
+                )? {
+                  let is_first_fragment = pending.offset <= EPSILON;
+                  let is_last_fragment = next >= pending.total_extent - EPSILON;
+                  let break_before_forced =
+                    !is_first_fragment && pending.analyzer.is_forced_break_at(pending.offset);
+                  let break_after_forced =
+                    !is_last_fragment && pending.analyzer.is_forced_break_at(next);
+                  normalize_fragment_margins(
+                    &mut slice,
+                    is_first_fragment,
+                    is_last_fragment,
+                    break_before_forced,
+                    break_after_forced,
+                    &axis,
+                  );
+                  let slice_block = axis.block_size(&slice.bounds).max(0.0);
+                  if slice_block > EPSILON {
+                    remaining_for_bodies -= slice_block;
+                    footnote_slices.push(slice);
+                  }
+                }
+
+                pending.offset = next;
+                if pending.offset < pending.total_extent - EPSILON {
+                  pending_footnotes.push_back(pending);
+                  defer_remaining = true;
+                }
+                continue;
+              }
+
+              if body_block <= remaining_for_bodies + EPSILON {
+                footnote_slices.push(snapshot);
+                remaining_for_bodies -= body_block;
+                continue;
+              }
+
+              if occ.policy == FootnotePolicy::Auto {
+                // `footnote-policy: auto` keeps the call on the current page; defer only the body.
+                enqueue_pending(&mut pending_footnotes, snapshot, root_axes, page_block);
+                defer_remaining = true;
+                continue;
+              }
+
+              // Fallback: treat as deferred so the body doesn't overflow the available footnote area.
+              enqueue_pending(&mut pending_footnotes, snapshot, root_axes, page_block);
+              defer_remaining = true;
             }
           }
 
@@ -2524,6 +2727,7 @@ fn should_apply_string_set_event(
 struct FootnoteOccurrence {
   pos: f32,
   snapshot: FragmentNode,
+  policy: FootnotePolicy,
 }
 
 #[derive(Debug)]
@@ -2603,13 +2807,14 @@ fn collect_footnote_occurrences(
     current_line_start
   };
 
-  if let FragmentContent::FootnoteAnchor { snapshot } = &node.content {
+  if let FragmentContent::FootnoteAnchor { snapshot, policy } = &node.content {
     out.push(FootnoteOccurrence {
       // Footnote calls are typically inside line boxes (which are indivisible during pagination).
       // Use the line's flow-start as the call position so deferring a footnote moves the whole
       // line, not just part of it.
       pos: current_line_start.unwrap_or(abs_block),
       snapshot: (**snapshot).clone(),
+      policy: *policy,
     });
   }
 
@@ -2632,6 +2837,10 @@ fn adjust_end_for_footnotes(
   footnotes: &[FootnoteOccurrence],
   axis: &crate::layout::fragmentation::FragmentAxis,
 ) -> f32 {
+  let footnotes: Vec<&FootnoteOccurrence> = footnotes
+    .iter()
+    .filter(|occ| occ.policy != FootnotePolicy::Auto)
+    .collect();
   if footnotes.is_empty() {
     return end_candidate;
   }
@@ -2641,7 +2850,7 @@ fn adjust_end_for_footnotes(
 
   let mut included = 0usize;
   let mut total_footnote_block = 0.0f32;
-  for occ in footnotes {
+  for occ in footnotes.iter() {
     let body_block = axis.block_size(&occ.snapshot.bounds).max(0.0);
     let next_total = total_footnote_block + body_block;
     let next_with_separator = next_total + separator_block;
@@ -4215,6 +4424,7 @@ mod tests {
     FootnoteOccurrence {
       pos,
       snapshot: FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, block_size), vec![]),
+      policy: FootnotePolicy::Line,
     }
   }
 

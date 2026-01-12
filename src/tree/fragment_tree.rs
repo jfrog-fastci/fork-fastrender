@@ -63,7 +63,7 @@ use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::scroll::ScrollMetadata;
 use crate::style::color::Rgba;
-use crate::style::types::{BorderStyle, Overflow};
+use crate::style::types::{BorderStyle, FootnotePolicy, Overflow};
 use crate::style::ComputedStyle;
 use crate::text::pipeline::ShapedRun;
 use crate::tree::box_tree::{BoxNode, BoxTree, FormControl, ReplacedType};
@@ -439,6 +439,8 @@ pub enum FragmentContent {
   FootnoteAnchor {
     /// Snapshot of the laid-out footnote body subtree.
     snapshot: Arc<FragmentNode>,
+    /// `footnote-policy` computed value from the footnote float element.
+    policy: FootnotePolicy,
   },
 }
 
@@ -1191,11 +1193,12 @@ impl FragmentNode {
   }
 
   /// Creates a new footnote anchor fragment with a captured snapshot.
-  pub fn new_footnote_anchor(bounds: Rect, snapshot: FragmentNode) -> Self {
+  pub fn new_footnote_anchor(bounds: Rect, snapshot: FragmentNode, policy: FootnotePolicy) -> Self {
     Self::new(
       bounds,
       FragmentContent::FootnoteAnchor {
         snapshot: Arc::new(snapshot),
+        policy,
       },
       vec![],
     )
@@ -1362,7 +1365,7 @@ impl FragmentNode {
     self.starting_style = None;
     match &mut self.content {
       FragmentContent::RunningAnchor { snapshot, .. }
-      | FragmentContent::FootnoteAnchor { snapshot } => {
+      | FragmentContent::FootnoteAnchor { snapshot, .. } => {
         Arc::make_mut(snapshot).translate_root_in_place(offset);
       }
       _ => {}
@@ -1381,8 +1384,9 @@ impl FragmentNode {
         name: name.clone(),
         snapshot: Arc::new(snapshot.translate_subtree_absolute(offset)),
       },
-      FragmentContent::FootnoteAnchor { snapshot } => FragmentContent::FootnoteAnchor {
+      FragmentContent::FootnoteAnchor { snapshot, policy } => FragmentContent::FootnoteAnchor {
         snapshot: Arc::new(snapshot.translate_subtree_absolute(offset)),
+        policy: *policy,
       },
       other => other.clone(),
     };
@@ -1624,8 +1628,9 @@ impl FragmentNode {
         name: name.clone(),
         snapshot: Arc::new(snapshot.deep_clone()),
       },
-      FragmentContent::FootnoteAnchor { snapshot } => FragmentContent::FootnoteAnchor {
+      FragmentContent::FootnoteAnchor { snapshot, policy } => FragmentContent::FootnoteAnchor {
         snapshot: Arc::new(snapshot.deep_clone()),
+        policy: *policy,
       },
       other => other.clone(),
     };
@@ -1658,7 +1663,7 @@ impl FragmentNode {
   pub fn node_count(&self) -> usize {
     let anchor_count = match &self.content {
       FragmentContent::RunningAnchor { snapshot, .. } => snapshot.node_count(),
-      FragmentContent::FootnoteAnchor { snapshot } => snapshot.node_count(),
+      FragmentContent::FootnoteAnchor { snapshot, .. } => snapshot.node_count(),
       _ => 0,
     };
     1 + anchor_count
@@ -2060,7 +2065,7 @@ impl FragmentTree {
       }
       match &mut fragment.content {
         FragmentContent::RunningAnchor { snapshot, .. }
-        | FragmentContent::FootnoteAnchor { snapshot } => {
+        | FragmentContent::FootnoteAnchor { snapshot, .. } => {
           apply(Arc::make_mut(snapshot), map);
         }
         _ => {}

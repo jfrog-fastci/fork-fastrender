@@ -406,7 +406,7 @@ impl TransitionState {
       }
       match &node.content {
         FragmentContent::RunningAnchor { snapshot, .. }
-        | FragmentContent::FootnoteAnchor { snapshot } => {
+        | FragmentContent::FootnoteAnchor { snapshot, .. } => {
           stack.push(snapshot.as_ref());
         }
         _ => {}

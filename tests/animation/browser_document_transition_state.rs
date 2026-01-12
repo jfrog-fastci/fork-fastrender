@@ -51,7 +51,7 @@ fn find_fragment<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a Fr
     }
   }
   if let fastrender::tree::fragment_tree::FragmentContent::RunningAnchor { snapshot, .. }
-  | fastrender::tree::fragment_tree::FragmentContent::FootnoteAnchor { snapshot } =
+  | fastrender::tree::fragment_tree::FragmentContent::FootnoteAnchor { snapshot, .. } =
     &fragment.content
   {
     return find_fragment(snapshot, box_id);

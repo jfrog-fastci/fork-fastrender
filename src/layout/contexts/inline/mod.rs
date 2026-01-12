@@ -1346,6 +1346,7 @@ impl InlineFormattingContext {
     let snapshot_fragment = fc.layout(&snapshot_node, &snapshot_constraints)?;
     Ok(FootnoteInfo {
       snapshot: snapshot_fragment,
+      policy: body.style.footnote_policy,
     })
   }
 
@@ -8778,7 +8779,7 @@ impl InlineFormattingContext {
           fragment
         } else if let Some(footnote) = anchor.footnote.as_ref() {
           let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01);
-          FragmentNode::new_footnote_anchor(bounds, footnote.snapshot.clone())
+          FragmentNode::new_footnote_anchor(bounds, footnote.snapshot.clone(), footnote.policy)
         } else {
           FragmentNode::new_inline(Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0), 0, vec![])
         }

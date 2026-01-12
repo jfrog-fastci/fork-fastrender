@@ -2080,6 +2080,27 @@ impl Default for BreakInside {
   }
 }
 
+/// CSS GCPM `footnote-policy` property.
+///
+/// Controls whether a footnote body may be placed on a later page than its reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FootnotePolicy {
+  /// UA may keep the reference on the current page and place the body later.
+  Auto,
+  /// Keep the reference line with the footnote body (legacy FastRender behavior).
+  Line,
+  /// Keep the reference block with the footnote body.
+  Block,
+}
+
+impl Default for FootnotePolicy {
+  fn default() -> Self {
+    // FastRender historically behaved like `footnote-policy: line`; keep that as the initial value
+    // so existing paged-media tests don't change unless the author opts into `auto`.
+    FootnotePolicy::Line
+  }
+}
+
 /// CSS `resize` property
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resize {

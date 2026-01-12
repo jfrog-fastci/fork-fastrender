@@ -5609,7 +5609,11 @@ impl FormattingContext for FlexFormattingContext {
         };
         let origin = item_fragment.bounds.origin;
         let anchor_bounds = Rect::from_xywh(origin.x, origin.y, 0.0, 0.01);
-        let mut anchor = FragmentNode::new_footnote_anchor(anchor_bounds, snapshot_fragment);
+        let mut anchor = FragmentNode::new_footnote_anchor(
+          anchor_bounds,
+          snapshot_fragment,
+          child.style.footnote_policy,
+        );
         anchor.style = Some(child.style.clone());
         footnote_anchors.push(anchor);
       }

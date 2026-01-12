@@ -4685,18 +4685,15 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
     RunUntilIdleOutcome::Idle
   );
 
+  let realm = host.window_realm()?;
   let (name, msg) = {
-    let realm = host.window_realm()?;
     let global = realm.global_object();
     let (_vm, heap) = realm.vm_and_heap_mut();
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global)).unwrap();
     let name = get_data_prop(&mut scope, global, "__size_err_name");
     let msg = get_data_prop(&mut scope, global, "__size_err_msg");
-    (
-      get_string(scope.heap(), name),
-      get_string(scope.heap(), msg),
-    )
+    (get_string(scope.heap(), name), get_string(scope.heap(), msg))
   };
   assert_eq!(name, "TypeError");
   assert!(

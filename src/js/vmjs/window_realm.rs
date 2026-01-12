@@ -14056,6 +14056,7 @@ fn mutation_observer_notify_native(
     };
     // SAFETY: `dom_ptr` is owned by the realm's document registry.
     let deliveries = unsafe { dom_ptr.as_mut() }.mutation_observer_take_deliveries();
+    // SAFETY: `dom_ptr` remains valid while the owning document stays registered.
     (deliveries, Some(dom_ptr))
   };
   if deliveries.is_empty() {

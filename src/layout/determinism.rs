@@ -1,4 +1,5 @@
 use crate::geometry::Rect;
+use crate::style::types::FootnotePolicy;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::text::pipeline::{RunRotation, ShapedRun};
@@ -411,9 +412,14 @@ fn hash_fragment_content(hasher: &mut FingerprintHasher, content: &FragmentConte
       hasher.write_str(name);
       hash_fragment_node(hasher, snapshot.as_ref());
     }
-    FragmentContent::FootnoteAnchor { snapshot } => {
+    FragmentContent::FootnoteAnchor { snapshot, policy } => {
       hasher.write_u8(6);
       hash_fragment_node(hasher, snapshot.as_ref());
+      hasher.write_u8(match policy {
+        FootnotePolicy::Auto => 0,
+        FootnotePolicy::Line => 1,
+        FootnotePolicy::Block => 2,
+      });
     }
   }
 }

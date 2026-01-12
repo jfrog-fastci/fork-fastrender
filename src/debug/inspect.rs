@@ -328,7 +328,7 @@ fn collect_fragments_for_box<'a>(
       out.entry(box_id).or_default().push(fragment);
     }
     if let FragmentContent::RunningAnchor { snapshot, .. }
-    | FragmentContent::FootnoteAnchor { snapshot } = &fragment.content
+    | FragmentContent::FootnoteAnchor { snapshot, .. } = &fragment.content
     {
       stack.push(snapshot.as_ref());
     }

@@ -10517,6 +10517,17 @@ fn apply_declaration_with_base_internal_with_order(
         }
       }
     }
+    "footnote-policy" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
+        styles.footnote_policy = match kw.as_str() {
+          "auto" => FootnotePolicy::Auto,
+          "line" => FootnotePolicy::Line,
+          "block" => FootnotePolicy::Block,
+          _ => styles.footnote_policy,
+        };
+      }
+    }
     "clear" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Ok(value) = Clear::parse(kw) {
@@ -14315,10 +14326,9 @@ fn apply_declaration_with_base_internal_with_order(
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
         styles.text_orientation = match kw.as_str() {
-          // Legacy keyword (MDN compat). Browsers treat it like `mixed` (the initial value).
-          // Historically, `use-glyph-orientation` interacted with the deprecated
-          // `glyph-orientation-*` properties; FastRender does not implement those, so treat this as
-          // `mixed`.
+          // Legacy keyword (MDN compat). Historically, `use-glyph-orientation` interacted with the
+          // deprecated `glyph-orientation-*` properties. We do not implement those, so treat it as
+          // `mixed` (the initial value).
           "use-glyph-orientation" => TextOrientation::Mixed,
           "mixed" => TextOrientation::Mixed,
           "upright" => TextOrientation::Upright,

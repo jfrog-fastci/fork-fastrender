@@ -824,7 +824,7 @@ impl Document {
     self.node_checked(node_id)?;
 
     let has_live_subscribers = self.live_mutation.has_subscribers();
- 
+
     #[derive(Clone, Copy)]
     enum ReplaceTarget {
       Text,
