@@ -33,6 +33,9 @@ pub struct Intrinsics {
   object_prototype: GcObject,
   function_prototype: GcObject,
   iterator_prototype: GcObject,
+  generator_function: GcObject,
+  generator_function_prototype: GcObject,
+  generator_prototype: GcObject,
   array_prototype: GcObject,
   array_iterator_prototype: GcObject,
   string_prototype: GcObject,
@@ -621,6 +624,16 @@ impl Intrinsics {
     let reflect_set = vm.register_native_call(builtins::reflect_set)?;
     let reflect_set_prototype_of = vm.register_native_call(builtins::reflect_set_prototype_of)?;
 
+    // Generator intrinsics.
+    let generator_function_constructor_call =
+      vm.register_native_call(builtins::generator_function_constructor_call)?;
+    let generator_function_constructor_construct = vm.register_native_construct(
+      builtins::generator_function_constructor_construct,
+    )?;
+    let generator_prototype_next = vm.register_native_call(builtins::generator_prototype_next)?;
+    let generator_prototype_return = vm.register_native_call(builtins::generator_prototype_return)?;
+    let generator_prototype_throw = vm.register_native_call(builtins::generator_prototype_throw)?;
+
     // `%Number%`, `%Boolean%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
     let number_construct = vm.register_native_construct(builtins::number_constructor_construct)?;
@@ -816,6 +829,129 @@ impl Intrinsics {
         function_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // `%GeneratorFunction.prototype%`
+    let generator_function_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(generator_function_prototype, Some(function_prototype))?;
+
+    // `%GeneratorPrototype%`
+    let generator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(generator_prototype, Some(iterator_prototype))?;
+
+    // `%GeneratorFunction%`
+    let generator_function_name = scope.alloc_string("GeneratorFunction")?;
+    let generator_function = alloc_rooted_native_function(
+      scope,
+      roots,
+      generator_function_constructor_call,
+      Some(generator_function_constructor_construct),
+      generator_function_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(generator_function, Some(function_constructor))?;
+    // Override `.prototype` with the spec-required (non-writable, non-configurable) value.
+    scope.define_property(
+      generator_function,
+      common.prototype,
+      data_desc(
+        Value::Object(generator_function_prototype),
+        false,
+        false,
+        false,
+      ),
+    )?;
+
+    // GeneratorFunction.prototype.constructor
+    scope.define_property(
+      generator_function_prototype,
+      common.constructor,
+      data_desc(Value::Object(generator_function), false, false, true),
+    )?;
+    // GeneratorFunction.prototype.prototype
+    scope.define_property(
+      generator_function_prototype,
+      common.prototype,
+      data_desc(Value::Object(generator_prototype), false, false, true),
+    )?;
+    // GeneratorFunction.prototype[@@toStringTag]
+    {
+      let tag = scope.alloc_string("GeneratorFunction")?;
+      scope.define_property(
+        generator_function_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag), false, false, true),
+      )?;
+    }
+
+    // GeneratorPrototype.constructor
+    scope.define_property(
+      generator_prototype,
+      common.constructor,
+      data_desc(Value::Object(generator_function_prototype), false, false, true),
+    )?;
+    // GeneratorPrototype.next
+    {
+      let next_s = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_s))?;
+      let key = PropertyKey::from_string(next_s);
+      let func = scope.alloc_native_function(generator_prototype_next, None, next_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        generator_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+    // GeneratorPrototype.return
+    {
+      let return_s = scope.alloc_string("return")?;
+      scope.push_root(Value::String(return_s))?;
+      let key = PropertyKey::from_string(return_s);
+      let func = scope.alloc_native_function(generator_prototype_return, None, return_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        generator_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+    // GeneratorPrototype.throw
+    {
+      let throw_s = scope.alloc_string("throw")?;
+      scope.push_root(Value::String(throw_s))?;
+      let key = PropertyKey::from_string(throw_s);
+      let func = scope.alloc_native_function(generator_prototype_throw, None, throw_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        generator_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+    // GeneratorPrototype[@@toStringTag]
+    {
+      let tag = scope.alloc_string("Generator")?;
+      scope.define_property(
+        generator_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag), false, false, true),
       )?;
     }
 
@@ -3038,6 +3174,9 @@ impl Intrinsics {
       object_prototype,
       function_prototype,
       iterator_prototype,
+      generator_function,
+      generator_function_prototype,
+      generator_prototype,
       array_prototype,
       array_iterator_prototype,
       string_prototype,
@@ -3116,6 +3255,18 @@ impl Intrinsics {
 
   pub fn iterator_prototype(&self) -> GcObject {
     self.iterator_prototype
+  }
+
+  pub fn generator_function(&self) -> GcObject {
+    self.generator_function
+  }
+
+  pub fn generator_function_prototype(&self) -> GcObject {
+    self.generator_function_prototype
+  }
+
+  pub fn generator_prototype(&self) -> GcObject {
+    self.generator_prototype
   }
 
   pub fn array_prototype(&self) -> GcObject {

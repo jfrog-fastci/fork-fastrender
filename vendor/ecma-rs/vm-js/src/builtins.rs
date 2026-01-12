@@ -1995,6 +1995,72 @@ pub fn function_constructor_construct(
   Ok(Value::Object(func_obj))
 }
 
+/// `%GeneratorFunction%` (ECMA-262).
+///
+/// Note: full `GeneratorFunction` semantics are implemented in a separate task.
+pub fn generator_function_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::Unimplemented("GeneratorFunction call"))
+}
+
+/// `%GeneratorFunction%` `[[Construct]]` (ECMA-262).
+///
+/// Note: full `GeneratorFunction` semantics are implemented in a separate task.
+pub fn generator_function_constructor_construct(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  Err(VmError::Unimplemented("GeneratorFunction construct"))
+}
+
+pub fn generator_prototype_next(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::Unimplemented("%GeneratorPrototype%.next"))
+}
+
+pub fn generator_prototype_return(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::Unimplemented("%GeneratorPrototype%.return"))
+}
+
+pub fn generator_prototype_throw(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::Unimplemented("%GeneratorPrototype%.throw"))
+}
+
 pub fn error_constructor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
