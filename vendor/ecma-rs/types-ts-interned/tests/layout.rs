@@ -381,3 +381,41 @@ fn ref_types_can_lower_to_concrete_object_layouts_via_expansion() {
     "expected expanded ref to lower to a non-opaque pointer kind, got {to:?}"
   );
 }
+
+#[test]
+fn gc_ptr_offsets_include_pointers_common_to_all_union_variants() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let name = store.intern_name("x");
+  let mut shape = Shape::new();
+  shape.properties.push(Property {
+    key: PropKey::String(name),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  });
+  let shape_id = store.intern_shape(shape);
+  let obj_id = store.intern_object(ObjectType { shape: shape_id });
+  let obj_ty = store.intern_type(TypeKind::Object(obj_id));
+
+  // Both members are GC pointers, so the union layout always contains a GC
+  // pointer in its payload regardless of the discriminant.
+  let ptr_union = store.intern_type(TypeKind::Union(vec![primitives.string, obj_ty]));
+  let ptr_union_layout = store.layout_of(ptr_union);
+  let Layout::TaggedUnion { payload_offset, .. } = store.layout(ptr_union_layout) else {
+    panic!("expected union to lower to TaggedUnion layout");
+  };
+  assert_eq!(store.gc_ptr_offsets(ptr_union_layout), vec![payload_offset]);
+
+  // Mixed pointer/scalar union has no unconditional GC pointer slots.
+  let mixed_union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.number]));
+  let mixed_layout = store.layout_of(mixed_union);
+  assert!(store.gc_ptr_offsets(mixed_layout).is_empty());
+}

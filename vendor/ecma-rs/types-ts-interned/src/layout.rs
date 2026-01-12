@@ -381,25 +381,65 @@ impl LayoutStore {
   }
 
   pub(crate) fn gc_ptr_offsets(&self, layout: LayoutId) -> Vec<u32> {
-    fn collect(trace: &[GcTraceStep], out: &mut Vec<u32>) {
-      for step in trace {
-        match step {
-          GcTraceStep::Ptr { offset } => out.push(*offset),
-          GcTraceStep::TaggedUnion { .. } => {
-            // This helper intentionally only extracts unconditional pointer
-            // offsets. Callers that need to trace tagged unions should use
-            // `gc_trace` instead.
+    fn is_gc_ptr_kind(kind: &PtrKind) -> bool {
+      matches!(
+        kind,
+        PtrKind::GcObject { .. } | PtrKind::GcArray { .. } | PtrKind::GcString | PtrKind::GcAny
+      )
+    }
+
+    fn shift(offsets: &std::collections::BTreeSet<u32>, delta: u32) -> std::collections::BTreeSet<u32> {
+      offsets
+        .iter()
+        .map(|offset| offset.saturating_add(delta))
+        .collect()
+    }
+
+    fn collect_unconditional(store: &LayoutStore, layout: LayoutId) -> std::collections::BTreeSet<u32> {
+      match store.layout(layout) {
+        Layout::Scalar { .. } => Default::default(),
+        Layout::Ptr { to } => {
+          if is_gc_ptr_kind(&to) {
+            std::collections::BTreeSet::from([0])
+          } else {
+            Default::default()
           }
+        }
+        Layout::Struct { fields, .. } => {
+          let mut out: std::collections::BTreeSet<u32> = Default::default();
+          for field in fields {
+            for offset in shift(&collect_unconditional(store, field.layout), field.offset) {
+              out.insert(offset);
+            }
+          }
+          out
+        }
+        Layout::TaggedUnion {
+          payload_offset,
+          variants,
+          ..
+        } => {
+          // A tagged union only contains an *unconditional* GC pointer if it is
+          // present in every variant at the same offset.
+          let mut it = variants.into_iter();
+          let Some(first) = it.next() else {
+            return Default::default();
+          };
+
+          let mut common = shift(&collect_unconditional(store, first.layout), payload_offset);
+          for variant in it {
+            let offsets = shift(&collect_unconditional(store, variant.layout), payload_offset);
+            common = common.intersection(&offsets).copied().collect();
+            if common.is_empty() {
+              break;
+            }
+          }
+          common
         }
       }
     }
 
-    let trace = self.gc_trace(layout);
-    let mut out = Vec::new();
-    collect(&trace, &mut out);
-    out.sort();
-    out.dedup();
-    out
+    collect_unconditional(self, layout).into_iter().collect()
   }
 
   fn canonical_closure_payload_layout(&self) -> LayoutId {
