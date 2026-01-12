@@ -206,6 +206,11 @@ export type DumpInst = {
   binOp?: string;
   unOp?: string;
   foreign?: StableId | number;
+  // Stringified copy of `foreign` (see optimize-js `InstDump::foreign_str`).
+  //
+  // `foreign` can exceed JavaScript's safe integer range when decoded from
+  // MessagePack. Prefer `foreignStr` when present to avoid precision loss.
+  foreignStr?: string;
   unknown?: string;
   meta: DumpInstMeta;
 };
@@ -502,6 +507,7 @@ const vDumpInst = new VStruct({
   binOp: new VOptional(new VString()),
   unOp: new VOptional(new VString()),
   foreign: new VOptional(vForeign),
+  foreignStr: new VOptional(new VString()),
   unknown: new VOptional(new VString()),
   meta: vDumpInstMeta,
 });
@@ -537,8 +543,10 @@ export const parseProgramDump = (raw: unknown): ProgramDump => vProgramDump.pars
 
 export const formatId = (id: StableId): string => id.value;
 
-export const formatForeign = (id: StableId | number): string =>
-  typeof id === "number" ? `${id}` : formatId(id);
+export type ForeignId = StableId | number | string;
+
+export const formatForeign = (id: ForeignId): string =>
+  typeof id === "string" ? id : typeof id === "number" ? `${id}` : formatId(id);
 
 export const constToLabel = (value: StableConst): string => {
   switch (value.kind) {
@@ -631,7 +639,7 @@ const instMatchesQuery = (
   if ((inst as any).unknown?.toLowerCase().includes(query)) {
     return true;
   }
-  const foreign = (inst as any).foreign;
+  const foreign = (inst as any).foreignStr ?? (inst as any).foreign;
   if (foreign != undefined) {
     const key = formatForeign(foreign);
     if (key.toLowerCase().includes(query)) {
@@ -673,7 +681,10 @@ const instSignature = (inst: GraphInst): string =>
     labels: inst.labels,
     binOp: (inst as any).binOp,
     unOp: (inst as any).unOp,
-    foreign: (inst as any).foreign == undefined ? undefined : formatForeign((inst as any).foreign),
+    foreign:
+      ((inst as any).foreignStr ?? (inst as any).foreign) == undefined
+        ? undefined
+        : formatForeign((inst as any).foreignStr ?? (inst as any).foreign),
     unknown: (inst as any).unknown,
     meta: (inst as any).meta,
   });

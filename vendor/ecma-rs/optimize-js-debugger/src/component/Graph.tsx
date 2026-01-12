@@ -73,7 +73,7 @@ const InstElement = ({
   symbolNames?: Map<string, string>;
 }) => {
   const foreignLabel = () => {
-    const foreign = (inst as any).foreign;
+    const foreign = (inst as any).foreignStr ?? (inst as any).foreign;
     const key = foreign != undefined ? formatForeign(foreign) : "foreign";
     const name = key && symbolNames?.get(key);
     return name ? `foreign ${key} (${name})` : `foreign ${key}`;

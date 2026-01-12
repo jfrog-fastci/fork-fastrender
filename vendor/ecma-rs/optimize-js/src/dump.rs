@@ -264,6 +264,13 @@ pub struct InstDump {
   pub un_op: Option<String>,
   #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
   pub foreign: Option<u64>,
+  /// Stringified copy of [`InstDump::foreign`].
+  ///
+  /// `SymbolId` values (used for `ForeignLoad`/`ForeignStore`) are `u64` and can
+  /// exceed JavaScript's safe integer range, which breaks tooling that decodes
+  /// MessagePack into JS numbers. Tooling should prefer this field when present.
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub foreign_str: Option<String>,
   #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
   pub unknown: Option<String>,
   pub meta: InstMetaDump,
@@ -495,6 +502,7 @@ fn dump_inst(
     InstTyp::ForeignLoad | InstTyp::ForeignStore => Some(inst.foreign.raw_id()),
     _ => None,
   };
+  let foreign_str = foreign.map(|id| id.to_string());
   let unknown = match inst.t {
     InstTyp::UnknownLoad | InstTyp::UnknownStore if !inst.unknown.is_empty() => {
       Some(inst.unknown.clone())
@@ -563,6 +571,7 @@ fn dump_inst(
     bin_op,
     un_op,
     foreign,
+    foreign_str,
     unknown,
     meta: InstMetaDump {
       effects: inst.meta.effects.clone(),
