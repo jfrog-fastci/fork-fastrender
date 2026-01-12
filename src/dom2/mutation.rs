@@ -1258,7 +1258,6 @@ impl Document {
       self.nodes[parent.index()]
         .children
         .splice(old_child_idx..old_child_idx, children_to_move);
-
       self.record_child_list_mutation(parent);
       self.bump_mutation_generation();
       let _ = self.queue_mutation_record_child_list(
