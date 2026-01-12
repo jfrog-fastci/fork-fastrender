@@ -16,6 +16,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use crate::ui::url::validate_user_navigation_url_scheme;
+
 pub const BOOKMARK_STORE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -133,6 +135,10 @@ impl BookmarkStore {
   }
 
   pub fn toggle(&mut self, url: &str, title: Option<&str>) -> bool {
+    let url = url.trim();
+    if url.is_empty() {
+      return false;
+    }
     if self.contains_url(url) {
       let _removed = self.remove_by_url(url);
       false
@@ -150,6 +156,11 @@ impl BookmarkStore {
     title: Option<String>,
     parent: Option<BookmarkId>,
   ) -> Result<BookmarkId, BookmarkError> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+      return Err(BookmarkError::InvalidStore("bookmark URL is empty".to_string()));
+    }
+    validate_user_navigation_url_scheme(&url).map_err(BookmarkError::InvalidStore)?;
     let title = normalize_optional_string(title);
     let added_at_ms = now_unix_ms();
     self.add_with_timestamp(url, title, parent, added_at_ms)
@@ -826,5 +837,12 @@ mod tests {
     let json = serde_json::to_string(&store).unwrap();
     let decoded: BookmarkStore = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded, store);
+  }
+
+  #[test]
+  fn add_rejects_invalid_url_scheme() {
+    let mut store = BookmarkStore::default();
+    assert!(store.add("javascript:alert(1)".to_string(), None, None).is_err());
+    assert!(!store.contains_url("javascript:alert(1)"));
   }
 }
