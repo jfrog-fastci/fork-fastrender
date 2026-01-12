@@ -28,7 +28,7 @@ repo) when the canonical implementation lives in:
 
 - `vendor/ecma-rs/webidl/`
 - `vendor/ecma-rs/webidl-vm-js/`
-- `vendor/ecma-rs/webidl-runtime/` (migration target; currently `crates/webidl-js-runtime/`)
+- `vendor/ecma-rs/webidl-runtime/`
 
 This creates maintenance burden, sync overhead, and divergence. Every line in a parallel crate is
 technical debt.
