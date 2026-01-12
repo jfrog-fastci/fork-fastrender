@@ -1517,24 +1517,36 @@ fn illegal_dom_constructor_construct_native(
   illegal_dom_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
 }
 
-fn storage_require_this(scope: &Scope<'_>, this: Value) -> Result<web_storage::StorageKind, VmError> {
+fn storage_require_this(
+  scope: &mut Scope<'_>,
+  this: Value,
+) -> Result<web_storage::StorageKind, VmError> {
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   };
-  let slots = match scope.heap().object_host_slots(obj) {
-    Ok(slots) => slots,
-    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
-    Err(err) => return Err(err),
-  };
-  let Some(slots) = slots else {
-    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
-  };
-  if slots.b != STORAGE_HOST_TAG {
+
+  let brand_key = alloc_key(scope, STORAGE_BRAND_KEY)?;
+  if !matches!(
+    scope.heap().object_get_own_data_property_value(obj, &brand_key)?,
+    Some(Value::Bool(true))
+  ) {
     return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   }
-  match slots.a {
-    0 => Ok(web_storage::StorageKind::Local),
-    1 => Ok(web_storage::StorageKind::Session),
+
+  let kind_key = alloc_key(scope, STORAGE_KIND_KEY)?;
+  let kind_v = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &kind_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Number(kind_n) = kind_v else {
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+  };
+  if !kind_n.is_finite() || kind_n.is_nan() {
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+  }
+  match kind_n {
+    n if n == 0.0 => Ok(web_storage::StorageKind::Local),
+    n if n == 1.0 => Ok(web_storage::StorageKind::Session),
     _ => Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR)),
   }
 }
@@ -1705,37 +1717,34 @@ fn install_storage_object(
   global_key: PropertyKey,
   storage_proto: GcObject,
   kind: web_storage::StorageKind,
+  storage_brand_key: PropertyKey,
+  storage_kind_key: PropertyKey,
 ) -> Result<(), VmError> {
   let storage_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_obj))?;
   scope
     .heap_mut()
     .object_set_prototype(storage_obj, Some(storage_proto))?;
-  let kind_host_slot = match kind {
-    web_storage::StorageKind::Local => 0,
-    web_storage::StorageKind::Session => 1,
-  };
-  scope.heap_mut().object_set_host_slots(
+
+  // FastRender-only branding to ensure `Storage.prototype.*` methods throw when borrowed onto other
+  // receivers.
+  scope.define_property(
     storage_obj,
-    HostSlots {
-      a: kind_host_slot,
-      b: STORAGE_HOST_TAG,
-    },
+    storage_brand_key,
+    non_configurable_read_only_data_desc(Value::Bool(true)),
+  )?;
+  let kind_value = match kind {
+    web_storage::StorageKind::Local => 0.0,
+    web_storage::StorageKind::Session => 1.0,
+  };
+  scope.define_property(
+    storage_obj,
+    storage_kind_key,
+    non_configurable_read_only_data_desc(Value::Number(kind_value)),
   )?;
 
   // Install the storage object on the global as a read-only data property.
-  scope.define_property(
-    global,
-    global_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Object(storage_obj),
-        writable: false,
-      },
-    },
-  )?;
+  scope.define_property(global, global_key, read_only_data_desc(Value::Object(storage_obj)))?;
 
   Ok(())
 }
@@ -1813,6 +1822,8 @@ const HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT: usize = 3;
 const DOM_RECT_FROM_RECT_CTOR_SLOT: usize = 0;
 const DOM_RECT_FROM_RECT_READ_ONLY_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
+const STORAGE_BRAND_KEY: &str = "__fastrender_storage_brand";
+const STORAGE_KIND_KEY: &str = "__fastrender_storage_kind";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
 const EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT: usize = 2;
@@ -1833,12 +1844,6 @@ const WINDOW_REALM_CONSOLE_HOST_TAG: u64 = u64::from_be_bytes(*b"CONSOLE_");
 const DOM_TOKEN_LIST_HOST_TAG: u64 = 3;
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
 const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
-// Brand for the Web Storage objects (`localStorage` / `sessionStorage`).
-//
-// NOTE: This must stay unique amongst *all* objects that use `HostSlots`, otherwise `Storage`
-// prototype methods could accidentally treat a different host object (e.g. MutationObserver) as a
-// Storage instance.
-const STORAGE_HOST_TAG: u64 = 0x5354_4F52_4147_4520; // "STORAGE "
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
@@ -26295,9 +26300,15 @@ fn init_window_globals(
   let storage_remove_item_key = alloc_key(&mut scope, "removeItem")?;
   let storage_clear_key = alloc_key(&mut scope, "clear")?;
   let storage_key_key = alloc_key(&mut scope, "key")?;
+  let storage_brand_key = alloc_key(&mut scope, STORAGE_BRAND_KEY)?;
+  let storage_kind_key = alloc_key(&mut scope, STORAGE_KIND_KEY)?;
 
   let storage_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_proto))?;
+  scope.heap_mut().object_set_prototype(
+    storage_proto,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
 
   let make_method = |scope: &mut Scope<'_>,
                      call_id: vm_js::NativeFunctionId,
@@ -26413,6 +26424,8 @@ fn init_window_globals(
     local_storage_key,
     storage_proto,
     web_storage::StorageKind::Local,
+    storage_brand_key,
+    storage_kind_key,
   )?;
   install_storage_object(
     &mut scope,
@@ -26420,6 +26433,8 @@ fn init_window_globals(
     session_storage_key,
     storage_proto,
     web_storage::StorageKind::Session,
+    storage_brand_key,
+    storage_kind_key,
   )?;
 
   // --- WindowOrWorkerGlobalScope primitives ---------------------------------
@@ -27499,6 +27514,35 @@ mod tests {
       Value::Bool(true)
     );
     assert_eq!(
+      realm.exec_script("localStorage.hasOwnProperty('getItem')")?,
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm.exec_script("typeof localStorage.getItem === 'function'")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("localStorage.hasOwnProperty('length')")?,
+      Value::Bool(false)
+    );
+    let illegal_invocation_name = realm.exec_script(
+      "(() => {\n\
+        try { Storage.prototype.getItem.call({}, 'x'); return 'no error'; }\n\
+        catch (e) { return e && e.name; }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), illegal_invocation_name), "TypeError");
+    let illegal_invocation_message = realm.exec_script(
+      "(() => {\n\
+        try { Storage.prototype.getItem.call({}, 'x'); return 'no error'; }\n\
+        catch (e) { return e && e.message; }\n\
+      })()",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), illegal_invocation_message),
+      STORAGE_ILLEGAL_INVOCATION_ERROR
+    );
+    assert_eq!(
       realm.exec_script(
         "(() => {\n\
           try {\n\
@@ -27529,6 +27573,10 @@ mod tests {
     )?;
     assert_eq!(get_string(realm.heap(), new_error), "TypeError");
 
+    assert_eq!(
+      realm.exec_script("Storage.prototype.getItem.call(localStorage, 'missing')")?,
+      Value::Null
+    );
     assert_eq!(
       realm.exec_script("localStorage.getItem('missing')")?,
       Value::Null
