@@ -42,8 +42,11 @@ Run `bash scripts/cargo_agent.sh xtask js wpt-dom --help` for the full CLI. Comm
   - `new` (default): fail only on **unexpected** mismatches (not covered by the manifest).
   - `all`: fail on any mismatch (including expected/xfail/flaky).
   - `none`: always exit 0.
-- `--filter <GLOB|REGEX>`
-  - Filter tests by id (e.g. `smoke/**` or `event_loop/**`).
+- `--filter <GLOB|SUBSTRING|REGEX>`
+  - Filters tests by id.
+  - If the value contains glob metacharacters (e.g. `dom/**`, `smoke/**`), it is treated as a glob.
+  - Otherwise it is treated as a literal substring match (e.g. `mutation`).
+  - Prefix with `re:` to force a regex, or `glob:` to force a glob.
 - `--backend <auto|vmjs>`
   - Choose which JS backend to execute with.
   - Note: `xtask js wpt-dom` currently builds the runner with the `vmjs` backend only.

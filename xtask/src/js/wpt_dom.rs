@@ -75,7 +75,11 @@ pub struct WptDomArgs {
   #[arg(long, value_parser = crate::parse_shard)]
   pub shard: Option<(usize, usize)>,
 
-  /// Filter tests by id using a glob or regex (glob is attempted first).
+  /// Filter tests by id using a glob, substring, or regex.
+  ///
+  /// - `dom/**` uses glob syntax.
+  /// - `mutation` matches as a literal substring.
+  /// - Prefix with `re:` to force a regex, or `glob:` to force a glob.
   #[arg(long, value_name = "GLOB|REGEX")]
   pub filter: Option<String>,
 

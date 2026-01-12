@@ -135,6 +135,32 @@ fn build_filter(pattern: Option<&str>) -> Result<Filter> {
         return Ok(Filter::All);
       }
 
+      // Explicit filter mode prefixes so callers can disambiguate between glob and regex.
+      //
+      // Historically, we attempted to parse *any* filter as a glob first. Since most strings are
+      // valid glob patterns, this meant regex filters were effectively unreachable, and plain
+      // filters like `--filter mutation` would only match a test whose id is exactly `mutation`.
+      //
+      // We keep glob support for patterns that actually use glob metacharacters (e.g. `dom/**`) and
+      // for comma-separated suite presets, but treat plain patterns as a substring match by default.
+      // If a true regex is desired, use `re:<pattern>`.
+      let raw = if let Some(rest) = raw.strip_prefix("glob:") {
+        let rest = rest.trim();
+        let glob = Glob::new(rest).map_err(|err| anyhow!("invalid glob: {err}"))?;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(glob);
+        let set = builder
+          .build()
+          .map_err(|err| anyhow!("invalid glob: {err}"))?;
+        return Ok(Filter::Glob(set));
+      } else if let Some(rest) = raw.strip_prefix("re:").or_else(|| raw.strip_prefix("regex:")) {
+        let rest = rest.trim();
+        let regex = Regex::new(rest).map_err(|err| anyhow!("invalid regex: {err}"))?;
+        return Ok(Filter::Regex(regex));
+      } else {
+        raw
+      };
+
       // Prefer regex semantics for patterns that are unambiguously regex-like. In particular, `|`
       // is not supported as alternation in glob patterns, but is commonly used for "OR" filters
       // (e.g. `--filter "documentURI|compatMode"`). Without this, such filters are parsed as globs
@@ -178,22 +204,11 @@ fn build_filter(pattern: Option<&str>) -> Result<Filter> {
         }
       }
 
-      // Developer ergonomics: treat patterns without glob meta characters as substring globs.
-      //
-      // The CLI advertises `--filter` as "glob or regex". However, patterns like "range_" parse as a
-      // valid glob that matches only the exact id "range_", which is almost never what a caller
-      // intends. Mapping plain strings to `*{pattern}*` matches common expectations ("run tests whose
-      // id contains this substring") while keeping wildcard-heavy globs (e.g. `dom/**`) unchanged.
-      //
-      // Note: If the user provided a comma-separated list we intentionally do *not* apply this
-      // rewriting; each list segment has its own glob semantics above.
-      let raw = if raw.contains(',') || raw.contains('*') || raw.contains('?') || raw.contains('[') {
-        raw.to_string()
-      } else {
-        format!("*{raw}*")
-      };
-
-      if let Ok(glob) = Glob::new(raw.as_str()) {
+      let has_glob_metachar = raw
+        .chars()
+        .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'));
+      if has_glob_metachar {
+        let glob = Glob::new(raw).map_err(|err| anyhow!("invalid glob: {err}"))?;
         let mut builder = GlobSetBuilder::new();
         builder.add(glob);
         let set = builder
@@ -202,7 +217,11 @@ fn build_filter(pattern: Option<&str>) -> Result<Filter> {
         return Ok(Filter::Glob(set));
       }
 
-      let regex = Regex::new(raw.as_str()).map_err(|err| anyhow!("invalid regex: {err}"))?;
+      // Default: treat the filter as a literal substring match.
+      //
+      // This matches the typical `xtask js wpt-dom --filter mutation` workflow while remaining safe
+      // for filters that include regex metacharacters like `.`.
+      let regex = Regex::new(&regex::escape(raw)).map_err(|err| anyhow!("invalid regex: {err}"))?;
       Ok(Filter::Regex(regex))
     }
   }
@@ -243,16 +262,15 @@ pub fn run_suite(config: &SuiteConfig) -> Result<Report> {
     .collect();
 
   if selected.is_empty() {
-    // `--filter` is documented as "glob or regex" (with glob tried first). This means that a bare
-    // substring like `--filter assert_throws` is treated as a glob that only matches the *entire*
-    // test id, which is surprising and easy to trip over.
+    // `--filter` supports both glob and regex-like patterns. When a pattern is interpreted as a
+    // glob (e.g. because it uses `*` or `**`), a common footgun is supplying a regex that happens
+    // to also be a valid glob (e.g. `mutation.*`) and selecting zero tests.
     //
-    // If the glob matched zero tests, fall back to treating the pattern as a regex. This keeps the
-    // exact-id glob behavior working when there *is* an exact match while enabling the more common
-    // "substring match" workflow for bare filters.
+    // If a glob matched zero tests, fall back to treating the pattern as a regex for convenience,
+    // unless the user explicitly forced glob mode via the `glob:` prefix.
     if let (Some(raw), Filter::Glob(_)) = (filter_pattern, &filter) {
       let raw = raw.trim();
-      if !raw.is_empty() {
+      if !raw.is_empty() && !raw.starts_with("glob:") {
         if let Ok(re) = Regex::new(raw) {
           selected = discovered
             .iter()
@@ -586,5 +604,35 @@ mod tests {
     assert!(filter.matches("dom/element_query_selector.window.js"));
     assert!(filter.matches("events/eventtarget_order.window.js"));
     assert!(!filter.matches("event_loop/settimeout_args.window.js"));
+  }
+
+  #[test]
+  fn filter_plain_string_matches_substring() {
+    let filter = build_filter(Some("mutation")).expect("parse filter");
+    assert!(filter.matches("dom/mutation_observer_basic.window.js"));
+    assert!(!filter.matches("dom/document_query_selector.window.js"));
+  }
+
+  #[test]
+  fn filter_plain_string_is_literal_not_regex() {
+    // Plain filters are treated as a literal substring match so values containing regex
+    // metacharacters like `.` behave as users expect.
+    let filter = build_filter(Some("sync-fail.html")).expect("parse filter");
+    assert!(filter.matches("smoke/sync-fail.html"));
+    assert!(!filter.matches("smoke/sync-failXhtml"));
+  }
+
+  #[test]
+  fn filter_prefix_regex_enables_regex_syntax() {
+    let filter = build_filter(Some("re:mutation_observer_.*\\.window\\.js$")).expect("parse filter");
+    assert!(filter.matches("dom/mutation_observer_basic.window.js"));
+    assert!(!filter.matches("dom/mutation_observer_basic.window.jsx"));
+  }
+
+  #[test]
+  fn filter_prefix_glob_enables_glob_syntax() {
+    let filter = build_filter(Some("glob:dom/mutation_observer_*.window.js")).expect("parse filter");
+    assert!(filter.matches("dom/mutation_observer_basic.window.js"));
+    assert!(!filter.matches("dom/document_query_selector.window.js"));
   }
 }
