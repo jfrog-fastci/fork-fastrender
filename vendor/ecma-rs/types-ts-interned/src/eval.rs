@@ -279,6 +279,13 @@ pub struct EvaluatorLimits {
   /// Maximum cumulative size (in UTF-8 bytes) of all strings produced by a
   /// single template literal enumeration.
   pub max_template_total_bytes: usize,
+  /// Maximum number of union members to produce when distributing template
+  /// literal placeholders over union types (e.g. `` `a${X | Y}b${Z | W}c` ``).
+  ///
+  /// This avoids exponential blowups for template literals with many union
+  /// placeholders. When exceeded, the evaluator will conservatively return the
+  /// non-distributed template literal type.
+  pub max_template_union_distribution: usize,
   /// Maximum number of union members to produce when distributing intersections
   /// over unions (e.g. `(A | B) & (C | D)`).
   ///
@@ -291,6 +298,7 @@ impl EvaluatorLimits {
   pub const DEFAULT_MAX_TEMPLATE_STRINGS: usize = 1024;
   pub const DEFAULT_MAX_TEMPLATE_STRING_LEN: usize = 16 * 1024;
   pub const DEFAULT_MAX_TEMPLATE_TOTAL_BYTES: usize = 1024 * 1024;
+  pub const DEFAULT_MAX_TEMPLATE_UNION_DISTRIBUTION: usize = 1024;
   pub const DEFAULT_MAX_INTERSECTION_DISTRIBUTION: usize = 256;
   pub const DEFAULT_STEP_LIMIT: usize = usize::MAX;
 }
@@ -303,6 +311,7 @@ impl Default for EvaluatorLimits {
       max_template_strings: Self::DEFAULT_MAX_TEMPLATE_STRINGS,
       max_template_string_len: Self::DEFAULT_MAX_TEMPLATE_STRING_LEN,
       max_template_total_bytes: Self::DEFAULT_MAX_TEMPLATE_TOTAL_BYTES,
+      max_template_union_distribution: Self::DEFAULT_MAX_TEMPLATE_UNION_DISTRIBUTION,
       max_intersection_distribution: Self::DEFAULT_MAX_INTERSECTION_DISTRIBUTION,
     }
   }
@@ -650,6 +659,11 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
 
   pub fn with_max_template_total_bytes(mut self, limit: usize) -> Self {
     self.limits.max_template_total_bytes = limit;
+    self
+  }
+
+  pub fn with_max_template_union_distribution(mut self, limit: usize) -> Self {
+    self.limits.max_template_union_distribution = limit;
     self
   }
 
@@ -2157,7 +2171,9 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         {
           span.record("computed", "infinite");
         }
-        let evaluated_spans = tpl
+        let primitives = self.store.primitive_ids();
+
+        let evaluated_spans: Vec<TemplateChunk> = tpl
           .spans
           .into_iter()
           .map(|chunk| TemplateChunk {
@@ -2165,12 +2181,62 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
             ty: self.evaluate_with_subst(chunk.ty, subst, depth + 1),
           })
           .collect();
-        let result = self
+        let evaluated_tpl = TemplateLiteralType {
+          head: tpl.head,
+          spans: evaluated_spans,
+        };
+
+        // `never` in any placeholder position collapses the entire template to
+        // `never`, even when other atoms are non-finite.
+        if evaluated_tpl
+          .spans
+          .iter()
+          .any(|chunk| matches!(self.store.type_kind(chunk.ty), TypeKind::Never))
+        {
+          let result = primitives.never;
+          #[cfg(feature = "tracing")]
+          {
+            span.record("result", &tracing::field::debug(&result));
+          }
+          return result;
+        }
+
+        // We can only apply TS-style structural normalization once union
+        // placeholders have been distributed away. If distribution would blow up
+        // (or evaluation is step-limited), conservatively return the evaluated
+        // template literal without distribution.
+        let fallback = self
           .store
-          .intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
-            head: tpl.head,
-            spans: evaluated_spans,
-          }));
+          .intern_type(TypeKind::TemplateLiteral(evaluated_tpl.clone()));
+
+        if self
+          .template_literal_has_union_placeholder(&evaluated_tpl)
+        {
+          if self.template_literal_union_cross_product_too_large(&evaluated_tpl) {
+            #[cfg(feature = "tracing")]
+            {
+              span.record("result", &tracing::field::debug(&fallback));
+            }
+            return fallback;
+          }
+
+          let distributed =
+            self.distribute_template_literal_unions(&evaluated_tpl, subst, depth + 1);
+          let Some(result) = distributed else {
+            #[cfg(feature = "tracing")]
+            {
+              span.record("result", &tracing::field::debug(&fallback));
+            }
+            return fallback;
+          };
+          #[cfg(feature = "tracing")]
+          {
+            span.record("result", &tracing::field::debug(&result));
+          }
+          return result;
+        }
+
+        let result = self.normalize_template_literal_type(evaluated_tpl, depth + 1);
         #[cfg(feature = "tracing")]
         {
           span.record("result", &tracing::field::debug(&result));
@@ -2178,6 +2244,260 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         result
       }
     }
+  }
+
+  fn template_literal_has_union_placeholder(&self, tpl: &TemplateLiteralType) -> bool {
+    tpl
+      .spans
+      .iter()
+      .any(|chunk| matches!(self.store.type_kind(chunk.ty), TypeKind::Union(_)))
+  }
+
+  fn template_literal_union_cross_product_too_large(&self, tpl: &TemplateLiteralType) -> bool {
+    let limit = self.limits.max_template_union_distribution;
+    if limit == 0 {
+      return true;
+    }
+
+    let mut product: usize = 1;
+    for span in tpl.spans.iter() {
+      match self.store.type_kind(span.ty) {
+        TypeKind::Union(members) => {
+          let member_count = members.len();
+          match product.checked_mul(member_count) {
+            Some(next) if next <= limit => {
+              product = next;
+            }
+            _ => return true,
+          }
+        }
+        // The caller should have handled `never` already, but keep this
+        // conservative in case it slips through due to step/depth limits.
+        TypeKind::Never => return true,
+        _ => {}
+      }
+    }
+    false
+  }
+
+  /// Distribute a template literal type over union placeholder types, like
+  /// TypeScript's `getTemplateLiteralType`.
+  ///
+  /// Returns `None` when evaluation is step-limited; the caller should fall
+  /// back to the non-distributed template literal.
+  fn distribute_template_literal_unions(
+    &mut self,
+    tpl: &TemplateLiteralType,
+    subst: &Substitution,
+    depth: usize,
+  ) -> Option<TypeId> {
+    let primitives = self.store.primitive_ids();
+
+    // Respect the evaluator step budget: if we've already hit the limit, do not
+    // attempt potentially-explosive distribution.
+    if self.limits.step_limit != EvaluatorLimits::DEFAULT_STEP_LIMIT
+      && self.steps >= self.limits.step_limit
+    {
+      return None;
+    }
+
+    let union_index = tpl
+      .spans
+      .iter()
+      .position(|chunk| matches!(self.store.type_kind(chunk.ty), TypeKind::Union(_)));
+    let Some(union_index) = union_index else {
+      // Caller should have checked, but keep this safe.
+      return Some(self.normalize_template_literal_type(tpl.clone(), depth + 1));
+    };
+
+    let TypeKind::Union(members) = self.store.type_kind(tpl.spans[union_index].ty) else {
+      unreachable!("union_index must refer to a union placeholder");
+    };
+
+    let mut out = Vec::with_capacity(members.len());
+    for member in members {
+      // Count distribution work against the step limit. (Evaluation of each
+      // branch also consumes steps via `evaluate_with_subst`.)
+      if self.limits.step_limit != EvaluatorLimits::DEFAULT_STEP_LIMIT {
+        if self.steps >= self.limits.step_limit {
+          return None;
+        }
+        self.steps += 1;
+      }
+
+      let mut next_tpl = tpl.clone();
+      next_tpl.spans[union_index].ty = member;
+      out.push(self.evaluate_template_literal(next_tpl, subst, depth + 1));
+    }
+
+    if out.is_empty() {
+      Some(primitives.never)
+    } else {
+      Some(self.store.union(out))
+    }
+  }
+
+  fn normalize_template_literal_type(&mut self, tpl: TemplateLiteralType, depth: usize) -> TypeId {
+    let primitives = self.store.primitive_ids();
+    if depth >= self.limits.depth_limit {
+      // Don't attempt deep normalization; return the template literal as-is.
+      return self.store.intern_type(TypeKind::TemplateLiteral(tpl));
+    }
+
+    let mut out_types: Vec<TypeId> = Vec::new();
+    let mut out_texts: Vec<String> = Vec::new();
+    let mut text = tpl.head;
+    let mut visited_templates: AHashSet<TypeId> = AHashSet::new();
+
+    if !self.add_template_literal_spans(
+      tpl.spans,
+      &mut out_texts,
+      &mut out_types,
+      &mut text,
+      depth + 1,
+      &mut visited_templates,
+    ) {
+      return primitives.string;
+    }
+
+    if out_types.is_empty() {
+      let name = self.store.intern_name(text);
+      return self.store.intern_type(TypeKind::StringLiteral(name));
+    }
+
+    out_texts.push(text);
+
+    if out_texts.iter().all(|t| t.is_empty()) {
+      if out_types
+        .iter()
+        .all(|ty| matches!(self.store.type_kind(*ty), TypeKind::String))
+      {
+        return primitives.string;
+      }
+
+      if out_types.len() == 1 && self.template_literal_is_pattern_type(out_types[0]) {
+        return out_types[0];
+      }
+    }
+
+    let mut texts_iter = out_texts.into_iter();
+    let head = texts_iter.next().unwrap_or_default();
+    let spans = out_types
+      .into_iter()
+      .zip(texts_iter)
+      .map(|(ty, literal)| TemplateChunk { ty, literal })
+      .collect();
+
+    self
+      .store
+      .intern_type(TypeKind::TemplateLiteral(TemplateLiteralType { head, spans }))
+  }
+
+  fn template_literal_is_pattern_type(&self, ty: TypeId) -> bool {
+    matches!(
+      self.store.type_kind(ty),
+      TypeKind::TemplateLiteral(_)
+        | TypeKind::Intrinsic {
+          kind: IntrinsicKind::Uppercase
+            | IntrinsicKind::Lowercase
+            | IntrinsicKind::Capitalize
+            | IntrinsicKind::Uncapitalize,
+          ..
+        }
+    )
+  }
+
+  fn add_template_literal_spans(
+    &mut self,
+    spans: Vec<TemplateChunk>,
+    out_texts: &mut Vec<String>,
+    out_types: &mut Vec<TypeId>,
+    text: &mut String,
+    depth: usize,
+    visited_templates: &mut AHashSet<TypeId>,
+  ) -> bool {
+    if depth >= self.limits.depth_limit {
+      return false;
+    }
+
+    for span in spans {
+      let TemplateChunk { ty, literal } = span;
+      match self.store.type_kind(ty) {
+        TypeKind::StringLiteral(id) => {
+          text.push_str(&self.store.name(id));
+          text.push_str(&literal);
+        }
+        TypeKind::NumberLiteral(num) => {
+          text.push_str(&js_number_to_string(num.0));
+          text.push_str(&literal);
+        }
+        TypeKind::BigIntLiteral(val) => {
+          text.push_str(&val.to_string());
+          text.push_str(&literal);
+        }
+        TypeKind::BooleanLiteral(val) => {
+          text.push_str(if val { "true" } else { "false" });
+          text.push_str(&literal);
+        }
+        TypeKind::Null => {
+          text.push_str("null");
+          text.push_str(&literal);
+        }
+        TypeKind::Undefined => {
+          text.push_str("undefined");
+          text.push_str(&literal);
+        }
+        TypeKind::TemplateLiteral(inner_tpl) => {
+          // Prevent infinite recursion on cyclic template literal types.
+          if !visited_templates.insert(ty) {
+            return false;
+          }
+
+          text.push_str(&inner_tpl.head);
+          if !self.add_template_literal_spans(
+            inner_tpl.spans,
+            out_texts,
+            out_types,
+            text,
+            depth + 1,
+            visited_templates,
+          ) {
+            return false;
+          }
+          visited_templates.remove(&ty);
+
+          text.push_str(&literal);
+        }
+        _ if self.template_literal_is_placeholder_type(ty) => {
+          out_types.push(ty);
+          out_texts.push(std::mem::take(text));
+          *text = literal;
+        }
+        _ => return false,
+      }
+    }
+    true
+  }
+
+  fn template_literal_is_placeholder_type(&self, ty: TypeId) -> bool {
+    matches!(
+      self.store.type_kind(ty),
+      TypeKind::String
+        | TypeKind::Number
+        | TypeKind::BigInt
+        | TypeKind::Boolean
+        | TypeKind::Null
+        | TypeKind::Undefined
+        | TypeKind::TypeParam(_)
+        | TypeKind::IndexedAccess { .. }
+        | TypeKind::Intrinsic {
+          kind: IntrinsicKind::Uppercase
+            | IntrinsicKind::Lowercase
+            | IntrinsicKind::Capitalize
+            | IntrinsicKind::Uncapitalize,
+          ..
+        }
+    )
   }
 
   fn evaluate_intrinsic(

@@ -2825,6 +2825,212 @@ fn template_literal_distributes_over_union_parts() {
 }
 
 #[test]
+fn template_literal_distributes_over_union_placeholder_types() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let literal_a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
+  let placeholder_union = store.union(vec![primitives.number, literal_a]);
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "foo".into(),
+    spans: vec![TemplateChunk {
+      literal: "bar".into(),
+      ty: placeholder_union,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::Union(members) = store.type_kind(result) else {
+    panic!("expected union, got {:?}", store.type_kind(result));
+  };
+
+  assert!(
+    members.iter().any(|m| {
+      matches!(
+        store.type_kind(*m),
+        TypeKind::StringLiteral(id) if store.name(id) == "fooabar"
+      )
+    }),
+    "expected `\"fooabar\"` branch, got {:?}",
+    members.iter().map(|m| store.type_kind(*m)).collect::<Vec<_>>()
+  );
+
+  assert!(
+    members.iter().any(|m| {
+      let TypeKind::TemplateLiteral(tpl) = store.type_kind(*m) else {
+        return false;
+      };
+      tpl.head == "foo"
+        && tpl.spans.len() == 1
+        && tpl.spans[0].literal == "bar"
+        && tpl.spans[0].ty == primitives.number
+    }),
+    "expected `foo${{number}}bar` branch, got {:?}",
+    members.iter().map(|m| store.type_kind(*m)).collect::<Vec<_>>()
+  );
+}
+
+#[test]
+fn template_literal_never_placeholder_is_never() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: primitives.never,
+    }],
+  }));
+  assert_eq!(eval.evaluate(tpl), primitives.never);
+
+  // Ensure `never` collapses even when a preceding atom is non-finite.
+  let mixed = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![
+      TemplateChunk {
+        literal: "".into(),
+        ty: primitives.number,
+      },
+      TemplateChunk {
+        literal: "".into(),
+        ty: primitives.never,
+      },
+    ],
+  }));
+  assert_eq!(eval.evaluate(mixed), primitives.never);
+}
+
+#[test]
+fn template_literal_inlines_literal_atoms_into_text() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let true_ty = store.intern_type(TypeKind::BooleanLiteral(true));
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "x_".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: true_ty,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::StringLiteral(id) = store.type_kind(result) else {
+    panic!("expected string literal, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(store.name(id), "x_true");
+
+  // Inlining should also happen in non-finite templates.
+  let mixed = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "x_".into(),
+    spans: vec![
+      TemplateChunk {
+        literal: "".into(),
+        ty: true_ty,
+      },
+      TemplateChunk {
+        literal: "".into(),
+        ty: primitives.number,
+      },
+    ],
+  }));
+  let result = eval.evaluate(mixed);
+  let TypeKind::TemplateLiteral(tpl) = store.type_kind(result) else {
+    panic!("expected template literal, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(tpl.head, "x_true");
+  assert_eq!(tpl.spans.len(), 1);
+  assert_eq!(tpl.spans[0].ty, primitives.number);
+  assert_eq!(tpl.spans[0].literal, "");
+}
+
+#[test]
+fn template_literal_splices_nested_template_literals() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let inner = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "b".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.number,
+      literal: "c".into(),
+    }],
+  }));
+
+  let outer = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "a".into(),
+    spans: vec![TemplateChunk {
+      ty: inner,
+      literal: "d".into(),
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(outer);
+
+  let TypeKind::TemplateLiteral(tpl) = store.type_kind(result) else {
+    panic!("expected template literal, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(tpl.head, "ab");
+  assert_eq!(tpl.spans.len(), 1);
+  assert_eq!(tpl.spans[0].ty, primitives.number);
+  assert_eq!(tpl.spans[0].literal, "cd");
+}
+
+#[test]
+fn template_literal_union_distribution_respects_limit() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let literal_a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
+  let literal_b = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("b")));
+  let union1 = store.union(vec![primitives.number, literal_a]);
+  let union2 = store.union(vec![primitives.number, literal_b]);
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![
+      TemplateChunk {
+        literal: "".into(),
+        ty: union1,
+      },
+      TemplateChunk {
+        literal: "".into(),
+        ty: union2,
+      },
+    ],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander).with_max_template_union_distribution(2);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::TemplateLiteral(tpl) = store.type_kind(result) else {
+    panic!("expected template literal, got {:?}", store.type_kind(result));
+  };
+  assert_ne!(result, primitives.string);
+  assert!(
+    tpl.spans
+      .iter()
+      .any(|span| matches!(store.type_kind(span.ty), TypeKind::Union(_))),
+    "expected union placeholders to remain when distribution limit is exceeded"
+  );
+}
+
+#[test]
 fn template_literal_expands_boolean_to_true_false_union() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
