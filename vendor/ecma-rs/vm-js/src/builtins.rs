@@ -8100,6 +8100,11 @@ pub fn function_prototype_symbol_has_instance(
     ));
   };
 
+  // Root `prototype` for the duration of the algorithm. For Proxy constructors, `Get(C,
+  // "prototype")` can return an object that is not reachable from `C`/its target/handler, and we
+  // must keep it alive across the prototype-chain walk.
+  scope.push_root(Value::Object(prototype))?;
+
   // 6. Repeat
   //   a. Let O be O.[[GetPrototypeOf]]().
   //   b. ReturnIfAbrupt(O).
@@ -8129,6 +8134,10 @@ pub fn function_prototype_symbol_has_instance(
     if !visited.insert(obj) {
       return Err(VmError::PrototypeCycle);
     }
+
+    // Root this prototype step. Proxy `getPrototypeOf` traps can synthesize objects that are not
+    // necessarily reachable from the original LHS; keep them alive until the algorithm completes.
+    scope.push_root(Value::Object(obj))?;
 
     if obj == prototype {
       return Ok(Value::Bool(true));

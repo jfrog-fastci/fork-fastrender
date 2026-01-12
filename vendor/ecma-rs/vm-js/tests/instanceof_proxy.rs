@@ -188,6 +188,81 @@ fn instanceof_uses_proxy_get_and_getprototypeof_traps() -> Result<(), VmError> {
 }
 
 #[test]
+fn instanceof_uses_function_prototype_has_instance_via_proxy_get_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  {
+    let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let call_id = vm.register_native_call(native_noop_call)?;
+
+    let mut scope = heap.scope();
+
+    // RHS: callable Proxy. Its `get` trap forwards `@@hasInstance` to the underlying function so
+    // `instanceof` uses `Function.prototype[@@hasInstance]`, but traps `"prototype"`.
+    let rhs_target_name = scope.alloc_string("rhsTarget")?;
+    scope.push_root(Value::String(rhs_target_name))?;
+    let rhs_target = scope.alloc_native_function(call_id, None, rhs_target_name, 0)?;
+    scope.push_root(Value::Object(rhs_target))?;
+
+    let rhs_handler = scope.alloc_object()?;
+    scope.push_root(Value::Object(rhs_handler))?;
+    let rhs_proxy = scope.alloc_proxy(Some(rhs_target), Some(rhs_handler))?;
+
+    define_global(&mut scope, global, "rhsProxy", Value::Object(rhs_proxy))?;
+    define_global(&mut scope, global, "rhsHandler", Value::Object(rhs_handler))?;
+
+    // LHS: Proxy whose `getPrototypeOf` trap returns the synthetic RHS prototype.
+    let lhs_target = scope.alloc_object()?;
+    scope.push_root(Value::Object(lhs_target))?;
+    let lhs_handler = scope.alloc_object()?;
+    scope.push_root(Value::Object(lhs_handler))?;
+    let lhs_proxy = scope.alloc_proxy(Some(lhs_target), Some(lhs_handler))?;
+
+    define_global(&mut scope, global, "lhsProxy", Value::Object(lhs_proxy))?;
+    define_global(&mut scope, global, "lhsHandler", Value::Object(lhs_handler))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var seenHasInstanceGet = false;
+      var seenPrototypeGet = false;
+      var seenGetPrototypeOf = false;
+
+      // Synthetic prototype object returned from traps.
+      var proto = {};
+
+      rhsHandler.get = function(target, prop, receiver) {
+        if (prop === Symbol.hasInstance) {
+          seenHasInstanceGet = true;
+          // Forward to the target's ordinary property lookup so we get
+          // `Function.prototype[Symbol.hasInstance]`.
+          return target[prop];
+        }
+        if (prop === "prototype") {
+          seenPrototypeGet = true;
+          return proto;
+        }
+        return target[prop];
+      };
+
+      lhsHandler.getPrototypeOf = function(target) {
+        seenGetPrototypeOf = true;
+        return proto;
+      };
+
+      (lhsProxy instanceof rhsProxy) === true &&
+        seenHasInstanceGet &&
+        seenPrototypeGet &&
+        seenGetPrototypeOf
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
 fn instanceof_throws_type_error_on_revoked_proxy_lhs_or_rhs() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let global = rt.realm().global_object();
@@ -233,4 +308,3 @@ fn instanceof_throws_type_error_on_revoked_proxy_lhs_or_rhs() -> Result<(), VmEr
 
   Ok(())
 }
-
