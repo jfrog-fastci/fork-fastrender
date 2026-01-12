@@ -45,6 +45,41 @@ fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
   Ok(PropertyKey::from_string(key_s))
 }
 
+/// Forces the heap to run its "shrink unused metadata capacity" path (`Heap::shrink_excess_capacity`)
+/// so tests can measure memory usage in a way that's stable across different heap-limit regimes.
+///
+/// In small heaps, `ensure_can_allocate` can call `shrink_excess_capacity` and free large amounts of
+/// unused capacity from heap metadata vectors (slot table, mark bits, root stacks, etc). These
+/// savings can otherwise dominate small-object tests (like WeakSet entry vectors) and make
+/// heap-limit expectations nondeterministic.
+fn force_shrink_excess_capacity(
+  scope: &mut Scope<'_>,
+  extra_roots: &[Value],
+) -> Result<(), VmError> {
+  // Root extra scratch values so that if `shrink_excess_capacity` shrinks the root stack to fit, we
+  // still have enough capacity for small temporary rooting scopes used by WeakMap/WeakSet methods
+  // (`weak_map_set_with_tick` roots 3 values; `weak_set_add_with_tick` roots 2).
+  let mut scope = scope.reborrow();
+  scope.push_roots(extra_roots)?;
+
+  // Charge enough external bytes to bring the heap right up to its limit, then attempt an
+  // allocation that is guaranteed to fail. This forces `ensure_can_allocate` to run
+  // `shrink_excess_capacity` before returning `OutOfMemory`.
+  let max_bytes = scope.heap().limits().max_bytes;
+  let cur = scope.heap().estimated_total_bytes();
+  let charge = max_bytes.saturating_sub(cur);
+  let token = scope.heap_mut().charge_external(charge)?;
+
+  match scope.alloc_array_buffer(max_bytes) {
+    Err(VmError::OutOfMemory) => {}
+    Ok(_) => panic!("expected forced allocation to fail with VmError::OutOfMemory"),
+    Err(e) => return Err(e),
+  }
+
+  drop(token);
+  Ok(())
+}
+
 #[test]
 fn weak_map_and_weak_set_construct() -> Result<(), VmError> {
   let mut rt = TestRt::new(HeapLimits::new(1024 * 1024, 1024 * 1024))?;
@@ -297,6 +332,11 @@ fn weak_map_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), V
     }
     scope.push_roots(&keys)?;
 
+    // Ensure heap metadata vectors are in a "shrunk" state so the bytes we measure match the
+    // minimum footprint the heap can reach under tight limits.
+    let extra_roots = [Value::Undefined; 3];
+    force_shrink_excess_capacity(&mut scope, &extra_roots)?;
+
     let bytes_after_keys = scope.heap().estimated_total_bytes();
 
     for value in &keys {
@@ -320,9 +360,7 @@ fn weak_map_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), V
   // Set a heap limit between the two values so we can allocate the keys, but cannot grow the WeakMap
   // all the way to N entries.
   let growth = bytes_after_inserts.saturating_sub(bytes_after_keys);
-  let max_bytes = bytes_after_keys
-    .saturating_add(growth / 2)
-    .saturating_add(4096);
+  let max_bytes = bytes_after_keys.saturating_add(growth / 2);
 
   let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
   let mut scope = heap.scope();
@@ -396,6 +434,11 @@ fn weak_set_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), V
     }
     scope.push_roots(&keys)?;
 
+    // Ensure heap metadata vectors are in a "shrunk" state so the bytes we measure match the
+    // minimum footprint the heap can reach under tight limits.
+    let extra_roots = [Value::Undefined; 2];
+    force_shrink_excess_capacity(&mut scope, &extra_roots)?;
+
     let bytes_after_keys = scope.heap().estimated_total_bytes();
 
     for value in &keys {
@@ -417,9 +460,7 @@ fn weak_set_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), V
   // Set a heap limit between the two values so we can allocate the keys, but cannot grow the WeakSet
   // all the way to N entries.
   let growth = bytes_after_inserts.saturating_sub(bytes_after_keys);
-  let max_bytes = bytes_after_keys
-    .saturating_add(growth / 2)
-    .saturating_add(4096);
+  let max_bytes = bytes_after_keys.saturating_add(growth / 2);
 
   let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
   let mut scope = heap.scope();
