@@ -3116,6 +3116,17 @@ impl<'a> BodyBuilder<'a> {
     let body_span = body_span
       .filter(|span| !span.is_empty())
       .unwrap_or(self.span);
+    let body_span = if body_span.start < self.span.start || body_span.end > self.span.end {
+      let start = body_span.start.max(self.span.start);
+      let end = body_span.end.min(self.span.end);
+      if start < end {
+        TextRange::new(start, end)
+      } else {
+        self.span
+      }
+    } else {
+      body_span
+    };
     self.span_map.add_body(body_span, self.body_id);
 
     Body {

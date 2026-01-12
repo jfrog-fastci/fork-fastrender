@@ -1182,6 +1182,10 @@ impl AstIndex {
 /// as the base instance type for `super.prop`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BodyThisSuperContext {
+  /// Type of the `this` keyword within the current body.
+  pub this_ty: Option<TypeId>,
+  /// Type of the `super` keyword within the current body (for `super.prop`).
+  pub super_ty: Option<TypeId>,
   pub super_instance_ty: Option<TypeId>,
   pub super_value_ty: Option<TypeId>,
 }
@@ -3746,7 +3750,7 @@ impl<'a> Checker<'a> {
       }
       AstExpr::Super(_) => self
         .this_super_context
-        .super_instance_ty
+        .super_ty
         .unwrap_or(self.current_super_ty),
       AstExpr::ImportMeta(_) => self
         .resolve_type_ref(&["ImportMeta"])
@@ -4753,13 +4757,16 @@ impl<'a> Checker<'a> {
             AstExpr::ArrowFunc(_) | AstExpr::Func(_)
               if self.first_callable_signature(param_ty).is_some() =>
             {
-              arg_ty
+              // Record the contextual callable type for function expressions so nested
+              // body checks can recover the contextual signature (including `this`
+              // parameters) from the parent expression table.
+              self.contextual_callable_type(param_ty).unwrap_or(arg_ty)
             }
             _ => self.contextual_arg_type(arg_ty, param_ty),
           };
           self.record_expr_type(arg.stx.value.loc, contextual);
-        }
-      }
+         }
+       }
 
       self.record_call_signature(
         call.loc,
@@ -10028,6 +10035,15 @@ impl<'a> Checker<'a> {
     let saved_async = self.in_async_function;
     let saved_returns = std::mem::take(&mut self.return_types);
     let saved_this = self.current_this_ty;
+    let saved_super = self.current_super_ty;
+    let saved_super_ctor = self.current_super_ctor_ty;
+
+    if !func.stx.arrow {
+      // Non-arrow functions do not lexically capture `this`/`super`.
+      self.current_this_ty = prim.unknown;
+      self.current_super_ty = prim.unknown;
+      self.current_super_ctor_ty = prim.unknown;
+    }
 
     self.in_async_function = func.stx.async_;
     self.expected_return = Some(if func.stx.async_ {
@@ -10086,6 +10102,8 @@ impl<'a> Checker<'a> {
     self.expected_return = saved_expected;
     self.in_async_function = saved_async;
     self.current_this_ty = saved_this;
+    self.current_super_ty = saved_super;
+    self.current_super_ctor_ty = saved_super_ctor;
 
     let mut instantiated = expected_sig;
     instantiated.ret = if func.stx.async_ {
@@ -12289,8 +12307,11 @@ pub fn check_body_with_env_with_bindings_strict_native(
   super_ty: TypeId,
   strict_native: bool,
 ) -> BodyCheckResult {
+  let canon = |ty: TypeId| store.contains_type_id(ty).then_some(store.canon(ty));
   let this_super_context = BodyThisSuperContext {
-    super_instance_ty: store.contains_type_id(super_ty).then_some(store.canon(super_ty)),
+    this_ty: canon(this_ty),
+    super_ty: canon(super_ty),
+    super_instance_ty: canon(super_ty),
     super_value_ty: None,
   };
   let expr_def_types = HashMap::new();
@@ -12413,9 +12434,10 @@ struct FlowBodyChecker<'a> {
   type_resolver: Option<Arc<dyn TypeResolver>>,
   promise_def: Option<DefId>,
   promise_any: TypeId,
-  this_ty: TypeId,
   file: FileId,
   this_super_context: BodyThisSuperContext,
+  this_ty: TypeId,
+  super_ty: TypeId,
   relate: RelateCtx<'a>,
   instantiation_cache: InstantiationCache,
   expr_types: Vec<TypeId>,
@@ -13144,11 +13166,29 @@ impl<'a> FlowBodyChecker<'a> {
     flow_bindings: Option<&'a FlowBindings>,
     relate: RelateCtx<'a>,
     ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
-    this_ty: TypeId,
+    fallback_this_ty: TypeId,
     _strict_native: bool,
     is_derived_constructor: bool,
   ) -> Self {
     let prim = store.primitive_ids();
+    let mut this_ty = this_super_context.this_ty.unwrap_or(fallback_this_ty);
+    if let Some(function) = body.function.as_ref() {
+      if let Some(first_param) = function.params.first() {
+        if let Some(pat) = body.pats.get(first_param.pat.0 as usize) {
+          if let PatKind::Ident(name_id) = pat.kind {
+            if names.resolve(name_id) == Some("this") && first_param.type_annotation.is_some() {
+              // Explicit `this` parameters override contextual/implicit `this` types.
+              this_ty = initial.get(&name_id).copied().unwrap_or(prim.unknown);
+            }
+          }
+        }
+      }
+    }
+    let super_ty = this_super_context
+      .super_ty
+      .or(this_super_context.super_instance_ty)
+      .or(this_super_context.super_value_ty)
+      .unwrap_or(prim.unknown);
     let expr_types = vec![prim.unknown; body.exprs.len()];
     let call_signatures = HashMap::new();
     let optional_chain_exec_types = vec![None; body.exprs.len()];
@@ -13202,9 +13242,16 @@ impl<'a> FlowBodyChecker<'a> {
     } else {
       prim.unknown
     };
+    let super_ty = if store.contains_type_id(super_ty) {
+      store.canon(super_ty)
+    } else {
+      prim.unknown
+    };
     let this_super_context = {
       let canon = |ty: TypeId| store.contains_type_id(ty).then_some(store.canon(ty));
       BodyThisSuperContext {
+        this_ty: this_super_context.this_ty.and_then(canon),
+        super_ty: this_super_context.super_ty.and_then(canon),
         super_instance_ty: this_super_context.super_instance_ty.and_then(canon),
         super_value_ty: this_super_context.super_value_ty.and_then(canon),
       }
@@ -13228,9 +13275,10 @@ impl<'a> FlowBodyChecker<'a> {
       type_resolver,
       promise_def,
       promise_any,
-      this_ty,
       file,
       this_super_context,
+      this_ty,
+      super_ty,
       relate,
       instantiation_cache: InstantiationCache::default(),
       expr_types,
@@ -13743,7 +13791,6 @@ impl<'a> FlowBodyChecker<'a> {
         }
         ty
       }
-      ExprKind::Super => self.this_super_context.super_instance_ty.unwrap_or(prim.unknown),
       ExprKind::Literal(lit) => match lit {
         hir_js::Literal::Number(num) => self.store.intern_type(TypeKind::NumberLiteral(
           num.parse::<f64>().unwrap_or(0.0).into(),
@@ -13759,6 +13806,7 @@ impl<'a> FlowBodyChecker<'a> {
         )),
         hir_js::Literal::Regex(_) => prim.unknown,
       },
+      ExprKind::Super => self.super_ty,
       ExprKind::Unary { op, expr } => match op {
         UnaryOp::Not => {
           let (_, inner_facts) = self.eval_expr(*expr, env);

@@ -1977,136 +1977,165 @@ pub mod body_check {
         && !is_dts;
       let no_implicit_any = ctx.no_implicit_any || strict_native;
       let this_super_context = (|| {
-        let mut ctx_super = BodyThisSuperContext::default();
-
-        // Find the enclosing class and whether `super` is evaluated in a static
-        // context. Arrow functions can reference `super`, so we cannot assume
-        // the body owner’s direct parent is the class.
-        let mut is_static = false;
-        let mut current_def = Some(body.owner);
-        let mut class_def_id = None;
-        while let Some(def_id) = current_def {
-          let Some(def) = lowered.def(def_id) else {
-            break;
+        fn map_def_ty(ctx: &BodyCheckContext, def: DefId, unknown: TypeId) -> TypeId {
+          let Some(raw) = ctx.interned_def_types.get(&def).copied() else {
+            return unknown;
           };
-          match def.path.kind {
-            hir_js::DefKind::Method
-            | hir_js::DefKind::Constructor
-            | hir_js::DefKind::Getter
-            | hir_js::DefKind::Setter
-            | hir_js::DefKind::Field
-            | hir_js::DefKind::StaticBlock => {
-              is_static = def.is_static;
-            }
-            hir_js::DefKind::Class => {
-              class_def_id = Some(def_id);
-              break;
-            }
-            _ => {}
+          if ctx.store.contains_type_id(raw) {
+            ctx.store.canon(raw)
+          } else {
+            unknown
           }
-          current_def = def.parent;
-        }
-        let Some(class_def) = class_def_id.and_then(|id| lowered.def(id)) else {
-          return ctx_super;
-        };
-
-        // Prefer deriving the base constructor type from the containing class's
-        // value type: `lower_class_instance_and_value` models `class Derived
-        // extends Base<number> {}` as an intersection that retains the base
-        // constructor value type (often wrapped in `OmitConstructSignatures` /
-        // `InheritConstructSignatures`). This keeps the type arguments from the
-        // `extends` clause (and any class type parameters) intact for `super()`
-        // call checking.
-        let mut base_value_ty: Option<TypeId> = None;
-        let class_value_def = ctx.value_defs.get(&class_def.id).copied().unwrap_or(class_def.id);
-        let raw_class_value_ty = ctx
-          .interned_def_types
-          .get(&class_value_def)
-          .copied()
-          .unwrap_or(prim.unknown);
-        let class_value_ty = if ctx.store.contains_type_id(raw_class_value_ty) {
-          ctx.store.canon(raw_class_value_ty)
-        } else {
-          prim.unknown
-        };
-        if class_value_ty != prim.unknown {
-          // The declared constructor value type for a derived class is modeled
-          // as an intersection that includes wrapper nodes around the base
-          // constructor value (e.g. `OmitConstructSignatures<typeof Base<T>>`).
-          // Peel those wrappers so we can recover `typeof Base<...>` with the
-          // `extends` clause type arguments intact for `super()` checking.
-          let pick_base = |member: TypeId| match ctx.store.type_kind(member) {
-            types_ts_interned::TypeKind::Ref { .. } => Some(member),
-            types_ts_interned::TypeKind::OmitConstructSignatures(inner) => Some(inner),
-            types_ts_interned::TypeKind::InheritConstructSignatures { base, .. } => Some(base),
-            _ => None,
-          };
-          base_value_ty = match ctx.store.type_kind(class_value_ty) {
-            types_ts_interned::TypeKind::Intersection(members) => {
-              members.iter().copied().find_map(pick_base)
-            }
-            _ => pick_base(class_value_ty),
-          };
         }
 
-        // Fallback: derive the base constructor type from the syntactic `extends`
-        // expression when we cannot recover it from the declared class value type
-        // (e.g. missing declared types).
-        if base_value_ty.is_none() {
+        fn contextual_this_param(ctx: &BodyCheckContext, ty: TypeId) -> Option<TypeId> {
+          let sig_id = crate::check::overload::callable_signatures(ctx.store.as_ref(), ty)
+            .into_iter()
+            .next()?;
+          ctx.store.signature(sig_id).this_param
+        }
+
+        fn class_context_for_body(
+          lowered: &hir_js::LowerResult,
+          body: &HirBody,
+        ) -> Option<(DefId, bool)> {
+          let owner_def = lowered.def(body.owner)?;
+          let parent = owner_def.parent?;
+          let parent_def = lowered.def(parent)?;
+          (parent_def.path.kind == hir_js::DefKind::Class).then_some((parent, owner_def.is_static))
+        }
+
+        fn is_class_field_initializer(lowered: &hir_js::LowerResult, body: &HirBody) -> bool {
+          let Some(owner_def) = lowered.def(body.owner) else {
+            return false;
+          };
+          if owner_def.path.kind != hir_js::DefKind::Field {
+            return false;
+          }
+          let Some(parent) = owner_def.parent else {
+            return false;
+          };
+          lowered
+            .def(parent)
+            .is_some_and(|def| def.path.kind == hir_js::DefKind::Class)
+        }
+
+        fn context_for_class(
+          ctx: &BodyCheckContext,
+          lowered: &hir_js::LowerResult,
+          expander: &DbTypeExpander,
+          file: FileId,
+          class_def_id: DefId,
+          is_static: bool,
+          unknown: TypeId,
+        ) -> BodyThisSuperContext {
+          let mut out = BodyThisSuperContext::default();
+
+          let instance_this = map_def_ty(ctx, class_def_id, unknown);
+          let static_this = ctx
+            .value_defs
+            .get(&class_def_id)
+            .copied()
+            .map(|value_def| map_def_ty(ctx, value_def, unknown))
+            .unwrap_or(unknown);
+          let this_ty = if is_static { static_this } else { instance_this };
+          if this_ty != unknown {
+            out.this_ty = Some(this_ty);
+          }
+
+          let Some(class_def) = lowered.def(class_def_id) else {
+            return out;
+          };
           let Some(class_body_id) = class_def.body else {
-            return ctx_super;
+            return out;
           };
           let Some(class_body) = lowered.body(class_body_id) else {
-            return ctx_super;
+            return out;
           };
           let Some(extends_expr) = class_body.class.as_ref().and_then(|c| c.extends) else {
-            return ctx_super;
+            return out;
           };
-          let base_name = match class_body.exprs.get(extends_expr.0 as usize).map(|e| &e.kind) {
-            Some(hir_js::ExprKind::Ident(name_id)) => lowered.names.resolve(*name_id),
-            Some(hir_js::ExprKind::Instantiation { expr, .. }) => {
-              match class_body.exprs.get(expr.0 as usize).map(|e| &e.kind) {
-                Some(hir_js::ExprKind::Ident(name_id)) => lowered.names.resolve(*name_id),
-                _ => None,
-              }
+
+          // Prefer deriving the base constructor type from the containing class's
+          // value type: `lower_class_instance_and_value` models `class Derived
+          // extends Base<number> {}` as an intersection that retains the base
+          // constructor value type (often wrapped in `OmitConstructSignatures` /
+          // `InheritConstructSignatures`). This keeps the type arguments from the
+          // `extends` clause (and any class type parameters) intact for `super()`
+          // call checking.
+          let base_value_ty_from_value_ty = (|| {
+            let class_value_def = ctx
+              .value_defs
+              .get(&class_def_id)
+              .copied()
+              .unwrap_or(class_def_id);
+            let class_value_ty = map_def_ty(ctx, class_value_def, unknown);
+            if class_value_ty == unknown {
+              return None;
             }
-            _ => None,
-          };
-          let Some(base_name) = base_name else {
-            return ctx_super;
-          };
-          let base_name = base_name.to_string();
+            let pick_base = |member: TypeId| match ctx.store.type_kind(member) {
+              types_ts_interned::TypeKind::Ref { .. } => Some(member),
+              types_ts_interned::TypeKind::OmitConstructSignatures(inner) => Some(inner),
+              types_ts_interned::TypeKind::InheritConstructSignatures { base, .. } => Some(base),
+              _ => None,
+            };
+            match ctx.store.type_kind(class_value_ty) {
+              types_ts_interned::TypeKind::Intersection(members) => {
+                members.iter().copied().find_map(pick_base)
+              }
+              _ => pick_base(class_value_ty),
+            }
+          })();
 
-          let base_binding = ctx
-            .file_bindings
-            .get(&meta.file)
-            .and_then(|bindings| bindings.get(&base_name))
-            .or_else(|| ctx.global_bindings.get(&base_name));
-          let Some(base_binding) = base_binding else {
-            return ctx_super;
-          };
-          let base_ty = base_binding
-            .def
-            .map(map_def_ty)
-            .filter(|ty| *ty != prim.unknown)
-            .or(base_binding.type_id)
-            .unwrap_or(prim.unknown);
-          if base_ty != prim.unknown {
-            base_value_ty = Some(base_ty);
-          }
-        }
+          let base_value_ty_from_extends = (|| {
+            let base_name = match class_body.exprs.get(extends_expr.0 as usize).map(|e| &e.kind) {
+              Some(hir_js::ExprKind::Ident(name_id)) => lowered.names.resolve(*name_id),
+              Some(hir_js::ExprKind::Instantiation { expr, .. }) => {
+                match class_body.exprs.get(expr.0 as usize).map(|e| &e.kind) {
+                  Some(hir_js::ExprKind::Ident(name_id)) => lowered.names.resolve(*name_id),
+                  _ => None,
+                }
+              }
+              _ => None,
+            }?;
+            let base_name = base_name.to_string();
 
-        if let Some(base_value_ty) = base_value_ty.filter(|ty| *ty != prim.unknown) {
-          ctx_super.super_value_ty = Some(base_value_ty);
-          if is_static {
-            // `super.prop` inside static class elements refers to the base
-            // constructor value (not an instance type).
-            ctx_super.super_instance_ty = Some(base_value_ty);
+            let base_binding = ctx
+              .file_bindings
+              .get(&file)
+              .and_then(|bindings| bindings.get(&base_name))
+              .or_else(|| ctx.global_bindings.get(&base_name))?;
+            let base_ty = base_binding
+              .def
+              .map(|def| {
+                let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
+                map_def_ty(ctx, value_def, unknown)
+              })
+              .filter(|ty| *ty != unknown)
+              .or(base_binding.type_id.filter(|ty| *ty != unknown))
+              .unwrap_or(unknown);
+            (base_ty != unknown).then_some(base_ty)
+          })();
+
+          // The "best" base constructor type differs between instance and static
+          // contexts:
+          // - Instance context: prefer `base_value_ty_from_value_ty` to preserve
+          //   `extends` type arguments for `super()` call checking.
+          // - Static context: prefer deriving from the `extends` expression to
+          //   avoid accidentally selecting the base instance `Ref` from the
+          //   derived class's value-type intersection.
+          let base_value_ty = if is_static {
+            base_value_ty_from_extends.or(base_value_ty_from_value_ty)
           } else {
+            base_value_ty_from_value_ty.or(base_value_ty_from_extends)
+          };
+
+          if let Some(base_value_ty) = base_value_ty.filter(|ty| *ty != unknown) {
+            out.super_value_ty = Some(base_value_ty);
             let ctor_sigs = crate::check::overload::construct_signatures_with_expander(
               ctx.store.as_ref(),
               base_value_ty,
-              Some(&expander),
+              Some(expander),
             );
             if !ctor_sigs.is_empty() {
               let mut rets: Vec<_> = ctor_sigs
@@ -2115,16 +2144,96 @@ pub mod body_check {
                 .collect();
               rets.sort_by(|a, b| ctx.store.type_cmp(*a, *b));
               rets.dedup();
-              ctx_super.super_instance_ty = Some(if rets.len() == 1 {
+              out.super_instance_ty = Some(if rets.len() == 1 {
                 rets[0]
               } else {
                 ctx.store.union(rets)
               });
             }
           }
+
+          out.super_ty = if is_static {
+            out.super_value_ty
+          } else {
+            out.super_instance_ty
+          };
+
+          out
         }
 
-        ctx_super
+        fn context_for_body(
+          ctx: &BodyCheckContext,
+          expander: &DbTypeExpander,
+          body_id: BodyId,
+          contextual_fn_ty: Option<TypeId>,
+          unknown: TypeId,
+          visited: &mut HashSet<BodyId>,
+        ) -> BodyThisSuperContext {
+          if !visited.insert(body_id) {
+            return BodyThisSuperContext::default();
+          }
+
+          let Some(meta) = ctx.body_info.get(&body_id) else {
+            return BodyThisSuperContext::default();
+          };
+          let Some(lowered) = ctx.lowered.get(&meta.file) else {
+            return BodyThisSuperContext::default();
+          };
+          let Some(hir_id) = meta.hir else {
+            return BodyThisSuperContext::default();
+          };
+          let Some(body) = lowered.body(hir_id) else {
+            return BodyThisSuperContext::default();
+          };
+
+          let is_arrow = matches!(body.kind, HirBodyKind::Function)
+            && body
+              .function
+              .as_ref()
+              .is_some_and(|func| func.is_arrow);
+          let inherits_initializer = matches!(body.kind, HirBodyKind::Initializer)
+            && !is_class_field_initializer(lowered.as_ref(), body);
+
+          let mut out = if is_arrow || inherits_initializer {
+            if let Some(parent) = ctx.body_parents.get(&body_id).copied() {
+              context_for_body(ctx, expander, parent, None, unknown, visited)
+            } else {
+              BodyThisSuperContext::default()
+            }
+          } else if let Some((class_def, is_static)) =
+            class_context_for_body(lowered.as_ref(), body)
+          {
+            context_for_class(
+              ctx,
+              lowered.as_ref(),
+              expander,
+              meta.file,
+              class_def,
+              is_static,
+              unknown,
+            )
+          } else {
+            BodyThisSuperContext::default()
+          };
+
+          if let Some(contextual) =
+            contextual_fn_ty.and_then(|ty| contextual_this_param(ctx, ty)).filter(|ty| *ty != unknown)
+          {
+            out.this_ty = Some(contextual);
+          }
+
+          out
+        }
+
+        let mut visited = HashSet::new();
+        context_for_body(
+          ctx,
+          &expander,
+          body_id,
+          contextual_fn_ty,
+          prim.unknown,
+          &mut visited,
+        )
       })();
       let mut expr_value_overrides: HashMap<TextRange, TypeId> = HashMap::new();
       if !body.exprs.is_empty() {
@@ -3147,6 +3256,10 @@ pub mod body_check {
     func_span: TextRange,
   ) -> Option<TypeId> {
     let store = &db.context.store;
+    // Use an expander so contextual parameter types like `Foo` where `interface Foo { (this: T): U }`
+    // can still be treated as callable when deriving a contextual type from a call signature.
+    let caches = db.context.checker_caches.for_body();
+    let expander = DbTypeExpander::new(db.context.as_ref(), caches.eval.clone());
     let mut visited = HashSet::new();
     let mut current = db.context.body_parents.get(&body_id).copied();
     while let Some(parent) = current {
@@ -3161,51 +3274,124 @@ pub mod body_check {
         let Some(ty) = parent_result.expr_types.get(idx).copied() else {
           continue;
         };
-        if !store.contains_type_id(ty)
-          || !matches!(
-            store.type_kind(ty),
-            types_ts_interned::TypeKind::Callable { .. }
-          )
-        {
+        if !store.contains_type_id(ty) {
           continue;
         }
+        let ty_is_callable =
+          matches!(store.type_kind(ty), types_ts_interned::TypeKind::Callable { .. });
+
+        // When the function expression is used as a call argument, recover the
+        // contextual type from the call's resolved signature.
+        let contextual_from_call = || -> Option<TypeId> {
+          let Some(meta) = db.bc_body_info(parent) else {
+            return None;
+          };
+          let Some(hir_body_id) = meta.hir else {
+            return None;
+          };
+          let Some(lowered) = db.bc_lower_hir(meta.file) else {
+            return None;
+          };
+          let Some(parent_body) = lowered.body(hir_body_id) else {
+            return None;
+          };
+
+          let func_expr_id = hir_js::ExprId(idx as u32);
+          for (call_idx, expr) in parent_body.exprs.iter().enumerate() {
+            let hir_js::ExprKind::Call(call) = &expr.kind else {
+              continue;
+            };
+            let mut arg_pos = None;
+            for (pos, arg) in call.args.iter().enumerate() {
+              if arg.expr != func_expr_id {
+                continue;
+              }
+              // Skip spreads (and any argument after a spread) to avoid unstable
+              // parameter mapping.
+              if arg.spread || call.args.iter().take(pos).any(|a| a.spread) {
+                arg_pos = None;
+                break;
+              }
+              arg_pos = Some(pos);
+              break;
+            }
+            let Some(arg_pos) = arg_pos else {
+              continue;
+            };
+            let Some(sig_id) = parent_result
+              .call_signatures
+              .get(call_idx)
+              .copied()
+              .flatten()
+            else {
+              continue;
+            };
+            let sig = store.signature(sig_id);
+            let Some(expected) =
+              crate::check::overload::expected_arg_type_at(store.as_ref(), &sig, arg_pos)
+            else {
+              continue;
+            };
+            let mut overloads = crate::check::overload::callable_signatures_with_expander(
+              store.as_ref(),
+              expected,
+              Some(&expander),
+            );
+            if overloads.is_empty() {
+              continue;
+            }
+            overloads.sort();
+            overloads.dedup();
+            let callable = store.intern_type(types_ts_interned::TypeKind::Callable { overloads });
+            return Some(store.canon(callable));
+          }
+          None
+        };
 
         // Avoid using the function expression's own inferred signature as its
         // "contextual type". Without this guard, uncontextualized arrow/function
         // expressions can appear contextually typed by a callable type that was
         // derived from the expression itself, which suppresses `--noImplicitAny`
         // diagnostics for parameters.
-        let should_skip_self_context = (|| {
-          let Some(meta) = db.bc_body_info(parent) else {
-            return false;
-          };
-          let Some(hir_body_id) = meta.hir else {
-            return false;
-          };
-          let Some(lowered) = db.bc_lower_hir(meta.file) else {
-            return false;
-          };
-          let Some(parent_body) = lowered.body(hir_body_id) else {
-            return false;
-          };
-          let Some(expr) = parent_body.exprs.get(idx) else {
-            return false;
-          };
-          let hir_js::ExprKind::FunctionExpr { def, body, .. } = &expr.kind else {
-            return false;
-          };
-          if *body != body_id {
-            return false;
+        let should_skip_self_context = if ty_is_callable {
+          (|| {
+            let Some(meta) = db.bc_body_info(parent) else {
+              return false;
+            };
+            let Some(hir_body_id) = meta.hir else {
+              return false;
+            };
+            let Some(lowered) = db.bc_lower_hir(meta.file) else {
+              return false;
+            };
+            let Some(parent_body) = lowered.body(hir_body_id) else {
+              return false;
+            };
+            let Some(expr) = parent_body.exprs.get(idx) else {
+              return false;
+            };
+            let hir_js::ExprKind::FunctionExpr { def, body, .. } = &expr.kind else {
+              return false;
+            };
+            if *body != body_id {
+              return false;
+            }
+            let Some(def_ty) = db.context.interned_def_types.get(def).copied() else {
+              return false;
+            };
+            if !store.contains_type_id(def_ty) {
+              return false;
+            }
+            store.canon(def_ty) == store.canon(ty)
+          })()
+        } else {
+          false
+        };
+
+        if should_skip_self_context || !ty_is_callable {
+          if let Some(ctx_ty) = contextual_from_call() {
+            return Some(ctx_ty);
           }
-          let Some(def_ty) = db.context.interned_def_types.get(def).copied() else {
-            return false;
-          };
-          if !store.contains_type_id(def_ty) {
-            return false;
-          }
-          store.canon(def_ty) == store.canon(ty)
-        })();
-        if should_skip_self_context {
           continue;
         }
 
