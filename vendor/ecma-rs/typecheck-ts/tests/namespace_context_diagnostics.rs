@@ -64,6 +64,22 @@ fn ts1194_export_list_with_module_specifier_points_at_specifier() {
 }
 
 #[test]
+fn ts1194_export_all_with_module_specifier_points_at_specifier() {
+  let source = "declare namespace N { export * from \"mod\"; }\n";
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("main.ts");
+  host.insert(key.clone(), source);
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  assert_eq!(diagnostics.len(), 1, "unexpected diagnostics: {diagnostics:?}");
+
+  let diag = &diagnostics[0];
+  assert_eq!(diag.code.as_str(), codes::EXPORT_DECLARATION_IN_NAMESPACE.as_str());
+  assert_primary_span_equals(diag, source, "\"mod\"");
+}
+
+#[test]
 fn ts1147_import_equals_require_in_namespace_points_at_specifier() {
   let source = "export namespace M { import foo = require(\"pkg\"); }\n";
   let mut host = MemoryHost::new();
@@ -83,10 +99,29 @@ fn ts1147_import_equals_require_in_namespace_points_at_specifier() {
 }
 
 #[test]
+fn ts1147_es_import_in_namespace_points_at_specifier() {
+  let source = "export namespace M { import * as M2 from \"M2\"; }\n";
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("main.ts");
+  host.insert(key.clone(), source);
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  assert_eq!(diagnostics.len(), 1, "unexpected diagnostics: {diagnostics:?}");
+
+  let diag = &diagnostics[0];
+  assert_eq!(
+    diag.code.as_str(),
+    codes::IMPORT_IN_NAMESPACE_CANNOT_REFERENCE_MODULE.as_str()
+  );
+  assert_primary_span_equals(diag, source, "\"M2\"");
+}
+
+#[test]
 fn no_ts1194_or_ts1147_inside_external_module_declaration() {
   let source = r#"
-declare module "foo" {
-  import foo = require("pkg");
+ declare module "foo" {
+   import foo = require("pkg");
   export { x } from "mod";
 }
 "#;
