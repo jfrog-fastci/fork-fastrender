@@ -63,6 +63,28 @@ fn for_of_over_array_shrinks_during_iteration() {
 }
 
 #[test]
+fn for_of_does_not_close_iterator_when_next_throws() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var closed = 0;
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { throw 1; },
+          "return": function () { closed = closed + 1; return { done: true }; },
+        };
+      };
+      try { for (var x of iterable) {} } catch (e) {}
+      closed
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(0.0));
+}
+
+#[test]
 fn array_spread() {
   let mut rt = new_runtime();
   let value = rt
