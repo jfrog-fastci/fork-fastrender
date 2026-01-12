@@ -7345,12 +7345,12 @@ impl<'a> Checker<'a> {
 
   fn member_type_opt(&mut self, obj: TypeId, prop: &str) -> Option<TypeId> {
     let prim = self.store.primitive_ids();
-    let obj = self.expand_ref(obj);
+    let obj = self.expand_callable_type(obj);
     match self.store.type_kind(obj) {
-      // `expand_ref` above follows any resolvable references with a local
-      // cycle guard. If we still have a `Ref`, treat it as unknown to avoid
-      // infinitely recursing on self-referential expansions (e.g. during
-      // in-progress type computation).
+      // `expand_callable_type` above follows any resolvable references with a local
+      // cycle guard and expands type parameters through their constraints. If we
+      // still have a `Ref`, treat it as unknown to avoid infinitely recursing on
+      // self-referential expansions (e.g. during in-progress type computation).
       TypeKind::Ref { .. } => Some(prim.unknown),
       TypeKind::Any => Some(prim.any),
       TypeKind::Unknown => Some(prim.unknown),
@@ -7454,6 +7454,9 @@ impl<'a> Checker<'a> {
         return inner(checker, ty, prop, seen);
       }
       match checker.store.type_kind(ty) {
+        TypeKind::TypeParam(param) => checker
+          .type_param_constraint(param)
+          .is_some_and(|constraint| inner(checker, constraint, prop, seen)),
         TypeKind::Object(obj_id) => {
           let shape = checker.store.shape(checker.store.object(obj_id).shape);
           if !shape.indexers.is_empty() {
@@ -7496,7 +7499,7 @@ impl<'a> Checker<'a> {
   fn member_type_for_index_key(&mut self, obj: TypeId, key_ty: TypeId) -> TypeId {
     let prim = self.store.primitive_ids();
     let key_ty = self.store.canon(key_ty);
-    let obj = self.expand_ref(obj);
+    let obj = self.expand_callable_type(obj);
 
     match self.store.type_kind(key_ty) {
       TypeKind::Union(members) => {
@@ -8702,12 +8705,26 @@ impl<'a> Checker<'a> {
     } else {
       expected_sig.ret
     });
+
+    let use_contextual_type_params =
+      func.stx.type_parameters.is_none() && !expected_sig.type_params.is_empty();
+    if use_contextual_type_params {
+      self.type_param_scopes.push(expected_sig.type_params.clone());
+    }
     self.scopes.push(Scope::default());
     self.var_scopes.push(self.scopes.len().saturating_sub(1));
-    self.bind_params(func, &[], Some(&expected_sig));
+    let bind_type_params = if use_contextual_type_params {
+      expected_sig.type_params.as_slice()
+    } else {
+      &[]
+    };
+    self.bind_params(func, bind_type_params, Some(&expected_sig));
     self.check_function_body(func);
     self.var_scopes.pop();
     self.scopes.pop();
+    if use_contextual_type_params {
+      self.type_param_scopes.pop();
+    }
 
     let prim = self.store.primitive_ids();
     let inferred_ret = if self.return_types.is_empty() {
