@@ -642,19 +642,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       force_fallback_adapter: wgpu_options.force_fallback_adapter,
     }
   };
-  let mut app = pollster::block_on(App::new(
+  let gpu = pollster::block_on(GpuContext::new(&window, wgpu_init))?;
+  let mut app = App::new(
     window,
     &event_loop,
     ui_to_worker_tx,
     worker_join,
-    wgpu_init,
+    &gpu,
     theme_override,
     theme_accent,
     bookmarks_path,
     history_path,
     bookmarks,
     history,
-  ))?;
+  )?;
   app.startup(startup_session);
   app.profile_autosave = Some(fastrender::ui::ProfileAutosaveHandle::spawn(
     app.bookmarks_path.clone(),
@@ -1329,13 +1330,132 @@ impl PageTextureFilterPolicy {
 }
 
 #[cfg(feature = "browser_ui")]
+struct GpuContext {
+  instance: wgpu::Instance,
+  adapter: wgpu::Adapter,
+  device: std::sync::Arc<wgpu::Device>,
+  queue: std::sync::Arc<wgpu::Queue>,
+}
+
+#[cfg(feature = "browser_ui")]
+impl GpuContext {
+  async fn new(
+    window: &winit::window::Window,
+    wgpu_init: WgpuInitOptions,
+  ) -> Result<Self, Box<dyn std::error::Error>> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+      backends: wgpu_init.backends,
+      ..Default::default()
+    });
+    let surface = unsafe { instance.create_surface(window) }?;
+
+    let adapter_options = wgpu::RequestAdapterOptions {
+      power_preference: wgpu_init.power_preference,
+      compatible_surface: Some(&surface),
+      force_fallback_adapter: wgpu_init.force_fallback_adapter,
+    };
+    let adapter = instance
+      .request_adapter(&adapter_options)
+      .await
+      .ok_or_else(|| {
+        let mut available = Vec::new();
+        for adapter in instance.enumerate_adapters(wgpu_init.backends) {
+          let info = adapter.get_info();
+          available.push(format!("{} ({:?})", info.name, info.backend));
+        }
+        let available = if available.is_empty() {
+          "none".to_string()
+        } else {
+          available.join(", ")
+        };
+
+        let mut msg = format!(
+          "wgpu adapter selection failed.\n\
+requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
+available adapters (instance.enumerate_adapters): {available}",
+          wgpu_init.backends,
+          wgpu_init.power_preference,
+          wgpu_init.force_fallback_adapter,
+        );
+
+        if !wgpu_init.force_fallback_adapter {
+          msg.push_str(&format!(
+            "\nHint: Try enabling the software adapter with `--wgpu-fallback` or `{}`=1.",
+            fastrender::ui::browser_cli::ENV_WGPU_FALLBACK
+          ));
+        }
+
+        msg.push_str(&format!(
+          "\nHint: Try forcing a backend set with `--wgpu-backends gl` or `{}`=gl.",
+          fastrender::ui::browser_cli::ENV_WGPU_BACKENDS
+        ));
+
+        msg.push_str(
+          "\nHint: If you're running in a headless environment, try `browser --headless-smoke` (skips window + wgpu).",
+        );
+
+        std::io::Error::new(std::io::ErrorKind::Other, msg)
+      })?;
+
+    let adapter_info = adapter.get_info();
+    // Populate `about:gpu` with the adapter selected by the windowed front-end.
+    fastrender::ui::about_pages::set_gpu_info(
+      adapter_info.name.clone(),
+      format!("{:?}", adapter_info.backend),
+      format!("{:?}", wgpu_init.power_preference),
+      wgpu_init.force_fallback_adapter,
+      format!("{:?}", wgpu_init.backends),
+    );
+
+    let (device, queue) = adapter
+      .request_device(
+        &wgpu::DeviceDescriptor {
+          label: Some("device"),
+          features: wgpu::Features::empty(),
+          limits: wgpu::Limits::default(),
+        },
+        None,
+      )
+      .await
+      .map_err(|err| {
+        let mut msg = format!(
+          "wgpu device request failed for adapter {adapter_info:?}.\n\
+requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
+error: {err}",
+          wgpu_init.backends,
+          wgpu_init.power_preference,
+          wgpu_init.force_fallback_adapter,
+        );
+        if !wgpu_init.force_fallback_adapter {
+          msg.push_str(&format!(
+            "\nHint: Try enabling the software adapter with `--wgpu-fallback` or `{}`=1.",
+            fastrender::ui::browser_cli::ENV_WGPU_FALLBACK
+          ));
+        }
+        msg.push_str(&format!(
+          "\nHint: Try forcing a different backend set with `--wgpu-backends gl` or `{}`=gl.",
+          fastrender::ui::browser_cli::ENV_WGPU_BACKENDS
+        ));
+        std::io::Error::new(std::io::ErrorKind::Other, msg)
+      })?;
+
+    Ok(Self {
+      instance,
+      adapter,
+      device: std::sync::Arc::new(device),
+      queue: std::sync::Arc::new(queue),
+    })
+  }
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
 
   surface: wgpu::Surface,
-  device: wgpu::Device,
-  queue: wgpu::Queue,
+  device: std::sync::Arc<wgpu::Device>,
+  queue: std::sync::Arc<wgpu::Queue>,
   surface_config: wgpu::SurfaceConfiguration,
 
   egui_ctx: egui::Context,
@@ -1540,12 +1660,12 @@ impl App {
     dragging || hovering
   }
 
-  async fn new<T: 'static>(
+  fn new<T: 'static>(
     window: winit::window::Window,
     event_loop: &winit::event_loop::EventLoopWindowTarget<T>,
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
     worker_join: std::thread::JoinHandle<()>,
-    wgpu_init: WgpuInitOptions,
+    gpu: &GpuContext,
     theme_override: Option<fastrender::ui::theme::ThemeMode>,
     theme_accent: Option<egui::Color32>,
     bookmarks_path: std::path::PathBuf,
@@ -1581,101 +1701,11 @@ impl App {
       }
     };
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-      backends: wgpu_init.backends,
-      ..Default::default()
-    });
-    let surface = unsafe { instance.create_surface(&window) }?;
+    let surface = unsafe { gpu.instance.create_surface(&window) }?;
+    let device = gpu.device.clone();
+    let queue = gpu.queue.clone();
 
-    let adapter_options = wgpu::RequestAdapterOptions {
-      power_preference: wgpu_init.power_preference,
-      compatible_surface: Some(&surface),
-      force_fallback_adapter: wgpu_init.force_fallback_adapter,
-    };
-    let adapter = instance
-      .request_adapter(&adapter_options)
-      .await
-      .ok_or_else(|| {
-        let mut available = Vec::new();
-        for adapter in instance.enumerate_adapters(wgpu_init.backends) {
-          let info = adapter.get_info();
-          available.push(format!("{} ({:?})", info.name, info.backend));
-        }
-        let available = if available.is_empty() {
-          "none".to_string()
-        } else {
-          available.join(", ")
-        };
-
-        let mut msg = format!(
-          "wgpu adapter selection failed.\n\
-requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
-available adapters (instance.enumerate_adapters): {available}",
-          wgpu_init.backends,
-          wgpu_init.power_preference,
-          wgpu_init.force_fallback_adapter,
-        );
-
-        if !wgpu_init.force_fallback_adapter {
-          msg.push_str(&format!(
-            "\nHint: Try enabling the software adapter with `--wgpu-fallback` or `{}`=1.",
-            fastrender::ui::browser_cli::ENV_WGPU_FALLBACK
-          ));
-        }
-
-        msg.push_str(&format!(
-          "\nHint: Try forcing a backend set with `--wgpu-backends gl` or `{}`=gl.",
-          fastrender::ui::browser_cli::ENV_WGPU_BACKENDS
-        ));
-
-        msg.push_str(
-          "\nHint: If you're running in a headless environment, try `browser --headless-smoke` (skips window + wgpu).",
-        );
-
-        std::io::Error::new(std::io::ErrorKind::Other, msg)
-      })?;
-
-    let adapter_info = adapter.get_info();
-    // Populate `about:gpu` with the adapter selected by the windowed front-end.
-    fastrender::ui::about_pages::set_gpu_info(
-      adapter_info.name.clone(),
-      format!("{:?}", adapter_info.backend),
-      format!("{:?}", wgpu_init.power_preference),
-      wgpu_init.force_fallback_adapter,
-      format!("{:?}", wgpu_init.backends),
-    );
-
-    let (device, queue) = adapter
-      .request_device(
-        &wgpu::DeviceDescriptor {
-          label: Some("device"),
-          features: wgpu::Features::empty(),
-          limits: wgpu::Limits::default(),
-        },
-        None,
-      )
-      .await
-      .map_err(|err| {
-        let mut msg = format!(
-          "wgpu device request failed for adapter {adapter_info:?}.\n\
-requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
-error: {err}",
-          wgpu_init.backends, wgpu_init.power_preference, wgpu_init.force_fallback_adapter,
-        );
-        if !wgpu_init.force_fallback_adapter {
-          msg.push_str(&format!(
-            "\nHint: Try enabling the software adapter with `--wgpu-fallback` or `{}`=1.",
-            fastrender::ui::browser_cli::ENV_WGPU_FALLBACK
-          ));
-        }
-        msg.push_str(&format!(
-          "\nHint: Try forcing a different backend set with `--wgpu-backends gl` or `{}`=gl.",
-          fastrender::ui::browser_cli::ENV_WGPU_BACKENDS
-        ));
-        std::io::Error::new(std::io::ErrorKind::Other, msg)
-      })?;
-
-    let surface_caps = surface.get_capabilities(&adapter);
+    let surface_caps = surface.get_capabilities(&gpu.adapter);
     let surface_format = surface_caps
       .formats
       .iter()
