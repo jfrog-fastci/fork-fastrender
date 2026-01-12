@@ -11194,9 +11194,15 @@ fn async_bind_object_pattern_from(
     return Err(err);
   }
 
-  let keys = match rest_scope.ordinary_own_property_keys_with_tick(obj, || evaluator.tick()) {
+  let keys = match rest_scope.object_own_property_keys_with_host_and_hooks(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    obj,
+  ) {
     Ok(keys) => keys,
     Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut rest_scope, err);
       cleanup(&mut rest_scope, &mut excluded);
       return Err(err);
     }
@@ -11215,15 +11221,22 @@ fn async_bind_object_pattern_from(
       continue;
     }
 
-    let desc = match rest_scope.ordinary_get_own_property(obj, key) {
-      Ok(desc) => desc,
+    let desc = match rest_scope
+      .object_get_own_property_with_host_and_hooks(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        obj,
+        key,
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rest_scope, err))
+    {
+      Ok(Some(desc)) => desc,
+      Ok(None) => continue,
       Err(err) => {
         cleanup(&mut rest_scope, &mut excluded);
         return Err(err);
       }
-    };
-    let Some(desc) = desc else {
-      continue;
     };
     if !desc.enumerable {
       continue;

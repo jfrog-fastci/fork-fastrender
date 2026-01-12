@@ -314,6 +314,76 @@ fn await_in_object_pattern_default_uses_proxy_get_trap() -> Result<(), VmError> 
 }
 
 #[test]
+fn await_in_object_pattern_rest_uses_proxy_own_keys_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var log = [];
+      var out = -1;
+      var target = { b: 2 };
+      var handler = {
+        ownKeys: function (t) {
+          log.push("ownKeys");
+          return ["b"];
+        },
+        getOwnPropertyDescriptor: function (t, k) {
+          log.push("getOwnPropertyDescriptor:" + String(k));
+          return Object.getOwnPropertyDescriptor(t, k);
+        },
+        get: function (t, k, r) {
+          log.push("get:" + String(k));
+          return t[k];
+        },
+      };
+    "#,
+  )?;
+
+  let target = match rt.exec_script("target")? {
+    Value::Object(o) => o,
+    other => panic!("expected target object, got {other:?}"),
+  };
+  let handler = match rt.exec_script("handler")? {
+    Value::Object(o) => o,
+    other => panic!("expected handler object, got {other:?}"),
+  };
+
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(target))?;
+    scope.push_root(Value::Object(handler))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  // Pattern contains `await`, so async destructuring path is used.
+  let value = rt.exec_script(
+    r#"
+      async function f() {
+        const { a = await Promise.resolve("ignored"), ...r } = p;
+        return r.b;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_number(value), -1.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out_value = rt.exec_script("out")?;
+  assert_eq!(value_to_number(out_value), 2.0);
+
+  let log_value = rt.exec_script("log.join(',')")?;
+  let log_str = value_to_string(&rt, log_value);
+  assert!(log_str.contains("ownKeys"));
+  assert!(log_str.contains("get:b"));
+  Ok(())
+}
+
+#[test]
 fn await_in_array_pattern_default() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
