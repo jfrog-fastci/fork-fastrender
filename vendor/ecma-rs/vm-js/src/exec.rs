@@ -26056,6 +26056,199 @@ fn gen_resume_from_frames(
             frames: out_frames,
           }));
         }
+        Completion::Throw(thrown) => {
+          let reason = thrown.value;
+
+          // `yield*` abrupt resumption (`.throw(..)`) delegates to the iterator's `throw` method when
+          // present. If absent, the iterator is closed and a TypeError is thrown per ECMA-262.
+          scope.push_root(reason)?;
+
+          let throw_key_s = scope.alloc_string("throw")?;
+          scope.push_root(Value::String(throw_key_s))?;
+          let throw_key = PropertyKey::from_string(throw_key_s);
+
+          let throw_method = match crate::spec_ops::get_method_with_host_and_hooks(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            iterator_record.iterator,
+            throw_key,
+          ) {
+            Ok(m) => m,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let Some(throw_method) = throw_method else {
+            // No `throw` method: close then throw TypeError (yield* protocol violation).
+            if let Err(close_err) = iterator::iterator_close(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              &iterator_record,
+              iterator::CloseCompletionKind::NonThrow,
+            ) {
+              state = gen_error_to_completion(evaluator, scope, close_err)?;
+              continue;
+            }
+
+            let err = throw_type_error(
+              evaluator.vm,
+              scope,
+              "yield*: iterator does not have a throw method",
+            )?;
+            state = completion_from_expr_result(Err(err))?;
+            continue;
+          };
+
+          let call_args = [reason];
+          let iter_result = match evaluator.vm.call_with_host_and_hooks(
+            &mut *evaluator.host,
+            scope,
+            &mut *evaluator.hooks,
+            throw_method,
+            iterator_record.iterator,
+            &call_args,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let done = match iterator::iterator_complete(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let value = match iterator::iterator_value(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          if done {
+            state = Completion::normal(value);
+            continue;
+          }
+
+          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
+          gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
+          out_frames.append(&mut frames);
+          return Ok(GenEval::Suspend(GenSuspend {
+            yield_value: value,
+            frames: out_frames,
+          }));
+        }
+        Completion::Return(return_value) => {
+          // `yield*` abrupt resumption (`.return(..)`) delegates to the iterator's `return` method
+          // when present; otherwise the return completion is propagated out of the `yield*`
+          // expression.
+          scope.push_root(return_value)?;
+
+          let return_key_s = scope.alloc_string("return")?;
+          scope.push_root(Value::String(return_key_s))?;
+          let return_key = PropertyKey::from_string(return_key_s);
+
+          let return_method = match crate::spec_ops::get_method_with_host_and_hooks(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            iterator_record.iterator,
+            return_key,
+          ) {
+            Ok(m) => m,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let Some(return_method) = return_method else {
+            state = Completion::Return(return_value);
+            continue;
+          };
+
+          let call_args = [return_value];
+          let iter_result = match evaluator.vm.call_with_host_and_hooks(
+            &mut *evaluator.host,
+            scope,
+            &mut *evaluator.hooks,
+            return_method,
+            iterator_record.iterator,
+            &call_args,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let done = match iterator::iterator_complete(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let value = match iterator::iterator_value(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          if done {
+            state = Completion::Return(value);
+            continue;
+          }
+
+          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
+          gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
+          out_frames.append(&mut frames);
+          return Ok(GenEval::Suspend(GenSuspend {
+            yield_value: value,
+            frames: out_frames,
+          }));
+        }
         abrupt => state = abrupt,
       },
 
@@ -26677,6 +26870,14 @@ pub(crate) fn generator_resume(
       }
     },
     GeneratorState::SuspendedYield => {
+      // Root the resumption value across continuation rooting and any allocations performed while
+      // resuming generator execution. Values on the Rust stack are not traced by the GC.
+      let resume_value = match &input {
+        GeneratorResumeInput::Next(v) | GeneratorResumeInput::Return(v) => *v,
+        GeneratorResumeInput::Throw(err) => *err,
+      };
+      scope.push_root(resume_value)?;
+
       scope
         .heap_mut()
         .generator_set_state(gen_obj, GeneratorState::Executing)?;

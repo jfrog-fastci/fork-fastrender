@@ -147,6 +147,11 @@ glob = "language/expressions/**"
 status = "xfail"
 reason = "vm-js: ECMAScript semantics are still incomplete; tracked via curated test262 progress."
 
+# --- Generators (newly green) ---
+[[expectations]]
+glob = "language/statements/generators/**"
+status = "pass"
+
 # --- Additional curated suites (statements + built-ins) ---
 [[expectations]]
 glob = "language/statements/**"
