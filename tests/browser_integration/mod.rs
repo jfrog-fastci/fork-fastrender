@@ -88,6 +88,7 @@ mod ui_worker_hover_active;
 mod ui_worker_hover_cursor;
 mod ui_worker_interaction;
 mod ui_worker_keyboard;
+mod ui_worker_form_state_tab_switch;
 mod ui_worker_navigation_errors;
 mod ui_worker_navigation_messages;
 mod ui_worker_number_input;
