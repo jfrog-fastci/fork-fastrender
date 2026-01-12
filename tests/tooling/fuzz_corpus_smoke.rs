@@ -146,8 +146,7 @@ fn corpus_file_name(path: &Path) -> String {
     .to_string()
 }
 
-#[test]
-fn fuzz_corpus_smoke_test() {
+pub(crate) fn fuzz_corpus_smoke_test() {
   // Keep smoke runs deterministic and avoid spawning a large Rayon pool in CI.
   //
   // `fastrender` also disables layout/paint parallelism via per-render options, but initializing
