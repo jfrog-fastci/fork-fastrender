@@ -40,6 +40,7 @@ mod style_attr;
 mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
+pub use cross_document::AdoptedSubtree;
 
 pub use mutation_observer::{
   MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord,

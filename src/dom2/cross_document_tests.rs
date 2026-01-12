@@ -59,6 +59,37 @@ fn find_first_shadow_root(doc: &Document) -> NodeId {
     .expect("expected a ShadowRoot node")
 }
 
+fn count_subtree_nodes(doc: &Document, root: NodeId) -> usize {
+  let mut count = 0usize;
+  let mut stack: Vec<NodeId> = vec![root];
+  while let Some(id) = stack.pop() {
+    count += 1;
+    stack.extend_from_slice(&doc.node(id).children);
+  }
+  count
+}
+
+#[test]
+fn clone_basic_element_and_text_subtree_across_documents() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let div = src.create_element("div", HTML_NAMESPACE);
+  src.set_attribute(div, "class", "a").unwrap();
+  let text = src.create_text("hello");
+  src.append_child(div, text).unwrap();
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let cloned = dst.clone_node_from(&src, div, /* deep */ true).unwrap();
+
+  assert_eq!(dst.parent(cloned).unwrap(), None);
+  assert_eq!(dst.get_attribute(cloned, "class").unwrap(), Some("a"));
+
+  let children = dst.children(cloned).unwrap();
+  assert_eq!(children.len(), 1);
+  let child = children[0];
+  assert_eq!(dst.parent(child).unwrap(), Some(cloned));
+  assert_eq!(dst.text_data(child).unwrap(), "hello");
+}
+
 #[test]
 fn import_basic_element_and_text_subtree() {
   let mut src = Document::new(QuirksMode::NoQuirks);
@@ -76,6 +107,68 @@ fn import_basic_element_and_text_subtree() {
   let imported = dst.import_node_from(&src, div, /* deep */ true).unwrap();
   assert_eq!(dst.parent(imported).unwrap(), None);
   assert_subtree_kinds_match(&src, div, &dst, imported);
+}
+
+#[test]
+fn adopt_node_from_returns_mapping_and_detaches_source_subtree() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let src_root = src.root();
+
+  let div = src.create_element("div", HTML_NAMESPACE);
+  src.set_attribute(div, "id", "a").unwrap();
+  let span = src.create_element("span", HTML_NAMESPACE);
+  let text = src.create_text("hi");
+  src.append_child(span, text).unwrap();
+  src.append_child(div, span).unwrap();
+  src.append_child(src_root, div).unwrap();
+
+  let expected_size = count_subtree_nodes(&src, div);
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, div).unwrap();
+
+  assert_eq!(adopted.mapping.len(), expected_size);
+  assert_eq!(dst.parent(adopted.new_root).unwrap(), None);
+
+  assert!(
+    adopted
+      .mapping
+      .iter()
+      .any(|(old, new)| *old == div && *new == adopted.new_root),
+    "expected mapping to include adopted root"
+  );
+
+  assert!(!src.children(src_root).unwrap().contains(&div));
+  assert_eq!(src.parent(div).unwrap(), None);
+  assert_eq!(src.parent(span).unwrap(), None);
+  assert_eq!(src.parent(text).unwrap(), None);
+}
+
+#[test]
+fn create_doctype_can_be_inserted_under_document_root() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let doctype = doc.create_doctype("html", "", "");
+  assert!(matches!(
+    &doc.node(doctype).kind,
+    NodeKind::Doctype { name, .. } if name == "html"
+  ));
+
+  assert_eq!(doc.append_child(root, doctype).unwrap(), true);
+
+  let html = doc.create_element("html", HTML_NAMESPACE);
+  assert_eq!(doc.append_child(root, html).unwrap(), true);
+
+  let mut doc2 = Document::new(QuirksMode::NoQuirks);
+  let root2 = doc2.root();
+  let html2 = doc2.create_element("html", HTML_NAMESPACE);
+  doc2.append_child(root2, html2).unwrap();
+  let doctype_after = doc2.create_doctype("html", "", "");
+  assert_eq!(
+    doc2.append_child(root2, doctype_after),
+    Err(DomError::HierarchyRequestError)
+  );
 }
 
 #[test]

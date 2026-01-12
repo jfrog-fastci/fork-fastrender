@@ -594,6 +594,18 @@ impl Document {
     )
   }
 
+  pub fn create_doctype(&mut self, name: &str, public_id: &str, system_id: &str) -> NodeId {
+    self.push_node(
+      NodeKind::Doctype {
+        name: name.to_string(),
+        public_id: public_id.to_string(),
+        system_id: system_id.to_string(),
+      },
+      None,
+      /* inert_subtree */ false,
+    )
+  }
+
   pub fn text_data(&self, node: NodeId) -> Result<&str, DomError> {
     let node = self.node_checked(node)?;
     match &node.kind {

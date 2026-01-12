@@ -1,13 +1,11 @@
 use crate::dom::HTML_NAMESPACE;
 
-use rustc_hash::FxHashMap;
-
 use super::{Document, DomError, NodeId, NodeKind};
 
-#[derive(Debug)]
-pub(crate) struct CrossDocumentCloneResult {
-  pub(crate) root: NodeId,
-  pub(crate) mapping: Option<FxHashMap<NodeId, NodeId>>,
+#[derive(Debug, Clone)]
+pub struct AdoptedSubtree {
+  pub new_root: NodeId,
+  pub mapping: Vec<(NodeId, NodeId)>,
 }
 
 fn clone_node_shallow_from_other_document(
@@ -15,7 +13,6 @@ fn clone_node_shallow_from_other_document(
   src: &Document,
   src_id: NodeId,
   parent: Option<NodeId>,
-  mapping: Option<&mut FxHashMap<NodeId, NodeId>>,
 ) -> Result<NodeId, DomError> {
   src.node_checked(src_id)?;
 
@@ -47,6 +44,7 @@ fn clone_node_shallow_from_other_document(
     } else {
       false
     };
+
     let kind = match &node.kind {
       NodeKind::Document { quirks_mode } => {
         // A `dom2::Document` stores its primary document node at `Document::root()`, but cloning a
@@ -124,7 +122,8 @@ fn clone_node_shallow_from_other_document(
   let dst_id = dst.push_node(kind, parent, inert_subtree);
 
   // Preserve HTML parser flags that affect future parsing behavior.
-  dst.nodes[dst_id.index()].mathml_annotation_xml_integration_point = mathml_annotation_xml_integration_point;
+  dst.nodes[dst_id.index()].mathml_annotation_xml_integration_point =
+    mathml_annotation_xml_integration_point;
 
   if is_html_script {
     // HTML: script element cloning steps copy the "already started" flag only.
@@ -134,35 +133,28 @@ fn clone_node_shallow_from_other_document(
     dst.nodes[dst_id.index()].script_already_started = script_already_started;
   }
 
-  if let Some(mapping) = mapping {
-    mapping.insert(src_id, dst_id);
-  }
-
   Ok(dst_id)
 }
 
-pub(crate) fn clone_subtree_from_other_document(
+fn clone_subtree_from_other_document(
   dst: &mut Document,
   src: &Document,
   src_root: NodeId,
   dst_parent: Option<NodeId>,
   deep: bool,
-  emit_mapping: bool,
-) -> Result<CrossDocumentCloneResult, DomError> {
+  mut mapping: Option<&mut Vec<(NodeId, NodeId)>>,
+) -> Result<NodeId, DomError> {
   src.node_checked(src_root)?;
   if let Some(parent) = dst_parent {
     dst.node_checked(parent)?;
   }
 
-  let mut mapping: Option<FxHashMap<NodeId, NodeId>> =
-    emit_mapping.then(|| FxHashMap::with_capacity_and_hasher(1, Default::default()));
-
-  let dst_root = clone_node_shallow_from_other_document(dst, src, src_root, dst_parent, mapping.as_mut())?;
+  let dst_root = clone_node_shallow_from_other_document(dst, src, src_root, dst_parent)?;
+  if let Some(mapping) = mapping.as_mut() {
+    mapping.push((src_root, dst_root));
+  }
   if !deep {
-    return Ok(CrossDocumentCloneResult {
-      root: dst_root,
-      mapping,
-    });
+    return Ok(dst_root);
   }
 
   struct Frame {
@@ -190,8 +182,11 @@ pub(crate) fn clone_subtree_from_other_document(
     let parent_dst = frame.dst;
     stack.push(frame);
 
-    let child_dst =
-      clone_node_shallow_from_other_document(dst, src, child_src, Some(parent_dst), mapping.as_mut())?;
+    let child_dst = clone_node_shallow_from_other_document(dst, src, child_src, Some(parent_dst))?;
+    if let Some(mapping) = mapping.as_mut() {
+      mapping.push((child_src, child_dst));
+    }
+
     stack.push(Frame {
       src: child_src,
       dst: child_dst,
@@ -199,13 +194,26 @@ pub(crate) fn clone_subtree_from_other_document(
     });
   }
 
-  Ok(CrossDocumentCloneResult {
-    root: dst_root,
-    mapping,
-  })
+  Ok(dst_root)
 }
 
 impl Document {
+  /// Clone `node` from `src` into `self`, optionally cloning its descendant subtree.
+  ///
+  /// The returned node is always detached (`parent == None`) and belongs to `self`.
+  ///
+  /// Deep cloning is implemented iteratively to avoid recursion overflow on degenerate trees.
+  pub fn clone_node_from(&mut self, src: &Document, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
+    clone_subtree_from_other_document(
+      self,
+      src,
+      node,
+      /* dst_parent */ None,
+      deep,
+      /* mapping */ None,
+    )
+  }
+
   /// DOM `Document.importNode(node, deep)` equivalent for `dom2`.
   ///
   /// Imports (clones) `node` from a potentially different `src` `dom2::Document` into `self`.
@@ -230,16 +238,46 @@ impl Document {
       return Err(DomError::NotSupportedError);
     }
 
-    Ok(
+    self.clone_node_from(src, node, deep)
+  }
+
+  /// Adopt (move) `node` from `src` into `self`.
+  ///
+  /// This clones the subtree into `self` and returns the new root plus a stable old→new mapping so
+  /// embedding layers can preserve JS wrapper identity.
+  ///
+  /// The source subtree is detached in `src` by clearing parent pointers (dom2 has no deletion).
+  pub fn adopt_node_from(
+    &mut self,
+    src: &mut Document,
+    node: NodeId,
+  ) -> Result<AdoptedSubtree, DomError> {
+    src.node_checked(node)?;
+
+    // Detach the root using existing mutation APIs so mutation logs are recorded.
+    if let Some(old_parent) = src.nodes[node.index()].parent {
+      let _ = src.remove_child(old_parent, node)?;
+    }
+
+    let mut mapping: Vec<(NodeId, NodeId)> = Vec::new();
+    let new_root = {
+      let src_ref: &Document = &*src;
       clone_subtree_from_other_document(
         self,
-        src,
+        src_ref,
         node,
         /* dst_parent */ None,
-        deep,
-        /* emit_mapping */ false,
+        /* deep */ true,
+        Some(&mut mapping),
       )?
-      .root,
-    )
+    };
+
+    // Leave the old nodes detached. We intentionally do not attempt to delete nodes from `src`
+    // (dom2 has no deletion), but ensure the old subtree is no longer connected via parent pointers.
+    for (old, _) in &mapping {
+      src.nodes[old.index()].parent = None;
+    }
+
+    Ok(AdoptedSubtree { new_root, mapping })
   }
 }
