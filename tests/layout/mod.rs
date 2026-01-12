@@ -12,6 +12,7 @@ mod fixed_flex_auto_height_does_not_use_intrinsic_block_size;
 mod float_external_base_x;
 mod grid_column_shorthand_longhand_merge;
 mod html_body_percent_height;
+mod paged_media;
 mod image_missing_placeholder_does_not_scale_to_width;
 mod image_percent_height_missing_uses_alt_intrinsic;
 mod intrinsic_memoization_stress;

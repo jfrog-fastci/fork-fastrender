@@ -1,4 +1,11 @@
 //! Paged media / pagination regression tests.
+//!
+//! These tests run under the unified integration harness (`tests/integration.rs`). To run only
+//! this module, use the standard Rust test filter:
+//!
+//! ```bash
+//! cargo test --test integration paged_media
+//! ```
 
 use fastrender::api::FastRender;
 use fastrender::style::media::MediaType;

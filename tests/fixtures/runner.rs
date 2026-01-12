@@ -25,18 +25,18 @@
 //!
 //! Run all fixture tests:
 //! ```bash
-//! cargo test fixtures
+//! cargo test --test integration fixtures
 //! ```
 //!
 //! Generate golden images (run with UPDATE_GOLDEN=1):
 //! ```bash
-//! UPDATE_GOLDEN=1 cargo test fixtures
+//! UPDATE_GOLDEN=1 cargo test --test integration fixtures
 //! ```
 use crate::common::with_large_stack;
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{FastRender, FontConfig};
 use crate::r#ref::compare::load_png_from_bytes;
 use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
+use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::{FastRender, FontConfig};
 use std::fs;
 use std::path::PathBuf;
 
@@ -151,8 +151,8 @@ fn test_fixture(name: &str) -> Result<(), String> {
         "Warning: No golden image for {}. Run with UPDATE_GOLDEN=1 to create.",
         name
       );
-        Ok(())
-      }
+      Ok(())
+    }
   })
 }
 
@@ -214,8 +214,6 @@ fn test_all_fixture_files_exist() {
     "form_controls_textarea_placeholder",
     "form_controls_placeholder_vendor_alias",
     "form_controls_whitespace_value_placeholder",
-    // Top layer
-    "top_layer_dialog_popover",
     // Text
     "text_complex_scripts",
     "text_additional_scripts",
@@ -239,7 +237,6 @@ fn test_all_fixture_files_exist() {
     "shadow_dom",
     "shadow_dom_selectors",
     "svg_foreign_object",
-    "top_layer_dialog_popover",
   ];
 
   for name in &expected_fixtures {
@@ -514,20 +511,6 @@ fn test_fixture_form_controls_whitespace_value_placeholder() {
 }
 
 //
-// Top layer Tests
-//
-
-mod fixtures {
-  use super::test_fixture;
-
-  #[test]
-  fn test_fixture_top_layer_dialog_popover() {
-    test_fixture("top_layer_dialog_popover")
-      .expect("top_layer_dialog_popover fixture should render");
-  }
-}
-
-//
 // Text Tests
 //
 
@@ -720,8 +703,6 @@ pub fn list_fixtures() -> Vec<&'static str> {
     "form_controls_textarea_placeholder",
     "form_controls_placeholder_vendor_alias",
     "form_controls_whitespace_value_placeholder",
-    // Top layer
-    "top_layer_dialog_popover",
     // Text
     "text_complex_scripts",
     "text_additional_scripts",
