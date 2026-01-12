@@ -195,8 +195,7 @@ impl ProgramState {
     results: Vec<(BodyId, Arc<BodyCheckResult>)>,
   ) -> Result<Arc<[Diagnostic]>, FatalError> {
     for (body, res) in results {
-      self.body_results.insert(body, Arc::clone(&res));
-      self.typecheck_db.set_body_result(body, res);
+      self.cache_body_result(body, res);
     }
     if matches!(self.compiler_options.cache.mode, CacheMode::PerBody) {
       self.cache_stats.merge(&cache_stats);

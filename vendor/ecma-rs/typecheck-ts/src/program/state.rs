@@ -5,10 +5,10 @@ use crate::db::spans::expr_at_from_spans;
 use crate::semantic_js;
 use crate::{SymbolBinding, SymbolInfo, SymbolOccurrence};
 use ahash::AHashSet;
-use hir_js::ids::{MISSING_BODY, MISSING_DEF};
+use hir_js::ids::MISSING_BODY;
 use hir_js::{
   BodyKind as HirBodyKind, DefId as HirDefId, DefKind as HirDefKind, ExportKind as HirExportKind,
-  ExprKind as HirExprKind, LowerResult, NameId, PatId as HirPatId, PatKind as HirPatKind,
+  ExprKind as HirExprKind, LowerResult, PatId as HirPatId, PatKind as HirPatKind,
   VarDeclKind as HirVarDeclKind,
 };
 use parse_js::ast::class_or_object::{ClassMember, ClassOrObjVal};
@@ -32,10 +32,8 @@ use std::sync::Arc;
 use types_ts_interned::{self as tti, PropData, PropKey, Property, RelateCtx, TypeId, TypeParamId};
 
 use self::check::caches::{CheckerCacheStats, CheckerCaches};
-use self::check::flow_bindings::FlowBindings;
 use self::check::relate_hooks;
-use crate::check::expr::{resolve_call, resolve_construct};
-use crate::check::overload::{callable_signatures, CallArgType};
+use crate::check::overload::callable_signatures;
 use crate::check::type_expr::{TypeLowerer, TypeResolver};
 use crate::codes;
 use crate::db::queries::{var_initializer_in_file, VarInit};
@@ -162,7 +160,6 @@ struct ProgramState {
   semantics: Option<Arc<sem_ts::TsProgramSemantics>>,
   qualified_def_members: Arc<HashMap<(DefId, String, sem_ts::Namespace), DefId>>,
   body_results: HashMap<BodyId, Arc<BodyCheckResult>>,
-  checking_bodies: HashSet<BodyId>,
   symbol_to_def: HashMap<semantic_js::SymbolId, DefId>,
   symbol_occurrences: HashMap<FileId, Vec<SymbolOccurrence>>,
   local_symbol_info: BTreeMap<semantic_js::SymbolId, crate::db::symbols::LocalSymbolInfo>,
@@ -276,7 +273,6 @@ impl ProgramState {
       semantics: None,
       qualified_def_members: Arc::new(HashMap::new()),
       body_results: HashMap::new(),
-      checking_bodies: HashSet::new(),
       symbol_to_def: HashMap::new(),
       symbol_occurrences: HashMap::new(),
       local_symbol_info: BTreeMap::new(),
@@ -335,7 +331,6 @@ impl ProgramState {
     self.semantics = None;
     self.qualified_def_members = Arc::new(HashMap::new());
     self.body_results.clear();
-    self.checking_bodies.clear();
     self.symbol_to_def.clear();
     self.symbol_occurrences.clear();
     self.local_symbol_info.clear();
@@ -387,7 +382,6 @@ impl ProgramState {
     // by `expr_at`/`type_at`.
     self.body_results.clear();
     self.typecheck_db.clear_body_results();
-    self.checking_bodies.clear();
 
     // Internal body checker caches AST indexes per file; these depend on AST
     // pointer identity/spans, so drop them for the edited file.

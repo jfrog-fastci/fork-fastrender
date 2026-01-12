@@ -73,7 +73,7 @@ impl ProgramState {
       return Ok(unknown);
     };
 
-    let result = self.check_body(body_id)?;
+    let result = self.check_body_for_inference(body_id)?;
     Ok(result.pat_type(PatId(pat_id.0)).unwrap_or(unknown))
   }
 
@@ -317,61 +317,55 @@ impl ProgramState {
             None => None,
           };
 
-          let mut skip_implicit_any = false;
           let mut inferred = if let Some(t) = annotated {
             t
-           } else if let Some(init) = init {
-             if self.checking_bodies.contains(&init.body) {
-               skip_implicit_any = true;
-               prim.unknown
-             } else {
-               let res = self.check_body(init.body)?;
-               init_span_for_const = res.expr_span(init.expr);
+          } else if let Some(init) = init {
+            let res = self.check_body_for_inference(init.body)?;
+            init_span_for_const = res.expr_span(init.expr);
 
-               init_pat_is_root = init
-                 .pat
-                .map(|pat| {
-                  let meta = match self.body_map.get(&init.body) {
-                    Some(meta) => meta,
-                    None => return false,
-                  };
-                  let hir_id = match meta.hir {
-                    Some(id) => id,
-                    None => return false,
-                  };
-                  let lowered = match self.hir_lowered.get(&meta.file) {
-                    Some(lowered) => lowered,
-                    None => return false,
-                  };
-                  let hir_body = match lowered.body(hir_id) {
-                    Some(body) => body,
-                    None => return false,
-                  };
-                  for stmt in hir_body.stmts.iter() {
-                    if let hir_js::StmtKind::Var(decl) = &stmt.kind {
-                      for declarator in decl.declarators.iter() {
-                        if declarator.init == Some(init.expr) {
-                          return declarator.pat == pat;
-                        }
+            init_pat_is_root = init
+              .pat
+              .map(|pat| {
+                let meta = match self.body_map.get(&init.body) {
+                  Some(meta) => meta,
+                  None => return false,
+                };
+                let hir_id = match meta.hir {
+                  Some(id) => id,
+                  None => return false,
+                };
+                let lowered = match self.hir_lowered.get(&meta.file) {
+                  Some(lowered) => lowered,
+                  None => return false,
+                };
+                let hir_body = match lowered.body(hir_id) {
+                  Some(body) => body,
+                  None => return false,
+                };
+                for stmt in hir_body.stmts.iter() {
+                  if let hir_js::StmtKind::Var(decl) = &stmt.kind {
+                    for declarator in decl.declarators.iter() {
+                      if declarator.init == Some(init.expr) {
+                        return declarator.pat == pat;
                       }
                     }
                   }
-                  false
-                })
-                .unwrap_or(true);
+                }
+                false
+              })
+              .unwrap_or(true);
 
-              let init_ty_from_pat = init
-                .pat
-                .and_then(|pat| res.pat_type(pat))
-                .filter(|ty| !matches!(store.type_kind(store.canon(*ty)), tti::TypeKind::Unknown));
+            let init_ty_from_pat = init
+              .pat
+              .and_then(|pat| res.pat_type(pat))
+              .filter(|ty| !matches!(store.type_kind(store.canon(*ty)), tti::TypeKind::Unknown));
 
-              let init_ty = init_ty_from_pat.or_else(|| res.expr_type(init.expr));
-              if let Some(init_ty) = init_ty {
-                let init_ty = self.resolve_value_ref_type(init_ty)?;
-                store.canon(init_ty)
-              } else {
-                prim.unknown
-              }
+            let init_ty = init_ty_from_pat.or_else(|| res.expr_type(init.expr));
+            if let Some(init_ty) = init_ty {
+              let init_ty = self.resolve_value_ref_type(init_ty)?;
+              store.canon(init_ty)
+            } else {
+              prim.unknown
             }
           } else if let Some(ns_ty) = ns_ty {
             ns_ty
@@ -382,27 +376,26 @@ impl ProgramState {
           if const_like && init_pat_is_root {
             if let Some(init_span) = init_span_for_const {
               if let Some(file_body) = self.files.get(&def_data.file).and_then(|f| f.top_body) {
-                if let Some(res) = self.body_results.get(&file_body).cloned() {
-                  let top_ty = res
-                    .expr_spans()
-                    .iter()
-                    .enumerate()
-                    .find(|(_, span)| **span == init_span)
-                    .and_then(|(idx, _)| res.expr_type(ExprId(idx as u32)));
+                let res = self.check_body_for_inference(file_body)?;
+                let top_ty = res
+                  .expr_spans()
+                  .iter()
+                  .enumerate()
+                  .find(|(_, span)| **span == init_span)
+                  .and_then(|(idx, _)| res.expr_type(ExprId(idx as u32)));
 
-                  if let Some(top_ty) = top_ty {
-                    let has_readonly = match store.type_kind(top_ty) {
-                      tti::TypeKind::Object(obj) => {
-                        let shape = store.shape(store.object(obj).shape);
-                        shape.properties.iter().any(|p| p.data.readonly)
-                      }
-                      tti::TypeKind::Tuple(elems) => elems.iter().any(|e| e.readonly),
-                      _ => false,
-                    };
-
-                    if has_readonly {
-                      inferred = store.canon(top_ty);
+                if let Some(top_ty) = top_ty {
+                  let has_readonly = match store.type_kind(top_ty) {
+                    tti::TypeKind::Object(obj) => {
+                      let shape = store.shape(store.object(obj).shape);
+                      shape.properties.iter().any(|p| p.data.readonly)
                     }
+                    tti::TypeKind::Tuple(elems) => elems.iter().any(|e| e.readonly),
+                    _ => false,
+                  };
+
+                  if has_readonly {
+                    inferred = store.canon(top_ty);
                   }
                 }
               }
@@ -414,7 +407,6 @@ impl ProgramState {
               && !self.lib_file_ids.contains(&def_data.file)
               && self.file_kinds.get(&def_data.file) != Some(&FileKind::Dts));
           if no_implicit_any
-            && !skip_implicit_any
             && annotated.is_none()
             && matches!(
               store.type_kind(store.canon(inferred)),

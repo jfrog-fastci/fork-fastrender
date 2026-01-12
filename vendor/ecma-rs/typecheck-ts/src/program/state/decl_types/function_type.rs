@@ -17,10 +17,8 @@ impl ProgramState {
     if overloads.len() != 1 {
       return Ok(None);
     }
-    let mut ret = if self.checking_bodies.contains(&body) {
-      store.primitive_ids().unknown
-    } else {
-      let res = self.check_body(body)?;
+    let mut ret = {
+      let res = self.check_body_for_inference(body)?;
       if res.return_types.is_empty() {
         store.primitive_ids().void
       } else {
@@ -119,20 +117,16 @@ impl ProgramState {
       self.resolve_value_ref_type(ret)?
     } else if let Some(body) = func.body {
       self.check_cancelled()?;
-      if self.checking_bodies.contains(&body) {
-        prim.unknown
+      let res = self.check_body_for_inference(body)?;
+      if res.return_types.is_empty() {
+        prim.void
       } else {
-        let res = self.check_body(body)?;
-        if res.return_types.is_empty() {
-          prim.void
-        } else {
-          let mut widened = Vec::new();
-          for ty in res.return_types.iter() {
-            let ty = store.canon(*ty);
-            widened.push(check::widen::widen_literal(store.as_ref(), ty));
-          }
-          store.union(widened)
+        let mut widened = Vec::new();
+        for ty in res.return_types.iter() {
+          let ty = store.canon(*ty);
+          widened.push(check::widen::widen_literal(store.as_ref(), ty));
         }
+        store.union(widened)
       }
     } else {
       prim.unknown

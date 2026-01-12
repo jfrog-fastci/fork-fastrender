@@ -39,7 +39,8 @@ impl ProgramState {
       false,
       Some(self.query_stats.clone()),
     );
-    let context = Arc::new(self.build_body_check_context());
+    self.ensure_def_types_for_body_check_context();
+    let context = Arc::new(self.build_body_check_context_snapshot());
     self.cached_body_context = Some(CachedBodyCheckContext {
       decl_types_fingerprint: fingerprint,
       file_text_revision,
@@ -52,30 +53,42 @@ impl ProgramState {
     context
   }
 
-  fn build_body_check_context(&mut self) -> BodyCheckContext {
+  fn ensure_def_types_for_body_check_context(&mut self) {
     let store = Arc::clone(&self.store);
     let mut def_ids: Vec<_> = self.def_data.keys().copied().collect();
     def_ids.sort_by_key(|def| def.0);
-    for def in def_ids.into_iter() {
-      let needs_type = match self.interned_def_types.get(&def).copied() {
-        Some(existing) => {
-          matches!(store.type_kind(existing), tti::TypeKind::Unknown)
-            || callable_return_is_unknown(&store, existing)
+
+    let max_passes = def_ids.len().max(1).min(64);
+    for _ in 0..max_passes {
+      let mut changed = false;
+      for def in def_ids.iter().copied() {
+        let needs_type = match self.interned_def_types.get(&def).copied() {
+          Some(existing) => {
+            matches!(store.type_kind(existing), tti::TypeKind::Unknown)
+              || callable_return_is_unknown(&store, existing)
+          }
+          None => true,
+        };
+        if !needs_type {
+          continue;
         }
-        None => true,
-      };
-      if !needs_type {
-        continue;
-      }
-      if std::env::var("DEBUG_MEMBER").is_ok() {
-        if let Some(data) = self.def_data.get(&def) {
-          eprintln!("DEBUG_MEMBER recomputing def {} {:?}", data.name, def);
+        let before = self.interned_def_types.get(&def).copied().map(|t| store.canon(t));
+        if let Ok(ty) = self.type_of_def(def) {
+          let ty = store.canon(ty);
+          self.interned_def_types.insert(def, ty);
+          if before != Some(ty) {
+            changed = true;
+          }
         }
       }
-      if let Ok(ty) = self.type_of_def(def) {
-        self.interned_def_types.insert(def, store.canon(ty));
+      if !changed {
+        break;
       }
     }
+  }
+
+  pub(super) fn build_body_check_context_snapshot(&self) -> BodyCheckContext {
+    let store = Arc::clone(&self.store);
     let mut body_info = HashMap::new();
     for (id, meta) in self.body_map.iter() {
       body_info.insert(

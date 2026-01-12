@@ -68,9 +68,7 @@ impl Program {
         .entry(body)
         .or_insert_with(|| Arc::clone(&computed))
         .clone();
-      if !state.snapshot_loaded {
-        state.typecheck_db.set_body_result(body, Arc::clone(&res));
-      }
+      state.cache_body_result(body, Arc::clone(&res));
       Ok(res)
     })
   }
