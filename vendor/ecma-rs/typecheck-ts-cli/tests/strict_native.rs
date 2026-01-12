@@ -375,6 +375,112 @@ Reflect.apply(e, null, ["1"]);
 }
 
 #[test]
+fn strict_native_reports_forbidden_eval_via_reflect_apply_with_call_invoker_and_destructuring_alias_target(
+) {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval: unknown };
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { eval: e } = globalThis;
+Reflect.apply(Function.prototype.call, e, [null, "1"]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_prototype_mutation_via_reflect_apply_with_call_invoker_and_destructuring_alias_target(
+) {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { defineProperty: dp } = Object;
+Reflect.apply(Function.prototype.call, dp, [null, Foo, "prototype", {}]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
+fn strict_native_reports_forbidden_eval_via_reflect_apply_call_with_destructuring_alias_target() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval: unknown };
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { eval: e } = globalThis;
+Reflect.apply.call(Reflect, e, null, ["1"]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_prototype_mutation_via_reflect_apply_call_with_destructuring_alias_target() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { defineProperty: dp } = Object;
+Reflect.apply.call(Reflect, dp, null, [Foo, "prototype", {}]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
 fn strict_native_reports_forbidden_eval_via_reflect_apply_destructuring_alias_with_destructuring_alias_target(
 ) {
   let tmp = tempdir().expect("temp dir");

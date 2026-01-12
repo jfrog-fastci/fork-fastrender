@@ -3698,6 +3698,10 @@ pub fn validate_native_strict_body(
                           .copied()
                           .or_else(|| body.exprs.get(target_arg.0 as usize).map(|expr| expr.span))
                           .unwrap_or(callee_span);
+                        let target_alias_kind = semantic_destructured_aliases.resolve_expr(ExprRef {
+                          body: body_id,
+                          expr: target_arg,
+                        });
 
                         if expr_is_ident_or_global_this_member(
                           resolver,
@@ -3709,7 +3713,7 @@ pub fn validate_native_strict_body(
                           global_this_name,
                           eval_name,
                           "eval",
-                        ) {
+                        ) || matches!(target_alias_kind, Some(DestructuredAliasKind::Eval)) {
                           diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
                             "`eval` is forbidden when `native_strict` is enabled",
                             Span::new(file, target_span),
@@ -3725,7 +3729,7 @@ pub fn validate_native_strict_body(
                           global_this_name,
                           function_name,
                           "Function",
-                        ) {
+                        ) || matches!(target_alias_kind, Some(DestructuredAliasKind::Function)) {
                           diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                             "`Function` constructor is forbidden when `native_strict` is enabled",
                             Span::new(file, target_span),
@@ -3774,6 +3778,9 @@ pub fn validate_native_strict_body(
                           "Proxy",
                           revocable_name,
                           "revocable",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(DestructuredAliasKind::Proxy | DestructuredAliasKind::ProxyRevocable)
                         ) {
                           diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
                             "`Proxy` is forbidden when `native_strict` is enabled",
@@ -3867,7 +3874,12 @@ pub fn validate_native_strict_body(
                               .copied()
                               .or_else(|| body.exprs.get(called_target.0 as usize).map(|expr| expr.span))
                               .unwrap_or(target_span);
- 
+                            let called_target_alias_kind =
+                              semantic_destructured_aliases.resolve_expr(ExprRef {
+                                body: body_id,
+                                expr: called_target,
+                              });
+  
                             if expr_is_ident_or_global_this_member(
                               resolver,
                               &const_aliases,
@@ -3878,7 +3890,8 @@ pub fn validate_native_strict_body(
                               global_this_name,
                               eval_name,
                               "eval",
-                            ) {
+                            ) || matches!(called_target_alias_kind, Some(DestructuredAliasKind::Eval))
+                            {
                               diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
                                 "`eval` is forbidden when `native_strict` is enabled",
                                 Span::new(file, called_target_span),
@@ -3894,6 +3907,9 @@ pub fn validate_native_strict_body(
                               global_this_name,
                               function_name,
                               "Function",
+                            ) || matches!(
+                              called_target_alias_kind,
+                              Some(DestructuredAliasKind::Function)
                             ) {
                               diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                                 "`Function` constructor is forbidden when `native_strict` is enabled",
@@ -3943,6 +3959,9 @@ pub fn validate_native_strict_body(
                               "Proxy",
                               revocable_name,
                               "revocable",
+                            ) || matches!(
+                              called_target_alias_kind,
+                              Some(DestructuredAliasKind::Proxy | DestructuredAliasKind::ProxyRevocable)
                             ) {
                               diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
                                 "`Proxy` is forbidden when `native_strict` is enabled",
@@ -3974,6 +3993,11 @@ pub fn validate_native_strict_body(
                               "Reflect",
                               set_prototype_of_name,
                               "setPrototypeOf",
+                            ) || matches!(
+                              called_target_alias_kind,
+                              Some(
+                                DestructuredAliasKind::ObjectSetPrototypeOf | DestructuredAliasKind::ReflectSetPrototypeOf
+                              )
                             ) {
                               let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
                               diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
@@ -3994,6 +4018,9 @@ pub fn validate_native_strict_body(
                               "Object",
                               define_property_name,
                               "defineProperty",
+                            ) || matches!(
+                              called_target_alias_kind,
+                              Some(DestructuredAliasKind::ObjectDefineProperty)
                             );
                             let called_target_is_reflect_define_property = expr_is_builtin_member(
                               resolver,
@@ -4007,6 +4034,9 @@ pub fn validate_native_strict_body(
                               "Reflect",
                               define_property_name,
                               "defineProperty",
+                            ) || matches!(
+                              called_target_alias_kind,
+                              Some(DestructuredAliasKind::ReflectDefineProperty)
                             );
                             let called_target_is_object_define_properties = expr_is_builtin_member(
                               resolver,
@@ -4020,6 +4050,9 @@ pub fn validate_native_strict_body(
                               "Object",
                               define_properties_name,
                               "defineProperties",
+                            ) || matches!(
+                              called_target_alias_kind,
+                              Some(DestructuredAliasKind::ObjectDefineProperties)
                             );
                             let called_target_is_object_assign = expr_is_builtin_member(
                               resolver,
@@ -4033,6 +4066,9 @@ pub fn validate_native_strict_body(
                               "Object",
                               assign_name,
                               "assign",
+                            ) || matches!(
+                              called_target_alias_kind,
+                              Some(DestructuredAliasKind::ObjectAssign)
                             );
                             if called_target_is_object_define_property
                               || called_target_is_reflect_define_property
@@ -4149,6 +4185,11 @@ pub fn validate_native_strict_body(
                           "Reflect",
                           set_prototype_of_name,
                           "setPrototypeOf",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(
+                            DestructuredAliasKind::ObjectSetPrototypeOf | DestructuredAliasKind::ReflectSetPrototypeOf
+                          )
                         ) {
                           let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
                           diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
@@ -4169,6 +4210,9 @@ pub fn validate_native_strict_body(
                           "Object",
                           define_property_name,
                           "defineProperty",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(DestructuredAliasKind::ObjectDefineProperty)
                         );
                         let target_is_reflect_define_property = expr_is_builtin_member(
                           resolver,
@@ -4182,6 +4226,9 @@ pub fn validate_native_strict_body(
                           "Reflect",
                           define_property_name,
                           "defineProperty",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(DestructuredAliasKind::ReflectDefineProperty)
                         );
                         let target_is_object_define_properties = expr_is_builtin_member(
                           resolver,
@@ -4195,6 +4242,9 @@ pub fn validate_native_strict_body(
                           "Object",
                           define_properties_name,
                           "defineProperties",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(DestructuredAliasKind::ObjectDefineProperties)
                         );
                         let target_is_object_assign = expr_is_builtin_member(
                           resolver,
@@ -4208,6 +4258,9 @@ pub fn validate_native_strict_body(
                           "Object",
                           assign_name,
                           "assign",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(DestructuredAliasKind::ObjectAssign)
                         );
 
                         if target_is_object_define_property
@@ -4288,6 +4341,10 @@ pub fn validate_native_strict_body(
                           .copied()
                           .or_else(|| body.exprs.get(target_arg.0 as usize).map(|expr| expr.span))
                           .unwrap_or(callee_span);
+                        let target_alias_kind = semantic_destructured_aliases.resolve_expr(ExprRef {
+                          body: body_id,
+                          expr: target_arg,
+                        });
 
                         if expr_is_ident_or_global_this_member(
                           resolver,
@@ -4299,7 +4356,7 @@ pub fn validate_native_strict_body(
                           global_this_name,
                           function_name,
                           "Function",
-                        ) {
+                        ) || matches!(target_alias_kind, Some(DestructuredAliasKind::Function)) {
                           diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                             "`Function` constructor is forbidden when `native_strict` is enabled",
                             Span::new(file, target_span),
@@ -4336,7 +4393,7 @@ pub fn validate_native_strict_body(
                           global_this_name,
                           proxy_name,
                           "Proxy",
-                        ) {
+                        ) || matches!(target_alias_kind, Some(DestructuredAliasKind::Proxy)) {
                           diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
                             "`Proxy` is forbidden when `native_strict` is enabled",
                             Span::new(file, target_span),
@@ -5258,31 +5315,36 @@ pub fn validate_native_strict_body(
                     "bind",
                   );
                   if target_is_call_invoker || target_is_apply_invoker || target_is_bind_invoker {
-                    if let Some(called_target) =
-                      call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
-                    {
-                      let called_target_span = result
+                  if let Some(called_target) =
+                    call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                  {
+                    let called_target_span = result
                         .expr_spans
                         .get(called_target.0 as usize)
-                        .copied()
-                        .or_else(|| body.exprs.get(called_target.0 as usize).map(|expr| expr.span))
-                        .unwrap_or(target_span);
+                      .copied()
+                      .or_else(|| body.exprs.get(called_target.0 as usize).map(|expr| expr.span))
+                      .unwrap_or(target_span);
+                    let called_target_alias_kind =
+                      semantic_destructured_aliases.resolve_expr(ExprRef {
+                        body: body_id,
+                        expr: called_target,
+                      });
 
-                      if expr_is_ident_or_global_this_member(
-                        resolver,
-                        &const_aliases,
+                    if expr_is_ident_or_global_this_member(
+                      resolver,
+                      &const_aliases,
                         ExprRef {
                           body: body_id,
                           expr: called_target,
                         },
-                        global_this_name,
-                        eval_name,
-                        "eval",
-                      ) {
-                        diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
-                          "`eval` is forbidden when `native_strict` is enabled",
-                          Span::new(file, called_target_span),
-                        ));
+                      global_this_name,
+                      eval_name,
+                      "eval",
+                    ) || matches!(called_target_alias_kind, Some(DestructuredAliasKind::Eval)) {
+                      diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                        "`eval` is forbidden when `native_strict` is enabled",
+                        Span::new(file, called_target_span),
+                      ));
                       }
                       if expr_is_ident_or_global_this_member(
                         resolver,
@@ -5291,14 +5353,17 @@ pub fn validate_native_strict_body(
                           body: body_id,
                           expr: called_target,
                         },
-                        global_this_name,
-                        function_name,
-                        "Function",
-                      ) {
-                        diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
-                          "`Function` constructor is forbidden when `native_strict` is enabled",
-                          Span::new(file, called_target_span),
-                        ));
+                      global_this_name,
+                      function_name,
+                      "Function",
+                    ) || matches!(
+                      called_target_alias_kind,
+                      Some(DestructuredAliasKind::Function)
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                        "`Function` constructor is forbidden when `native_strict` is enabled",
+                        Span::new(file, called_target_span),
+                      ));
                       }
                       if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
                         resolver,
@@ -5328,26 +5393,29 @@ pub fn validate_native_strict_body(
                           body: body_id,
                           expr: called_target,
                         },
-                        global_this_name,
-                        proxy_name,
-                        "Proxy",
-                      ) || expr_is_builtin_member(
-                        resolver,
-                        &const_aliases,
+                      global_this_name,
+                      proxy_name,
+                      "Proxy",
+                    ) || expr_is_builtin_member(
+                      resolver,
+                      &const_aliases,
                         ExprRef {
                           body: body_id,
                           expr: called_target,
                         },
                         global_this_name,
                         proxy_name,
-                        "Proxy",
-                        revocable_name,
-                        "revocable",
-                      ) {
-                        diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
-                          "`Proxy` is forbidden when `native_strict` is enabled",
-                          Span::new(file, called_target_span),
-                        ));
+                      "Proxy",
+                      revocable_name,
+                      "revocable",
+                    ) || matches!(
+                      called_target_alias_kind,
+                      Some(DestructuredAliasKind::Proxy | DestructuredAliasKind::ProxyRevocable)
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                        "`Proxy` is forbidden when `native_strict` is enabled",
+                        Span::new(file, called_target_span),
+                      ));
                       }
 
                       if expr_is_builtin_member(
@@ -5371,14 +5439,19 @@ pub fn validate_native_strict_body(
                         },
                         global_this_name,
                         reflect_name,
-                        "Reflect",
-                        set_prototype_of_name,
-                        "setPrototypeOf",
-                      ) {
-                        let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
-                        diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
-                          "prototype mutation is forbidden when `native_strict` is enabled",
-                          Span::new(file, span),
+                      "Reflect",
+                      set_prototype_of_name,
+                      "setPrototypeOf",
+                    ) || matches!(
+                      called_target_alias_kind,
+                      Some(
+                        DestructuredAliasKind::ObjectSetPrototypeOf | DestructuredAliasKind::ReflectSetPrototypeOf
+                      )
+                    ) {
+                      let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                      diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                        "prototype mutation is forbidden when `native_strict` is enabled",
+                        Span::new(file, span),
                         ));
                       }
 
@@ -5394,6 +5467,9 @@ pub fn validate_native_strict_body(
                         "Object",
                         define_property_name,
                         "defineProperty",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::ObjectDefineProperty)
                       );
                       let mut called_target_is_reflect_define_property = expr_is_builtin_member(
                         resolver,
@@ -5407,6 +5483,9 @@ pub fn validate_native_strict_body(
                         "Reflect",
                         define_property_name,
                         "defineProperty",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::ReflectDefineProperty)
                       );
                       let mut called_target_is_object_define_properties = expr_is_builtin_member(
                         resolver,
@@ -5420,6 +5499,9 @@ pub fn validate_native_strict_body(
                         "Object",
                         define_properties_name,
                         "defineProperties",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::ObjectDefineProperties)
                       );
                       let mut called_target_is_object_assign = expr_is_builtin_member(
                         resolver,
@@ -5433,6 +5515,9 @@ pub fn validate_native_strict_body(
                         "Object",
                         assign_name,
                         "assign",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::ObjectAssign)
                       );
 
                       let mut bound_prefix: Vec<hir_js::ExprId> = Vec::new();
@@ -5449,64 +5534,81 @@ pub fn validate_native_strict_body(
                               if let Some(bound_callee) =
                                 body.exprs.get(bound_call.callee.0 as usize)
                               {
-                                if let ExprKind::Member(bound_member) = &bound_callee.kind {
-                                  let prop_is_bind =
-                                    object_key_is_ident(&bound_member.property, bind_name)
-                                      || object_key_is_string(&bound_member.property, "bind")
-                                      || object_key_is_literal_string(body, &bound_member.property, "bind");
-                                  if prop_is_bind {
-                                    let bound_is_object_define_property = expr_is_builtin_member(
-                                      resolver,
-                                      &const_aliases,
-                                      ExprRef {
+                                  if let ExprKind::Member(bound_member) = &bound_callee.kind {
+                                    let prop_is_bind =
+                                      object_key_is_ident(&bound_member.property, bind_name)
+                                        || object_key_is_string(&bound_member.property, "bind")
+                                        || object_key_is_literal_string(body, &bound_member.property, "bind");
+                                    if prop_is_bind {
+                                      let bound_object_alias_kind =
+                                        semantic_destructured_aliases.resolve_expr(ExprRef {
+                                          body: body_id,
+                                          expr: bound_member.object,
+                                        });
+                                      let bound_is_object_define_property = expr_is_builtin_member(
+                                        resolver,
+                                        &const_aliases,
+                                        ExprRef {
                                         body: body_id,
                                         expr: bound_member.object,
                                       },
                                       global_this_name,
-                                      object_name,
-                                      "Object",
-                                      define_property_name,
-                                      "defineProperty",
-                                    );
-                                    let bound_is_reflect_define_property = expr_is_builtin_member(
-                                      resolver,
-                                      &const_aliases,
-                                      ExprRef {
+                                        object_name,
+                                        "Object",
+                                        define_property_name,
+                                        "defineProperty",
+                                      ) || matches!(
+                                        bound_object_alias_kind,
+                                        Some(DestructuredAliasKind::ObjectDefineProperty)
+                                      );
+                                      let bound_is_reflect_define_property = expr_is_builtin_member(
+                                        resolver,
+                                        &const_aliases,
+                                        ExprRef {
                                         body: body_id,
                                         expr: bound_member.object,
                                       },
                                       global_this_name,
-                                      reflect_name,
-                                      "Reflect",
-                                      define_property_name,
-                                      "defineProperty",
-                                    );
-                                    let bound_is_object_define_properties = expr_is_builtin_member(
-                                      resolver,
-                                      &const_aliases,
-                                      ExprRef {
+                                        reflect_name,
+                                        "Reflect",
+                                        define_property_name,
+                                        "defineProperty",
+                                      ) || matches!(
+                                        bound_object_alias_kind,
+                                        Some(DestructuredAliasKind::ReflectDefineProperty)
+                                      );
+                                      let bound_is_object_define_properties = expr_is_builtin_member(
+                                        resolver,
+                                        &const_aliases,
+                                        ExprRef {
                                         body: body_id,
                                         expr: bound_member.object,
                                       },
                                       global_this_name,
-                                      object_name,
-                                      "Object",
-                                      define_properties_name,
-                                      "defineProperties",
-                                    );
-                                    let bound_is_object_assign = expr_is_builtin_member(
-                                      resolver,
-                                      &const_aliases,
-                                      ExprRef {
+                                        object_name,
+                                        "Object",
+                                        define_properties_name,
+                                        "defineProperties",
+                                      ) || matches!(
+                                        bound_object_alias_kind,
+                                        Some(DestructuredAliasKind::ObjectDefineProperties)
+                                      );
+                                      let bound_is_object_assign = expr_is_builtin_member(
+                                        resolver,
+                                        &const_aliases,
+                                        ExprRef {
                                         body: body_id,
                                         expr: bound_member.object,
                                       },
                                       global_this_name,
-                                      object_name,
-                                      "Object",
-                                      assign_name,
-                                      "assign",
-                                    );
+                                        object_name,
+                                        "Object",
+                                        assign_name,
+                                        "assign",
+                                      ) || matches!(
+                                        bound_object_alias_kind,
+                                        Some(DestructuredAliasKind::ObjectAssign)
+                                      );
                                     if bound_is_object_define_property
                                       || bound_is_reflect_define_property
                                       || bound_is_object_define_properties
