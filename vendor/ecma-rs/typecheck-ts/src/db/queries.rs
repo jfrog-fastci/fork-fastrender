@@ -1399,6 +1399,7 @@ pub mod body_check {
   };
 
   use crate::check::caches::{CheckerCacheStats, CheckerCaches};
+  use crate::check::decls::HirDeclLowerer;
   use crate::check::hir_body::{
     check_body_with_env_tables_with_bindings, check_body_with_expander, BindingTypeResolver,
     BodyThisSuperContext,
@@ -1945,6 +1946,9 @@ pub mod body_check {
       let mut expr_value_overrides: HashMap<TextRange, TypeId> = HashMap::new();
       if !body.exprs.is_empty() {
         let mut cached_def_types: HashMap<DefId, TypeId> = HashMap::new();
+        let mut local_defs: Option<HashMap<String, DefId>> = None;
+        let file_key = ctx.file_registry.lookup_key(meta.file);
+        let key_to_id = |key: &crate::FileKey| ctx.file_registry.lookup_id(key);
         for (idx, expr) in body.exprs.iter().enumerate() {
           if idx % 4096 == 0 && ctx.cancelled.load(Ordering::Relaxed) {
             panic_any(crate::FatalError::Cancelled);
@@ -1966,9 +1970,7 @@ pub mod body_check {
               expr_value_overrides.insert(expr.span, ty);
             }
             hir_js::ExprKind::ClassExpr { def, .. } => {
-              let Some(value_def) = ctx.value_defs.get(&def).copied() else {
-                continue;
-              };
+              let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
               let ty = if let Some(ty) = cached_def_types.get(&value_def).copied() {
                 ty
               } else {
@@ -1977,11 +1979,55 @@ pub mod body_check {
                   .get(&value_def)
                   .copied()
                   .unwrap_or(prim.unknown);
-                let ty = if ctx.store.contains_type_id(raw) {
+                let mut ty = if ctx.store.contains_type_id(raw) {
                   ctx.store.canon(raw)
                 } else {
                   prim.unknown
                 };
+
+                // Some bodies (e.g. files containing only expression statements)
+                // do not seed `interned_def_types` for nested class-expression
+                // defs. Fall back to lowering the class definition's declared
+                // *value* type so downstream `new (...)()` and static member
+                // access can be checked in the base checker.
+                if ty == prim.unknown {
+                  if let Some(hir_def) = lowered.def(def) {
+                    if let Some(type_info) = hir_def.type_info.as_ref() {
+                      let local_defs = local_defs.get_or_insert_with(|| {
+                        let mut defs = HashMap::new();
+                        for def in lowered.defs.iter() {
+                          if let Some(name) = lowered.names.resolve(def.name) {
+                            defs.insert(name.to_string(), def.id);
+                          }
+                        }
+                        defs
+                      });
+                      let mut diagnostics = Vec::new();
+                      let mut lowerer = HirDeclLowerer::new(
+                        Arc::clone(&ctx.store),
+                        &lowered.types,
+                        ctx.semantics.as_deref(),
+                        HashMap::new(),
+                        meta.file,
+                        file_key.clone(),
+                        strict_native,
+                        local_defs.clone(),
+                        &mut diagnostics,
+                        None,
+                        None,
+                        Some(ctx.host.as_ref()),
+                        Some(&key_to_id),
+                        Some(ctx.module_namespace_defs.as_ref()),
+                        Some(ctx.value_defs.as_ref()),
+                      );
+                      ty = lowerer
+                        .lower_class_instance_and_value_types(def, type_info, &lowered.names)
+                        .map(|(_, value, _)| ctx.store.canon(value))
+                        .unwrap_or(prim.unknown);
+                    }
+                  }
+                }
+
                 cached_def_types.insert(value_def, ty);
                 ty
               };

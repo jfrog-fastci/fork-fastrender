@@ -3636,7 +3636,17 @@ impl<'a> Checker<'a> {
         .expr_value_overrides
         .and_then(|overrides| overrides.get(&loc_to_range(self.file, expr.loc)).copied())
         .unwrap_or_else(|| self.function_type(&func.stx.func)),
-      AstExpr::Class(_class_expr) => {
+      AstExpr::Class(class_expr) => {
+        // Class evaluation expressions (`extends`, decorators) need to be checked
+        // in the current lexical scope. The class body itself is checked via its
+        // own `BodyKind::Class` body check.
+        for decorator in class_expr.stx.decorators.iter() {
+          let _ = self.check_expr(&decorator.stx.expression);
+        }
+        if let Some(extends) = class_expr.stx.extends.as_ref() {
+          let _ = self.check_expr(extends);
+        }
+
         let range = loc_to_range(self.file, expr.loc);
         if let Some(ty) = self
           .expr_value_overrides

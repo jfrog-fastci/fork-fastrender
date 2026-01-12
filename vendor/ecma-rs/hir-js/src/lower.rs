@@ -4933,6 +4933,17 @@ fn collect_expr<'a>(
   ctx: &mut LoweringContext,
 ) {
   match &*expr.stx {
+    AstExpr::Instantiation(inst) => {
+      collect_expr(
+        &inst.stx.expression,
+        descriptors,
+        module_items,
+        names,
+        ambient,
+        in_global,
+        ctx,
+      );
+    }
     AstExpr::Func(f) => {
       let (name_id, name_text) = name_from_optional(&f.stx.name, names);
       let mut desc = DefDescriptor::new(
@@ -5097,6 +5108,28 @@ fn collect_expr<'a>(
       );
       collect_expr(
         &bin.stx.right,
+        descriptors,
+        module_items,
+        names,
+        ambient,
+        in_global,
+        ctx,
+      );
+    }
+    AstExpr::Unary(unary) => {
+      collect_expr(
+        &unary.stx.argument,
+        descriptors,
+        module_items,
+        names,
+        ambient,
+        in_global,
+        ctx,
+      );
+    }
+    AstExpr::UnaryPostfix(post) => {
+      collect_expr(
+        &post.stx.argument,
         descriptors,
         module_items,
         names,
