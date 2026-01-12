@@ -90,6 +90,7 @@ pub(crate) fn resolve_module_specifier(
     ResolveOptions {
       node_modules: true,
       package_imports: true,
+      ..Default::default()
     },
   );
   let from_path = Path::new(from.as_str());
