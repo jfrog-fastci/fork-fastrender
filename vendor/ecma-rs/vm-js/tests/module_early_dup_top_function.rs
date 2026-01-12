@@ -15,6 +15,7 @@ fn assert_module_syntax_error(source: &str) {
 // - language/module-code/parse-err-hoist-lex-fun.js
 // - language/module-code/parse-err-hoist-lex-gen.js
 // - language/module-code/early-lex-and-var.js
+// - language/module-code/early-dup-lex.js
 #[test]
 fn rejects_duplicate_top_level_function_decls() {
   assert_module_syntax_error(
@@ -91,6 +92,16 @@ fn rejects_let_and_top_level_function_name_collision() {
     r#"
       let f;
       function f() {}
+    "#,
+  );
+}
+
+#[test]
+fn rejects_duplicate_lexical_names_in_module_scope() {
+  assert_module_syntax_error(
+    r#"
+      let x;
+      const x = 0;
     "#,
   );
 }
