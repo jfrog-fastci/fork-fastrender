@@ -23,8 +23,8 @@ Usage:
   vendor/ecma-rs/scripts/native_js_link_linux.sh --out <output> [--no-gc-sections] -- <obj>...
 
 Environment:
-  NATIVE_JS_CLANG        (default: clang-18)
-  NATIVE_JS_OBJCOPY      (default: llvm-objcopy-18)
+  NATIVE_JS_CLANG        (default: clang-18/clang)
+  NATIVE_JS_OBJCOPY      (default: llvm-objcopy-18/llvm-objcopy)
 
 Notes:
   - This script is Linux-only.
@@ -39,6 +39,16 @@ fi
 
 out=""
 gc_sections=1
+
+pick_cmd() {
+  for c in "$@"; do
+    if command -v "${c}" >/dev/null 2>&1; then
+      echo "${c}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,20 +84,37 @@ if [[ -z "${out}" || $# -eq 0 ]]; then
   exit 2
 fi
 
-clang="${NATIVE_JS_CLANG:-clang-18}"
-objcopy="${NATIVE_JS_OBJCOPY:-llvm-objcopy-18}"
+clang="${NATIVE_JS_CLANG:-}"
+if [[ -z "${clang}" ]]; then
+  if ! clang="$(pick_cmd clang-18 clang)"; then
+    echo "error: missing clang (expected clang-18 or clang in PATH)" >&2
+    exit 2
+  fi
+fi
+objcopy="${NATIVE_JS_OBJCOPY:-}"
+if [[ -z "${objcopy}" ]]; then
+  if ! objcopy="$(pick_cmd llvm-objcopy-18 llvm-objcopy)"; then
+    echo "error: missing llvm-objcopy (expected llvm-objcopy-18 or llvm-objcopy in PATH)" >&2
+    exit 2
+  fi
+fi
 
-lld_fuse="lld"
+lld_fuse=""
 if command -v ld.lld-18 >/dev/null 2>&1; then
   lld_fuse="lld-18"
+elif command -v ld.lld >/dev/null 2>&1; then
+  lld_fuse="lld"
+else
+  echo "error: missing lld (expected ld.lld-18 or ld.lld in PATH; install lld-18)" >&2
+  exit 2
 fi
 
 if ! command -v "${clang}" >/dev/null 2>&1; then
-  echo "error: missing ${clang} (install clang-18)" >&2
+  echo "error: missing ${clang} (expected clang-18 or clang in PATH)" >&2
   exit 2
 fi
 if ! command -v "${objcopy}" >/dev/null 2>&1; then
-  echo "error: missing ${objcopy} (install llvm-18)" >&2
+  echo "error: missing ${objcopy} (expected llvm-objcopy-18 or llvm-objcopy in PATH)" >&2
   exit 2
 fi
 if ! command -v readelf >/dev/null 2>&1; then

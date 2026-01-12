@@ -56,15 +56,15 @@ fn linux_pie_stackmaps_link_succeeds_without_textrels() {
     eprintln!("skipping: clang-18 not found in PATH");
     return;
   }
-  // The link driver script uses `clang-18 -fuse-ld=lld`, which requires an `ld.lld` linker driver
-  // to be installed. Some minimal CI/agent images ship clang without lld, in which case clang
-  // errors out with "invalid linker name".
-  if !tool_exists("ld.lld") {
-    eprintln!("skipping: ld.lld not found in PATH (install lld)");
+  // The link driver script uses `clang -fuse-ld=lld{,-18}`, which requires an `ld.lld{,-18}`
+  // linker driver to be installed. Some minimal CI/agent images ship clang without lld, in which
+  // case clang errors out with "invalid linker name".
+  if !tool_exists("ld.lld-18") && !tool_exists("ld.lld") {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return;
   }
-  if !tool_exists("llvm-objcopy-18") {
-    eprintln!("skipping: llvm-objcopy-18 not found in PATH");
+  if !tool_exists("llvm-objcopy-18") && !tool_exists("llvm-objcopy") {
+    eprintln!("skipping: llvm-objcopy not found in PATH (expected `llvm-objcopy-18` or `llvm-objcopy`)");
     return;
   }
   if !tool_exists("readelf") {
