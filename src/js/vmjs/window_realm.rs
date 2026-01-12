@@ -8897,10 +8897,12 @@ fn remove_listener_root_if_unused(
 /// This is used by host-driven DOM event dispatch (e.g. UI click handling) so that Rust events
 /// dispatched via [`web_events::dispatch_event`] can invoke JS listeners.
 ///
-/// Note: Unlike JS-driven `dispatchEvent(e)`, this adapter synthesizes a JS `Event` object for each
-/// listener invocation. This is sufficient for `preventDefault()`/propagation control (which
-/// mutate the shared Rust [`web_events::Event`]) and keeps the invoker independent from any
-/// long-lived `vm-js` scope borrows.
+/// Note: Unlike JS-driven `dispatchEvent(e)`, host-driven dispatch starts from a Rust
+/// [`web_events::Event`]. To match DOM semantics (shared event identity/state across listeners) we
+/// synthesize a JS `Event`/`CustomEvent` object **once per dispatch** (via
+/// [`WindowRealmDomEventListenerInvoker::with_dispatch_event_object`]) and reuse it across all
+/// listener invocations, syncing per-listener fields (`currentTarget`, `eventPhase`, etc) before
+/// each callback.
 pub(crate) struct WindowRealmDomEventListenerInvoker<Host: WindowRealmHost + 'static> {
   /// Pointer to the owning executor's `Option<WindowRealm>` slot.
   ///
@@ -8926,7 +8928,19 @@ pub(crate) struct WindowRealmDomEventListenerInvoker<Host: WindowRealmHost + 'st
   /// [`WindowRealmDomEventListenerInvoker::with_event_loop`], and `invoke` forwards it into the
   /// `VmJsEventLoopHooks` payload so Web APIs like `queueMicrotask` can enqueue work.
   event_loop: Option<NonNull<EventLoop<Host>>>,
+  /// Stack of per-dispatch JS `Event` objects installed via
+  /// [`WindowRealmDomEventListenerInvoker::with_dispatch_event_object`].
+  ///
+  /// Host-driven dispatch reuses the same JS object identity for all listeners in a single
+  /// dispatch. We root the object in the heap so it remains valid across `invoke(..)` calls (each of
+  /// which creates a fresh `Scope`). A stack supports nested/re-entrant dispatch.
+  dispatch_event_object_stack: Vec<ActiveDispatchEventObject>,
   _marker: PhantomData<fn() -> Host>,
+}
+
+struct ActiveDispatchEventObject {
+  event_obj: GcObject,
+  root_id: vm_js::RootId,
 }
 
 impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
@@ -8940,6 +8954,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       vm_host,
       webidl_bindings_host,
       event_loop: None,
+      dispatch_event_object_stack: Vec::new(),
       _marker: PhantomData,
     }
   }
@@ -8965,6 +8980,93 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     let mut guard = EventLoopSwapGuard {
       invoker: self,
       prev,
+    };
+    f(&mut *guard.invoker)
+  }
+
+  pub(crate) fn with_dispatch_event_object<R>(
+    &mut self,
+    event: &web_events::Event,
+    f: impl FnOnce(&mut Self) -> Result<R, web_events::DomError>,
+  ) -> Result<R, web_events::DomError> {
+    struct DispatchEventObjectGuard<'a, Host: WindowRealmHost + 'static> {
+      invoker: &'a mut WindowRealmDomEventListenerInvoker<Host>,
+      root_id: vm_js::RootId,
+      event_obj: GcObject,
+    }
+
+    impl<Host: WindowRealmHost + 'static> Drop for DispatchEventObjectGuard<'_, Host> {
+      fn drop(&mut self) {
+        let popped = self.invoker.dispatch_event_object_stack.pop();
+        debug_assert!(popped.is_some_and(|p| p.event_obj == self.event_obj));
+        // Best-effort: if the realm was torn down during dispatch we cannot remove the root, but
+        // the heap is also gone so there is nothing to clean up.
+        let Some(realm) = unsafe { &mut *self.invoker.realm }.as_mut() else {
+          return;
+        };
+        realm.heap_mut().remove_root(self.root_id);
+      }
+    }
+
+    let maybe_obj_and_root: Result<Option<(GcObject, vm_js::RootId)>, web_events::DomError> = (|| {
+      // SAFETY: `BrowserTabHost` stores the returned invoker alongside the owning executor, so the
+      // pointer remains valid for the lifetime of the host. Dispatch is single-threaded and
+      // non-reentrant with respect to other `WindowRealm` borrows.
+      let Some(realm) = unsafe { &mut *self.realm }.as_mut() else {
+        // No JS realm to allocate the object in.
+        return Ok(None);
+      };
+
+      // Host-driven dispatch is a new JS "turn": clear any prior termination state so prototype
+      // lookup/allocation can run even if the previous turn ended due to a budget/interrupt.
+      realm.reset_interrupt();
+
+      let realm_id = realm.realm_id;
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+
+      let window_obj = realm_ref.global_object();
+      scope
+        .push_root(Value::Object(window_obj))
+        .map_err(|e| web_events::DomError::new(e.to_string()))?;
+      let document_key =
+        alloc_key(&mut scope, "document").map_err(|e| web_events::DomError::new(e.to_string()))?;
+      let document_obj = match vm
+        .get(&mut scope, window_obj, document_key)
+        .map_err(|e| web_events::DomError::new(e.to_string()))?
+      {
+        Value::Object(obj) => obj,
+        _ => return Ok(None),
+      };
+
+      let event_obj = Self::alloc_js_event_object(&mut scope, document_obj, event)
+        .map_err(|e| web_events::DomError::new(e.to_string()))?;
+      // `add_root` can allocate/GC, so protect the newly created object first.
+      scope
+        .push_root(Value::Object(event_obj))
+        .map_err(|e| web_events::DomError::new(e.to_string()))?;
+      let root_id = scope
+        .heap_mut()
+        .add_root(Value::Object(event_obj))
+        .map_err(|e| web_events::DomError::new(e.to_string()))?;
+      Ok(Some((event_obj, root_id)))
+    })();
+
+    let Some((event_obj, root_id)) = maybe_obj_and_root? else {
+      return f(self);
+    };
+
+    self
+      .dispatch_event_object_stack
+      .push(ActiveDispatchEventObject { event_obj, root_id });
+    let mut guard = DispatchEventObjectGuard {
+      invoker: self,
+      root_id,
+      event_obj,
     };
     f(&mut *guard.invoker)
   }
@@ -9103,8 +9205,11 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     state_guard.event.current_target = Some(target);
     state_guard.event.event_phase = web_events::EventPhase::AtTarget;
 
-    let event_obj = Self::alloc_js_event_object(&mut scope, document_obj, state_guard.event)
-      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let event_obj = match self.dispatch_event_object_stack.last() {
+      Some(active) => active.event_obj,
+      None => Self::alloc_js_event_object(&mut scope, document_obj, state_guard.event)
+        .map_err(|e| web_events::DomError::new(e.to_string()))?,
+    };
     scope
       .push_root(Value::Object(event_obj))
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
@@ -9591,8 +9696,11 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker
       return Ok(());
     };
 
-    let event_obj = Self::alloc_js_event_object(&mut scope, document_obj, event)
-      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let event_obj = match self.dispatch_event_object_stack.last() {
+      Some(active) => active.event_obj,
+      None => Self::alloc_js_event_object(&mut scope, document_obj, event)
+        .map_err(|e| web_events::DomError::new(e.to_string()))?,
+    };
     scope
       .push_root(Value::Object(event_obj))
       .map_err(|e| web_events::DomError::new(e.to_string()))?;

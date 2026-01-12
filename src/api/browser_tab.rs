@@ -605,14 +605,30 @@ impl BrowserTabHost {
 
   fn dispatch_dom_event(&mut self, target: EventTargetId, mut event: Event) -> Result<bool> {
     let dom: &crate::dom2::Document = self.document.dom();
-    crate::web::events::dispatch_event(
-      target,
-      &mut event,
-      dom,
-      dom.events(),
-      self.event_invoker.as_mut(),
-    )
-    .map_err(|err| Error::Other(err.to_string()))
+    let event_invoker = &mut self.event_invoker;
+    if let Some(invoker) = event_invoker
+      .as_any_mut()
+      .and_then(|any| any.downcast_mut::<crate::js::window_realm::WindowRealmDomEventListenerInvoker<Self>>())
+    {
+      let mut event_for_event_obj = Event::new(
+        event.type_.clone(),
+        EventInit {
+          bubbles: event.bubbles,
+          cancelable: event.cancelable,
+          composed: event.composed,
+        },
+      );
+      event_for_event_obj.detail = event.detail.clone();
+      event_for_event_obj.storage = event.storage.clone();
+      return invoker
+        .with_dispatch_event_object(&event_for_event_obj, |invoker| {
+          crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
+        })
+        .map_err(|err| Error::Other(err.to_string()));
+    }
+
+    crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), event_invoker.as_mut())
+      .map_err(|err| Error::Other(err.to_string()))
   }
 
   fn dispatch_dom_event_in_event_loop(
@@ -628,23 +644,36 @@ impl BrowserTabHost {
       any.downcast_mut::<crate::js::window_realm::WindowRealmDomEventListenerInvoker<Self>>()
     }) {
       return invoker.with_event_loop(event_loop, |invoker| {
-        crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
-          .map_err(|err| Error::Other(err.to_string()))?;
-        // Mirror the dispatchEvent() behavior for host-driven dispatch: after listener dispatch,
-        // invoke `target["on" + type]` (if callable) so Window/Document handler properties like
-        // `document.onvisibilitychange` are observable for platform-triggered events.
-        //
-        // Note: this intentionally only invokes the EventHandler property on the *dispatch target*,
-        // not on ancestors in the propagation path.
-        if matches!(
-          target,
-          EventTargetId::Window | EventTargetId::Document | EventTargetId::Node(_)
-        ) {
-          invoker
-            .invoke_event_handler_property(target, &mut event)
-            .map_err(|err| Error::Other(err.to_string()))?;
-        }
-        Ok(!event.default_prevented)
+        let mut event_for_event_obj = Event::new(
+          event.type_.clone(),
+          EventInit {
+            bubbles: event.bubbles,
+            cancelable: event.cancelable,
+            composed: event.composed,
+          },
+        );
+        event_for_event_obj.detail = event.detail.clone();
+        event_for_event_obj.storage = event.storage.clone();
+        invoker
+          .with_dispatch_event_object(&event_for_event_obj, |invoker| {
+            crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)?;
+
+            // Mirror the dispatchEvent() behavior for host-driven dispatch: after listener dispatch,
+            // invoke `target["on" + type]` (if callable) so Window/Document handler properties like
+            // `document.onvisibilitychange` are observable for platform-triggered events.
+            //
+            // Note: this intentionally only invokes the EventHandler property on the *dispatch target*,
+            // not on ancestors in the propagation path.
+            if matches!(
+              target,
+              EventTargetId::Window | EventTargetId::Document | EventTargetId::Node(_)
+            ) {
+              invoker.invoke_event_handler_property(target, &mut event)?;
+            }
+
+            Ok(!event.default_prevented)
+          })
+          .map_err(|err| Error::Other(err.to_string()))
       });
     }
 
@@ -8800,6 +8829,72 @@ mod tests {
       realm.exec_script("globalThis.__x").map_err(|err| Error::Other(err.to_string()))?
     };
     assert_eq!(x, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn host_dispatched_click_event_reuses_single_js_event_object_per_dispatch() -> Result<()> {
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(
+      "<!doctype html><html><body></body></html>",
+      RenderOptions::default(),
+    )?;
+
+    // Create a clickable target node.
+    let button_id = tab.host.mutate_dom(|dom| {
+      let button = dom.create_element("button", "");
+      dom.set_attribute(button, "id", "btn").expect("set_attribute");
+      let body = dom.body().expect("expected <body>");
+      dom.append_child(body, button).expect("append_child");
+      (button, true)
+    });
+
+    // Register two click listeners. The first stores the event object and writes a custom property;
+    // the second must observe the same JS object identity and the custom property.
+    {
+      let host = &mut tab.host;
+      let event_loop = &mut tab.event_loop;
+
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (host_ctx, realm) = host.vm_host_and_window_realm();
+      realm
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+          const btn = document.getElementById('btn');
+          globalThis.__first = undefined;
+          globalThis.__same = false;
+          globalThis.__mark2 = undefined;
+
+          btn.addEventListener('click', (e) => {
+            globalThis.__first = e;
+            e.__mark = 123;
+          });
+          btn.addEventListener('click', (e) => {
+            globalThis.__same = (e === globalThis.__first);
+            globalThis.__mark2 = e.__mark;
+          });
+          "#,
+        )
+        .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
+      }
+    }
+
+    tab.dispatch_click_event(button_id)?;
+
+    let realm = tab
+      .host
+      .executor
+      .window_realm_mut()
+      .expect("vm-js executor should expose a WindowRealm");
+    let same = realm.exec_script("globalThis.__same").map_err(|err| Error::Other(err.to_string()))?;
+    let mark2 =
+      realm.exec_script("globalThis.__mark2").map_err(|err| Error::Other(err.to_string()))?;
+    assert!(matches!(same, Value::Bool(true)));
+    assert!(matches!(mark2, Value::Number(n) if n == 123.0));
     Ok(())
   }
 
