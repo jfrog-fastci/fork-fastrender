@@ -5382,6 +5382,14 @@ impl<'a> Evaluator<'a> {
     func_name: &str,
     members: &[Node<ClassMember>],
   ) -> Result<GcObject, VmError> {
+    // Per ECMA-262, class definitions are always strict mode code, regardless of whether they
+    // appear in a sloppy script/function body.
+    //
+    // This matters for runtime semantics (not just early errors). For example, in sloppy mode,
+    // `unbound = 1` creates a global property, but in class bodies it must throw a ReferenceError.
+    let saved_strict = self.strict;
+    self.strict = true;
+    let result = (|| {
     let class_env = self.env.lexical_env;
 
     // Ensure the requested class binding exists before creating any class element closures that may
@@ -5559,6 +5567,11 @@ impl<'a> Evaluator<'a> {
     )?;
 
     // Define prototype and static methods.
+    //
+    // While defining methods, collect class static blocks so we can evaluate them *after* all
+    // methods have been defined (ECMA-262 `ClassDefinitionEvaluation`: static blocks are evaluated
+    // after the element definition pass).
+    let mut static_blocks: Vec<&[Node<Stmt>]> = Vec::new();
     for member in members {
       self.tick()?;
 
@@ -5586,6 +5599,16 @@ impl<'a> Evaluator<'a> {
         && matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.key == "constructor")
         && matches!(&member.stx.val, ClassOrObjVal::Method(_));
       if is_constructor_method {
+        continue;
+      }
+
+      // Static initialization blocks are not properties on the class/prototype. Record them for
+      // later evaluation and continue to the next element.
+      if let ClassOrObjVal::StaticBlock(block) = &member.stx.val {
+        static_blocks
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        static_blocks.push(&block.stx.body);
         continue;
       }
 
@@ -5893,13 +5916,85 @@ impl<'a> Evaluator<'a> {
         ClassOrObjVal::IndexSignature(_) => {
           return Err(VmError::Unimplemented("class index signature"));
         }
-        ClassOrObjVal::StaticBlock(_) => {
-          return Err(VmError::Unimplemented("class static block"));
-        }
+        // Class static blocks are handled above (collected and evaluated after this loop).
+        ClassOrObjVal::StaticBlock(_) => unreachable!("static blocks collected before key eval"),
       }
     }
 
+    // Evaluate class static blocks in source order.
+    //
+    // Note: We currently reject public/private static fields (`class fields`) earlier in the
+    // element loop, so this list contains only blocks.
+    for stmts in static_blocks {
+      self.eval_class_static_block(&mut class_scope, func_obj, stmts)?;
+    }
+
     Ok(func_obj)
+    })();
+    self.strict = saved_strict;
+    result
+  }
+
+  fn eval_class_static_block(
+    &mut self,
+    scope: &mut Scope<'_>,
+    receiver: GcObject,
+    stmts: &[Node<Stmt>],
+  ) -> Result<(), VmError> {
+    // Static blocks are evaluated as strict-mode "method" function bodies with `this` bound to the
+    // class constructor object and `new.target` set to `undefined`.
+    //
+    // We implement this by:
+    // - creating a fresh var environment whose outer is the current class lexical environment,
+    // - creating a function-body lexical environment whose outer is that var environment,
+    // - instantiating the statement list, then evaluating it.
+    //
+    // This matches the internal structure used by `instantiate_function` for ordinary function
+    // bodies, but without parameters or an `arguments` object (static blocks have an early error
+    // for `ContainsArguments`).
+    let mut block_scope = scope.reborrow();
+    block_scope.push_root(Value::Object(receiver))?;
+
+    let saved_this = self.this;
+    let saved_new_target = self.new_target;
+    let saved_lex = self.env.lexical_env;
+    let saved_var_env = self.env.var_env();
+
+    self.this = Value::Object(receiver);
+    self.new_target = Value::Undefined;
+
+    let var_env = block_scope.env_create(Some(saved_lex))?;
+    let body_lex = block_scope.env_create(Some(var_env))?;
+    self.env.set_var_env(VarEnv::Env(var_env));
+    self.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+
+    let res: Result<Completion, VmError> = (|| {
+      self.instantiate_stmt_list(&mut block_scope, stmts)?;
+      self.eval_stmt_list(&mut block_scope, stmts)
+    })();
+
+    // Restore the surrounding class evaluation context regardless of how the block completes.
+    self.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
+    self.env.set_var_env(saved_var_env);
+    self.this = saved_this;
+    self.new_target = saved_new_target;
+
+    match res? {
+      Completion::Normal(_) => Ok(()),
+      Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+        value: thrown.value,
+        stack: thrown.stack,
+      }),
+      Completion::Return(_) => Err(VmError::InvariantViolation(
+        "class static block produced Return completion (early errors should prevent this)",
+      )),
+      Completion::Break(..) => Err(VmError::InvariantViolation(
+        "class static block produced Break completion (early errors should prevent this)",
+      )),
+      Completion::Continue(..) => Err(VmError::InvariantViolation(
+        "class static block produced Continue completion (early errors should prevent this)",
+      )),
+    }
   }
 
   fn eval_class_decl(
@@ -29732,6 +29827,166 @@ mod tests {
       }
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn class_static_block_empty_executes() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script("class C { static {} } 1")?;
+    assert!(matches!(value, Value::Number(n) if n == 1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn class_static_block_this_is_class_constructor() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var ok = false;
+      class C {
+        static { ok = (this === C); }
+      }
+      ok
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn class_static_block_new_target_is_undefined() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var ok = false;
+      class C {
+        static { ok = (new.target === undefined); }
+      }
+      ok
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn class_static_block_lexical_scope_isolated_per_block() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      let test262 = 'outer scope';
+      let probe1, probe2;
+      class C {
+        static {
+          let test262 = 'first block';
+          probe1 = test262;
+        }
+        static {
+          let test262 = 'second block';
+          probe2 = test262;
+        }
+      }
+      test262 === 'outer scope' && probe1 === 'first block' && probe2 === 'second block'
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn class_static_block_var_scope_isolated_per_block() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var test262 = 'outer scope';
+      var probe1, probe2;
+      class C {
+        static {
+          var test262 = 'first block';
+          probe1 = test262;
+        }
+        static {
+          var test262 = 'second block';
+          probe2 = test262;
+        }
+      }
+      test262 === 'outer scope' && probe1 === 'first block' && probe2 === 'second block'
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn class_static_block_can_reference_class_name_binding() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var probe;
+      class C {
+        static { probe = C; }
+      }
+      probe === C
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn class_static_block_is_strict_mode_code() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var name;
+      try {
+        class C {
+          static { unbound = 1; }
+        }
+      } catch (e) {
+        name = e.name;
+      }
+      name === 'ReferenceError'
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn class_computed_key_is_evaluated_in_strict_mode() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var name;
+      try {
+        class C {
+          [unbound2 = 1]() {}
+        }
+      } catch (e) {
+        name = e.name;
+      }
+      name === 'ReferenceError'
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
   }
 
   #[test]
