@@ -12084,65 +12084,37 @@ impl DisplayListBuilder {
       return;
     }
 
-    // Place the controls just above the bottom control bar. This matches common UA behaviour where
-    // the scrubber and icons sit within a shadowed region that extends upward from the bar.
+    // Chromium generally keeps the native video controls hidden until the user interacts, but it
+    // still paints a thin scrubber track within a dark control-bar region. Avoid painting a fully
+    // custom UI (play/volume/settings/fullscreen) since that tends to diverge from real UAs and
+    // dominate page diffs.
+    //
+    // Keep this placeholder minimal and deterministic: just paint a scrubber track.
     let bar_h = 32.0_f32.min(h);
-    let overlay_bottom = content_rect.max_y() - bar_h;
-
-    let inset = 8.0;
-    let icon_size = 12.0;
-    let icon_gap = 8.0;
-    let progress_h = 4.0;
-    let progress_gap = 4.0;
-    let knob_r = 4.0;
-
-    let icon_y = overlay_bottom - inset - icon_size;
-    let progress_y = icon_y - progress_gap - progress_h;
-
-    // Ensure we have enough vertical space for the UI elements (avoid cluttering tiny videos).
-    if progress_y < content_rect.y() + inset {
+    if bar_h < 12.0_f32 {
       return;
     }
 
-    let track_x = content_rect.x() + inset;
-    let track_w = (w - inset * 2.0).max(0.0);
+    // Align to device pixels to avoid fuzzy lines when the <video> box has fractional offsets.
+    let overlay_bottom = content_rect.max_y().ceil();
+    let bar_top = overlay_bottom - bar_h;
+
+    let track_inset = 16.0_f32;
+    let track_h = 4.0_f32;
+    let track_y = bar_top + 8.0_f32;
+
+    let track_x = content_rect.x().ceil() + track_inset;
+    let track_w = (w - track_inset * 2.0).max(0.0);
     if track_w <= 0.0 {
       return;
     }
 
-    // Scrubber track + knob (0% progress).
-    self.list.push(DisplayItem::FillRect(FillRectItem {
-      rect: Rect::from_xywh(track_x, progress_y, track_w, progress_h),
-      color: Rgba::WHITE.with_alpha(0.35),
-    }));
+    let track_r = (track_h * 0.5).min(2.0_f32);
     self.list.push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-      rect: Rect::from_xywh(
-        track_x - knob_r,
-        progress_y + progress_h * 0.5 - knob_r,
-        knob_r * 2.0,
-        knob_r * 2.0,
-      ),
-      color: Rgba::WHITE.with_alpha(0.9),
-      radii: BorderRadii::uniform(knob_r),
+      rect: Rect::from_xywh(track_x, track_y, track_w, track_h),
+      color: Rgba::WHITE.with_alpha(0.3_f32),
+      radii: BorderRadii::uniform(track_r),
     }));
-
-    // Play icon (triangle built from vertical strips so we don't need a path primitive).
-    let play_rect = Rect::from_xywh(track_x, icon_y, icon_size, icon_size);
-    self.emit_play_triangle_icon(play_rect, Rgba::WHITE.with_alpha(0.85));
-
-    // A few simple right-aligned icon placeholders (volume/settings/fullscreen).
-    let icon_count = 3;
-    let total_w = icon_count as f32 * icon_size + (icon_count as f32 - 1.0) * icon_gap;
-    let start_x = content_rect.max_x() - inset - total_w;
-    if start_x.is_finite() && start_x >= play_rect.max_x() + icon_gap {
-      for i in 0..icon_count {
-        let x = start_x + i as f32 * (icon_size + icon_gap);
-        self.list.push(DisplayItem::FillRect(FillRectItem {
-          rect: Rect::from_xywh(x, icon_y, icon_size, icon_size),
-          color: Rgba::WHITE.with_alpha(0.6),
-        }));
-      }
-    }
   }
 
   fn emit_play_triangle_icon(&mut self, rect: Rect, color: Rgba) {
@@ -12231,6 +12203,9 @@ impl DisplayListBuilder {
       if shadow_h > 0.0 && h > 0.0 {
         let start = (h - bar_h - shadow_h) / h;
         let end = (h - bar_h) / h;
+        // Chromium's native controls darken all the way to black at the very bottom of the video.
+        // Keep the same overall shape, but blend to full black so fixture diffs don't get dominated
+        // by a 1px/2px value mismatch across the entire control bar.
         let end_alpha = 0.85;
         let black = |alpha: f32| Rgba::rgb(0, 0, 0).with_alpha(alpha.clamp(0.0, 1.0));
         let mut stops = Vec::new();
@@ -12254,7 +12229,7 @@ impl DisplayListBuilder {
         });
         stops.push(GradientStop {
           position: 1.0,
-          color: black(end_alpha),
+          color: black(1.0),
         });
         self.list.push(DisplayItem::LinearGradient(LinearGradientItem {
           rect: content_rect,

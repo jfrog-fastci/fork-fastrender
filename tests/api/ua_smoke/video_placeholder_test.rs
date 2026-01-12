@@ -29,7 +29,23 @@ fn video_with_controls_without_poster_paints_placeholder() -> Result<()> {
 
   // `<video controls>` typically paints an opaque UI surface even before playback. FastRender
   // doesn't implement native controls, so it should at least paint a deterministic placeholder
-  // instead of leaving the element transparent.
-  assert_ne!(pixel(&pixmap, 50, 50), (0, 255, 0, 255));
+  // instead of leaving the element transparent. The placeholder should also avoid painting a full
+  // fake control set (icons) since that tends to diverge from Chromium's auto-hidden controls.
+  let surface = pixel(&pixmap, 50, 30);
+  assert_ne!(surface, (0, 255, 0, 255));
+
+  // A subtle scrubber track should be visible near the bottom bar.
+  let track = pixel(&pixmap, 50, 58);
+  assert!(
+    track.0 >= 60 && track.1 >= 60 && track.2 >= 60 && track.3 == 255,
+    "expected scrubber track pixel to be bright; got {track:?}"
+  );
+
+  // But pixels in the same bar area away from the scrubber should remain dark.
+  let bar_bg = pixel(&pixmap, 50, 70);
+  assert!(
+    bar_bg.0 < 20 && bar_bg.1 < 20 && bar_bg.2 < 20 && bar_bg.3 == 255,
+    "expected control bar background to be dark; got {bar_bg:?}"
+  );
   Ok(())
 }

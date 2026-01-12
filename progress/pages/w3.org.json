@@ -16,7 +16,7 @@
     "layout": 45.12339966101695,
     "paint": 14.038391005649718
   },
-  "notes": "",
+  "notes": "Remaining diffs are dominated by Chromium's native `<video controls>` UI (FastRender paints a simplified deterministic video surface + scrubber track) plus minor text rasterization/anti-aliasing differences.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 72683,
