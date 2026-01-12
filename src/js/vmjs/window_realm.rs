@@ -8158,7 +8158,6 @@ fn document_query_selector_native(
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
     let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
   };
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let selector_value = scope.heap_mut().to_string(selector_value)?;
@@ -8168,7 +8167,11 @@ fn document_query_selector_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  match dom.query_selector(&selector, None) {
+  let result = mutate_dom_for_vm_host(host, |dom| (dom.query_selector(&selector, None), false))
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  match result {
     Ok(Some(node_id)) => get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id),
     Ok(None) => Ok(Value::Null),
     Err(err) => {
@@ -8206,7 +8209,6 @@ fn document_query_selector_all_native(
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
     let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
   };
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let selector_value = scope.heap_mut().to_string(selector_value)?;
@@ -8216,7 +8218,9 @@ fn document_query_selector_all_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let matches = match dom.query_selector_all(&selector, None) {
+  let matches = match mutate_dom_for_vm_host(host, |dom| (dom.query_selector_all(&selector, None), false))
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+  {
     Ok(nodes) => nodes,
     Err(err) => {
       let (name, message) = match err {
@@ -8234,6 +8238,8 @@ fn document_query_selector_all_native(
       return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
     }
   };
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
   let array = scope.alloc_array(0)?;
   scope.push_root(Value::Object(array))?;
@@ -8460,15 +8466,17 @@ fn element_query_selector_native(
     }
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "Element.querySelector requires a DOM-backed element",
-  ))?;
-  let node_id = match dom.node_id_from_index(node_index) {
-    Ok(id) => id,
-    Err(_) => {
-      return Err(VmError::TypeError(
-        "Element.querySelector must be called on a node object",
-      ));
+  let node_id = {
+    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+      "Element.querySelector requires a DOM-backed element",
+    ))?;
+    match dom.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => {
+        return Err(VmError::TypeError(
+          "Element.querySelector must be called on a node object",
+        ));
+      }
     }
   };
 
@@ -8480,7 +8488,15 @@ fn element_query_selector_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  match dom.query_selector(&selector, Some(node_id)) {
+  let result = mutate_dom_for_vm_host(host, |dom| (dom.query_selector(&selector, Some(node_id)), false))
+    .ok_or(VmError::TypeError(
+      "Element.querySelector requires a DOM-backed element",
+    ))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "Element.querySelector requires a DOM-backed element",
+  ))?;
+
+  match result {
     Ok(Some(found)) => get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found),
     Ok(None) => Ok(Value::Null),
     Err(err) => {
@@ -8542,12 +8558,14 @@ fn element_query_selector_all_native(
     }
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "Element.querySelectorAll requires a DOM-backed element",
-  ))?;
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("Element.querySelectorAll must be called on a node object"))?;
+  let node_id = {
+    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+      "Element.querySelectorAll requires a DOM-backed element",
+    ))?;
+    dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("Element.querySelectorAll must be called on a node object"))?
+  };
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let selector_value = scope.heap_mut().to_string(selector_value)?;
@@ -8557,7 +8575,11 @@ fn element_query_selector_all_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let matches = match dom.query_selector_all(&selector, Some(node_id)) {
+  let matches = match mutate_dom_for_vm_host(host, |dom| (dom.query_selector_all(&selector, Some(node_id)), false))
+    .ok_or(VmError::TypeError(
+      "Element.querySelectorAll requires a DOM-backed element",
+    ))?
+  {
     Ok(nodes) => nodes,
     Err(err) => {
       let (name, message) = match err {
@@ -8575,6 +8597,10 @@ fn element_query_selector_all_native(
       return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
     }
   };
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "Element.querySelectorAll requires a DOM-backed element",
+  ))?;
 
   let array = scope.alloc_array(0)?;
   scope.push_root(Value::Object(array))?;
@@ -8635,12 +8661,13 @@ fn element_matches_native(
     }
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "Element.matches requires a DOM-backed element",
-  ))?;
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("Element.matches must be called on a node object"))?;
+  let node_id = {
+    let dom = dom_from_vm_host(host)
+      .ok_or(VmError::TypeError("Element.matches requires a DOM-backed element"))?;
+    dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("Element.matches must be called on a node object"))?
+  };
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let selector_value = scope.heap_mut().to_string(selector_value)?;
@@ -8650,7 +8677,12 @@ fn element_matches_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  match dom.matches_selector(node_id, &selector) {
+  let result = mutate_dom_for_vm_host(host, |dom| (dom.matches_selector(node_id, &selector), false))
+    .ok_or(VmError::TypeError(
+      "Element.matches requires a DOM-backed element",
+    ))?;
+
+  match result {
     Ok(result) => Ok(Value::Bool(result)),
     Err(err) => {
       let (name, message) = match err {
@@ -8711,12 +8743,14 @@ fn element_closest_native(
     }
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "Element.closest requires a DOM-backed element",
-  ))?;
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("Element.closest must be called on a node object"))?;
+  let node_id = {
+    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+      "Element.closest requires a DOM-backed element",
+    ))?;
+    dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("Element.closest must be called on a node object"))?
+  };
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let selector_value = scope.heap_mut().to_string(selector_value)?;
@@ -8726,7 +8760,15 @@ fn element_closest_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  match dom.closest(node_id, &selector) {
+  let result = mutate_dom_for_vm_host(host, |dom| (dom.closest(node_id, &selector), false))
+    .ok_or(VmError::TypeError(
+      "Element.closest requires a DOM-backed element",
+    ))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "Element.closest requires a DOM-backed element",
+  ))?;
+
+  match result {
     Ok(Some(found)) => get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found),
     Ok(None) => Ok(Value::Null),
     Err(err) => {
@@ -31773,6 +31815,45 @@ mod tests {
       "no-op attribute writes must not mark BrowserDocumentDom2 dirty"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn selector_queries_do_not_invalidate_browser_document_dom2() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      "<!doctype html><html><head></head><body><div id=\"a\"></div></body></html>",
+      RenderOptions::default(),
+    )
+    .expect("BrowserDocumentDom2::from_html should succeed");
+    let _ = document
+      .render_if_needed()
+      .expect("initial render should succeed");
+    assert!(
+      !document.is_dirty(),
+      "expected document to be clean after initial render"
+    );
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+         document.querySelector('body');\n\
+         document.querySelectorAll('div');\n\
+         const el = document.body;\n\
+         el.querySelector('#a');\n\
+         el.querySelectorAll('div');\n\
+         el.matches('body');\n\
+         el.closest('html');\n\
+       })()",
+    )?;
+
+    assert!(
+      !document.is_dirty(),
+      "selector queries must not mark BrowserDocumentDom2 dirty"
+    );
     Ok(())
   }
 
