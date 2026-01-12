@@ -385,9 +385,9 @@ Regression coverage:
 - `src/paint/svg_filter/turbulence.rs` (determinism under rayon):
   - `turbulence_render_is_byte_identical_for_same_seed`
   - `turbulence_raster_is_deterministic_across_thread_counts`
- 
+
 ### `feTurbulence` unit tests (reference behavior)
- 
+
 - `src/paint/svg_filter/tests/filter_turbulence.rs`:
   - `turbulence_is_deterministic`
   - `turbulence_seed_changes_output`

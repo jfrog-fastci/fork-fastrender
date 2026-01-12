@@ -116,9 +116,9 @@ COLRv1 rendering lives in
 [`src/text/color_fonts/colr_v1.rs`](../../src/text/color_fonts/colr_v1.rs) and is
 exercised by tests such as:
 
-- `tests/colr/v1_color_font_test.rs`
-- `tests/colr/v1_radial_gradient_test.rs`
-- `tests/colr/v1_sweep_gradient_test.rs` (see also `colrv1-sweep-test.ttf` /
+- `src/text/color_fonts/golden_tests.rs::colrv1_color_font_test`
+- `src/text/color_fonts/golden_tests.rs::colrv1_radial_gradient_test`
+- `src/text/color_fonts/golden_tests.rs::colrv1_sweep_gradient_test` (see also `colrv1-sweep-test.ttf` /
   `colrv1-var-sweep-test.ttf` in
   [`tests/fixtures/fonts/README.md`](../../tests/fixtures/fonts/README.md))
 
