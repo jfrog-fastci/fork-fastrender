@@ -2966,6 +2966,21 @@ pub fn promise_species_get(
   Ok(this)
 }
 
+/// `%IteratorPrototype%[@@iterator]` (ECMA-262).
+///
+/// All built-in iterator objects are iterable (calling `@@iterator` returns the iterator itself).
+pub fn iterator_prototype_iterator(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(this)
+}
+
 pub fn promise_capability_executor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4997,6 +5012,7 @@ fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, Vm
 
 const ARRAY_ITERATOR_ARRAY_MARKER: &str = "vm-js.internal.ArrayIteratorArray";
 const ARRAY_ITERATOR_INDEX_MARKER: &str = "vm-js.internal.ArrayIteratorIndex";
+const ARRAY_ITERATOR_KIND_MARKER: &str = "vm-js.internal.ArrayIteratorKind";
 /// `Array.prototype.map` (minimal).
 pub fn array_prototype_map(
   vm: &mut Vm,
@@ -6613,23 +6629,24 @@ pub fn array_prototype_splice(
   Ok(Value::Object(removed))
 }
 
-/// `Array.prototype.values` / `%Array.prototype%[@@iterator]` (minimal).
-///
-/// This is primarily needed by higher-level binding layers (e.g. WebIDL iterable snapshot helpers)
-/// that want to build a JS `Array` and then obtain an iterator via `arr[Symbol.iterator]()`.
-pub fn array_prototype_values(
+#[derive(Clone, Copy)]
+enum ArrayIteratorKind {
+  Keys = 0,
+  Values = 1,
+  Entries = 2,
+}
+
+fn create_array_iterator_with_kind(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
   this: Value,
-  _args: &[Value],
+  kind: ArrayIteratorKind,
+  non_object_message: &'static str,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let this_obj = match this {
     Value::Object(o) => o,
-    _ => return Err(VmError::TypeError("Array.prototype.values called on non-object")),
+    _ => return Err(VmError::TypeError(non_object_message)),
   };
 
   // Root `this` while allocating/defining properties on the iterator object.
@@ -6640,7 +6657,7 @@ pub fn array_prototype_values(
   scope.push_root(Value::Object(iter))?;
   scope
     .heap_mut()
-    .object_set_prototype(iter, Some(intr.object_prototype()))?;
+    .object_set_prototype(iter, Some(intr.array_iterator_prototype()))?;
 
   let array_key = internal_symbol_key(&mut scope, ARRAY_ITERATOR_ARRAY_MARKER)?;
   scope.define_property(
@@ -6656,14 +6673,74 @@ pub fn array_prototype_values(
     data_desc(Value::Number(0.0), true, false, true),
   )?;
 
-  let next_key = string_key(&mut scope, "next")?;
+  let kind_key = internal_symbol_key(&mut scope, ARRAY_ITERATOR_KIND_MARKER)?;
   scope.define_property(
     iter,
-    next_key,
-    data_desc(Value::Object(intr.array_iterator_next()), true, false, true),
+    kind_key,
+    data_desc(Value::Number(kind as u8 as f64), true, false, true),
   )?;
 
   Ok(Value::Object(iter))
+}
+
+/// `Array.prototype.values` / `%Array.prototype%[@@iterator]` (minimal).
+///
+/// This is primarily needed by higher-level binding layers (e.g. WebIDL iterable snapshot helpers)
+/// that want to build a JS `Array` and then obtain an iterator via `arr[Symbol.iterator]()`.
+pub fn array_prototype_values(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  create_array_iterator_with_kind(
+    vm,
+    scope,
+    this,
+    ArrayIteratorKind::Values,
+    "Array.prototype.values called on non-object",
+  )
+}
+
+/// `Array.prototype.keys` (minimal).
+pub fn array_prototype_keys(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  create_array_iterator_with_kind(
+    vm,
+    scope,
+    this,
+    ArrayIteratorKind::Keys,
+    "Array.prototype.keys called on non-object",
+  )
+}
+
+/// `Array.prototype.entries` (minimal).
+pub fn array_prototype_entries(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  create_array_iterator_with_kind(
+    vm,
+    scope,
+    this,
+    ArrayIteratorKind::Entries,
+    "Array.prototype.entries called on non-object",
+  )
 }
 
 /// `ArrayIterator.prototype.next` (minimal).
@@ -6689,8 +6766,23 @@ pub fn array_iterator_next(
   let array_key = internal_symbol_key(&mut scope, ARRAY_ITERATOR_ARRAY_MARKER)?;
   let array_value = get_data_property_value(vm, &mut scope, this_obj, &array_key)?
     .ok_or(VmError::TypeError("Array iterator missing internal array"))?;
-  let Value::Object(array_obj) = array_value else {
-    return Err(VmError::TypeError("Array iterator internal array is not an object"));
+  let array_obj = match array_value {
+    // Per spec, once the iterator is exhausted its internal `[[IteratedObject]]` is set to
+    // `undefined`.
+    Value::Undefined => {
+      let out = scope.alloc_object()?;
+      scope.push_root(Value::Object(out))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(out, Some(intr.object_prototype()))?;
+      let value_key = string_key(&mut scope, "value")?;
+      let done_key = string_key(&mut scope, "done")?;
+      scope.define_property(out, value_key, data_desc(Value::Undefined, true, true, true))?;
+      scope.define_property(out, done_key, data_desc(Value::Bool(true), true, true, true))?;
+      return Ok(Value::Object(out));
+    }
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("Array iterator internal array is not an object")),
   };
   scope.push_root(Value::Object(array_obj))?;
 
@@ -6702,8 +6794,29 @@ pub fn array_iterator_next(
     _ => 0usize,
   };
 
+  let kind_key = internal_symbol_key(&mut scope, ARRAY_ITERATOR_KIND_MARKER)?;
+  let kind_value = get_data_property_value(vm, &mut scope, this_obj, &kind_key)?
+    .unwrap_or(Value::Number(ArrayIteratorKind::Values as u8 as f64));
+  let kind = match kind_value {
+    Value::Number(n) if n.is_finite() && n.fract() == 0.0 => match n as u8 {
+      0 => ArrayIteratorKind::Keys,
+      1 => ArrayIteratorKind::Values,
+      2 => ArrayIteratorKind::Entries,
+      _ => return Err(VmError::TypeError("Array iterator internal kind is invalid")),
+    },
+    _ => return Err(VmError::TypeError("Array iterator internal kind is not a number")),
+  };
+
   let len = get_array_length(vm, &mut scope, array_obj)?;
   if idx >= len {
+    // End-of-iteration: clear `[[IteratedObject]]` so the underlying array can be collected if this
+    // iterator is retained.
+    scope.define_property(
+      this_obj,
+      array_key,
+      data_desc(Value::Undefined, true, false, true),
+    )?;
+
     let out = scope.alloc_object()?;
     scope.push_root(Value::Object(out))?;
     scope
@@ -6716,13 +6829,6 @@ pub fn array_iterator_next(
     return Ok(Value::Object(out));
   }
 
-  // Root `array_obj` and the index string across allocation for the property key.
-  let idx_s = scope.alloc_string(&idx.to_string())?;
-  scope.push_root(Value::String(idx_s))?;
-  let key = PropertyKey::from_string(idx_s);
-  let value = get_data_property_value(vm, &mut scope, array_obj, &key)?.unwrap_or(Value::Undefined);
-  scope.push_root(value)?;
-
   // Update `[[ArrayIteratorNextIndex]]`.
   let next_idx = idx.saturating_add(1);
   scope.define_property(
@@ -6730,6 +6836,38 @@ pub fn array_iterator_next(
     index_key,
     data_desc(Value::Number(next_idx as f64), true, false, true),
   )?;
+
+  let out_value = match kind {
+    ArrayIteratorKind::Keys => Value::Number(idx as f64),
+    ArrayIteratorKind::Values | ArrayIteratorKind::Entries => {
+      // Root `array_obj` and the index string across allocation for the property key.
+      let idx_s = scope.alloc_string(&idx.to_string())?;
+      scope.push_root(Value::String(idx_s))?;
+      let key = PropertyKey::from_string(idx_s);
+      let value =
+        get_data_property_value(vm, &mut scope, array_obj, &key)?.unwrap_or(Value::Undefined);
+
+      match kind {
+        ArrayIteratorKind::Values => value,
+        ArrayIteratorKind::Entries => {
+          // Root `value` across allocation of the entry array.
+          scope.push_root(value)?;
+
+          let entry = scope.alloc_array(0)?;
+          scope.push_root(Value::Object(entry))?;
+          scope
+            .heap_mut()
+            .object_set_prototype(entry, Some(intr.array_prototype()))?;
+          let key0 = string_key(&mut scope, "0")?;
+          scope.create_data_property_or_throw(entry, key0, Value::Number(idx as f64))?;
+          let key1 = string_key(&mut scope, "1")?;
+          scope.create_data_property_or_throw(entry, key1, value)?;
+          Value::Object(entry)
+        }
+        ArrayIteratorKind::Keys => unreachable!(),
+      }
+    }
+  };
 
   // Create iterator result object.
   let out = scope.alloc_object()?;
@@ -6739,7 +6877,7 @@ pub fn array_iterator_next(
     .object_set_prototype(out, Some(intr.object_prototype()))?;
   let value_key = string_key(&mut scope, "value")?;
   let done_key = string_key(&mut scope, "done")?;
-  scope.define_property(out, value_key, data_desc(value, true, true, true))?;
+  scope.define_property(out, value_key, data_desc(out_value, true, true, true))?;
   scope.define_property(out, done_key, data_desc(Value::Bool(false), true, true, true))?;
   Ok(Value::Object(out))
 }
