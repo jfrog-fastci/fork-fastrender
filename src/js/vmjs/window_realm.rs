@@ -7,7 +7,7 @@ use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::document_write::{
   current_document_write_state_mut, DOCUMENT_WRITE_IGNORED_NO_PARSER_WARNING,
 };
-use crate::js::dom_platform::{DocumentId, DomInterface, DomNodeKey, DomPlatform};
+use crate::js::dom_platform::{DocumentId, DomInterface, DomNodeKey, DomPlatform, DOM_WRAPPER_HOST_TAG};
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
 use crate::js::time::{TimeBindings, WebTime};
@@ -10900,6 +10900,13 @@ fn dom_parser_parse_from_string_native(
   // the detached tree.
   let document_obj = scope.alloc_object_with_prototype(Some(host_document_obj))?;
   scope.push_root(Value::Object(document_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    document_obj,
+    HostSlots {
+      a: DOM_WRAPPER_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Detached documents have no associated window.
   let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;

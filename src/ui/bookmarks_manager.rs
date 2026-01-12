@@ -137,8 +137,10 @@ pub fn bookmarks_manager_side_panel(
       });
 
       // Create-folder inline form.
-      if let Some(create) = state.creating_folder.as_mut() {
+      if let Some(mut create) = state.creating_folder.take() {
         ui.add_space(4.0);
+        let mut create_clicked = false;
+        let mut cancel_clicked = false;
         ui.group(|ui| {
           ui.label(egui::RichText::new("Create folder").strong());
           ui.horizontal(|ui| {
@@ -167,23 +169,32 @@ pub fn bookmarks_manager_side_panel(
           }
           ui.horizontal(|ui| {
             if ui.button("Create").clicked() {
-              match store.create_folder(create.title.clone(), create.parent) {
-                Ok(_) => {
-                  out.changed = true;
-                  state.creating_folder = None;
-                  state.error = None;
-                  state.message = Some("Folder created.".to_string());
-                }
-                Err(err) => {
-                  create.error = Some(format!("{err:?}"));
-                }
-              }
+              create_clicked = true;
             }
             if ui.button("Cancel").clicked() {
-              state.creating_folder = None;
+              cancel_clicked = true;
             }
           });
         });
+
+        if cancel_clicked {
+          state.creating_folder = None;
+        } else if create_clicked {
+          match store.create_folder(create.title.clone(), create.parent) {
+            Ok(_) => {
+              out.changed = true;
+              state.error = None;
+              state.message = Some("Folder created.".to_string());
+              state.creating_folder = None;
+            }
+            Err(err) => {
+              create.error = Some(format!("{err:?}"));
+              state.creating_folder = Some(create);
+            }
+          }
+        } else {
+          state.creating_folder = Some(create);
+        }
       }
 
       ui.add_space(6.0);
@@ -274,13 +285,13 @@ pub fn bookmarks_manager_side_panel(
         return;
       }
 
-      let query = state.search.trim();
+      let query = state.search.trim().to_string();
       egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         if query.is_empty() {
           let roots = store.roots.clone();
           render_nodes(ui, state, store, &roots, &folder_options, &folder_labels, &mut out);
         } else {
-          let results = store.search(query, usize::MAX);
+          let results = store.search(&query, usize::MAX);
           if results.is_empty() {
             ui.label("No matching bookmarks.");
             return;
@@ -367,10 +378,7 @@ fn render_bookmark_row(
     .as_ref()
     .is_some_and(|edit| edit.id == entry.id)
   {
-    let edit = state
-      .editing_bookmark
-      .as_mut()
-      .expect("edit state must exist");
+    let mut edit = state.editing_bookmark.take().expect("edit state must exist");
     ui.label(egui::RichText::new("Edit bookmark").strong());
     ui.horizontal(|ui| {
       ui.label("Title:");
@@ -398,25 +406,35 @@ fn render_bookmark_row(
     if let Some(err) = edit.error.as_deref().filter(|s| !s.trim().is_empty()) {
       ui.colored_label(ui.visuals().error_fg_color, err);
     }
+    let mut save_clicked = false;
+    let mut cancel_clicked = false;
     ui.horizontal(|ui| {
       if ui.button("Save").clicked() {
-        let title = normalize_optional_string(&edit.title);
-        match store.update(edit.id, title, edit.url.clone(), edit.parent) {
-          Ok(()) => {
-            out.changed = true;
-            state.editing_bookmark = None;
-            state.error = None;
-            state.message = Some("Bookmark updated.".to_string());
-          }
-          Err(err) => {
-            edit.error = Some(format!("{err:?}"));
-          }
-        }
+        save_clicked = true;
       }
       if ui.button("Cancel").clicked() {
-        state.editing_bookmark = None;
+        cancel_clicked = true;
       }
     });
+    if cancel_clicked {
+      state.editing_bookmark = None;
+    } else if save_clicked {
+      let title = normalize_optional_string(&edit.title);
+      match store.update(edit.id, title, edit.url.clone(), edit.parent) {
+        Ok(()) => {
+          out.changed = true;
+          state.editing_bookmark = None;
+          state.error = None;
+          state.message = Some("Bookmark updated.".to_string());
+        }
+        Err(err) => {
+          edit.error = Some(format!("{err:?}"));
+          state.editing_bookmark = Some(edit);
+        }
+      }
+    } else {
+      state.editing_bookmark = Some(edit);
+    }
     return;
   }
 
