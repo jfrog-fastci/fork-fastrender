@@ -3402,10 +3402,7 @@ impl<'a> Checker<'a> {
         .unwrap_or(self.store.primitive_ids().unknown),
       AstExpr::NewTarget(_) => {
         let prim = self.store.primitive_ids();
-        self
-          .resolve_type_ref(&["Function"])
-          .map(|function_ty| self.store.union(vec![function_ty, prim.undefined]))
-          .unwrap_or(prim.unknown)
+        self.resolve_type_ref(&["Function"]).unwrap_or(prim.unknown)
       }
       AstExpr::Unary(un) => {
         if matches!(un.stx.operator, OperatorName::New) {
@@ -3452,24 +3449,17 @@ impl<'a> Checker<'a> {
         );
 
         let inner_ty = if let AstExpr::LitStr(str_lit) = import.stx.module.stx.as_ref() {
-          if let Some(resolver) = self.type_resolver.as_ref() {
-            let specifier = str_lit.stx.value.as_str();
-            match resolver.resolve_import_typeof(specifier, None) {
-              Some(def) => self.store.canon(self.store.intern_type(TypeKind::Ref {
+          self
+            .type_resolver
+            .as_ref()
+            .and_then(|resolver| resolver.resolve_import_typeof(str_lit.stx.value.as_str(), None))
+            .map(|def| {
+              self.store.canon(self.store.intern_type(TypeKind::Ref {
                 def,
                 args: Vec::new(),
-              })),
-              None => {
-                self.diagnostics.push(codes::UNRESOLVED_MODULE.error(
-                  format!("unresolved module specifier \"{specifier}\""),
-                  Span::new(self.file, loc_to_range(self.file, import.stx.module.loc)),
-                ));
-                prim.unknown
-              }
-            }
-          } else {
-            prim.unknown
-          }
+              }))
+            })
+            .unwrap_or(prim.unknown)
         } else {
           prim.unknown
         };
