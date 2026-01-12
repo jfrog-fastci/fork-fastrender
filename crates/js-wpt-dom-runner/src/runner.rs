@@ -143,7 +143,7 @@ impl Runner {
         #[cfg(not(feature = "vmjs"))]
         {
           Err(RunError::Js(
-            "selected backend `vmjs` is not available in this build".to_string(),
+            format!("selected backend `{backend_kind}` is not available in this build"),
           ))
         }
       }
