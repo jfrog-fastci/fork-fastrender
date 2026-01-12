@@ -405,26 +405,91 @@ pub(crate) fn vm_error_to_message_and_stack(
   }
 }
 
-fn push_truncated(out: &mut String, s: &str, max_total_bytes: usize) {
-  if out.len() >= max_total_bytes {
+fn truncate_in_place_to_char_boundary(out: &mut String, max_bytes: usize) {
+  if out.len() <= max_bytes {
     return;
   }
+  let mut end = max_bytes;
+  while end > 0 && !out.is_char_boundary(end) {
+    end -= 1;
+  }
+  out.truncate(end);
+}
+
+fn ensure_trailing_ellipsis(out: &mut String, max_total_bytes: usize) {
+  if max_total_bytes == 0 {
+    out.clear();
+    return;
+  }
+  if max_total_bytes <= 3 {
+    truncate_in_place_to_char_boundary(out, max_total_bytes);
+    return;
+  }
+  let max_prefix = max_total_bytes - 3;
+  truncate_in_place_to_char_boundary(out, max_prefix);
+  out.push_str("...");
+}
+
+fn push_truncated(out: &mut String, s: &str, max_total_bytes: usize) -> bool {
+  if s.is_empty() {
+    return false;
+  }
+
+  if out.len() >= max_total_bytes {
+    ensure_trailing_ellipsis(out, max_total_bytes);
+    return true;
+  }
+
   let remaining = max_total_bytes - out.len();
   if s.len() <= remaining {
     out.push_str(s);
-    return;
+    return false;
   }
-  // Preserve space for "...".
-  if remaining <= 3 {
-    return;
+
+  if max_total_bytes <= 3 {
+    let mut end = remaining;
+    while end > 0 && !s.is_char_boundary(end) {
+      end -= 1;
+    }
+    out.push_str(&s[..end]);
+    return true;
   }
-  let limit = remaining - 3;
-  let mut end = limit;
+
+  // Preserve space for "...", trimming existing content if needed.
+  let max_prefix = max_total_bytes - 3;
+  truncate_in_place_to_char_boundary(out, max_prefix);
+  let remaining_prefix = max_prefix - out.len();
+  let mut end = remaining_prefix;
   while end > 0 && !s.is_char_boundary(end) {
     end -= 1;
   }
   out.push_str(&s[..end]);
   out.push_str("...");
+  true
+}
+
+fn push_utf16_lossy_truncated(out: &mut String, units: &[u16], max_total_bytes: usize) -> bool {
+  if units.is_empty() {
+    return false;
+  }
+
+  if out.len() >= max_total_bytes {
+    ensure_trailing_ellipsis(out, max_total_bytes);
+    return true;
+  }
+
+  for unit in std::char::decode_utf16(units.iter().copied()) {
+    let ch = unit.unwrap_or(char::REPLACEMENT_CHARACTER);
+    let mut buf = [0u8; 4];
+    let encoded = ch.encode_utf8(&mut buf);
+    if out.len() + encoded.len() > max_total_bytes {
+      ensure_trailing_ellipsis(out, max_total_bytes);
+      return true;
+    }
+    out.push_str(encoded);
+  }
+
+  false
 }
 
 /// Deterministically format console arguments without invoking user-defined `toString` hooks.
@@ -432,17 +497,211 @@ fn push_truncated(out: &mut String, s: &str, max_total_bytes: usize) {
 /// This is intended for renderer diagnostics, so it is intentionally bounded and lossy for complex
 /// objects.
 pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) -> String {
+  if args.is_empty() {
+    return String::new();
+  }
+
   let mut out = String::new();
-  for (idx, value) in args.iter().copied().enumerate() {
-    if idx > 0 {
-      push_truncated(&mut out, " ", MAX_CONSOLE_MESSAGE_BYTES);
+
+  let Value::String(format_s) = args[0] else {
+    for (idx, value) in args.iter().copied().enumerate() {
+      if idx > 0 && push_truncated(&mut out, " ", MAX_CONSOLE_MESSAGE_BYTES) {
+        break;
+      }
+      let formatted = format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
+      if push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES) {
+        break;
+      }
     }
-    let formatted = format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
-    push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
-    if out.len() >= MAX_CONSOLE_MESSAGE_BYTES {
+    return out;
+  };
+
+  let fmt_len = match heap.get_string(format_s) {
+    Ok(js) => js.len_code_units(),
+    Err(_) => {
+      // If the format string cannot be read, fall back to the default join logic.
+      for (idx, value) in args.iter().copied().enumerate() {
+        if idx > 0 && push_truncated(&mut out, " ", MAX_CONSOLE_MESSAGE_BYTES) {
+          break;
+        }
+        let formatted =
+          format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
+        if push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES) {
+          break;
+        }
+      }
+      return out;
+    }
+  };
+
+  let mut fmt_idx = 0usize;
+  let mut arg_idx = 1usize;
+  let mut truncated = false;
+
+  while fmt_idx < fmt_len && !truncated {
+    let mut specifier: Option<u16> = None;
+    let mut emit_literal: Option<&'static str> = None;
+    let mut advance = 0usize;
+
+    {
+      let Ok(js) = heap.get_string(format_s) else {
+        break;
+      };
+      let units = js.as_code_units();
+
+      let mut next_percent = fmt_idx;
+      while next_percent < fmt_len && units[next_percent] != b'%' as u16 {
+        next_percent += 1;
+      }
+
+      if next_percent > fmt_idx {
+        truncated |= push_utf16_lossy_truncated(
+          &mut out,
+          &units[fmt_idx..next_percent],
+          MAX_CONSOLE_MESSAGE_BYTES,
+        );
+      }
+
+      fmt_idx = next_percent;
+      if truncated || fmt_idx >= fmt_len {
+        break;
+      }
+
+      debug_assert_eq!(units[fmt_idx], b'%' as u16);
+      if fmt_idx + 1 >= fmt_len {
+        // Trailing `%` => literal `%`.
+        truncated |= push_truncated(&mut out, "%", MAX_CONSOLE_MESSAGE_BYTES);
+        fmt_idx += 1;
+        break;
+      }
+
+      let next_unit = units[fmt_idx + 1];
+
+      // `%%` => literal `%`.
+      if next_unit == b'%' as u16 {
+        truncated |= push_truncated(&mut out, "%", MAX_CONSOLE_MESSAGE_BYTES);
+        fmt_idx += 2;
+        continue;
+      }
+
+      let next_char = (next_unit <= 0x7F).then_some(next_unit as u8 as char);
+      match next_char {
+        Some('s' | 'd' | 'i' | 'f' | 'o' | 'O' | 'c') => {
+          if arg_idx >= args.len() {
+            emit_literal = Some(match next_char.unwrap() {
+              's' => "%s",
+              'd' => "%d",
+              'i' => "%i",
+              'f' => "%f",
+              'o' => "%o",
+              'O' => "%O",
+              'c' => "%c",
+              _ => unreachable!(),
+            });
+            advance = 2;
+          } else {
+            specifier = Some(next_unit);
+            advance = 2;
+          }
+        }
+        _ => {
+          // Unknown specifier: emit verbatim and do not consume an argument.
+          truncated |= push_truncated(&mut out, "%", MAX_CONSOLE_MESSAGE_BYTES);
+          // Emit the specifier char, preserving surrogate pairs when possible.
+          let mut spec_units_len = 1usize;
+          if (0xD800..=0xDBFF).contains(&next_unit) {
+            if fmt_idx + 2 < fmt_len {
+              let low = units[fmt_idx + 2];
+              if (0xDC00..=0xDFFF).contains(&low) {
+                spec_units_len = 2;
+              }
+            }
+          }
+          truncated |= push_utf16_lossy_truncated(
+            &mut out,
+            &units[fmt_idx + 1..fmt_idx + 1 + spec_units_len],
+            MAX_CONSOLE_MESSAGE_BYTES,
+          );
+          fmt_idx += 1 + spec_units_len;
+          continue;
+        }
+      }
+    }
+
+    if truncated {
       break;
     }
+
+    if let Some(literal) = emit_literal {
+      truncated |= push_truncated(&mut out, literal, MAX_CONSOLE_MESSAGE_BYTES);
+      fmt_idx += advance;
+      continue;
+    }
+
+    let Some(spec_unit) = specifier else {
+      break;
+    };
+    fmt_idx += advance;
+
+    // Recognized specifier with an argument available.
+    let value = args[arg_idx];
+    arg_idx += 1;
+
+    match spec_unit as u8 as char {
+      'c' => {
+        // Consume the styling argument but emit nothing.
+      }
+      's' => match value {
+        Value::String(s) => match heap.get_string(s) {
+          Ok(js) => {
+            truncated |= push_utf16_lossy_truncated(
+              &mut out,
+              js.as_code_units(),
+              MAX_CONSOLE_MESSAGE_BYTES,
+            );
+          }
+          Err(_) => truncated |= push_truncated(&mut out, "[string]", MAX_CONSOLE_MESSAGE_BYTES),
+        },
+        other => {
+          let formatted =
+            format_thrown_value(heap, other).unwrap_or_else(|| "[exception]".to_string());
+          truncated |= push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
+        }
+      },
+      'd' | 'f' | 'i' => match value {
+        Value::Number(n) => {
+          let n = if (spec_unit as u8 as char) == 'i' { n.trunc() } else { n };
+          let formatted = format_number_fallback(n);
+          truncated |= push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
+        }
+        other => {
+          let formatted =
+            format_thrown_value(heap, other).unwrap_or_else(|| "[exception]".to_string());
+          truncated |= push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
+        }
+      },
+      'o' | 'O' => {
+        let formatted =
+          format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
+        truncated |= push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
+      }
+      _ => unreachable!(),
+    }
   }
+
+  // Append any unused arguments separated by spaces.
+  if !truncated {
+    for value in args.iter().copied().skip(arg_idx) {
+      if !out.is_empty() && push_truncated(&mut out, " ", MAX_CONSOLE_MESSAGE_BYTES) {
+        break;
+      }
+      let formatted = format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
+      if push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES) {
+        break;
+      }
+    }
+  }
+
   out
 }
 
@@ -914,6 +1173,121 @@ mod tests {
     assert!(
       msg.contains("at f (<test>:1:2)"),
       "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn console_format_basic_substitution() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let fmt_s = scope.alloc_string("[%s %d]").expect("alloc fmt");
+    scope.push_root(Value::String(fmt_s)).expect("root fmt");
+    let arg_s = scope.alloc_string("x").expect("alloc arg");
+    scope.push_root(Value::String(arg_s)).expect("root arg");
+
+    let msg = format_console_arguments_limited(
+      scope.heap_mut(),
+      &[Value::String(fmt_s), Value::String(arg_s), Value::Number(1.0)],
+    );
+    assert_eq!(msg, "[x 1]");
+  }
+
+  #[test]
+  fn console_format_percent_escape() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let fmt_s = scope.alloc_string("%%").expect("alloc fmt");
+    scope.push_root(Value::String(fmt_s)).expect("root fmt");
+
+    let msg = format_console_arguments_limited(scope.heap_mut(), &[Value::String(fmt_s)]);
+    assert_eq!(msg, "%");
+  }
+
+  #[test]
+  fn console_format_c_consumes_argument() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let fmt_s = scope.alloc_string("%c%s").expect("alloc fmt");
+    scope.push_root(Value::String(fmt_s)).expect("root fmt");
+    let style_s = scope.alloc_string("color:red").expect("alloc style");
+    scope
+      .push_root(Value::String(style_s))
+      .expect("root style");
+    let arg_s = scope.alloc_string("x").expect("alloc arg");
+    scope.push_root(Value::String(arg_s)).expect("root arg");
+
+    let msg = format_console_arguments_limited(
+      scope.heap_mut(),
+      &[Value::String(fmt_s), Value::String(style_s), Value::String(arg_s)],
+    );
+    assert_eq!(msg, "x");
+  }
+
+  #[test]
+  fn console_format_missing_arguments_leave_specifier_verbatim() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let fmt_s = scope.alloc_string("[%s %d]").expect("alloc fmt");
+    scope.push_root(Value::String(fmt_s)).expect("root fmt");
+    let arg_s = scope.alloc_string("x").expect("alloc arg");
+    scope.push_root(Value::String(arg_s)).expect("root arg");
+
+    let msg = format_console_arguments_limited(
+      scope.heap_mut(),
+      &[Value::String(fmt_s), Value::String(arg_s)],
+    );
+    assert_eq!(msg, "[x %d]");
+  }
+
+  #[test]
+  fn console_format_extra_arguments_are_appended() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let fmt_s = scope.alloc_string("%s").expect("alloc fmt");
+    scope.push_root(Value::String(fmt_s)).expect("root fmt");
+    let arg_s = scope.alloc_string("x").expect("alloc arg");
+    scope.push_root(Value::String(arg_s)).expect("root arg");
+
+    let msg = format_console_arguments_limited(
+      scope.heap_mut(),
+      &[Value::String(fmt_s), Value::String(arg_s), Value::Number(1.0)],
+    );
+    assert_eq!(msg, "x 1");
+  }
+
+  #[test]
+  fn console_format_output_is_bounded_and_truncated() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let fmt_s = scope.alloc_string("%s").expect("alloc fmt");
+    scope.push_root(Value::String(fmt_s)).expect("root fmt");
+
+    let long_text = format!("{}TAIL", "a".repeat(MAX_CONSOLE_MESSAGE_BYTES + 8));
+    let long_s = scope.alloc_string(&long_text).expect("alloc long");
+    scope
+      .push_root(Value::String(long_s))
+      .expect("root long");
+
+    let msg =
+      format_console_arguments_limited(scope.heap_mut(), &[Value::String(fmt_s), Value::String(long_s)]);
+    assert!(
+      msg.len() <= MAX_CONSOLE_MESSAGE_BYTES,
+      "expected console output to be bounded, got len={} msg={msg:?}",
+      msg.len()
+    );
+    assert!(
+      !msg.contains("TAIL"),
+      "expected truncated console output to omit tail, got {msg:?}"
+    );
+    assert!(
+      msg.ends_with("..."),
+      "expected truncated console output to include ellipsis, got {msg:?}"
     );
   }
 }
