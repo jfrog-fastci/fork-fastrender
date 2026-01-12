@@ -6,7 +6,9 @@ mod common;
 use common::compile_source_typed;
 use optimize_js::analysis::annotate_program;
 use optimize_js::cfg::cfg::Cfg;
-use optimize_js::il::inst::{Arg, Inst, InstTyp, ParallelPlan};
+use optimize_js::il::inst::{Inst, InstTyp, ParallelPlan};
+#[cfg(not(feature = "native-async-ops"))]
+use optimize_js::il::inst::Arg;
 use optimize_js::TopLevelMode;
 
 fn collect_insts(cfg: &Cfg) -> Vec<Inst> {
@@ -34,11 +36,24 @@ fn parallelize_promise_all() {
   annotate_program(&mut program);
 
   let insts = collect_insts(program.top_level.analyzed_cfg());
-  let all = insts
-    .iter()
-    .find(|inst| inst.t == InstTyp::Call && matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == "Promise.all"))
-    .expect("expected Promise.all call");
+  #[cfg(feature = "native-async-ops")]
+  {
+    let all = insts
+      .iter()
+      .find(|inst| inst.t == InstTyp::PromiseAll)
+      .expect("expected PromiseAll semantic op");
+    assert_eq!(all.meta.parallel, Some(ParallelPlan::SpawnAll));
+  }
 
-  assert_eq!(all.meta.parallel, Some(ParallelPlan::SpawnAll));
+  #[cfg(not(feature = "native-async-ops"))]
+  {
+    let all = insts
+      .iter()
+      .find(|inst| {
+        inst.t == InstTyp::Call
+          && matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == "Promise.all")
+      })
+      .expect("expected Promise.all call");
+    assert_eq!(all.meta.parallel, Some(ParallelPlan::SpawnAll));
+  }
 }
-

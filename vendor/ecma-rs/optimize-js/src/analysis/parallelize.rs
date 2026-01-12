@@ -323,6 +323,23 @@ pub fn annotate_cfg_parallelize(
 
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
+      #[cfg(feature = "native-async-ops")]
+      match inst.t {
+        InstTyp::PromiseAll => {
+          inst.meta.parallel = Some(ParallelPlan::SpawnAll);
+          continue;
+        }
+        InstTyp::PromiseRace => {
+          inst.meta.parallel = Some(ParallelPlan::SpawnAllButRaceResult);
+          continue;
+        }
+        InstTyp::Await => {
+          inst.meta.parallel = Some(ParallelPlan::NotParallelizable(ParallelReason::Await));
+          continue;
+        }
+        _ => {}
+      }
+
       if inst.t != InstTyp::Call {
         continue;
       }
