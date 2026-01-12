@@ -1,6 +1,15 @@
 use crate::js::JsExecutionOptions;
 use std::cell::RefCell;
 
+/// Warning emitted when `document.write()` / `document.writeln()` is invoked when parsing is no
+/// longer active (e.g. after streaming parsing completes).
+///
+/// FastRender intentionally treats such calls as deterministic no-ops (instead of implicitly
+/// calling `document.open()` and rewriting the document), but emits this warning so callers/tests
+/// can detect the ignored write.
+pub const DOCUMENT_WRITE_IGNORED_NO_PARSER_WARNING: &str =
+  "Ignored document.write()/document.writeln() because no streaming parser is active";
+
 /// Host-managed state for `document.write()` / `document.writeln()`.
 ///
 /// This tracks:
@@ -18,8 +27,7 @@ pub struct DocumentWriteState {
   max_bytes_total: usize,
   max_calls: usize,
 
-  #[allow(dead_code)]
-  ignore_destructive_writes_counter: usize,
+  warned_ignored_write: bool,
 }
 
 impl Default for DocumentWriteState {
@@ -33,7 +41,7 @@ impl Default for DocumentWriteState {
       max_bytes_per_call: opts.max_document_write_bytes_per_call,
       max_bytes_total: opts.max_document_write_bytes_total,
       max_calls: opts.max_document_write_calls,
-      ignore_destructive_writes_counter: 0,
+      warned_ignored_write: false,
     }
   }
 }
@@ -44,7 +52,7 @@ impl DocumentWriteState {
     self.pending_html.clear();
     self.bytes_written_total = 0;
     self.write_calls = 0;
-    self.ignore_destructive_writes_counter = 0;
+    self.warned_ignored_write = false;
   }
 
   pub fn update_limits(&mut self, options: JsExecutionOptions) {
@@ -121,6 +129,18 @@ impl DocumentWriteState {
   pub fn take_pending_html(&mut self) -> String {
     std::mem::take(&mut self.pending_html)
   }
+
+  /// Mark that a `document.write` / `document.writeln` call was ignored because parsing is no
+  /// longer active.
+  ///
+  /// Returns `true` exactly once per navigation so callers can avoid spamming diagnostics.
+  pub fn note_ignored_write(&mut self) -> bool {
+    if self.warned_ignored_write {
+      return false;
+    }
+    self.warned_ignored_write = true;
+    true
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +148,22 @@ pub enum DocumentWriteLimitError {
   TooManyCalls { limit: usize },
   PerCallBytesExceeded { len: usize, limit: usize },
   TotalBytesExceeded { current: usize, add: usize, limit: usize },
+}
+
+impl DocumentWriteLimitError {
+  pub fn range_error_message(&self) -> String {
+    match *self {
+      DocumentWriteLimitError::TooManyCalls { limit } => {
+        format!("document.write exceeded max call count (limit={limit})")
+      }
+      DocumentWriteLimitError::PerCallBytesExceeded { len, limit } => {
+        format!("document.write exceeded max bytes per call (len={len}, limit={limit})")
+      }
+      DocumentWriteLimitError::TotalBytesExceeded { current, add, limit } => format!(
+        "document.write exceeded max cumulative bytes (current={current}, add={add}, limit={limit})"
+      ),
+    }
+  }
 }
 
 thread_local! {

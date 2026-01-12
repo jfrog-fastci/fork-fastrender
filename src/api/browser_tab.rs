@@ -1339,6 +1339,7 @@ impl BrowserTabHost {
       Finished,
       AbortedForNavigation,
       BudgetExhausted,
+      YieldForAsapScriptExecution,
     }
 
     let outcome = (|| -> Result<Outcome> {
@@ -1610,7 +1611,7 @@ impl BrowserTabHost {
             };
             let base_url_at_discovery = spec.base_url.clone();
 
-            let _script_id = with_active_streaming_parser(&state.parser, || {
+            let script_id = with_active_streaming_parser(&state.parser, || {
               self.register_and_schedule_script(script, spec, base_url_at_discovery, event_loop)
             })?;
 
@@ -1689,6 +1690,12 @@ impl BrowserTabHost {
         self.streaming_parse = Some(state);
         Ok(ParseUntilBlockedResult::Continue(
           ParseUntilBlockedContinueReason::BudgetExhausted,
+        ))
+      }
+      Ok(Outcome::YieldForAsapScriptExecution) => {
+        self.streaming_parse = Some(state);
+        Ok(ParseUntilBlockedResult::Continue(
+          ParseUntilBlockedContinueReason::PendingAsapScriptExecution,
         ))
       }
       Ok(Outcome::Finished | Outcome::AbortedForNavigation) => {
@@ -10210,6 +10217,77 @@ document.write('<div id="x"></div>');
   }
 
   #[test]
+  fn vmjs_document_write_per_call_limit_throws_range_error_with_message() -> Result<()> {
+    let html = "<!doctype html><html><body>\
+      <script>document.write('hello');</script>\
+      </body></html>";
+    let options = RenderOptions::default().with_diagnostics_level(crate::api::DiagnosticsLevel::Basic);
+    let js_options = JsExecutionOptions {
+      max_document_write_bytes_per_call: 4,
+      ..JsExecutionOptions::default()
+    };
+    let tab = BrowserTab::from_html_with_vmjs_and_js_execution_options(html, options, js_options)?;
+    let diagnostics = tab
+      .diagnostics_snapshot()
+      .expect("expected BrowserTab diagnostics to be enabled");
+    assert!(
+      diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc.message == "RangeError: document.write exceeded max bytes per call (len=5, limit=4)"),
+      "expected RangeError message to be captured, got: {diagnostics:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_document_write_total_bytes_limit_throws_range_error_with_message() -> Result<()> {
+    let html = "<!doctype html><html><body>\
+      <script>document.write('ab');document.write('cd');</script>\
+      </body></html>";
+    let options = RenderOptions::default().with_diagnostics_level(crate::api::DiagnosticsLevel::Basic);
+    let js_options = JsExecutionOptions {
+      max_document_write_bytes_per_call: 16,
+      max_document_write_bytes_total: 3,
+      ..JsExecutionOptions::default()
+    };
+    let tab = BrowserTab::from_html_with_vmjs_and_js_execution_options(html, options, js_options)?;
+    let diagnostics = tab
+      .diagnostics_snapshot()
+      .expect("expected BrowserTab diagnostics to be enabled");
+    assert!(
+      diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc.message == "RangeError: document.write exceeded max cumulative bytes (current=2, add=2, limit=3)"),
+      "expected RangeError message to be captured, got: {diagnostics:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_document_write_call_count_limit_throws_range_error_with_message() -> Result<()> {
+    let html = "<!doctype html><html><body>\
+      <script>document.write('a');document.write('b');</script>\
+      </body></html>";
+    let options = RenderOptions::default().with_diagnostics_level(crate::api::DiagnosticsLevel::Basic);
+    let js_options = JsExecutionOptions {
+      max_document_write_calls: 1,
+      ..JsExecutionOptions::default()
+    };
+    let tab = BrowserTab::from_html_with_vmjs_and_js_execution_options(html, options, js_options)?;
+    let diagnostics = tab
+      .diagnostics_snapshot()
+      .expect("expected BrowserTab diagnostics to be enabled");
+    assert!(
+      diagnostics.js_exceptions.iter().any(|exc| exc.message
+        == "RangeError: document.write exceeded max call count (limit=1)"),
+      "expected RangeError message to be captured, got: {diagnostics:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn js_document_write_is_noop_when_no_active_parser() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let executor = WindowRealmExecutor::new(Rc::clone(&log))?;
@@ -10254,7 +10332,8 @@ html, body { margin: 0; padding: 0; }
     let html = r#"<!doctype html><html><body>
       <script>
         setTimeout(() => {
-          document.write('<div id="postparse"></div>');
+          document.write('<div id="postparse1"></div>');
+          document.write('<div id="postparse2"></div>');
           document.body.setAttribute("data-timeout", "1");
         }, 0);
       </script>
@@ -10274,20 +10353,29 @@ html, body { margin: 0; padding: 0; }
       Some("1")
     );
     assert!(
-      dom.get_element_by_id("postparse").is_none(),
+      dom.get_element_by_id("postparse1").is_none(),
+      "expected post-parse document.write to be a deterministic no-op"
+    );
+    assert!(
+      dom.get_element_by_id("postparse2").is_none(),
       "expected post-parse document.write to be a deterministic no-op"
     );
 
     let diagnostics = tab
       .diagnostics_snapshot()
       .expect("diagnostics should be enabled");
-    assert!(
-      diagnostics.console_messages.iter().any(|msg| {
+    let warnings: Vec<_> = diagnostics
+      .console_messages
+      .iter()
+      .filter(|msg| {
         msg.level == crate::api::ConsoleMessageLevel::Warn
-          && msg.message.contains("document.write")
-          && msg.message.contains("no active streaming HTML parser")
-      }),
-      "expected a document.write post-parse warning, got console_messages={:?}",
+          && msg.message == crate::js::document_write::DOCUMENT_WRITE_IGNORED_NO_PARSER_WARNING
+      })
+      .collect();
+    assert_eq!(
+      warnings.len(),
+      1,
+      "expected exactly one stable post-parse document.write warning, got console_messages={:?}",
       diagnostics.console_messages
     );
 

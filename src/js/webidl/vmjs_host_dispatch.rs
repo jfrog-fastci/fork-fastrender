@@ -2067,6 +2067,12 @@ mod window_document_tests {
     VmError, VmHost, VmHostHooks, VmOptions,
   };
 
+  #[test]
+  fn url_search_params_iterator_kind_returns_error_for_unknown_operation() {
+    let err = url_search_params_iterator_kind("bogus").unwrap_err();
+    assert!(matches!(err, VmError::TypeError(_)));
+  }
+
   fn window_document_getter_native(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
