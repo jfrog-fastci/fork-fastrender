@@ -159,3 +159,41 @@ fn for_in_over_typed_array_skips_prototype_numeric_keys() {
     .unwrap();
   assert_value_is_utf8(&rt, value, "foo");
 }
+
+#[test]
+fn for_in_over_detached_typed_array_skips_indices_but_keeps_non_numeric_prototype_keys() {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+    Uint8Array.prototype['0']=7;
+    Uint8Array.prototype.foo=1;
+    u = new Uint8Array(2);
+    "#,
+  )
+  .unwrap();
+
+  let buffer = match rt.exec_script("u.buffer").unwrap() {
+    Value::Object(o) => o,
+    other => panic!("expected ArrayBuffer object, got {other:?}"),
+  };
+
+  // Detach from Rust to simulate transfer/structured-clone behaviour.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    heap.detach_array_buffer(buffer).unwrap();
+  }
+
+  let value = rt
+    .exec_script(
+      r#"
+      var s='';
+      for (var k in u) { s+=k; }
+      delete Uint8Array.prototype['0'];
+      delete Uint8Array.prototype.foo;
+      s
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "foo");
+}
