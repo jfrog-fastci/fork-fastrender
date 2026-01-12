@@ -44,22 +44,34 @@ fn vm_js_executor_smoke_pass_and_timeout() {
 
   let discovered = discover_tests(temp.path()).unwrap();
   let cases = expand_cases(&discovered, &Filter::All).unwrap();
+  let (pass_cases, timeout_cases): (Vec<_>, Vec<_>) =
+    cases.into_iter().partition(|c| c.id == "pass.js");
 
   let expectations = Expectations::empty();
   let executor = default_executor();
   let timeout_manager = TimeoutManager::new();
 
-  let results = test262_semantic::runner::run_cases(
+  // Run the passing cases with a generous timeout: this keeps the smoke test reliable on slower
+  // machines without impacting runtime (they should finish well before the timeout).
+  let mut results = test262_semantic::runner::run_cases(
     temp.path(),
     HarnessMode::Test262,
-    &cases,
+    &pass_cases,
     &expectations,
     executor.as_ref(),
-    // Keep this small to stay fast while leaving enough headroom that a cold CI machine doesn't
-    // spuriously time out `pass.js` during parsing/runtime initialization.
     Duration::from_millis(500),
     &timeout_manager,
   );
+  // Run the infinite-loop case with a short timeout so the test stays fast.
+  results.extend(test262_semantic::runner::run_cases(
+    temp.path(),
+    HarnessMode::Test262,
+    &timeout_cases,
+    &expectations,
+    executor.as_ref(),
+    Duration::from_millis(100),
+    &timeout_manager,
+  ));
 
   let mut by_id: HashMap<(&str, test262_semantic::report::Variant), &test262_semantic::report::TestResult> =
     HashMap::new();
