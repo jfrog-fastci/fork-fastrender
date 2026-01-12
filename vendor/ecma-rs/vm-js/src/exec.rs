@@ -22740,13 +22740,38 @@ pub(crate) fn run_module_until_await(
 
               let mut promise_scope = scope.reborrow();
               promise_scope.push_root(awaited_value)?;
-              let awaited_promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut promise_scope,
-                host,
-                hooks,
-                awaited_value,
-              )?;
+              let awaited_promise = if let Value::Object(obj) = awaited_value {
+                if promise_scope.heap().is_promise_object(obj) {
+                  let ctor_key_s = promise_scope.alloc_string("constructor")?;
+                  promise_scope.push_root(Value::String(ctor_key_s))?;
+                  let ctor_key = PropertyKey::from_string(ctor_key_s);
+                  let _ = promise_scope.ordinary_get_with_host_and_hooks(
+                    &mut *vm_frame,
+                    host,
+                    hooks,
+                    obj,
+                    ctor_key,
+                    Value::Object(obj),
+                  )?;
+                  awaited_value
+                } else {
+                  crate::promise_ops::promise_resolve_with_host_and_hooks(
+                    &mut *vm_frame,
+                    &mut promise_scope,
+                    host,
+                    hooks,
+                    awaited_value,
+                  )?
+                }
+              } else {
+                crate::promise_ops::promise_resolve_with_host_and_hooks(
+                  &mut *vm_frame,
+                  &mut promise_scope,
+                  host,
+                  hooks,
+                  awaited_value,
+                )?
+              };
               promise_scope.push_root(awaited_promise)?;
 
               // Convert fulfillment into rejection so the module resume machinery can treat it as
