@@ -286,6 +286,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
                 push_lowercase_ascii(&mut out, prefix);
               } else {
                 out.push_str(prefix);
+              }
               out.push_str("=\"");
               escape_attr_value(&mut out, ns_uri);
               out.push('"');

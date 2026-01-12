@@ -130,7 +130,7 @@ impl MutationObserverAgent {
   ///
   /// Some host integrations preserve JS identity by updating wrapper objects to point at new
   /// `dom2::NodeId`s. Mutation observer state stores `NodeId`s in:
-  /// - each observer's node list
+  /// - each observer's node list (observed targets + transient registrations)
   /// - queued mutation records
   ///
   /// This helper updates those references so subsequent deliveries return the correct JS nodes.

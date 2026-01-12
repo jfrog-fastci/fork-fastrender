@@ -34,6 +34,7 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
         NodeKind::Element {
           tag_name: tag.name().to_string(),
           namespace: tag.namespace().unwrap_or("").to_string(),
+          // `roxmltree` resolves namespaces but does not preserve the original namespace prefix.
           prefix: None,
           attributes,
         },

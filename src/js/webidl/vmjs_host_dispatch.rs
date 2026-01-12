@@ -2067,21 +2067,15 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
             let any = host.as_any_mut();
             if let Some(host) = any.downcast_mut::<DocumentHostState>() {
-              Ok(DomHost::mutate_dom(
-                host,
-                |dom| match dom.set_element_class_name(element_id, &value) {
+              Ok(DomHost::mutate_dom(host, |dom| match dom.set_element_class_name(element_id, &value) {
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
-              },
-              ))
+              }))
             } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
-              Ok(DomHost::mutate_dom(
-                host,
-                |dom| match dom.set_element_class_name(element_id, &value) {
+              Ok(DomHost::mutate_dom(host, |dom| match dom.set_element_class_name(element_id, &value) {
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
-              },
-              ))
+              }))
             } else {
               Err(VmError::TypeError("DOM host not available"))
             }

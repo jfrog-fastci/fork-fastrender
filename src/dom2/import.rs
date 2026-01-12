@@ -39,6 +39,7 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
         NodeKind::Element {
           tag_name: "slot".to_string(),
           namespace: namespace.clone(),
+          prefix: None,
           attributes: attributes.clone(),
         }
       }

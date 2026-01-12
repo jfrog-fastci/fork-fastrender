@@ -217,7 +217,7 @@ impl Document {
     let node = self.node_checked(textarea)?;
     match &node.kind {
       NodeKind::Element { tag_name, namespace, .. }
-        if is_html_namespace(namespace) && tag_name.eq_ignore_ascii_case("textarea") => {}
+        if self.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("textarea") => {}
       _ => return Err(DomError::InvalidNodeType),
     }
 
@@ -245,7 +245,7 @@ impl Document {
     let node = self.node_checked(form)?;
     match &node.kind {
       NodeKind::Element { tag_name, namespace, .. }
-        if is_html_namespace(namespace) && tag_name.eq_ignore_ascii_case("form") => {}
+        if self.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("form") => {}
       _ => return Err(DomError::InvalidNodeType),
     }
 

@@ -539,6 +539,7 @@ impl Document {
       root: NodeId(0),
       ready_state: DocumentReadyState::Loading,
       events: web_events::EventListenerRegistry::new(),
+      has_window_event_parent: false,
       // DOMParser "text/xml"/"application/xml"/... flavors return a Document with scripting disabled.
       scripting_enabled: false,
       mutations: MutationLog::default(),
@@ -546,6 +547,10 @@ impl Document {
       selector_snapshot_cache: None,
       mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
       live_mutation: live_mutation::LiveMutation::default(),
+      intersection_observers: intersection_observer::IntersectionObserverRegistry::new(0),
+      resize_observers: resize_observer::ResizeObserverRegistry::new(0),
+      node_iterators: FxHashMap::default(),
+      next_node_iterator_id: 1,
     };
     let root = doc.push_node(
       NodeKind::Document {
@@ -758,10 +763,10 @@ impl Document {
   pub fn set_script_already_started(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
     // This is a per-script-element internal slot that does not affect rendering. Avoid bumping the
     // mutation generation so hosts can use it to detect *real* DOM changes.
-    let node = self.node_checked_mut(node)?;
-    if !self.kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&self.node_checked(node)?.kind) {
       return Err(DomError::InvalidNodeType);
     }
+    let node = self.node_checked_mut(node)?;
     node.script_already_started = value;
     Ok(())
   }
@@ -775,10 +780,10 @@ impl Document {
   }
 
   pub fn set_script_force_async(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
-    let node = self.node_checked_mut(node)?;
-    if !self.kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&self.node_checked(node)?.kind) {
       return Err(DomError::InvalidNodeType);
     }
+    let node = self.node_checked_mut(node)?;
     node.script_force_async = value;
     Ok(())
   }
@@ -791,10 +796,10 @@ impl Document {
     Ok(node.script_parser_document)
   }
   pub fn set_script_parser_document(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
-    let node = self.node_checked_mut(node)?;
-    if !self.kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&self.node_checked(node)?.kind) {
       return Err(DomError::InvalidNodeType);
     }
+    let node = self.node_checked_mut(node)?;
     node.script_parser_document = value;
     Ok(())
   }

@@ -3517,36 +3517,6 @@ fn window_scroll_by_native(
   Ok(Value::Undefined)
 }
 
-fn window_scroll_x_get_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
-    return Ok(Value::Number(0.0));
-  };
-  Ok(Value::Number(document.viewport_scroll_offset().x as f64))
-}
-
-fn window_scroll_y_get_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
-    return Ok(Value::Number(0.0));
-  };
-  Ok(Value::Number(document.viewport_scroll_offset().y as f64))
-}
-
 fn serialized_origin_for_document_url(url: &str) -> String {
   let Ok(url) = Url::parse(url) else {
     return "null".to_string();
@@ -4179,8 +4149,8 @@ fn dispatch_hashchange_event<Host: WindowRealmHost + 'static>(
   old_url: &str,
   new_url: &str,
 ) -> crate::error::Result<()> {
-  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
   hooks.set_event_loop(event_loop);
   window_realm.reset_interrupt();
 
@@ -12438,7 +12408,40 @@ fn alloc_mutation_records_array(
 /// implementations rely on the rect fields being real `DOMRectReadOnly` instances rather than
 /// plain `{x,y,width,height}` objects.
 #[allow(dead_code)]
+pub(crate) fn alloc_intersection_observer_entry_object(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  root_bounds: Option<(f64, f64, f64, f64)>,
+  bounding_client_rect: (f64, f64, f64, f64),
+  intersection_rect: (f64, f64, f64, f64),
+) -> Result<GcObject, VmError> {
+  alloc_intersection_observer_entry_dom_rects_object(
+    scope,
+    global,
+    root_bounds,
+    bounding_client_rect,
+    intersection_rect,
+  )
+}
+
+#[allow(dead_code)]
 pub(crate) fn alloc_intersection_observer_entry_dom_rects_object(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  root_bounds: Option<(f64, f64, f64, f64)>,
+  bounding_client_rect: (f64, f64, f64, f64),
+  intersection_rect: (f64, f64, f64, f64),
+) -> Result<GcObject, VmError> {
+  alloc_intersection_observer_entry_object_with_dom_rects(
+    scope,
+    global,
+    root_bounds,
+    bounding_client_rect,
+    intersection_rect,
+  )
+}
+
+pub(crate) fn alloc_intersection_observer_entry_object_with_dom_rects(
   scope: &mut Scope<'_>,
   global: GcObject,
   root_bounds: Option<(f64, f64, f64, f64)>,
@@ -12492,6 +12495,22 @@ pub(crate) fn alloc_intersection_observer_entry_dom_rects_object(
 /// Allocates a `ResizeObserverEntry`-shaped object.
 #[allow(dead_code)]
 pub(crate) fn alloc_resize_observer_entry_dom_rect_object(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  content_rect: (f64, f64, f64, f64),
+) -> Result<GcObject, VmError> {
+  alloc_resize_observer_entry_object_with_dom_rects(scope, global, content_rect)
+}
+
+pub(crate) fn alloc_resize_observer_entry_object(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  content_rect: (f64, f64, f64, f64),
+) -> Result<GcObject, VmError> {
+  alloc_resize_observer_entry_dom_rect_object(scope, global, content_rect)
+}
+
+pub(crate) fn alloc_resize_observer_entry_object_with_dom_rects(
   scope: &mut Scope<'_>,
   global: GcObject,
   content_rect: (f64, f64, f64, f64),
@@ -12745,13 +12764,14 @@ fn mutation_observer_notify_native(
   };
 
   let document_id = gc_object_id(document_obj);
-  let (deliveries, dom_for_wrappers) = if is_host_document_id(vm, document_id) {
+  let (deliveries, dom_for_wrappers, dom_for_wrappers_from_host) = if is_host_document_id(vm, document_id) {
     let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
       return Ok(Value::Undefined);
     };
     (
       dom_host.mutation_observer_take_deliveries(),
-      dom_from_vm_host(host),
+      None,
+      true,
     )
   } else {
     let Some(mut dom_ptr) = (|| {
@@ -12765,7 +12785,7 @@ fn mutation_observer_notify_native(
     let deliveries = unsafe { dom_ptr.as_mut() }.mutation_observer_take_deliveries();
     // SAFETY: `dom_ptr` remains valid while the owning document stays registered.
     let dom_for_wrappers = Some(unsafe { dom_ptr.as_ref() });
-    (deliveries, dom_for_wrappers)
+    (deliveries, dom_for_wrappers, false)
   };
   if deliveries.is_empty() {
     return Ok(Value::Undefined);
@@ -12798,6 +12818,11 @@ fn mutation_observer_notify_native(
     }
 
     let records_array = {
+      let dom_for_wrappers = if dom_for_wrappers_from_host {
+        dom_from_vm_host(host)
+      } else {
+        dom_for_wrappers
+      };
       alloc_mutation_records_array(vm, scope, document_obj, dom_for_wrappers, &records)?
     };
     let args = [Value::Object(records_array), Value::Object(observer_obj)];
