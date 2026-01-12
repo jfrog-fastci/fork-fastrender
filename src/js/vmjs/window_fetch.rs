@@ -8186,10 +8186,12 @@ mod tests {
     EventLoop, RunLimits, RunNextTaskLimitedOutcome, RunUntilIdleOutcome, RunUntilIdleStopReason,
   };
   use crate::js::realm_module_loader::ModuleLoader;
+  use crate::js::window::WindowHost;
   use crate::js::window_realm::WindowRealm;
   use crate::js::window_realm::WindowRealmConfig;
   use crate::js::JsExecutionOptions;
   use crate::resource::FetchedResource;
+  use selectors::context::QuirksMode;
   use std::cell::RefCell;
   use std::collections::VecDeque;
   use std::rc::Rc;
@@ -8283,6 +8285,41 @@ mod tests {
   impl VmHostHooks for JobQueueHooks {
     fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
       self.jobs.push_back((job, realm));
+    }
+  }
+
+  fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
+    let window = host.host_mut().window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope
+      .push_root(Value::Object(global))
+      .expect("push root global");
+    let key_s = scope.alloc_string(name).expect("alloc key");
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push root key");
+    let key = PropertyKey::from_string(key_s);
+    vm.get(&mut scope, global, key).expect("get global prop")
+  }
+
+  fn get_global_prop_utf8(host: &mut WindowHost, name: &str) -> Option<String> {
+    let window = host.host_mut().window_mut();
+    let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope
+      .push_root(Value::Object(global))
+      .expect("push root global");
+    let key_s = scope.alloc_string(name).ok()?;
+    scope.push_root(Value::String(key_s)).ok()?;
+    let key = PropertyKey::from_string(key_s);
+    let value = scope.heap().get(global, &key).ok()?;
+    match value {
+      Value::String(s) => Some(scope.heap().get_string(s).ok()?.to_utf8_lossy()),
+      Value::Undefined => Some(String::new()),
+      _ => None,
     }
   }
 
@@ -14544,6 +14581,139 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
     assert_eq!(host.bindings_host.calls, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_readable_stream_pipe_to_and_pipe_through_pump() -> crate::error::Result<()> {
+    let dom = crate::dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__out = "";
+      globalThis.__err = "";
+      globalThis.__closed = false;
+      globalThis.__chunks = [];
+
+      const src = new Response("ok").body;
+      const dest = {
+        getWriter() {
+          return {
+            write(chunk) {
+              try { globalThis.__chunks.push(new TextDecoder().decode(chunk)); }
+              catch (e) { globalThis.__err = String(e && e.message || e); }
+              return Promise.resolve();
+            },
+            close() {
+              globalThis.__closed = true;
+              return Promise.resolve();
+            }
+          };
+        }
+      };
+
+      src.pipeTo(dest)
+        .then(() => { globalThis.__out = globalThis.__chunks.join(""); })
+        .catch(e => { globalThis.__err = String(e && e.message || e); });
+
+      globalThis.__out2 = "";
+      globalThis.__err2 = "";
+      globalThis.__closed2 = false;
+      globalThis.__chunks2 = [];
+
+      const dest2 = {
+        getWriter() {
+          return {
+            write(chunk) {
+              try { globalThis.__chunks2.push(new TextDecoder().decode(chunk)); }
+              catch (e) { globalThis.__err2 = String(e && e.message || e); }
+              return Promise.resolve();
+            },
+            close() {
+              globalThis.__closed2 = true;
+              return Promise.resolve();
+            }
+          };
+        }
+      };
+
+      new Response("ok").body
+        .pipeTo(dest2, { preventClose: true })
+        .then(() => { globalThis.__out2 = globalThis.__chunks2.join(""); })
+        .catch(e => { globalThis.__err2 = String(e && e.message || e); });
+
+      globalThis.__through_ok = false;
+      globalThis.__through_out = "";
+      globalThis.__through_err = "";
+      globalThis.__through_closed = false;
+      globalThis.__through_throw = false;
+      globalThis.__through_chunks = [];
+
+      const throughReadable = {};
+      const throughDest = {
+        getWriter() {
+          return {
+            write(chunk) {
+              try { globalThis.__through_chunks.push(new TextDecoder().decode(chunk)); }
+              catch (e) { globalThis.__through_err = String(e && e.message || e); }
+              return Promise.resolve();
+            },
+            close() {
+              globalThis.__through_closed = true;
+              globalThis.__through_out = globalThis.__through_chunks.join("");
+              return Promise.resolve();
+            }
+          };
+        }
+      };
+      const transform = { writable: throughDest, readable: throughReadable };
+      const returned = new Response("ok").body.pipeThrough(transform);
+      globalThis.__through_ok = returned === throughReadable;
+
+      try { new Response("ok").body.pipeThrough(null); }
+      catch (e) { globalThis.__through_throw = e instanceof TypeError; }
+      "#,
+    )?;
+
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(get_global_prop_utf8(&mut host, "__out").unwrap_or_default(), "ok");
+    assert!(matches!(get_global_prop(&mut host, "__closed"), Value::Bool(true)));
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err2").unwrap_or_default(), "");
+    assert_eq!(get_global_prop_utf8(&mut host, "__out2").unwrap_or_default(), "ok");
+    assert!(matches!(
+      get_global_prop(&mut host, "__closed2"),
+      Value::Bool(false)
+    ));
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__through_err").unwrap_or_default(),
+      ""
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__through_out").unwrap_or_default(),
+      "ok"
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__through_ok"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__through_closed"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__through_throw"),
+      Value::Bool(true)
+    ));
+
     Ok(())
   }
 }

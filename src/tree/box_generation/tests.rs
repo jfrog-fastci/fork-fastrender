@@ -67,7 +67,7 @@ fn generate_box_tree_with_anonymous_fixup(styled: &StyledNode) -> BoxTree {
   generate_box_tree_with_anonymous_fixup_result(styled).expect("anonymous box generation failed")
 }
 
-fn serialized_inline_svg(html: &str, width: f32, height: f32) -> Option<SvgContent> {
+fn serialized_inline_svg_content_from_html(html: &str, width: f32, height: f32) -> Option<SvgContent> {
   let dom = dom::parse_html(html).ok()?;
   let stylesheet = extract_css(&dom).ok()?;
   let media = MediaContext::screen(width, height);
@@ -7599,7 +7599,7 @@ fn svg_document_css_forced_on_injects_even_without_class_or_id() {
       "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
       "1".to_string(),
     )]))),
-    || serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg"),
+    || serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg"),
   );
 
   assert!(
@@ -7629,7 +7629,7 @@ fn svg_document_css_embedding_policy_respects_svg_count_overrides_and_size_limit
       "FASTR_SVG_EMBED_DOCUMENT_CSS_MAX_SVGS".to_string(),
       "1".to_string(),
     )]))),
-    || serialized_inline_svg(html_many_svgs, 20.0, 20.0).expect("serialize svg"),
+    || serialized_inline_svg_content_from_html(html_many_svgs, 20.0, 20.0).expect("serialize svg"),
   );
   assert!(
     disabled.document_css_injection.is_none(),
@@ -7649,7 +7649,7 @@ fn svg_document_css_embedding_policy_respects_svg_count_overrides_and_size_limit
         "1".to_string(),
       ),
     ]))),
-    || serialized_inline_svg(html_many_svgs, 20.0, 20.0).expect("serialize svg"),
+    || serialized_inline_svg_content_from_html(html_many_svgs, 20.0, 20.0).expect("serialize svg"),
   );
   assert!(
     forced_on.document_css_injection.is_some(),
@@ -7678,7 +7678,7 @@ fn svg_document_css_embedding_policy_respects_svg_count_overrides_and_size_limit
       "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
       "0".to_string(),
     )]))),
-    || serialized_inline_svg(html_one_svg, 20.0, 20.0).expect("serialize svg"),
+    || serialized_inline_svg_content_from_html(html_one_svg, 20.0, 20.0).expect("serialize svg"),
   );
   assert!(
     forced_off.document_css_injection.is_none(),
@@ -7700,7 +7700,7 @@ fn svg_document_css_embedding_policy_respects_svg_count_overrides_and_size_limit
       "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
       "1".to_string(),
     )]))),
-    || serialized_inline_svg(&html_oversized_css, 20.0, 20.0).expect("serialize svg"),
+    || serialized_inline_svg_content_from_html(&html_oversized_css, 20.0, 20.0).expect("serialize svg"),
   );
   assert!(
     forced_on_oversized.document_css_injection.is_none(),
