@@ -12859,8 +12859,7 @@ pub fn string_raw(
   let raw_key_s = scope.alloc_string("raw")?;
   scope.push_root(Value::String(raw_key_s))?;
   let raw_key = PropertyKey::from_string(raw_key_s);
-  let raw_val =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, template, raw_key, Value::Object(template))?;
+  let raw_val = scope.get_with_host_and_hooks(vm, host, hooks, template, raw_key, Value::Object(template))?;
   scope.push_root(raw_val)?;
   let raw = scope.to_object(vm, host, hooks, raw_val)?;
   scope.push_root(Value::Object(raw))?;
@@ -12868,14 +12867,7 @@ pub fn string_raw(
   let length_key_s = scope.alloc_string("length")?;
   scope.push_root(Value::String(length_key_s))?;
   let length_key = PropertyKey::from_string(length_key_s);
-  let length_val = scope.ordinary_get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    raw,
-    length_key,
-    Value::Object(raw),
-  )?;
+  let length_val = scope.get_with_host_and_hooks(vm, host, hooks, raw, length_key, Value::Object(raw))?;
   scope.push_root(length_val)?;
   let literal_segments = scope.to_length(vm, host, hooks, length_val)?;
 
@@ -12899,14 +12891,7 @@ pub fn string_raw(
       let idx_s = iter_scope.alloc_string(&i.to_string())?;
       iter_scope.push_root(Value::String(idx_s))?;
       let idx_key = PropertyKey::from_string(idx_s);
-      let next_seg = iter_scope.ordinary_get_with_host_and_hooks(
-        vm,
-        host,
-        hooks,
-        raw,
-        idx_key,
-        Value::Object(raw),
-      )?;
+      let next_seg = iter_scope.get_with_host_and_hooks(vm, host, hooks, raw, idx_key, Value::Object(raw))?;
       iter_scope.push_root(next_seg)?;
       let next_seg_s = iter_scope.to_string(vm, host, hooks, next_seg)?;
       iter_scope.push_root(Value::String(next_seg_s))?;
