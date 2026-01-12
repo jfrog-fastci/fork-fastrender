@@ -3231,12 +3231,41 @@ pub fn span_of_def(db: &dyn Db, def: DefId) -> Option<Span> {
 /// available the query returns `None` to avoid triggering type checking from
 /// within salsa.
 pub fn type_at(db: &dyn Db, file: FileId, offset: u32) -> Option<TypeId> {
-  let (body, expr) = expr_at(db, file, offset)?;
-  let result = db.body_result(body)?;
-  if let Some((_, ty)) = result.expr_at(offset) {
-    return Some(ty);
+  let index = file_span_index(db, file);
+  let mut body = index.body_at(offset)?;
+  let mut visited: HashSet<BodyId> = HashSet::new();
+
+  // `SpanMap::body_at_offset` returns the innermost body syntactically covering
+  // the offset. Some nested bodies (notably synthesized initializer bodies) can
+  // overlap expression spans in their parent body. When only the parent body has
+  // been checked and cached, we still want offset-based queries to surface the
+  // best available type instead of returning `None`.
+  //
+  // Walk up the body parent chain until we find a cached result that contains an
+  // expression covering the offset.
+  loop {
+    if !visited.insert(body) {
+      break;
+    }
+
+    if let Some(result) = db.body_result(body) {
+      if let Some((_, ty)) = result.expr_at(offset) {
+        return Some(ty);
+      }
+
+      // Fallback: if the cached body did not record an expression at the offset
+      // but the HIR span index does, try resolving via the expression id.
+      if let Some((expr, _span)) = index.expr_at_in_body(body, offset) {
+        if let Some(ty) = result.expr_type(expr) {
+          return Some(ty);
+        }
+      }
+    }
+
+    body = body_parent(db, body)?;
   }
-  result.expr_type(expr)
+
+  None
 }
 
 /// Host-provided module resolution result.
