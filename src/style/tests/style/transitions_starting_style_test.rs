@@ -1,5 +1,5 @@
 use fastrender::animation;
-use fastrender::api::{FastRender, RenderOptions};
+use fastrender::{FastRender, FontConfig, RenderOptions};
 use fastrender::css::types::{BoxShadow, TextShadow};
 use fastrender::FontConfig;
 use fastrender::style::cascade::StyledNode;

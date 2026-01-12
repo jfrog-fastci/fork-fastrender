@@ -4333,6 +4333,10 @@ impl FastRenderFactory {
   pub fn build_renderer(&self) -> Result<FastRender> {
     self.shared.build_renderer()
   }
+
+  pub(crate) fn runtime_toggles(&self) -> Arc<RuntimeToggles> {
+    Arc::clone(&self.shared.config.runtime_toggles)
+  }
 }
 
 /// Pool of reusable [`FastRender`] instances.

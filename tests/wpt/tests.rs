@@ -714,20 +714,17 @@ mod wpt_runner_tests {
   #[test]
   fn test_wpt_env_ignore_alpha_is_reflected_in_config() {
     let harness = HarnessConfig::default();
-    let env = HashMap::from([("WPT_IGNORE_ALPHA", "1")]);
-    let compare = harness
-      .compare_config_from_lookup(|key| env.get(key).copied())
-      .unwrap();
+    let vars = HashMap::from([("WPT_IGNORE_ALPHA".to_string(), "1".to_string())]);
+    let compare = harness.compare_config_from_env_map(&vars).unwrap();
     assert!(!compare.compare_alpha);
   }
 
   #[test]
   fn test_wpt_env_max_perceptual_distance_is_reflected_in_config() {
     let harness = HarnessConfig::default();
-    let env = HashMap::from([("WPT_MAX_PERCEPTUAL_DISTANCE", "0.123")]);
-    let compare = harness
-      .compare_config_from_lookup(|key| env.get(key).copied())
-      .unwrap();
+    let vars =
+      HashMap::from([("WPT_MAX_PERCEPTUAL_DISTANCE".to_string(), "0.123".to_string())]);
+    let compare = harness.compare_config_from_env_map(&vars).unwrap();
     assert_eq!(compare.max_perceptual_distance, Some(0.123));
   }
 

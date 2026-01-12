@@ -13,7 +13,6 @@ fn ensure_rayon_threads() {
     .max(1);
   crate::testing::init_rayon_for_tests(threads);
 }
-
 #[derive(Debug, Clone)]
 struct CellInfo {
   rect: Rect,

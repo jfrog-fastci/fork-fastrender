@@ -773,6 +773,13 @@ impl HarnessConfig {
     Ok(config)
   }
 
+  pub fn compare_config_from_env_map(
+    &self,
+    vars: &HashMap<String, String>,
+  ) -> Result<CompareConfig, String> {
+    self.compare_config_from_lookup(|key| vars.get(key).map(|value| value.as_str()))
+  }
+
   pub fn compare_config_from_env(&self) -> Result<CompareConfig, String> {
     let mut vars = HashMap::<&'static str, String>::new();
 
@@ -1157,11 +1164,7 @@ mod tests {
       .with_compare_alpha(false)
       .with_max_perceptual_distance(Some(0.123));
 
-    let env: HashMap<&'static str, &'static str> = HashMap::new();
-    let config = harness
-      .compare_config_from_lookup(|key| env.get(key).copied())
-      .unwrap();
-
+    let config = harness.compare_config_from_env_map(&HashMap::new()).unwrap();
     assert_eq!(config.channel_tolerance, 7);
     assert_eq!(config.max_different_percent, 0.25);
     assert!(!config.compare_alpha);
@@ -1175,12 +1178,8 @@ mod tests {
       .with_tolerance(1)
       .with_max_diff(0.0)
       .with_compare_alpha(true);
-
-    let env = HashMap::from([("WPT_FUZZY", "1")]);
-    let config = harness
-      .compare_config_from_lookup(|key| env.get(key).copied())
-      .unwrap();
-
+    let vars = HashMap::from([("WPT_FUZZY".to_string(), "1".to_string())]);
+    let config = harness.compare_config_from_env_map(&vars).unwrap();
     assert_eq!(config.channel_tolerance, CompareConfig::fuzzy().channel_tolerance);
     assert_eq!(
       config.max_different_percent,
@@ -1200,18 +1199,13 @@ mod tests {
       .with_max_diff(0.0)
       .with_compare_alpha(true)
       .with_max_perceptual_distance(None);
-
-    let env = HashMap::from([
-      ("WPT_TOLERANCE", "5"),
-      ("WPT_MAX_DIFFERENT_PERCENT", "2.5"),
-      ("WPT_IGNORE_ALPHA", "1"),
-      ("WPT_MAX_PERCEPTUAL_DISTANCE", "0.42"),
+    let vars = HashMap::from([
+      ("WPT_TOLERANCE".to_string(), "5".to_string()),
+      ("WPT_MAX_DIFFERENT_PERCENT".to_string(), "2.5".to_string()),
+      ("WPT_IGNORE_ALPHA".to_string(), "1".to_string()),
+      ("WPT_MAX_PERCEPTUAL_DISTANCE".to_string(), "0.42".to_string()),
     ]);
-
-    let config = harness
-      .compare_config_from_lookup(|key| env.get(key).copied())
-      .unwrap();
-
+    let config = harness.compare_config_from_env_map(&vars).unwrap();
     assert_eq!(config.channel_tolerance, 5);
     assert_eq!(config.max_different_percent, 2.5);
     assert!(!config.compare_alpha);
@@ -1221,10 +1215,11 @@ mod tests {
   #[test]
   fn test_compare_config_from_env_rejects_invalid_values() {
     let harness = HarnessConfig::default();
-    let env = HashMap::from([("WPT_TOLERANCE", "not-a-number")]);
-    let err = harness
-      .compare_config_from_lookup(|key| env.get(key).copied())
-      .unwrap_err();
+    let vars = HashMap::from([(
+      "WPT_TOLERANCE".to_string(),
+      "not-a-number".to_string(),
+    )]);
+    let err = harness.compare_config_from_env_map(&vars).unwrap_err();
     assert!(err.contains("Invalid WPT_TOLERANCE"));
   }
 

@@ -5362,6 +5362,8 @@ fn spawn_worker_with_factory_inner(
         })
         .expect("spawn UI worker router thread");
 
+      let _runtime_toggles_guard =
+        crate::debug::runtime::set_thread_runtime_toggles(factory.runtime_toggles());
       let mut runtime = BrowserRuntime::new(runtime_rx, worker_to_ui_tx, factory, downloads);
       runtime.run();
 

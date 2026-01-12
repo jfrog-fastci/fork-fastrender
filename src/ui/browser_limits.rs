@@ -9,6 +9,8 @@
 //! - the UI never requests absurd allocations from the worker, and
 //! - the worker is still robust if other frontends send insane values.
 
+use crate::debug::runtime;
+
 /// Environment variable override for [`BrowserLimits::max_pixels`].
 pub const ENV_MAX_PIXELS: &str = "FASTR_BROWSER_MAX_PIXELS";
 /// Environment variable override for [`BrowserLimits::max_dim_px`].
@@ -56,8 +58,8 @@ impl BrowserLimits {
   /// Invalid / empty values are ignored (defaults remain in effect). Underscore separators are
   /// accepted (e.g. `50_000_000`).
   pub fn from_env() -> Self {
-    let toggles = crate::debug::runtime::runtime_toggles();
     let mut out = Self::default();
+    let toggles = runtime::runtime_toggles();
 
     if let Some(v) = parse_env_u64(toggles.get(ENV_MAX_PIXELS)) {
       out.max_pixels = v.max(1);
