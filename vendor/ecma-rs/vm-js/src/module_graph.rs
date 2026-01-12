@@ -675,7 +675,6 @@ impl ModuleGraph {
 
     // Mark linking in progress (cycle-safe).
     self.modules[idx].status = ModuleStatus::Linking;
-
     let link_result = (|| -> Result<(), VmError> {
       // Ensure the module has an environment root allocated early so cycles can create import bindings
       // to it.
@@ -690,6 +689,7 @@ impl ModuleGraph {
       let requested_modules = self.modules[idx].requested_modules.clone();
       let import_entries = self.modules[idx].import_entries.clone();
       let local_exports = self.modules[idx].local_export_entries.clone();
+      let indirect_exports = self.modules[idx].indirect_export_entries.clone();
       let source = self.modules[idx]
         .source
         .clone()
@@ -709,6 +709,46 @@ impl ModuleGraph {
           .get_imported_module(module, &request)
           .ok_or(VmError::Unimplemented("unlinked module request"))?;
         self.link_inner(vm, scope, global_object, imported)?;
+      }
+
+      // Validate `[[IndirectExportEntries]]` (re-exports).
+      //
+      // ECMA-262 requires `ModuleDeclarationInstantiation` to throw a SyntaxError if any indirect
+      // export does not resolve to a concrete binding. This ensures broken re-exports fail during
+      // linking (test262 `negative.phase: resolution`) even when no other module imports them.
+      for (i, entry) in indirect_exports.into_iter().enumerate() {
+        if i % LINK_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
+        }
+
+        let resolution =
+          self.modules[idx].resolve_export_with_vm(vm, self, module, &entry.export_name)?;
+
+        match resolution {
+          ResolveExportResult::Resolved(_) => {}
+          ResolveExportResult::NotFound => {
+            let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+              "module linking requires intrinsics to create SyntaxError objects",
+            ))?;
+            let message = format!(
+              "Indirect export '{}' could not be resolved (re-export from '{}')",
+              entry.export_name, entry.module_request.specifier
+            );
+            let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
+            return Err(VmError::Throw(err_obj));
+          }
+          ResolveExportResult::Ambiguous => {
+            let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+              "module linking requires intrinsics to create SyntaxError objects",
+            ))?;
+            let message = format!(
+              "Indirect export '{}' is ambiguous (re-export from '{}')",
+              entry.export_name, entry.module_request.specifier
+            );
+            let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
+            return Err(VmError::Throw(err_obj));
+          }
+        }
       }
 
       let env_root = self.modules[idx]
