@@ -1348,8 +1348,8 @@ NEW: knowledge-base/
 
 Developer docs for the native TS→LLVM pipeline:
 
-- [`native-js/README.md`](./native-js/README.md)
-- [`native-js-cli/README.md`](./native-js-cli/README.md)
+- [`native-js/README.md`](../native-js/README.md)
+- [`native-js-cli/README.md`](../native-js-cli/README.md)
 
 ---
 
