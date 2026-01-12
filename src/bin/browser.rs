@@ -461,6 +461,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use winit::window::Theme;
   use winit::window::WindowBuilder;
 
+  let theme_override = fastrender::ui::theme::theme_mode_override_from_env();
+  let window_theme_override = match theme_override {
+    Some(fastrender::ui::theme::ThemeMode::Light) => Some(Theme::Light),
+    Some(fastrender::ui::theme::ThemeMode::Dark) => Some(Theme::Dark),
+    _ => None,
+  };
+
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
   let window_icon = load_window_icon();
@@ -469,9 +476,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_inner_size(LogicalSize::new(1200.0, 800.0))
     .with_min_inner_size(LogicalSize::new(480.0, 320.0))
     .with_window_icon(window_icon)
-    // Prefer a consistent in-app theme for now so the native titlebar doesn't clash badly with
-    // our egui chrome.
-    .with_theme(Some(Theme::Dark));
+    // Match native window chrome to the browser theme override when one is set; otherwise follow
+    // the system theme.
+    .with_theme(window_theme_override);
 
   // Platform-native titlebar integration.
   //
@@ -538,6 +545,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ui_to_worker_tx,
     worker_join,
     wgpu_init,
+    theme_override,
   ))?;
   app.startup(startup_session);
 
@@ -642,8 +650,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             app.window.request_redraw();
           }
           WindowEvent::ThemeChanged(theme) => {
-            app.apply_system_theme(theme);
-            app.window.request_redraw();
+            if app.refresh_theme_from_system_theme(Some(theme)) {
+              app.window.request_redraw();
+            }
           }
           _ => {}
         }
@@ -1084,6 +1093,9 @@ struct App {
   egui_renderer: egui_wgpu::Renderer,
   pixels_per_point: f32,
   browser_limits: fastrender::ui::browser_limits::BrowserLimits,
+  theme_override: Option<fastrender::ui::theme::ThemeMode>,
+  theme: fastrender::ui::theme::BrowserTheme,
+  clear_color: wgpu::Color,
 
   ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
   worker_join: Option<std::thread::JoinHandle<()>>,
@@ -1169,6 +1181,40 @@ impl App {
   const DEBUG_LOG_MAX_LINES: usize = 200;
   const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
+  fn refresh_theme_from_system_theme(&mut self, system_theme: Option<winit::window::Theme>) -> bool {
+    use fastrender::ui::theme::ThemeMode;
+
+    let resolved_mode = match self.theme_override.unwrap_or(ThemeMode::System) {
+      ThemeMode::Light => ThemeMode::Light,
+      ThemeMode::Dark => ThemeMode::Dark,
+      ThemeMode::System => match system_theme {
+        Some(winit::window::Theme::Dark) => ThemeMode::Dark,
+        Some(winit::window::Theme::Light) => ThemeMode::Light,
+        None => ThemeMode::Light,
+      },
+    };
+
+    if resolved_mode == self.theme.mode {
+      return false;
+    }
+
+    self.theme = match resolved_mode {
+      fastrender::ui::theme::ThemeMode::Dark => fastrender::ui::theme::BrowserTheme::dark(None),
+      _ => fastrender::ui::theme::BrowserTheme::light(None),
+    };
+    fastrender::ui::theme::apply_browser_theme(&self.egui_ctx, &self.theme);
+
+    let bg = self.theme.colors.bg;
+    self.clear_color = wgpu::Color {
+      r: bg.r() as f64 / 255.0,
+      g: bg.g() as f64 / 255.0,
+      b: bg.b() as f64 / 255.0,
+      a: bg.a() as f64 / 255.0,
+    };
+
+    true
+  }
+
   fn cursor_over_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
     let pos = fastrender::Point::new(pos_points.x, pos_points.y);
     self
@@ -1212,6 +1258,7 @@ impl App {
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
     worker_join: std::thread::JoinHandle<()>,
     wgpu_init: WgpuInitOptions,
+    theme_override: Option<fastrender::ui::theme::ThemeMode>,
   ) -> Result<Self, Box<dyn std::error::Error>> {
     // Enable OS IME integration (WindowEvent::Ime) so the page can handle non-Latin input methods.
     // Egui manages IME for chrome text fields; we forward IME events to the page when appropriate.
@@ -1221,14 +1268,23 @@ impl App {
 
     let egui_ctx = egui::Context::default();
     egui_ctx.set_pixels_per_point(pixels_per_point);
-    if let Some(theme) = window.theme() {
-      let visuals = match theme {
-        winit::window::Theme::Dark => egui::Visuals::dark(),
-        winit::window::Theme::Light => egui::Visuals::light(),
-      };
-      egui_ctx.set_visuals(visuals);
-    }
     let egui_state = egui_winit::State::new(event_loop);
+
+    let theme_mode = fastrender::ui::theme::resolve_theme_mode(&window, theme_override);
+    let theme = match theme_mode {
+      fastrender::ui::theme::ThemeMode::Dark => fastrender::ui::theme::BrowserTheme::dark(None),
+      _ => fastrender::ui::theme::BrowserTheme::light(None),
+    };
+    fastrender::ui::theme::apply_browser_theme(&egui_ctx, &theme);
+    let clear_color = {
+      let bg = theme.colors.bg;
+      wgpu::Color {
+        r: bg.r() as f64 / 255.0,
+        g: bg.g() as f64 / 255.0,
+        b: bg.b() as f64 / 255.0,
+        a: bg.a() as f64 / 255.0,
+      }
+    };
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
       backends: wgpu_init.backends,
@@ -1373,6 +1429,9 @@ error: {err}",
       egui_renderer,
       pixels_per_point,
       browser_limits: fastrender::ui::browser_limits::BrowserLimits::from_env(),
+      theme_override,
+      theme,
+      clear_color,
       ui_to_worker_tx,
       worker_join: Some(worker_join),
       browser_state: fastrender::ui::BrowserAppState::new(),
@@ -1660,14 +1719,6 @@ error: {err}",
     // Invalidate the cached viewport so the worker receives the new DPR: changing the DPI scale
     // factor affects the effective device pixel ratio used for rendering.
     self.viewport_cache_tab = None;
-  }
-
-  fn apply_system_theme(&mut self, theme: winit::window::Theme) {
-    let visuals = match theme {
-      winit::window::Theme::Dark => egui::Visuals::dark(),
-      winit::window::Theme::Light => egui::Visuals::light(),
-    };
-    self.egui_ctx.set_visuals(visuals);
   }
 
   fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -2270,16 +2321,26 @@ error: {err}",
       .interactable(false)
       .fixed_pos(pos)
       .show(ctx, |ui| {
+        let fill = egui::Color32::from_rgba_unmultiplied(
+          self.theme.colors.raised.r(),
+          self.theme.colors.raised.g(),
+          self.theme.colors.raised.b(),
+          230,
+        );
         egui::Frame::none()
-          .fill(egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200))
-          .rounding(egui::Rounding::same(4.0))
-          .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+          .fill(fill)
+          .stroke(egui::Stroke::new(
+            self.theme.sizing.stroke_width,
+            self.theme.colors.border,
+          ))
+          .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
+          .inner_margin(egui::Margin::symmetric(self.theme.sizing.padding, self.theme.sizing.padding * 0.75))
           .show(ui, |ui| {
             ui.label(
               egui::RichText::new(hud.text_buf.as_str())
                 .monospace()
                 .small()
-                .color(egui::Color32::WHITE),
+                .color(self.theme.colors.text_primary),
             );
           });
       });
@@ -4482,12 +4543,7 @@ error: {err}",
           view: &view,
           resolve_target: None,
           ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color {
-              r: 0.08,
-              g: 0.08,
-              b: 0.08,
-              a: 1.0,
-            }),
+            load: wgpu::LoadOp::Clear(self.clear_color),
             store: true,
           },
         })],

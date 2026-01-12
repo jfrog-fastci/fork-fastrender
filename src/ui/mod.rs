@@ -42,6 +42,9 @@ pub mod chrome;
 pub mod icons;
 
 #[cfg(feature = "browser_ui")]
+pub mod theme;
+
+#[cfg(feature = "browser_ui")]
 pub mod session;
 
 // CLI parsing and wgpu-adapter selection knobs for the `browser` binary.

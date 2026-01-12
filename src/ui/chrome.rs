@@ -512,24 +512,34 @@ pub fn chrome_ui(
       }
 
       if let Some(warn) = warning.as_deref().filter(|s| !s.trim().is_empty()) {
+        let warn_fg = ui.visuals().warn_fg_color;
+        let warn_bg =
+          egui::Color32::from_rgba_unmultiplied(warn_fg.r(), warn_fg.g(), warn_fg.b(), 40);
         let resp = egui::Frame::none()
-          .fill(egui::Color32::from_rgb(250, 230, 150))
+          .fill(warn_bg)
           .rounding(egui::Rounding::same(3.0))
           .inner_margin(egui::Margin::same(2.0))
           .show(ui, |ui| {
-            let _ = icon_tinted(ui, BrowserIcon::WarningInsecure, ui.spacing().icon_width, egui::Color32::BLACK);
+            let _ = icon_tinted(
+              ui,
+              BrowserIcon::WarningInsecure,
+              ui.spacing().icon_width,
+              warn_fg,
+            );
           })
           .response;
         let _ = resp.on_hover_text(warn);
       }
 
       if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
+        let err_fg = ui.visuals().error_fg_color;
+        let err_bg = egui::Color32::from_rgba_unmultiplied(err_fg.r(), err_fg.g(), err_fg.b(), 40);
         let resp = egui::Frame::none()
-          .fill(egui::Color32::from_rgb(160, 0, 0))
+          .fill(err_bg)
           .rounding(egui::Rounding::same(3.0))
           .inner_margin(egui::Margin::same(2.0))
           .show(ui, |ui| {
-            let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, egui::Color32::WHITE);
+            let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
           })
           .response;
         let _ = resp.on_hover_text(err);
