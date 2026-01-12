@@ -1,59 +1,78 @@
-//! Test fixtures for comprehensive layout testing
+//! HTML fixture golden regression suite.
 //!
-//! This module provides infrastructure for testing the renderer against
-//! HTML fixture files and golden reference images.
+//! This harness renders every top-level HTML fixture under `tests/fixtures/html/*.html` and
+//! compares the output against checked-in PNG goldens under `tests/fixtures/golden/`.
 //!
-//! # Organization
+//! ## Filtering
 //!
-//! Test fixtures are organized by layout mode:
-//! - `tests/fixtures/html/` - HTML test files
-//! - `tests/fixtures/css/` - Optional external CSS files
-//! - `tests/fixtures/golden/` - Golden reference images (PNG)
+//! The suite is intentionally auto-discovered so adding new fixtures does not require updating the
+//! harness. To keep iterations fast, you can select a subset via environment variables:
 //!
-//! # Coverage
+//! - `FIXTURES_FIXTURE=<name>`
+//! - `FIXTURES_FILTER=<comma,separated,names>`
 //!
-//! 1. **Block Layout**: Simple blocks, nested blocks, margin collapsing, clearance
-//! 2. **Inline Layout**: Text wrapping, mixed inline/block, baseline alignment
-//! 3. **Flexbox**: flex-direction, justify-content, align-items, flex-grow/shrink
-//! 4. **Grid**: Template tracks, auto-flow, grid gaps
-//! 5. **Tables**: Fixed layout, auto layout, colspan/rowspan
-//! 6. **Floats**: Left/right floats, text wrapping, clearance
-//! 7. **Positioned**: Relative positioning, absolute positioning
-//! 8. **Text**: Complex scripts, bidi text, line breaking
+//! ## Golden updates
 //!
-//! # Usage
+//! Set `UPDATE_GOLDEN=1` to rewrite goldens in-place:
 //!
-//! Run all fixture tests:
 //! ```bash
-//! cargo test --test integration fixtures
+//! UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::runner::fixtures_regression_suite -- --exact
 //! ```
-//!
-//! Generate golden images (run with UPDATE_GOLDEN=1):
-//! ```bash
-//! UPDATE_GOLDEN=1 cargo test --test integration fixtures
-//! ```
-use crate::common::with_large_stack;
+
+use crate::common::{init_rayon_for_tests, with_large_stack};
 use crate::r#ref::compare::load_png_from_bytes;
 use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
+use fastrender::api::RenderDiagnostics;
 use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{FastRender, FontConfig};
+use fastrender::image_output::OutputFormat;
+use fastrender::{FastRender, FontConfig, RenderOptions, ResourcePolicy};
+use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use url::Url;
 
-/// Test configuration for fixtures
-const FIXTURE_WIDTH: u32 = 600;
-const FIXTURE_HEIGHT: u32 = 800;
-/// Get the fixtures directory path
+/// Fallback viewport when no golden exists yet.
+const DEFAULT_VIEWPORT: (u32, u32) = (600, 800);
+
+/// Rendering "shots" for a single fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixtureShot {
+  /// Default DPR=1 golden: `<name>.png`
+  Default,
+  /// Optional DPR=2 golden: `<name>_dpr2.png`
+  Dpr2,
+}
+
+impl FixtureShot {
+  fn dpr(self) -> u32 {
+    match self {
+      Self::Default => 1,
+      Self::Dpr2 => 2,
+    }
+  }
+
+  fn golden_name(self, fixture_name: &str) -> String {
+    match self {
+      Self::Default => fixture_name.to_string(),
+      Self::Dpr2 => format!("{fixture_name}_dpr2"),
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+struct Fixture {
+  name: String,
+  html_path: PathBuf,
+}
+
 fn fixtures_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-/// Get the HTML fixtures directory path
 fn html_dir() -> PathBuf {
   fixtures_dir().join("html")
 }
 
-/// Get the golden images directory path
 fn golden_dir() -> PathBuf {
   fixtures_dir().join("golden")
 }
@@ -62,846 +81,276 @@ fn fixtures_diff_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/fixtures_diffs")
 }
 
-fn golden_path(name: &str) -> PathBuf {
-  golden_dir().join(format!("{}.png", name))
+fn golden_path(golden_name: &str) -> PathBuf {
+  golden_dir().join(format!("{golden_name}.png"))
 }
 
-/// Load an HTML fixture file
-fn load_fixture(name: &str) -> String {
-  let path = html_dir().join(format!("{}.html", name));
-  fs::read_to_string(&path)
-    .unwrap_or_else(|e| panic!("Failed to read fixture {}: {}", path.display(), e))
+fn should_update_goldens() -> bool {
+  std::env::var_os("UPDATE_GOLDEN").is_some()
 }
 
-/// Check if golden image exists
-#[allow(dead_code)]
-fn golden_exists(name: &str) -> bool {
-  golden_path(name).exists()
+fn fixture_filter() -> Option<Vec<String>> {
+  let raw = std::env::var("FIXTURES_FILTER")
+    .ok()
+    .or_else(|| std::env::var("FIXTURES_FIXTURE").ok())?;
+  let parts = raw
+    .split(',')
+    .map(|part| part.trim().to_string())
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>();
+  (!parts.is_empty()).then_some(parts)
 }
 
-/// Load golden image bytes
-fn load_golden(name: &str) -> Option<Vec<u8>> {
-  let path = golden_path(name);
-  fs::read(&path).ok()
+fn discover_fixtures() -> Result<Vec<Fixture>, String> {
+  let dir = html_dir();
+  let entries = fs::read_dir(&dir)
+    .map_err(|e| format!("Failed to read HTML fixtures dir {}: {}", dir.display(), e))?;
+  let mut fixtures = Vec::new();
+
+  for entry in entries {
+    let entry = entry
+      .map_err(|e| format!("Failed to read entry in {}: {}", dir.display(), e))?;
+    let path = entry.path();
+    if !path.is_file() {
+      continue;
+    }
+    if path.extension() != Some(OsStr::new("html")) {
+      continue;
+    }
+    let stem = path
+      .file_stem()
+      .and_then(|s| s.to_str())
+      .ok_or_else(|| format!("Fixture filename is not valid UTF-8: {}", path.display()))?;
+    fixtures.push(Fixture {
+      name: stem.to_string(),
+      html_path: path,
+    });
+  }
+
+  fixtures.sort_by(|a, b| a.name.cmp(&b.name));
+  Ok(fixtures)
 }
 
-/// Save golden image
-fn save_golden(name: &str, data: &[u8]) {
-  let dir = golden_dir();
-  fs::create_dir_all(&dir).expect("Failed to create golden directory");
-  let path = golden_path(name);
-  fs::write(&path, data).expect("Failed to write golden image");
+fn base_url_for(html_path: &Path) -> Result<String, String> {
+  let dir = html_path
+    .parent()
+    .ok_or_else(|| format!("No parent directory for {}", html_path.display()))?;
+  Url::from_directory_path(dir)
+    .map_err(|_| format!("Failed to build file:// base URL for {}", dir.display()))
+    .map(|url| url.to_string())
 }
 
-/// Check if we should update golden images
-fn should_update_golden() -> bool {
-  std::env::var("UPDATE_GOLDEN").is_ok()
+fn offline_resource_policy() -> ResourcePolicy {
+  ResourcePolicy::default()
+    .allow_http(false)
+    .allow_https(false)
+    .allow_file(true)
+    .allow_data(true)
 }
 
-/// Render a fixture and optionally compare against golden image
-///
-/// Returns true if test passes (either rendering succeeds and matches golden,
-/// or golden was updated).
-fn test_fixture(name: &str) -> Result<(), String> {
-  let name_owned = name.to_string();
-  with_large_stack(move || {
-    let compare_config = compare_config_from_env(CompareEnvVars::fixtures())?;
-    let name = name_owned;
-    let html = load_fixture(&name);
-    let golden = load_golden(&name);
-    let (render_width, render_height) = golden
-      .as_ref()
-      .and_then(|bytes| load_png_from_bytes(bytes).ok())
-      .map(|png| (png.width(), png.height()))
-      .unwrap_or((FIXTURE_WIDTH, FIXTURE_HEIGHT));
-    crate::common::init_rayon_for_tests(2);
-    let mut renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      // Avoid host `FASTR_*` env vars affecting deterministic fixture renders.
-      .runtime_toggles(RuntimeToggles::default())
-      .build()
-      .map_err(|e| format!("Failed to create renderer: {:?}", e))?;
+fn infer_viewport_from_golden(
+  golden_png: &[u8],
+  dpr: u32,
+  golden_path: &Path,
+) -> Result<(u32, u32), String> {
+  let pixmap = load_png_from_bytes(golden_png).map_err(|e| {
+    format!(
+      "Failed to decode golden PNG {}: {}",
+      golden_path.display(),
+      e
+    )
+  })?;
+  let (width, height) = (pixmap.width(), pixmap.height());
+  if dpr == 0 {
+    return Err("DPR must be > 0".to_string());
+  }
+  if width % dpr != 0 || height % dpr != 0 {
+    return Err(format!(
+      "Golden {} has dimensions {}x{} which are not divisible by dpr={}",
+      golden_path.display(),
+      width,
+      height,
+      dpr
+    ));
+  }
+  Ok((width / dpr, height / dpr))
+}
 
-    // Render the fixture
-    let rendered = renderer
-      .render_to_png(&html, render_width, render_height)
-      .map_err(|e| format!("Render failed for {}: {:?}", name, e))?;
+fn render_png(
+  renderer: &mut FastRender,
+  html: &str,
+  viewport: (u32, u32),
+  dpr: f32,
+) -> Result<(Vec<u8>, RenderDiagnostics), String> {
+  let options = RenderOptions::new()
+    .with_viewport(viewport.0, viewport.1)
+    .with_device_pixel_ratio(dpr);
+  let rendered = renderer
+    .render_html_with_diagnostics(html, options)
+    .map_err(|e| format!("Render failed: {:?}", e))?;
+  rendered
+    .encode(OutputFormat::Png)
+    .map_err(|e| format!("PNG encode failed: {:?}", e))
+}
 
-    // Handle golden image comparison/update
-    if should_update_golden() {
-      save_golden(&name, &rendered);
-      eprintln!("Updated golden image for: {}", name);
-      return Ok(());
+fn run_fixture(
+  fixture: &Fixture,
+  compare_config: &crate::r#ref::compare::CompareConfig,
+) -> Result<(), String> {
+  let html = fs::read_to_string(&fixture.html_path).map_err(|e| {
+    format!(
+      "Failed to read fixture {}: {}",
+      fixture.html_path.display(),
+      e
+    )
+  })?;
+  let base_url = base_url_for(&fixture.html_path)?;
+  let policy = offline_resource_policy();
+
+  let mut renderer = FastRender::builder()
+    .base_url(base_url)
+    .font_sources(FontConfig::bundled_only())
+    // Avoid host `FASTR_*` env vars affecting deterministic fixture renders.
+    .runtime_toggles(RuntimeToggles::default())
+    .resource_policy(policy)
+    .build()
+    .map_err(|e| format!("Failed to create renderer: {:?}", e))?;
+
+  let mut shots = vec![FixtureShot::Default];
+  let dpr2_path = golden_path(&FixtureShot::Dpr2.golden_name(&fixture.name));
+  if dpr2_path.exists() {
+    shots.push(FixtureShot::Dpr2);
+  }
+
+  for shot in shots {
+    let golden_name = shot.golden_name(&fixture.name);
+    let golden_path = golden_path(&golden_name);
+    let golden_bytes = fs::read(&golden_path).ok();
+
+    let viewport = match golden_bytes.as_deref() {
+      Some(bytes) => infer_viewport_from_golden(bytes, shot.dpr(), &golden_path)?,
+      None => DEFAULT_VIEWPORT,
+    };
+
+    let (rendered, diagnostics) = render_png(&mut renderer, &html, viewport, shot.dpr() as f32)?;
+
+    if should_update_goldens() {
+      fs::create_dir_all(golden_dir()).map_err(|e| {
+        format!(
+          "Failed to create golden dir {}: {}",
+          golden_dir().display(),
+          e
+        )
+      })?;
+      fs::write(&golden_path, &rendered)
+        .map_err(|e| format!("Failed to write golden {}: {}", golden_path.display(), e))?;
+      eprintln!("Updated golden for {}", golden_name);
+      continue;
     }
 
-    // If golden exists, compare
-    if let Some(golden) = golden {
-      compare_pngs(
-        &name,
+    if let Some(golden_bytes) = golden_bytes {
+      if let Err(err) = compare_pngs(
+        &golden_name,
         &rendered,
-        &golden,
-        &compare_config,
+        &golden_bytes,
+        compare_config,
         &fixtures_diff_dir(),
-      )
+      ) {
+        let mut message = err;
+        if !diagnostics.fetch_errors.is_empty() || !diagnostics.blocked_fetch_errors.is_empty() {
+          message.push_str("\n\nRender diagnostics:");
+          if !diagnostics.fetch_errors.is_empty() {
+            message.push_str("\nFetch errors:");
+            for error in &diagnostics.fetch_errors {
+              message.push_str(&format!(
+                "\n- {:?} {}: {}",
+                error.kind, error.url, error.message
+              ));
+            }
+          }
+          if !diagnostics.blocked_fetch_errors.is_empty() {
+            message.push_str("\nBlocked fetch errors:");
+            for error in &diagnostics.blocked_fetch_errors {
+              message.push_str(&format!(
+                "\n- {:?} {}: {}",
+                error.kind, error.url, error.message
+              ));
+            }
+          }
+        }
+        return Err(message);
+      }
     } else {
-      // No golden exists - just verify rendering succeeds
+      // No golden exists yet; at least validate that we produced a syntactically valid PNG.
       load_png_from_bytes(&rendered)
-        .map_err(|e| format!("Invalid PNG output for {}: {}", name, e))?;
+        .map_err(|e| format!("Invalid PNG output for {}: {}", golden_name, e))?;
       eprintln!(
-        "Warning: No golden image for {}. Run with UPDATE_GOLDEN=1 to create.",
-        name
+        "Warning: Missing golden for {} (expected at {}). Run with UPDATE_GOLDEN=1 to create.",
+        golden_name,
+        golden_path.display()
       );
-      Ok(())
     }
-  })
-}
+  }
 
-//
-// Fixture existence tests (always run)
-//
+  Ok(())
+}
 
 #[test]
-fn test_fixtures_directory_exists() {
-  assert!(fixtures_dir().exists(), "Fixtures directory should exist");
-  assert!(html_dir().exists(), "HTML fixtures directory should exist");
+fn fixture_discovery_finds_many_html_fixtures_and_excludes_js_subtree() {
+  let fixtures = discover_fixtures().expect("fixture discovery should succeed");
   assert!(
-    golden_dir().exists(),
-    "Golden images directory should exist"
+    fixtures.len() > 80,
+    "Expected > 80 HTML fixtures; found {}",
+    fixtures.len()
+  );
+
+  assert!(
+    fixtures.iter().any(|f| f.name == "block_simple"),
+    "Expected discovery to include block_simple"
+  );
+
+  // Ensure we are not recursively walking `tests/fixtures/html/js/**`.
+  let js_fixture = html_dir().join("js/base_url_timing.html");
+  assert!(
+    js_fixture.exists(),
+    "Expected test fixture to exist for js subtree exclusion test: {}",
+    js_fixture.display()
+  );
+  assert!(
+    !fixtures.iter().any(|f| f.html_path == js_fixture),
+    "Discovery should ignore html/js/** entries, but included {}",
+    js_fixture.display()
   );
 }
 
 #[test]
-fn test_all_fixture_files_exist() {
-  let expected_fixtures = [
-    // Block layout
-    "block_simple",
-    "block_nested",
-    "block_margin_collapse",
-    "block_clearance",
-    // Inline layout
-    "inline_text_wrap",
-    "inline_mixed",
-    "inline_baseline",
-    // Flexbox
-    "flex_direction",
-    "flex_justify_align",
-    "flex_grow_shrink",
-    // Grid
-    "grid_template",
-    "grid_auto_flow",
-    "grid_gaps",
-    "multicol_basic",
-    // Tables
-    "table_fixed",
-    "table_auto",
-    "table_span",
-    "columns_multicol",
-    // Floats
-    "float_basic",
-    "float_text_wrap",
-    "float_clearance",
-    // Positioned
-    "positioned_relative",
-    "positioned_absolute",
-    // Viewport units
-    "viewport_units_modern",
-    // Transforms
-    "transform_layer",
-    "mask_composite",
-    // Forms
-    "form_controls",
-    "form_controls_appearance_none",
-    "form_controls_textarea_placeholder",
-    "form_controls_placeholder_vendor_alias",
-    "form_controls_whitespace_value_placeholder",
-    // Text
-    "text_complex_scripts",
-    "text_additional_scripts",
-    "text_bidi",
-    "text_bidi_mirror",
-    "text_line_break",
-    "text_font_variant_emoji",
-    "text_font_variant_emoji_clusters",
-    "text_font_variant_emoji_webfont",
-    "text_emoji_sequences_presentation",
-    "text_overflow_vertical",
-    "text_overflow_wrap_word_break_priority",
-    "text_letter_spacing_vertical",
-    "text_font_palette_overrides_display_list",
-    "text_variable_font_mvar_line_height",
-    "text_vertical_orientation_mixed",
-    "text_vertical_upright_bidi_preserve_order",
-    "text_combine_upright_scale",
-    "text_combine_upright_tate_chu_yoko",
-    "text_decoration_thickness_auto_vs_from_font",
-    "shadow_dom",
-    "shadow_dom_selectors",
-    "svg_foreign_object",
-  ];
+fn fixtures_regression_suite() {
+  let filter = fixture_filter();
+  init_rayon_for_tests(2);
+  with_large_stack(move || {
+    let compare_config =
+      compare_config_from_env(CompareEnvVars::fixtures()).expect("invalid compare config");
+    let fixtures = discover_fixtures().expect("fixture discovery failed");
 
-  for name in &expected_fixtures {
-    let path = html_dir().join(format!("{}.html", name));
-    assert!(
-      path.exists(),
-      "Fixture file should exist: {}",
-      path.display()
-    );
-  }
-}
+    let mut failures = Vec::new();
+    for fixture in fixtures {
+      if let Some(filter) = filter.as_ref() {
+        if !filter.iter().any(|name| name == &fixture.name) {
+          continue;
+        }
+      }
+      if let Err(err) = run_fixture(&fixture, &compare_config) {
+        failures.push(format!("Fixture '{}' failed: {}", fixture.name, err));
+      }
+    }
 
-#[test]
-fn test_required_text_goldens_exist() {
-  for name in [
-    "text_bidi",
-    "text_bidi_mirror",
-    "text_line_break",
-    "text_overflow_vertical",
-  ] {
-    let path = golden_path(name);
-    assert!(
-      path.exists(),
-      "Missing required golden image for fixture {} (expected at {})",
-      name,
-      path.display()
-    );
-  }
-}
-
-#[test]
-fn test_fixture_files_are_valid_html() {
-  let html_path = html_dir();
-  if !html_path.exists() {
-    return;
-  }
-
-  for entry in fs::read_dir(&html_path).unwrap() {
-    let entry = entry.unwrap();
-    let path = entry.path();
-    if path.extension().is_some_and(|e| e == "html") {
-      let content = fs::read_to_string(&path).unwrap();
-      // Basic HTML validation - should contain doctype and html tags
-      assert!(
-        content.contains("<!DOCTYPE html>") || content.contains("<!doctype html>"),
-        "File {} should have DOCTYPE declaration",
-        path.display()
-      );
-      assert!(
-        content.contains("<html") && content.contains("</html>"),
-        "File {} should have html tags",
-        path.display()
+    if !failures.is_empty() {
+      panic!(
+        "{} fixture(s) failed:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
       );
     }
-  }
+  });
 }
 
-//
-// Block Layout Tests
-//
-
-#[test]
-fn test_fixture_block_simple() {
-  test_fixture("block_simple").expect("block_simple fixture should render");
-}
-
-#[test]
-fn test_fixture_block_nested() {
-  test_fixture("block_nested").expect("block_nested fixture should render");
-}
-
-#[test]
-fn test_fixture_block_margin_collapse() {
-  test_fixture("block_margin_collapse").expect("block_margin_collapse fixture should render");
-}
-
-#[test]
-fn test_fixture_block_clearance() {
-  test_fixture("block_clearance").expect("block_clearance fixture should render");
-}
-
-#[test]
-fn test_fixture_viewport_units_modern() {
-  test_fixture("viewport_units_modern").expect("viewport_units_modern fixture should render");
-}
-
-//
-// Inline Layout Tests
-//
-
-#[test]
-fn test_fixture_inline_text_wrap() {
-  test_fixture("inline_text_wrap").expect("inline_text_wrap fixture should render");
-}
-
-#[test]
-fn test_fixture_inline_mixed() {
-  test_fixture("inline_mixed").expect("inline_mixed fixture should render");
-}
-
-#[test]
-fn test_fixture_inline_baseline() {
-  test_fixture("inline_baseline").expect("inline_baseline fixture should render");
-}
-
-//
-// Flexbox Tests
-//
-
-#[test]
-fn test_fixture_flex_direction() {
-  test_fixture("flex_direction").expect("flex_direction fixture should render");
-}
-
-#[test]
-fn test_fixture_flex_justify_align() {
-  test_fixture("flex_justify_align").expect("flex_justify_align fixture should render");
-}
-
-#[test]
-fn test_fixture_flex_grow_shrink() {
-  test_fixture("flex_grow_shrink").expect("flex_grow_shrink fixture should render");
-}
-
-//
-// Grid Tests
-//
-
-#[test]
-fn test_fixture_grid_template() {
-  test_fixture("grid_template").expect("grid_template fixture should render");
-}
-
-#[test]
-fn test_fixture_grid_auto_flow() {
-  test_fixture("grid_auto_flow").expect("grid_auto_flow fixture should render");
-}
-
-#[test]
-fn test_fixture_grid_gaps() {
-  test_fixture("grid_gaps").expect("grid_gaps fixture should render");
-}
-
-//
-// Table Tests
-//
-
-#[test]
-fn test_fixture_table_fixed() {
-  test_fixture("table_fixed").expect("table_fixed fixture should render");
-}
-
-#[test]
-fn test_fixture_table_auto() {
-  test_fixture("table_auto").expect("table_auto fixture should render");
-}
-
-#[test]
-fn test_fixture_table_span() {
-  test_fixture("table_span").expect("table_span fixture should render");
-}
-
-//
-// Column Layout Tests
-//
-
-#[test]
-fn test_fixture_columns_multicol() {
-  test_fixture("columns_multicol").expect("columns_multicol fixture should render");
-}
-
-//
-// Float Tests
-//
-
-#[test]
-fn test_fixture_float_basic() {
-  test_fixture("float_basic").expect("float_basic fixture should render");
-}
-
-#[test]
-fn test_fixture_float_text_wrap() {
-  test_fixture("float_text_wrap").expect("float_text_wrap fixture should render");
-}
-
-#[test]
-fn test_fixture_float_clearance() {
-  test_fixture("float_clearance").expect("float_clearance fixture should render");
-}
-
-//
-// Positioned Tests
-//
-
-#[test]
-fn test_fixture_positioned_relative() {
-  test_fixture("positioned_relative").expect("positioned_relative fixture should render");
-}
-
-#[test]
-fn test_fixture_positioned_absolute() {
-  test_fixture("positioned_absolute").expect("positioned_absolute fixture should render");
-}
-
-//
-// Transform Tests
-//
-
-#[test]
-fn test_fixture_transform_layer() {
-  test_fixture("transform_layer").expect("transform_layer fixture should render");
-}
-
-//
-// Top layer tests
-//
-
-#[test]
-fn test_fixture_top_layer_dialog_popover() {
-  test_fixture("top_layer_dialog_popover").expect("top_layer_dialog_popover fixture should render");
-}
-
-//
-// SVG Tests
-//
-
-#[test]
-fn test_fixture_svg_foreign_object() {
-  test_fixture("svg_foreign_object").expect("svg_foreign_object fixture should render");
-}
-
-//
-// Mask Tests
-//
-
-#[test]
-fn test_fixture_mask_composite() {
-  test_fixture("mask_composite").expect("mask_composite fixture should render");
-}
-
-//
-// Form Tests
-//
-
-#[test]
-fn test_fixture_form_controls() {
-  test_fixture("form_controls").expect("form_controls fixture should render");
-}
-
-#[test]
-fn test_fixture_form_controls_appearance_none() {
-  test_fixture("form_controls_appearance_none")
-    .expect("form_controls_appearance_none fixture should render");
-}
-
-#[test]
-fn test_fixture_form_controls_textarea_placeholder() {
-  test_fixture("form_controls_textarea_placeholder")
-    .expect("form_controls_textarea_placeholder fixture should render");
-}
-
-#[test]
-fn test_fixture_form_controls_placeholder_vendor_alias() {
-  test_fixture("form_controls_placeholder_vendor_alias")
-    .expect("form_controls_placeholder_vendor_alias fixture should render");
-}
-
-#[test]
-fn test_fixture_form_controls_whitespace_value_placeholder() {
-  test_fixture("form_controls_whitespace_value_placeholder")
-    .expect("form_controls_whitespace_value_placeholder fixture should render");
-}
-
-//
-// Text Tests
-//
-
-#[test]
-fn test_fixture_text_complex_scripts() {
-  test_fixture("text_complex_scripts").expect("text_complex_scripts fixture should render");
-}
-
-#[test]
-fn test_fixture_text_additional_scripts() {
-  test_fixture("text_additional_scripts").expect("text_additional_scripts fixture should render");
-}
-
-#[test]
-fn test_fixture_text_bidi() {
-  test_fixture("text_bidi").expect("text_bidi fixture should render");
-}
-
-#[test]
-fn test_fixture_text_bidi_mirror() {
-  test_fixture("text_bidi_mirror").expect("text_bidi_mirror fixture should render");
-}
-
-#[test]
-fn test_fixture_text_line_break() {
-  test_fixture("text_line_break").expect("text_line_break fixture should render");
-}
-
-#[test]
-fn test_fixture_text_overflow_vertical() {
-  test_fixture("text_overflow_vertical").expect("text_overflow_vertical fixture should render");
-}
-
-#[test]
-fn test_fixture_text_overflow_wrap_word_break_priority() {
-  test_fixture("text_overflow_wrap_word_break_priority")
-    .expect("text_overflow_wrap_word_break_priority fixture should render");
-}
-
-#[test]
-fn test_fixture_text_letter_spacing_vertical() {
-  test_fixture("text_letter_spacing_vertical")
-    .expect("text_letter_spacing_vertical fixture should render");
-}
-
-#[test]
-fn test_fixture_text_font_variant_emoji() {
-  test_fixture("text_font_variant_emoji").expect("text_font_variant_emoji fixture should render");
-}
-
-#[test]
-fn test_fixture_text_font_variant_emoji_clusters() {
-  test_fixture("text_font_variant_emoji_clusters")
-    .expect("text_font_variant_emoji_clusters fixture should render");
-}
-
-#[test]
-fn test_fixture_text_font_variant_emoji_webfont() {
-  test_fixture("text_font_variant_emoji_webfont")
-    .expect("text_font_variant_emoji_webfont fixture should render");
-}
-
-#[test]
-fn test_fixture_text_emoji_sequences_presentation() {
-  test_fixture("text_emoji_sequences_presentation")
-    .expect("text_emoji_sequences_presentation fixture should render");
-}
-
-#[test]
-fn test_fixture_text_font_palette_overrides_display_list() {
-  test_fixture("text_font_palette_overrides_display_list")
-    .expect("text_font_palette_overrides_display_list fixture should render");
-}
-
-#[test]
-fn test_fixture_text_variable_font_mvar_line_height() {
-  test_fixture("text_variable_font_mvar_line_height")
-    .expect("text_variable_font_mvar_line_height fixture should render");
-}
-
-#[test]
-fn test_fixture_text_vertical_orientation_mixed() {
-  test_fixture("text_vertical_orientation_mixed")
-    .expect("text_vertical_orientation_mixed fixture should render");
-}
-
-#[test]
-fn test_fixture_text_vertical_upright_bidi_preserve_order() {
-  test_fixture("text_vertical_upright_bidi_preserve_order")
-    .expect("text_vertical_upright_bidi_preserve_order fixture should render");
-}
-
-#[test]
-fn test_fixture_text_combine_upright_scale() {
-  test_fixture("text_combine_upright_scale")
-    .expect("text_combine_upright_scale fixture should render");
-}
-
-#[test]
-fn test_fixture_text_combine_upright_tate_chu_yoko() {
-  test_fixture("text_combine_upright_tate_chu_yoko")
-    .expect("text_combine_upright_tate_chu_yoko fixture should render");
-}
-
-#[test]
-fn test_fixture_text_decoration_thickness_auto_vs_from_font() {
-  test_fixture("text_decoration_thickness_auto_vs_from_font")
-    .expect("text_decoration_thickness_auto_vs_from_font fixture should render");
-}
-
-//
-// Shadow DOM Tests
-//
-
-#[test]
-fn test_fixture_shadow_dom() {
-  test_fixture("shadow_dom").expect("shadow_dom fixture should render");
-}
-
-#[test]
-fn test_fixture_shadow_dom_selectors() {
-  test_fixture("shadow_dom_selectors").expect("shadow_dom_selectors fixture should render");
-}
-
-//
-// Utility tests
-//
-
-#[test]
-fn test_fixture_loading() {
-  // Test that we can load at least one fixture
-  let html = load_fixture("block_simple");
-  assert!(html.contains("<!DOCTYPE html>"));
-  assert!(html.contains("block_simple") || html.contains("Block Layout"));
-}
-
-#[test]
-fn test_golden_directory_structure() {
-  let golden = golden_dir();
-  // Golden directory should exist (even if empty)
-  assert!(golden.exists() || fs::create_dir_all(&golden).is_ok());
-}
-
-//
-// Fixture metadata
-//
-
-/// Returns a list of all available fixture names
-pub fn list_fixtures() -> Vec<&'static str> {
-  vec![
-    // Block layout
-    "block_simple",
-    "block_nested",
-    "block_margin_collapse",
-    "block_clearance",
-    // Inline layout
-    "inline_text_wrap",
-    "inline_mixed",
-    "inline_baseline",
-    // Flexbox
-    "flex_direction",
-    "flex_justify_align",
-    "flex_grow_shrink",
-    // Grid
-    "grid_template",
-    "grid_auto_flow",
-    "grid_gaps",
-    "multicol_basic",
-    // Tables
-    "table_fixed",
-    "table_auto",
-    "table_span",
-    "columns_multicol",
-    // Floats
-    "float_basic",
-    "float_text_wrap",
-    "float_clearance",
-    // Positioned
-    "positioned_relative",
-    "positioned_absolute",
-    // Transforms
-    "transform_layer",
-    // Top layer
-    "top_layer_dialog_popover",
-    // Masks
-    "mask_composite",
-    // Forms
-    "form_controls",
-    "form_controls_appearance_none",
-    "form_controls_textarea_placeholder",
-    "form_controls_placeholder_vendor_alias",
-    "form_controls_whitespace_value_placeholder",
-    // Text
-    "text_complex_scripts",
-    "text_additional_scripts",
-    "text_bidi",
-    "text_bidi_mirror",
-    "text_line_break",
-    "text_font_variant_emoji",
-    "text_font_variant_emoji_clusters",
-    "text_font_variant_emoji_webfont",
-    "text_emoji_sequences_presentation",
-    "text_overflow_vertical",
-    "text_overflow_wrap_word_break_priority",
-    "text_letter_spacing_vertical",
-    "text_font_palette_overrides_display_list",
-    "text_vertical_orientation_mixed",
-    "text_vertical_upright_bidi_preserve_order",
-    "text_combine_upright_scale",
-    "text_combine_upright_tate_chu_yoko",
-    "text_decoration_thickness_auto_vs_from_font",
-    // Shadow DOM
-    "shadow_dom",
-    // SVG
-    "svg_foreign_object",
-  ]
-}
-
-/// Returns fixture metadata for documentation
-pub fn fixture_descriptions() -> Vec<(&'static str, &'static str, &'static str)> {
-  vec![
-    (
-      "block_simple",
-      "Block Layout",
-      "Simple stacked block elements",
-    ),
-    (
-      "block_nested",
-      "Block Layout",
-      "Deeply nested block containers",
-    ),
-    (
-      "block_margin_collapse",
-      "Block Layout",
-      "Adjacent and parent-child margin collapsing",
-    ),
-    (
-      "block_clearance",
-      "Block Layout",
-      "Float clearance with clear property",
-    ),
-    (
-      "inline_text_wrap",
-      "Inline Layout",
-      "Text wrapping in various container widths",
-    ),
-    (
-      "inline_mixed",
-      "Inline Layout",
-      "Mixed inline elements and inline-blocks",
-    ),
-    (
-      "inline_baseline",
-      "Inline Layout",
-      "Baseline alignment of different-sized elements",
-    ),
-    (
-      "flex_direction",
-      "Flexbox",
-      "All flex-direction values (row, column, reverse)",
-    ),
-    (
-      "flex_justify_align",
-      "Flexbox",
-      "justify-content and align-items combinations",
-    ),
-    (
-      "flex_grow_shrink",
-      "Flexbox",
-      "flex-grow and flex-shrink distribution",
-    ),
-    (
-      "grid_template",
-      "Grid",
-      "grid-template-columns/rows with various track sizes",
-    ),
-    (
-      "grid_auto_flow",
-      "Grid",
-      "grid-auto-flow and auto placement",
-    ),
-    ("grid_gaps", "Grid", "row-gap and column-gap variations"),
-    ("multicol_basic", "Columns", "Basic multi-column layout"),
-    (
-      "table_fixed",
-      "Tables",
-      "table-layout: fixed with explicit widths",
-    ),
-    (
-      "table_auto",
-      "Tables",
-      "table-layout: auto content-based sizing",
-    ),
-    ("table_span", "Tables", "colspan and rowspan cell spanning"),
-    (
-      "columns_multicol",
-      "Columns",
-      "Multi-column layout with column span variations",
-    ),
-    ("float_basic", "Floats", "Basic left and right floats"),
-    (
-      "float_text_wrap",
-      "Floats",
-      "Text wrapping around floated elements",
-    ),
-    ("float_clearance", "Floats", "Clear property behavior"),
-    (
-      "positioned_relative",
-      "Positioned",
-      "position: relative with various offsets",
-    ),
-    (
-      "positioned_absolute",
-      "Positioned",
-      "position: absolute with containing blocks",
-    ),
-    (
-      "transform_layer",
-      "Transforms",
-      "Nested transforms and compositing layers",
-    ),
-    (
-      "top_layer_dialog_popover",
-      "Top layer",
-      "Modal dialog backdrop + popover stacking order",
-    ),
-    (
-      "mask_composite",
-      "Masks",
-      "Compositing multiple CSS mask layers",
-    ),
-    ("form_controls", "Forms", "Default form control styling"),
-    (
-      "form_controls_appearance_none",
-      "Forms",
-      "Form controls with appearance: none should still paint values/labels",
-    ),
-    (
-      "form_controls_textarea_placeholder",
-      "Forms",
-      "Textarea placeholder rendering when empty",
-    ),
-    (
-      "form_controls_placeholder_vendor_alias",
-      "Forms",
-      "Vendor placeholder pseudo-elements should alias to ::placeholder in selector lists",
-    ),
-    (
-      "form_controls_whitespace_value_placeholder",
-      "Forms",
-      "Form control values consisting of whitespace should not show placeholders",
-    ),
-    (
-      "text_complex_scripts",
-      "Text",
-      "Various scripts (Arabic, Hebrew, CJK, etc.)",
-    ),
-    (
-      "text_additional_scripts",
-      "Text",
-      "Bundled script fallbacks (Indic, Armenian, Tibetan, etc.)",
-    ),
-    (
-      "text_bidi",
-      "Text",
-      "Bidirectional text with mixed directions",
-    ),
-    (
-      "text_bidi_mirror",
-      "Text",
-      "Bidirectional text with mirrored punctuation",
-    ),
-    (
-      "text_line_break",
-      "Text",
-      "Line breaking and white-space handling",
-    ),
-    (
-      "text_letter_spacing_vertical",
-      "Text",
-      "letter-spacing on vertical writing-mode should not drift sideways",
-    ),
-    (
-      "shadow_dom",
-      "Shadow DOM",
-      "Declarative shadow DOM slotting",
-    ),
-    (
-      "mask_composite",
-      "Masks",
-      "Compositing multiple CSS mask layers",
-    ),
-  ]
-}

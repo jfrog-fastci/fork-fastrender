@@ -1732,11 +1732,11 @@ try {
     let global = window.global_object();
     let (_vm, heap) = window.vm_and_heap_mut();
     let mut scope = heap.scope();
-    (
-      get_data_prop(&mut scope, global, "__threw"),
-      get_string(scope.heap(), get_data_prop(&mut scope, global, "__name")),
-      get_string(scope.heap(), get_data_prop(&mut scope, global, "__msg")),
-    )
+    let threw = get_data_prop(&mut scope, global, "__threw");
+    let name_value = get_data_prop(&mut scope, global, "__name");
+    let msg_value = get_data_prop(&mut scope, global, "__msg");
+    let heap = scope.heap();
+    (threw, get_string(heap, name_value), get_string(heap, msg_value))
   };
 
   assert_eq!(threw, Value::Bool(true));

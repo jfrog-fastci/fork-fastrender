@@ -5561,7 +5561,6 @@ fn history_state_change_native(
       read_only_data_desc(cloned_state_value),
     )?;
   }
- 
   // Keep `history.length` in sync with the per-realm session history.
   {
     // Root the receiver while allocating the property key: `alloc_key` can trigger GC.

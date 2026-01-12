@@ -99,20 +99,18 @@ These tests cover targeted style/cascade/layout regressions.
 
 ## Fixture renders (goldens)
 
-Fixture tests render HTML under `tests/fixtures/html/` and write/read golden PNGs under `tests/fixtures/golden/`. They are compiled into the main integration test binary.
+Fixture tests render HTML fixtures under `tests/fixtures/html/*.html` (auto-discovered; top-level only, excluding `tests/fixtures/html/js/**`) and write/read golden PNGs under `tests/fixtures/golden/`. They are compiled into the main integration test binary.
 
-- Run fixtures: `bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::`
-- (Re)generate goldens: `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::`
-- Refresh a single fixture (faster):
-  ```bash
-  # Find the exact test name:
-  bash scripts/cargo_agent.sh test -p fastrender --test integration -- --list | rg '^fixtures::'
-
-  # Then run just that one:
-  UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::<name> -- --exact
-  ```
+- Run fixtures: `bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::runner::fixtures_regression_suite -- --exact`
+- (Re)generate goldens: `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::runner::fixtures_regression_suite -- --exact`
+- Run a single fixture (faster): `FIXTURES_FIXTURE=block_simple bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::runner::fixtures_regression_suite -- --exact`
+- Run a subset: `FIXTURES_FILTER=block_simple,flex_direction bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::runner::fixtures_regression_suite -- --exact`
 
 Rendered output is compared pixel-by-pixel against the checked-in PNG goldens. Failures write artifacts under `target/fixtures_diffs/<fixture>_{actual,expected,diff}.png` for debugging.
+
+### DPR=2 goldens
+
+If a fixture has a `tests/fixtures/golden/<name>_dpr2.png` golden, the harness automatically runs an additional render with `dpr=2` and compares/updates that golden as well. The CSS viewport is inferred from the golden PNG dimensions (`png_size / dpr`); DPR2 goldens must have pixel dimensions divisible by 2.
 
 Comparisons are strict by default. To allow small local differences (fonts, GPU, AA), set a tolerance env var:
 

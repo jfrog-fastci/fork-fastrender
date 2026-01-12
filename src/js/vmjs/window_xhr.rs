@@ -379,7 +379,10 @@ fn to_rust_string_limited(
   js_string_to_rust_string_limited(heap, s, max_bytes, error)
 }
 
-fn clamp_response_headers(headers: Vec<(String, String)>, limits: &WebFetchLimits) -> Vec<(String, String)> {
+fn clamp_response_headers(
+  headers: Vec<(String, String)>,
+  limits: &WebFetchLimits,
+) -> Vec<(String, String)> {
   if headers.is_empty() {
     return headers;
   }
@@ -414,7 +417,10 @@ fn decode_response_text(bytes: &[u8], override_mime_type: &str) -> String {
   if override_mime_type.is_empty() {
     return String::from_utf8_lossy(bytes).to_string();
   }
-  if override_mime_type.to_ascii_lowercase().contains("charset=x-user-defined") {
+  if override_mime_type
+    .to_ascii_lowercase()
+    .contains("charset=x-user-defined")
+  {
     let mut out = String::with_capacity(bytes.len());
     for &b in bytes {
       out.push(char::from(b));
@@ -432,7 +438,9 @@ fn sanitize_request_header_value(value: &str) -> String {
       other => other,
     })
     .collect::<String>();
-  sanitized.trim_matches(|c| matches!(c, ' ' | '\t')).to_string()
+  sanitized
+    .trim_matches(|c| matches!(c, ' ' | '\t'))
+    .to_string()
 }
 
 fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
@@ -550,14 +558,17 @@ fn xhr_constructor_construct(
 
   // `xhr.upload` stub for libraries that attach upload progress listeners (axios, etc). This MVP
   // binding never fires upload events but provides the common surface area.
-  let (upload_add_event_listener_call, upload_remove_event_listener_call, upload_dispatch_event_call) =
-    with_env_state(env_id, |state| {
-      Ok((
-        state.upload_add_event_listener_call,
-        state.upload_remove_event_listener_call,
-        state.upload_dispatch_event_call,
-      ))
-    })?;
+  let (
+    upload_add_event_listener_call,
+    upload_remove_event_listener_call,
+    upload_dispatch_event_call,
+  ) = with_env_state(env_id, |state| {
+    Ok((
+      state.upload_add_event_listener_call,
+      state.upload_remove_event_listener_call,
+      state.upload_dispatch_event_call,
+    ))
+  })?;
 
   let intr = vm
     .intrinsics()
@@ -578,11 +589,18 @@ fn xhr_constructor_construct(
   scope
     .heap_mut()
     .object_set_prototype(add_fn, Some(intr.function_prototype()))?;
-  set_data_prop(scope, upload, "addEventListener", Value::Object(add_fn), true)?;
+  set_data_prop(
+    scope,
+    upload,
+    "addEventListener",
+    Value::Object(add_fn),
+    true,
+  )?;
 
   let remove_name = scope.alloc_string("removeEventListener")?;
   scope.push_root(Value::String(remove_name))?;
-  let remove_fn = scope.alloc_native_function(upload_remove_event_listener_call, None, remove_name, 2)?;
+  let remove_fn =
+    scope.alloc_native_function(upload_remove_event_listener_call, None, remove_name, 2)?;
   scope
     .heap_mut()
     .object_set_prototype(remove_fn, Some(intr.function_prototype()))?;
@@ -596,11 +614,18 @@ fn xhr_constructor_construct(
 
   let dispatch_name = scope.alloc_string("dispatchEvent")?;
   scope.push_root(Value::String(dispatch_name))?;
-  let dispatch_fn = scope.alloc_native_function(upload_dispatch_event_call, None, dispatch_name, 1)?;
+  let dispatch_fn =
+    scope.alloc_native_function(upload_dispatch_event_call, None, dispatch_name, 1)?;
   scope
     .heap_mut()
     .object_set_prototype(dispatch_fn, Some(intr.function_prototype()))?;
-  set_data_prop(scope, upload, "dispatchEvent", Value::Object(dispatch_fn), true)?;
+  set_data_prop(
+    scope,
+    upload,
+    "dispatchEvent",
+    Value::Object(dispatch_fn),
+    true,
+  )?;
 
   for handler in [
     "onprogress",
@@ -656,7 +681,11 @@ fn xhr_status_get(
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
     Ok((xhr.ready_state, xhr.status))
   })?;
-  let visible = if ready_state < XHR_HEADERS_RECEIVED { 0 } else { status };
+  let visible = if ready_state < XHR_HEADERS_RECEIVED {
+    0
+  } else {
+    status
+  };
   Ok(Value::Number(visible as f64))
 }
 
@@ -769,7 +798,9 @@ fn xhr_response_type_set(
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
     // XHR spec: responseType can only be set in UNSENT/OPENED with send() not in progress.
     if xhr.send_in_progress || !matches!(xhr.ready_state, XHR_UNSENT | XHR_OPENED) {
-      return Err(VmError::TypeError("XMLHttpRequest.responseType invalid state"));
+      return Err(VmError::TypeError(
+        "XMLHttpRequest.responseType invalid state",
+      ));
     }
     xhr.response_type = normalized.to_string();
     Ok(())
@@ -817,7 +848,9 @@ fn xhr_with_credentials_set(
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
     // XHR spec: withCredentials can only be set in UNSENT/OPENED and before send().
     if xhr.send_in_progress || !matches!(xhr.ready_state, XHR_UNSENT | XHR_OPENED) {
-      return Err(VmError::TypeError("XMLHttpRequest.withCredentials invalid state"));
+      return Err(VmError::TypeError(
+        "XMLHttpRequest.withCredentials invalid state",
+      ));
     }
     xhr.with_credentials = value;
     Ok(())
@@ -896,7 +929,11 @@ fn xhr_response_text_get(
       .xhrs
       .get(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
-    Ok((xhr.ready_state, xhr.response_type.clone(), xhr.response_text.clone()))
+    Ok((
+      xhr.ready_state,
+      xhr.response_type.clone(),
+      xhr.response_text.clone(),
+    ))
   })?;
 
   if response_type == "arraybuffer" || response_type == "json" {
@@ -1202,7 +1239,9 @@ fn xhr_override_mime_type_native(
       .get_mut(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
     if xhr.ready_state != XHR_OPENED || xhr.send_in_progress {
-      return Err(VmError::TypeError("XMLHttpRequest.overrideMimeType invalid state"));
+      return Err(VmError::TypeError(
+        "XMLHttpRequest.overrideMimeType invalid state",
+      ));
     }
     xhr.override_mime_type = mime;
     Ok(())
@@ -1387,38 +1426,38 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     return Err(VmError::TypeError(XHR_BODY_TOO_LONG_ERROR));
   }
   // Snapshot request data and transition to "in-flight" under the env lock.
-  let (request_seq, request, async_flag, credentials_mode, timeout_ms) = with_env_state_mut(env_id, |state| {
-    let xhr = state
-      .xhrs
-      .get_mut(&xhr_id)
-      .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
-    if xhr.ready_state != XHR_OPENED || xhr.send_in_progress {
-      return Err(VmError::TypeError("XMLHttpRequest.send invalid state"));
-    }
-    let credentials_mode = if xhr.with_credentials {
-      FetchCredentialsMode::Include
-    } else {
-      FetchCredentialsMode::SameOrigin
-    };
-    let async_flag = xhr.async_flag;
-    let timeout_ms = xhr.timeout_ms;
-    let mut req = xhr
-      .request
-      .clone()
-      .ok_or(VmError::TypeError("XMLHttpRequest.open must be called first"))?;
-    // XHR spec: GET/HEAD ignore the request body.
-    if req.method.eq_ignore_ascii_case("GET") || req.method.eq_ignore_ascii_case("HEAD") {
-      req.body = None;
-    } else {
-      req.body = body;
-    }
-    xhr.request = Some(req.clone());
-    xhr.send_in_progress = true;
-    xhr.aborted = false;
-    xhr.request_seq = xhr.request_seq.saturating_add(1);
-    let seq = xhr.request_seq;
-    Ok((seq, req, async_flag, credentials_mode, timeout_ms))
-  })?;
+  let (request_seq, request, async_flag, credentials_mode, timeout_ms) =
+    with_env_state_mut(env_id, |state| {
+      let xhr = state
+        .xhrs
+        .get_mut(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      if xhr.ready_state != XHR_OPENED || xhr.send_in_progress {
+        return Err(VmError::TypeError("XMLHttpRequest.send invalid state"));
+      }
+      let credentials_mode = if xhr.with_credentials {
+        FetchCredentialsMode::Include
+      } else {
+        FetchCredentialsMode::SameOrigin
+      };
+      let async_flag = xhr.async_flag;
+      let timeout_ms = xhr.timeout_ms;
+      let mut req = xhr.request.clone().ok_or(VmError::TypeError(
+        "XMLHttpRequest.open must be called first",
+      ))?;
+      // XHR spec: GET/HEAD ignore the request body.
+      if req.method.eq_ignore_ascii_case("GET") || req.method.eq_ignore_ascii_case("HEAD") {
+        req.body = None;
+      } else {
+        req.body = body;
+      }
+      xhr.request = Some(req.clone());
+      xhr.send_in_progress = true;
+      xhr.aborted = false;
+      xhr.request_seq = xhr.request_seq.saturating_add(1);
+      let seq = xhr.request_seq;
+      Ok((seq, req, async_flag, credentials_mode, timeout_ms))
+    })?;
 
   if !async_flag {
     // Synchronous XHR: run the fetch inline and dispatch events synchronously. This keeps FastRender
@@ -1482,7 +1521,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
           if status_text.len() > XHR_STATUS_TEXT_MAX_BYTES {
             status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
           }
-          response_headers = clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
+          response_headers =
+            clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
           response_url = res.final_url.unwrap_or_else(|| request.url.clone());
         }
       }
@@ -1751,7 +1791,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
           if status_text.len() > XHR_STATUS_TEXT_MAX_BYTES {
             status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
           }
-          response_headers = clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
+          response_headers =
+            clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
           response_url = final_url;
         }
       }
@@ -2520,7 +2561,8 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   env: WindowXhrEnv,
 ) -> Result<WindowXhrBindings, VmError> {
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
-  let upload_add_event_listener_call = vm.register_native_call(xhr_upload_add_event_listener_native)?;
+  let upload_add_event_listener_call =
+    vm.register_native_call(xhr_upload_add_event_listener_native)?;
   let upload_remove_event_listener_call =
     vm.register_native_call(xhr_upload_remove_event_listener_native)?;
   let upload_dispatch_event_call = vm.register_native_call(xhr_upload_dispatch_event_native)?;
@@ -2674,8 +2716,12 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let get_all_response_headers_id = vm.register_native_call(xhr_get_all_response_headers_native)?;
   let get_all_response_headers_name = scope.alloc_string("getAllResponseHeaders")?;
   scope.push_root(Value::String(get_all_response_headers_name))?;
-  let get_all_response_headers_fn =
-    scope.alloc_native_function(get_all_response_headers_id, None, get_all_response_headers_name, 0)?;
+  let get_all_response_headers_fn = scope.alloc_native_function(
+    get_all_response_headers_id,
+    None,
+    get_all_response_headers_name,
+    0,
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(get_all_response_headers_fn, Some(func_proto))?;
@@ -3000,7 +3046,10 @@ mod tests {
       }
 
       let mut res = if req.fetch.url.contains("json") {
-        FetchedResource::new(br#"{"answer":42}"#.to_vec(), Some("application/json".to_string()))
+        FetchedResource::new(
+          br#"{"answer":42}"#.to_vec(),
+          Some("application/json".to_string()),
+        )
       } else if req.fetch.url.contains("binary") {
         FetchedResource::new(vec![0xFF], Some("text/plain".to_string()))
       } else {
@@ -3160,7 +3209,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3291,7 +3342,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3327,7 +3380,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3367,7 +3422,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3405,7 +3462,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3441,7 +3500,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3570,7 +3631,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3579,7 +3642,10 @@ mod tests {
     let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
     let global = realm.global_object();
-    assert_eq!(get_prop(&mut scope, global, "__answer"), Value::Number(42.0));
+    assert_eq!(
+      get_prop(&mut scope, global, "__answer"),
+      Value::Number(42.0)
+    );
     Ok(())
   }
 
@@ -3614,7 +3680,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3632,7 +3700,10 @@ mod tests {
     let all = get_string(scope.heap(), all_value);
     assert!(all.contains("X-Test: value\r\n"), "all={all:?}");
     assert!(all.contains("X-Multi: a, b\r\n"), "all={all:?}");
-    assert!(!all.to_ascii_lowercase().contains("set-cookie"), "all={all:?}");
+    assert!(
+      !all.to_ascii_lowercase().contains("set-cookie"),
+      "all={all:?}"
+    );
     Ok(())
   }
 
@@ -3704,7 +3775,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3744,7 +3817,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3780,7 +3855,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -3792,4 +3869,4 @@ mod tests {
     assert_eq!(get_prop(&mut scope, global, "__threw"), Value::Bool(true));
     Ok(())
   }
-} 
+}
