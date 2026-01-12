@@ -13,6 +13,7 @@ use runtime_native::rt_gc_set_config;
 use runtime_native::rt_gc_set_limits;
 use runtime_native::rt_thread_deinit;
 use runtime_native::rt_thread_init;
+use runtime_native::roots::Root;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
 
@@ -89,17 +90,19 @@ fn gc_config_api_child() {
   assert!(!young_end.is_null());
   assert_eq!(young_end as usize - young_start as usize, cfg.nursery_size_bytes);
 
-  // With a small nursery, we should fall back to old-gen allocation after a small number of
-  // allocations.
-  let mut saw_old = false;
+  // With a small nursery and a low minor-GC trigger threshold, the allocator should trigger a minor
+  // collection quickly. A rooted young object should then be evacuated/promoted out of the nursery.
+  let rooted = Root::<u8>::new(rt_alloc(256, RtShapeId(1)));
+  let mut promoted = false;
   for _ in 0..4096 {
-    let obj = rt_alloc(256, RtShapeId(1)) as usize;
+    let _ = rt_alloc(256, RtShapeId(1));
+    let obj = rooted.get() as usize;
     if !(young_start as usize..young_end as usize).contains(&obj) {
-      saw_old = true;
+      promoted = true;
       break;
     }
   }
-  assert!(saw_old);
+  assert!(promoted, "expected a rooted object to be promoted out of the nursery");
 
   // GC should reset the nursery, making subsequent allocations young again.
   rt_gc_collect();
