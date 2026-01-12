@@ -88,6 +88,18 @@ impl ProgramState {
       .filter(|(id, _)| !file_def_ids.contains(id))
       .map(|(id, decls)| (*id, Arc::clone(decls)))
       .collect();
+    let mut new_interned_intrinsics: HashMap<DefId, tti::IntrinsicKind> = self
+      .interned_intrinsics
+      .iter()
+      .filter(|(id, _)| !file_def_ids.contains(id))
+      .map(|(id, kind)| (*id, *kind))
+      .collect();
+    let mut new_interned_class_instances: HashMap<DefId, tti::TypeId> = self
+      .interned_class_instances
+      .iter()
+      .filter(|(id, _)| !file_def_ids.contains(id))
+      .map(|(id, ty)| (*id, *ty))
+      .collect();
     let mut id_mapping: HashMap<DefId, DefId> = HashMap::new();
 
     let Some(file_state) = self.files.get(&file).cloned() else {
@@ -185,6 +197,12 @@ impl ProgramState {
         }
         if let Some(decls) = self.interned_type_param_decls.get(&old_id).cloned() {
           new_interned_type_param_decls.insert(def.id, decls);
+        }
+        if let Some(kind) = self.interned_intrinsics.get(&old_id).copied() {
+          new_interned_intrinsics.insert(def.id, kind);
+        }
+        if let Some(ty) = self.interned_class_instances.get(&old_id).copied() {
+          new_interned_class_instances.insert(def.id, ty);
         }
         (def.id, data)
       } else {
@@ -319,18 +337,89 @@ impl ProgramState {
       resolved_defs.push(def_id);
     }
 
+    let file_text = self.load_text(file, &self.host).ok();
+
+    // Any binder-produced definitions that were not matched to a `hir-js` lowered
+    // def would previously keep their sequential `alloc_def()` IDs. Those IDs
+    // are order-dependent (and not file-scoped), so replacing them with
+    // deterministic synthetic IDs keeps the public API stable across unrelated
+    // edits elsewhere in the program.
+    let mut unmatched_defs: Vec<(DefId, DefData)> = Vec::new();
     for leftovers in by_name_kind.values_mut() {
-      for (old_id, data) in leftovers.drain(..) {
-        new_def_data.insert(old_id, data.clone());
-        if let Some(ty) = self.interned_def_types.get(&old_id).copied() {
-          new_interned_def_types.insert(old_id, ty);
-        }
-        if let Some(params) = self.interned_type_params.get(&old_id).cloned() {
-          new_interned_type_params.insert(old_id, params);
-        }
-        if let Some(decls) = self.interned_type_param_decls.get(&old_id).cloned() {
-          new_interned_type_param_decls.insert(old_id, decls);
-        }
+      unmatched_defs.extend(leftovers.drain(..));
+    }
+    // Ensure deterministic allocation independent of the source hash map order.
+    let match_kind_sort_key = |kind: DefMatchKind| -> u8 {
+      match kind {
+        DefMatchKind::Function => 0,
+        DefMatchKind::Var => 1,
+        DefMatchKind::VarDeclarator => 2,
+        DefMatchKind::Class => 3,
+        DefMatchKind::Enum => 4,
+        DefMatchKind::Namespace => 5,
+        DefMatchKind::Module => 6,
+        DefMatchKind::Interface => 7,
+        DefMatchKind::TypeAlias => 8,
+        DefMatchKind::Import => 9,
+        DefMatchKind::Other => 10,
+      }
+    };
+    unmatched_defs.sort_by(|(_, a), (_, b)| {
+      (
+        a.name.as_str(),
+        match_kind_sort_key(match_kind_from_def(&a.kind)),
+        a.span.start,
+        a.span.end,
+        a.export,
+      )
+        .cmp(&(
+          b.name.as_str(),
+          match_kind_sort_key(match_kind_from_def(&b.kind)),
+          b.span.start,
+          b.span.end,
+          b.export,
+        ))
+    });
+
+    let mut taken_ids: HashSet<DefId> = new_def_data.keys().copied().collect();
+    for (old_id, data) in unmatched_defs.into_iter() {
+      let span_start = data.span.start as usize;
+      let span_end = data.span.end as usize;
+      let snippet = file_text
+        .as_deref()
+        .map(|text| {
+          let bytes = text.as_bytes();
+          bytes
+            .get(span_start..span_end)
+            .map(|s| s as &[u8])
+            .unwrap_or(&[])
+        })
+        .unwrap_or(&[]);
+      let seed = (
+        "ts_unaligned_def",
+        match_kind_from_def(&data.kind),
+        data.name.as_str(),
+        data.export,
+        snippet,
+      );
+      let new_id = alloc_synthetic_def_id(file, &mut taken_ids, &seed);
+      id_mapping.insert(old_id, new_id);
+      new_def_data.insert(new_id, data.clone());
+
+      if let Some(ty) = self.interned_def_types.get(&old_id).copied() {
+        new_interned_def_types.insert(new_id, ty);
+      }
+      if let Some(params) = self.interned_type_params.get(&old_id).cloned() {
+        new_interned_type_params.insert(new_id, params);
+      }
+      if let Some(decls) = self.interned_type_param_decls.get(&old_id).cloned() {
+        new_interned_type_param_decls.insert(new_id, decls);
+      }
+      if let Some(kind) = self.interned_intrinsics.get(&old_id).copied() {
+        new_interned_intrinsics.insert(new_id, kind);
+      }
+      if let Some(ty) = self.interned_class_instances.get(&old_id).copied() {
+        new_interned_class_instances.insert(new_id, ty);
       }
     }
 
@@ -355,7 +444,6 @@ impl ProgramState {
     self.value_defs.retain(|type_def, value_def| {
       !file_def_ids.contains(type_def) && !file_def_ids.contains(value_def)
     });
-    let mut taken_ids: HashSet<DefId> = new_def_data.keys().copied().collect();
     let mut class_enum_type_defs: Vec<DefId> = Vec::new();
     for def_id in resolved_defs.iter().copied() {
       if let Some(data) = new_def_data.get(&def_id) {
@@ -421,6 +509,8 @@ impl ProgramState {
     self.interned_def_types = new_interned_def_types;
     self.interned_type_params = new_interned_type_params;
     self.interned_type_param_decls = new_interned_type_param_decls;
+    self.interned_intrinsics = new_interned_intrinsics;
+    self.interned_class_instances = new_interned_class_instances;
 
     self.symbol_to_def.clear();
     for (def, data) in self.def_data.iter() {
