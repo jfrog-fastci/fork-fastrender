@@ -968,12 +968,23 @@ impl FloatContext {
         f32::NEG_INFINITY,
         f32::INFINITY,
       );
-      cache.segments.push(FloatRangeSegment {
-        start_y: segment_start,
-        end_y: segment_end,
-        left_edge,
-        right_edge,
-      });
+      // Coalesce adjacent segments whose constraints are identical. This is common on float-heavy
+      // pages that stack many equally-sized floats: the active set changes at each start/end, but
+      // the most-constraining edges often remain constant.
+      if let Some(last) = cache.segments.last_mut()
+        && last.end_y == segment_start
+        && last.left_edge == left_edge
+        && last.right_edge == right_edge
+      {
+        last.end_y = segment_end;
+      } else {
+        cache.segments.push(FloatRangeSegment {
+          start_y: segment_start,
+          end_y: segment_end,
+          left_edge,
+          right_edge,
+        });
+      }
 
       if !segment_end.is_finite() || segment_end <= segment_start {
         break;
