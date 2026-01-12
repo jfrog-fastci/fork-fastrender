@@ -38,7 +38,11 @@ fn call_summary_propagates_param_origin_through_phi() {
   )
   .expect("compile");
 
-  assert_eq!(program.functions.len(), 1, "expected exactly one nested function");
+  assert_eq!(
+    program.functions.len(),
+    1,
+    "expected exactly one nested function"
+  );
   let func = &program.functions[0];
   let has_phi = func
     .cfg_ssa()
@@ -49,7 +53,11 @@ fn call_summary_propagates_param_origin_through_phi() {
   assert!(has_phi, "expected SSA cfg to contain at least one Phi inst");
 
   let summaries = summarize_program(&program);
-  assert_eq!(summaries.len(), 1, "summaries should align with program.functions");
+  assert_eq!(
+    summaries.len(),
+    1,
+    "summaries should align with program.functions"
+  );
 
   let summary = &summaries[0];
   assert_eq!(
@@ -97,7 +105,11 @@ fn call_summary_marks_param_escape_through_phi_arg() {
   )
   .expect("compile");
 
-  assert_eq!(program.functions.len(), 1, "expected exactly one nested function");
+  assert_eq!(
+    program.functions.len(),
+    1,
+    "expected exactly one nested function"
+  );
   let func = &program.functions[0];
   let has_phi = func
     .cfg_ssa()

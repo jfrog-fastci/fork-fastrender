@@ -68,6 +68,19 @@ fn noescape_allocations_get_stack_alloc_candidate_hint() {
     .as_mut()
     .expect("expected SSA cfg");
 
+  // The main compilation pipeline may already set `stack_alloc_candidate` on SSA bodies. Clear it so
+  // this test continues to validate that `optpass_scalar_replace` can (re)apply the hint and report
+  // a change.
+  for (_, block) in cfg.bblocks.all_mut() {
+    for inst in block.iter_mut() {
+      if inst.t == InstTyp::Call
+        && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object")
+      {
+        inst.meta.stack_alloc_candidate = false;
+      }
+    }
+  }
+
   let result = optpass_scalar_replace(cfg);
   assert!(result.changed, "expected pass to mark changes (stack alloc hint)");
 

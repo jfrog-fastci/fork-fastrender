@@ -1329,12 +1329,15 @@ fn source_declares_console(source: &str) -> bool {
 
 #[cfg(feature = "typed")]
 fn typed_memory_host_for_source(source: &str) -> typecheck_ts::MemoryHost {
-  use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, FileKind, LibFile, LibName};
+  use typecheck_ts::lib_support::{
+    CompilerOptions as TsCompilerOptions, FileKind, LibFile, LibName,
+  };
 
   // Respect `/// <reference no-default-lib="true" />` on root files by leaving
   // the compiler options' `libs` empty so `typecheck-ts` can disable bundled lib
   // loading.
-  let no_default_lib = typecheck_ts::triple_slash::scan_triple_slash_directives(source).no_default_lib;
+  let no_default_lib =
+    typecheck_ts::triple_slash::scan_triple_slash_directives(source).no_default_lib;
   let mut host = if no_default_lib {
     typecheck_ts::MemoryHost::new()
   } else {

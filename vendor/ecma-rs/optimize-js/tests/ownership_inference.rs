@@ -5,8 +5,11 @@ use common::compile_source;
 use optimize_js::analysis::annotate_program;
 use optimize_js::analysis::driver::FunctionKey;
 use optimize_js::cfg::cfg::Cfg;
+use optimize_js::cfg::cfg::{CfgBBlocks, CfgGraph};
 use optimize_js::il::inst::{Arg, ArgUseMode, Const, InPlaceHint, InstTyp, OwnershipState};
+use optimize_js::il::inst::Inst;
 use optimize_js::CompileCfgOptions;
+use optimize_js::{OptimizationStats, Program, ProgramFunction};
 use optimize_js::TopLevelMode;
 
 fn mode_at(inst: &optimize_js::il::inst::Inst, idx: usize) -> ArgUseMode {
@@ -88,7 +91,10 @@ fn find_unique_non_internal_call_arg0(cfg: &Cfg) -> (u32, usize, u32) {
       let Some(Arg::Var(v)) = inst.args.get(2) else {
         continue;
       };
-      assert!(found.is_none(), "expected a single non-internal call with one arg");
+      assert!(
+        found.is_none(),
+        "expected a single non-internal call with one arg"
+      );
       found = Some((label, idx, *v));
     }
   }
@@ -287,16 +293,89 @@ fn returned_value_is_consumed_as_an_ownership_transfer() {
 
 #[test]
 fn earlier_prop_assign_borrows_when_value_is_used_again() {
-  let src = r#"
-    (() => {
-      let a = {};
-      let c = {};
-      c.y = a;
-      c.x = a;
-    })();
-  "#;
-  let mut program = compile_source(src, TopLevelMode::Module, false);
-  assert_eq!(program.functions.len(), 1);
+  // A minimal SSA cfg with the same key property as the JS snippet:
+  //   c.y = a; c.x = a;
+  // where `a` is used twice and does not escape. This is intentionally built directly instead of
+  // using `compile_source`, because later optimization passes (e.g. scalar replacement) can delete
+  // unobservable local property stores, making this test brittle.
+
+  // %0 = {}
+  // %1 = {}
+  // %1["y"] = %0
+  // %1["x"] = %0
+  // return
+  let mut graph = CfgGraph::default();
+  graph.ensure_label(0);
+  let mut bblocks = CfgBBlocks::default();
+  bblocks.add(
+    0,
+    vec![
+      Inst::call(
+        0,
+        Arg::Builtin("__optimize_js_object".to_string()),
+        Arg::Const(Const::Undefined),
+        vec![],
+        vec![],
+      ),
+      Inst::call(
+        1,
+        Arg::Builtin("__optimize_js_object".to_string()),
+        Arg::Const(Const::Undefined),
+        vec![],
+        vec![],
+      ),
+      Inst::prop_assign(
+        Arg::Var(1),
+        Arg::Const(Const::Str("y".to_string())),
+        Arg::Var(0),
+      ),
+      Inst::prop_assign(
+        Arg::Var(1),
+        Arg::Const(Const::Str("x".to_string())),
+        Arg::Var(0),
+      ),
+      Inst::ret(None),
+    ],
+  );
+  let cfg_fn = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let mut top_graph = CfgGraph::default();
+  top_graph.ensure_label(0);
+  let mut top_blocks = CfgBBlocks::default();
+  top_blocks.add(0, vec![Inst::ret(None)]);
+  let cfg_top = Cfg {
+    graph: top_graph,
+    bblocks: top_blocks,
+    entry: 0,
+  };
+
+  let mut program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
+    functions: vec![ProgramFunction {
+      debug: None,
+      meta: Default::default(),
+      body: cfg_fn.clone(),
+      params: Vec::new(),
+      ssa_body: Some(cfg_fn),
+      stats: OptimizationStats::default(),
+    }],
+    top_level: ProgramFunction {
+      debug: None,
+      meta: Default::default(),
+      body: cfg_top.clone(),
+      params: Vec::new(),
+      ssa_body: Some(cfg_top),
+      stats: OptimizationStats::default(),
+    },
+    top_level_mode: TopLevelMode::Module,
+    symbols: None,
+  };
+
   let analyses = annotate_program(&mut program);
   let cfg = program.functions[0].analyzed_cfg();
   let ownership = analyses
@@ -306,7 +385,10 @@ fn earlier_prop_assign_borrows_when_value_is_used_again() {
 
   let (label_y, idx_y, var_y) = find_unique_prop_assign(cfg, "y");
   let (label_x, idx_x, var_x) = find_unique_prop_assign(cfg, "x");
-  assert_eq!(var_x, var_y, "expected both prop stores to write the same value");
+  assert_eq!(
+    var_x, var_y,
+    "expected both prop stores to write the same value"
+  );
 
   let inst_y = &cfg.bblocks.get(label_y)[idx_y];
   let inst_x = &cfg.bblocks.get(label_x)[idx_x];

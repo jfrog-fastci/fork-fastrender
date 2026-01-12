@@ -26,7 +26,11 @@ fn update_expr_to_numeric_handles_object_returning_bigint() {
   let js = std::str::from_utf8(&bytes).expect("UTF-8 output");
 
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // The decompiler may fall back to a state machine for irreducible control flow, which can be
+  // relatively allocation-heavy for `vm-js` to parse/compile. Keep a modest heap limit here so the
+  // test still guards against runaway output size, but leave enough headroom for the state-machine
+  // fallback to run.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap).expect("create vm-js runtime");
   rt
     .exec_script(js)

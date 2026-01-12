@@ -1,10 +1,10 @@
 use super::super::inst::InstTyp;
 use crate::compile_source;
+#[cfg(feature = "typed")]
+use crate::compile_source_typed_cfg_options;
 use crate::compile_source_with_cfg_options;
 use crate::il::inst::{Arg, Const, UnOp};
 use crate::CompileCfgOptions;
-#[cfg(feature = "typed")]
-use crate::compile_source_typed_cfg_options;
 use crate::Program;
 use crate::ProgramFunction;
 use crate::TopLevelMode;
@@ -347,9 +347,9 @@ fn update_expr_on_builtin_is_rejected() {
   let err = compile_source("undefined++;", TopLevelMode::Module, false)
     .expect_err("expected update of builtin to be rejected");
   assert!(
-    err.iter().any(|diag| {
-      diag.code == "OPT0002" && diag.message.contains("assignment to builtin")
-    }),
+    err
+      .iter()
+      .any(|diag| { diag.code == "OPT0002" && diag.message.contains("assignment to builtin") }),
     "expected OPT0002 assignment-to-builtin diagnostic, got {err:?}"
   );
 }

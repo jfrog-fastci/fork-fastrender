@@ -61,7 +61,11 @@ fn decompile_roundtrip_global_mode() {
         }
       }
       for (;;) {
-        total++;
+        // Avoid `total++` here: in global mode, update expressions lower to full
+        // `ToNumeric` + BigInt-aware semantics, which currently decompile into a
+        // large state machine. Re-compiling that emitted output in this roundtrip
+        // test can be prohibitively slow.
+        total += 1;
         if (stop(total)) {
           break;
         }

@@ -230,6 +230,9 @@ fn inlines_recursive_callees_once() {
   // Build:
   // - caller (fn 0): %0 = call Fn1(); return %0
   // - callee (fn 1): call Fn1(); return undefined
+  //
+  // The recursive call inside the callee must remain a Call instruction (to avoid unbounded
+  // growth), but the outer callsite should still be eligible for inlining.
   let mut top_graph = CfgGraph::default();
   top_graph.ensure_label(0);
   let mut top_blocks = CfgBBlocks::default();
@@ -318,10 +321,20 @@ fn inlines_recursive_callees_once() {
 
   let cfg = program.functions[0].ssa_body.as_ref().unwrap();
   let insts = collect_insts(cfg);
-  let calls = insts.iter().filter(|i| i.t == InstTyp::Call).count();
+  let calls: Vec<_> = insts.iter().filter(|i| i.t == InstTyp::Call).collect();
   assert_eq!(
-    calls, 1,
-    "expected recursion call to remain after inlining (no unbounded growth), got {calls} calls: {insts:?}"
+    calls.len(),
+    1,
+    "expected the original call to be inlined but the recursive call to remain, got {insts:?}"
+  );
+  let (tgt, callee, _, _, _) = calls[0].as_call();
+  assert!(
+    tgt.is_none(),
+    "expected the remaining call to be the recursive call (no tgt), got {insts:?}"
+  );
+  assert!(
+    matches!(callee, Arg::Fn(1)),
+    "expected the remaining call to target the recursive callee, got {insts:?}"
   );
 }
 

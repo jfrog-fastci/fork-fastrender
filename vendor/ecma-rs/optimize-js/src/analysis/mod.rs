@@ -17,6 +17,7 @@ pub mod alias;
 pub mod async_elision;
 pub mod consume;
 pub mod liveness;
+pub mod loop_canon;
 pub mod loop_info;
 #[cfg(feature = "typed")]
 pub mod layout;

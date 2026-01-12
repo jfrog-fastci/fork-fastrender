@@ -536,7 +536,13 @@ fn unroll_counted_loop(
   let body_bb = cfg.bblocks.get(info.body);
 
   // Do not unroll bodies that contain SSA or control-flow instructions; we'd need to clone blocks.
-  if body_bb.iter().any(|inst| inst.t == InstTyp::Phi || inst.t == InstTyp::CondGoto) {
+  //
+  // Also skip calls to keep unrolling conservative: cloning calls can easily inflate code size and
+  // tends not to enable downstream vectorization anyway.
+  if body_bb
+    .iter()
+    .any(|inst| inst.t == InstTyp::Phi || inst.t == InstTyp::CondGoto || inst.t == InstTyp::Call)
+  {
     return None;
   }
 
