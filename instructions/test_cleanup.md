@@ -286,7 +286,7 @@ After moving tests from a module:
 
 ```bash
 # Before: tests ran via
-bash scripts/cargo_agent.sh test --test layout_tests flex_wrap
+bash scripts/cargo_agent.sh test --test integration layout::flex_wrap
 
 # After: tests run via
 bash scripts/cargo_agent.sh test --lib flex_wrap
@@ -351,9 +351,9 @@ Once all tests are moved:
 
 ```bash
 # Delete all the old top-level test files
-rm tests/layout_tests.rs
-rm tests/paint_tests.rs
-rm tests/style_tests.rs
+rm -f tests/layout_tests.rs
+rm -f tests/paint_tests.rs
+rm -f tests/style_tests.rs
 # ... etc
 ```
 
