@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, RootId, Value, Vm, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -79,6 +79,51 @@ fn object_destructuring_assignment_can_assign_to_member() {
     .exec_script(r#"var o = {}; ({a:o.x} = {a:1}); o.x === 1"#)
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_destructuring_assignment_member_on_primitive_is_silent_in_sloppy_mode() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var s = "abc"; ({a: s.x} = {a: 1}); true"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_destructuring_assignment_member_on_primitive_throws_in_strict_mode() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; var s = "abc"; ({a: s.x} = {a: 1});"#)
+    .unwrap_err();
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+
+  // Root the thrown value across any subsequent allocations / script runs.
+  let root: RootId = rt
+    .heap_mut()
+    .add_root(thrown)
+    .expect("root thrown value");
+
+  let Value::Object(thrown_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+
+  let type_error_proto = rt
+    .exec_script("globalThis.TypeError.prototype")
+    .expect("evaluate TypeError.prototype");
+  let Value::Object(type_error_proto) = type_error_proto else {
+    panic!("expected TypeError.prototype to be an object");
+  };
+
+  let thrown_proto = rt
+    .heap()
+    .object_prototype(thrown_obj)
+    .expect("get thrown prototype");
+  assert_eq!(thrown_proto, Some(type_error_proto));
+
+  rt.heap_mut().remove_root(root);
 }
 
 #[test]

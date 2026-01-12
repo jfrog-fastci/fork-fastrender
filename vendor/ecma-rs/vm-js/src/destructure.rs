@@ -547,6 +547,47 @@ fn array_like_get(
   scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))
 }
 
+fn assign_to_property_key(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  base: Value,
+  key: PropertyKey,
+  value: Value,
+  strict: bool,
+) -> Result<(), VmError> {
+  // Root `base`/`key`/`value` across `ToObject(base)` and `[[Set]]`, both of which can allocate and
+  // invoke user code (via accessors / host hooks).
+  let mut set_scope = scope.reborrow();
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  let roots = [base, key_root, value];
+  set_scope.push_roots(&roots)?;
+
+  // `PutValue` for property references uses `ToObject(base)` for the target object, but uses the
+  // original base value (which may be a primitive) as the receiver.
+  let object = match set_scope.to_object(vm, host, hooks, base) {
+    Ok(obj) => obj,
+    Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, &mut set_scope, msg)?),
+    Err(err) => return Err(err),
+  };
+  // Root the boxed object so host hooks/accessors can allocate freely.
+  set_scope.push_root(Value::Object(object))?;
+
+  let ok = set_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, object, key, value, base)?;
+  if ok {
+    Ok(())
+  } else if strict {
+    Err(throw_type_error(vm, &mut set_scope, "Cannot assign to read-only property")?)
+  } else {
+    // Sloppy-mode assignment to a non-writable/non-extensible target fails silently.
+    Ok(())
+  }
+}
+
 fn assign_to_member(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -565,28 +606,13 @@ fn assign_to_member(
   // Root the RHS across evaluation of the LHS object.
   let mut rhs_scope = scope.reborrow();
   rhs_scope.push_root(value)?;
-  let obj_value = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.left)?;
-
-  let Value::Object(obj) = obj_value else {
-    return Err(throw_type_error(
-      vm,
-      &mut rhs_scope,
-      "member assignment on non-object",
-    )?);
-  };
+  let base = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.left)?;
+  // Root the base value across property-key allocation and `ToObject(base)` boxing.
+  let base = rhs_scope.push_root(base)?;
 
   let key_s = rhs_scope.alloc_string(&member.right)?;
   let key = PropertyKey::from_string(key_s);
-  let ok =
-    rhs_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, value, Value::Object(obj))?;
-  if ok {
-    Ok(())
-  } else if strict {
-    let msg = format!("Cannot assign to read only property '{}'", member.right);
-    Err(throw_type_error(vm, &mut rhs_scope, &msg)?)
-  } else {
-    Ok(())
-  }
+  assign_to_property_key(vm, host, hooks, &mut rhs_scope, base, key, value, strict)
 }
 
 fn assign_to_computed_member(
@@ -608,15 +634,9 @@ fn assign_to_computed_member(
   let mut rhs_scope = scope.reborrow();
   rhs_scope.push_root(value)?;
 
-  let obj_value = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.object)?;
-  let Value::Object(obj) = obj_value else {
-    return Err(throw_type_error(
-      vm,
-      &mut rhs_scope,
-      "computed member assignment on non-object",
-    )?);
-  };
-
+  let base = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.object)?;
+  // Root the base across evaluation/conversion of the computed key.
+  let base = rhs_scope.push_root(base)?;
   let key_value = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.member)?;
   let key_value = rhs_scope.push_root(key_value)?;
   let key = match rhs_scope.to_property_key(vm, host, hooks, key_value) {
@@ -624,16 +644,7 @@ fn assign_to_computed_member(
     Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, &mut rhs_scope, msg)?),
     Err(err) => return Err(err),
   };
-
-  let ok =
-    rhs_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, value, Value::Object(obj))?;
-  if ok {
-    Ok(())
-  } else if strict {
-    Err(throw_type_error(vm, &mut rhs_scope, "strict mode assignment failed")?)
-  } else {
-    Ok(())
-  }
+  assign_to_property_key(vm, host, hooks, &mut rhs_scope, base, key, value, strict)
 }
 
 fn root_property_key(scope: &mut Scope<'_>, key: PropertyKey) -> Result<(), VmError> {
