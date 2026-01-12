@@ -32724,7 +32724,8 @@ mod tests {
         target.onmouseover = capRelated;\n\
         target.onmouseout = capRelated;\n\
         target.onmouseenter = capRelated;\n\
-        target.onmouseleave = capRelated;",
+        target.onmouseleave = capRelated;\n\
+        target.onclick = cap;",
     )?;
 
     struct DummyHost;
@@ -32954,17 +32955,47 @@ mod tests {
     )
     .expect("mouseleave dispatch should succeed");
 
+    let mut click = web_events::Event::new(
+      "click",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    click.is_trusted = true;
+    click.mouse = Some(web_events::MouseEvent {
+      client_x: 13.0,
+      client_y: 26.0,
+      button: 0,
+      buttons: 0,
+      ctrl_key: true,
+      shift_key: true,
+      alt_key: false,
+      meta_key: false,
+      related_target: None,
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut click,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("click dispatch should succeed");
+
     let realm = realm_slot.as_mut().expect("expected realm slot");
     let ok = realm.exec_script(
       "(() => {\n\
-         return __log.length === 7 &&\n\
+         return __log.length === 8 &&\n\
            __log[0] === 'mousedown|true|10|20|0|1|true|false|true|false' &&\n\
            __log[1] === 'mousemove|true|11|22|0|1|false|true|false|true' &&\n\
            __log[2] === 'mouseup|true|12|24|0|0|false|false|false|false' &&\n\
            __log[3] === 'mouseover|true|other' &&\n\
            __log[4] === 'mouseout|true|other' &&\n\
            __log[5] === 'mouseenter|true|other' &&\n\
-           __log[6] === 'mouseleave|true|other';\n\
+           __log[6] === 'mouseleave|true|other' &&\n\
+           __log[7] === 'click|true|13|26|0|0|true|true|false|false';\n\
         })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
