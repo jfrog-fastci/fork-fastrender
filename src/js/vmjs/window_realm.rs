@@ -21368,8 +21368,9 @@ fn init_window_globals(
   let error_func = define_console_method(&mut scope, "error", ConsoleMessageLevel::Error)?;
   let debug_func = define_console_method(&mut scope, "debug", ConsoleMessageLevel::Debug)?;
   let trace_func = define_console_method(&mut scope, "trace", ConsoleMessageLevel::Debug)?;
-  let group_func = define_console_noop_method(&mut scope, "group")?;
-  let group_collapsed_func = define_console_noop_method(&mut scope, "groupCollapsed")?;
+  let group_func = define_console_method(&mut scope, "group", ConsoleMessageLevel::Log)?;
+  let group_collapsed_func =
+    define_console_method(&mut scope, "groupCollapsed", ConsoleMessageLevel::Log)?;
   let group_end_func = define_console_noop_method(&mut scope, "groupEnd")?;
   let clear_func = define_console_noop_method(&mut scope, "clear")?;
   let assert_func = define_console_standard_method(&mut scope, console_assert_call_id, "assert", 0)?;
@@ -24681,6 +24682,27 @@ mod tests {
     )?;
     assert_eq!(call_result, Value::Undefined);
 
+    let trace_args = [Value::Number(1.0)];
+    let group_args = [Value::Number(2.0)];
+    let group_collapsed_args = [Value::Number(3.0)];
+    for (name, args) in [
+      ("trace", &trace_args[..]),
+      ("group", &group_args[..]),
+      ("groupCollapsed", &group_collapsed_args[..]),
+      ("groupEnd", &[][..]),
+      ("clear", &[][..]),
+    ] {
+      let func = get_prop(vm, &mut scope, console_obj, name)?;
+      let call_result = vm.call_with_host(
+        &mut scope,
+        &mut host_hooks,
+        func,
+        Value::Object(console_obj),
+        args,
+      )?;
+      assert_eq!(call_result, Value::Undefined);
+    }
+
     Ok(())
   }
 
@@ -24873,6 +24895,12 @@ mod tests {
       ("error", ConsoleMessageLevel::Error, Value::Number(4.0)),
       ("debug", ConsoleMessageLevel::Debug, Value::Number(5.0)),
       ("trace", ConsoleMessageLevel::Debug, Value::Number(6.0)),
+      ("group", ConsoleMessageLevel::Log, Value::Number(7.0)),
+      (
+        "groupCollapsed",
+        ConsoleMessageLevel::Log,
+        Value::Number(8.0),
+      ),
     ];
     for (name, _level, arg) in calls {
       let func = get_prop(vm, &mut scope, console_obj, name)?;
@@ -24882,6 +24910,18 @@ mod tests {
         func,
         Value::Object(console_obj),
         &[arg],
+      )?;
+      assert_eq!(call_result, Value::Undefined);
+    }
+
+    for name in ["groupEnd", "clear"] {
+      let func = get_prop(vm, &mut scope, console_obj, name)?;
+      let call_result = vm.call_with_host(
+        &mut scope,
+        &mut host_hooks,
+        func,
+        Value::Object(console_obj),
+        &[],
       )?;
       assert_eq!(call_result, Value::Undefined);
     }
@@ -24912,6 +24952,14 @@ mod tests {
         CapturedConsoleCall {
           level: ConsoleMessageLevel::Debug,
           args: vec![CapturedConsoleArg::Number(6.0)]
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Log,
+          args: vec![CapturedConsoleArg::Number(7.0)]
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Log,
+          args: vec![CapturedConsoleArg::Number(8.0)]
         },
       ]
     );
