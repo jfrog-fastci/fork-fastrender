@@ -1,5 +1,9 @@
 name: typecheck-ts upstream conformance
 
+concurrency:
+  group: typecheck-ts-upstream-conformance-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     paths:
@@ -219,6 +223,81 @@ jobs:
             typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.json
             typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.stderr.log
           if-no-files-found: error
+
+      - name: Shard summary (step summary)
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          
+          report_path = Path(os.environ["REPORT_PATH"])
+          shard = os.environ["SHARD"]
+          shard_total = os.environ["SHARD_TOTAL"]
+          status = os.environ.get("STATUS", "")
+          
+          data = {}
+          if report_path.exists():
+            try:
+              data = json.loads(report_path.read_text())
+            except Exception as exc:
+              data = {"error": f"failed to parse JSON report: {exc}"}
+          else:
+            data = {"error": "missing JSON report"}
+          
+          summary = data.get("summary") if isinstance(data, dict) else None
+          outcomes = summary.get("outcomes") if isinstance(summary, dict) else None
+          mismatches = summary.get("mismatches") if isinstance(summary, dict) else None
+          
+          def get_int(obj, key):
+            if not isinstance(obj, dict):
+              return 0
+            val = obj.get(key, 0)
+            return val if isinstance(val, int) else 0
+          
+          total = get_int(summary, "total")
+          match = get_int(outcomes, "match")
+          extra = get_int(outcomes, "rust_extra_diagnostics")
+          missing = get_int(outcomes, "rust_missing_diagnostics")
+          span = get_int(outcomes, "span_mismatch")
+          code = get_int(outcomes, "code_mismatch")
+          ice = get_int(outcomes, "rust_ice")
+          tsc_crashed = get_int(outcomes, "tsc_crashed")
+          timeout = get_int(outcomes, "timeout")
+          
+          expected = get_int(mismatches, "expected")
+          unexpected = get_int(mismatches, "unexpected")
+          flaky = get_int(mismatches, "flaky")
+          xpass = get_int(mismatches, "xpass")
+          
+          lines = []
+          lines.append(f"## Upstream TS conformance shard {shard}/{shard_total}")
+          lines.append("")
+          if status:
+            lines.append(f"- Exit status: `{status}`")
+          if "error" in data:
+            lines.append(f"- Report error: `{data['error']}`")
+          else:
+            lines.append(f"- Total cases: {total}")
+            lines.append(
+              f"- Outcomes: match={match}, extra={extra}, missing={missing}, span={span}, code={code}, rust_ice={ice}, tsc_crashed={tsc_crashed}, timeout={timeout}"
+            )
+            if isinstance(mismatches, dict):
+              lines.append(f"- Mismatches: expected={expected}, unexpected={unexpected}, flaky={flaky}, xpass={xpass}")
+          lines.append("")
+          
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+              f.write("\n")
+          PY
+        env:
+          REPORT_PATH: typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.json
+          SHARD: ${{ matrix.shard_index }}
+          SHARD_TOTAL: ${{ matrix.shard_total }}
+          STATUS: ${{ steps.run_conformance.outputs.status }}
 
       - name: Fail on uncovered regressions (post-upload)
         if: steps.run_conformance.outputs.status != '0'
