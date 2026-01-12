@@ -666,6 +666,7 @@ extern "C" {
   pub fn rt_string_to_owned_utf8(s: GcPtr) -> StringRef;
   pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
   pub fn rt_string_pin_interned(id: InternedId);
+  pub fn rt_string_lookup(id: InternedId, out: *mut StringRef) -> bool;
 
   // Parallel
   pub fn rt_parallel_spawn(task: RtTaskFn, data: *mut u8) -> TaskId;
