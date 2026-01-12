@@ -422,7 +422,7 @@ impl ModuleGraph {
       .intrinsics()
       .ok_or(VmError::Unimplemented("module namespaces require intrinsics"))?;
 
-    let getter_call = vm.register_native_call(module_namespace_getter)?;
+    let getter_call = vm.module_namespace_getter_call_id()?;
 
     // Allocate the namespace object.
     //
@@ -1457,7 +1457,7 @@ fn module_request_from_specifier(specifier: &str) -> ModuleRequest {
 /// This creates an ordinary object with the correct `[[Prototype]]` and `%Symbol.toStringTag%`
 /// property. A real module namespace is an *exotic object* with virtual string-keyed export
 /// properties backed by live bindings; that behaviour will be added once module environments exist.
-fn module_namespace_getter(
+pub(crate) fn module_namespace_getter(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn crate::VmHost,

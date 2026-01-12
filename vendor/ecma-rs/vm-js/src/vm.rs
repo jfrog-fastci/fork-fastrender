@@ -340,6 +340,7 @@ pub struct Vm {
   module_tla_init_default_export_on_fulfilled_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_fulfilled_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_rejected_call: Option<NativeFunctionId>,
+  module_namespace_getter_call: Option<NativeFunctionId>,
   async_from_sync_iterator_unwrap_call: Option<NativeFunctionId>,
   async_from_sync_iterator_close_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
@@ -575,6 +576,7 @@ impl Vm {
       module_tla_init_default_export_on_fulfilled_call: None,
       dynamic_import_eval_on_fulfilled_call: None,
       dynamic_import_eval_on_rejected_call: None,
+      module_namespace_getter_call: None,
       async_from_sync_iterator_unwrap_call: None,
       async_from_sync_iterator_close_call: None,
       next_async_continuation_id: 0,
@@ -692,6 +694,15 @@ impl Vm {
     }
     let id = self.register_native_call(crate::module_loading::dynamic_import_eval_on_rejected)?;
     self.dynamic_import_eval_on_rejected_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn module_namespace_getter_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.module_namespace_getter_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::module_graph::module_namespace_getter)?;
+    self.module_namespace_getter_call = Some(id);
     Ok(id)
   }
 
@@ -3366,6 +3377,18 @@ mod tests {
     assert_eq!(rejected_first, rejected_second);
     assert_eq!(len, vm.native_calls.len());
 
+    Ok(())
+  }
+
+  #[test]
+  fn module_namespace_getter_call_id_is_cached() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+
+    let first = vm.module_namespace_getter_call_id()?;
+    let len = vm.native_calls.len();
+    let second = vm.module_namespace_getter_call_id()?;
+    assert_eq!(first, second);
+    assert_eq!(len, vm.native_calls.len());
     Ok(())
   }
 }
