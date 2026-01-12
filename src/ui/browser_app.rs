@@ -1236,6 +1236,54 @@ mod browser_app_tests {
   }
 
   #[test]
+  fn visited_urls_strip_fragments_and_dedupe_by_normalized_url() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://example.test/y#one".to_string(),
+      title: Some("One".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://example.test/y#two".to_string(),
+      title: Some("Two".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    assert_eq!(app.visited.len(), 1);
+    let record = app.visited.iter_recent().next().expect("expected visit");
+    assert_eq!(record.url, "https://example.test/y");
+
+    assert_eq!(app.history.entries.len(), 1);
+    let entry = app.history.entries.last().expect("expected history entry");
+    assert_eq!(entry.url, "https://example.test/y");
+    assert_eq!(entry.visit_count, 2);
+  }
+
+  #[test]
+  fn visited_urls_ignore_unsupported_schemes() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "mailto:test@example.com".to_string(),
+      title: Some("Email".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    assert!(!update.history_changed);
+    assert!(app.visited.is_empty());
+    assert!(app.history.entries.is_empty());
+  }
+
+  #[test]
   fn clear_history_empties_history_and_visited_stores() {
     let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
     let tab_id = app.active_tab_id().unwrap();

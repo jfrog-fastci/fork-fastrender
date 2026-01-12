@@ -68,7 +68,7 @@ impl GlobalHistoryStore {
   }
 
   fn record_at_ms(&mut self, url: String, title: Option<String>, visited_at_ms: u64) -> bool {
-    let Some(normalized) = normalize_history_url(&url) else {
+    let Some(normalized) = normalize_url_for_history(&url) else {
       return false;
     };
 
@@ -96,7 +96,7 @@ impl GlobalHistoryStore {
 
   /// Look up an entry by URL, applying the same normalization used for recording.
   pub fn get(&self, url: &str) -> Option<&GlobalHistoryEntry> {
-    let key = normalize_history_url(url)?;
+    let key = normalize_url_for_history(url)?;
     self.entries.iter().find(|e| e.url == key)
   }
 
@@ -107,7 +107,7 @@ impl GlobalHistoryStore {
   pub fn normalize_in_place(&mut self) {
     let mut out: Vec<GlobalHistoryEntry> = Vec::with_capacity(self.entries.len());
     for entry in std::mem::take(&mut self.entries) {
-      let Some(url) = normalize_history_url(&entry.url) else {
+      let Some(url) = normalize_url_for_history(&entry.url) else {
         continue;
       };
 
@@ -149,7 +149,14 @@ fn normalize_title(title: Option<String>) -> Option<String> {
     .filter(|t| !t.is_empty())
 }
 
-fn normalize_history_url(url: &str) -> Option<String> {
+/// Normalize a URL for use in `GlobalHistoryStore` and `VisitedUrlStore`.
+///
+/// Semantics:
+/// - Reject empty input
+/// - Reject `about:` pages
+/// - Allow only `http`, `https`, `file`
+/// - Strip the fragment (`#...`)
+pub fn normalize_url_for_history(url: &str) -> Option<String> {
   let trimmed = url.trim();
   if trimmed.is_empty() {
     return None;
