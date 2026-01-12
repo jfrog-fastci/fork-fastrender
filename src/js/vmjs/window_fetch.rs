@@ -2893,7 +2893,6 @@ fn request_clone_native(
     Value::Undefined => Value::Null,
     other => other,
   };
-
   if request_body_stream_locked(env_id, request_id, scope.heap())? {
     return Err(throw_type_error(
       vm,
