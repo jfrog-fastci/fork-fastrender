@@ -28,15 +28,14 @@ fn effective_module_resolution_mode(compiler_options: &CompilerOptions) -> Modul
     Some("node16") => ModuleResolutionMode::Node16,
     Some("nodenext") => ModuleResolutionMode::NodeNext,
     Some("bundler") => ModuleResolutionMode::Bundler,
-    // `tsc` computes the default `moduleResolution` based on `module` when the option is unset.
+    // `tsc` computes the default `moduleResolution` based on `module` when the
+    // option is unset. In particular, ES module outputs default to Classic
+    // resolution while CommonJS defaults to Node10.
     None | Some("") => match effective_module_kind(compiler_options) {
-      ModuleKind::None | ModuleKind::Amd | ModuleKind::Umd | ModuleKind::System => {
-        ModuleResolutionMode::Classic
-      }
       ModuleKind::Node16 => ModuleResolutionMode::Node16,
       ModuleKind::NodeNext => ModuleResolutionMode::NodeNext,
-      // All other module kinds (including CommonJS, ES*, etc) default to Node10.
-      _ => ModuleResolutionMode::Node10,
+      ModuleKind::CommonJs => ModuleResolutionMode::Node10,
+      _ => ModuleResolutionMode::Classic,
     },
     // Fall back to Classic semantics for unknown values so we don't accidentally
     // enable `node_modules` lookups in misconfigured tests.
