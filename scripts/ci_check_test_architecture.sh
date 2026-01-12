@@ -16,6 +16,14 @@ if [[ ! -f Cargo.toml ]]; then
   exit 1
 fi
 
+# `tests/integration.rs` is the unified integration-test harness. Even while the broader test
+# cleanup is in-flight, we want to fail fast if it disappears.
+if [[ ! -f tests/integration.rs ]]; then
+  echo "error: missing tests/integration.rs (unified integration-test harness)" >&2
+  echo "see: ${doc_ref}" >&2
+  exit 1
+fi
+
 have_rg=0
 if command -v rg >/dev/null 2>&1; then
   have_rg=1
