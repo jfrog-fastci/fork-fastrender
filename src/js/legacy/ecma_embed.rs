@@ -213,6 +213,7 @@ impl VmJsScriptRealm {
       default_fuel: options.default_fuel,
       default_deadline: options.default_deadline,
       check_time_every: options.check_time_every,
+      math_random_seed: VmOptions::default().math_random_seed,
       interrupt_flag: Some(Arc::clone(&interrupt_flag)),
       external_interrupt_flag: None,
     });

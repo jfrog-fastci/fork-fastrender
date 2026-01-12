@@ -563,6 +563,18 @@ pub trait VmHostHooks {
   /// [microtask checkpoints](https://html.spec.whatwg.org/multipage/webappapis.html#perform-a-microtask-checkpoint).
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>);
 
+  /// Optional host hook for `Math.random()`.
+  ///
+  /// If provided, this hook supplies raw pseudorandom bits that will be converted into a
+  /// `Number` in the range `[0, 1)`, using the same 53-bit conversion as the engine's default PRNG.
+  ///
+  /// Returning `None` falls back to the VM's deterministic per-VM PRNG (seeded by
+  /// [`crate::VmOptions::math_random_seed`]).
+  #[inline]
+  fn host_math_random_u64(&mut self) -> Option<u64> {
+    None
+  }
+
   /// Host hook for "exotic" `[[Get]]` behavior.
   ///
   /// This allows embeddings to model lightweight host objects (e.g. DOMStringMap-style named
@@ -684,6 +696,10 @@ pub trait VmHostHooks {
     impl<H: VmHostHooks + ?Sized> VmHostHooks for HostProxy<'_, H> {
       fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
         self.0.host_enqueue_promise_job(job, realm);
+      }
+
+      fn host_math_random_u64(&mut self) -> Option<u64> {
+        self.0.host_math_random_u64()
       }
 
       fn host_exotic_get(
@@ -894,6 +910,10 @@ pub trait VmHostHooks {
     impl<H: VmHostHooks + ?Sized> VmHostHooks for HostProxy<'_, H> {
       fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
         self.0.host_enqueue_promise_job(job, realm);
+      }
+
+      fn host_math_random_u64(&mut self) -> Option<u64> {
+        self.0.host_math_random_u64()
       }
 
       fn as_any_mut(&mut self) -> Option<&mut dyn Any> {

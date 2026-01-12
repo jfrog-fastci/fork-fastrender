@@ -17,6 +17,7 @@ fn fuel_exhaustion_triggers_out_of_fuel_after_exact_tick_count() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });
@@ -45,6 +46,7 @@ fn deadline_exhaustion_triggers_deadline_exceeded() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });
@@ -69,6 +71,7 @@ fn interrupt_token_triggers_interrupted() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });
@@ -92,6 +95,7 @@ fn shared_interrupt_flag_triggers_interrupted() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: Some(flag.clone()),
     external_interrupt_flag: None,
   });
@@ -114,6 +118,7 @@ fn shared_interrupt_flag_is_toggled_by_vm_interrupt_handle() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: Some(flag.clone()),
     external_interrupt_flag: None,
   });
@@ -129,6 +134,7 @@ fn interrupt_handle_can_be_reset_to_reuse_vm() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });
@@ -155,6 +161,7 @@ fn vm_reset_interrupt_clears_shared_interrupt_flag() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: Some(flag.clone()),
     external_interrupt_flag: None,
   });
@@ -181,6 +188,7 @@ fn external_interrupt_flag_is_not_cleared_by_vm_reset_interrupt() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: Some(flag.clone()),
   });
@@ -213,6 +221,7 @@ fn vm_reset_interrupt_clears_internal_but_not_external_interrupt_flag() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: Some(internal.clone()),
     external_interrupt_flag: Some(external.clone()),
   });
@@ -248,6 +257,7 @@ fn reset_budget_to_default_recomputes_deadline_relative_to_now() {
     default_fuel: None,
     default_deadline: Some(Duration::from_millis(50)),
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });
@@ -271,6 +281,7 @@ fn budget_guard_restores_previous_budget_state() {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });

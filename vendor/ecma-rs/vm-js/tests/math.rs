@@ -1,0 +1,282 @@
+use vm_js::{
+  Budget, GcObject, Heap, HeapLimits, PropertyKey, PropertyKind, Realm, Scope, TerminationReason,
+  Value, Vm, VmError, VmHostHooks, VmOptions,
+};
+
+struct TestRt {
+  vm: Vm,
+  heap: Heap,
+  realm: Realm,
+}
+
+impl TestRt {
+  fn new(options: VmOptions) -> Result<Self, VmError> {
+    let mut vm = Vm::new(options);
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let realm = Realm::new(&mut vm, &mut heap)?;
+    Ok(Self { vm, heap, realm })
+  }
+}
+
+impl Drop for TestRt {
+  fn drop(&mut self) {
+    self.realm.teardown(&mut self.heap);
+  }
+}
+
+fn get_data_property(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  name: &str,
+) -> Result<Option<Value>, VmError> {
+  let key = PropertyKey::from_string(scope.alloc_string(name)?);
+  let Some(desc) = scope.heap().get_property(obj, &key)? else {
+    return Ok(None);
+  };
+  match desc.kind {
+    PropertyKind::Data { value, .. } => Ok(Some(value)),
+    PropertyKind::Accessor { .. } => Err(VmError::PropertyNotData),
+  }
+}
+
+fn assert_is_pos_zero(n: f64) {
+  assert_eq!(n, 0.0);
+  assert!(!n.is_sign_negative(), "expected +0, got -0");
+}
+
+fn assert_is_neg_zero(n: f64) {
+  assert_eq!(n, 0.0);
+  assert!(n.is_sign_negative(), "expected -0, got +0");
+}
+
+#[test]
+fn max_min_and_sign_handle_negative_zero() -> Result<(), VmError> {
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+
+  let max = get_data_property(&mut scope, math, "max")?.unwrap();
+  let min = get_data_property(&mut scope, math, "min")?.unwrap();
+  let sign = get_data_property(&mut scope, math, "sign")?.unwrap();
+
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, max, Value::Object(math), &[Value::Number(-0.0), Value::Number(0.0)])?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.max did not return number"));
+  };
+  assert_is_pos_zero(n);
+
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, min, Value::Object(math), &[Value::Number(0.0), Value::Number(-0.0)])?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.min did not return number"));
+  };
+  assert_is_neg_zero(n);
+
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, sign, Value::Object(math), &[Value::Number(-0.0)])?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.sign did not return number"));
+  };
+  assert_is_neg_zero(n);
+
+  Ok(())
+}
+
+#[test]
+fn hypot_infinity_overrides_nan() -> Result<(), VmError> {
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let hypot = get_data_property(&mut scope, math, "hypot")?.unwrap();
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    hypot,
+    Value::Object(math),
+    &[Value::Number(f64::NAN), Value::Number(f64::INFINITY)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.hypot did not return number"));
+  };
+  assert!(n.is_infinite() && n.is_sign_positive());
+  Ok(())
+}
+
+#[test]
+fn clz32_and_imul_match_spec_int32_semantics() -> Result<(), VmError> {
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let clz32 = get_data_property(&mut scope, math, "clz32")?.unwrap();
+  let imul = get_data_property(&mut scope, math, "imul")?.unwrap();
+
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, clz32, Value::Object(math), &[Value::Number(1.0)])?;
+  assert_eq!(out, Value::Number(31.0));
+
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, clz32, Value::Object(math), &[Value::Number(0.0)])?;
+  assert_eq!(out, Value::Number(32.0));
+
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, clz32, Value::Object(math), &[Value::Number(-1.0)])?;
+  assert_eq!(out, Value::Number(0.0));
+
+  // (2^32 - 1) * 5 mod 2^32 == 2^32 - 5 == -5 as int32.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    imul,
+    Value::Object(math),
+    &[Value::Number(4_294_967_295.0), Value::Number(5.0)],
+  )?;
+  assert_eq!(out, Value::Number(-5.0));
+
+  Ok(())
+}
+
+fn xorshift64star_next(state: &mut u64) -> u64 {
+  if *state == 0 {
+    *state = 0x243F_6A88_85A3_08D3;
+  }
+  let mut x = *state;
+  x ^= x >> 12;
+  x ^= x << 25;
+  x ^= x >> 27;
+  *state = x;
+  x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+}
+
+fn bits_to_unit_double(x: u64) -> f64 {
+  let bits = x >> 11;
+  (bits as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
+#[test]
+fn math_methods_have_correct_length_properties() -> Result<(), VmError> {
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+
+  let atan2 = get_data_property(&mut scope, math, "atan2")?.unwrap();
+  let Value::Object(atan2_fn) = atan2 else {
+    return Err(VmError::Unimplemented("Math.atan2 is not a function"));
+  };
+  assert_eq!(
+    get_data_property(&mut scope, atan2_fn, "length")?.unwrap(),
+    Value::Number(2.0)
+  );
+
+  let max = get_data_property(&mut scope, math, "max")?.unwrap();
+  let Value::Object(max_fn) = max else {
+    return Err(VmError::Unimplemented("Math.max is not a function"));
+  };
+  assert_eq!(
+    get_data_property(&mut scope, max_fn, "length")?.unwrap(),
+    Value::Number(2.0)
+  );
+
+  let random = get_data_property(&mut scope, math, "random")?.unwrap();
+  let Value::Object(random_fn) = random else {
+    return Err(VmError::Unimplemented("Math.random is not a function"));
+  };
+  assert_eq!(
+    get_data_property(&mut scope, random_fn, "length")?.unwrap(),
+    Value::Number(0.0)
+  );
+
+  Ok(())
+}
+
+#[test]
+fn random_is_seeded_and_host_overridable() -> Result<(), VmError> {
+  // Deterministic by default: new VMs with the same seed produce the same first output.
+  let seed = 0x243F_6A88_85A3_08D3;
+  let mut expected_state = seed;
+  let expected = bits_to_unit_double(xorshift64star_next(&mut expected_state));
+
+  let mut rt = TestRt::new(VmOptions {
+    math_random_seed: seed,
+    ..VmOptions::default()
+  })?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let random = get_data_property(&mut scope, math, "random")?.unwrap();
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, random, Value::Object(math), &[])?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.random did not return number"));
+  };
+  assert_eq!(n, expected);
+
+  // Host override wins.
+  #[derive(Default)]
+  struct Host {
+    next: u64,
+  }
+  impl VmHostHooks for Host {
+    fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
+
+    fn host_math_random_u64(&mut self) -> Option<u64> {
+      Some(self.next)
+    }
+  }
+
+  let mut host = Host { next: 0 };
+  let out = rt.vm.call_with_host(&mut scope, &mut host, random, Value::Object(math), &[])?;
+  assert_eq!(out, Value::Number(0.0));
+
+  Ok(())
+}
+
+#[test]
+fn variadic_math_methods_tick_in_argument_loops() -> Result<(), VmError> {
+  let mut rt = TestRt::new(VmOptions {
+    check_time_every: 1,
+    ..VmOptions::default()
+  })?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let max = get_data_property(&mut scope, math, "max")?.unwrap();
+
+  // Fuel budget is intentionally too small:
+  // - 1 tick at call entry
+  // - `Math.max` ticks in its loop at i=0 and i=32
+  rt.vm.set_budget(Budget {
+    fuel: Some(2),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let mut args: Vec<Value> = (0..33).map(|i| Value::Number(i as f64)).collect();
+  args[0] = Value::Number(-0.0);
+
+  let err = rt
+    .vm
+    .call_without_host(&mut scope, max, Value::Object(math), &args)
+    .unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected OutOfFuel termination, got {other:?}"),
+  }
+
+  Ok(())
+}

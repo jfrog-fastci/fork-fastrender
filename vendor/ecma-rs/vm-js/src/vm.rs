@@ -217,6 +217,11 @@ pub struct VmOptions {
   /// time the budget is initialized/reset (for example via [`Vm::reset_budget_to_default`]).
   pub default_deadline: Option<Duration>,
   pub check_time_every: u32,
+  /// Seed for the VM's deterministic `Math.random()` PRNG.
+  ///
+  /// Embeddings that need non-deterministic randomness should provide a host hook (see
+  /// [`crate::VmHostHooks::host_math_random_u64`]) or initialize this seed from an external RNG.
+  pub math_random_seed: u64,
   /// Optional shared interrupt flag to observe for cooperative cancellation.
   ///
   /// If provided, the VM will use this flag for its interrupt token so hosts can cancel execution
@@ -237,6 +242,9 @@ impl Default for VmOptions {
       default_fuel: None,
       default_deadline: None,
       check_time_every: 100,
+      // A fixed default seed keeps `Math.random()` deterministic for tests and reproducible
+      // embeddings. Hosts can override via `VmOptions` or `VmHostHooks::host_math_random_u64`.
+      math_random_seed: 0x243F_6A88_85A3_08D3,
       interrupt_flag: None,
       external_interrupt_flag: None,
     }
@@ -294,6 +302,7 @@ pub struct Vm {
   interrupt: InterruptToken,
   interrupt_handle: InterruptHandle,
   budget: BudgetState,
+  math_random_state: u64,
   stack: Vec<StackFrame>,
   execution_context_stack: Vec<ExecutionContext>,
   native_calls: Vec<NativeCall>,
@@ -534,12 +543,14 @@ impl Vm {
     let (interrupt, interrupt_handle) =
       InterruptToken::from_internal_and_external_flags(internal, external);
     let check_time_every = options.check_time_every;
+    let math_random_state = options.math_random_seed;
     let mut vm = Self {
       options,
       interrupt,
       interrupt_handle,
       // Placeholder; immediately overwritten by `reset_budget_to_default`.
       budget: BudgetState::new(Budget::unlimited(check_time_every)),
+      math_random_state,
       stack: Vec::new(),
       execution_context_stack: Vec::new(),
       native_calls: Vec::new(),
@@ -563,6 +574,29 @@ impl Vm {
     };
     vm.reset_budget_to_default();
     vm
+  }
+
+  /// Returns the next pseudorandom `u64` output for `Math.random()` and advances the VM's internal
+  /// PRNG state.
+  ///
+  /// This PRNG is **deterministic** and **not** cryptographically secure. Hosts that need
+  /// non-deterministic randomness should either:
+  /// - seed the VM using [`VmOptions::math_random_seed`], or
+  /// - override randomness via [`crate::VmHostHooks::host_math_random_u64`].
+  ///
+  /// The algorithm is xorshift64* (Marsaglia), chosen for its tiny constant-time implementation.
+  pub(crate) fn next_math_random_u64(&mut self) -> u64 {
+    // xorshift64* requires a non-zero state. If a host explicitly seeded with 0, fall back to the
+    // default constant so `Math.random()` still produces a useful sequence.
+    if self.math_random_state == 0 {
+      self.math_random_state = 0x243F_6A88_85A3_08D3;
+    }
+    let mut x = self.math_random_state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    self.math_random_state = x;
+    x.wrapping_mul(0x2545_F491_4F6C_DD1D)
   }
 
   /// Returns the VM-owned microtask queue.
@@ -926,6 +960,9 @@ impl Vm {
 
   pub(crate) fn set_intrinsics(&mut self, intrinsics: Intrinsics) {
     self.intrinsics = Some(intrinsics);
+    // Intrinsics are installed per realm. Treat this as the realm initialization boundary for
+    // `Math.random()` and reset the per-realm PRNG state.
+    self.math_random_state = self.options.math_random_seed;
   }
 
   /// Returns the VM's initialized intrinsics, if any.

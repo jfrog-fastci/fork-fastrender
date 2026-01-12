@@ -34,6 +34,7 @@ fn call_native_function_returns_value() -> Result<(), VmError> {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });
@@ -63,6 +64,7 @@ fn call_non_callable_returns_type_error_placeholder() -> Result<(), VmError> {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });
@@ -97,6 +99,7 @@ fn call_ticks_budget_and_reports_stack_on_termination() -> Result<(), VmError> {
     default_fuel: None,
     default_deadline: None,
     check_time_every: 1,
+    math_random_seed: 0x243F_6A88_85A3_08D3,
     interrupt_flag: None,
     external_interrupt_flag: None,
   });

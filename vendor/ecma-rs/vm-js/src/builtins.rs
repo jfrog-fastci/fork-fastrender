@@ -12,7 +12,6 @@ use parse_js::ast::node::ParenthesizedExpr;
 use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 fn data_desc(
   value: Value,
@@ -9510,8 +9509,6 @@ pub fn global_decode_uri_component(
   decode_uri_string(vm, scope, host, hooks, input, &[])
 }
 
-static MATH_RANDOM_STATE: AtomicU64 = AtomicU64::new(0x243F_6A88_85A3_08D3);
-
 fn math_unary_number_op(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -9525,6 +9522,37 @@ fn math_unary_number_op(
   Ok(Value::Number(f(n)))
 }
 
+fn math_binary_number_op(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  args: &[Value],
+  f: impl FnOnce(f64, f64) -> f64,
+) -> Result<Value, VmError> {
+  let a = args.get(0).copied().unwrap_or(Value::Undefined);
+  let b = args.get(1).copied().unwrap_or(Value::Undefined);
+  let x = scope.to_number(vm, host, hooks, a)?;
+  let y = scope.to_number(vm, host, hooks, b)?;
+  Ok(Value::Number(f(x, y)))
+}
+
+fn to_uint32(n: f64) -> u32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  // ECMA-262 `ToUint32`: truncate then compute modulo 2^32.
+  let int = n.trunc();
+  const TWO_32: f64 = 4_294_967_296.0;
+  let mut int = int % TWO_32;
+  if int < 0.0 {
+    int += TWO_32;
+  }
+  int as u32
+}
+
+const MATH_VARIADIC_TICK_EVERY: usize = 32;
+
 /// `Math.abs(x)` (ECMA-262).
 pub fn math_abs(
   vm: &mut Vm,
@@ -9536,6 +9564,110 @@ pub fn math_abs(
   args: &[Value],
 ) -> Result<Value, VmError> {
   math_unary_number_op(vm, scope, host, hooks, args, |n| n.abs())
+}
+
+/// `Math.acos(x)` (ECMA-262).
+pub fn math_acos(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.acos())
+}
+
+/// `Math.acosh(x)` (ECMA-262).
+pub fn math_acosh(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.acosh())
+}
+
+/// `Math.asin(x)` (ECMA-262).
+pub fn math_asin(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.asin())
+}
+
+/// `Math.asinh(x)` (ECMA-262).
+pub fn math_asinh(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.asinh())
+}
+
+/// `Math.atan(x)` (ECMA-262).
+pub fn math_atan(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.atan())
+}
+
+/// `Math.atan2(y, x)` (ECMA-262).
+pub fn math_atan2(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_binary_number_op(vm, scope, host, hooks, args, |y, x| y.atan2(x))
+}
+
+/// `Math.atanh(x)` (ECMA-262).
+pub fn math_atanh(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.atanh())
+}
+
+/// `Math.cbrt(x)` (ECMA-262).
+pub fn math_cbrt(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.cbrt())
 }
 
 /// `Math.floor(x)` (ECMA-262).
@@ -9551,6 +9683,22 @@ pub fn math_floor(
   math_unary_number_op(vm, scope, host, hooks, args, |n| n.floor())
 }
 
+/// `Math.clz32(x)` (ECMA-262).
+pub fn math_clz32(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let v = args.first().copied().unwrap_or(Value::Undefined);
+  let n = scope.to_number(vm, host, hooks, v)?;
+  let u = to_uint32(n);
+  Ok(Value::Number(u.leading_zeros() as f64))
+}
+
 /// `Math.ceil(x)` (ECMA-262).
 pub fn math_ceil(
   vm: &mut Vm,
@@ -9562,6 +9710,158 @@ pub fn math_ceil(
   args: &[Value],
 ) -> Result<Value, VmError> {
   math_unary_number_op(vm, scope, host, hooks, args, |n| n.ceil())
+}
+
+/// `Math.cos(x)` (ECMA-262).
+pub fn math_cos(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.cos())
+}
+
+/// `Math.cosh(x)` (ECMA-262).
+pub fn math_cosh(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.cosh())
+}
+
+/// `Math.expm1(x)` (ECMA-262).
+pub fn math_expm1(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.exp_m1())
+}
+
+/// `Math.fround(x)` (ECMA-262).
+pub fn math_fround(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| (n as f32) as f64)
+}
+
+/// `Math.hypot(...args)` (ECMA-262).
+pub fn math_hypot(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  if args.is_empty() {
+    return Ok(Value::Number(0.0));
+  }
+
+  let mut seen_nan = false;
+  let mut acc = 0.0f64;
+  for (i, v) in args.iter().copied().enumerate() {
+    if i % MATH_VARIADIC_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let n = scope.to_number(vm, host, hooks, v)?;
+    if n.is_infinite() {
+      // Spec: ±Infinity overrides NaN.
+      return Ok(Value::Number(f64::INFINITY));
+    }
+    if n.is_nan() {
+      seen_nan = true;
+      continue;
+    }
+    if !seen_nan {
+      acc = acc.hypot(n);
+    }
+  }
+
+  if seen_nan {
+    Ok(Value::Number(f64::NAN))
+  } else {
+    Ok(Value::Number(acc))
+  }
+}
+
+/// `Math.imul(a, b)` (ECMA-262).
+pub fn math_imul(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let a = args.get(0).copied().unwrap_or(Value::Undefined);
+  let b = args.get(1).copied().unwrap_or(Value::Undefined);
+  let x = scope.to_number(vm, host, hooks, a)?;
+  let y = scope.to_number(vm, host, hooks, b)?;
+  let ax = to_uint32(x);
+  let by = to_uint32(y);
+  let out = ax.wrapping_mul(by) as i32;
+  Ok(Value::Number(out as f64))
+}
+
+/// `Math.log1p(x)` (ECMA-262).
+pub fn math_log1p(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.ln_1p())
+}
+
+/// `Math.log10(x)` (ECMA-262).
+pub fn math_log10(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.log10())
+}
+
+/// `Math.log2(x)` (ECMA-262).
+pub fn math_log2(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.log2())
 }
 
 /// `Math.trunc(x)` (ECMA-262).
@@ -9616,14 +9916,22 @@ pub fn math_max(
 
   let mut best = f64::NEG_INFINITY;
   for (i, v) in args.iter().copied().enumerate() {
-    if i % 1024 == 0 {
+    if i % MATH_VARIADIC_TICK_EVERY == 0 {
       vm.tick()?;
     }
     let n = scope.to_number(vm, host, hooks, v)?;
     if n.is_nan() {
       return Ok(Value::Number(f64::NAN));
     }
-    best = best.max(n);
+
+    if n > best {
+      best = n;
+      continue;
+    }
+    if n == best && n == 0.0 && best.is_sign_negative() && !n.is_sign_negative() {
+      // Spec: if either value is +0, `Math.max` must return +0.
+      best = n;
+    }
   }
   Ok(Value::Number(best))
 }
@@ -9644,14 +9952,22 @@ pub fn math_min(
 
   let mut best = f64::INFINITY;
   for (i, v) in args.iter().copied().enumerate() {
-    if i % 1024 == 0 {
+    if i % MATH_VARIADIC_TICK_EVERY == 0 {
       vm.tick()?;
     }
     let n = scope.to_number(vm, host, hooks, v)?;
     if n.is_nan() {
       return Ok(Value::Number(f64::NAN));
     }
-    best = best.min(n);
+
+    if n < best {
+      best = n;
+      continue;
+    }
+    if n == best && n == 0.0 && !best.is_sign_negative() && n.is_sign_negative() {
+      // Spec: if either value is -0, `Math.min` must return -0.
+      best = n;
+    }
   }
   Ok(Value::Number(best))
 }
@@ -9712,23 +10028,96 @@ pub fn math_exp(
   math_unary_number_op(vm, scope, host, hooks, args, |n| n.exp())
 }
 
+/// `Math.sign(x)` (ECMA-262).
+pub fn math_sign(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| {
+    if n.is_nan() {
+      return f64::NAN;
+    }
+    if n == 0.0 {
+      // Preserve the sign of zero.
+      return n;
+    }
+    if n.is_sign_negative() {
+      -1.0
+    } else {
+      1.0
+    }
+  })
+}
+
+/// `Math.sin(x)` (ECMA-262).
+pub fn math_sin(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.sin())
+}
+
+/// `Math.sinh(x)` (ECMA-262).
+pub fn math_sinh(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.sinh())
+}
+
+/// `Math.tan(x)` (ECMA-262).
+pub fn math_tan(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.tan())
+}
+
+/// `Math.tanh(x)` (ECMA-262).
+pub fn math_tanh(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  math_unary_number_op(vm, scope, host, hooks, args, |n| n.tanh())
+}
+
 /// `Math.random()` (ECMA-262) (deterministic PRNG).
 pub fn math_random(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // xorshift64* (deterministic, not cryptographically secure).
-  let mut x = MATH_RANDOM_STATE.load(Ordering::Relaxed);
-  x ^= x >> 12;
-  x ^= x << 25;
-  x ^= x >> 27;
-  MATH_RANDOM_STATE.store(x, Ordering::Relaxed);
-  let x = x.wrapping_mul(0x2545_F491_4F6C_DD1D);
+  // Host override hook (if any) wins, otherwise fall back to the VM's PRNG.
+  let x = hooks.host_math_random_u64().unwrap_or_else(|| vm.next_math_random_u64());
 
   // Convert the high 53 bits into a double in [0, 1).
   let bits = x >> 11;

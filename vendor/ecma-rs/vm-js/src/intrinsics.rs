@@ -519,8 +519,26 @@ impl Intrinsics {
     let json_parse = vm.register_native_call(builtins::json_parse)?;
     let json_stringify = vm.register_native_call(builtins::json_stringify)?;
     let math_abs = vm.register_native_call(builtins::math_abs)?;
+    let math_acos = vm.register_native_call(builtins::math_acos)?;
+    let math_acosh = vm.register_native_call(builtins::math_acosh)?;
+    let math_asin = vm.register_native_call(builtins::math_asin)?;
+    let math_asinh = vm.register_native_call(builtins::math_asinh)?;
+    let math_atan = vm.register_native_call(builtins::math_atan)?;
+    let math_atan2 = vm.register_native_call(builtins::math_atan2)?;
+    let math_atanh = vm.register_native_call(builtins::math_atanh)?;
+    let math_cbrt = vm.register_native_call(builtins::math_cbrt)?;
     let math_floor = vm.register_native_call(builtins::math_floor)?;
+    let math_clz32 = vm.register_native_call(builtins::math_clz32)?;
     let math_ceil = vm.register_native_call(builtins::math_ceil)?;
+    let math_cos = vm.register_native_call(builtins::math_cos)?;
+    let math_cosh = vm.register_native_call(builtins::math_cosh)?;
+    let math_expm1 = vm.register_native_call(builtins::math_expm1)?;
+    let math_fround = vm.register_native_call(builtins::math_fround)?;
+    let math_hypot = vm.register_native_call(builtins::math_hypot)?;
+    let math_imul = vm.register_native_call(builtins::math_imul)?;
+    let math_log1p = vm.register_native_call(builtins::math_log1p)?;
+    let math_log10 = vm.register_native_call(builtins::math_log10)?;
+    let math_log2 = vm.register_native_call(builtins::math_log2)?;
     let math_trunc = vm.register_native_call(builtins::math_trunc)?;
     let math_round = vm.register_native_call(builtins::math_round)?;
     let math_max = vm.register_native_call(builtins::math_max)?;
@@ -529,6 +547,11 @@ impl Intrinsics {
     let math_sqrt = vm.register_native_call(builtins::math_sqrt)?;
     let math_log = vm.register_native_call(builtins::math_log)?;
     let math_exp = vm.register_native_call(builtins::math_exp)?;
+    let math_sign = vm.register_native_call(builtins::math_sign)?;
+    let math_sin = vm.register_native_call(builtins::math_sin)?;
+    let math_sinh = vm.register_native_call(builtins::math_sinh)?;
+    let math_tan = vm.register_native_call(builtins::math_tan)?;
+    let math_tanh = vm.register_native_call(builtins::math_tanh)?;
     let math_random = vm.register_native_call(builtins::math_random)?;
     let reflect_apply = vm.register_native_call(builtins::reflect_apply)?;
     let reflect_construct = vm.register_native_call(builtins::reflect_construct)?;
@@ -2373,8 +2396,26 @@ impl Intrinsics {
         };
 
       define_method("abs", math_abs, 1)?;
+      define_method("acos", math_acos, 1)?;
+      define_method("acosh", math_acosh, 1)?;
+      define_method("asin", math_asin, 1)?;
+      define_method("asinh", math_asinh, 1)?;
+      define_method("atan", math_atan, 1)?;
+      define_method("atan2", math_atan2, 2)?;
+      define_method("atanh", math_atanh, 1)?;
+      define_method("cbrt", math_cbrt, 1)?;
+      define_method("clz32", math_clz32, 1)?;
       define_method("floor", math_floor, 1)?;
       define_method("ceil", math_ceil, 1)?;
+      define_method("cos", math_cos, 1)?;
+      define_method("cosh", math_cosh, 1)?;
+      define_method("expm1", math_expm1, 1)?;
+      define_method("fround", math_fround, 1)?;
+      define_method("hypot", math_hypot, 2)?;
+      define_method("imul", math_imul, 2)?;
+      define_method("log1p", math_log1p, 1)?;
+      define_method("log10", math_log10, 1)?;
+      define_method("log2", math_log2, 1)?;
       define_method("trunc", math_trunc, 1)?;
       define_method("round", math_round, 1)?;
       define_method("max", math_max, 2)?;
@@ -2383,6 +2424,11 @@ impl Intrinsics {
       define_method("sqrt", math_sqrt, 1)?;
       define_method("log", math_log, 1)?;
       define_method("exp", math_exp, 1)?;
+      define_method("sign", math_sign, 1)?;
+      define_method("sin", math_sin, 1)?;
+      define_method("sinh", math_sinh, 1)?;
+      define_method("tan", math_tan, 1)?;
+      define_method("tanh", math_tanh, 1)?;
       define_method("random", math_random, 0)?;
     }
 
