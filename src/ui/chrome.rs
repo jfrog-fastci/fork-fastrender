@@ -4,10 +4,14 @@ use crate::render_control::StageHeartbeat;
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
+use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
+use crate::ui::url_display;
 use crate::ui::zoom;
 use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
-use url::Url;
+
+const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
+const COMPACT_MODE_THRESHOLD_PX: f32 = 640.0;
 
 mod tab_strip;
 
@@ -320,6 +324,7 @@ pub fn chrome_ui(
 
     // Navigation + address bar row.
     ui.horizontal(|ui| {
+      let is_compact = ui.available_width() < COMPACT_MODE_THRESHOLD_PX;
       let (can_back, can_forward, loading, stage, load_progress, warning, error, zoom_factor) = app
         .active_tab()
         .map(|t| {
@@ -336,10 +341,10 @@ pub fn chrome_ui(
         })
         .unwrap_or((false, false, false, None, None, None, None, zoom::DEFAULT_ZOOM));
 
-      if icon_button(ui, BrowserIcon::Back, "Back", can_back).clicked() {
+      if icon_button(ui, BrowserIcon::Back, "Back (Alt+Left)", can_back).clicked() {
         actions.push(ChromeAction::Back);
       }
-      if icon_button(ui, BrowserIcon::Forward, "Forward", can_forward).clicked() {
+      if icon_button(ui, BrowserIcon::Forward, "Forward (Alt+Right)", can_forward).clicked() {
         actions.push(ChromeAction::Forward);
       }
       if icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true).clicked() {
@@ -348,80 +353,189 @@ pub fn chrome_ui(
 
       // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with
       // non-US keyboard layouts).
-      if ui.small_button("−").clicked() {
-        if let Some(tab) = app.active_tab_mut() {
-          tab.zoom = zoom::zoom_out(tab.zoom);
+      if !is_compact {
+        if ui
+          .small_button("−")
+          .on_hover_text("Zoom out (Ctrl/Cmd+-)")
+          .clicked()
+        {
+          if let Some(tab) = app.active_tab_mut() {
+            tab.zoom = zoom::zoom_out(tab.zoom);
+          }
         }
-      }
-      let percent = zoom::zoom_percent(zoom_factor);
-      if ui
-        .small_button(format!("{percent}%"))
-        .on_hover_text("Reset zoom (Ctrl/Cmd+0)")
-        .clicked()
-      {
-        if let Some(tab) = app.active_tab_mut() {
-          tab.zoom = zoom::zoom_reset();
+        let percent = zoom::zoom_percent(zoom_factor);
+        if ui
+          .small_button(format!("{percent}%"))
+          .on_hover_text("Reset zoom (Ctrl/Cmd+0)")
+          .clicked()
+        {
+          if let Some(tab) = app.active_tab_mut() {
+            tab.zoom = zoom::zoom_reset();
+          }
         }
-      }
-      if ui.small_button("+").clicked() {
-        if let Some(tab) = app.active_tab_mut() {
-          tab.zoom = zoom::zoom_in(tab.zoom);
+        if ui
+          .small_button("+")
+          .on_hover_text("Zoom in (Ctrl/Cmd++)")
+          .clicked()
+        {
+          if let Some(tab) = app.active_tab_mut() {
+            tab.zoom = zoom::zoom_in(tab.zoom);
+          }
         }
       }
 
-      // Security indicator (non-interactive).
-      if let Some(committed) = app.active_tab().and_then(|t| t.committed_url.as_deref()) {
-        if let Ok(parsed) = Url::parse(committed) {
-          match parsed.scheme() {
-            "https" => {
+      // ---------------------------------------------------------------------------
+      // Address bar (pill + truncation + security indicator)
+      // ---------------------------------------------------------------------------
+      let address_bar_id = ui.make_persistent_id("address_bar");
+      let egui_focus = ctx.memory(|mem| mem.has_focus(address_bar_id));
+      let show_text_edit =
+        egui_focus || app.chrome.address_bar_has_focus || app.chrome.request_focus_address_bar;
+
+      // Derive the URL for display/indicator from the active tab (not from in-progress address bar
+      // edits).
+      let active_url = app
+        .active_tab()
+        .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
+        .unwrap_or("")
+        .to_string();
+      let indicator = security_indicator::indicator_for_url(&active_url);
+
+      let stage = stage.filter(|s| *s != StageHeartbeat::Done);
+      let loading_text = match stage {
+        Some(stage) => format!("Loading… {}", stage.as_str()),
+        None => "Loading…".to_string(),
+      };
+
+      let bar_height = ui.spacing().interact_size.y;
+      let (bar_rect, bar_response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), bar_height),
+        if show_text_edit {
+          egui::Sense::hover()
+        } else {
+          egui::Sense::click()
+        },
+      );
+
+      let bar_rounding = egui::Rounding::same(bar_rect.height() / 2.0);
+      ui.painter().rect_filled(bar_rect, bar_rounding, ui.visuals().widgets.inactive.bg_fill);
+
+      // Build the contents inside an inset rect to get pill-like padding.
+      let pad = ui.spacing().button_padding;
+      let inner_rect = bar_rect.shrink2(egui::vec2(pad.x.max(6.0), pad.y.max(4.0)));
+      let mut text_edit_response: Option<egui::Response> = None;
+      ui.allocate_ui_at_rect(inner_rect, |ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+
+        // Right-to-left layout ensures the URL text doesn't consume the entire width before we get a
+        // chance to place status indicators on the right edge.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+          if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
+            let err_fg = ui.visuals().error_fg_color;
+            let err_bg =
+              egui::Color32::from_rgba_unmultiplied(err_fg.r(), err_fg.g(), err_fg.b(), 40);
+            let resp = egui::Frame::none()
+              .fill(err_bg)
+              .rounding(egui::Rounding::same(3.0))
+              .inner_margin(egui::Margin::same(2.0))
+              .show(ui, |ui| {
+                let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
+              })
+              .response;
+            let _ = resp.on_hover_text(err);
+          }
+
+          if let Some(warn) = warning.as_deref().filter(|s| !s.trim().is_empty()) {
+            let warn_fg = ui.visuals().warn_fg_color;
+            let warn_bg =
+              egui::Color32::from_rgba_unmultiplied(warn_fg.r(), warn_fg.g(), warn_fg.b(), 40);
+            let resp = egui::Frame::none()
+              .fill(warn_bg)
+              .rounding(egui::Rounding::same(3.0))
+              .inner_margin(egui::Margin::same(2.0))
+              .show(ui, |ui| {
+                let _ = icon_tinted(
+                  ui,
+                  BrowserIcon::WarningInsecure,
+                  ui.spacing().icon_width,
+                  warn_fg,
+                );
+              })
+              .response;
+            let _ = resp.on_hover_text(warn);
+          }
+
+          if loading {
+            let _ = spinner(ui, ui.spacing().icon_width).on_hover_text(loading_text.clone());
+            if !is_compact {
+              let _ = ui
+                .add(
+                  egui::Label::new(egui::RichText::new(loading_text.clone()).small())
+                    .wrap(false)
+                    .truncate(true),
+                )
+                .on_hover_text(loading_text.clone());
+            }
+          }
+
+          if show_text_edit {
+            let response = ui.add(
+              egui::TextEdit::singleline(&mut app.chrome.address_bar_text)
+                .id(address_bar_id)
+                .desired_width(f32::INFINITY)
+                .hint_text("Enter URL…")
+                .frame(false),
+            );
+            text_edit_response = Some(response);
+          } else {
+            let display = if active_url.trim().is_empty() {
+              egui::RichText::new("Enter URL…").color(ui.visuals().weak_text_color())
+            } else {
+              egui::RichText::new(url_display::truncate_url_middle(
+                &active_url,
+                ADDRESS_BAR_DISPLAY_MAX_CHARS,
+              ))
+            };
+            ui.add(egui::Label::new(display).wrap(false).truncate(true));
+          }
+
+          match indicator {
+            security_indicator::SecurityIndicator::Secure => {
               let _ = icon_tinted(
                 ui,
                 BrowserIcon::LockSecure,
                 ui.spacing().icon_width,
                 ui.visuals().text_color(),
               )
-              .on_hover_text("Secure connection (HTTPS)");
+              .on_hover_text(indicator.tooltip());
             }
-            "http" => {
+            security_indicator::SecurityIndicator::Insecure => {
               let _ = icon_tinted(
                 ui,
                 BrowserIcon::WarningInsecure,
                 ui.spacing().icon_width,
                 ui.visuals().text_color(),
               )
-              .on_hover_text("Not secure (HTTP)");
+              .on_hover_text(indicator.tooltip());
             }
-            _ => {}
+            security_indicator::SecurityIndicator::Neutral => {
+              let _ = ui
+                .label(egui::RichText::new(indicator.icon()).color(ui.visuals().weak_text_color()))
+                .on_hover_text(indicator.tooltip());
+            }
           }
-        }
-      }
+        });
+      });
 
-      let address_bar_id = ui.make_persistent_id("address_bar");
-      let response = ui.add(
-        egui::TextEdit::singleline(&mut app.chrome.address_bar_text)
-          .id(address_bar_id)
-          .desired_width(f32::INFINITY)
-          .hint_text("Enter URL…"),
-      );
+      // Border stroke for the pill.
+      let border_stroke = if bar_response.hovered() {
+        ui.visuals().widgets.hovered.bg_stroke
+      } else {
+        ui.visuals().widgets.inactive.bg_stroke
+      };
+      ui.painter().rect_stroke(bar_rect, bar_rounding, border_stroke);
 
-      if app.chrome.request_focus_address_bar {
-        response.request_focus();
-        app.chrome.request_focus_address_bar = false;
-      }
-
-      if app.chrome.request_select_all_address_bar {
-        if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, address_bar_id) {
-          let end = app.chrome.address_bar_text.chars().count();
-          state.set_ccursor_range(Some(egui::text::CCursorRange::two(
-            egui::text::CCursor::new(0),
-            egui::text::CCursor::new(end),
-          )));
-          state.store(ctx, address_bar_id);
-        }
-        app.chrome.request_select_all_address_bar = false;
-      }
-
-      let has_focus = response.has_focus();
+      let has_focus = text_edit_response.as_ref().is_some_and(|r| r.has_focus());
 
       // Micro-interaction: address bar focus ring animation.
       let focus_t = motion.animate_bool(
@@ -433,10 +547,11 @@ pub fn chrome_ui(
       if focus_t > 0.0 {
         let ring_color = with_alpha(ui.visuals().selection.stroke.color, focus_t);
         let ring_width = 1.0 + focus_t;
-        let ring_rect = response.rect.expand(1.0 + focus_t);
+        let ring_rect = bar_rect.expand(1.0 + focus_t);
+        let ring_rounding = egui::Rounding::same(ring_rect.height() / 2.0);
         ui.painter().rect_stroke(
           ring_rect,
-          egui::Rounding::same(4.0),
+          ring_rounding,
           egui::Stroke::new(ring_width, ring_color),
         );
       }
@@ -459,10 +574,10 @@ pub fn chrome_ui(
         // When loading finishes, keep the bar full width while it fades out to avoid a sudden
         // disappearance (and to mimic typical browser "complete then fade" behaviour).
         let progress = if loading { progress.max(0.02) } else { 1.0 };
-        let x1 = response.rect.left() + response.rect.width() * progress;
+        let x1 = bar_rect.left() + bar_rect.width() * progress;
         let rect = egui::Rect::from_min_max(
-          egui::pos2(response.rect.left(), response.rect.bottom() - bar_h),
-          egui::pos2(x1, response.rect.bottom()),
+          egui::pos2(bar_rect.left(), bar_rect.bottom() - bar_h),
+          egui::pos2(x1, bar_rect.bottom()),
         );
         let color = with_alpha(ui.visuals().selection.stroke.color, loading_t);
         if rect.width() > 0.0 {
@@ -472,78 +587,64 @@ pub fn chrome_ui(
         }
       }
 
-      if has_focus != app.chrome.address_bar_has_focus {
-        // Keep `address_bar_editing` and `address_bar_has_focus` in sync, and when the user leaves
-        // the address bar revert any uncommitted edits back to the active tab URL (matching typical
-        // browser UX).
-        app.set_address_bar_editing(has_focus);
-        actions.push(ChromeAction::AddressBarFocusChanged(has_focus));
-      }
-
-      // Some chrome actions (e.g. switching tabs via Ctrl/Cmd+Tab) cancel address bar editing while
-      // keeping focus in the widget. Ensure we re-enter "editing" mode as soon as the user starts
-      // typing, so worker navigation updates don't clobber in-progress input.
-      if has_focus && response.changed() {
-        app.chrome.address_bar_editing = true;
-      }
-
-      if has_focus && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        app.chrome.address_bar_editing = false;
-        app.sync_address_bar_to_active();
-        response.surrender_focus();
-      }
-
-      if has_focus && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        app.chrome.address_bar_editing = false;
-        actions.push(ChromeAction::NavigateTo(
-          app.chrome.address_bar_text.clone(),
-        ));
-        response.surrender_focus();
-      }
-
-      if loading {
-        let _ = spinner(ui, ui.spacing().icon_width);
-        let stage = stage.filter(|s| *s != StageHeartbeat::Done);
-        match stage {
-          Some(stage) => {
-            ui.label(egui::RichText::new(format!("Loading… {}", stage.as_str())).small())
-          }
-          None => ui.label(egui::RichText::new("Loading…").small()),
+      // Display mode: click-to-focus and show the full URL on hover.
+      if !show_text_edit {
+        let bar_response = if active_url.trim().is_empty() {
+          bar_response.on_hover_text("Enter URL…")
+        } else {
+          bar_response.on_hover_text(active_url.clone())
         };
+        if bar_response.clicked() {
+          app.chrome.request_focus_address_bar = true;
+          app.chrome.request_select_all_address_bar = true;
+        }
       }
 
-      if let Some(warn) = warning.as_deref().filter(|s| !s.trim().is_empty()) {
-        let warn_fg = ui.visuals().warn_fg_color;
-        let warn_bg =
-          egui::Color32::from_rgba_unmultiplied(warn_fg.r(), warn_fg.g(), warn_fg.b(), 40);
-        let resp = egui::Frame::none()
-          .fill(warn_bg)
-          .rounding(egui::Rounding::same(3.0))
-          .inner_margin(egui::Margin::same(2.0))
-          .show(ui, |ui| {
-            let _ = icon_tinted(
-              ui,
-              BrowserIcon::WarningInsecure,
-              ui.spacing().icon_width,
-              warn_fg,
-            );
-          })
-          .response;
-        let _ = resp.on_hover_text(warn);
-      }
+      if let Some(response) = text_edit_response {
+        if app.chrome.request_focus_address_bar {
+          response.request_focus();
+          app.chrome.request_focus_address_bar = false;
+        }
 
-      if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
-        let err_fg = ui.visuals().error_fg_color;
-        let err_bg = egui::Color32::from_rgba_unmultiplied(err_fg.r(), err_fg.g(), err_fg.b(), 40);
-        let resp = egui::Frame::none()
-          .fill(err_bg)
-          .rounding(egui::Rounding::same(3.0))
-          .inner_margin(egui::Margin::same(2.0))
-          .show(ui, |ui| {
-            let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
-          })
-          .response;
-        let _ = resp.on_hover_text(err);
+        if app.chrome.request_select_all_address_bar {
+          if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, address_bar_id) {
+            let end = app.chrome.address_bar_text.chars().count();
+            state.set_ccursor_range(Some(egui::text::CCursorRange::two(
+              egui::text::CCursor::new(0),
+              egui::text::CCursor::new(end),
+            )));
+            state.store(ctx, address_bar_id);
+          }
+          app.chrome.request_select_all_address_bar = false;
+        }
+
+        let has_focus = response.has_focus();
+        if has_focus != app.chrome.address_bar_has_focus {
+          // Keep `address_bar_editing` and `address_bar_has_focus` in sync, and when the user leaves
+          // the address bar revert any uncommitted edits back to the active tab URL (matching typical
+          // browser UX).
+          app.set_address_bar_editing(has_focus);
+          actions.push(ChromeAction::AddressBarFocusChanged(has_focus));
+        }
+
+        // Some chrome actions (e.g. switching tabs via Ctrl/Cmd+Tab) cancel address bar editing while
+        // keeping focus in the widget. Ensure we re-enter "editing" mode as soon as the user starts
+        // typing, so worker navigation updates don't clobber in-progress input.
+        if has_focus && response.changed() {
+          app.chrome.address_bar_editing = true;
+        }
+
+        if has_focus && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+          app.chrome.address_bar_editing = false;
+          app.sync_address_bar_to_active();
+          response.surrender_focus();
+        }
+
+        if has_focus && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+          app.chrome.address_bar_editing = false;
+          actions.push(ChromeAction::NavigateTo(app.chrome.address_bar_text.clone()));
+          response.surrender_focus();
+        }
       }
     });
   });

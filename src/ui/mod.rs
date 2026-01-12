@@ -26,6 +26,8 @@ pub mod scrollbars;
 pub mod shortcuts;
 pub mod find_in_page;
 pub mod url;
+pub mod url_display;
+pub mod security_indicator;
 pub mod worker;
 pub mod zoom;
 pub mod motion;

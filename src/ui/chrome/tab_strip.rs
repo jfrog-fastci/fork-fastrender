@@ -97,7 +97,10 @@ fn tab_ui(
 ) -> (Rect, Option<ChromeAction>) {
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
-  let response = ui.interact(tab_rect, tab_id, Sense::click());
+  let title = tab.display_title();
+  let response = ui
+    .interact(tab_rect, tab_id, Sense::click())
+    .on_hover_text(title.as_str());
 
   let visuals = ui.style().visuals.clone();
 
@@ -161,7 +164,9 @@ fn tab_ui(
 
   if let Some(close_rect) = close_rect {
     let close_id = ui.make_persistent_id(("tab_strip_close", tab.id));
-    let close_resp = ui.interact(close_rect, close_id, Sense::click());
+    let close_resp = ui
+      .interact(close_rect, close_id, Sense::click())
+      .on_hover_text("Close tab (Ctrl/Cmd+W)");
     close_clicked = close_resp.clicked();
 
     if close_resp.hovered() {
@@ -191,7 +196,6 @@ fn tab_ui(
       Pos2::new(title_start_x, tab_rect.min.y),
       Pos2::new(title_end_x, tab_rect.max.y),
     );
-    let title = tab.display_title();
     let label = egui::Label::new(egui::RichText::new(title).strong())
       .truncate(true)
       .wrap(false);
@@ -268,7 +272,8 @@ pub(super) fn tab_strip_ui(
   }
 
   // New tab button stays visible even when the tab list overflows.
-  let new_tab_resp = ui.put(button_rect, egui::Button::new("+"));
+  let new_tab_resp =
+    ui.put(button_rect, egui::Button::new("+")).on_hover_text("New tab (Ctrl/Cmd+T)");
   if new_tab_resp.clicked() {
     actions.push(ChromeAction::NewTab);
   }
