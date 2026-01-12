@@ -502,6 +502,55 @@ fn closest_does_not_cross_shadow_root_boundary_to_host() {
 }
 
 #[test]
+fn shadow_root_get_element_by_id_does_not_pierce_into_nested_shadow_roots() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowroot=open>",
+    "<div id=inner_host>",
+    "<template shadowroot=open><span id=nested></span></template>",
+    "</div>",
+    "<span id=shadow></span>",
+    "</template>",
+    "</div>",
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let host = doc.get_element_by_id("host").expect("host element missing");
+  let inner_host = find_node_by_id_attr(&doc, "inner_host");
+  let nested_span = find_node_by_id_attr(&doc, "nested");
+
+  let mut outer_shadow_root: Option<NodeId> = None;
+  let mut inner_shadow_root: Option<NodeId> = None;
+  for (idx, node) in doc.nodes().iter().enumerate() {
+    if !matches!(&node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    let shadow_root_id = doc
+      .node_id_from_index(idx)
+      .expect("shadow root index from enumerate");
+    match doc.parent_node(shadow_root_id) {
+      Some(parent) if parent == host => outer_shadow_root = Some(shadow_root_id),
+      Some(parent) if parent == inner_host => inner_shadow_root = Some(shadow_root_id),
+      _ => {}
+    }
+  }
+  let outer_shadow_root = outer_shadow_root.expect("outer shadow root missing");
+  let inner_shadow_root = inner_shadow_root.expect("inner shadow root missing");
+
+  // Document-scoped queries must not see into shadow DOM.
+  assert_eq!(doc.get_element_by_id("nested"), None);
+
+  // ShadowRoot.getElementById sees its own tree scope but must not pierce into nested shadow roots.
+  assert_eq!(doc.get_element_by_id_from(outer_shadow_root, "nested"), None);
+  assert_eq!(
+    doc.get_element_by_id_from(inner_shadow_root, "nested"),
+    Some(nested_span)
+  );
+}
+
+#[test]
 fn query_selector_skips_inert_templates_and_shadow_roots_by_default_but_can_scope_into_shadow_root() {
   let html = concat!(
     "<!doctype html>",
