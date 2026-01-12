@@ -1141,7 +1141,9 @@ fn run_headless_vmjs_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   // Keep the smoke test cheap and deterministic. See `run_headless_smoke_mode` for rationale.
   const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
   if !std::env::var_os(RAYON_NUM_THREADS_ENV).is_some_and(|value| !value.is_empty()) {
-    std::env::set_var(RAYON_NUM_THREADS_ENV, "1");
+    // Avoid mutating process environment variables (the test harness may reuse this process for
+    // other work). Instead, eagerly initialize Rayon's global pool with the desired thread count.
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
   }
 
   // Prefer deterministic bundled fonts for this smoke path unless explicitly opted out.
@@ -1294,7 +1296,9 @@ fn run_headless_smoke_mode(
   // the global pool with different settings.
   const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
   if !std::env::var_os(RAYON_NUM_THREADS_ENV).is_some_and(|value| !value.is_empty()) {
-    std::env::set_var(RAYON_NUM_THREADS_ENV, "1");
+    // Avoid mutating process environment variables (the test harness may reuse this process for
+    // other work). Instead, eagerly initialize Rayon's global pool with the desired thread count.
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
   }
 
   const VIEWPORT_CSS: (u32, u32) = (200, 120);
