@@ -423,6 +423,7 @@ impl GradientPixmapCacheKey {
     radii: Point,
     spread: SpreadMode,
     stops: &[(f32, Rgba)],
+    dither_phase: u8,
   ) -> Option<Self> {
     if width == 0 || height == 0 || stops.is_empty() {
       return None;
@@ -445,6 +446,7 @@ impl GradientPixmapCacheKey {
         f32_to_canonical_bits(center.y),
         f32_to_canonical_bits(radii.x),
         f32_to_canonical_bits(radii.y),
+        u32::from(dither_phase),
       ],
       lut_key: Some(GradientCacheKey::new(
         stops,
@@ -2491,6 +2493,7 @@ pub fn rasterize_radial_gradient(
   stops: &[(f32, Rgba)],
   cache: &GradientLutCache,
   bucket: u16,
+  dither_phase: u8,
 ) -> Result<Option<Pixmap>, RenderError> {
   check_active(RenderStage::Paint)?;
   if width == 0 || height == 0 || stops.is_empty() {
@@ -2538,20 +2541,83 @@ pub fn rasterize_radial_gradient(
   let pixels = pixmap.pixels_mut();
   let total_pixels = width as usize * height as usize;
   let spread_key: SpreadModeKey = spread.into();
+  let use_8x8_dither = linear_gradient_use_8x8_dither(bucket);
+  let multi_stop = stops.len() > 2;
+  let phase_x = (dither_phase & 7) as usize;
+  let phase_y = ((dither_phase >> 3) & 7) as usize;
+  // Approximate the length of a 0→1 ramp in device pixels. For a circular radial gradient this is
+  // simply the radius; for ellipses, use the major axis. This value is only used to select between
+  // Skia's observed 8×8 dither tables.
+  let gradient_len = radii.x.max(radii.y);
+  let dither_table_8x8 = if use_8x8_dither {
+    Some(linear_gradient_select_8x8_dither_table(
+      lut.as_ref(),
+      gradient_len,
+    ))
+  } else {
+    None
+  };
+  let (dither_mask, dither_row_stride, dither_scale, dither_bias, phase_x, phase_y) =
+    if use_8x8_dither {
+      (
+        7usize,
+        8usize,
+        0.015625f32,  // 1/64
+        0.0078125f32, // 0.5/64
+        phase_x,
+        phase_y,
+      )
+    } else {
+      (
+        3usize,
+        4usize,
+        0.0625f32,  // 1/16
+        0.03125f32, // 0.5/16
+        phase_x & 3,
+        phase_y & 3,
+      )
+    };
 
   let sample_row = |y: usize, row: &mut [PremultipliedColorU8]| -> Result<(), RenderError> {
     let dy = (y as f32 + 0.5 - center.y) * inv_ry;
     let dy2 = dy * dy;
+    let y_mod = (y + phase_y) & dither_mask;
     let mut deadline_counter = 0usize;
     match spread_key {
       SpreadModeKey::Pad => {
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let mut x_mod = (x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           for (idx, pixel) in chunk.iter_mut().enumerate() {
             let t = (dx2[x + idx] + dy2).sqrt();
-            *pixel = lut.sample_pad(t);
+            if let Some(dither_table) = dither_table_8x8 {
+              let (src, seg) = lut.sample_pad_f32_with_segment(t);
+              let seg = seg as usize;
+              let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+              let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+              let (shift, m0_fix) = linear_gradient_8x8_dither_shift_x(
+                dither_table,
+                band,
+                seg as i32,
+                dom_delta,
+                multi_stop,
+              );
+              let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+              let mut m = unsafe { *dither_table.get_unchecked(idx) };
+              if m0_fix && m == 0 {
+                m = 1;
+              }
+              let dither = m as f32 * dither_scale + dither_bias;
+              *pixel = GradientLut::quantize_dither(src, dither);
+            } else {
+              let idx = y_mod * dither_row_stride + x_mod;
+              let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+              let dither = m * dither_scale + dither_bias;
+              *pixel = lut.sample_pad_dither(t, dither);
+            }
+            x_mod = (x_mod + 1) & dither_mask;
           }
           x += chunk_len;
         }
@@ -2560,10 +2626,36 @@ pub fn rasterize_radial_gradient(
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let mut x_mod = (x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           for (idx, pixel) in chunk.iter_mut().enumerate() {
             let t = (dx2[x + idx] + dy2).sqrt();
-            *pixel = lut.sample_repeat(t);
+            if let Some(dither_table) = dither_table_8x8 {
+              let (src, seg) = lut.sample_repeat_f32_with_segment(t);
+              let seg = seg as usize;
+              let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+              let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+              let (shift, m0_fix) = linear_gradient_8x8_dither_shift_x(
+                dither_table,
+                band,
+                seg as i32,
+                dom_delta,
+                multi_stop,
+              );
+              let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+              let mut m = unsafe { *dither_table.get_unchecked(idx) };
+              if m0_fix && m == 0 {
+                m = 1;
+              }
+              let dither = m as f32 * dither_scale + dither_bias;
+              *pixel = GradientLut::quantize_dither(src, dither);
+            } else {
+              let idx = y_mod * dither_row_stride + x_mod;
+              let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+              let dither = m * dither_scale + dither_bias;
+              *pixel = lut.sample_repeat_dither(t, dither);
+            }
+            x_mod = (x_mod + 1) & dither_mask;
           }
           x += chunk_len;
         }
@@ -2572,10 +2664,36 @@ pub fn rasterize_radial_gradient(
         let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let mut x_mod = (x + phase_x) & dither_mask;
           let chunk_len = chunk.len();
           for (idx, pixel) in chunk.iter_mut().enumerate() {
             let t = (dx2[x + idx] + dy2).sqrt();
-            *pixel = lut.sample_reflect(t);
+            if let Some(dither_table) = dither_table_8x8 {
+              let (src, seg) = lut.sample_reflect_f32_with_segment(t);
+              let seg = seg as usize;
+              let start = unsafe { *lut.stop_colors.get_unchecked(seg) };
+              let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+              let (shift, m0_fix) = linear_gradient_8x8_dither_shift_x(
+                dither_table,
+                band,
+                seg as i32,
+                dom_delta,
+                multi_stop,
+              );
+              let idx = y_mod * dither_row_stride + ((x_mod + shift) & 7);
+              let mut m = unsafe { *dither_table.get_unchecked(idx) };
+              if m0_fix && m == 0 {
+                m = 1;
+              }
+              let dither = m as f32 * dither_scale + dither_bias;
+              *pixel = GradientLut::quantize_dither(src, dither);
+            } else {
+              let idx = y_mod * dither_row_stride + x_mod;
+              let m = unsafe { *BAYER_4X4_XY.get_unchecked(idx) } as f32;
+              let dither = m * dither_scale + dither_bias;
+              *pixel = lut.sample_reflect_dither(t, dither);
+            }
+            x_mod = (x_mod + 1) & dither_mask;
           }
           x += chunk_len;
         }
@@ -3025,7 +3143,8 @@ mod tests {
       SpreadMode::Pad,
       stops,
       &cache,
-      4096,
+      gradient_bucket(3),
+      0,
     )
     .expect("rasterize")
     .expect("pixmap");
@@ -3041,6 +3160,171 @@ mod tests {
 
     let corner = PremultipliedColorU8::from_rgba(180, 180, 180, 255).unwrap();
     assert_eq!(px(0, 0), corner);
+  }
+
+  #[test]
+  fn radial_gradient_dither_matrix_matches_expected_4x4() {
+    // Guardrail: radial gradients should apply the same ordered dithering used by Chrome/Skia,
+    // including honoring the dither phase.
+    let stops = vec![
+      (0.0, Rgba::BLACK),
+      (
+        1.0,
+        Rgba {
+          r: 1,
+          g: 1,
+          b: 1,
+          a: 1.0,
+        },
+      ),
+    ];
+    let cache = GradientLutCache::default();
+    let width = 4;
+    let height = 4;
+    let bucket = gradient_bucket(width.max(height));
+    assert_eq!(bucket, 64);
+    let center = Point::new(2.0, 2.0);
+    let radii = Point::new(10.0, 10.0);
+    let dither_phase = (2u8 << 3) | 1u8;
+    let phase_x = (dither_phase & 7) as usize;
+    let phase_y = ((dither_phase >> 3) & 7) as usize;
+
+    let pixmap = rasterize_radial_gradient(
+      width,
+      height,
+      center,
+      radii,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+      dither_phase,
+    )
+    .expect("rasterize")
+    .expect("pixmap");
+    let pixels = pixmap.pixels();
+    let stride = width as usize;
+    let lut = get_gradient_lut(&cache, &stops, SpreadMode::Pad, bucket);
+
+    for y in 0..height as usize {
+      let dy = (y as f32 + 0.5 - center.y) / radii.y;
+      let dy2 = dy * dy;
+      let y_mod = (y + phase_y) & 3;
+      for x in 0..width as usize {
+        let dx = (x as f32 + 0.5 - center.x) / radii.x;
+        let t = (dx * dx + dy2).sqrt();
+        let src = lut.sample_pad_f32(t);
+        let x_mod = (x + phase_x) & 3;
+        let idx = y_mod * 4 + x_mod;
+        let m = BAYER_4X4_XY[idx] as f32;
+        let dither = m * 0.0625 + 0.03125;
+        let expected = GradientLut::quantize_dither(src, dither);
+        assert_eq!(pixels[y * stride + x], expected, "pixel {x},{y}");
+      }
+    }
+  }
+
+  #[test]
+  fn radial_gradient_dither_matrix_matches_expected_8x8() {
+    // Guardrail: large radial gradients should switch to an 8×8 ordered dither pattern.
+    let stops = vec![
+      (0.0, Rgba::BLACK),
+      (
+        1.0,
+        Rgba {
+          r: 1,
+          g: 1,
+          b: 1,
+          a: 1.0,
+        },
+      ),
+    ];
+    let cache = GradientLutCache::default();
+    let width = 128;
+    let height = 8;
+    let bucket = gradient_bucket(width.max(height));
+    assert_eq!(bucket, 128);
+    let center = Point::new(0.0, 0.0);
+    let radii = Point::new(1024.0, 1024.0);
+    let dither_phase = (3u8 << 3) | 5u8;
+    let phase_x = (dither_phase & 7) as usize;
+    let phase_y = ((dither_phase >> 3) & 7) as usize;
+
+    let pixmap = rasterize_radial_gradient(
+      width,
+      height,
+      center,
+      radii,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+      dither_phase,
+    )
+    .expect("rasterize")
+    .expect("pixmap");
+    let pixels = pixmap.pixels();
+    let stride = width as usize;
+    let lut = get_gradient_lut(&cache, &stops, SpreadMode::Pad, bucket);
+    let gradient_len = radii.x.max(radii.y);
+    let dither_table = linear_gradient_select_8x8_dither_table(lut.as_ref(), gradient_len);
+    let multi_stop = false;
+
+    for y in 0..height as usize {
+      let dy = (y as f32 + 0.5 - center.y) / radii.y;
+      let dy2 = dy * dy;
+      let y_mod = (y + phase_y) & 7;
+      for x in 0..width as usize {
+        let dx = (x as f32 + 0.5 - center.x) / radii.x;
+        let t = (dx * dx + dy2).sqrt();
+        let (src, seg) = lut.sample_pad_f32_with_segment(t);
+        let seg = seg as usize;
+        let start = lut.stop_colors[seg];
+        let (band, dom_delta) = linear_gradient_dither_band_and_dom_delta(src, start);
+        let (shift, m0_fix) = linear_gradient_8x8_dither_shift_x(
+          dither_table,
+          band,
+          seg as i32,
+          dom_delta,
+          multi_stop,
+        );
+        let x_mod = (x + phase_x) & 7;
+        let idx = y_mod * 8 + ((x_mod + shift) & 7);
+        let mut m = dither_table[idx];
+        if m0_fix && m == 0 {
+          m = 1;
+        }
+        let dither = m as f32 * 0.015625 + 0.0078125;
+        let expected = GradientLut::quantize_dither(src, dither);
+        assert_eq!(pixels[y * stride + x], expected, "pixel {x},{y}");
+      }
+    }
+  }
+
+  #[test]
+  fn radial_gradient_pixmap_cache_key_includes_dither_phase() {
+    let stops = &[(0.0, Rgba::BLACK), (1.0, Rgba::WHITE)];
+    let key0 = GradientPixmapCacheKey::radial(
+      10,
+      10,
+      Point::new(1.0, 2.0),
+      Point::new(3.0, 4.0),
+      SpreadMode::Pad,
+      stops,
+      0,
+    )
+    .expect("key0");
+    let key1 = GradientPixmapCacheKey::radial(
+      10,
+      10,
+      Point::new(1.0, 2.0),
+      Point::new(3.0, 4.0),
+      SpreadMode::Pad,
+      stops,
+      1,
+    )
+    .expect("key1");
+    assert!(key0 != key1);
   }
 
   fn naive_conic(

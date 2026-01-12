@@ -6547,8 +6547,11 @@ impl DisplayListRenderer {
       self.ds_len(item.center.y) - offset_y,
     );
     let radii = Point::new(self.ds_len(item.radii.x), self.ds_len(item.radii.y));
+    let dest_x = visible_rect.x().floor() as i32;
+    let dest_y = visible_rect.y().floor() as i32;
+    let dither_phase = (((dest_y & 7) as u8) << 3) | ((dest_x & 7) as u8);
     let Some(key) =
-      GradientPixmapCacheKey::radial(width, height, center, radii, spread, &stops_rgba)
+      GradientPixmapCacheKey::radial(width, height, center, radii, spread, &stops_rgba, dither_phase)
     else {
       return Ok(());
     };
@@ -6570,6 +6573,7 @@ impl DisplayListRenderer {
         &stops_rgba,
         &self.gradient_cache,
         bucket,
+        dither_phase,
       )
     })?
     else {
@@ -6580,8 +6584,6 @@ impl DisplayListRenderer {
       self.record_gradient_usage((width * height) as u64, start);
     }
 
-    let dest_x = visible_rect.x().floor() as i32;
-    let dest_y = visible_rect.y().floor() as i32;
     let frac_x = visible_rect.x() - dest_x as f32;
     let frac_y = visible_rect.y() - dest_y as f32;
     let canvas_transform = self.canvas.transform();
@@ -6839,8 +6841,11 @@ impl DisplayListRenderer {
       }
     }
 
+    let origin_x = origin.x.floor() as i32;
+    let origin_y = origin.y.floor() as i32;
+    let dither_phase = (((origin_y & 7) as u8) << 3) | ((origin_x & 7) as u8);
     let Some(key) =
-      GradientPixmapCacheKey::radial(width, height, center_key, radii_key, spread, &stops_rgba)
+      GradientPixmapCacheKey::radial(width, height, center_key, radii_key, spread, &stops_rgba, dither_phase)
     else {
       self.record_background_paint(background_timer);
       return Ok(());
@@ -6856,6 +6861,7 @@ impl DisplayListRenderer {
         &stops_rgba,
         &self.gradient_cache,
         bucket,
+        dither_phase,
       )
     })?
     else {
@@ -19875,8 +19881,15 @@ fn render_generated_border_image_subrect(
       }
       let center = Point::new(cx - crop_x, cy - crop_y);
       let radii = Point::new(radius_x, radius_y);
-      let key =
-        GradientPixmapCacheKey::radial(width, height, center, radii, SpreadMode::Pad, &resolved)?;
+      let key = GradientPixmapCacheKey::radial(
+        width,
+        height,
+        center,
+        radii,
+        SpreadMode::Pad,
+        &resolved,
+        dither_phase,
+      )?;
       let bucket = gradient_bucket(full_width.max(full_height));
       pixmap_cache
         .get_or_insert(key, || {
@@ -19889,6 +19902,7 @@ fn render_generated_border_image_subrect(
             &resolved,
             cache,
             bucket,
+            dither_phase,
           )
         })
         .ok()
@@ -19931,6 +19945,7 @@ fn render_generated_border_image_subrect(
         radii,
         SpreadMode::Repeat,
         &resolved,
+        dither_phase,
       )?;
       let bucket = gradient_bucket(full_width.max(full_height));
       pixmap_cache
@@ -19944,6 +19959,7 @@ fn render_generated_border_image_subrect(
             &resolved,
             cache,
             bucket,
+            dither_phase,
           )
         })
         .ok()

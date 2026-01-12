@@ -3599,7 +3599,8 @@ mod tests {
     assert_eq!(get_string(scope.heap(), hdr), "value");
     let multi = get_prop(&mut scope, global, "__multi");
     assert_eq!(get_string(scope.heap(), multi), "a, b");
-    assert_eq!(get_prop(&mut scope, global, "__cookie"), Value::Null);
+    let cookie = get_prop(&mut scope, global, "__cookie");
+    assert_eq!(cookie, Value::Null);
     let all_value = get_prop(&mut scope, global, "__all");
     let all = get_string(scope.heap(), all_value);
     assert!(all.contains("X-Test: value\r\n"), "all={all:?}");

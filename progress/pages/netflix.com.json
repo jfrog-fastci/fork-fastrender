@@ -16,7 +16,7 @@
     "layout": 42.086916156250005,
     "paint": 23.047596942708335
   },
-  "notes": "",
+  "notes": "Visually close; remaining large pixel diff is dominated by photo-heavy hero image sampling (many pixels off by 1–2). Matching Chrome likely requires more Skia-equivalent JPEG decode/resampling and color pipeline behavior.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 679274,
