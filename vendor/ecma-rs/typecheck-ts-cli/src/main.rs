@@ -461,7 +461,11 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
       schema_version: JSON_SCHEMA_VERSION,
       files,
       diagnostics: diagnostics.clone(),
-      compiler_options: host.compiler_options.clone(),
+      // The host's compiler options are "requested options" (after CLI/tsconfig
+      // merging). Prefer returning the *effective* options that `typecheck-ts`
+      // actually used after normalization/validation and triple-slash directive
+      // fixups.
+      compiler_options: program.compiler_options(),
       queries: JsonQueries {
         type_at,
         symbol_at,
