@@ -160,6 +160,41 @@ fn build_block_intrinsic_many_runs_tree(run_count: usize) -> BoxTree {
   BoxTree::new(root)
 }
 
+fn build_inline_cache_tree(span_count: usize) -> BoxTree {
+  const TEXT: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit";
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+  let root_style = Arc::new(root_style);
+
+  let mut span_style = ComputedStyle::default();
+  span_style.display = Display::Inline;
+  let span_style = Arc::new(span_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(span_count * 2);
+  for idx in 0..span_count {
+    let text = BoxNode::new_text(text_style.clone(), format!("span-{idx} {TEXT} {TEXT}"));
+    children.push(BoxNode::new_inline(span_style.clone(), vec![text]));
+    children.push(BoxNode::new_text(text_style.clone(), " ".to_string()));
+  }
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Inline, children);
+  BoxTree::new(root)
+}
+
+fn assign_box_ids(node: &mut BoxNode, next: &mut usize) {
+  let id = *next;
+  *next = id.saturating_add(1);
+  node.id = id;
+  for child in &mut node.children {
+    assign_box_ids(child, next);
+  }
+}
+
 fn build_table_tree(rows: usize, cols: usize) -> BoxNode {
   // Regression protected:
   // - Table auto layout measures min/max-content widths for every cell, then distributes
@@ -410,6 +445,50 @@ fn bench_table_cell_intrinsic_and_distribution(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_inline_layout_cache(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  let viewport = Size::new(480.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+  let mut config =
+    LayoutConfig::for_viewport(viewport).with_parallelism(LayoutParallelism::disabled());
+  config.enable_cache = true;
+  let engine = LayoutEngine::with_font_context(config, font_ctx);
+
+  let mut box_tree = build_inline_cache_tree(128);
+  let mut next_id = 1usize;
+  assign_box_ids(&mut box_tree.root, &mut next_id);
+
+  let _ = engine
+    .layout_tree(black_box(&box_tree))
+    .expect("inline layout warmup should succeed");
+  let before = engine.stats();
+  let _ = engine
+    .layout_tree_reuse_caches(black_box(&box_tree))
+    .expect("inline layout cache probe should succeed");
+  let after = engine.stats();
+  assert!(
+    after.layout_cache_hits > before.layout_cache_hits,
+    "expected inline layout cache hit after warmup (before={} after={})",
+    before.layout_cache_hits,
+    after.layout_cache_hits
+  );
+  eprintln!(
+    "layout_hotspots inline_layout_cache: layout_cache_hits={} layout_cache_misses={} layout_cache_clones={}",
+    after.layout_cache_hits, after.layout_cache_misses, after.layout_cache_clones
+  );
+
+  let mut group = c.benchmark_group("layout_hotspots_inline_cache");
+  group.bench_function("inline_layout_cached", |b| {
+    b.iter(|| {
+      let fragments = engine
+        .layout_tree_reuse_caches(black_box(&box_tree))
+        .expect("inline layout should succeed");
+      black_box(fragments);
+    })
+  });
+  group.finish();
+}
+
 criterion_group!(
   name = benches;
   config = micro_criterion();
@@ -417,6 +496,7 @@ criterion_group!(
     bench_flex_measure_hot_path,
     bench_block_intrinsic_sizing,
     bench_block_intrinsic_many_inline_runs,
-    bench_table_cell_intrinsic_and_distribution
+    bench_table_cell_intrinsic_and_distribution,
+    bench_inline_layout_cache
 );
 criterion_main!(benches);

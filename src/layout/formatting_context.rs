@@ -1238,11 +1238,6 @@ fn layout_cache_key(
     };
   let constraints_hash = layout_constraints_hash(constraints);
   let fragmentation_hash = LAYOUT_CACHE_FRAGMENTATION.with(|hash| hash.get());
-  let viewport_scroll_hash = if subtree_contains_content_visibility_auto(box_node, epoch) {
-    pack_viewport_scroll(sanitize_viewport_scroll(viewport_scroll))
-  } else {
-    0
-  };
   let positioned_deps = subtree_positioned_dependencies(box_node, epoch);
   if matches!(fc_type, FormattingContextType::Inline) {
     // Inline formatting contexts interact with floats and out-of-flow positioned descendants in
@@ -1256,6 +1251,11 @@ fn layout_cache_key(
       return None;
     }
   }
+  let viewport_scroll_hash = if subtree_contains_content_visibility_auto(box_node, epoch) {
+    pack_viewport_scroll(sanitize_viewport_scroll(viewport_scroll))
+  } else {
+    0
+  };
   let include_positioned_cb = positioned_deps & POSITIONED_DEP_ABSOLUTE != 0
     && !box_node.style.establishes_abs_containing_block();
   let include_fixed_cb = positioned_deps & POSITIONED_DEP_FIXED != 0
@@ -2538,6 +2538,175 @@ mod tests {
     assert_eq!(hits, 1);
     assert_eq!(stores, 1);
     assert_eq!(evictions, 0);
+
+    layout_cache_use_epoch(1, false, true, None, None);
+  }
+
+  #[test]
+  fn layout_cache_hits_for_inline_formatting_context() {
+    let _guard = layout_cache_test_lock();
+    layout_cache_use_epoch(1, true, true, None, None);
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let root_style = Arc::new(root_style);
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let text_style = Arc::new(text_style);
+
+    let text_child = BoxNode::new_text(text_style, "Hello, cached inline layout!".to_string());
+    let mut node = BoxNode::new_block(root_style, FormattingContextType::Inline, vec![text_child]);
+    node.id = 1;
+
+    let constraints = LayoutConstraints::definite(800.0, 600.0);
+    let viewport = Size::new(800.0, 600.0);
+    let cb = ContainingBlock::viewport(viewport);
+    let fc_type = FormattingContextType::Inline;
+
+    assert!(
+      layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb).is_none()
+    );
+    layout_cache_store(
+      &node,
+      fc_type,
+      &constraints,
+      &block_fragment(100.0, 50.0),
+      Point::ZERO,
+      viewport,
+      cb,
+      cb,
+    );
+    let hit = layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb);
+    assert!(hit.is_some());
+
+    let (lookups, hits, stores, evictions, _clones) = layout_cache_stats();
+    assert_eq!(lookups, 2);
+    assert_eq!(hits, 1);
+    assert_eq!(stores, 1);
+    assert_eq!(evictions, 0);
+
+    layout_cache_use_epoch(1, false, true, None, None);
+  }
+
+  #[test]
+  fn layout_cache_does_not_cache_inline_formatting_contexts_with_floats() {
+    let _guard = layout_cache_test_lock();
+    layout_cache_use_epoch(1, true, true, None, None);
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let root_style = Arc::new(root_style);
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = crate::style::float::Float::Left;
+    let mut float_child =
+      BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+    float_child.id = 2;
+
+    let mut node = BoxNode::new_block(root_style, FormattingContextType::Inline, vec![float_child]);
+    node.id = 1;
+
+    let constraints = LayoutConstraints::definite(800.0, 600.0);
+    let viewport = Size::new(800.0, 600.0);
+    let cb = ContainingBlock::viewport(viewport);
+    let fc_type = FormattingContextType::Inline;
+
+    layout_cache_store(
+      &node,
+      fc_type,
+      &constraints,
+      &block_fragment(100.0, 50.0),
+      Point::ZERO,
+      viewport,
+      cb,
+      cb,
+    );
+    LAYOUT_RESULT_CACHE.with(|cache| assert!(cache.borrow().is_empty()));
+    assert!(layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb).is_none());
+
+    layout_cache_use_epoch(1, false, true, None, None);
+  }
+
+  #[test]
+  fn layout_cache_style_overrides_use_distinct_keys_for_inline() {
+    let _guard = layout_cache_test_lock();
+    layout_cache_use_epoch(1, true, true, None, None);
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let root_style = Arc::new(root_style);
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let text_style = Arc::new(text_style);
+
+    let text_child = BoxNode::new_text(text_style, "Inline override test".to_string());
+    let mut node = BoxNode::new_block(root_style, FormattingContextType::Inline, vec![text_child]);
+    node.id = 1;
+
+    let constraints = LayoutConstraints::definite(800.0, 600.0);
+    let viewport = Size::new(800.0, 600.0);
+    let cb = ContainingBlock::viewport(viewport);
+    let fc_type = FormattingContextType::Inline;
+
+    layout_cache_store(
+      &node,
+      fc_type,
+      &constraints,
+      &block_fragment(100.0, 50.0),
+      Point::ZERO,
+      viewport,
+      cb,
+      cb,
+    );
+
+    let mut override_style = (*node.style).clone();
+    override_style.font_size = 30.0;
+    let override_style = Arc::new(override_style);
+    crate::layout::style_override::with_style_override(node.id, override_style.clone(), || {
+      layout_cache_store(
+        &node,
+        fc_type,
+        &constraints,
+        &block_fragment(200.0, 60.0),
+        Point::ZERO,
+        viewport,
+        cb,
+        cb,
+      );
+    });
+
+    LAYOUT_RESULT_CACHE.with(|cache| assert_eq!(cache.borrow().len(), 2));
+
+    let base_hit =
+      layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb).unwrap();
+    assert_eq!(base_hit.bounds.width(), 100.0);
+
+    let override_hit =
+      crate::layout::style_override::with_style_override(node.id, override_style.clone(), || {
+        layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb)
+      })
+      .expect("override cache hit");
+    assert_eq!(override_hit.bounds.width(), 200.0);
+
+    let mut override_style_again = (*node.style).clone();
+    override_style_again.font_size = 30.0;
+    let override_hit_again = crate::layout::style_override::with_style_override(
+      node.id,
+      Arc::new(override_style_again),
+      || layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb),
+    )
+    .expect("override cache hit (fresh arc)");
+    assert_eq!(override_hit_again.bounds.width(), 200.0);
+
+    let mut different_override = (*node.style).clone();
+    different_override.font_size = 42.0;
+    let miss = crate::layout::style_override::with_style_override(
+      node.id,
+      Arc::new(different_override),
+      || layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb),
+    );
+    assert!(miss.is_none());
 
     layout_cache_use_epoch(1, false, true, None, None);
   }
