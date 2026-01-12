@@ -1093,10 +1093,22 @@ pub fn chrome_ui_with_bookmarks(
             egui::Margin::same((pad.y * 0.35).clamp(1.0, 3.0))
           };
 
-          if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
-            let err_fg = ui.visuals().error_fg_color;
-            let err_bg =
-              egui::Color32::from_rgba_unmultiplied(err_fg.r(), err_fg.g(), err_fg.b(), 40);
+          let err_msg = error.as_deref().filter(|s| !s.trim().is_empty());
+          let err_t = motion.animate_bool(
+            ctx,
+            address_bar_id.with("status_badge_error"),
+            err_msg.is_some(),
+            motion.durations.progress_fade,
+          );
+          if err_t > 0.0 {
+            let err_fg = with_alpha(ui.visuals().error_fg_color, err_t);
+            let err_bg_base = egui::Color32::from_rgba_unmultiplied(
+              ui.visuals().error_fg_color.r(),
+              ui.visuals().error_fg_color.g(),
+              ui.visuals().error_fg_color.b(),
+              40,
+            );
+            let err_bg = with_alpha(err_bg_base, err_t);
             let resp = egui::Frame::none()
               .fill(err_bg)
               .rounding(badge_rounding)
@@ -1105,13 +1117,27 @@ pub fn chrome_ui_with_bookmarks(
                 let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
               })
               .response;
-            let _ = resp.on_hover_text(err);
+            if let Some(err) = err_msg {
+              let _ = resp.on_hover_text(err);
+            }
           }
 
-          if let Some(warn) = warning.as_deref().filter(|s| !s.trim().is_empty()) {
-            let warn_fg = ui.visuals().warn_fg_color;
-            let warn_bg =
-              egui::Color32::from_rgba_unmultiplied(warn_fg.r(), warn_fg.g(), warn_fg.b(), 40);
+          let warn_msg = warning.as_deref().filter(|s| !s.trim().is_empty());
+          let warn_t = motion.animate_bool(
+            ctx,
+            address_bar_id.with("status_badge_warning"),
+            warn_msg.is_some(),
+            motion.durations.progress_fade,
+          );
+          if warn_t > 0.0 {
+            let warn_fg = with_alpha(ui.visuals().warn_fg_color, warn_t);
+            let warn_bg_base = egui::Color32::from_rgba_unmultiplied(
+              ui.visuals().warn_fg_color.r(),
+              ui.visuals().warn_fg_color.g(),
+              ui.visuals().warn_fg_color.b(),
+              40,
+            );
+            let warn_bg = with_alpha(warn_bg_base, warn_t);
             let resp = egui::Frame::none()
               .fill(warn_bg)
               .rounding(badge_rounding)
@@ -1125,7 +1151,9 @@ pub fn chrome_ui_with_bookmarks(
                 );
               })
               .response;
-            let _ = resp.on_hover_text(warn);
+            if let Some(warn) = warn_msg {
+              let _ = resp.on_hover_text(warn);
+            }
           }
 
           if loading {
