@@ -683,7 +683,9 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
           Span::new(self.file, TextRange::new(0, 0)),
         ));
 
-        self.store.primitive_ids().unknown
+        // Match TypeScript's "error type" behaviour: unknown value references in
+        // type positions behave like `any` so follow-on checks don't cascade.
+        self.store.primitive_ids().any
       }
       TypeExprKind::KeyOf(inner) => {
         let ty = self.lower_type_expr(inner, names);
@@ -1440,7 +1442,9 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       Span::new(self.file, TextRange::new(0, 0)),
     ));
 
-    self.store.primitive_ids().unknown
+    // Match TypeScript's "error type" behaviour: unknown identifiers in
+    // declarations behave like `any` so they don't cascade.
+    self.store.primitive_ids().any
   }
 
   fn lower_import_type(

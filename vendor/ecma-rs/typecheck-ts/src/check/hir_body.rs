@@ -4069,7 +4069,7 @@ impl<'a> Checker<'a> {
                 format!("unknown identifier `{name}`"),
                 Span::new(self.file, loc_to_range(self.file, id.loc)),
               ));
-              prim.unknown
+              prim.any
             });
           if let Some(constraint) = element_type_constraint {
             if !self.relate.is_assignable(component_ty, constraint) {
@@ -4153,7 +4153,7 @@ impl<'a> Checker<'a> {
                 format!("unknown identifier `{base_name}`"),
                 Span::new(self.file, loc_to_range(self.file, member.stx.base.loc)),
               ));
-              prim.unknown
+              prim.any
             });
           for segment in member.stx.path.iter() {
             current = self.member_type(current, segment);
@@ -6739,7 +6739,10 @@ impl<'a> Checker<'a> {
         range,
       },
     ));
-    self.store.primitive_ids().unknown
+    // Match TypeScript's "error type" behaviour: unknown identifiers in value
+    // positions behave like `any` so we don't cascade into follow-on diagnostics
+    // like TS2322 assignability errors.
+    self.store.primitive_ids().any
   }
 
   fn check_unary(&mut self, op: OperatorName, arg: &Node<AstExpr>) -> TypeId {
