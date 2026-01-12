@@ -35,6 +35,14 @@ fn browser_help_exits_successfully_without_startup_logs() {
     help.contains("Supported schemes:"),
     "expected help to mention supported schemes, got:\n{help}"
   );
+  assert!(
+    help.contains("attempts to restore the previous session"),
+    "expected help to mention session restore startup behaviour, got:\n{help}"
+  );
+  assert!(
+    help.contains("Use `--restore`"),
+    "expected help to mention how to override session restore behaviour, got:\n{help}"
+  );
   for flag in [
     "--restore",
     "--no-restore",

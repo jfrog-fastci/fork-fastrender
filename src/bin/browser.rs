@@ -106,14 +106,14 @@ enum UserEvent {
   disable_help_subcommand = true,
   color = clap::ColorChoice::Never,
   term_width = 90,
-  after_help = "If URL is omitted, the browser opens `about:newtab`.\nThe URL value is normalized like the address bar (e.g. `example.com` → https).\nSupported schemes: http, https, file, about."
+  after_help = "If URL is omitted, the browser attempts to restore the previous session; if none exists it opens `about:newtab`.\nUse `--restore` to try restoring even when a URL is provided, or `--no-restore` to disable session restore.\nThe URL value is normalized like the address bar (e.g. `example.com` → https).\nSupported schemes: http, https, file, about."
 )]
 struct BrowserCliArgs {
-  /// Start URL (default: about:newtab)
+  /// Start URL (omit to restore previous session when available; otherwise `about:newtab`)
   #[arg(value_name = "URL")]
   url: Option<String>,
 
-  /// Restore the previous session (if supported)
+  /// Try to restore the previous session (even when a URL is provided)
   #[arg(long, action = clap::ArgAction::SetTrue, overrides_with = "no_restore")]
   restore: bool,
 
