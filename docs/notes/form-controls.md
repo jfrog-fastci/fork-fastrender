@@ -79,8 +79,9 @@ When `appearance:none` is computed, the control stops using the native form-cont
   - `src/tree/box_generation.rs::appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
   - `src/tree/box_generation.rs::webkit_appearance_none_disables_form_control_replacement`
   - `src/tree/box_generation.rs::moz_appearance_none_disables_form_control_replacement`
-- Box/tree integration tests:
-  - `tests/tree/form_controls_appearance_none_fallback.rs` exercises `appearance:none` fallback children (including range/file pseudos).
+  - `src/tree/box_generation.rs::button_appearance_none_preserves_dom_children`
+  - `src/tree/box_generation.rs::range_appearance_none_generates_slider_track_and_thumb_boxes`
+  - `src/tree/box_generation.rs::file_input_appearance_none_generates_file_selector_button_box`
 - Paint integration tests:
   - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
   - `tests/misc/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
@@ -97,7 +98,7 @@ their goldens with:
 ```
 UPDATE_PAGES_GOLDEN=1 \
   PAGES_FIXTURE_FILTER=form_controls,form_controls_appearance,form_controls_placeholder,form_controls_placeholder_pseudo,form_controls_range_select,form_controls_showcase,form_controls_states,form_controls_custom_vs_default,form_controls_comparison_panel,form_controls_lab \
-  bash scripts/cargo_agent.sh test -p fastrender --test integration regression::pages::pages_regression_suite
+  bash scripts/cargo_agent.sh test -p fastrender --test regression_tests regression::pages::pages_regression_suite
 ```
 
 Note: `PAGES_FIXTURE_FILTER` expects a comma-separated list of **exact** fixture names (it is not a prefix/regex match).
