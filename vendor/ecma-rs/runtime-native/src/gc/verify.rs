@@ -423,6 +423,10 @@ mod tests {
 
       // Resume the world so the contending registration can complete.
       crate::threading::safepoint::rt_gc_resume_world();
+      assert!(
+        crate::threading::safepoint::rt_gc_wait_for_world_resumed_timeout(TIMEOUT),
+        "world failed to resume within timeout"
+      );
 
       c_done_rx
         .recv_timeout(TIMEOUT)

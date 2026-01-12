@@ -162,7 +162,11 @@ mod imp {
     #[test]
     fn rt_trace_registry_lock_is_gc_aware() {
       let _rt = crate::test_util::TestRuntimeGuard::new();
-      const TIMEOUT: Duration = Duration::from_secs(2);
+      const TIMEOUT: Duration = if cfg!(debug_assertions) {
+        Duration::from_secs(30)
+      } else {
+        Duration::from_secs(2)
+      };
 
       std::thread::scope(|scope| {
         // Thread A holds the registry lock.
@@ -248,6 +252,10 @@ mod imp {
 
         // Resume the world so the contending snapshot can complete.
         crate::threading::safepoint::rt_gc_resume_world();
+        assert!(
+          crate::threading::safepoint::rt_gc_wait_for_world_resumed_timeout(TIMEOUT),
+          "world failed to resume within timeout"
+        );
 
         c_done_rx
           .recv_timeout(TIMEOUT)

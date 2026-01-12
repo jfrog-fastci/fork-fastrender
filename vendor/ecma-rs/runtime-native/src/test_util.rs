@@ -31,10 +31,20 @@ pub use crate::unhandled_rejection::PromiseRejectionEvent;
 /// This intentionally does *not* tear down any background threads (if/when they are introduced);
 /// it only clears per-process queues and registrations so each test starts from a blank slate.
 pub fn reset_runtime_state() {
+  // Stop-the-world handshakes can take much longer in debug builds (especially under parallel test
+  // execution on multi-agent hosts). Keep release builds strict, but give debug builds enough slack
+  // to avoid flaky timeouts.
+  let timeout = if cfg!(debug_assertions) {
+    Duration::from_secs(30)
+  } else {
+    Duration::from_secs(2)
+  };
+
   // Tests may panic while a stop-the-world epoch is active, leaving the process in a permanently
   // "stopped" state. Always resume before clearing any other state so subsequent tests can't hang
   // in safepoint polls.
   crate::rt_gc_resume_world();
+  let _ = crate::rt_gc_wait_for_world_resumed_timeout(timeout);
 
   // Integration tests run on a fixed pool of test-harness threads. If a test registers the current
   // thread and then panics before calling `threading::unregister_current_thread`, that registration

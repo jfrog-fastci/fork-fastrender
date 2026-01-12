@@ -450,11 +450,23 @@ fn runtime_native_gc_safepoint_slow_impl_inner(requested_epoch: u64, ctx: *const
   coord.threads_waiting.fetch_add(1, Ordering::SeqCst);
   // `cv_mutex` is only used to synchronize notify/wait transitions; poisoning is not meaningful.
   let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
+  let mut observed_epoch = requested_epoch;
   loop {
     let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if epoch & 1 == 0 {
       registry::set_current_thread_safepoint_epoch_observed(epoch);
       break;
+    }
+    // A thread blocked in the safepoint slow path can miss the brief resumed epoch if another
+    // stop-the-world request starts before it is scheduled again. Be prepared to observe multiple
+    // stop epochs while still waiting: publish the newly requested epoch so the coordinator can
+    // make progress.
+    if epoch != observed_epoch {
+      observed_epoch = epoch;
+      registry::set_current_thread_safepoint_epoch_observed(epoch);
+      // Notify any coordinator threads waiting on `cv` while holding the mutex to avoid lost
+      // wakeups.
+      coord.notify_all_locked(&guard);
     }
     guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
   }
@@ -689,11 +701,17 @@ fn rt_gc_safepoint_impl_inner(caller_fp: u64, caller_pc: u64, regs: *mut RegCont
   coord.threads_waiting.fetch_add(1, Ordering::SeqCst);
   // `cv_mutex` is only used to synchronize notify/wait transitions; poisoning is not meaningful.
   let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
+  let mut observed_epoch = requested_epoch;
   loop {
     let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if epoch & 1 == 0 {
       registry::set_current_thread_safepoint_epoch_observed(epoch);
       break;
+    }
+    if epoch != observed_epoch {
+      observed_epoch = epoch;
+      registry::set_current_thread_safepoint_epoch_observed(epoch);
+      coord.notify_all_locked(&guard);
     }
     guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
   }

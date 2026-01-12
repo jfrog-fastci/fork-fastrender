@@ -68,6 +68,16 @@ impl GcSafeGuard {
       return;
     }
 
+    // If the world is currently resumed (even epoch), publish that we've observed it before clearing
+    // `NativeSafe`. Some GC-aware locks use `GcSafeGuard::exit_no_wait` to avoid blocking while
+    // holding contended mutexes; without updating the observed epoch here, the coordinator's
+    // post-resume barrier (`rt_gc_wait_for_world_resumed_timeout`) can time out waiting for this
+    // thread.
+    let epoch = safepoint::current_epoch();
+    if epoch & 1 == 0 {
+      registry::set_current_thread_safepoint_epoch_observed(epoch);
+    }
+
     // Outermost guard: clear NativeSafe without waiting for an in-progress stop-the-world.
     thread.native_safe_depth.store(0, Ordering::Release);
     safepoint::notify_state_change();

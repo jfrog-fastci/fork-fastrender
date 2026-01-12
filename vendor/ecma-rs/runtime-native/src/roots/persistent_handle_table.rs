@@ -323,6 +323,10 @@ mod tests {
 
       // Resume the world so the contending allocation can complete.
       crate::threading::safepoint::rt_gc_resume_world();
+      assert!(
+        crate::threading::safepoint::rt_gc_wait_for_world_resumed_timeout(TIMEOUT),
+        "world failed to resume within timeout"
+      );
 
       let handle = c_done_rx
         .recv_timeout(TIMEOUT)

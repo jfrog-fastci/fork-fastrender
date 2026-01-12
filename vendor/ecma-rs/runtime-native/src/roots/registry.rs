@@ -538,12 +538,11 @@ impl Drop for RootScope {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::process::Command;
-  use std::sync::atomic::{AtomicBool, Ordering};
-  use std::sync::{Arc, Barrier};
   use crate::threading;
   use crate::threading::ThreadKind;
+  use std::process::Command;
   use std::sync::mpsc;
+  use std::sync::{Arc, Barrier};
   use std::time::Duration;
   use std::time::Instant;
 
@@ -594,10 +593,16 @@ mod tests {
 
   #[test]
   fn handle_api_multithreaded_stw_stress_no_deadlock_child() {
-    let _rt = crate::test_util::TestRuntimeGuard::new();
     if std::env::var_os("RT_HANDLE_STW_STRESS_CHILD").is_none() {
       return;
     }
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    const TIMEOUT: Duration = if cfg!(debug_assertions) {
+      Duration::from_secs(30)
+    } else {
+      Duration::from_secs(2)
+    };
 
     // Use multiple registered mutator threads so stop-the-world coordination is exercised.
     // Keep debug builds conservative: unit tests run in parallel by default and this stress test
@@ -605,66 +610,109 @@ mod tests {
     // cycles can lead to flaky stop-the-world watchdog timeouts even when the protocol is correct.
     let n_threads: usize = if cfg!(debug_assertions) { 2 } else { 4 };
     let stw_iters: usize = if cfg!(debug_assertions) { 10 } else { 25 };
-    let stop = Arc::new(AtomicBool::new(false));
+
+    // Hold the persistent handle table's shared/read lock so mutator threads block attempting to
+    // allocate handles (write lock). Threads blocked on GC-aware locks must enter a GC-safe
+    // ("NativeSafe") region so stop-the-world coordination does not wait for them to reach a
+    // cooperative safepoint poll.
+    let table = crate::roots::global_persistent_handle_table();
+    let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+    let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+    let lock_thread = std::thread::spawn(move || {
+      // Keep the lock-holder thread unregistered: it blocks on a channel recv while holding the
+      // table lock, and unregistered threads are not part of stop-the-world coordination.
+      table.debug_with_read_lock_for_tests(|| {
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+      });
+    });
+
+    a_locked_rx
+      .recv_timeout(TIMEOUT)
+      .expect("handle table read lock should be acquired");
+
+    // Spawn registered mutator threads that will block on `rt_handle_alloc` while the read lock is
+    // held.
     let start = Arc::new(Barrier::new(n_threads + 1));
+    let (registered_tx, registered_rx) = mpsc::channel::<threading::ThreadId>();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
 
     let mut workers = Vec::new();
     for t in 0..n_threads {
-      let stop = stop.clone();
       let start = start.clone();
+      let registered_tx = registered_tx.clone();
+      let done_tx = done_tx.clone();
       workers.push(std::thread::spawn(move || {
-        crate::threading::register_current_thread(crate::threading::ThreadKind::Worker);
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        registered_tx.send(id).unwrap();
+
         start.wait();
 
-        let mut i = 0usize;
-        while !stop.load(Ordering::Relaxed) {
-          let base = 0x1000usize + (t * 0x100) + (i & 0xff);
-          let p1 = base as *mut u8;
-          let p2 = (base ^ 0x55aa) as *mut u8;
+        // Treat pointers as opaque addresses; they do not need to be dereferenceable in this test.
+        let base = 0x1000usize + (t * 0x100);
+        let p1 = base as *mut u8;
+        let handle = crate::exports::rt_handle_alloc(p1);
+        crate::exports::rt_handle_free(handle);
 
-          let h = crate::exports::rt_handle_alloc(p1);
-          // Ensure the thread polls at multiple points while the handle table lock is hotly
-          // contended so stop-the-world coordination doesn't rely on a single poll at the end of
-          // the iteration.
-          crate::threading::safepoint_poll();
-          let _ = crate::exports::rt_handle_load(h);
-          crate::threading::safepoint_poll();
-          crate::exports::rt_handle_store(h, p2);
-          crate::threading::safepoint_poll();
-          let _ = crate::exports::rt_handle_load(h);
-          crate::threading::safepoint_poll();
-          crate::exports::rt_handle_free(h);
-
-          // Cooperate with stop-the-world requests.
-          crate::threading::safepoint_poll();
-          std::thread::yield_now();
-
-          i = i.wrapping_add(1);
-        }
-
-        crate::threading::unregister_current_thread();
+        threading::unregister_current_thread();
+        done_tx.send(()).unwrap();
       }));
     }
 
-    start.wait();
-
-    // Stop-the-world while worker threads are actively contending on the handle table lock.
-    let stw_res = std::panic::catch_unwind(|| {
-      for _ in 0..stw_iters {
-        crate::safepoint::with_world_stopped(|| {});
-        // Yield between stop-the-world cycles so mutator threads reliably get CPU time to make
-        // forward progress on heavily contended test runners.
-        std::thread::yield_now();
-      }
-    });
-
-    stop.store(true, Ordering::Relaxed);
-    for w in workers {
-      w.join().unwrap();
+    let mut ids = Vec::with_capacity(n_threads);
+    for _ in 0..n_threads {
+      ids.push(
+        registered_rx
+          .recv_timeout(TIMEOUT)
+          .expect("worker thread should register"),
+      );
     }
 
-    if let Err(panic) = stw_res {
-      std::panic::resume_unwind(panic);
+    // Ensure all threads are registered before starting contention.
+    start.wait();
+
+    // Wait until every worker is marked NativeSafe (meaning it is blocked on the GC-aware lock).
+    let start_time = Instant::now();
+    loop {
+      let mut all_native_safe = true;
+      for id in &ids {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == *id {
+            native_safe = t.is_native_safe();
+          }
+        });
+        if !native_safe {
+          all_native_safe = false;
+          break;
+        }
+      }
+
+      if all_native_safe {
+        break;
+      }
+      if start_time.elapsed() > TIMEOUT {
+        panic!("worker threads did not enter a GC-safe region while contending on the handle table lock");
+      }
+      std::thread::yield_now();
+    }
+
+    // Stop-the-world while worker threads are blocked contending on the handle table lock.
+    for _ in 0..stw_iters {
+      crate::safepoint::with_world_stopped(|| {});
+    }
+
+    // Release the read lock so worker threads can complete.
+    a_release_tx.send(()).unwrap();
+    lock_thread.join().unwrap();
+
+    for _ in 0..n_threads {
+      done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("worker thread should complete");
+    }
+    for w in workers {
+      w.join().unwrap();
     }
   }
 
@@ -1034,6 +1082,10 @@ mod tests {
 
       // Resume the world so the contending registration can complete.
       crate::threading::safepoint::rt_gc_resume_world();
+      assert!(
+        crate::threading::safepoint::rt_gc_wait_for_world_resumed_timeout(TIMEOUT),
+        "world failed to resume within timeout"
+      );
 
       let handle = c_done_rx
         .recv_timeout(TIMEOUT)
