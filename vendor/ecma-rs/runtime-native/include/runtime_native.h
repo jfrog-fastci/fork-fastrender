@@ -59,6 +59,11 @@ typedef struct RtGcPrefix {
 } RtGcPrefix;
 
 typedef uint32_t InternedId;
+// Reserved invalid/sentinel InternedId value.
+//
+// This value is never returned by `rt_string_intern`. It can be used by callers as a "no interned
+// string" marker, and `rt_string_lookup(RT_INTERNED_ID_INVALID)` will return `{ptr = NULL, len = 0}`.
+#define RT_INTERNED_ID_INVALID ((InternedId)UINT32_MAX)
 typedef uint64_t TaskId;
 typedef uint64_t TimerId;
 // Stable persistent handle id (safe to store in OS event loop userdata like epoll_event.data.u64).
