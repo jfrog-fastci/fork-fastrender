@@ -413,3 +413,51 @@ fn dataview_set_propagates_value_coercion_exceptions_before_detached_check() -> 
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn dataview_set_does_not_coerce_value_when_offset_toindex_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let ab = rt.exec_script("var ab = new ArrayBuffer(8); var dv = new DataView(ab, 0, 8); ab")?;
+  let Value::Object(ab) = ab else {
+    panic!("expected ArrayBuffer object");
+  };
+  rt.heap_mut().detach_array_buffer(ab)?;
+
+  let value = rt.exec_script(
+    r#"
+    var calledValue = false;
+    var threw = false;
+    try {
+      dv.setUint8(-1, { valueOf(){ calledValue = true; return 1; } });
+    } catch (e) {
+      threw = e.name === "RangeError";
+    }
+    !calledValue && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn dataview_constructor_byte_length_toindex_errors_precede_detached_check() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("detachArrayBuffer", detach_array_buffer, 1)?;
+
+  let value = rt.exec_script(
+    r#"
+    var ab = new ArrayBuffer(8);
+    var called = false;
+    var threw = false;
+    try {
+      new DataView(ab, 0, { valueOf(){ called = true; detachArrayBuffer(ab); return Infinity; } });
+    } catch (e) {
+      threw = e.name === "RangeError";
+    }
+    called && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
