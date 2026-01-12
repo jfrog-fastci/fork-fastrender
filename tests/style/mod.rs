@@ -52,6 +52,7 @@ mod explicit_no_namespace_selector_test;
 mod extract_print;
 mod field_sizing_property_test;
 mod first_pseudo_test;
+mod blank_pseudo_class_test;
 mod flex_keywords_case_insensitive_test;
 mod flex_property_test;
 mod font_relative_units_font_size_test;

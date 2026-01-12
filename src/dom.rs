@@ -7923,6 +7923,27 @@ impl<'a> Element for ElementRef<'a> {
       }
       PseudoClass::ReadOnly => !self.is_read_write(),
       PseudoClass::ReadWrite => self.is_read_write(),
+      PseudoClass::Blank => {
+        if !self.is_html_element() {
+          return false;
+        }
+        let Some(tag) = self.node.tag_name() else {
+          return false;
+        };
+        if tag.eq_ignore_ascii_case("input") {
+          let input_type = self.node.get_attribute_ref("type");
+          if !supports_placeholder(input_type) {
+            return false;
+          }
+          let value = self.control_value().unwrap_or_default();
+          return trim_ascii_whitespace_html(&value).is_empty();
+        }
+        if tag.eq_ignore_ascii_case("textarea") {
+          let value = textarea_current_value(self.node);
+          return trim_ascii_whitespace_html(&value).is_empty();
+        }
+        false
+      }
       PseudoClass::PlaceholderShown
       | PseudoClass::WebkitInputPlaceholder
       | PseudoClass::MsInputPlaceholder
