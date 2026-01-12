@@ -2055,6 +2055,31 @@ pub mod body_check {
         Some(&ctx.cancelled),
       );
 
+      // The base checker does not (yet) type `AstExpr::Class`, leaving HIR class
+      // expressions as `unknown`. Fill those slots from the class definition's
+      // value-side type so `Program::type_at` works even when we don't run the
+      // flow checker (notably `BodyKind::Class` / `BodyKind::Initializer`).
+      for (idx, expr) in body.exprs.iter().enumerate() {
+        let hir_js::ExprKind::ClassExpr { def, .. } = expr.kind else {
+          continue;
+        };
+        let Some(slot) = result.expr_types.get_mut(idx) else {
+          continue;
+        };
+        if *slot != prim.unknown {
+          continue;
+        }
+        let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
+        let ty = ctx
+          .interned_def_types
+          .get(&value_def)
+          .copied()
+          .filter(|ty| ctx.store.contains_type_id(*ty))
+          .map(|ty| ctx.store.canon(ty))
+          .unwrap_or(prim.unknown);
+        *slot = ty;
+      }
+
       let check_cancelled = || {
         if ctx.cancelled.load(Ordering::Relaxed) {
           panic_any(crate::FatalError::Cancelled);

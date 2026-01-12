@@ -3845,62 +3845,6 @@ impl<'a> Checker<'a> {
     }
   }
 
-  fn check_super_call_expr(
-    &mut self,
-    call: &Node<parse_js::ast::expr::CallExpr>,
-    contextual_return: Option<TypeId>,
-  ) -> TypeId {
-    let prim = self.store.primitive_ids();
-
-    // `super(...)` uses the base class *constructor* signature, not the instance
-    // type used for `super.prop` access.
-    let super_ctor_ty = self
-      .this_super_context
-      .super_value_ty
-      .unwrap_or(self.current_super_ctor_ty);
-    let callee_ty = self.expand_callable_type(super_ctor_ty);
-
-    let mut arg_types = Vec::with_capacity(call.stx.arguments.len());
-    let mut const_arg_types = Vec::with_capacity(call.stx.arguments.len());
-    for arg in call.stx.arguments.iter() {
-      let ty = self.check_expr(&arg.stx.value);
-      if arg.stx.spread {
-        arg_types.push(CallArgType::spread(ty));
-      } else {
-        arg_types.push(CallArgType::new(ty));
-      }
-      const_arg_types.push(self.const_inference_type(&arg.stx.value));
-    }
-
-    let span = Span {
-      file: self.file,
-      range: loc_to_range(self.file, call.loc),
-    };
-    let resolution = resolve_construct(
-      &self.store,
-      &self.relate,
-      &self.instantiation_cache,
-      callee_ty,
-      &arg_types,
-      Some(&const_arg_types),
-      None,
-      contextual_return,
-      span,
-      self.ref_expander,
-    );
-
-    for diag in &resolution.diagnostics {
-      self.diagnostics.push(diag.clone());
-    }
-    self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
-
-    if resolution.diagnostics.is_empty() {
-      resolution.return_type
-    } else {
-      prim.unknown
-    }
-  }
-
   fn check_call_expr(
     &mut self,
     call: &Node<parse_js::ast::expr::CallExpr>,
