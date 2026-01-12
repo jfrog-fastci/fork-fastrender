@@ -17,7 +17,7 @@ use crate::emit::TargetConfig;
 use crate::resolve::Resolver;
 use crate::{
   compile_typescript_to_llvm_ir, emit, link, Artifact, CompileOptions, CompilerOptions, EmitKind,
-  NativeJsError, OptLevel,
+  NativeJsError, OptLevel, Toolchain,
 };
 use diagnostics::{Diagnostic, Severity, Span, TextRange};
 use hir_js::{BodyId, ExprKind, FileKind};
@@ -78,7 +78,14 @@ pub fn compile_llvm_ir_to_artifact(
     ensure_executable_target_supported(opts.target.as_ref())?;
   }
 
-  let (out_path, out_tempdir) = resolve_output_path(opts.emit, opts.debug, output_path)?;
+  let (out_path, mut out_tempdir) = resolve_output_path(opts.emit, opts.debug, output_path)?;
+  if opts.keep_temp {
+    if let Some(td) = out_tempdir.take() {
+      let path = td.path().to_path_buf();
+      let _ = td.keep();
+      eprintln!("kept tempdir: {}", path.display());
+    }
+  }
 
   if let Some(path) = opts.emit_ir.as_deref() {
     ensure_parent_dir(path)?;
@@ -130,7 +137,13 @@ pub fn compile_llvm_ir_to_artifact(
           } else {
             let dir = TempDir::new().map_err(NativeJsError::TempDirCreateFailed)?;
             let obj_path = dir.path().join("out.o");
-            tmp = Some(dir);
+            if opts.keep_temp {
+              let dir_path = dir.path().to_path_buf();
+              let _ = dir.keep();
+              eprintln!("kept tempdir: {}", dir_path.display());
+            } else {
+              tmp = Some(dir);
+            }
             obj_path
           };
 
@@ -141,18 +154,32 @@ pub fn compile_llvm_ir_to_artifact(
           }
 
           let _ = std::fs::remove_file(&out_path);
-          link::link_elf_executable_with_options_and_static_libs(
+          let toolchain = match opts.toolchain.clone() {
+            Some(tc) => tc,
+            None => Toolchain::detect().map_err(|err| NativeJsError::Toolchain(err.to_string()))?,
+          };
+          let linker = if toolchain.lld_fuse_arg.is_some() {
+            link::LinkerFlavor::Lld
+          } else {
+            link::LinkerFlavor::System
+          };
+          link::link_elf_executable_with_toolchain_and_static_libs(
             &out_path,
             &[obj_path.clone()],
             link::LinkOpts {
               pie: opts.pie,
               debug: opts.debug,
               target: opts.target.clone(),
+              linker,
               ..Default::default()
             },
             std::slice::from_ref(&runtime_native_a),
-          )
-          .map_err(|err| NativeJsError::Internal(err.to_string()))?;
+            &toolchain,
+            link::LinkCommandOptions {
+              print_commands: opts.print_commands,
+              keep_temp: opts.keep_temp,
+            },
+          )?;
 
           #[cfg(unix)]
           {
@@ -577,7 +604,13 @@ impl<'a> Compiler<'a> {
         } else {
           let dir = TempDir::new().map_err(NativeJsError::TempDirCreateFailed)?;
           let obj_path = dir.path().join("out.o");
-          tmp_obj = Some(dir);
+          if self.opts.keep_temp {
+            let dir_path = dir.path().to_path_buf();
+            let _ = dir.keep();
+            eprintln!("kept tempdir: {}", dir_path.display());
+          } else {
+            tmp_obj = Some(dir);
+          }
           obj_path
         };
 
@@ -588,18 +621,32 @@ impl<'a> Compiler<'a> {
           write_file(&ll_path, ir.as_bytes())?;
         }
 
-        link::link_elf_executable_with_options_and_static_libs(
+        let toolchain = match self.opts.toolchain.clone() {
+          Some(tc) => tc,
+          None => Toolchain::detect().map_err(|err| NativeJsError::Toolchain(err.to_string()))?,
+        };
+        let linker = if toolchain.lld_fuse_arg.is_some() {
+          link::LinkerFlavor::Lld
+        } else {
+          link::LinkerFlavor::System
+        };
+        link::link_elf_executable_with_toolchain_and_static_libs(
           &exe_path,
           &[obj_path.clone()],
           link::LinkOpts {
             pie: self.opts.pie,
             debug: self.opts.debug,
             target: self.opts.target.clone(),
+            linker,
             ..Default::default()
           },
           std::slice::from_ref(&runtime_native_a),
-        )
-        .map_err(|err| NativeJsError::Internal(err.to_string()))?;
+          &toolchain,
+          link::LinkCommandOptions {
+            print_commands: self.opts.print_commands,
+            keep_temp: self.opts.keep_temp,
+          },
+        )?;
         drop(tmp_obj);
 
         #[cfg(unix)]

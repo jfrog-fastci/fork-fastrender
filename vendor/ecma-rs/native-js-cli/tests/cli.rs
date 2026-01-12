@@ -541,6 +541,84 @@ fn addr2line_resolves_main_symbol_to_typescript_location() {
 }
 
 #[test]
+fn build_verbose_prints_clang_invocation() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--verbose")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success()
+    .stderr(predicates::str::contains("clang"));
+}
+
+#[test]
+fn build_keep_temp_preserves_tempdirs() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  let assert = native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--keep-temp")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+  let kept_line = stderr
+    .lines()
+    .find(|line| line.contains("kept tempdir:"))
+    .expect("expected --keep-temp to print at least one `kept tempdir:` line");
+  let kept_path = kept_line
+    .splitn(2, "kept tempdir:")
+    .nth(1)
+    .expect("kept tempdir line missing separator")
+    .trim();
+  assert!(
+    !kept_path.is_empty(),
+    "expected non-empty kept tempdir path in stderr, got: {stderr}"
+  );
+  assert!(
+    std::path::Path::new(kept_path).is_dir(),
+    "expected kept tempdir to exist after exit: {kept_path}\nstderr:\n{stderr}"
+  );
+}
+
+#[test]
+fn build_with_invalid_clang_path_fails_with_exit_code_2() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--clang")
+    .arg("/nonexistent/native-js-clang")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("clang"))
+    .stderr(predicates::str::contains("/nonexistent/native-js-clang"));
+}
+
+#[test]
 fn build_and_run_returns_boolean_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");

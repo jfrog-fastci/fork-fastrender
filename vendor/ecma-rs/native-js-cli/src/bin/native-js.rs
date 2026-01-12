@@ -83,6 +83,34 @@ struct Cli {
   #[arg(long, global = true)]
   pie: bool,
 
+  /// Override the `clang` used for linking.
+  #[arg(long, value_name = "PATH", global = true)]
+  clang: Option<PathBuf>,
+
+  /// Override the `llvm-objcopy` used for stackmaps section rewriting (PIE + lld).
+  #[arg(long, value_name = "PATH", global = true)]
+  llvm_objcopy: Option<PathBuf>,
+
+  /// Override the optional `llvm-objdump` used by debugging tools.
+  #[arg(long, value_name = "PATH", global = true)]
+  llvm_objdump: Option<PathBuf>,
+
+  /// Pass `--sysroot=<PATH>` to clang during linking.
+  #[arg(long, value_name = "PATH", global = true)]
+  sysroot: Option<PathBuf>,
+
+  /// Extra argument to pass to clang during linking (repeatable).
+  #[arg(long, value_name = "ARG", global = true)]
+  link_arg: Vec<String>,
+
+  /// Print the exact tool invocations used during linking.
+  #[arg(long, global = true, alias = "print-commands")]
+  verbose: bool,
+
+  /// Keep temporary build directories (for debugging) and print their paths.
+  #[arg(long, global = true)]
+  keep_temp: bool,
+
   /// Also run the legacy `native_js::strict::validate` checks.
   ///
   /// This is stricter than `validate_strict_subset` and may reject TypeScript-only,
@@ -317,6 +345,8 @@ fn cmd_build(
   opts.output = Some(output_exe.to_path_buf());
   opts.emit_ir = emit_ir.map(|p| p.to_path_buf());
   opts.debug = cli.debug;
+  opts.print_commands = cli.verbose;
+  opts.keep_temp = cli.keep_temp;
   opts.pie = cli.pie;
   opts.target = target.clone();
   let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
@@ -324,6 +354,24 @@ fn cmd_build(
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
   };
+  if cli.clang.is_some()
+    || cli.llvm_objcopy.is_some()
+    || cli.llvm_objdump.is_some()
+    || cli.sysroot.is_some()
+    || !cli.link_arg.is_empty()
+  {
+    let toolchain = native_js::Toolchain::detect_with_overrides(
+      cli.clang.clone(),
+      cli.llvm_objcopy.clone(),
+      cli.llvm_objdump.clone(),
+      cli.sysroot.clone(),
+      cli.link_arg.clone(),
+    );
+    match toolchain {
+      Ok(tc) => opts.toolchain = Some(tc),
+      Err(err) => return exit_internal(&program, cli.json, render, err.to_string()),
+    }
+  }
 
   if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
     if let Some(diags) = err.diagnostics() {
@@ -368,6 +416,8 @@ fn cmd_emit_ir(
   opts.emit = native_js::EmitKind::LlvmIr;
   opts.output = Some(output_ll.to_path_buf());
   opts.debug = cli.debug;
+  opts.print_commands = cli.verbose;
+  opts.keep_temp = cli.keep_temp;
   opts.target = target.clone();
   let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
   opts.opt_level = match opt_level(opt_raw) {
@@ -403,7 +453,15 @@ fn cmd_run(
       return exit_internal_without_program(cli.json, format!("failed to create tempdir: {err}"));
     }
   };
-  let exe = dir.path().join("out");
+  let (exe_dir, _exe_dir_keepalive) = if cli.keep_temp {
+    let path = dir.path().to_path_buf();
+    let _ = dir.keep();
+    eprintln!("kept tempdir: {}", path.display());
+    (path, None)
+  } else {
+    (dir.path().to_path_buf(), Some(dir))
+  };
+  let exe = exe_dir.join("out");
 
   let build_exit = cmd_build(cli, entry, &exe, None, target, render);
   if build_exit != ExitCode::SUCCESS {

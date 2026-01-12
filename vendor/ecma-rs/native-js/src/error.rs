@@ -93,6 +93,9 @@ pub enum NativeJsError {
   #[error("linker failed: {cmd}\n{stderr}")]
   LinkerFailed { cmd: String, stderr: String },
 
+  #[error("{0}")]
+  Toolchain(String),
+
   #[error("required tool not found in PATH: {0}")]
   ToolNotFound(&'static str),
 

@@ -32,7 +32,7 @@
 //! emits `.llvm_stackmaps` during link-time codegen, so we can't pre-patch input objects with
 //! `llvm-objcopy` the way we do for object-file linking.
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -40,6 +40,8 @@ use std::process::Stdio;
 use target_lexicon::Triple;
 
 const RUNTIME_NATIVE_STATICLIB_FILENAME: &str = "libruntime_native.a";
+
+use crate::Toolchain;
 
 /// Symbol exported by the final ELF that points at the first byte of stackmaps.
 pub const LLVM_STACKMAPS_START_SYM: &str = "__start_llvm_stackmaps";
@@ -88,6 +90,15 @@ pub struct LinkOpts {
   /// This does not generate debug info by itself; it only tells the linker driver to keep debug
   /// sections from the input objects (useful when those objects already contain DWARF).
   pub debug: bool,
+}
+
+/// Options controlling how native-js invokes external tools during linking.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LinkCommandOptions {
+  /// Print each tool invocation (clang/llvm-objcopy) to stderr.
+  pub print_commands: bool,
+  /// Keep intermediate temporary directories (and print their paths).
+  pub keep_temp: bool,
 }
 
 impl Default for LinkOpts {
@@ -169,22 +180,6 @@ fn exe_exists<P: AsRef<Path>>(path: P) -> bool {
   std::fs::metadata(path).is_ok()
 }
 
-fn find_clang() -> Option<&'static str> {
-  // Prefer clang-18 (what our exec plan installs), but allow fallback for developer machines.
-  for cand in ["clang-18", "clang"] {
-    if Command::new(cand)
-      .arg("--version")
-      .stdout(Stdio::null())
-      .stderr(Stdio::null())
-      .status()
-      .is_ok_and(|s| s.success())
-    {
-      return Some(cand);
-    }
-  }
-  None
-}
-
 fn find_clang_18() -> Option<&'static str> {
   let cand = "clang-18";
   if Command::new(cand)
@@ -200,19 +195,54 @@ fn find_clang_18() -> Option<&'static str> {
   }
 }
 
-fn find_llvm_objcopy() -> Option<&'static str> {
-  for cand in ["llvm-objcopy-18", "llvm-objcopy"] {
-    if Command::new(cand)
-      .arg("--version")
-      .stdout(Stdio::null())
-      .stderr(Stdio::null())
-      .status()
-      .is_ok_and(|s| s.success())
-    {
-      return Some(cand);
+fn missing_tool_message(tool: &str, candidates: &[&str], extra_hint: Option<&str>) -> String {
+  let mut msg = String::new();
+  msg.push_str(&format!("missing required tool: {tool}\n"));
+  msg.push_str("candidates tried:\n");
+  for cand in candidates {
+    msg.push_str(&format!("  - {cand}\n"));
+  }
+  msg.push_str("hint: install LLVM 18 tools (e.g. `clang-18`, `lld-18`, `llvm-objcopy-18`) and ensure they are in PATH");
+  if let Some(extra) = extra_hint {
+    msg.push_str(&format!("\n{extra}"));
+  }
+  msg
+}
+
+fn print_kept_tempdir(opts: LinkCommandOptions, td_path: &Path) {
+  if opts.keep_temp {
+    eprintln!("kept tempdir: {}", td_path.display());
+  }
+}
+
+fn run_tool(opts: LinkCommandOptions, cmd: &mut Command, tool_label: &str) -> Result<(), crate::NativeJsError> {
+  let cmd_dbg = format!("{cmd:?}");
+  if opts.print_commands {
+    eprintln!("+ {cmd_dbg}");
+  }
+  let out = cmd.output().map_err(|err| {
+    crate::NativeJsError::Toolchain(format!("failed to spawn {tool_label}: {err}"))
+  })?;
+  if !out.status.success() {
+    return Err(crate::NativeJsError::LinkerFailed {
+      cmd: cmd_dbg,
+      stderr: format!(
+        "{tool_label} failed with status {status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        status = out.status,
+        stdout = String::from_utf8_lossy(&out.stdout),
+        stderr = String::from_utf8_lossy(&out.stderr),
+      ),
+    });
+  }
+  if opts.print_commands {
+    if !out.stdout.is_empty() {
+      eprintln!("{}", String::from_utf8_lossy(&out.stdout));
+    }
+    if !out.stderr.is_empty() {
+      eprintln!("{}", String::from_utf8_lossy(&out.stderr));
     }
   }
-  None
+  Ok(())
 }
 
 /// Best-effort discovery of the `runtime-native` `staticlib` artifact (`libruntime_native.a`).
@@ -270,28 +300,74 @@ pub fn link_elf_executable(output_path: &Path, object_files: &[PathBuf]) -> anyh
   link_elf_executable_with_options(output_path, object_files, LinkOpts::default())
 }
 
+pub fn link_elf_executable_with_options(
+  output_path: &Path,
+  object_files: &[PathBuf],
+  opts: LinkOpts,
+) -> anyhow::Result<()> {
+  link_elf_executable_with_options_and_static_libs(output_path, object_files, opts, &[])
+}
+
 pub fn link_elf_executable_with_options_and_static_libs(
+  output_path: &Path,
+  object_files: &[PathBuf],
+  opts: LinkOpts,
+  extra_static_libs: &[PathBuf],
+) -> anyhow::Result<()> {
+  let toolchain = Toolchain::detect().context("failed to detect native-js toolchain")?;
+  link_elf_executable_with_toolchain_and_static_libs(
+    output_path,
+    object_files,
+    opts,
+    extra_static_libs,
+    &toolchain,
+    LinkCommandOptions::default(),
+  )
+  .map_err(|err| anyhow!(err.to_string()))
+}
+
+pub fn link_elf_executable_with_toolchain(
+  output_path: &Path,
+  object_files: &[PathBuf],
+  opts: LinkOpts,
+  toolchain: &Toolchain,
+  cmd_opts: LinkCommandOptions,
+) -> Result<(), crate::NativeJsError> {
+  link_elf_executable_with_toolchain_and_static_libs(
+    output_path,
+    object_files,
+    opts,
+    &[],
+    toolchain,
+    cmd_opts,
+  )
+}
+
+pub(crate) fn link_elf_executable_with_toolchain_and_static_libs(
   output_path: &Path,
   object_files: &[PathBuf],
   mut opts: LinkOpts,
   extra_static_libs: &[PathBuf],
-) -> anyhow::Result<()> {
-  let clang = find_clang().context("unable to locate clang (expected `clang-18` or `clang`)")?;
+  toolchain: &Toolchain,
+  cmd_opts: LinkCommandOptions,
+) -> Result<(), crate::NativeJsError> {
+  if !cfg!(target_os = "linux") {
+    return Err(crate::NativeJsError::UnsupportedPlatform {
+      target_os: std::env::consts::OS.to_string(),
+    });
+  }
 
-  // Prefer lld for deterministic links, but allow falling back to the system linker when `ld.lld`
-  // isn't available in PATH (common on developer machines that only have `clang` installed).
-  let lld = if matches!(opts.linker, LinkerFlavor::Lld) {
-    lld_fuse_arg()
-  } else {
-    None
-  };
-  if matches!(opts.linker, LinkerFlavor::Lld) && lld.is_none() {
+  // Prefer lld for deterministic links when the full stackmaps toolchain is available, but allow
+  // falling back to the system linker when `ld.lld`/`llvm-objcopy` aren't in PATH.
+  if matches!(opts.linker, LinkerFlavor::Lld)
+    && (toolchain.lld_fuse_arg.is_none() || toolchain.llvm_objcopy.is_none())
+  {
     opts.linker = LinkerFlavor::System;
   }
 
-  let out_dir = output_path
-    .parent()
-    .context("output_path must have a parent directory")?;
+  let out_dir = output_path.parent().ok_or_else(|| {
+    crate::NativeJsError::Toolchain("output_path must have a parent directory".to_string())
+  })?;
   // `Path::parent` of a relative filename like `out` is `Some("")`. Treat that as the current
   // directory so `create_dir_all` and script emission work as expected.
   let out_dir: &Path = if out_dir.as_os_str().is_empty() {
@@ -300,77 +376,89 @@ pub fn link_elf_executable_with_options_and_static_libs(
     out_dir
   };
 
-  // `LinkOpts` defaults to `LinkerFlavor::Lld`, but some environments (including minimal CI images)
-  // don't have `ld.lld{,-18}` installed. Treat lld as a best-effort preference: fall back to the
-  // system linker selected by clang when lld isn't available.
-  let opts = if matches!(opts.linker, LinkerFlavor::Lld) && lld_fuse_arg().is_none() {
-    LinkOpts {
-      linker: LinkerFlavor::System,
-      ..opts
-    }
-  } else {
-    opts
-  };
-
-  fs::create_dir_all(out_dir)
-    .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
+  fs::create_dir_all(out_dir).map_err(|source| crate::NativeJsError::Io {
+    path: out_dir.to_path_buf(),
+    source,
+  })?;
 
   // Use a per-invocation temp file for the linker script fragment to avoid:
   // - polluting the output directory with build artifacts
   // - collisions when multiple linkers run concurrently and happen to share an output directory
   //   (e.g. temp file outputs in `/tmp`).
-  let script_dir =
-    tempfile::tempdir().context("failed to create tempdir for stackmaps linker script")?;
-  let script_path = script_dir.path().join("llvm_stackmaps.ld");
-  write_stackmaps_linker_script(&script_path, &opts)?;
+  let script_dir = tempfile::tempdir().map_err(crate::NativeJsError::TempDirCreateFailed)?;
+  let script_dir_path = script_dir.path().to_path_buf();
+  let script_dir_keepalive = if cmd_opts.keep_temp {
+    let _ = script_dir.keep();
+    print_kept_tempdir(cmd_opts, &script_dir_path);
+    None
+  } else {
+    Some(script_dir)
+  };
+  let script_path = script_dir_path.join("llvm_stackmaps.ld");
+  fs::write(&script_path, stackmaps_linker_script_fragment(&opts)).map_err(|source| {
+    crate::NativeJsError::Io {
+      path: script_path.clone(),
+      source,
+    }
+  })?;
 
   // Relocate `.llvm_stackmaps` / `.llvm_faultmaps` into
   // `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` in the input objects so lld can
   // place them in a RELRO-friendly segment without requiring DT_TEXTREL.
   //
   // We copy objects into a tempdir to avoid mutating the caller's build artifacts in-place.
-  let mut patched_obj_dir: Option<tempfile::TempDir> = None;
+  let mut patched_obj_dir_keepalive: Option<tempfile::TempDir> = None;
   let mut object_files: Vec<PathBuf> = object_files.to_vec();
   if cfg!(target_os = "linux") && (opts.pie || matches!(opts.linker, LinkerFlavor::Lld)) {
-    let objcopy = find_llvm_objcopy()
-      .context("unable to locate llvm-objcopy (expected `llvm-objcopy-18` or `llvm-objcopy`)")?;
-    let td = tempfile::tempdir().context("failed to create tempdir for stackmaps objcopy")?;
+    let objcopy = toolchain.llvm_objcopy.as_ref().ok_or_else(|| {
+      crate::NativeJsError::Toolchain(missing_tool_message(
+        "llvm-objcopy (needed for PIE/lld stackmaps section rewriting)",
+        &["llvm-objcopy-18", "llvm-objcopy"],
+        Some("install `llvm-objcopy-18` (part of LLVM 18) or pass --llvm-objcopy <PATH>"),
+      ))
+    })?;
+
+    let td = tempfile::tempdir().map_err(crate::NativeJsError::TempDirCreateFailed)?;
+    let td_path = td.path().to_path_buf();
+    let td_keepalive = if cmd_opts.keep_temp {
+      let _ = td.keep();
+      print_kept_tempdir(cmd_opts, &td_path);
+      None
+    } else {
+      Some(td)
+    };
+
     let mut patched = Vec::with_capacity(object_files.len());
     for (idx, src) in object_files.iter().enumerate() {
-      let dst = td.path().join(format!("obj{idx}.o"));
-      fs::copy(src, &dst).with_context(|| {
-        format!(
-          "failed to copy object {} to {}",
-          src.display(),
-          dst.display()
-        )
+      let dst = td_path.join(format!("obj{idx}.o"));
+      fs::copy(src, &dst).map_err(|source| crate::NativeJsError::Io {
+        path: dst.clone(),
+        source,
       })?;
 
       // `llvm-objcopy` is a no-op if the section doesn't exist, so we can apply this
       // unconditionally.
-      let status = Command::new(objcopy)
-        .args([
-          "--rename-section",
-          ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
-          "--rename-section",
-          ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents",
-        ])
-        .arg(&dst)
-        .status()
-        .with_context(|| format!("failed to spawn {objcopy}"))?;
-      if !status.success() {
-        anyhow::bail!("{objcopy} failed with status {status}");
-      }
+      let mut cmd = Command::new(objcopy);
+      cmd.args([
+        "--rename-section",
+        ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
+        "--rename-section",
+        ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents",
+      ])
+      .arg(&dst);
+      run_tool(cmd_opts, &mut cmd, "llvm-objcopy")?;
 
       patched.push(dst);
     }
     object_files = patched;
-    patched_obj_dir = Some(td);
+    patched_obj_dir_keepalive = td_keepalive;
   }
-  // Keep the tempdir alive until after linking completes.
-  let _patched_obj_dir = patched_obj_dir;
 
-  let mut cmd = Command::new(clang);
+  let mut cmd = Command::new(&toolchain.clang);
+  if let Some(sysroot) = toolchain.sysroot.as_ref() {
+    cmd.arg(format!("--sysroot={}", sysroot.display()));
+  }
+
   cmd.arg("-o").arg(output_path);
   if let Some(target) = opts.target.as_ref() {
     cmd.arg("-target").arg(target.to_string());
@@ -383,10 +471,9 @@ pub fn link_elf_executable_with_options_and_static_libs(
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      // `lld` is computed above when `opts.linker == LinkerFlavor::Lld`. If it is missing we
-      // downgrade to `LinkerFlavor::System` so this branch is only entered when lld is available.
-      let lld = lld.expect("lld should be Some when LinkerFlavor::Lld is active");
-      cmd.arg(format!("-fuse-ld={lld}"));
+      if let Some(lld) = toolchain.lld_fuse_arg.as_deref() {
+        cmd.arg(format!("-fuse-ld={lld}"));
+      }
     }
   }
 
@@ -418,29 +505,23 @@ pub fn link_elf_executable_with_options_and_static_libs(
     cmd.args(["-lpthread", "-ldl", "-lm", "-lrt"]);
   }
 
-  let status = cmd
-    .status()
-    .with_context(|| format!("failed to spawn {clang} for linking"))?;
-  if !status.success() {
-    anyhow::bail!("linker exited with status {status}");
+  for arg in &toolchain.extra_link_args {
+    cmd.arg(arg);
   }
+
+  run_tool(cmd_opts, &mut cmd, "clang (link)")?;
 
   if !exe_exists(output_path) {
-    anyhow::bail!(
+    return Err(crate::NativeJsError::Toolchain(format!(
       "linker reported success but output file does not exist: {}",
       output_path.display()
-    );
+    )));
   }
 
-  Ok(())
-}
+  drop(script_dir_keepalive);
+  drop(patched_obj_dir_keepalive);
 
-pub fn link_elf_executable_with_options(
-  output_path: &Path,
-  object_files: &[PathBuf],
-  opts: LinkOpts,
-) -> anyhow::Result<()> {
-  link_elf_executable_with_options_and_static_libs(output_path, object_files, opts, &[])
+  Ok(())
 }
 
 /// Link one or more **in-memory** object buffers into an ELF executable.
@@ -663,113 +744,30 @@ pub fn link_object_to_executable(
   obj_path: &Path,
   exe_path: &Path,
 ) -> Result<(), crate::NativeJsError> {
-  if !cfg!(target_os = "linux") {
-    return Err(crate::NativeJsError::UnsupportedPlatform {
-      target_os: std::env::consts::OS.to_string(),
-    });
-  }
+  let toolchain = Toolchain::detect().map_err(|err| crate::NativeJsError::Toolchain(err.to_string()))?;
 
-  let clang = find_program(&["clang-18", "clang"])
-    .ok_or(crate::NativeJsError::ToolNotFound("clang-18/clang"))?;
-
-  // `clang -fuse-ld=lld{,-18}` selects the `ld.lld{,-18}` driver. Don't treat `lld`/`lld-18` as
-  // sufficient here: those binaries may exist without the `ld.lld` symlink, and `clang` won't find
-  // them under `-fuse-ld=...`.
-  let mut use_lld = lld_fuse_arg().is_some();
-
-  // Always inject the stackmaps linker script fragment:
-  // - defines `__fastr_stackmaps_start/end` (and `__llvm_*` aliases)
-  // - `KEEP`s `.llvm_stackmaps` so `--gc-sections` can't discard it.
-  let td = tempfile::tempdir().map_err(crate::NativeJsError::TempDirCreateFailed)?;
-  let script_path = td.path().join("fastr_stackmaps.ld");
-  let default_opts = LinkOpts::default();
-  fs::write(
-    &script_path,
-    stackmaps_linker_script_fragment(&default_opts),
+  // Prefer lld when it is available and we can also patch objects with llvm-objcopy. If stackmaps
+  // can't be relocated into RELRO-friendly sections, lld often fails links with "relro sections not
+  // contiguous" when the stackmaps linker script fragment is injected.
+  let linker = if toolchain.lld_fuse_arg.is_some() && toolchain.llvm_objcopy.is_some() {
+    LinkerFlavor::Lld
+  } else {
+    LinkerFlavor::System
+  };
+ 
+  link_elf_executable_with_toolchain(
+    exe_path,
+    &[obj_path.to_path_buf()],
+    LinkOpts {
+      gc_sections: true,
+      linker,
+      target: None,
+      pie: false,
+      debug: false,
+    },
+    &toolchain,
+    LinkCommandOptions::default(),
   )
-  .map_err(|source| {
-    crate::NativeJsError::Io {
-      path: script_path.clone(),
-      source,
-    }
-  })?;
-
-  // lld is stricter about RELRO layout. When using lld, rewrite the input object to rename
-  // `.llvm_stackmaps` (and `.llvm_faultmaps`) into RELRO-friendly data sections before linking.
-  // This avoids lld failing with "relro sections not contiguous" when the stackmaps linker-script
-  // fragment is injected.
-  let mut patched_obj_path = None;
-  if use_lld {
-    if let Some(objcopy) = find_llvm_objcopy() {
-      let dst = td.path().join("patched.o");
-      fs::copy(obj_path, &dst).map_err(|source| crate::NativeJsError::Io {
-        path: dst.clone(),
-        source,
-      })?;
-
-      let mut cmd = Command::new(objcopy);
-      cmd.args([
-        "--rename-section",
-        ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
-        "--rename-section",
-        ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents",
-      ])
-      .arg(&dst);
-
-      let cmd_dbg = format!("{cmd:?}");
-      let out = cmd
-        .output()
-        .map_err(crate::NativeJsError::LinkerSpawnFailed)?;
-      if !out.status.success() {
-        return Err(crate::NativeJsError::LinkerFailed {
-          cmd: cmd_dbg,
-          stderr: format!(
-            "llvm-objcopy failed with status {status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-            status = out.status,
-            stdout = String::from_utf8_lossy(&out.stdout),
-            stderr = String::from_utf8_lossy(&out.stderr),
-          ),
-        });
-      }
-
-      patched_obj_path = Some(dst);
-    } else {
-      // If we can't patch objects, fall back to the system linker (GNU ld typically accepts the
-      // injected script without requiring section renames).
-      use_lld = false;
-      // Fall through: we'll link the original object with the system linker.
-      // Note: this is a best-effort convenience path used by tests/debug tools.
-    }
-  }
-
-  let mut cmd = Command::new(&clang);
-  cmd
-    .arg("-O2")
-    .arg("-Wl,--gc-sections")
-    .arg(format!("-Wl,-T,{}", script_path.display()))
-    .arg("-no-pie");
-  if use_lld {
-    let lld = lld_fuse_arg()
-      .ok_or(crate::NativeJsError::ToolNotFound("ld.lld-18/ld.lld"))?;
-    cmd.arg(format!("-fuse-ld={lld}"));
-  }
-  cmd
-    .arg(patched_obj_path.as_deref().unwrap_or(obj_path))
-    .arg("-o")
-    .arg(exe_path);
-
-  let cmd_dbg = format!("{cmd:?}");
-  let output = cmd
-    .output()
-    .map_err(crate::NativeJsError::LinkerSpawnFailed)?;
-  if !output.status.success() {
-    return Err(crate::NativeJsError::LinkerFailed {
-      cmd: cmd_dbg,
-      stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    });
-  }
-
-  Ok(())
 }
 
 fn find_program(names: &[&str]) -> Option<PathBuf> {

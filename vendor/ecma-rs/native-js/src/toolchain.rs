@@ -5,6 +5,32 @@ use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context, Result};
 
+/// Toolchain configuration for external LLVM/Clang tooling used by native-js.
+///
+/// This is intentionally "loose": some tools are optional depending on the link mode.
+/// For example, `llvm-objcopy` is only required when we need to rewrite input objects to
+/// relocate `.llvm_stackmaps` into RELRO-friendly data sections (PIE + lld).
+#[derive(Clone, Debug)]
+pub struct Toolchain {
+  /// Path to `clang` (or `clang-18`).
+  pub clang: PathBuf,
+  /// Argument to `clang -fuse-ld=<...>` if an `ld.lld` driver is available (e.g. `lld-18` or `lld`).
+  ///
+  /// This is detected by looking for `ld.lld-18`/`ld.lld` in PATH.
+  pub lld_fuse_arg: Option<String>,
+  /// Path to `llvm-objcopy` (or `llvm-objcopy-18`) if available.
+  pub llvm_objcopy: Option<PathBuf>,
+  /// Path to `llvm-objdump` (or `llvm-objdump-18`) if available.
+  pub llvm_objdump: Option<PathBuf>,
+  /// Optional sysroot path forwarded to `clang` as `--sysroot=<path>`.
+  pub sysroot: Option<PathBuf>,
+  /// Extra arguments forwarded to `clang` during linking.
+  pub extra_link_args: Vec<String>,
+}
+
+/// Backwards-compatible alias.
+pub type LlvmToolchain = Toolchain;
+
 #[derive(Clone, Copy, Debug)]
 pub enum OptLevel {
   O0,
@@ -24,21 +50,53 @@ impl OptLevel {
   }
 }
 
-#[derive(Clone, Debug)]
-pub struct LlvmToolchain {
-  pub clang: PathBuf,
-  pub llvm_objdump: PathBuf,
-}
-
-impl LlvmToolchain {
+impl Toolchain {
   pub fn detect() -> Result<Self> {
-    let clang = find_executable(&["clang-18", "clang"])
-      .ok_or_else(|| anyhow!("failed to find clang (expected `clang-18` or `clang` in PATH)"))?;
-    let llvm_objdump = find_executable(&["llvm-objdump-18", "llvm-objdump"])
-      .ok_or_else(|| {
-        anyhow!("failed to find llvm-objdump (expected `llvm-objdump-18` or `llvm-objdump` in PATH)")
-      })?;
-    Ok(Self { clang, llvm_objdump })
+    Self::detect_with_overrides(None, None, None, None, Vec::new())
+  }
+
+  pub fn detect_with_overrides(
+    clang: Option<PathBuf>,
+    llvm_objcopy: Option<PathBuf>,
+    llvm_objdump: Option<PathBuf>,
+    sysroot: Option<PathBuf>,
+    extra_link_args: Vec<String>,
+  ) -> Result<Self> {
+    let clang = match clang {
+      Some(path) => resolve_executable(path, "clang")?,
+      None => find_executable(&["clang-18", "clang"]).ok_or_else(|| {
+        anyhow!(missing_tool_message(
+          "clang",
+          &["clang-18", "clang"],
+          Some("install `clang-18` (LLVM 18) or pass an explicit --clang <PATH>"),
+        ))
+      })?,
+    };
+
+    let llvm_objcopy = match llvm_objcopy {
+      Some(path) => Some(resolve_executable(path, "llvm-objcopy")?),
+      None => find_executable(&["llvm-objcopy-18", "llvm-objcopy"]),
+    };
+
+    let llvm_objdump = match llvm_objdump {
+      Some(path) => Some(resolve_executable(path, "llvm-objdump")?),
+      None => find_executable(&["llvm-objdump-18", "llvm-objdump"]),
+    };
+
+    if let Some(sr) = sysroot.as_ref() {
+      if !sr.exists() {
+        bail!("--sysroot does not exist: {}", sr.display());
+      }
+    }
+
+    Ok(Self {
+      clang,
+      lld_fuse_arg: detect_lld_fuse_arg(),
+      llvm_objcopy,
+      llvm_objdump,
+      sysroot,
+      extra_link_args,
+    })
   }
 
   pub fn host_target_triple(&self) -> Result<String> {
@@ -103,11 +161,15 @@ impl LlvmToolchain {
   }
 
   pub fn objdump_disassemble_with_relocs(&self, object_path: &Path) -> Result<String> {
-    let out = Command::new(&self.llvm_objdump)
+    let objdump = self
+      .llvm_objdump
+      .as_ref()
+      .ok_or_else(|| anyhow!("llvm-objdump is not configured (expected `llvm-objdump-18` or `llvm-objdump` in PATH)"))?;
+    let out = Command::new(objdump)
       .arg("-dr")
       .arg(object_path)
       .output()
-      .with_context(|| format!("failed to run llvm-objdump at {}", self.llvm_objdump.display()))?;
+      .with_context(|| format!("failed to run llvm-objdump at {}", objdump.display()))?;
     if !out.status.success() {
       bail!(
         "llvm-objdump -dr failed (status={})\nstdout:\n{}\nstderr:\n{}",
@@ -120,11 +182,15 @@ impl LlvmToolchain {
   }
 
   pub fn objdump_section_headers(&self, object_path: &Path) -> Result<String> {
-    let out = Command::new(&self.llvm_objdump)
+    let objdump = self
+      .llvm_objdump
+      .as_ref()
+      .ok_or_else(|| anyhow!("llvm-objdump is not configured (expected `llvm-objdump-18` or `llvm-objdump` in PATH)"))?;
+    let out = Command::new(objdump)
       .arg("-h")
       .arg(object_path)
       .output()
-      .with_context(|| format!("failed to run llvm-objdump at {}", self.llvm_objdump.display()))?;
+      .with_context(|| format!("failed to run llvm-objdump at {}", objdump.display()))?;
     if !out.status.success() {
       bail!(
         "llvm-objdump -h failed (status={})\nstdout:\n{}\nstderr:\n{}",
@@ -135,6 +201,20 @@ impl LlvmToolchain {
     }
     Ok(String::from_utf8(out.stdout)?)
   }
+}
+
+fn missing_tool_message(tool: &str, candidates: &[&str], extra_hint: Option<&str>) -> String {
+  let mut msg = String::new();
+  msg.push_str(&format!("missing required tool: {tool}\n"));
+  msg.push_str("candidates tried:\n");
+  for cand in candidates {
+    msg.push_str(&format!("  - {cand}\n"));
+  }
+  msg.push_str("hint: install LLVM 18 tools (e.g. `clang-18`, `lld-18`, `llvm-objcopy-18`) and ensure they are in PATH");
+  if let Some(extra) = extra_hint {
+    msg.push_str(&format!("\n{extra}"));
+  }
+  msg
 }
 
 fn find_executable(names: &[&str]) -> Option<PathBuf> {
@@ -180,4 +260,48 @@ fn find_in_path(exe_name: &str) -> Option<PathBuf> {
     }
   }
   None
+}
+
+fn detect_lld_fuse_arg() -> Option<String> {
+  if find_executable(&["ld.lld-18"]).is_some() {
+    Some("lld-18".to_string())
+  } else if find_executable(&["ld.lld"]).is_some() {
+    Some("lld".to_string())
+  } else {
+    None
+  }
+}
+
+fn resolve_executable(path: PathBuf, tool: &str) -> Result<PathBuf> {
+  let path = if path.as_os_str().is_empty() {
+    bail!("invalid empty path for {tool}");
+  } else if path.to_string_lossy().contains(std::path::MAIN_SEPARATOR) {
+    path
+  } else {
+    // Allow passing a bare tool name (e.g. `--clang clang-18`) and resolve it via PATH.
+    find_in_path(&path.to_string_lossy()).ok_or_else(|| {
+      anyhow!(missing_tool_message(
+        tool,
+        &[path.to_string_lossy().as_ref()],
+        None,
+      ))
+    })?
+  };
+
+  if !path.is_file() {
+    bail!("{} does not exist or is not a file: {}", tool, path.display());
+  }
+
+  let out = Command::new(&path)
+    .arg("--version")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .output()
+    .with_context(|| format!("failed to run {tool} at {}", path.display()))?;
+  if !out.status.success() {
+    bail!("{tool} at {} failed --version with status {}", path.display(), out.status);
+  }
+
+  Ok(path)
 }

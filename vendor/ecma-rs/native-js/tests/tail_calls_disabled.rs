@@ -21,6 +21,10 @@ fn ts_codegen_disables_tail_calls_in_optimized_builds() -> Result<()> {
       return Ok(());
     }
   };
+  if tc.llvm_objdump.is_none() {
+    eprintln!("skipping: llvm-objdump not found in PATH (need llvm-objdump-18 or llvm-objdump)");
+    return Ok(());
+  }
   let triple = tc.host_target_triple()?;
   let ir = tailcall_regression_module_ir(&triple);
 

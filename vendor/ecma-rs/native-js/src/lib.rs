@@ -71,6 +71,7 @@ mod error;
 mod stack_walking;
 
 pub use error::NativeJsError;
+pub use toolchain::Toolchain;
 pub use project::compile_project_to_llvm_ir;
 pub use resolve::Resolver;
 pub use stack_walking::CodeGen;
@@ -122,6 +123,17 @@ pub struct CompilerOptions {
   pub target: Option<Triple>,
   /// Whether to emit debug info.
   pub debug: bool,
+  /// Optional override for the external toolchain used for linking.
+  ///
+  /// When `None`, native-js will attempt to auto-detect tools in PATH (preferring LLVM 18 tools).
+  ///
+  /// Note: most compilation modes do not require a toolchain. Tools are only needed for link steps
+  /// such as `EmitKind::Executable`.
+  pub toolchain: Option<Toolchain>,
+  /// Print the exact tool invocations used during linking (clang/llvm-objcopy).
+  pub print_commands: bool,
+  /// Keep intermediate build artifacts (temporary directories) and print their paths.
+  pub keep_temp: bool,
   /// Whether to produce a PIE executable when [`CompilerOptions::emit`] is [`EmitKind::Executable`]
   /// (Linux only).
   ///
@@ -147,6 +159,9 @@ impl Default for CompilerOptions {
       emit: EmitKind::Object,
       target: None,
       debug: false,
+      toolchain: None,
+      print_commands: false,
+      keep_temp: false,
       pie: false,
       builtins: true,
       output: None,
