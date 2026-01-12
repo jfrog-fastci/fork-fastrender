@@ -1854,6 +1854,8 @@ const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
 const EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT: usize = 2;
+const EVENT_HANDLER_WRAPPER_CALL_ID_SLOT: usize = 2;
+const EVENT_HANDLER_EVENT_TYPE_SLOT: usize = 3;
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
@@ -1869,6 +1871,8 @@ const STORAGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_storage_event_prototype"
 const EVENT_ID_KEY: &str = "__fastrender_event_id";
 const EVENT_IMMEDIATE_STOP_KEY: &str = "__fastrender_event_stop_immediate";
 const EVENT_LISTENER_ROOTS_KEY: &str = "__fastrender_event_listener_roots";
+const EVENT_HANDLER_WRAPPERS_KEY: &str = "__fastrender_event_handler_wrappers";
+const EVENT_HANDLER_WRAPPER_HANDLER_KEY: &str = "__fastrender_event_handler_wrapper_handler";
 const EVENT_TARGET_ADD_EVENT_LISTENER_KEY: &str = "__fastrender_event_target_add_event_listener";
 const EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY: &str =
   "__fastrender_event_target_remove_event_listener";
@@ -8742,6 +8746,37 @@ fn event_target_abort_cleanup_call_id_from_callee(
   }
 }
 
+fn event_handler_wrapper_call_id_from_callee(
+  scope: &Scope<'_>,
+  callee: GcObject,
+) -> Result<vm_js::NativeFunctionId, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots
+    .get(EVENT_HANDLER_WRAPPER_CALL_ID_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(vm_js::NativeFunctionId(n as u32)),
+    _ => Err(VmError::InvariantViolation(
+      "Event handler accessor missing required wrapper call id slot",
+    )),
+  }
+}
+
+fn event_handler_type_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcString, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots
+    .get(EVENT_HANDLER_EVENT_TYPE_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => Ok(s),
+    _ => Err(VmError::InvariantViolation(
+      "Event handler accessor missing required event type slot",
+    )),
+  }
+}
+
 fn event_target_resolve_this(
   scope: &Scope<'_>,
   callee: GcObject,
@@ -9081,6 +9116,53 @@ fn get_or_create_event_listener_roots(
     },
   )?;
   Ok(roots)
+}
+
+fn get_event_handler_wrappers_map(
+  scope: &mut Scope<'_>,
+  owner_obj: GcObject,
+) -> Result<Option<GcObject>, VmError> {
+  scope.push_root(Value::Object(owner_obj))?;
+  let key = alloc_key(scope, EVENT_HANDLER_WRAPPERS_KEY)?;
+  Ok(match scope.heap().object_get_own_data_property_value(owner_obj, &key)? {
+    Some(Value::Object(obj)) => Some(obj),
+    _ => None,
+  })
+}
+
+fn get_or_create_event_handler_wrappers_map(
+  scope: &mut Scope<'_>,
+  owner_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  if let Some(existing) = get_event_handler_wrappers_map(scope, owner_obj)? {
+    return Ok(existing);
+  }
+
+  let key = alloc_key(scope, EVENT_HANDLER_WRAPPERS_KEY)?;
+  let wrappers = scope.alloc_object()?;
+  scope.push_root(Value::Object(wrappers))?;
+  scope.define_property(
+    owner_obj,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(wrappers),
+        writable: false,
+      },
+    },
+  )?;
+  Ok(wrappers)
+}
+
+fn event_handler_map_key(target: web_events::EventTargetId, type_: &str) -> String {
+  match target.normalize() {
+    web_events::EventTargetId::Window => format!("window:{type_}"),
+    web_events::EventTargetId::Document => format!("document:{type_}"),
+    web_events::EventTargetId::Node(node_id) => format!("node:{}:{type_}", node_id.index()),
+    web_events::EventTargetId::Opaque(id) => format!("opaque:{id}:{type_}"),
+  }
 }
 
 fn listener_id_property_key(
@@ -10616,6 +10698,243 @@ fn abort_signal_listener_cleanup_native(
     remove_listener_root_if_unused(scope, document_obj, dom.events(), listener_id, None)?;
   }
 
+  Ok(Value::Undefined)
+}
+
+fn event_handler_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let target_obj = match this {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  scope.push_root(Value::Object(target_obj))?;
+
+  let type_s = event_handler_type_from_callee(scope, callee)?;
+  let type_name = scope.heap().get_string(type_s)?.to_utf8_lossy();
+
+  let resolved = resolve_event_target(vm, scope, host, callee, target_obj)?;
+  let ResolvedEventTarget {
+    resolved,
+    listener_roots_owner,
+    ..
+  } = resolved;
+
+  let Some(wrappers) = get_event_handler_wrappers_map(scope, listener_roots_owner)? else {
+    return Ok(Value::Null);
+  };
+  scope.push_root(Value::Object(wrappers))?;
+
+  let key_str = event_handler_map_key(resolved.target_id, &type_name);
+  let key = alloc_key(scope, &key_str)?;
+  let wrapper = match scope.heap().object_get_own_data_property_value(wrappers, &key)? {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Null),
+  };
+  scope.push_root(Value::Object(wrapper))?;
+
+  let handler_key = alloc_key(scope, EVENT_HANDLER_WRAPPER_HANDLER_KEY)?;
+  let handler = scope
+    .heap()
+    .object_get_own_data_property_value(wrapper, &handler_key)?
+    .unwrap_or(Value::Null);
+  Ok(match handler {
+    Value::Object(_) => handler,
+    _ => Value::Null,
+  })
+}
+
+fn event_handler_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target_obj = match this {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  scope.push_root(Value::Object(target_obj))?;
+
+  let type_s = event_handler_type_from_callee(scope, callee)?;
+  let type_name = scope.heap().get_string(type_s)?.to_utf8_lossy();
+
+  let resolved = resolve_event_target(vm, scope, host, callee, target_obj)?;
+  let ResolvedEventTarget {
+    resolved,
+    mut dom_ptr,
+    listener_roots_owner,
+    ..
+  } = resolved;
+
+  let key_str = event_handler_map_key(resolved.target_id, &type_name);
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let handler: Option<Value> = match value {
+    Value::Undefined | Value::Null => None,
+    Value::Object(obj) => {
+      if scope.heap().is_callable(value)? {
+        Some(value)
+      } else {
+        // Non-standard: accept `{ handleEvent() {} }` objects (like EventListener).
+        let handle_event_key = alloc_key(scope, "handleEvent")?;
+        let handle_event = vm.get_with_host_and_hooks(host, scope, hooks, obj, handle_event_key)?;
+        if scope.heap().is_callable(handle_event).unwrap_or(false) {
+          Some(value)
+        } else {
+          None
+        }
+      }
+    }
+    _ => None,
+  };
+
+  let existing_wrappers = get_event_handler_wrappers_map(scope, listener_roots_owner)?;
+  let existing_wrapper = if let Some(wrappers) = existing_wrappers {
+    scope.push_root(Value::Object(wrappers))?;
+    let key = alloc_key(scope, &key_str)?;
+    match scope.heap().object_get_own_data_property_value(wrappers, &key)? {
+      Some(Value::Object(obj)) => Some((wrappers, key, obj)),
+      _ => None,
+    }
+  } else {
+    None
+  };
+
+  let Some(handler) = handler else {
+    // Clear.
+    if let Some((wrappers, key, wrapper)) = existing_wrapper {
+      let listener_id = web_events::ListenerId::from_gc_object(wrapper);
+      let dom = unsafe { dom_ptr.as_mut() };
+      dom
+        .events_mut()
+        .remove_event_listener(resolved.target_id, &type_name, listener_id, /* capture */ false);
+
+      let target_for_owner = match resolved.target_id {
+        web_events::EventTargetId::Opaque(_) => Some(resolved.target_id),
+        _ => None,
+      };
+      remove_listener_root_if_unused(
+        scope,
+        listener_roots_owner,
+        dom.events(),
+        listener_id,
+        target_for_owner,
+      )?;
+      let _ = scope.ordinary_delete(wrappers, key)?;
+    }
+    return Ok(Value::Undefined);
+  };
+
+  if let Some((_wrappers, _key, wrapper)) = existing_wrapper {
+    // Replace the stored handler without touching the registry.
+    scope.push_root(Value::Object(wrapper))?;
+    scope.push_root(handler)?;
+    let handler_key = alloc_key(scope, EVENT_HANDLER_WRAPPER_HANDLER_KEY)?;
+    scope.define_property(wrapper, handler_key, data_desc(handler))?;
+    return Ok(Value::Undefined);
+  }
+
+  let wrappers = get_or_create_event_handler_wrappers_map(scope, listener_roots_owner)?;
+  scope.push_root(Value::Object(wrappers))?;
+
+  // Allocate the stable internal wrapper listener.
+  let wrapper_call_id = event_handler_wrapper_call_id_from_callee(scope, callee)?;
+  let wrapper_name = scope.alloc_string(&format!("__fastrender_event_handler_{type_name}"))?;
+  scope.push_root(Value::String(wrapper_name))?;
+  let wrapper = scope.alloc_native_function(wrapper_call_id, None, wrapper_name, 1)?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(wrapper, Some(intrinsics.function_prototype()))?;
+  }
+  scope.push_root(Value::Object(wrapper))?;
+
+  // Store the user handler on the wrapper so it can always forward to the latest value.
+  scope.push_root(handler)?;
+  let handler_key = alloc_key(scope, EVENT_HANDLER_WRAPPER_HANDLER_KEY)?;
+  scope.define_property(wrapper, handler_key, data_desc(handler))?;
+
+  // Register the wrapper as a normal DOM listener (so capture/bubble semantics match).
+  let listener_id = web_events::ListenerId::from_gc_object(wrapper);
+  let dom = unsafe { dom_ptr.as_mut() };
+  dom.events_mut().add_event_listener(
+    resolved.target_id,
+    &type_name,
+    listener_id,
+    web_events::AddEventListenerOptions::default(),
+  );
+
+  // Root the wrapper callback while it's registered.
+  let roots = get_or_create_event_listener_roots(scope, listener_roots_owner)?;
+  let listener_key = listener_id_property_key(scope, listener_id)?;
+  scope.define_property(roots, listener_key, data_desc(Value::Object(wrapper)))?;
+
+  // Store wrapper identity for this (target, type) pairing.
+  let key = alloc_key(scope, &key_str)?;
+  scope.define_property(wrappers, key, data_desc(Value::Object(wrapper)))?;
+
+  Ok(Value::Undefined)
+}
+
+fn event_handler_wrapper_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handler_key = alloc_key(scope, EVENT_HANDLER_WRAPPER_HANDLER_KEY)?;
+  let Some(handler) = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &handler_key)?
+  else {
+    return Ok(Value::Undefined);
+  };
+  let Value::Object(handler_obj) = handler else {
+    // Cleared handler: no-op.
+    return Ok(Value::Undefined);
+  };
+
+  let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let ret = if scope.heap().is_callable(handler)? {
+    vm.call_with_host_and_hooks(host, scope, hooks, handler, this, &[event_value])?
+  } else {
+    let handle_event_key = alloc_key(scope, "handleEvent")?;
+    let handle_event = vm.get_with_host_and_hooks(host, scope, hooks, handler_obj, handle_event_key)?;
+    if !scope.heap().is_callable(handle_event)? {
+      return Err(VmError::TypeError(
+        "Event handler callback has no callable handleEvent",
+      ));
+    }
+    vm.call_with_host_and_hooks(host, scope, hooks, handle_event, handler, &[event_value])?
+  };
+
+  // HTML EventHandler semantics: returning `false` cancels the event.
+  if matches!(ret, Value::Bool(false)) {
+    if let Value::Object(event_obj) = event_value {
+      let _ = event_prototype_prevent_default_native(
+        vm,
+        scope,
+        host,
+        hooks,
+        callee,
+        Value::Object(event_obj),
+        &[],
+      );
+    }
+  }
   Ok(Value::Undefined)
 }
 
@@ -19071,6 +19390,100 @@ fn init_window_globals(
     data_desc(Value::Object(event_target_ctor_func)),
   )?;
 
+  // EventHandler (on*) attributes.
+  //
+  // Real-world pages frequently use `element.onclick = fn` style assignments; implement a
+  // lightweight subset by installing accessors that register an internal wrapper listener in the
+  // shared event registry.
+  let event_handler_get_call_id = vm.register_native_call(event_handler_get_native)?;
+  let event_handler_set_call_id = vm.register_native_call(event_handler_set_native)?;
+  let event_handler_wrapper_call_id = vm.register_native_call(event_handler_wrapper_native)?;
+
+  let mut event_handler_targets: Vec<GcObject> = vec![event_target_proto, document_obj, global];
+  if let Some(platform) = dom_platform.as_ref() {
+    event_handler_targets.push(platform.prototype_for(DomInterface::EventTarget));
+  }
+  for &target in &event_handler_targets {
+    scope.push_root(Value::Object(target))?;
+  }
+
+  for (prop, type_) in [
+    // Mouse events.
+    ("onclick", "click"),
+    ("onmousedown", "mousedown"),
+    ("onmouseup", "mouseup"),
+    ("onmousemove", "mousemove"),
+    ("onmouseenter", "mouseenter"),
+    ("onmouseleave", "mouseleave"),
+    // Keyboard events.
+    ("onkeydown", "keydown"),
+    ("onkeyup", "keyup"),
+    ("onkeypress", "keypress"),
+    // Focus events.
+    ("onfocus", "focus"),
+    ("onblur", "blur"),
+    ("onfocusin", "focusin"),
+    ("onfocusout", "focusout"),
+    // Input events.
+    ("oninput", "input"),
+    ("onbeforeinput", "beforeinput"),
+    // Form events.
+    ("onsubmit", "submit"),
+    ("onchange", "change"),
+  ] {
+    let type_s = scope.alloc_string(type_)?;
+    scope.push_root(Value::String(type_s))?;
+    let slots = [
+      Value::Undefined,
+      Value::Object(global),
+      Value::Number(event_handler_wrapper_call_id.0 as f64),
+      Value::String(type_s),
+    ];
+
+    let get_name = scope.alloc_string(&format!("get {prop}"))?;
+    scope.push_root(Value::String(get_name))?;
+    let get_func = scope.alloc_native_function_with_slots(
+      event_handler_get_call_id,
+      None,
+      get_name,
+      0,
+      &slots,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(get_func))?;
+
+    let set_name = scope.alloc_string(&format!("set {prop}"))?;
+    scope.push_root(Value::String(set_name))?;
+    let set_func = scope.alloc_native_function_with_slots(
+      event_handler_set_call_id,
+      None,
+      set_name,
+      1,
+      &slots,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(set_func))?;
+
+    let key = alloc_key(&mut scope, prop)?;
+    let desc = PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(get_func),
+        set: Value::Object(set_func),
+      },
+    };
+    for &target in &event_handler_targets {
+      scope.define_property(target, key, desc.clone())?;
+    }
+  }
+
   // --- Core DOM constructors + prototypes (Node/Element/Document/DocumentFragment/Text) ----------
   //
   // These are needed for `instanceof` checks in the curated WPT DOM tests.
@@ -23547,7 +23960,9 @@ mod tests {
     assert_eq!(get_string(realm.heap(), ty), "storage");
 
     assert_eq!(
-      realm.exec_script("typeof document.createEvent('StorageEvent').initStorageEvent === 'function'")?,
+      realm.exec_script(
+        "typeof document.createEvent('StorageEvent').initStorageEvent === 'function'"
+      )?,
       Value::Bool(true)
     );
 
@@ -23572,6 +23987,44 @@ mod tests {
     assert_eq!(
       get_string(realm.heap(), result),
       "TypeError|EventTarget.dispatchEvent: event is not an Event"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn event_handler_onclick_runs_returning_false_cancels_and_reassigns() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><button id=\"b\"></button></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const btn = document.querySelector('button');\n\
+        let thisOk = false;\n\
+        globalThis.__count = 0;\n\
+        function a(e) { thisOk = (this === btn) && (e.currentTarget === btn); __count++; return false; }\n\
+        btn.onclick = a;\n\
+        const r1 = btn.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));\n\
+        function b(e) { __count += 10; }\n\
+        btn.onclick = b;\n\
+        const r2 = btn.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));\n\
+        const g2 = (btn.onclick === b);\n\
+        btn.onclick = null;\n\
+        const r3 = btn.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));\n\
+        const g3 = (btn.onclick === null);\n\
+        return [__count, thisOk, r1, r2, g2, r3, g3].join(',');\n\
+      })()",
+    )?;
+
+    assert_eq!(
+      get_string(realm.heap(), result),
+      "11,true,false,true,true,true,true"
     );
     Ok(())
   }
