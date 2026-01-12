@@ -8327,11 +8327,6 @@ impl ImageCache {
     url: &str,
     device_pixel_ratio: f32,
   ) -> Result<Arc<tiny_skia::Pixmap>> {
-    // Policy enforcement is based on SVG markup. Injected CSS can introduce additional `url(...)`
-    // references (filters/images/fonts), so scan both the original SVG and the injected `<style>`
-    // element.
-    self.enforce_svg_resource_policy(svg_content, url)?;
-    self.enforce_svg_resource_policy(style_element, url)?;
     self.enforce_decode_limits(render_width, render_height, url)?;
     check_root(RenderStage::Paint).map_err(Error::Render)?;
 
@@ -8354,25 +8349,24 @@ impl ImageCache {
       );
     };
 
-    // Match `svg_pixmap_key` hashing semantics for a single combined string without allocating it.
-    // `Hash` for `str` appends a 0xFF terminator byte, so hashing chunks separately would
-    // introduce extra terminators and change the key. We instead hash the raw bytes and append
-    // the terminator once.
-    let mut content_hasher = DefaultHasher::new();
-    content_hasher.write(prefix.as_bytes());
-    content_hasher.write(style_element.as_bytes());
-    content_hasher.write(suffix.as_bytes());
-    content_hasher.write_u8(0xff);
-    let mut url_hasher = DefaultHasher::new();
-    url.hash(&mut url_hasher);
-    let key = SvgPixmapKey {
-      hash: content_hasher.finish(),
-      url_hash: url_hasher.finish(),
-      len: prefix.len() + style_element.len() + suffix.len(),
-      width: render_width,
-      height: render_height,
-      device_pixel_ratio_bits: f32_to_canonical_bits(device_pixel_ratio),
-    };
+    let mut combined = String::with_capacity(prefix.len() + style_element.len() + suffix.len());
+    combined.push_str(prefix);
+    combined.push_str(style_element);
+    combined.push_str(suffix);
+
+    // Policy enforcement must consider the *final* SVG markup. The injected `<style>` element can
+    // contain `@import`/`url(...)` references whose resolution depends on the SVG's `xml:base`
+    // chain, so scanning the fragments separately can under/over-enforce and allow cached pixmaps
+    // to bypass policy.
+    self.enforce_svg_resource_policy(&combined, url)?;
+
+    let key = svg_pixmap_key(
+      &combined,
+      url,
+      device_pixel_ratio,
+      render_width,
+      render_height,
+    );
 
     record_image_cache_request();
     if let Ok(mut cache) = self.svg_pixmap_cache.lock() {
@@ -8383,12 +8377,6 @@ impl ImageCache {
     }
 
     record_image_cache_miss();
-
-    let mut combined = String::with_capacity(key.len);
-    combined.push_str(prefix);
-    combined.push_str(style_element);
-    combined.push_str(suffix);
-
     self.render_svg_pixmap_at_size_uncached(&combined, key, render_width, render_height, url)
   }
 
@@ -16753,6 +16741,85 @@ mod tests_inline {
         .any(|(url, dest, _)| url == nested_url && *dest == FetchDestination::Style),
       "expected nested @import to resolve relative to final URL {final_url} (fetch {nested_url}), got: {requests:?}"
     );
+  }
+
+  #[test]
+  fn svg_style_import_policy_injected_style_respects_xml_base_for_cache_safety() {
+    let doc_url = "https://doc.test/page.html";
+    let svg_url = "inline-svg";
+    let css_url = "https://cross.test/a.css";
+
+    // The injected `<style>` element is inserted under the SVG root. Its import resolution should
+    // inherit the SVG's xml:base, and policy enforcement must take that into account even for
+    // cached pixmaps.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xml:base="//cross.test/" width="1" height="1"><rect class="r" width="1" height="1" fill="blue"/></svg>"#;
+    let insert_pos = svg.find('>').expect("svg root tag end") + 1;
+    let style_element = r#"<style>@import "a.css";</style>"#;
+
+    let mut css_res = FetchedResource::new(
+      b".r{fill:red !important;}".to_vec(),
+      Some("text/css".to_string()),
+    );
+    css_res.status = Some(200);
+    css_res.final_url = Some(css_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(css_url.to_string(), css_res)]);
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    // First render: allow cross-origin so the pixmap is populated + cached.
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin.clone());
+    ctx.policy.same_origin_only = false;
+    cache.set_resource_context(Some(ctx));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size_with_injected_style(
+        svg,
+        insert_pos,
+        style_element,
+        1,
+        1,
+        svg_url,
+        1.0,
+      )
+      .expect("rendered pixmap with injected style");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
+    );
+
+    // Second render: switch to same-origin-only and ensure we *don't* get a cache hit that bypasses
+    // policy enforcement.
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+
+    let err = cache
+      .render_svg_pixmap_at_size_with_injected_style(
+        svg,
+        insert_pos,
+        style_element,
+        1,
+        1,
+        svg_url,
+        1.0,
+      )
+      .expect_err("expected policy block for injected cross-origin stylesheet");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, css_url);
+        assert!(
+          reason.contains("Blocked SVG subresource"),
+          "unexpected policy reason: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
   }
 
   #[test]
