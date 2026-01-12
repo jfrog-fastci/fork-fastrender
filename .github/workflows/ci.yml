@@ -215,7 +215,7 @@ jobs:
       - name: Run doc tests
         run: cargo test --doc --all-features --verbose
 
-      - name: Pageset guardrails perf smoke (release, offline fixtures)
+      - name: Offline perf smoke (release, core + pageset-guardrails fixtures)
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
         id: perf_smoke_pageset_guardrails
         run: |
@@ -229,7 +229,7 @@ jobs:
           # Note: `cargo xtask perf-smoke` now exposes these flags; consider switching if we want
           # to reduce duplication between local workflows and CI.
           cargo run --release --bin perf_smoke -- \
-            --suite pageset-guardrails \
+            --suite all \
             --fail-on-missing-fixtures \
             --fail-on-failure \
             --fail-on-fetch-errors \
@@ -277,12 +277,12 @@ jobs:
           echo "PERF_SMOKE_PAGESET_GUARDRAILS_BASELINE=$match" >> "$GITHUB_ENV"
           echo "Using perf_smoke baseline at $match"
 
-      - name: Perf regression check (perf_smoke pageset-guardrails)
+      - name: Perf regression check (perf_smoke all suite)
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable' && steps.perf_smoke_pageset_guardrails.outcome == 'success' && steps.download_perf_smoke_pageset_guardrails_baseline.outcome == 'success'
         run: |
           # To reproduce locally:
           #   cargo run --release --bin perf_smoke -- \
-          #     --suite pageset-guardrails \
+          #     --suite all \
           #     --fail-on-missing-fixtures \
           #     --fail-on-failure \
           #     --fail-on-fetch-errors \
@@ -301,7 +301,7 @@ jobs:
 
           # Use the already-built binary to keep the report free of cargo build noise.
           target/release/perf_smoke \
-            --suite pageset-guardrails \
+            --suite all \
             --fail-on-missing-fixtures \
             --fail-on-failure \
             --fail-on-fetch-errors \
@@ -318,7 +318,7 @@ jobs:
           cat "${report_path}" >&2
 
           {
-            echo "## perf_smoke pageset-guardrails regression check"
+            echo "## perf_smoke (all suite) regression check"
             echo
             echo "Baseline: ${PERF_SMOKE_PAGESET_GUARDRAILS_BASELINE}"
             echo "Threshold: ${PERF_SMOKE_REGRESSION_THRESHOLD} (relative)"
@@ -375,7 +375,7 @@ jobs:
         run: |
           echo "Previous perf_smoke pageset-guardrails artifact not found; skipping regression gate."
           {
-            echo "## perf_smoke pageset-guardrails regression check"
+            echo "## perf_smoke (all suite) regression check"
             echo
             echo "No prior baseline artifact was available from main."
             echo "Threshold: ${PERF_SMOKE_REGRESSION_THRESHOLD} (relative)"

@@ -235,6 +235,23 @@ const CORE_FIXTURES: &[CoreFixture] = &[
     1.0,
     MediaType::Screen,
   ),
+  // Layout hotspots: intrinsic sizing (`compute_intrinsic_inline_size`) amplification from nested
+  // flex/grid containers with content-based sizing.
+  (
+    "layout_intrinsic_sizing_stress",
+    "tests/pages/fixtures/layout_intrinsic_sizing_stress/index.html",
+    (1040, 1240),
+    1.0,
+    MediaType::Screen,
+  ),
+  // Layout hotspots: float placement + line float-avoidance range queries (`available_width_in_range`).
+  (
+    "layout_float_stress",
+    "tests/pages/fixtures/layout_float_stress/index.html",
+    (1040, 1240),
+    1.0,
+    MediaType::Screen,
+  ),
   (
     "intrinsic_sizing_stress",
     "tests/pages/fixtures/intrinsic_sizing_stress/index.html",
