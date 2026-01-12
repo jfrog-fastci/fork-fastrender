@@ -1,4 +1,4 @@
-use crate::common::{global_test_lock, EnvVarGuard};
+use crate::common::global_state::{global_test_lock, EnvVarGuard};
 use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::image_output::{encode_image, OutputFormat};
@@ -40,4 +40,3 @@ fn visual_fixture_matches_goldens() {
     compare_pngs(name, &png, &golden, &compare_config, &diff_dir).expect("compare");
   }
 }
-

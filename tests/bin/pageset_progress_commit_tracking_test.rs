@@ -85,9 +85,9 @@ fn timeout_to_timeout_keeps_commits_stable() {
 #[test]
 fn current_git_sha_uses_env_fallback() {
   let expected = "env-fallback-sha";
-  let _lock = crate::common::global_test_lock();
-  let _fastr_sha = crate::common::EnvVarGuard::set("FASTR_GIT_SHA", expected);
-  let _github_sha = crate::common::EnvVarGuard::set("GITHUB_SHA", "wrong-sha");
+  let _lock = crate::common::global_state::global_test_lock();
+  let _fastr_sha = crate::common::global_state::EnvVarGuard::set("FASTR_GIT_SHA", expected);
+  let _github_sha = crate::common::global_state::EnvVarGuard::set("GITHUB_SHA", "wrong-sha");
 
   // `current_git_sha()` should prefer env vars over spawning `git`, so this remains stable even
   // when `git` is available on PATH.

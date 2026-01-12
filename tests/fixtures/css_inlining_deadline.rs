@@ -1,4 +1,4 @@
-use crate::common::global_test_lock;
+use crate::common::global_state::global_test_lock;
 use std::path::PathBuf;
 use std::time::Duration;
 
