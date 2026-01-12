@@ -668,6 +668,203 @@ fn has_listeners_for_dispatch_respects_load_event_document_parent_special_case()
 }
 
 #[test]
+fn document_bubbling_event_reaches_window_by_default() {
+  let doc = Document::new(QuirksMode::NoQuirks);
+  assert!(doc.has_window_event_parent());
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id_document = ListenerId::new(1);
+  let id_window = ListenerId::new(2);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Document,
+    [
+      (
+        id_document,
+        Behavior {
+          label: "document",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_window,
+        Behavior {
+          label: "window_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Document,
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["document", "window_bubble"]);
+  assert_eq!(
+    event.path.iter().map(|e| e.target).collect::<Vec<_>>(),
+    vec![EventTargetId::Window, EventTargetId::Document]
+  );
+}
+
+#[test]
+fn document_without_window_event_parent_does_not_reach_window() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  doc.set_has_window_event_parent(false);
+  assert!(!doc.has_window_event_parent());
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id_document = ListenerId::new(1);
+  let id_window = ListenerId::new(2);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Document,
+    [(
+      id_document,
+      Behavior {
+        label: "document",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Document,
+        action: Action::None,
+      },
+    )],
+  );
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Document,
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["document"]);
+  assert_eq!(
+    event.path.iter().map(|e| e.target).collect::<Vec<_>>(),
+    vec![EventTargetId::Document]
+  );
+}
+
+#[test]
+fn connected_node_event_does_not_reach_window_without_window_event_parent() {
+  let (mut doc, a, b, c) = make_dom_abc();
+  doc.set_has_window_event_parent(false);
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id_document = ListenerId::new(1);
+  let id_window = ListenerId::new(2);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [(
+      id_document,
+      Behavior {
+        label: "document_bubble",
+        expected_phase: EventPhase::Bubbling,
+        expected_current_target: EventTargetId::Document,
+        action: Action::None,
+      },
+    )],
+  );
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["document_bubble"]);
+  assert_eq!(
+    event.path.iter().map(|e| e.target).collect::<Vec<_>>(),
+    vec![
+      EventTargetId::Document,
+      EventTargetId::Node(a),
+      EventTargetId::Node(b),
+      EventTargetId::Node(c)
+    ]
+  );
+}
+
+#[test]
 fn capture_and_bubble_ordering_across_opaque_parent_chain() {
   let doc = Document::new(QuirksMode::NoQuirks);
   let registry = EventListenerRegistry::new();

@@ -213,6 +213,7 @@ pub struct Document {
   root: NodeId,
   ready_state: DocumentReadyState,
   events: web_events::EventListenerRegistry,
+  has_window_event_parent: bool,
   scripting_enabled: bool,
   mutations: MutationLog,
   mutation_generation: u64,
@@ -234,6 +235,7 @@ impl Clone for Document {
       // Cloning a DOM tree should not implicitly clone active event listeners. Start with an empty
       // registry so callers can snapshot structure without inheriting the old event graph.
       events: web_events::EventListenerRegistry::new(),
+      has_window_event_parent: self.has_window_event_parent,
       scripting_enabled: self.scripting_enabled,
       // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
       mutations: MutationLog::default(),
@@ -407,6 +409,7 @@ impl Document {
       root: self.root,
       ready_state: self.ready_state,
       events: self.events.clone(),
+      has_window_event_parent: self.has_window_event_parent,
       scripting_enabled: self.scripting_enabled,
       // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
       mutations: MutationLog::default(),
@@ -491,6 +494,7 @@ impl Document {
       root: NodeId(0),
       ready_state: DocumentReadyState::Loading,
       events: web_events::EventListenerRegistry::new(),
+      has_window_event_parent: true,
       scripting_enabled,
       mutations: MutationLog::default(),
       mutation_generation: 0,
@@ -551,6 +555,15 @@ impl Document {
   pub fn events_mut(&mut self) -> &mut web_events::EventListenerRegistry {
     &mut self.events
   }
+
+  pub fn has_window_event_parent(&self) -> bool {
+    self.has_window_event_parent
+  }
+
+  pub fn set_has_window_event_parent(&mut self, has: bool) {
+    self.has_window_event_parent = has;
+  }
+
   pub fn node(&self, id: NodeId) -> &Node {
     &self.nodes[id.0]
   }

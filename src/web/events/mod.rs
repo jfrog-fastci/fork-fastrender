@@ -837,7 +837,8 @@ fn event_target_parent(
 ) -> Option<EventTargetId> {
   match target.normalize() {
     EventTargetId::Window => None,
-    EventTargetId::Document => (!is_load_event).then_some(EventTargetId::Window),
+    EventTargetId::Document => (!is_load_event && dom.has_window_event_parent())
+      .then_some(EventTargetId::Window),
     EventTargetId::Node(node_id) => {
       // DOM: a shadow root's "get the parent" algorithm returns `null` when the event is not
       // composed and the shadow root is the tree root of the original target's node tree.
