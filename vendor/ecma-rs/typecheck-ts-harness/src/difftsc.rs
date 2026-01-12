@@ -1045,7 +1045,16 @@ fn run_single_test(
   }
 
   let timeout_guard = timeout_manager.register(deadline);
-  let compiler_options = harness_options.to_compiler_options();
+  let mut compiler_options = harness_options.to_compiler_options();
+  // `typecheck-ts` still ships with an intentionally minimal lib surface (enough for
+  // difftsc progress tracking, not a full TypeScript standard library). Running
+  // difftsc with `skip_lib_check=false` would therefore flood the comparison with
+  // lib-only errors that are not representative of user code or parity with `tsc`.
+  //
+  // Keep the Rust checker in skip-lib-check mode for difftsc runs regardless of
+  // fixture directives; fixtures may still toggle `skipLibCheck` for the `tsc`
+  // side when they need to assert specific diagnostics.
+  compiler_options.skip_lib_check = true;
   let (host, rust_trace) = if args.trace_resolution {
     let (host, trace) = HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options);
     (host, Some(trace))
