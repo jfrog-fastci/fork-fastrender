@@ -45,7 +45,6 @@ section in sync with `ls tests/*.rs`.
 | `tests/iframe_tests.rs` | integration | `tests/integration.rs::fixtures::iframe` | Golden-image comparisons; sets `FASTR_USE_BUNDLED_FONTS`; uses file URLs/tempdirs. | TODO |
 | `tests/image_integration_tests.rs` | integration | `tests/integration.rs::api::image_integration` | Image loading/output/CORS integration tests under `tests/image_integration/**`. | TODO |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
-| `tests/interaction.rs` | unit | `src/interaction/` | Internal interaction engine tests. Current harness uses `#[path]` due to name collision (`tests/interaction.rs` vs `tests/interaction/mod.rs`). | TODO |
 | `tests/js_harness_tests.rs` | unit | `src/js/` | Large internal JS harness (event loop, timers, DOM integration). Likely lands as `#[cfg(test)]` submodules under `src/js/**`. | TODO |
 | `tests/js_html_integration.rs` | integration | `tests/integration.rs::api::js_html_integration` | End-to-end HTML+JS execution behavior via `BrowserTab` and `EventLoop`. Fold into `tests/api/`. | TODO |
 | `tests/layout_tests.rs` | unit | `src/layout/` | Harness for `tests/layout/**` (very large). | TODO |
@@ -88,6 +87,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/grid_tests.rs` | unit | `src/layout/contexts/grid.rs` | Migrated to grid context unit tests (and `tests/grid/**` directory removed). | DONE |
 | `tests/headless_chrome_media_features_test.rs` | integration | `tests/integration.rs::browser_integration::headless_chrome_media_features` | Moved into `tests/browser_integration/headless_chrome_media_features.rs`. | DONE |
 | `tests/html_script_processing.rs` | unit | `src/js/html_classic_scripts.rs` | Migrated to unit tests for `parse_and_run_classic_scripts`. | DONE |
+| `tests/interaction.rs` | delete | delete | Standalone interaction harness removed; tests are now pulled into `tests/integration.rs::interaction`. | DONE |
 | `tests/js_webidl_union_record_enum.rs` | unit | `src/js/webidl/bindings/webidl_union_record_tests.rs` | Migrated to unit tests alongside WebIDL bindings. | DONE |
 | `tests/llvm_statepoint_stackmap_llvm18.rs` | integration | `tests/integration.rs::tooling::llvm_stackmaps` | Moved into `tests/tooling/llvm_stackmaps.rs` (requires LLVM 18 tools; skips when missing). | DONE |
 | `tests/overflow_tests.rs` | unit | `src/paint/stacking.rs` | Migrated into `src/paint/stacking/tests/**`. | DONE |
@@ -121,6 +121,7 @@ migrations.
 | `tests/fixtures/` | HTML + golden-image fixtures | `tests/integration.rs::fixtures` | Stays in `tests/` (data-driven integration). |
 | `tests/guards/` | repo invariants / consolidation guards | `tests/integration.rs::guards` | Integration-style checks for repo structure. |
 | `tests/image_integration/` | image loading/output integration tests | `tests/integration.rs::api::image_integration` | Network/CORS/streaming output; stays integration. |
+| `tests/interaction/` | interaction engine regression tests | `src/interaction/**` | Harness removed; remaining tests are currently pulled into `tests/integration.rs::interaction` but should migrate to unit tests in `src/interaction/**`. |
 | `tests/js/` | JS subsystem integration tests | `tests/integration.rs::js` | Consolidated into the shared integration binary. |
 | `tests/layout/` | layout regressions, paging, flex/grid/table, etc | `src/layout/**` | Unit tests (bulk of migration). |
 | `tests/paint/` + `tests/backdrop/` | paint/backdrop filter/render pipeline tests | `src/paint/**` | Unit tests; move shared Rayon init helper to `src/test_utils` or `tests/common`. |
