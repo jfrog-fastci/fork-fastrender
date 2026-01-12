@@ -2307,6 +2307,15 @@ console.log:
     let api = kb.get("fs.readFile").expect("fs.readFile resolves via alias");
     assert_eq!(api.name, "node:fs.readFile");
     assert_eq!(kb.canonical_name("fs.readFile"), Some("node:fs.readFile"));
+
+    let mc = kb
+      .get("worker_threads.MessageChannel")
+      .expect("worker_threads.MessageChannel resolves via alias");
+    assert_eq!(mc.name, "node:worker_threads.MessageChannel");
+    assert_eq!(
+      kb.canonical_name("worker_threads.MessageChannel"),
+      Some("node:worker_threads.MessageChannel")
+    );
   }
 
   #[test]

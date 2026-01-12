@@ -54,3 +54,41 @@
   parallelizable: true
   idempotent: true
   deterministic: false
+
+- name: node:worker_threads.MessageChannel
+  kind: constructor
+  aliases:
+    - worker_threads.MessageChannel
+  since: "v10.5.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: true
+
+- name: node:worker_threads.MessagePort.prototype.postMessage
+  kind: function
+  aliases:
+    - worker_threads.MessagePort.prototype.postMessage
+  since: "v10.5.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:worker_threads.MessagePort.prototype.close
+  kind: function
+  aliases:
+    - worker_threads.MessagePort.prototype.close
+  since: "v10.5.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
