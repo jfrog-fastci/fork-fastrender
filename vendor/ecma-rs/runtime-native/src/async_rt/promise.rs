@@ -763,6 +763,88 @@ pub(crate) fn promise_mark_handled(p: PromiseRef) {
 ///
 /// This is the unified internal mechanism used by both `await` and `then`-style APIs.
 pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactionNode) {
+  let ts = crate::threading::registry::current_thread_state_ptr();
+  if !ts.is_null() {
+    // Safety: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let root = scope.root(p.0.cast::<u8>());
+
+    let mut p = PromiseRef(root.get().cast());
+    let mut header = promise_header_ptr(p);
+    if header.is_null() {
+      // Treat null as "never settles": discard the node so it doesn't leak.
+      if !node.is_null() {
+        let vtable = unsafe { (*node).vtable };
+        if vtable.is_null() {
+          std::process::abort();
+        }
+        crate::ffi::abort_on_callback_panic(|| unsafe {
+          let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) =
+            std::mem::transmute((&*vtable).drop);
+          drop_fn(node);
+        });
+      }
+      return;
+    }
+
+    // Test-only deterministic race hook: allow a resolver thread to settle/drain while this
+    // registration is paused before linking into `reactions`.
+    if let Some(hook) = debug_waiter_race_hook() {
+      // The legacy race hook is only wired into the legacy value-promise settle path
+      // (`promise_resolve`/`promise_reject`). Avoid waiting on promises that won't ever notify it.
+      let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
+      let is_legacy_value =
+        (flags & PROMISE_FLAG_LEGACY_RT_PROMISE) != 0 && (flags & PROMISE_FLAG_HAS_PAYLOAD) == 0;
+      if is_legacy_value {
+        let state = unsafe { &(*header).state }.load(Ordering::Acquire);
+        if state == PromiseHeader::PENDING {
+          hook.notify_waiter_checked_pending();
+          hook.wait_for_resolved();
+        }
+      }
+
+      // A GC may have run while waiting; reload the promise pointer from the shadow stack.
+      p = PromiseRef(root.get().cast());
+      header = promise_header_ptr(p);
+      if header.is_null() {
+        return;
+      }
+    }
+
+    // Mark "handled" as soon as someone attaches a reaction (await/then).
+    promise_mark_handled(p);
+
+    // `promise_mark_handled` may contend on a GC-aware lock; reload the promise pointer before
+    // mutating the header.
+    p = PromiseRef(root.get().cast());
+    header = promise_header_ptr(p);
+    if header.is_null() {
+      return;
+    }
+
+    push_reaction(header, node);
+    track_pending_reactions(header);
+
+    // `track_pending_reactions` can block on GC-aware locks; reload the promise pointer before
+    // reading its state.
+    p = PromiseRef(root.get().cast());
+    header = promise_header_ptr(p);
+    if header.is_null() {
+      return;
+    }
+
+    // If the promise is already settled, drain and schedule immediately.
+    let state = unsafe { &(*header).state }.load(Ordering::Acquire);
+    if state == PromiseHeader::FULFILLED || state == PromiseHeader::REJECTED {
+      drain_reactions_generic(header);
+    }
+    return;
+  }
+
+  // Fallback for unregistered threads: no shadow stack is available, so this path does not provide
+  // moving-GC safety guarantees.
   let header = promise_header_ptr(p);
   if header.is_null() {
     // Treat null as "never settles": discard the node so it doesn't leak.
@@ -829,13 +911,43 @@ pub(crate) fn promise_then_rooted(p: PromiseRef, on_settle: extern "C" fn(*mut u
     // Treat null as "never settles": keep it pending without retaining `data`.
     return;
   }
+
+  // Root the promise pointer itself across any potentially blocking work when registering the
+  // callback `data` root. If lock acquisition blocks, the thread may become `NativeSafe` and a moving
+  // GC may relocate the promise, making the raw `PromiseRef` stale.
+  let ts = crate::threading::registry::current_thread_state_ptr();
+  if !ts.is_null() {
+    // Safety: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let promise_root = scope.root(p.0.cast::<u8>());
+
+    let gc_root = if data.is_null() {
+      None
+    } else {
+      // Safety: caller promises `data` is a GC-managed object pointer.
+      Some(unsafe { async_gc::Root::new_unchecked(data) })
+    };
+
+    // Avoid storing a raw GC pointer in the reaction node; the callback will reload through
+    // `gc_root` at execution time.
+    let node_data = if gc_root.is_some() { null_mut() } else { data };
+    let node = alloc_callback_reaction(on_settle, node_data, None, gc_root);
+
+    let p = PromiseRef(promise_root.get().cast());
+    promise_register_reaction(p, node);
+    return;
+  }
+
   let gc_root = if data.is_null() {
     None
   } else {
     // Safety: caller promises `data` is a GC-managed object pointer.
     Some(unsafe { async_gc::Root::new_unchecked(data) })
   };
-  let node = alloc_callback_reaction(on_settle, data, None, gc_root);
+  let node_data = if gc_root.is_some() { null_mut() } else { data };
+  let node = alloc_callback_reaction(on_settle, node_data, None, gc_root);
   promise_register_reaction(p, node);
 }
 
@@ -853,6 +965,28 @@ pub(crate) unsafe fn promise_then_rooted_h(
 ) {
   if p.is_null() {
     // Treat null as "never settles": keep it pending without retaining `slot`.
+    return;
+  }
+
+  // Root the promise pointer itself across any potentially blocking work when registering the
+  // callback `data` root. See `promise_then_rooted` for rationale.
+  let ts = crate::threading::registry::current_thread_state_ptr();
+  if !ts.is_null() {
+    // Safety: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let promise_root = scope.root(p.0.cast::<u8>());
+
+    // Safety: caller promises `slot` points at a GC-managed object base pointer.
+    let gc_root = Some(unsafe { async_gc::Root::new_from_slot_unchecked(slot) });
+
+    // Avoid holding a raw GC pointer across any potentially blocking operations: the callback will
+    // reload from `gc_root` at execution time.
+    let node = alloc_callback_reaction(on_settle, null_mut(), None, gc_root);
+
+    let p = PromiseRef(promise_root.get().cast());
+    promise_register_reaction(p, node);
     return;
   }
 
@@ -1274,16 +1408,29 @@ pub(crate) fn promise_resolve_promise(dst: PromiseRef, src: PromiseRef) {
     }
   }
 
-  let cont = Box::new(AdoptContinuation {
-    dst_root: unsafe { async_gc::Root::new_unchecked(dst.0.cast::<u8>()) },
-    src_root: unsafe { async_gc::Root::new_unchecked(src.0.cast::<u8>()) },
-  });
-  promise_then_with_drop(
-    src,
-    adopt_on_settle,
-    Box::into_raw(cont) as *mut u8,
-    drop_adopt_continuation,
-  );
+  let ts = crate::threading::registry::current_thread_state_ptr();
+  let cont = if ts.is_null() {
+    Box::new(AdoptContinuation {
+      dst_root: unsafe { async_gc::Root::new_unchecked(dst.0.cast::<u8>()) },
+      src_root: unsafe { async_gc::Root::new_unchecked(src.0.cast::<u8>()) },
+    })
+  } else {
+    // Safety: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let dst_rooted = scope.root(dst.0.cast::<u8>());
+    let src_rooted = scope.root(src.0.cast::<u8>());
+
+    let dst_root = unsafe { async_gc::Root::new_unchecked(dst_rooted.get()) };
+    let src_root = unsafe { async_gc::Root::new_unchecked(src_rooted.get()) };
+    Box::new(AdoptContinuation { dst_root, src_root })
+  };
+
+  // Reload `src` from the persistent handle root so we don't subscribe using a stale raw pointer
+  // after a moving GC.
+  let src = PromiseRef(cont.src_root.ptr().cast());
+  promise_then_with_drop(src, adopt_on_settle, Box::into_raw(cont) as *mut u8, drop_adopt_continuation);
 }
 
 pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
@@ -1410,11 +1557,30 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
     }
   }
 
-  let thenable_root = (!thenable.ptr.is_null())
-    // Safety: `thenable.ptr` must be a valid pointer to a GC-managed object base pointer if it is
-    // intended to be relocatable.
-    .then(|| unsafe { async_gc::Root::new_unchecked(thenable.ptr) });
-  let dst_root = unsafe { async_gc::Root::new_unchecked(dst.0.cast::<u8>()) };
+  let ts = crate::threading::registry::current_thread_state_ptr();
+  let (dst_root, thenable_root) = if ts.is_null() {
+    let thenable_root = (!thenable.ptr.is_null())
+      // Safety: `thenable.ptr` must be a valid pointer to a GC-managed object base pointer if it is
+      // intended to be relocatable.
+      .then(|| unsafe { async_gc::Root::new_unchecked(thenable.ptr) });
+    let dst_root = unsafe { async_gc::Root::new_unchecked(dst.0.cast::<u8>()) };
+    (dst_root, thenable_root)
+  } else {
+    // Safety: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let dst_rooted = scope.root(dst.0.cast::<u8>());
+    let thenable_rooted = scope.root(thenable.ptr);
+
+    let thenable_root = (!thenable.ptr.is_null())
+      // Safety: `thenable.ptr` must be a valid pointer to a GC-managed object base pointer if it is
+      // intended to be relocatable.
+      .then(|| unsafe { async_gc::Root::new_unchecked(thenable_rooted.get()) });
+
+    let dst_root = unsafe { async_gc::Root::new_unchecked(dst_rooted.get()) };
+    (dst_root, thenable_root)
+  };
   let job = Box::new(ThenableJob {
     dst_root,
     thenable,

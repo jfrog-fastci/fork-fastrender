@@ -282,7 +282,7 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
     // Debug/test builds can be extremely slow and subject to high scheduler contention (e.g. when
     // running many tests in parallel on multi-agent hosts). Keep the stop-the-world watchdog, but
     // give it enough slack to avoid flaky failures.
-    Duration::from_secs(30)
+    Duration::from_secs(60)
   } else {
     Duration::from_secs(2)
   };
