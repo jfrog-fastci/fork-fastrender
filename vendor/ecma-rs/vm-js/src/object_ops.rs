@@ -2195,49 +2195,57 @@ impl<'a> Scope<'a> {
   ) -> Result<bool, VmError> {
     desc.validate()?;
 
-    // Fast path: typed array integer index properties.
-    let Some(index) = self.heap().array_index(&key) else {
+    // TypedArray `[[DefineOwnProperty]]` semantics for integer-indexed keys.
+    // https://tc39.es/ecma262/#sec-typedarray-defineownproperty
+    let PropertyKey::String(s) = key else {
       return self.ordinary_define_own_property(obj, key, desc);
     };
 
-    // Non-canonical numeric strings are not integer indices and should be treated as ordinary.
-    //
-    // `array_index` already enforces the canonical form.
-    let len = self.heap().typed_array_length(obj)?;
-    if index as usize >= len {
+    let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? else {
+      return self.ordinary_define_own_property(obj, PropertyKey::String(s), desc);
+    };
+
+    // `IsValidIntegerIndex`
+    if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
+      return Ok(false);
+    }
+    if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+      // -0 is a canonical numeric index string but never a valid integer index.
+      return Ok(false);
+    }
+    if numeric_index < 0.0 {
+      return Ok(false);
+    }
+    if self.heap().typed_array_is_out_of_bounds(obj)? {
       return Ok(false);
     }
 
+    let index = numeric_index as usize;
+    let len = self.heap().typed_array_length(obj)?;
+    if index >= len {
+      return Ok(false);
+    }
+
+    // Descriptor invariant checks for typed array element properties.
+    if matches!(desc.configurable, Some(false)) {
+      return Ok(false);
+    }
+    if matches!(desc.enumerable, Some(false)) {
+      return Ok(false);
+    }
     if desc.is_accessor_descriptor() {
       return Ok(false);
     }
-    // Typed array index properties are always:
-    // - enumerable: true
-    // - configurable: false
-    // - writable: true
-    if matches!(desc.configurable, Some(true)) {
+    if matches!(desc.writable, Some(false)) {
       return Ok(false);
-    }
-    if let Some(enumerable) = desc.enumerable {
-      if !enumerable {
-        return Ok(false);
-      }
-    }
-    if let Some(writable) = desc.writable {
-      if !writable {
-        return Ok(false);
-      }
     }
 
     if let Some(value) = desc.value {
       // `typed_array_set_element_value` performs the ToNumber conversion and element-type
       // conversion/clamping.
-      //
-      // This should always return `true` for an in-bounds `index`, but treat a `false` return as a
-      // rejection to preserve spec-like behaviour under internal invariant violations.
       let ok = self
         .heap_mut()
-        .typed_array_set_element_value(obj, index as usize, value)?;
+        .typed_array_set_element_value(obj, index, value)?;
       if !ok {
         return Ok(false);
       }

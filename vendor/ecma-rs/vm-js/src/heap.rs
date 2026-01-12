@@ -1024,7 +1024,6 @@ impl Heap {
   pub fn is_detached_array_buffer(&self, obj: GcObject) -> Result<bool, VmError> {
     Ok(self.get_array_buffer(obj)?.data.is_none())
   }
-
   /// Returns `true` if `obj` currently points to a live Uint8Array object allocation.
   pub fn is_uint8_array_object(&self, obj: GcObject) -> bool {
     matches!(
@@ -1230,6 +1229,24 @@ impl Heap {
 
   pub(crate) fn data_view_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {
     Ok(self.get_data_view(obj)?.viewed_array_buffer)
+  }
+
+  /// Returns `true` if the typed array's `[[ByteOffset]] + [[ByteLength]]` does not fit within its
+  /// backing ArrayBuffer, or if the backing buffer is detached.
+  pub(crate) fn typed_array_is_out_of_bounds(&self, obj: GcObject) -> Result<bool, VmError> {
+    let view = self.get_typed_array(obj)?;
+    let buffer = view.viewed_array_buffer;
+    if self.is_detached_array_buffer(buffer)? {
+      return Ok(true);
+    }
+
+    let buf_len = self.array_buffer_byte_length(buffer)?;
+    let byte_length = view.byte_length()?;
+    let end = match view.byte_offset.checked_add(byte_length) {
+      Some(end) => end,
+      None => return Ok(true),
+    };
+    Ok(end > buf_len)
   }
 
   /// Returns a borrowed view of the bytes visible through a `Uint8Array` view.
@@ -2894,6 +2911,25 @@ impl Heap {
       return None;
     }
     Some(n as u32)
+  }
+
+  /// ECMA-262 `CanonicalNumericIndexString`.
+  ///
+  /// Returns `Some(numericIndex)` when `s` is a *canonical numeric string* (including the special
+  /// `"-0"` case), and `None` otherwise.
+  pub(crate) fn canonical_numeric_index_string(&mut self, s: GcString) -> Result<Option<f64>, VmError> {
+    let units = self.get_string(s)?.as_code_units();
+    if units.len() == 2 && units[0] == b'-' as u16 && units[1] == b'0' as u16 {
+      return Ok(Some(-0.0));
+    }
+
+    let n = self.to_number(Value::String(s))?;
+    let s2 = crate::property::number_to_string(n);
+    if self.get_string(s)?.to_utf8_lossy() == s2 {
+      Ok(Some(n))
+    } else {
+      Ok(None)
+    }
   }
 
   fn get_array_buffer(&self, obj: GcObject) -> Result<&JsArrayBuffer, VmError> {

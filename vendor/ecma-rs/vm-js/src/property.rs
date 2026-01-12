@@ -291,7 +291,7 @@ impl Heap {
 }
 
 // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-tostring
-fn number_to_string(n: f64) -> String {
+pub(crate) fn number_to_string(n: f64) -> String {
   if n.is_nan() {
     return "NaN".to_string();
   }
