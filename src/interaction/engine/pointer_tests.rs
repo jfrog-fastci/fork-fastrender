@@ -530,6 +530,16 @@ fn link_middle_click_opens_in_new_tab() {
     }
   );
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
+  assert_eq!(
+    engine.interaction_state().focused,
+    None,
+    "middle-click should not move focus"
+  );
+  assert_eq!(
+    engine.take_last_click_target(),
+    None,
+    "middle-click should not populate last_click_target (used for dispatching click events)"
+  );
 }
 
 #[test]
@@ -658,6 +668,77 @@ fn link_target_blank_opens_in_new_tab() {
     }
   );
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
+}
+
+#[test]
+fn checkbox_secondary_click_does_not_toggle_or_focus() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![("id", "c"), ("type", "checkbox")],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let checkbox_dom_id = node_id(&dom, "c");
+  let mut checkbox_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  checkbox_box.styled_node_id = Some(checkbox_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![checkbox_box],
+  ));
+
+  let checkbox_box_id = find_box_id_for_styled_node(&box_tree, checkbox_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      checkbox_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+    PointerButton::Secondary,
+    PointerModifiers::default(),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert_eq!(action, InteractionAction::None);
+  assert!(
+    !has_attr(&dom, "c", "checked"),
+    "secondary-click should not toggle checkboxes"
+  );
+  assert_eq!(
+    engine.interaction_state().focused,
+    None,
+    "secondary-click should not move focus"
+  );
+  assert_eq!(
+    engine.take_last_click_target(),
+    None,
+    "secondary-click should not populate last_click_target (used for dispatching click events)"
+  );
 }
 
 #[test]

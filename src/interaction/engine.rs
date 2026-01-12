@@ -4330,17 +4330,20 @@ impl InteractionEngine {
     };
 
     let mut action = InteractionAction::None;
+    let is_primary_button = matches!(button, PointerButton::Primary);
+    let allow_link_activation = matches!(button, PointerButton::Primary | PointerButton::Middle);
 
     let mut click_target = if click_qualifies { down_semantic } else { None };
-    if let Some(target_id) = click_target {
-      if index.node(target_id).is_some_and(is_label) {
-        if let Some(control) = find_label_associated_control(&index, target_id) {
-          click_target = Some(control);
+    if is_primary_button {
+      if let Some(target_id) = click_target {
+        if index.node(target_id).is_some_and(is_label) {
+          if let Some(control) = find_label_associated_control(&index, target_id) {
+            click_target = Some(control);
+          }
         }
       }
+      self.last_click_target = click_target;
     }
-
-    self.last_click_target = click_target;
 
     if click_qualifies {
       if let Some(target_id) = click_target {
@@ -4351,13 +4354,16 @@ impl InteractionEngine {
           let computed_disabled = snapshot
             .as_ref()
             .is_some_and(|(_, _, disabled, _)| *disabled);
-          if is_focusable_interactive_element(&index, target_id) && !computed_disabled {
+          if is_primary_button
+            && is_focusable_interactive_element(&index, target_id)
+            && !computed_disabled
+          {
             dom_changed |= self.set_focus(&mut index, Some(target_id), false);
           }
 
           let disabled = is_disabled_or_inert(&index, target_id) || computed_disabled;
 
-          if !disabled {
+          if is_primary_button && !disabled {
             if let Some((select_box_id, control, _, style)) = snapshot.as_ref() {
               let changed = apply_select_listbox_click(
                 dom,
@@ -4376,7 +4382,7 @@ impl InteractionEngine {
             }
           }
 
-          if !disabled {
+          if is_primary_button && !disabled {
             if let Some((_, control, _, _)) = snapshot.as_ref() {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
@@ -4388,138 +4394,148 @@ impl InteractionEngine {
             }
           }
         } else {
-          if is_focusable_interactive_element(&index, target_id) {
+          if is_primary_button && is_focusable_interactive_element(&index, target_id) {
             dom_changed |= self.set_focus(&mut index, Some(target_id), false);
           }
 
-          if let Some(href) = index
-            .node(target_id)
-            .filter(|node| is_anchor_with_href(node))
-            .and_then(|node| node.get_attribute_ref("href"))
-          {
-            let mut href_for_resolution = trim_ascii_whitespace(href).to_string();
-
-            // Server-side image maps: `<img ismap>` inside `<a href>` appends `?x,y` to the anchor
-            // URL before resolution.
-            //
-            // Precedence: If a client-side image map `<img usemap>` resolves to an `<area>`, the
-            // click target becomes the `<area>` (not the `<a>`), so we only apply `ismap` when the
-            // semantic target is an `<a>`.
-            let target_is_a = index
+          if allow_link_activation {
+            if let Some(href) = index
               .node(target_id)
-              .and_then(|node| node.tag_name())
-              .is_some_and(|tag| tag.eq_ignore_ascii_case("a"));
+              .filter(|node| is_anchor_with_href(node))
+              .and_then(|node| node.get_attribute_ref("href"))
+            {
+              let mut href_for_resolution = trim_ascii_whitespace(href).to_string();
 
-            if target_is_a {
-              if let Some(hit) = up_hit.as_ref() {
-                let event_target = nearest_element_ancestor(&index, hit.styled_node_id);
-                let event_target_is_img_ismap = event_target
-                  .and_then(|id| index.node(id))
-                  .is_some_and(|node| {
-                    node
-                      .tag_name()
-                      .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
-                      && node.get_attribute_ref("ismap").is_some()
-                  });
+              // Server-side image maps: `<img ismap>` inside `<a href>` appends `?x,y` to the anchor
+              // URL before resolution.
+              //
+              // Precedence: If a client-side image map `<img usemap>` resolves to an `<area>`, the
+              // click target becomes the `<area>` (not the `<a>`), so we only apply `ismap` when the
+              // semantic target is an `<a>`.
+              let target_is_a = index
+                .node(target_id)
+                .and_then(|node| node.tag_name())
+                .is_some_and(|tag| tag.eq_ignore_ascii_case("a"));
 
-                if let Some(img_id) = event_target.filter(|_| event_target_is_img_ismap) {
-                  if is_ancestor_or_self(&index, target_id, img_id) {
-                    let img_fragment = fragment_tree
-                      .hit_test(page_point)
-                      .into_iter()
-                      .find(|fragment| fragment.box_id() == Some(hit.box_id));
-                    if let Some(img_fragment) = img_fragment {
-                      if let Some(img_point) =
-                        image_maps::local_point_in_fragment(fragment_tree, img_fragment, page_point)
-                      {
-                        let x = img_point.x.max(0.0).floor() as i32;
-                        let y = img_point.y.max(0.0).floor() as i32;
-                        href_for_resolution.push('?');
-                        href_for_resolution.push_str(&format!("{x},{y}"));
+              if target_is_a {
+                if let Some(hit) = up_hit.as_ref() {
+                  let event_target = nearest_element_ancestor(&index, hit.styled_node_id);
+                  let event_target_is_img_ismap = event_target
+                    .and_then(|id| index.node(id))
+                    .is_some_and(|node| {
+                      node
+                        .tag_name()
+                        .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
+                        && node.get_attribute_ref("ismap").is_some()
+                    });
+
+                  if let Some(img_id) = event_target.filter(|_| event_target_is_img_ismap) {
+                    if is_ancestor_or_self(&index, target_id, img_id) {
+                      let img_fragment = fragment_tree
+                        .hit_test(page_point)
+                        .into_iter()
+                        .find(|fragment| fragment.box_id() == Some(hit.box_id));
+                      if let Some(img_fragment) = img_fragment {
+                        if let Some(img_point) = image_maps::local_point_in_fragment(
+                          fragment_tree,
+                          img_fragment,
+                          page_point,
+                        ) {
+                          let x = img_point.x.max(0.0).floor() as i32;
+                          let y = img_point.y.max(0.0).floor() as i32;
+                          href_for_resolution.push('?');
+                          href_for_resolution.push_str(&format!("{x},{y}"));
+                        }
                       }
                     }
                   }
                 }
               }
-            }
 
-            if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
-              if self.state.visited_links.insert(target_id) {
-                dom_changed = true;
+              if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
+                if self.state.visited_links.insert(target_id) {
+                  dom_changed = true;
+                }
+
+                let target_blank = index
+                  .node(target_id)
+                  .and_then(|node| node.get_attribute_ref("target"))
+                  .is_some_and(|target| {
+                    trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank")
+                  });
+
+                let gesture_new_tab = matches!(button, PointerButton::Middle)
+                  || (matches!(button, PointerButton::Primary) && modifiers.command());
+
+                action = if target_blank || gesture_new_tab {
+                  InteractionAction::OpenInNewTab { href: resolved }
+                } else {
+                  InteractionAction::Navigate { href: resolved }
+                };
               }
-
-              let target_blank = index
-                .node(target_id)
-                .and_then(|node| node.get_attribute_ref("target"))
-                .is_some_and(|target| trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank"));
-
-              let gesture_new_tab = matches!(button, PointerButton::Middle)
-                || (matches!(button, PointerButton::Primary) && modifiers.command());
-
-              action = if target_blank || gesture_new_tab {
-                InteractionAction::OpenInNewTab { href: resolved }
-              } else {
-                InteractionAction::Navigate { href: resolved }
-              };
             }
-          } else if let Some(spin) = number_spin.filter(|spin| spin.node_id == target_id) {
-            let up_dir = up_hit
-              .as_ref()
-              .filter(|hit| hit.dom_node_id == target_id)
-              .and_then(|hit| {
-                number_input_spin_direction_at_point(
-                  &index,
-                  box_tree,
-                  fragment_tree,
-                  target_id,
-                  hit.box_id,
-                  page_point,
-                )
-              });
-            if up_dir == Some(spin.direction) {
-              let delta_steps = match spin.direction {
-                NumberSpinDirection::Up => 1,
-                NumberSpinDirection::Down => -1,
-              };
-              dom_changed |= self.step_number_input(&mut index, target_id, delta_steps);
-            }
-          } else if index.node(target_id).is_some_and(is_checkbox_input) {
-            if !node_is_disabled(&index, target_id) {
-              if let Some(node_mut) = index.node_mut(target_id) {
-                let changed = dom_mutation::toggle_checkbox(node_mut);
+          }
+
+          if is_primary_button {
+            if let Some(spin) = number_spin.filter(|spin| spin.node_id == target_id) {
+              let up_dir = up_hit
+                .as_ref()
+                .filter(|hit| hit.dom_node_id == target_id)
+                .and_then(|hit| {
+                  number_input_spin_direction_at_point(
+                    &index,
+                    box_tree,
+                    fragment_tree,
+                    target_id,
+                    hit.box_id,
+                    page_point,
+                  )
+                });
+              if up_dir == Some(spin.direction) {
+                let delta_steps = match spin.direction {
+                  NumberSpinDirection::Up => 1,
+                  NumberSpinDirection::Down => -1,
+                };
+                dom_changed |= self.step_number_input(&mut index, target_id, delta_steps);
+              }
+            } else if index.node(target_id).is_some_and(is_checkbox_input) {
+              if !node_is_disabled(&index, target_id) {
+                if let Some(node_mut) = index.node_mut(target_id) {
+                  let changed = dom_mutation::toggle_checkbox(node_mut);
+                  dom_changed |= changed;
+                  if changed {
+                    dom_changed |= self.mark_user_validity(target_id);
+                  }
+                }
+              }
+            } else if index.node(target_id).is_some_and(is_radio_input) {
+              if !node_is_disabled(&index, target_id) {
+                let changed = dom_mutation::activate_radio(dom, target_id);
                 dom_changed |= changed;
                 if changed {
                   dom_changed |= self.mark_user_validity(target_id);
                 }
               }
-            }
-          } else if index.node(target_id).is_some_and(is_radio_input) {
-            if !node_is_disabled(&index, target_id) {
-              let changed = dom_mutation::activate_radio(dom, target_id);
-              dom_changed |= changed;
-              if changed {
+            } else if index.node(target_id).is_some_and(is_submit_control) {
+              if node_is_disabled(&index, target_id) {
+                // Disabled submit controls do not submit.
+              } else {
+                // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
                 dom_changed |= self.mark_user_validity(target_id);
-              }
-            }
-          } else if index.node(target_id).is_some_and(is_submit_control) {
-            if node_is_disabled(&index, target_id) {
-              // Disabled submit controls do not submit.
-            } else {
-              // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
-              dom_changed |= self.mark_user_validity(target_id);
-              dom_changed |= self.mark_form_user_validity(&index, target_id);
-              if let Some(submission) = form_submission(dom, target_id, document_url, base_url) {
-                self.last_form_submitter = Some(target_id);
-                match submission.method {
-                  FormSubmissionMethod::Get => {
-                    action = InteractionAction::Navigate {
-                      href: submission.url,
-                    };
-                  }
-                  FormSubmissionMethod::Post => {
-                    action = InteractionAction::NavigateRequest {
-                      request: submission,
-                    };
+                dom_changed |= self.mark_form_user_validity(&index, target_id);
+                if let Some(submission) = form_submission(dom, target_id, document_url, base_url) {
+                  self.last_form_submitter = Some(target_id);
+                  match submission.method {
+                    FormSubmissionMethod::Get => {
+                      action = InteractionAction::Navigate {
+                        href: submission.url,
+                      };
+                    }
+                    FormSubmissionMethod::Post => {
+                      action = InteractionAction::NavigateRequest {
+                        request: submission,
+                      };
+                    }
                   }
                 }
               }
@@ -4533,13 +4549,15 @@ impl InteractionEngine {
       // If the pointer down started on a focusable target but the click was cancelled (pointer up
       // happened elsewhere / outside the page), we should not clear focus: typical browser UX
       // keeps the previously focused element focused in that case.
-      let clicked_focusable =
-        click_target.is_some_and(|id| is_focusable_interactive_element(&index, id));
-      let down_prevents_blur = down_semantic.is_some_and(|id| {
-        is_focusable_interactive_element(&index, id) || index.node(id).is_some_and(is_label)
-      });
-      if !clicked_focusable && !down_prevents_blur && prev_focus.is_some() {
-        dom_changed |= self.set_focus(&mut index, None, false);
+      if is_primary_button {
+        let clicked_focusable =
+          click_target.is_some_and(|id| is_focusable_interactive_element(&index, id));
+        let down_prevents_blur = down_semantic.is_some_and(|id| {
+          is_focusable_interactive_element(&index, id) || index.node(id).is_some_and(is_label)
+        });
+        if !clicked_focusable && !down_prevents_blur && prev_focus.is_some() {
+          dom_changed |= self.set_focus(&mut index, None, false);
+        }
       }
     }
 
