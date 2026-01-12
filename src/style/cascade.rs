@@ -19151,6 +19151,8 @@ mod tests {
 
   mod overflow_visibility_case_insensitive_test;
   mod scroll_box_shorthand_parsing_test;
+  mod logical_shorthand_parsing_test;
+  mod offset_anchor_parsing_test;
   mod container_scroll_state_queries_test;
   mod container_style_queries;
 
