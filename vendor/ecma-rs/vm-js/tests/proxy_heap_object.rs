@@ -8,7 +8,7 @@ fn proxy_heap_object_traces_target_and_handler_until_revoked() -> Result<(), VmE
     let mut scope = heap.scope();
     let target = scope.alloc_object()?;
     let handler = scope.alloc_object()?;
-    let proxy = scope.alloc_proxy(target, handler)?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
     (target, handler, proxy)
   };
 
@@ -70,7 +70,7 @@ fn proxy_heap_object_alloc_proxy_roots_inputs_across_gc() -> Result<(), VmError>
 
   let proxy = {
     let mut scope = heap.scope();
-    scope.alloc_proxy(target, handler)?
+    scope.alloc_proxy(Some(target), Some(handler))?
   };
 
   assert!(

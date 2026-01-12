@@ -147,4 +147,10 @@ exclude = [
   "language/import/**",
   "language/export/**",
   "language/module-code/**",
+
+  # Some tests are module-only (flagged `module` in frontmatter) even though they live under
+  # `language/statements/**`. Keep modules fully excluded until module execution lands.
+  "language/statements/labeled/value-await-module*.js",
+  "language/statements/for-of/head-await-using-bound-names-in-stmt.js",
+  "language/statements/for-of/head-await-using-fresh-binding-per-iteration.js",
 ]

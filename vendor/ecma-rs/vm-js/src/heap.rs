@@ -4295,18 +4295,23 @@ impl<'a> Scope<'a> {
   ) -> Result<GcObject, VmError> {
     // Root inputs during allocation in case `alloc_unchecked` triggers a GC.
     let mut scope = self.reborrow();
+    let mut roots = [Value::Undefined, Value::Undefined];
+    let mut root_count = 0;
     if let Some(target) = target {
       if !scope.heap.is_valid_object(target) {
         return Err(VmError::invalid_handle());
       }
-      scope.push_root(Value::Object(target))?;
+      roots[root_count] = Value::Object(target);
+      root_count += 1;
     }
     if let Some(handler) = handler {
       if !scope.heap.is_valid_object(handler) {
         return Err(VmError::invalid_handle());
       }
-      scope.push_root(Value::Object(handler))?;
+      roots[root_count] = Value::Object(handler);
+      root_count += 1;
     }
+    scope.push_roots(&roots[..root_count])?;
 
     // Proxies have no heap-owned payload allocations today; they store only GC handles inline.
     let new_bytes = 0usize;
