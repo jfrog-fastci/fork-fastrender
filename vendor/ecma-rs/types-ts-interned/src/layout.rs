@@ -603,7 +603,19 @@ impl LayoutComputer {
     self.store.layout_of(ty)
   }
 
+  pub fn layout_of_evaluated<E: crate::TypeExpander>(&self, ty: TypeId, expander: &E) -> LayoutId {
+    self.store.layout_of_evaluated(ty, expander)
+  }
+
   pub fn layout(&self, id: LayoutId) -> Layout {
     self.store.layout(id)
+  }
+
+  pub fn gc_trace(&self, layout: LayoutId) -> Vec<GcTraceStep> {
+    self.store.gc_trace(layout)
+  }
+
+  pub fn gc_ptr_offsets(&self, layout: LayoutId) -> Vec<u32> {
+    self.store.gc_ptr_offsets(layout)
   }
 }

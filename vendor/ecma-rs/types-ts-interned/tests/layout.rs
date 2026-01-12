@@ -292,6 +292,35 @@ fn callable_types_lower_to_traceable_closure_objects() {
 }
 
 #[test]
+fn callables_share_a_canonical_layout() {
+  use types_ts_interned::{Param, Signature};
+
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let sig_a = store.intern_signature(Signature::new(Vec::new(), primitives.number));
+  let sig_b = store.intern_signature(Signature::new(
+    vec![Param {
+      name: None,
+      ty: primitives.string,
+      optional: false,
+      rest: false,
+    }],
+    primitives.boolean,
+  ));
+
+  let callable_a = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_a],
+  });
+  let callable_b = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_b],
+  });
+
+  assert_ne!(callable_a, callable_b, "sanity check: signatures differ");
+  assert_eq!(store.layout_of(callable_a), store.layout_of(callable_b));
+}
+
+#[test]
 fn closure_layout_ids_are_deterministic_across_stores() {
   use types_ts_interned::Signature;
 
