@@ -1,6 +1,6 @@
 use vm_js::{
-  get_prototype_from_constructor, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  get_prototype_from_constructor, species_constructor, Heap, HeapLimits, JsRuntime, PropertyDescriptor,
+  PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 fn data_desc(value: Value) -> PropertyDescriptor {
@@ -24,6 +24,12 @@ fn executor_noop(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   Ok(Value::Undefined)
+}
+
+fn new_runtime() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
 }
 
 #[test]
@@ -98,5 +104,55 @@ fn promise_constructor_sets_instance_prototype_from_new_target() -> Result<(), V
   assert!(heap.is_valid_object(promise_instance));
 
   realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn species_constructor_observes_proxy_get_traps() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var log = [];
+      var ctor = new Proxy(function(){}, {
+        get: function (t, k, r) {
+          log.push("ctor:" + String(k));
+          if (k === Symbol.species) return undefined;
+        },
+      });
+      var p = new Proxy({}, {
+        get: function (t, k, r) {
+          log.push("obj:" + String(k));
+          if (k === "constructor") return ctor;
+        },
+      });
+    "#,
+  )?;
+
+  let p = match rt.exec_script("p")? {
+    Value::Object(o) => o,
+    other => panic!("expected Proxy object, got {other:?}"),
+  };
+  let default_ctor = Value::Object(rt.realm().intrinsics().object_constructor());
+
+  let result = {
+    let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    species_constructor(vm, &mut scope, p, default_ctor)?
+  };
+  assert_eq!(result, default_ctor);
+
+  let log_str = match rt.exec_script("log.join(',')")? {
+    Value::String(s) => rt.heap.get_string(s)?.to_utf8_lossy(),
+    other => panic!("expected string log output, got {other:?}"),
+  };
+  assert!(
+    log_str.contains("obj:constructor"),
+    "expected Proxy get trap to observe constructor property, got log {log_str:?}"
+  );
+  assert!(
+    log_str.contains("Symbol.species"),
+    "expected Proxy get trap to observe @@species property, got log {log_str:?}"
+  );
   Ok(())
 }

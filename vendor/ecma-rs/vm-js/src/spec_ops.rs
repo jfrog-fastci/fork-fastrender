@@ -597,14 +597,8 @@ pub fn species_constructor_with_host_and_hooks(
   let key_s = scope.alloc_string("constructor")?;
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
-  let constructor = scope.ordinary_get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    obj,
-    key,
-    Value::Object(obj),
-  )?;
+  // `Get(O, "constructor")` (Proxy-aware).
+  let constructor = scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
   scope.push_root(constructor)?;
 
   // 3. If C is undefined, return defaultConstructor.
@@ -627,7 +621,8 @@ pub fn species_constructor_with_host_and_hooks(
     .species;
   scope.push_root(Value::Symbol(species_sym))?;
   let species_key = PropertyKey::from_symbol(species_sym);
-  let species = scope.ordinary_get_with_host_and_hooks(
+  // `Get(C, @@species)` (Proxy-aware).
+  let species = scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,
