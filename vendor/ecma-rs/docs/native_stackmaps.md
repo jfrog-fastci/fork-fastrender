@@ -130,7 +130,7 @@ producing an **RWX** segment. The repo avoids this by anchoring stackmaps in the
 or data segment (never immediately after `.text`):
 
 - lld: `runtime-native/link/stackmaps.ld` inserts stackmaps/faultmaps **before `.bss`** (outside the RELRO range).
-- GNU ld + PIE: the wrappers select `runtime-native/link/stackmaps_gnuld.ld` automatically.
+- GNU ld: the wrappers select `runtime-native/link/stackmaps_gnuld.ld` automatically.
 
 To support PIE safely (without `DT_TEXTREL`), the stackmap section must be **writable during
 relocation**.
