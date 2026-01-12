@@ -6843,7 +6843,7 @@ impl<'a> Scope<'a> {
       ));
     }
 
-    // Validate handles up-front.
+    // Validate handles up-front (this should not trigger GC).
     if let Some(target) = target {
       if !self.heap.is_valid_object(target) {
         return Err(VmError::invalid_handle());
@@ -6867,7 +6867,6 @@ impl<'a> Scope<'a> {
 
     // Root inputs during allocation in case root-stack growth, `ensure_can_allocate`, or slot-table
     // growth triggers GC.
-    //
     let mut roots = [Value::Undefined; 2];
     let mut root_count: usize = 0;
     if let Some(target) = target {

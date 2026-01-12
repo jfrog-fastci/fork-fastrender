@@ -1,11 +1,17 @@
 //! Minimal `File` implementation for `vm-js` Window realms.
 //!
 //! This is a spec-shaped MVP intended to unblock real-world scripts that expect `File` to exist and
-//! to allow `fetch()` / `FormData` integrations to use `File` objects as `Blob` bodies.
+//! to allow `fetch()` / `FormData` integrations to use `File` objects.
 //!
-//! This implementation:
-//! - Stores bytes + MIME type in the existing `window_blob` registry so `Blob` methods work.
-//! - Stores `File`-specific metadata (`name`, `lastModified`) in a per-realm registry.
+//! This implementation stores bytes + MIME type in the existing `window_blob` registry so `Blob`
+//! methods (`text()`, `arrayBuffer()`, `slice()`) work on `File` objects, and stores `File`-specific
+//! metadata (`name`, `lastModified`) in a per-realm registry.
+//!
+//! Supported FileBits entries (mirrors `Blob`):
+//! - `string` (UTF-8 encoded, replacing invalid surrogates)
+//! - `ArrayBuffer`
+//! - `Uint8Array`
+//! - `Blob`/`File`
 
 use std::char::decode_utf16;
 use std::collections::HashMap;
@@ -16,6 +22,7 @@ use vm_js::{
   PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
+use crate::js::time;
 use crate::js::window_blob::{self, BlobData, MAX_BLOB_BYTES};
 
 const FILE_CTOR_REALM_ID_SLOT: usize = 0;
@@ -182,6 +189,23 @@ fn append_bytes_limited(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), VmError> 
   Ok(())
 }
 
+fn js_value_to_string_limited(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+  max_bytes: usize,
+  err: &'static str,
+) -> Result<String, VmError> {
+  let s = scope.to_string(vm, host, hooks, value)?;
+  let out = scope.heap().get_string(s)?.to_utf8_lossy();
+  if out.len() > max_bytes {
+    return Err(VmError::TypeError(err));
+  }
+  Ok(out)
+}
+
 fn to_long_long(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -189,6 +213,9 @@ fn to_long_long(
   hooks: &mut dyn VmHostHooks,
   value: Value,
 ) -> Result<i64, VmError> {
+  if matches!(value, Value::Undefined) {
+    return Ok(0);
+  }
   let n = scope.to_number(vm, host, hooks, value)?;
   if n.is_nan() {
     return Ok(0);
@@ -229,32 +256,32 @@ fn file_ctor_construct(
 
   // Collect the parts up front without holding any registry lock: property access and ToString can
   // invoke user code.
-  let parts_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let bits_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let mut parts: Vec<Value> = Vec::new();
 
-  if !matches!(parts_val, Value::Undefined | Value::Null) {
-    if let Value::Object(parts_obj) = parts_val {
-      if scope.heap().object_prototype(parts_obj)? == Some(intr.array_prototype()) {
+  if !matches!(bits_val, Value::Undefined | Value::Null) {
+    if let Value::Object(bits_obj) = bits_val {
+      if scope.heap().object_prototype(bits_obj)? == Some(intr.array_prototype()) {
         let length_key = alloc_key(scope, "length")?;
-        let len_val = vm.get_with_host_and_hooks(host, scope, hooks, parts_obj, length_key)?;
+        let len_val = vm.get_with_host_and_hooks(host, scope, hooks, bits_obj, length_key)?;
         let Value::Number(n) = len_val else {
-          return Err(VmError::TypeError("File parts array has invalid length"));
+          return Err(VmError::TypeError("File bits array has invalid length"));
         };
         if !n.is_finite() || n < 0.0 || n > (u32::MAX as f64) {
-          return Err(VmError::TypeError("File parts array has invalid length"));
+          return Err(VmError::TypeError("File bits array has invalid length"));
         }
         let len = n as usize;
         parts.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
         for i in 0..len {
           let key = alloc_key(scope, &i.to_string())?;
-          let v = vm.get_with_host_and_hooks(host, scope, hooks, parts_obj, key)?;
+          let v = vm.get_with_host_and_hooks(host, scope, hooks, bits_obj, key)?;
           parts.push(v);
         }
       } else {
-        parts.push(parts_val);
+        parts.push(bits_val);
       }
     } else {
-      parts.push(parts_val);
+      parts.push(bits_val);
     }
   }
 
@@ -298,7 +325,7 @@ fn file_ctor_construct(
   let type_string = window_blob::normalize_type(&type_string);
   let last_modified = match last_modified {
     Some(v) => v,
-    None => crate::js::time::date_now_ms(scope)?,
+    None => time::date_now_ms(scope)?,
   };
 
   let mut bytes: Vec<u8> = Vec::new();
@@ -359,7 +386,7 @@ fn file_ctor_construct(
   Ok(Value::Object(obj))
 }
 
-pub(crate) fn clone_file_metadata_for_object(
+pub(crate) fn clone_file_metadata_for_fetch(
   vm: &Vm,
   heap: &Heap,
   value: Value,
@@ -370,6 +397,7 @@ pub(crate) fn clone_file_metadata_for_object(
   let Some(realm_id) = vm.current_realm() else {
     return Ok(None);
   };
+
   let mut registry = registry()
     .lock()
     .unwrap_or_else(|err| err.into_inner());
@@ -377,6 +405,7 @@ pub(crate) fn clone_file_metadata_for_object(
     return Ok(None);
   };
 
+  // Opportunistic sweep.
   let gc_runs = heap.gc_runs();
   if gc_runs != state.last_gc_runs {
     state.last_gc_runs = gc_runs;
@@ -544,10 +573,14 @@ mod tests {
     let v = realm.exec_script("typeof File")?;
     assert_eq!(get_string(realm.heap(), v), "function");
 
-    let v = realm.exec_script("new File(['hi'], 'a.txt', { type: 'Text/Plain', lastModified: 123 }).size")?;
+    let v = realm.exec_script(
+      "new File(['hi'], 'a.txt', { type: 'Text/Plain', lastModified: 123 }).size",
+    )?;
     assert_eq!(v, Value::Number(2.0));
 
-    let v = realm.exec_script("new File(['hi'], 'a.txt', { type: 'Text/Plain', lastModified: 123 }).type")?;
+    let v = realm.exec_script(
+      "new File(['hi'], 'a.txt', { type: 'Text/Plain', lastModified: 123 }).type",
+    )?;
     assert_eq!(get_string(realm.heap(), v), "text/plain");
 
     let v = realm.exec_script("new File(['hi'], 'a.txt', { lastModified: 123 }).name")?;
@@ -559,10 +592,14 @@ mod tests {
     let v = realm.exec_script("Object.prototype.toString.call(new File(['hi'], 'a.txt'))")?;
     assert_eq!(get_string(realm.heap(), v), "[object File]");
 
-    let v = realm.exec_script("(() => { const f = new File(['hi'], 'a.txt'); return (f instanceof File) && (f instanceof Blob); })()")?;
+    let v = realm.exec_script(
+      "(() => { const f = new File(['hi'], 'a.txt'); return (f instanceof File) && (f instanceof Blob); })()",
+    )?;
     assert_eq!(v, Value::Bool(true));
 
-    let v = realm.exec_script("Object.prototype.toString.call(new File(['hi'], 'a.txt').slice(0, 1))")?;
+    let v = realm.exec_script(
+      "Object.prototype.toString.call(new File(['hi'], 'a.txt').slice(0, 1))",
+    )?;
     assert_eq!(get_string(realm.heap(), v), "[object Blob]");
 
     let v = realm.exec_script("new File(['hi'], 'a.txt').slice(0, 1) instanceof File")?;

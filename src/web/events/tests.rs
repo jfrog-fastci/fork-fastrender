@@ -3019,7 +3019,10 @@ fn shadow_dom_composed_true_retargets_target_outside_shadow_tree() {
   assert_eq!(document_call.event_phase, EventPhase::Bubbling);
 
   // For open shadow roots, composedPath() is allowed to expose the shadow tree to outside listeners.
-  assert_eq!(document_call.composed_path.first(), Some(EventTargetId::Node(inner)));
+  assert_eq!(
+    document_call.composed_path.first(),
+    Some(&EventTargetId::Node(inner))
+  );
   assert!(
     document_call
       .composed_path
@@ -3028,7 +3031,7 @@ fn shadow_dom_composed_true_retargets_target_outside_shadow_tree() {
   );
   assert_eq!(
     document_call.composed_path.last(),
-    Some(EventTargetId::Window),
+    Some(&EventTargetId::Window),
     "expected composedPath() to end at Window"
   );
 }
@@ -3474,7 +3477,7 @@ fn composed_path_hides_closed_shadow_tree_from_outside() {
 
   assert_eq!(
     document_call.composed_path.first(),
-    Some(EventTargetId::Node(host)),
+    Some(&EventTargetId::Node(host)),
     "closed shadow tree nodes should be hidden from outside listeners"
   );
   assert!(

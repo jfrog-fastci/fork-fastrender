@@ -37367,6 +37367,7 @@ mod tests {
       detail: 1,
       client_x: 12.5,
       client_y: 34.0,
+      detail: 1,
       button: 0,
       buttons: 1,
       detail: 1,

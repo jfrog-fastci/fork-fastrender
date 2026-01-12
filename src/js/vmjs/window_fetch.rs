@@ -11,6 +11,7 @@
 //! embedding.
 
 use crate::js::event_loop::TaskSource;
+use crate::js::time;
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
 use crate::js::window_form_data;
@@ -4573,7 +4574,7 @@ fn request_form_data_native(
           .as_deref()
           .is_some_and(|ct| normalize_content_type_for_blob(ct) == "multipart/form-data")
         {
-          crate::js::time::date_now_ms(scope)?
+          time::date_now_ms(scope)?
         } else {
           0
         };
@@ -5801,7 +5802,7 @@ fn response_form_data_native(
           .as_deref()
           .is_some_and(|ct| normalize_content_type_for_blob(ct) == "multipart/form-data")
         {
-          crate::js::time::date_now_ms(scope)?
+          time::date_now_ms(scope)?
         } else {
           0
         };
@@ -8199,6 +8200,10 @@ mod tests {
   use vm_js::{Job, RealmId, VmHostHooks};
   use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
+  // `vm-js` intrinsics + our window/fetch bindings have grown over time; keep unit tests resilient
+  // to that by using a slightly larger heap than the historical 1MiB.
+  const TEST_HEAP_BYTES: usize = 4 * 1024 * 1024;
+
   fn make_user_data(document_url: &str) -> WindowRealmUserData {
     let url = document_url.to_string();
     let module_loader = Rc::new(RefCell::new(ModuleLoader::new(Some(url.clone()))));
@@ -8418,7 +8423,7 @@ mod tests {
   #[test]
   fn window_fetch_bindings_drop_unregisters_env() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let _streams_guard = StreamsTeardownGuard::install(&mut vm, &realm, &mut heap)?;
@@ -8682,7 +8687,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let mut scope = heap.scope();
@@ -8716,7 +8721,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let mut scope = heap.scope();
@@ -8754,7 +8759,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let mut scope = heap.scope();
@@ -8792,7 +8797,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let _streams_guard = StreamsTeardownGuard::install(&mut vm, &realm, &mut heap)?;
@@ -8920,7 +8925,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let _streams_guard = StreamsTeardownGuard::install(&mut vm, &realm, &mut heap)?;
@@ -9128,7 +9133,24 @@ mod tests {
       let err = vm
         .call_with_host_and_hooks(&mut host_state, &mut scope, &mut hooks, read_fn, Value::Object(reader_obj), &[])
         .expect_err("expected read() to throw after releaseLock()");
-      assert!(matches!(err, VmError::TypeError(_)), "err={err}");
+      // `vm-js` may either surface internal TypeErrors directly (`VmError::TypeError`) or coerce
+      // them into thrown `TypeError` objects (e.g. with a captured stack trace). Accept both forms.
+      match err {
+        VmError::TypeError(msg) => assert_eq!(msg, "ReadableStreamDefaultReader has no stream"),
+        other => {
+          let Some(Value::Object(err_obj)) = other.thrown_value() else {
+            panic!("expected TypeError, got {other:?}");
+          };
+          scope.push_root(Value::Object(err_obj))?;
+          let message_key = alloc_key(&mut scope, "message")?;
+          let message_val = vm.get(&mut scope, err_obj, message_key)?;
+          let Value::String(message_str) = message_val else {
+            panic!("expected TypeError.message string, got {message_val:?}");
+          };
+          let msg = scope.heap().get_string(message_str)?.to_utf8_lossy();
+          assert_eq!(msg, "ReadableStreamDefaultReader has no stream");
+        }
+      }
     }
 
     heap.remove_root(resp_root);
@@ -9144,7 +9166,7 @@ mod tests {
   #[test]
   fn response_text_rejects_when_body_used_by_body_stream() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let _streams_guard = StreamsTeardownGuard::install(&mut vm, &realm, &mut heap)?;
@@ -9321,7 +9343,7 @@ mod tests {
   #[test]
   fn response_consumers_reject_when_body_stream_locked() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let _streams_guard = StreamsTeardownGuard::install(&mut vm, &realm, &mut heap)?;
@@ -9470,20 +9492,22 @@ mod tests {
         )
         .expect_err("expected Response.clone to throw while locked");
 
-      let VmError::Throw(thrown) = err else {
-        return Err(VmError::InvariantViolation("expected thrown TypeError"));
-      };
-      let Value::Object(err_obj) = thrown else {
-        return Err(VmError::InvariantViolation("expected thrown TypeError object"));
-      };
-      scope.push_root(Value::Object(err_obj))?;
-      let message_key = alloc_key(&mut scope, "message")?;
-      let message_val = vm.get(&mut scope, err_obj, message_key)?;
-      let Value::String(message_str) = message_val else {
-        return Err(VmError::InvariantViolation("expected TypeError.message string"));
-      };
-      let msg = scope.heap().get_string(message_str)?.to_utf8_lossy().to_string();
-      assert_eq!(msg, "Response body is locked");
+      match err {
+        VmError::TypeError(msg) => assert_eq!(msg, "Response body is locked"),
+        other => {
+          let Some(Value::Object(err_obj)) = other.thrown_value() else {
+            return Err(VmError::InvariantViolation("expected thrown TypeError"));
+          };
+          scope.push_root(Value::Object(err_obj))?;
+          let message_key = alloc_key(&mut scope, "message")?;
+          let message_val = vm.get(&mut scope, err_obj, message_key)?;
+          let Value::String(message_str) = message_val else {
+            return Err(VmError::InvariantViolation("expected TypeError.message string"));
+          };
+          let msg = scope.heap().get_string(message_str)?.to_utf8_lossy().to_string();
+          assert_eq!(msg, "Response body is locked");
+        }
+      }
     }
 
     heap.remove_root(resp_root);
@@ -9537,7 +9561,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let _streams_guard = StreamsTeardownGuard::install(&mut vm, &realm, &mut heap)?;
@@ -9902,7 +9926,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
 
@@ -10167,7 +10191,7 @@ mod tests {
 
     let mut vm = Vm::new(VmOptions::default());
     vm.set_user_data(make_user_data("https://example.com/dir/page"));
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10218,7 +10242,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10266,7 +10290,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10325,7 +10349,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10391,7 +10415,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10453,7 +10477,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
 
@@ -10582,7 +10606,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10678,7 +10702,7 @@ mod tests {
     // `Response.redirect("relative")` resolves against the current document base URL, which is
     // stored on the VM by `WindowRealm`.
     vm.set_user_data(make_user_data("https://example.com/dir/page"));
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10797,7 +10821,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10863,7 +10887,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10926,7 +10950,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -10997,7 +11021,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -11088,7 +11112,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -11159,7 +11183,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
@@ -11209,7 +11233,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let mut scope = heap.scope();
 
@@ -11246,7 +11270,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
@@ -11353,7 +11377,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let mut scope = heap.scope();
 
@@ -11512,7 +11536,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
@@ -11625,7 +11649,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
@@ -11739,7 +11763,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let _streams_guard = StreamsTeardownGuard::install(&mut vm, &realm, &mut heap)?;
@@ -11924,7 +11948,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
@@ -12022,7 +12046,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
@@ -12083,7 +12107,7 @@ mod tests {
   #[test]
   fn request_body_mixin_double_consume_and_clone_preserves_body() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
     let bindings = match install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -12418,7 +12442,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
     let bindings = match install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -12611,7 +12635,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
@@ -12768,7 +12792,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
@@ -13510,6 +13534,76 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn response_ctor_form_data_defaults_filename_from_file_name() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_obj = host.window.exec_script(
+      r#"(function(){
+           const fd = new FormData();
+           fd.append('file', new File(['hi'], 'f.txt', { type: 'text/plain' }));
+           const resp = new Response(fd);
+           return { ct: resp.headers.get('Content-Type'), promise: resp.text() };
+         })()"#,
+    )?;
+    let Value::Object(result_obj) = result_obj else {
+      return Err(VmError::InvariantViolation(
+        "expected response ctor test script to return an object",
+      ));
+    };
+
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(result_obj))?;
+
+    let ct_key = alloc_key(&mut scope, "ct")?;
+    let Value::String(ct_s) = vm.get(&mut scope, result_obj, ct_key)? else {
+      return Err(VmError::InvariantViolation("expected ct to be a string"));
+    };
+    assert_eq!(
+      scope.heap().get_string(ct_s)?.to_utf8_lossy(),
+      "multipart/form-data; boundary=----fastrenderformdata1"
+    );
+
+    let promise_key = alloc_key(&mut scope, "promise")?;
+    let promise = vm.get(&mut scope, result_obj, promise_key)?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation("expected promise to be an object"));
+    };
+    assert_eq!(
+      scope.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = scope.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation("Response.text promise missing result"));
+    };
+    let Value::String(text_s) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.text must resolve to a string",
+      ));
+    };
+    let text = scope.heap().get_string(text_s)?.to_utf8_lossy();
+
+    let expected = concat!(
+      "------fastrenderformdata1\r\n",
+      "Content-Disposition: form-data; name=\"file\"; filename=\"f.txt\"\r\n",
+      "Content-Type: text/plain\r\n",
+      "\r\n",
+      "hi\r\n",
+      "------fastrenderformdata1--\r\n"
+    );
+    assert_eq!(text, expected);
+
+    Ok(())
+  }
+
   fn clone_form_data_entries_for_test(
     host: &mut EventLoopHost,
     fd_obj: GcObject,
@@ -13632,7 +13726,7 @@ mod tests {
         assert_eq!(data.r#type, "text/plain");
         assert_eq!(data.bytes.as_slice(), b"hi");
       }
-      other => panic!("expected blob entry, got {other:?}"),
+      other => panic!("expected file entry, got {other:?}"),
     }
 
     Ok(())

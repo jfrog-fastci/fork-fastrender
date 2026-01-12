@@ -196,6 +196,7 @@ fn form_data_total_bytes(entries: &[FormDataEntry]) -> Result<usize, VmError> {
           .checked_add(data.bytes.len())
           .and_then(|t| t.checked_add(filename.len()))
           .and_then(|t| t.checked_add(data.r#type.len()))
+          .and_then(|t| t.checked_add(std::mem::size_of::<i64>()))
           .ok_or(VmError::OutOfMemory)?;
       }
     }
@@ -236,20 +237,28 @@ fn js_form_data_value_to_js(
       filename,
       last_modified,
     } => {
-      let proto = file_proto.ok_or(VmError::Unimplemented(
-        "FormData File values require File to be installed",
+      if let Some(file_proto) = file_proto {
+        let obj = window_file::create_file_with_proto(
+          vm,
+          scope,
+          callee,
+          file_proto,
+          data.clone(),
+          window_file::FileMeta {
+            name: filename.clone(),
+            last_modified: *last_modified,
+          },
+        )?;
+        return Ok(Value::Object(obj));
+      }
+
+      // Minimal realms may install `FormData` without `File`. Preserve behavior by surfacing a
+      // `Blob` instead of failing.
+      let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
+      let proto = window_blob::blob_prototype_for_realm(realm_id).ok_or(VmError::Unimplemented(
+        "FormData binary values require Blob to be installed",
       ))?;
-      let obj = window_file::create_file_with_proto(
-        vm,
-        scope,
-        callee,
-        proto,
-        data.clone(),
-        window_file::FileMeta {
-          name: filename.clone(),
-          last_modified: *last_modified,
-        },
-      )?;
+      let obj = window_blob::create_blob_with_proto(vm, scope, callee, proto, data.clone())?;
       Ok(Value::Object(obj))
     }
   }
@@ -335,27 +344,38 @@ fn form_data_append_native(
   )?;
 
   let value_val = args.get(1).copied().unwrap_or(Value::Undefined);
-  let file_meta = window_file::clone_file_metadata_for_object(vm, scope.heap(), value_val)?;
+  let file_meta = window_file::clone_file_metadata_for_fetch(vm, scope.heap(), value_val)?;
   let blob = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), value_val)?;
   let value = if let Some(blob) = blob {
-    let filename = match args.get(2).copied() {
-      None | Some(Value::Undefined) => file_meta
-        .as_ref()
-        .map(|m| m.name.clone())
-        .unwrap_or_else(|| "blob".to_string()),
-      Some(v) => js_value_to_string(
+    let filename_provided = args
+      .get(2)
+      .copied()
+      .is_some_and(|v| !matches!(v, Value::Undefined));
+    let filename = if filename_provided {
+      js_value_to_string(
         vm,
         scope,
         host,
         hooks,
-        v,
+        args.get(2).copied().unwrap_or(Value::Undefined),
         "FormData filename exceeds maximum length",
-      )?,
+      )?
+    } else if let Some(file) = file_meta.as_ref() {
+      file.name.clone()
+    } else {
+      "blob".to_string()
     };
-    let last_modified = file_meta
-      .as_ref()
-      .map(|m| m.last_modified)
-      .unwrap_or(time::date_now_ms(scope)?);
+
+    let last_modified = if !filename_provided {
+      if let Some(file) = file_meta.as_ref() {
+        file.last_modified
+      } else {
+        time::date_now_ms(scope)?
+      }
+    } else {
+      time::date_now_ms(scope)?
+    };
+
     FormDataValue::File {
       data: blob,
       filename,
@@ -407,27 +427,38 @@ fn form_data_set_native(
   )?;
 
   let value_val = args.get(1).copied().unwrap_or(Value::Undefined);
-  let file_meta = window_file::clone_file_metadata_for_object(vm, scope.heap(), value_val)?;
+  let file_meta = window_file::clone_file_metadata_for_fetch(vm, scope.heap(), value_val)?;
   let blob = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), value_val)?;
   let value = if let Some(blob) = blob {
-    let filename = match args.get(2).copied() {
-      None | Some(Value::Undefined) => file_meta
-        .as_ref()
-        .map(|m| m.name.clone())
-        .unwrap_or_else(|| "blob".to_string()),
-      Some(v) => js_value_to_string(
+    let filename_provided = args
+      .get(2)
+      .copied()
+      .is_some_and(|v| !matches!(v, Value::Undefined));
+    let filename = if filename_provided {
+      js_value_to_string(
         vm,
         scope,
         host,
         hooks,
-        v,
+        args.get(2).copied().unwrap_or(Value::Undefined),
         "FormData filename exceeds maximum length",
-      )?,
+      )?
+    } else if let Some(file) = file_meta.as_ref() {
+      file.name.clone()
+    } else {
+      "blob".to_string()
     };
-    let last_modified = file_meta
-      .as_ref()
-      .map(|m| m.last_modified)
-      .unwrap_or(time::date_now_ms(scope)?);
+
+    let last_modified = if !filename_provided {
+      if let Some(file) = file_meta.as_ref() {
+        file.last_modified
+      } else {
+        time::date_now_ms(scope)?
+      }
+    } else {
+      time::date_now_ms(scope)?
+    };
+
     FormDataValue::File {
       data: blob,
       filename,
@@ -1276,6 +1307,48 @@ mod tests {
       })()",
     )?;
     assert_eq!(get_string(realm.heap(), v), "a=1&b=2&a=3");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn form_data_file_semantics() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let v = realm.exec_script(
+      r#"(() => {
+        const fd = new FormData();
+        fd.append('f', new File(['x'], 'a.txt', { type: 'text/plain', lastModified: 7 }));
+        fd.append('b', new Blob(['y']));
+
+        const f = fd.get('f');
+        const b = fd.get('b');
+
+        let iterOk = true;
+        for (const [k, v] of fd) {
+          if (k === 'f') iterOk = iterOk && (v instanceof File) && v.name === 'a.txt';
+          if (k === 'b') iterOk = iterOk && (v instanceof File) && v.name === 'blob';
+        }
+
+        return [
+          f instanceof File,
+          f.name,
+          f.type,
+          f.size,
+          f.lastModified,
+          b instanceof File,
+          b.name,
+          b.size,
+          b.type,
+          iterOk,
+        ].join('|');
+      })()"#,
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), v),
+      "true|a.txt|text/plain|1|7|true|blob|1||true"
+    );
 
     realm.teardown();
     Ok(())

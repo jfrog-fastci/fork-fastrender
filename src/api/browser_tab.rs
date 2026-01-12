@@ -5263,6 +5263,7 @@ impl BrowserTab {
       detail: 1,
       client_x: pos_css.0 as f64,
       client_y: pos_css.1 as f64,
+      detail: 1,
       button: dom_button,
       buttons: dom_buttons,
       ctrl_key: modifiers.ctrl(),

@@ -10,13 +10,13 @@ fn new_xml_defaults_to_no_quirks_and_scripting_disabled() {
   assert!(!doc.is_html_document());
 
   let snapshot = doc.to_renderer_dom();
-  match snapshot.node_type {
+  match &snapshot.node_type {
     DomNodeType::Document {
       quirks_mode,
       scripting_enabled,
     } => {
-      assert_eq!(quirks_mode, QuirksMode::NoQuirks);
-      assert!(!scripting_enabled);
+      assert_eq!(*quirks_mode, QuirksMode::NoQuirks);
+      assert!(!*scripting_enabled);
     }
     other => panic!("expected document root, got {other:?}"),
   }
