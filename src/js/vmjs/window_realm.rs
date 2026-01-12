@@ -6794,7 +6794,7 @@ fn error_event_constructor_native(
   let mut filename = scope.alloc_string("")?;
   let mut lineno = 0u32;
   let mut colno = 0u32;
-  let mut error = Value::Undefined;
+  let mut error = Value::Null;
 
   if let Some(init_value) = args.get(1).copied() {
     if let Value::Object(init_obj) = init_value {
@@ -6827,7 +6827,9 @@ fn error_event_constructor_native(
         .heap()
         .object_get_own_data_property_value(init_obj, &message_key)?
       {
-        message = scope.heap_mut().to_string(value)?;
+        if !matches!(value, Value::Undefined) {
+          message = scope.heap_mut().to_string(value)?;
+        }
       }
 
       let filename_key = alloc_key(scope, "filename")?;
@@ -6835,7 +6837,9 @@ fn error_event_constructor_native(
         .heap()
         .object_get_own_data_property_value(init_obj, &filename_key)?
       {
-        filename = scope.heap_mut().to_string(value)?;
+        if !matches!(value, Value::Undefined) {
+          filename = scope.heap_mut().to_string(value)?;
+        }
       }
 
       let lineno_key = alloc_key(scope, "lineno")?;
@@ -6869,7 +6873,9 @@ fn error_event_constructor_native(
         .heap()
         .object_get_own_data_property_value(init_obj, &error_key)?
       {
-        error = value;
+        if !matches!(value, Value::Undefined) {
+          error = value;
+        }
       }
     }
   }
@@ -6942,7 +6948,7 @@ fn before_unload_event_constructor_native(
   let type_string = scope.heap_mut().to_string(type_arg)?;
 
   let mut bubbles = false;
-  let mut cancelable = false;
+  let cancelable = true;
   let mut composed = false;
   let mut return_value = scope.alloc_string("")?;
 
@@ -6954,14 +6960,6 @@ fn before_unload_event_constructor_native(
         .object_get_own_data_property_value(init_obj, &bubbles_key)?
       {
         bubbles = scope.heap().to_boolean(value)?;
-      }
-
-      let cancelable_key = alloc_key(scope, "cancelable")?;
-      if let Some(value) = scope
-        .heap()
-        .object_get_own_data_property_value(init_obj, &cancelable_key)?
-      {
-        cancelable = scope.heap().to_boolean(value)?;
       }
 
       let composed_key = alloc_key(scope, "composed")?;
@@ -6977,7 +6975,9 @@ fn before_unload_event_constructor_native(
         .heap()
         .object_get_own_data_property_value(init_obj, &return_value_key)?
       {
-        return_value = scope.heap_mut().to_string(value)?;
+        if !matches!(value, Value::Undefined) {
+          return_value = scope.heap_mut().to_string(value)?;
+        }
       }
     }
   }
@@ -22015,6 +22015,44 @@ mod tests {
     let referrer = realm.exec_script("document.referrer")?;
     assert_eq!(get_string(realm.heap(), referrer), "");
 
+    Ok(())
+  }
+
+  #[test]
+  fn error_event_constructor_sets_type_and_message_and_supports_instanceof() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      "(() => {\n\
+        const ev = new ErrorEvent('error', { message: 'x' });\n\
+        return ev.type + '|' + ev.message + '|' + (ev instanceof ErrorEvent);\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "error|x|true");
+    Ok(())
+  }
+
+  #[test]
+  fn before_unload_event_constructor_exists_and_is_cancelable() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      "(() => {\n\
+        const ev = new BeforeUnloadEvent('beforeunload');\n\
+        return typeof ev.returnValue === 'string' && ev.cancelable === true;\n\
+      })()",
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn page_transition_event_constructor_sets_persisted() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let persisted =
+      realm.exec_script("new PageTransitionEvent('pagehide', { persisted: true }).persisted")?;
+    assert_eq!(persisted, Value::Bool(true));
     Ok(())
   }
 

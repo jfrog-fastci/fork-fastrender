@@ -1637,6 +1637,20 @@ pub fn proxy_revoker(
   Ok(Value::Undefined)
 }
 
+// Alias kept for compatibility with older intrinsic initialization code that refers to
+// `builtins::proxy_revoke`.
+pub fn proxy_revoke(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  proxy_revoker(vm, scope, host, hooks, callee, this, args)
+}
+
 pub fn array_buffer_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
