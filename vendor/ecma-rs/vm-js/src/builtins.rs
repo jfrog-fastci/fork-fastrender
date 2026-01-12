@@ -8317,6 +8317,17 @@ pub fn object_prototype_to_string(
     b'o' as u16,
     b'n' as u16,
   ];
+  const TAG_GENERATOR: [u16; 9] = [
+    b'G' as u16,
+    b'e' as u16,
+    b'n' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'o' as u16,
+    b'r' as u16,
+  ];
   const TAG_OBJECT: [u16; 6] = [b'O' as u16, b'b' as u16, b'j' as u16, b'e' as u16, b'c' as u16, b't' as u16];
 
   // 1. Handle `undefined` / `null` early.
@@ -8369,6 +8380,8 @@ pub fn object_prototype_to_string(
         &TAG_DATE
       } else if scope.heap().is_regexp_object(o) {
         &TAG_REGEXP
+      } else if scope.heap().is_generator_object(o) {
+        &TAG_GENERATOR
       } else if can_check_markers {
         let heap = scope.heap();
         let has_marker = |marker: Option<crate::GcSymbol>| -> Result<bool, VmError> {

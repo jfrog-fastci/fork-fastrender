@@ -141,9 +141,6 @@ fn object_prototype_to_string_tags_regexps_and_uses_builtin_tag_when_to_string_t
 fn object_prototype_to_string_tags_generator_objects() {
   let mut rt = new_runtime();
   let value = rt
-    // `vm-js` does not yet implement generator execution (`(function*() {})()`), but generator
-    // functions still create a per-function `.prototype` object that inherits from
-    // `%GeneratorPrototype%`, which defines `@@toStringTag = "Generator"`.
     .exec_script(
       r#"var proto = (function*() {}).prototype;
          var o = Object.create(proto);
@@ -157,7 +154,7 @@ fn object_prototype_to_string_tags_generator_objects() {
 fn object_prototype_to_string_tags_generator_heap_object() {
   let mut rt = new_runtime();
 
-  // Allocate a Generator heap object directly (generator execution is not yet implemented).
+  // Allocate a Generator heap object directly.
   {
     let (_vm, realm, heap) = rt.vm_realm_and_heap_mut();
     let intr = *realm.intrinsics();
@@ -192,7 +189,8 @@ fn object_prototype_to_string_tags_generator_heap_object() {
          var genProto = Object.getPrototypeOf(g);
          toString.call(g) === "[object Generator]" &&
          (Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, get() { return {}; } }), true) &&
-         toString.call(g) === "[object Object]" &&
+         // Non-string @@toStringTag is ignored, so we fall back to the builtin tag ("Generator").
+         toString.call(g) === "[object Generator]" &&
          (Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, writable: false, enumerable: false, value: "Generator" }), true) &&
          toString.call(g) === "[object Generator]""#,
     )

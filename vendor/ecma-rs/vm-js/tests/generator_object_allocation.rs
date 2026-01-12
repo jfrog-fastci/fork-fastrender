@@ -30,19 +30,17 @@ ok;
   )?;
   assert_eq!(value, Value::Bool(true));
 
-  // `%GeneratorPrototype%.next` should recognize the generator object (marker present), so we
-  // should reach the stub `Unimplemented` path instead of throwing a TypeError.
-  let err = rt
-    .exec_script(
-      r#"
+  // `%GeneratorPrototype%.next` should recognize the generator object (marker + continuation id
+  // present) and return an iterator result object.
+  let value = rt.exec_script(
+    r#"
 function* g() {}
 const gen = g();
-Object.getPrototypeOf(g).prototype.next.call(gen);
+const r = Object.getPrototypeOf(g).prototype.next.call(gen);
+typeof r === "object" && r.value === undefined && r.done === true;
 "#,
-    )
-    .unwrap_err();
-  assert!(matches!(err, VmError::Unimplemented(_)));
+  )?;
+  assert_eq!(value, Value::Bool(true));
 
   Ok(())
 }
-
