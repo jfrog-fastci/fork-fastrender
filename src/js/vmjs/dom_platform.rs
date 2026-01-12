@@ -911,6 +911,36 @@ impl DomPlatform {
     Ok(wrapper)
   }
 
+  /// Update the primary interface (brand) for an existing wrapper object.
+  ///
+  /// This is primarily used when a wrapper was created without access to the backing `dom2::Document`
+  /// (so its node kind could not be inspected) and needs to be upgraded to a more specific
+  /// interface like `DocumentType`.
+  pub fn rebrand_wrapper(
+    &mut self,
+    scope: &mut Scope<'_>,
+    wrapper: GcObject,
+    primary_interface: DomInterface,
+  ) -> Result<(), VmError> {
+    self.sweep_dead_wrappers_if_needed(scope.heap());
+
+    let weak = WeakGcObject::from(wrapper);
+    let meta = self
+      .meta_by_wrapper
+      .get_mut(&weak)
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    if meta.realm_id != self.realm_id {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+
+    meta.primary_interface = primary_interface;
+    scope.heap_mut().object_set_prototype(
+      wrapper,
+      Some(self.prototype_for(primary_interface)),
+    )?;
+    Ok(())
+  }
+
   fn rebind_wrapper_impl(
     &mut self,
     heap: &mut Heap,
