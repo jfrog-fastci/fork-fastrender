@@ -748,33 +748,32 @@ fn js_execution_can_observe_window_globals() -> Result<()> {
 }
 
 #[test]
-fn window_realm_microtask_checkpoint_uses_dom_shim_hooks() -> Result<()> {
+fn event_loop_microtask_checkpoint_uses_dom_shim_hooks() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body><div id=t></div></body></html>")?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
-  let window = host.window_mut();
+  let mut event_loop = EventLoop::<WindowHostState>::new();
 
-  window
-    .exec_script(
-      r#"
-const el = document.getElementById('t');
-Promise.resolve().then(() => { el.dataset.fooBar = 'baz'; });
-"#,
-    )
-    .map_err(|e| Error::Other(e.to_string()))?;
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+ const el = document.getElementById('t');
+ Promise.resolve().then(() => { el.dataset.fooBar = 'baz'; });
+ "#,
+  )?;
 
-  let before = window
-    .exec_script("document.getElementById('t').getAttribute('data-foo-bar') === null")
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let before = host.exec_script_in_event_loop(
+    &mut event_loop,
+    "document.getElementById('t').getAttribute('data-foo-bar') === null",
+  )?;
   assert_eq!(before, Value::Bool(true));
 
-  window
-    .perform_microtask_checkpoint()
-    .map_err(|e| Error::Other(e.to_string()))?;
+  event_loop.perform_microtask_checkpoint(&mut host)?;
 
-  let after = window
-    .exec_script("document.getElementById('t').getAttribute('data-foo-bar') === 'baz'")
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let after = host.exec_script_in_event_loop(
+    &mut event_loop,
+    "document.getElementById('t').getAttribute('data-foo-bar') === 'baz'",
+  )?;
   assert_eq!(after, Value::Bool(true));
   Ok(())
 }
@@ -2186,11 +2185,11 @@ fn document_head_and_body_reflect_dom_ids() -> Result<()> {
     "<!doctype html><html><head id=h></head><body id=b></body></html>",
   )?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
 
-  {
-    let realm = host.window_mut();
-    let res = realm.exec_script(
-      r#"
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
   globalThis.__head_id = document.head.id;
   globalThis.__body_id = document.body.id;
   globalThis.__head_same = document.head === document.head;
@@ -2198,12 +2197,7 @@ fn document_head_and_body_reflect_dom_ids() -> Result<()> {
   document.body.id = "new";
   globalThis.__body_id_after = document.body.id;
   "#,
-    );
-    if let Err(err) = res {
-      let (_vm, heap) = realm.vm_and_heap_mut();
-      return Err(Error::Other(format_vm_error(heap, err)));
-    }
-  }
+  )?;
 
   let (head_id, body_id, body_id_after, head_same, body_same) = {
     let realm = host.window_mut();
@@ -2245,11 +2239,11 @@ fn document_get_element_by_id_returns_stable_wrapper() -> Result<()> {
     "<!doctype html><html><head></head><body><div id=x></div></body></html>",
   )?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
 
-  {
-    let realm = host.window_mut();
-    let res = realm.exec_script(
-      r#"
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
   globalThis.__missing = document.getElementById("missing") === null;
   globalThis.__empty = document.getElementById("") === null;
   const el = document.getElementById("x");
@@ -2261,12 +2255,7 @@ fn document_get_element_by_id_returns_stable_wrapper() -> Result<()> {
   globalThis.__same_after = el === el2;
   globalThis.__id_after = el2.id;
   "#,
-    );
-    if let Err(err) = res {
-      let (_vm, heap) = realm.vm_and_heap_mut();
-      return Err(Error::Other(format_vm_error(heap, err)));
-    }
-  }
+  )?;
 
   let (missing, empty, same, old_missing, same_after, id_before, id_after) = {
     let realm = host.window_mut();
@@ -2315,11 +2304,11 @@ fn document_query_selector_returns_stable_wrapper() -> Result<()> {
     "<!doctype html><html><head></head><body><div class=x id=a></div></body></html>",
   )?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
 
-  {
-    let realm = host.window_mut();
-    let res = realm.exec_script(
-      r###"
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r###"
   const el = document.querySelector(".x");
   globalThis.__qs_found = (el !== null);
   globalThis.__qs_same = (el === document.querySelector(".x"));
@@ -2331,12 +2320,7 @@ fn document_query_selector_returns_stable_wrapper() -> Result<()> {
     globalThis.__qs_bad = e.name;
   }
   "###,
-    );
-    if let Err(err) = res {
-      let (_vm, heap) = realm.vm_and_heap_mut();
-      return Err(Error::Other(format_vm_error(heap, err)));
-    }
-  }
+  )?;
 
   let (qs_found, qs_same, qs_id, qs_bad) = {
     let realm = host.window_mut();
@@ -2382,11 +2366,11 @@ fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
     Arc::new(InMemoryFetcher::default()),
     opts,
   )?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
 
-  {
-    let realm = host.window_mut();
-    let res = realm.exec_script(
-      r###"
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r###"
   const a = document.getElementById("a");
   const inner = a.querySelector(".inner");
   globalThis.__el_qs_id = inner && inner.id;
@@ -2424,12 +2408,7 @@ fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
     globalThis.__bad_closest = e.name;
   }
   "###,
-    );
-    if let Err(err) = res {
-      let (_vm, heap) = realm.vm_and_heap_mut();
-      return Err(Error::Other(format_vm_error(heap, err)));
-    }
-  }
+  )?;
 
   let (
     el_qs_id,
@@ -2504,11 +2483,11 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
 
-  {
-    let realm = host.window_mut();
-    let res = realm.exec_script(
-      r#"
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
   const el = document.createElement("div");
   el.setAttribute("id", "x");
   el.setAttribute("data-test", "1");
@@ -2518,12 +2497,7 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
   globalThis.__append_same = (ret === el);
   globalThis.__found_same = (document.getElementById("x") === el);
   "#,
-    );
-    if let Err(err) = res {
-      let (_vm, heap) = realm.vm_and_heap_mut();
-      return Err(Error::Other(format_vm_error(heap, err)));
-    }
-  }
+  )?;
 
   let (append_same, found_same, data_test, missing_attr) = {
     let realm = host.window_mut();
