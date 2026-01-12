@@ -30462,6 +30462,28 @@ mod tests {
   }
 
   #[test]
+  fn dom_wrapper_prototype_chain_inherits_event_target() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        if (!(document instanceof EventTarget)) return false;\n\
+        if (!(el instanceof EventTarget)) return false;\n\
+        if (Object.getPrototypeOf(Node.prototype) !== EventTarget.prototype) return false;\n\
+        if (!(new AbortController().signal instanceof EventTarget)) return false;\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn window_realm_shims_exist_and_are_linked() -> Result<(), VmError> {
     let url = "https://example.com/path";
     let mut realm = new_realm(WindowRealmConfig::new(url))?;
