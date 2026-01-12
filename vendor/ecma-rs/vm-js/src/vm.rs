@@ -119,7 +119,6 @@ fn create_array_from_list(
       vm.tick()?;
     }
     let mut elem_scope = scope.reborrow();
-    elem_scope.push_root(Value::Object(arr))?;
     elem_scope.push_root(v)?;
     let key_s = elem_scope.alloc_string(&i.to_string())?;
     elem_scope.push_root(Value::String(key_s))?;

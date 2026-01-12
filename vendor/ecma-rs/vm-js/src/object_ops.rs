@@ -875,8 +875,7 @@ impl<'a> Scope<'a> {
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<Vec<PropertyKey>, VmError> {
     if let Some(string_data) = self.string_object_data_with_tick(obj, &mut tick)? {
-      self.push_root(Value::Object(obj))?;
-      self.push_root(Value::String(string_data))?;
+      self.push_roots(&[Value::Object(obj), Value::String(string_data)])?;
 
       let len = self.heap().get_string(string_data)?.len_code_units();
       let own_keys = self

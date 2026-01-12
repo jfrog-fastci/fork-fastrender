@@ -475,14 +475,13 @@ impl GraphLoadingState {
     let reason = err.thrown_value().unwrap_or(Value::Undefined);
 
     // Ensure we always release the persistent roots even if calling the reject function fails.
-    let result = (|| {
-      let mut call_scope = scope.reborrow();
-      call_scope.push_root(cap.reject)?;
-      call_scope.push_root(reason)?;
-      let _ = vm.call_with_host_and_hooks(
-        host_ctx,
-        &mut call_scope,
-        hooks,
+      let result = (|| {
+        let mut call_scope = scope.reborrow();
+        call_scope.push_roots(&[cap.reject, reason])?;
+        let _ = vm.call_with_host_and_hooks(
+          host_ctx,
+          &mut call_scope,
+          hooks,
         cap.reject,
         Value::Undefined,
         &[reason],
@@ -648,8 +647,7 @@ impl DynamicImportState {
 
     let result = (|| {
       let mut call_scope = scope.reborrow();
-      call_scope.push_root(cap.resolve)?;
-      call_scope.push_root(value)?;
+      call_scope.push_roots(&[cap.resolve, value])?;
       let _ = vm.call_with_host_and_hooks(
         host_ctx,
         &mut call_scope,
@@ -683,8 +681,7 @@ impl DynamicImportState {
 
     let result = (|| {
       let mut call_scope = scope.reborrow();
-      call_scope.push_root(cap.reject)?;
-      call_scope.push_root(reason)?;
+      call_scope.push_roots(&[cap.reject, reason])?;
       let _ = vm.call_with_host_and_hooks(
         host_ctx,
         &mut call_scope,
@@ -1729,8 +1726,7 @@ pub fn start_dynamic_import_with_host_and_hooks(
   // Root the arguments while evaluating options and calling host hooks: the algorithm may allocate
   // and trigger GC.
   let mut import_scope = scope.reborrow();
-  import_scope.push_root(specifier)?;
-  import_scope.push_root(options)?;
+  import_scope.push_roots(&[specifier, options])?;
 
   // 1. Let promiseCapability be ? NewPromiseCapability(%Promise%).
   let (state, promise, realm_id) = {

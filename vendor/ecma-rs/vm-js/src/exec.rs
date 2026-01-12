@@ -685,7 +685,6 @@ impl RuntimeEnv {
         let global_object = self.global_object;
         let mut key_scope = outer_scope.reborrow();
         key_scope.push_root(Value::Object(global_object))?;
-        key_scope.push_root(value)?;
         let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
 
         if let Some(desc) =
@@ -1559,7 +1558,6 @@ impl<'a> Evaluator<'a> {
           self.tick()?;
         }
         let mut idx_scope = scope.reborrow();
-        idx_scope.push_root(Value::Object(args_obj))?;
         idx_scope.push_root(v)?;
         let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
         idx_scope.define_property(args_obj, key, global_var_desc(v))?;
@@ -1596,7 +1594,6 @@ impl<'a> Evaluator<'a> {
             self.tick()?;
           }
           let mut elem_scope = rest_scope.reborrow();
-          elem_scope.push_root(Value::Object(arr))?;
           elem_scope.push_root(v)?;
           let key_s = elem_scope.alloc_string(&i.to_string())?;
           elem_scope.push_root(Value::String(key_s))?;
@@ -5210,7 +5207,7 @@ impl<'a> Evaluator<'a> {
             &mut spread_scope,
             spread_value,
           )?;
-          spread_scope.push_root(iter.iterator)?;
+          spread_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
           if let Err(err) = spread_scope.push_root(iter.next_method) {
             return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
           }
@@ -6038,7 +6035,7 @@ impl<'a> Evaluator<'a> {
                 &mut new_scope,
                 spread_value,
               )?;
-              new_scope.push_root(iter.iterator)?;
+              new_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
               if let Err(err) = new_scope.push_root(iter.next_method) {
                 return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
               }
@@ -6273,7 +6270,7 @@ impl<'a> Evaluator<'a> {
           &mut call_scope,
           spread_value,
         )?;
-        call_scope.push_root(iter.iterator)?;
+        call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
         if let Err(err) = call_scope.push_root(iter.next_method) {
           return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
         }
@@ -6349,7 +6346,7 @@ impl<'a> Evaluator<'a> {
           &mut call_scope,
           spread_value,
         )?;
-        call_scope.push_root(iter.iterator)?;
+        call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
         if let Err(err) = call_scope.push_root(iter.next_method) {
           return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
         }
@@ -6924,8 +6921,7 @@ impl<'a> Evaluator<'a> {
     // Root inputs for the duration of the operation: `instanceof` may allocate when performing
     // `GetMethod`/`Get`/`Call`.
     let mut scope = scope.reborrow();
-    scope.push_root(object)?;
-    scope.push_root(constructor)?;
+    scope.push_roots(&[object, constructor])?;
 
     // InstanceofOperator(O, C) (ECMA-262).
     //
@@ -7160,8 +7156,7 @@ impl<'a> Evaluator<'a> {
     // Root inputs for the duration of the comparison: `ToPrimitive` can invoke user code and
     // allocate.
     let mut scope = scope.reborrow();
-    scope.push_root(a)?;
-    scope.push_root(b)?;
+    scope.push_roots(&[a, b])?;
 
     let mut x = a;
     let mut y = b;
@@ -7244,8 +7239,7 @@ impl<'a> Evaluator<'a> {
   ) -> Result<Option<bool>, VmError> {
     // Root inputs for the duration of the comparison: `ToPrimitive`/`ToNumeric` can allocate.
     let mut scope = scope.reborrow();
-    scope.push_root(x)?;
-    scope.push_root(y)?;
+    scope.push_roots(&[x, y])?;
 
     // 1. ToPrimitive, hint Number (order depends on `left_first`).
     let (px, py) = if left_first {
@@ -7327,8 +7321,7 @@ impl<'a> Evaluator<'a> {
     // Root inputs and intermediates for the duration of the operation: `+` may allocate
     // (string concatenation, ToString) and thus trigger GC.
     let mut add_scope = scope.reborrow();
-    add_scope.push_root(left)?;
-    add_scope.push_root(right)?;
+    add_scope.push_roots(&[left, right])?;
 
     // ECMA-262 AdditionOperator (+): ToPrimitive (default), then string concat if either side is a
     // string; otherwise numeric addition.
@@ -11645,8 +11638,7 @@ fn async_computed_member_after_member(
   member_value: Value,
 ) -> Result<Value, VmError> {
   let mut key_scope = scope.reborrow();
-  key_scope.push_root(base)?;
-  key_scope.push_root(member_value)?;
+  key_scope.push_roots(&[base, member_value])?;
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
@@ -11892,8 +11884,7 @@ fn async_call_computed_member_after_member(
   member_value: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
   let mut key_scope = scope.reborrow();
-  key_scope.push_root(base)?;
-  key_scope.push_root(member_value)?;
+  key_scope.push_roots(&[base, member_value])?;
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;

@@ -381,8 +381,10 @@ pub fn get_prototype_from_constructor_with_host_and_hooks(
   };
 
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(constructor_obj))?;
-  scope.push_root(Value::Object(intrinsic_default_proto))?;
+  scope.push_roots(&[
+    Value::Object(constructor_obj),
+    Value::Object(intrinsic_default_proto),
+  ])?;
 
   let key_s = scope.alloc_string("prototype")?;
   scope.push_root(Value::String(key_s))?;
@@ -606,8 +608,7 @@ where
 
   // Root `new_target`/`proto` across allocation in case it triggers GC.
   let mut scope = scope.reborrow();
-  scope.push_root(new_target)?;
-  scope.push_root(Value::Object(proto))?;
+  scope.push_roots(&[new_target, Value::Object(proto)])?;
 
   let obj = allocate(&mut scope)?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;

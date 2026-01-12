@@ -860,8 +860,7 @@ impl ModuleGraph {
                 .unwrap_or(Value::Undefined)
             };
             attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
-            eval_scope.push_root(cap.reject)?;
-            eval_scope.push_root(reason)?;
+            eval_scope.push_roots(&[cap.reject, reason])?;
             let _ = vm.call_with_host_and_hooks(
               host,
               &mut eval_scope,
@@ -935,8 +934,7 @@ impl ModuleGraph {
               .unwrap_or(Value::Undefined)
           };
           attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
-          eval_scope.push_root(cap.reject)?;
-          eval_scope.push_root(reason)?;
+          eval_scope.push_roots(&[cap.reject, reason])?;
           let _ = vm.call_with_host_and_hooks(
             host,
             &mut eval_scope,
@@ -1258,9 +1256,7 @@ impl ModuleGraph {
     scope
       .heap_mut()
       .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
-    scope.push_root(Value::Object(on_rejected))?;
-
-    scope.push_root(awaited_promise)?;
+    scope.push_roots(&[Value::Object(on_rejected), awaited_promise])?;
     crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
       vm,
       scope,
@@ -1460,8 +1456,7 @@ pub(crate) fn module_tla_on_fulfilled(
         crate::new_error(scope, intr.error_prototype(), "Error", message).unwrap_or(Value::Undefined)
       };
 
-      scope.push_root(reject)?;
-      scope.push_root(reason)?;
+      scope.push_roots(&[reject, reason])?;
       let _ = vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
 
       roots.teardown(scope.heap_mut());
@@ -1504,8 +1499,7 @@ pub(crate) fn module_tla_on_rejected(
     .ok_or_else(VmError::invalid_handle)?;
   let reject = cap.reject;
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  scope.push_root(reject)?;
-  scope.push_root(reason)?;
+  scope.push_roots(&[reject, reason])?;
   let _ = vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
 
   roots.teardown(scope.heap_mut());

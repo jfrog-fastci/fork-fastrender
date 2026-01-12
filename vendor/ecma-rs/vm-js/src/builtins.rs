@@ -545,8 +545,7 @@ pub fn object_keys(
       vm.tick()?;
     }
     let mut idx_scope = scope.reborrow();
-    idx_scope.push_root(Value::Object(array))?;
-    idx_scope.push_root(Value::String(name))?;
+    idx_scope.push_roots(&[Value::Object(array), Value::String(name)])?;
 
     let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
     idx_scope.define_property(array, key, data_desc(Value::String(name), true, true, true))?;
@@ -601,9 +600,11 @@ pub fn object_values(
     }
 
     let mut iter_scope = scope.reborrow();
-    iter_scope.push_root(Value::Object(obj))?;
-    iter_scope.push_root(Value::Object(array))?;
-    iter_scope.push_root(Value::String(key_str))?;
+    iter_scope.push_roots(&[
+      Value::Object(obj),
+      Value::Object(array),
+      Value::String(key_str),
+    ])?;
 
     // Allocate the target index key before calling `Get` so any GC triggered by the `Get`/getter
     // sees the index key as rooted.
@@ -672,9 +673,11 @@ pub fn object_entries(
     }
 
     let mut iter_scope = scope.reborrow();
-    iter_scope.push_root(Value::Object(obj))?;
-    iter_scope.push_root(Value::Object(array))?;
-    iter_scope.push_root(Value::String(key_str))?;
+    iter_scope.push_roots(&[
+      Value::Object(obj),
+      Value::Object(array),
+      Value::String(key_str),
+    ])?;
 
     let pair = create_array_object(vm, &mut iter_scope, 2)?;
     iter_scope.push_root(Value::Object(pair))?;
@@ -1411,8 +1414,7 @@ fn array_constructor_impl(
         }
         // Root `array` and `el` during string allocation.
         let mut idx_scope = scope.reborrow();
-        idx_scope.push_root(Value::Object(array))?;
-        idx_scope.push_root(el)?;
+        idx_scope.push_roots(&[Value::Object(array), el])?;
 
         let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
         idx_scope.define_property(array, key, data_desc(el, true, true, true))?;
@@ -3305,8 +3307,7 @@ fn species_constructor_with_host_and_hooks(
   let mut scope = scope.reborrow();
 
   // `Get` can invoke user code via accessors. Root inputs across allocations/GC.
-  scope.push_root(Value::Object(obj))?;
-  scope.push_root(default_constructor)?;
+  scope.push_roots(&[Value::Object(obj), default_constructor])?;
 
   // 1. Let C be ? Get(O, "constructor").
   let ctor_key_s = scope.alloc_string("constructor")?;
@@ -3371,8 +3372,7 @@ pub(crate) fn promise_resolve_abstract(
 ) -> Result<GcObject, VmError> {
   let mut scope = scope.reborrow();
   // Root inputs across allocations/GC.
-  scope.push_root(constructor)?;
-  scope.push_root(x)?;
+  scope.push_roots(&[constructor, x])?;
 
   if let Value::Object(obj) = x {
     if scope.heap().is_promise_object(obj) {
@@ -4142,9 +4142,7 @@ fn perform_promise_then_with_capability(
 ) -> Result<Value, VmError> {
   // Root inputs: `promise` must remain live while we allocate job roots and enqueue reactions.
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(promise))?;
-  scope.push_root(on_fulfilled)?;
-  scope.push_root(on_rejected)?;
+  scope.push_roots(&[Value::Object(promise), on_fulfilled, on_rejected])?;
   scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
   // `PerformPromiseThen`: unhandled rejection tracking.
@@ -4351,9 +4349,7 @@ fn invoke_then(
 
   // Root inputs: `Get` and `Call` can allocate/GC.
   let mut scope = scope.reborrow();
-  scope.push_root(receiver)?;
-  scope.push_root(on_fulfilled)?;
-  scope.push_root(on_rejected)?;
+  scope.push_roots(&[receiver, on_fulfilled, on_rejected])?;
 
   // `Invoke(receiver, "then", ...)` uses `GetV`, which performs `ToObject` for primitives
   // (throwing only for `null`/`undefined`).
@@ -4441,9 +4437,7 @@ pub fn promise_prototype_then(
 
   // Root inputs: `SpeciesConstructor` and `NewPromiseCapability` can invoke user code.
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(promise))?;
-  scope.push_root(on_fulfilled)?;
-  scope.push_root(on_rejected)?;
+  scope.push_roots(&[Value::Object(promise), on_fulfilled, on_rejected])?;
 
   // `C = SpeciesConstructor(promise, %Promise%)`
   let default_ctor = Value::Object(intr.promise());
@@ -4524,8 +4518,7 @@ pub fn promise_prototype_finally(
 
   // Root inputs: `SpeciesConstructor` can invoke user code via accessors.
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(promise))?;
-  scope.push_root(on_finally)?;
+  scope.push_roots(&[Value::Object(promise), on_finally])?;
 
   // `C = SpeciesConstructor(promise, %Promise%)`
   let default_ctor = Value::Object(intr.promise());
@@ -4567,8 +4560,7 @@ pub fn promise_prototype_finally(
   )?;
 
   // Root the closure functions before invoking `then`, which may allocate/GC.
-  scope.push_root(Value::Object(then_finally))?;
-  scope.push_root(Value::Object(catch_finally))?;
+  scope.push_roots(&[Value::Object(then_finally), Value::Object(catch_finally)])?;
 
   invoke_then(
     vm,
@@ -4616,8 +4608,7 @@ pub fn promise_finally_handler_call(
   let promise_obj = promise_resolve_abstract(vm, scope, host, hooks, constructor, result)?;
 
   // Create `valueThunk` or `thrower`.
-  scope.push_root(Value::Object(promise_obj))?;
-  scope.push_root(captured)?;
+  scope.push_roots(&[Value::Object(promise_obj), captured])?;
   let thunk_call = intr.promise_finally_thunk_call();
   let thunk_name = if is_reject { "thrower" } else { "valueThunk" };
   let thunk_name = scope.alloc_string(thunk_name)?;
@@ -4809,8 +4800,7 @@ fn create_internal_record(
   // This is intentionally not exposed to user code except indirectly via captured builtin function
   // slots.
   let mut record_scope = scope.reborrow();
-  record_scope.push_root(Value::Object(prototype))?;
-  record_scope.push_root(initial)?;
+  record_scope.push_roots(&[Value::Object(prototype), initial])?;
 
   let obj = record_scope.alloc_object()?;
   record_scope.push_root(Value::Object(obj))?;
@@ -4843,8 +4833,7 @@ fn write_internal_record_value(
 ) -> Result<(), VmError> {
   // Avoid accumulating roots by using a nested scope for the key string.
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(record))?;
-  scope.push_root(value)?;
+  scope.push_roots(&[Value::Object(record), value])?;
   let value_key = string_key(&mut scope, "value")?;
   scope.define_property(record, value_key, data_desc(value, true, false, true))
 }
@@ -5804,8 +5793,7 @@ pub fn promise_all_settled_element_call(
   // values[index] = obj.
   {
     let mut idx_scope = scope.reborrow();
-    idx_scope.push_root(Value::Object(values))?;
-    idx_scope.push_root(Value::Object(obj))?;
+    idx_scope.push_roots(&[Value::Object(values), Value::Object(obj)])?;
     let idx_s = idx_scope.alloc_string(&(index as u32).to_string())?;
     idx_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
@@ -9767,8 +9755,7 @@ pub fn string_prototype_split(
   if matches!(separator, Value::Undefined) {
     let array = create_array_object(vm, &mut scope, 1)?;
     let mut idx_scope = scope.reborrow();
-    idx_scope.push_root(Value::Object(array))?;
-    idx_scope.push_root(Value::String(s))?;
+    idx_scope.push_roots(&[Value::Object(array), Value::String(s)])?;
     let key = string_key(&mut idx_scope, "0")?;
     idx_scope.define_property(array, key, data_desc(Value::String(s), true, true, true))?;
     return Ok(Value::Object(array));
@@ -12947,9 +12934,7 @@ pub fn json_parse(
     reviver: Value,
   ) -> Result<Value, VmError> {
     let mut scope = scope.reborrow();
-    scope.push_root(Value::Object(holder))?;
-    scope.push_root(Value::String(name))?;
-    scope.push_root(reviver)?;
+    scope.push_roots(&[Value::Object(holder), Value::String(name), reviver])?;
 
     let key = PropertyKey::from_string(name);
     let mut val =
@@ -13023,8 +13008,7 @@ pub fn json_parse(
             vm.tick()?;
           }
           let mut p_scope = scope.reborrow();
-          p_scope.push_root(Value::Object(obj))?;
-          p_scope.push_root(Value::String(p))?;
+          p_scope.push_roots(&[Value::Object(obj), Value::String(p)])?;
 
           let new_element = internalize_json_property(vm, &mut p_scope, host, hooks, obj, p, reviver)?;
           if matches!(new_element, Value::Undefined) {
@@ -13246,8 +13230,7 @@ pub fn json_stringify(
     key: crate::GcString,
   ) -> Result<Option<Value>, VmError> {
     let mut scope = scope.reborrow();
-    scope.push_root(Value::Object(holder))?;
-    scope.push_root(Value::String(key))?;
+    scope.push_roots(&[Value::Object(holder), Value::String(key)])?;
     if let Some(replacer_fn) = state.replacer_function {
       scope.push_root(replacer_fn)?;
     }
