@@ -1,4 +1,5 @@
 use crate::dom::HTML_NAMESPACE;
+use crate::web::events::{AddEventListenerOptions, EventTargetId, ListenerId};
 use selectors::context::QuirksMode;
 
 use super::{clone_node_into_document, Document, DomError, NodeId, NodeKind};
@@ -287,6 +288,78 @@ fn adopt_node_from_returns_mapping_and_detaches_source_subtree() {
   assert_eq!(src.parent(div).unwrap(), None);
   assert_eq!(src.parent(span).unwrap(), None);
   assert_eq!(src.parent(text).unwrap(), None);
+}
+
+#[test]
+fn adopt_node_from_transfers_event_listeners_for_adopted_subtree() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let old_root = src.create_element("div", HTML_NAMESPACE);
+  let old_desc = src.create_element("span", HTML_NAMESPACE);
+  src.append_child(old_root, old_desc).unwrap();
+  src.append_child(src.root(), old_root).unwrap();
+
+  let type_ = "x";
+  assert!(src.events().add_event_listener(
+    EventTargetId::Node(old_root),
+    type_,
+    ListenerId::new(1),
+    AddEventListenerOptions::default()
+  ));
+  assert!(src.events().add_event_listener(
+    EventTargetId::Node(old_desc),
+    type_,
+    ListenerId::new(2),
+    AddEventListenerOptions::default()
+  ));
+  assert!(src
+    .events()
+    .has_event_listeners(EventTargetId::Node(old_root), type_));
+  assert!(src
+    .events()
+    .has_event_listeners(EventTargetId::Node(old_desc), type_));
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, old_root).unwrap();
+
+  let mut old_to_new = std::collections::HashMap::<NodeId, NodeId>::new();
+  for (old, new) in &adopted.mapping {
+    old_to_new.insert(*old, *new);
+  }
+
+  let new_root = old_to_new
+    .get(&old_root)
+    .copied()
+    .expect("expected mapping to include adopted root");
+  assert_eq!(new_root, adopted.new_root);
+  let new_desc = old_to_new
+    .get(&old_desc)
+    .copied()
+    .expect("expected mapping to include adopted descendant");
+
+  assert!(
+    !src
+      .events()
+      .has_event_listeners(EventTargetId::Node(old_root), type_),
+    "event listeners on the adopted subtree root should be removed from the source document"
+  );
+  assert!(
+    !src
+      .events()
+      .has_event_listeners(EventTargetId::Node(old_desc), type_),
+    "event listeners on adopted descendants should be removed from the source document"
+  );
+  assert!(
+    dst
+      .events()
+      .has_event_listeners(EventTargetId::Node(new_root), type_),
+    "event listeners on the adopted subtree root should be transferred to the destination document"
+  );
+  assert!(
+    dst
+      .events()
+      .has_event_listeners(EventTargetId::Node(new_desc), type_),
+    "event listeners on adopted descendants should be transferred to the destination document"
+  );
 }
 
 #[test]

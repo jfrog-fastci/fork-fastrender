@@ -379,6 +379,13 @@ impl Document {
       src.nodes[old.index()].parent = None;
     }
 
+    // `dom2::Document::adopt_node_from` approximates DOM adoption via subtree cloning. Since event
+    // listeners are stored in a per-document registry keyed by `NodeId`, we must explicitly transfer
+    // listeners from the old nodes into their cloned counterparts.
+    src
+      .events
+      .transfer_node_listeners(&self.events, mapping.as_slice());
+
     Ok(AdoptedSubtree { new_root, mapping })
   }
 }
