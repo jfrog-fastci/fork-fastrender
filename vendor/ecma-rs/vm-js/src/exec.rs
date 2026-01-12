@@ -26874,7 +26874,7 @@ fn gen_resume_from_frames(
           gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
           out_frames.append(&mut frames);
           return Ok(GenEval::Suspend(GenSuspend {
-            yield_value: value,
+            yielded: GenYield::IteratorResult(iter_result),
             frames: out_frames,
           }));
         }
@@ -26961,7 +26961,7 @@ fn gen_resume_from_frames(
           gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
           out_frames.append(&mut frames);
           return Ok(GenEval::Suspend(GenSuspend {
-            yield_value: value,
+            yielded: GenYield::IteratorResult(iter_result),
             frames: out_frames,
           }));
         }
