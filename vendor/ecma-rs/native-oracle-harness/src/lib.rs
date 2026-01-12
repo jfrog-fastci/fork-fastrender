@@ -318,6 +318,219 @@ fn native_print(
   Ok(Value::Undefined)
 }
 
+fn take_captured_stdout(vm: &mut Vm) -> String {
+  let Some(capture) = vm.take_user_data::<StdoutCapture>() else {
+    return String::new();
+  };
+  let mut out = capture.buf;
+  if out.ends_with('\n') {
+    out.pop();
+  }
+  out
+}
+
+/// Structured result of executing a snippet under either the oracle VM or a native backend.
+///
+/// This is intended for oracle-vs-native comparisons: it distinguishes between successful
+/// completion, uncaught exceptions, termination (fuel/timeout/OOM/etc), and compilation errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunOutcome {
+  Ok {
+    value: String,
+    stdout: String,
+    stderr: String,
+  },
+  Throw {
+    message: String,
+    stack: Option<String>,
+    stdout: String,
+    stderr: String,
+  },
+  Terminated {
+    message: String,
+    stdout: String,
+    stderr: String,
+  },
+  CompileError {
+    diagnostic: Diagnostic,
+  },
+}
+
+fn attach_stdio(outcome: RunOutcome, stdout: String, stderr: String) -> RunOutcome {
+  match outcome {
+    RunOutcome::Ok { value, .. } => RunOutcome::Ok {
+      value,
+      stdout,
+      stderr,
+    },
+    RunOutcome::Throw {
+      message, stack, ..
+    } => RunOutcome::Throw {
+      message,
+      stack,
+      stdout,
+      stderr,
+    },
+    RunOutcome::Terminated { message, .. } => RunOutcome::Terminated {
+      message,
+      stdout,
+      stderr,
+    },
+    other @ RunOutcome::CompileError { .. } => other,
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RunOutcomeCompareOptions {
+  pub compare_stdout: bool,
+  pub compare_stderr: bool,
+  pub compare_stack: bool,
+}
+
+impl Default for RunOutcomeCompareOptions {
+  fn default() -> Self {
+    Self {
+      // Most current deterministic fixtures only validate a stable value, but keep the comparison
+      // extensible: suites can opt into stdio and stack comparisons when available.
+      compare_stdout: false,
+      compare_stderr: false,
+      compare_stack: false,
+    }
+  }
+}
+
+/// Compare two [`RunOutcome`]s for oracle-vs-native equivalence.
+///
+/// Returns `Ok(())` when the outcomes match under `options`, or an explanatory message when they
+/// differ.
+pub fn compare_run_outcomes(
+  expected: &RunOutcome,
+  actual: &RunOutcome,
+  options: RunOutcomeCompareOptions,
+) -> Result<(), String> {
+  match (expected, actual) {
+    (
+      RunOutcome::Ok {
+        value: ev,
+        stdout: eout,
+        stderr: eerr,
+      },
+      RunOutcome::Ok {
+        value: av,
+        stdout: aout,
+        stderr: aerr,
+      },
+    ) => {
+      if ev != av {
+        return Err(format!("Ok.value mismatch: expected {ev:?}, got {av:?}"));
+      }
+      if options.compare_stdout && eout != aout {
+        return Err(format!(
+          "Ok.stdout mismatch: expected {eout:?}, got {aout:?}"
+        ));
+      }
+      if options.compare_stderr && eerr != aerr {
+        return Err(format!(
+          "Ok.stderr mismatch: expected {eerr:?}, got {aerr:?}"
+        ));
+      }
+      Ok(())
+    }
+    (
+      RunOutcome::Throw {
+        message: em,
+        stack: estack,
+        stdout: eout,
+        stderr: eerr,
+      },
+      RunOutcome::Throw {
+        message: am,
+        stack: astack,
+        stdout: aout,
+        stderr: aerr,
+      },
+    ) => {
+      if em != am {
+        return Err(format!(
+          "Throw.message mismatch: expected {em:?}, got {am:?}"
+        ));
+      }
+      if options.compare_stack && estack != astack {
+        return Err(format!(
+          "Throw.stack mismatch: expected {estack:?}, got {astack:?}"
+        ));
+      }
+      if options.compare_stdout && eout != aout {
+        return Err(format!(
+          "Throw.stdout mismatch: expected {eout:?}, got {aout:?}"
+        ));
+      }
+      if options.compare_stderr && eerr != aerr {
+        return Err(format!(
+          "Throw.stderr mismatch: expected {eerr:?}, got {aerr:?}"
+        ));
+      }
+      Ok(())
+    }
+    (
+      RunOutcome::Terminated {
+        message: em,
+        stdout: eout,
+        stderr: eerr,
+      },
+      RunOutcome::Terminated {
+        message: am,
+        stdout: aout,
+        stderr: aerr,
+      },
+    ) => {
+      if em != am {
+        return Err(format!(
+          "Terminated.message mismatch: expected {em:?}, got {am:?}"
+        ));
+      }
+      if options.compare_stdout && eout != aout {
+        return Err(format!(
+          "Terminated.stdout mismatch: expected {eout:?}, got {aout:?}"
+        ));
+      }
+      if options.compare_stderr && eerr != aerr {
+        return Err(format!(
+          "Terminated.stderr mismatch: expected {eerr:?}, got {aerr:?}"
+        ));
+      }
+      Ok(())
+    }
+    (
+      RunOutcome::CompileError { diagnostic: ed },
+      RunOutcome::CompileError { diagnostic: ad },
+    ) => {
+      // Spans can differ between compilers/backends; compare only the stable diagnostic identity.
+      if ed.code != ad.code || ed.message != ad.message {
+        return Err(format!(
+          "CompileError mismatch: expected {}: {}, got {}: {}",
+          ed.code, ed.message, ad.code, ad.message
+        ));
+      }
+      Ok(())
+    }
+    _ => Err(format!(
+      "outcome variant mismatch: expected {expected:?}, got {actual:?}"
+    )),
+  }
+}
+
+/// Runs `ts` in the `vm-js` oracle and `native`, then compares the two outcomes.
+pub fn compare_native_against_vm_js_oracle(
+  native: &impl NativeRunner2,
+  ts: &str,
+  options: RunOutcomeCompareOptions,
+) -> Result<(), String> {
+  let oracle = run_fixture_ts_outcome(ts);
+  let native = NativeRunner2::compile_and_run(native, ts);
+  compare_run_outcomes(&oracle, &native, options)
+}
+
 /// Execute a fixture file (TypeScript or JavaScript) and return its output string.
 pub fn run_fixture(path: impl AsRef<Path>) -> Result<String, OracleHarnessError> {
   run_fixture_with_options(path, &OracleHarnessOptions::default())
@@ -742,12 +955,52 @@ fn vm_error_to_diagnostic_with_heap(heap: &Heap, err: VmError) -> Diagnostic {
   }
 }
 
+fn vm_error_to_outcome(rt: &mut JsRuntime, err: VmError) -> RunOutcome {
+  let stdout = String::new();
+  let stderr = String::new();
+  match err {
+    VmError::Syntax(diags) => RunOutcome::CompileError {
+      diagnostic: diagnostics_to_one(diags),
+    },
+    VmError::Throw(value) => RunOutcome::Throw {
+      message: stringify_value(rt, value, 0),
+      stack: None,
+      stdout,
+      stderr,
+    },
+    VmError::ThrowWithStack { value, stack } => RunOutcome::Throw {
+      message: stringify_value(rt, value, 0),
+      stack: (!stack.is_empty()).then(|| format_stack_trace(&stack)),
+      stdout,
+      stderr,
+    },
+    VmError::Termination(term) => RunOutcome::Terminated {
+      message: format_termination(&term),
+      stdout,
+      stderr,
+    },
+    other => RunOutcome::Terminated {
+      message: other.to_string(),
+      stdout,
+      stderr,
+    },
+  }
+}
+
 /// Future boundary for a native TS→native backend.
 ///
 /// The oracle harness can run TS through the `vm-js` reference engine today; once `native-js`
 /// exists, it can implement this trait so the same fixtures can be compared against native output.
 pub trait NativeRunner {
   fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic>;
+}
+
+/// Like [`NativeRunner`], but returns a structured [`RunOutcome`] instead of a value-only `String`.
+///
+/// This is intended for robust oracle-vs-native comparisons that need to distinguish between
+/// completion, uncaught exceptions, termination, and compile errors.
+pub trait NativeRunner2 {
+  fn compile_and_run(&self, ts: &str) -> RunOutcome;
 }
 
 /// A runner that uses the `vm-js` interpreter as a JavaScript oracle.
@@ -769,6 +1022,195 @@ impl NativeRunner for VmJsOracleRunner {
   fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic> {
     run_fixture_ts(ts)
   }
+}
+
+impl NativeRunner2 for VmJsOracleRunner {
+  fn compile_and_run(&self, ts: &str) -> RunOutcome {
+    run_fixture_ts_outcome(ts)
+  }
+}
+
+/// Run a TypeScript fixture and return a structured [`RunOutcome`].
+///
+/// This uses the same "global observation protocol" as [`run_fixture_ts`]: it executes the erased
+/// script, performs a microtask checkpoint, then evaluates `String(globalThis.__native_result)`.
+pub fn run_fixture_ts_outcome(source: &str) -> RunOutcome {
+  run_fixture_ts_outcome_with_name("<fixture>", source)
+}
+
+/// Like [`run_fixture_ts_outcome`] but uses a custom source name for VM error reporting.
+pub fn run_fixture_ts_outcome_with_name(name: &str, source: &str) -> RunOutcome {
+  let js = match ts_to_js(source) {
+    Ok(js) => js,
+    Err(diag) => return RunOutcome::CompileError { diagnostic: diag },
+  };
+
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_user_data(StdoutCapture::default());
+  let heap = Heap::new(HeapLimits::new(HEAP_MAX_BYTES, HEAP_GC_THRESHOLD_BYTES));
+  let mut rt = match JsRuntime::new(vm, heap) {
+    Ok(rt) => rt,
+    Err(err) => {
+      return RunOutcome::Terminated {
+        message: format!("failed to init vm-js: {err}"),
+        stdout: String::new(),
+        stderr: String::new(),
+      };
+    }
+  };
+  rt.vm.set_budget(Budget {
+    fuel: Some(VM_FUEL),
+    deadline: None,
+    check_time_every: 100,
+  });
+
+  let outcome = (|| {
+    if let Err(err) = rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    if let Err(err) = rt.exec_script_source(Arc::new(SourceText::new(
+      CONSOLE_PRELUDE_SOURCE_NAME,
+      CONSOLE_PRELUDE_SCRIPT,
+    ))) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    let fixture_source = Arc::new(SourceText::new(name, js));
+    if let Err(err) = rt.exec_script_source(fixture_source) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    let value = match rt.exec_script_source(Arc::new(SourceText::new(
+      OBSERVE_SOURCE_NAME,
+      OBSERVE_SCRIPT,
+    ))) {
+      Ok(v) => v,
+      Err(err) => return vm_error_to_outcome(&mut rt, err),
+    };
+
+    let Value::String(s) = value else {
+      return RunOutcome::Terminated {
+        message: format!("observe script returned non-string value: {value:?}"),
+        stdout: String::new(),
+        stderr: String::new(),
+      };
+    };
+
+    let value = match rt.heap().get_string(s) {
+      Ok(s) => s.to_utf8_lossy(),
+      Err(err) => {
+        return RunOutcome::Terminated {
+          message: format!("invalid string handle: {err}"),
+          stdout: String::new(),
+          stderr: String::new(),
+        }
+      }
+    };
+
+    RunOutcome::Ok {
+      value,
+      stdout: String::new(),
+      stderr: String::new(),
+    }
+  })();
+
+  let stdout = take_captured_stdout(&mut rt.vm);
+  teardown_microtasks(&mut rt);
+  attach_stdio(outcome, stdout, String::new())
+}
+
+/// Like [`run_fixture_ts_outcome_with_name`], but allows customizing the VM options and heap limits.
+///
+/// This is primarily intended for tests that need to trigger deterministic termination conditions
+/// (e.g. out-of-fuel).
+pub fn run_fixture_ts_outcome_with_name_and_options(
+  name: &str,
+  source: &str,
+  options: &OracleHarnessOptions,
+) -> RunOutcome {
+  let js = match ts_to_js(source) {
+    Ok(js) => js,
+    Err(diag) => return RunOutcome::CompileError { diagnostic: diag },
+  };
+
+  let mut vm = Vm::new(options.vm_options.clone());
+  vm.set_user_data(StdoutCapture::default());
+
+  let heap = Heap::new(options.heap_limits);
+  let mut rt = match JsRuntime::new(vm, heap) {
+    Ok(rt) => rt,
+    Err(err) => {
+      return RunOutcome::Terminated {
+        message: format!("failed to init vm-js: {err}"),
+        stdout: String::new(),
+        stderr: String::new(),
+      };
+    }
+  };
+
+  let outcome = (|| {
+    if let Err(err) = rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    if let Err(err) = rt.exec_script_source(Arc::new(SourceText::new(
+      CONSOLE_PRELUDE_SOURCE_NAME,
+      CONSOLE_PRELUDE_SCRIPT,
+    ))) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    let fixture_source = Arc::new(SourceText::new(name, js));
+    if let Err(err) = rt.exec_script_source(fixture_source) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    let value = match rt.exec_script_source(Arc::new(SourceText::new(
+      OBSERVE_SOURCE_NAME,
+      OBSERVE_SCRIPT,
+    ))) {
+      Ok(v) => v,
+      Err(err) => return vm_error_to_outcome(&mut rt, err),
+    };
+
+    let Value::String(s) = value else {
+      return RunOutcome::Terminated {
+        message: format!("observe script returned non-string value: {value:?}"),
+        stdout: String::new(),
+        stderr: String::new(),
+      };
+    };
+
+    let value = match rt.heap().get_string(s) {
+      Ok(s) => s.to_utf8_lossy(),
+      Err(err) => {
+        return RunOutcome::Terminated {
+          message: format!("invalid string handle: {err}"),
+          stdout: String::new(),
+          stderr: String::new(),
+        }
+      }
+    };
+
+    RunOutcome::Ok {
+      value,
+      stdout: String::new(),
+      stderr: String::new(),
+    }
+  })();
+
+  let stdout = take_captured_stdout(&mut rt.vm);
+  teardown_microtasks(&mut rt);
+  attach_stdio(outcome, stdout, String::new())
 }
 
 /// Run a TypeScript fixture and return the deterministic observation string.
