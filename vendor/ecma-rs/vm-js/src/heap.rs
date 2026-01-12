@@ -630,6 +630,81 @@ impl Heap {
       }
     }
 
+    // WeakMap ephemeron processing.
+    //
+    // WeakMap keys are weak (they do not keep their keys alive), but as long as a WeakMap itself is
+    // reachable, each entry behaves like an ephemeron: if the key is reachable, then the value is
+    // reachable.
+    //
+    // This is a fixpoint computation because marking a value can make additional keys reachable,
+    // which can in turn activate additional WeakMap entries.
+    {
+      debug_assert_eq!(self.slots.len(), self.marks.len());
+
+      let slots = &self.slots;
+      let marks = &mut self.marks[..];
+
+      self.gc_worklist.clear();
+      let mut tracer = Tracer::new(slots, marks, &mut self.gc_worklist);
+
+      loop {
+        let mut did_mark = false;
+
+        for (wm_idx, slot) in slots.iter().enumerate() {
+          // Ignore unreachable WeakMaps.
+          if tracer.marks[wm_idx] == 0 {
+            continue;
+          }
+          let Some(HeapObject::WeakMap(wm)) = slot.value.as_ref() else {
+            continue;
+          };
+
+          for entry in wm.entries.iter() {
+            // Ignore stale/out-of-bounds keys and treat unmarked keys as absent.
+            let key_idx = entry.key.index() as usize;
+            let Some(key_slot) = slots.get(key_idx) else {
+              continue;
+            };
+            if key_slot.generation != entry.key.generation() {
+              continue;
+            }
+            if key_slot.value.is_none() {
+              continue;
+            }
+            if tracer.marks[key_idx] == 0 {
+              continue;
+            }
+
+            let before = tracer.worklist.len();
+            tracer.trace_value(entry.value);
+            if tracer.worklist.len() != before {
+              did_mark = true;
+            }
+          }
+        }
+
+        while let Some(id) = tracer.pop_work() {
+          let Some(idx) = tracer.validate(id) else {
+            continue;
+          };
+          if tracer.marks[idx] == 2 {
+            continue;
+          }
+          tracer.marks[idx] = 2;
+
+          let Some(obj) = tracer.slots[idx].value.as_ref() else {
+            debug_assert!(false, "validated heap id points to a free slot: {id:?}");
+            continue;
+          };
+          obj.trace(&mut tracer);
+        }
+
+        if !did_mark {
+          break;
+        }
+      }
+    }
+
     // Sweep.
     for (idx, slot) in self.slots.iter_mut().enumerate() {
       let marked = self.marks[idx] != 0;
@@ -1623,6 +1698,16 @@ impl Heap {
     wm.entries = entries;
 
     Ok(removed)
+  }
+
+  /// Returns the number of entries currently stored in `map`.
+  ///
+  /// Note: this counts *weak* entries and is intended for engine tests/introspection.
+  pub fn weak_map_entry_count(&self, map: GcObject) -> Result<usize, VmError> {
+    match self.get_heap_object(map.0)? {
+      HeapObject::WeakMap(wm) => Ok(wm.entries.len()),
+      _ => Err(VmError::invalid_handle()),
+    }
   }
 
   /// Returns `true` if `key` is present in `set`.
@@ -6684,9 +6769,7 @@ impl JsWeakMap {
 impl Trace for JsWeakMap {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     // WeakMap keys are weak: do not trace `entries`.
-    //
-    // Note: values are intentionally not traced here; ephemeron processing will be added in a
-    // follow-up task.
+    // WeakMap values are traced during GC via ephemeron processing when their keys are live.
     self.base.trace(tracer);
   }
 }
