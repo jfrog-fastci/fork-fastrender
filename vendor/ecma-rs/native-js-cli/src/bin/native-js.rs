@@ -1,6 +1,7 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use diagnostics::{host_error, Diagnostic, FileId, Severity, Span, TextRange};
 use std::ffi::OsString;
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -102,6 +103,9 @@ enum Commands {
   Bench(BenchArgs),
   /// Emit LLVM IR to a file.
   EmitIr(EmitIrArgs),
+  /// Resolve instruction addresses to source locations using DWARF debug info.
+  #[command(name = "addr2line")]
+  Addr2Line(Addr2LineArgs),
 }
 
 #[derive(Args, Debug)]
@@ -171,6 +175,27 @@ struct EmitIrArgs {
   output: PathBuf,
 }
 
+#[derive(Args, Debug)]
+struct Addr2LineArgs {
+  /// Executable or object file containing DWARF debug info.
+  #[arg(value_name = "PATH")]
+  exe: PathBuf,
+
+  /// Instruction addresses to resolve (hex, with or without 0x prefix).
+  #[arg(value_name = "ADDR", required = true, num_args = 1..)]
+  addrs: Vec<String>,
+
+  /// Base load address to subtract from each input address (hex).
+  ///
+  /// Useful when addresses come from a PIE binary in a running process.
+  #[arg(long, value_name = "ADDR")]
+  base: Option<String>,
+
+  /// Demangle function names when possible (Rust symbols).
+  #[arg(long, action = ArgAction::SetTrue)]
+  demangle: bool,
+}
+
 fn main() -> ExitCode {
   let cli = Cli::parse();
 
@@ -236,6 +261,7 @@ fn main() -> ExitCode {
     Commands::Run(args) => cmd_run(&cli, &args.entry, &args.args, &target, render),
     Commands::Bench(args) => cmd_bench(&cli, args, &target, render),
     Commands::EmitIr(args) => cmd_emit_ir(&cli, &args.entry, &args.output, &target, render),
+    Commands::Addr2Line(args) => cmd_addr2line(&cli, args),
   }
 }
 
@@ -784,6 +810,179 @@ fn run_bench_once(exe: &Path, args: &[OsString], timeout: Duration) -> Result<Be
       })
     }
   }
+}
+
+fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
+  use object::{Object, ObjectSection};
+  use std::borrow::Cow;
+  use std::sync::Arc;
+
+  if cli.json {
+    eprintln!("--json is not supported with `addr2line`");
+    return ExitCode::from(2);
+  }
+
+  let base = match args.base.as_deref() {
+    Some(raw) => match parse_hex_u64(raw) {
+      Ok(value) => Some(value),
+      Err(err) => {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+      }
+    },
+    None => None,
+  };
+
+  let data = match fs::read(&args.exe) {
+    Ok(data) => data,
+    Err(err) => {
+      eprintln!("failed to read {}: {err}", args.exe.display());
+      return ExitCode::from(2);
+    }
+  };
+
+  let object = match object::File::parse(&*data) {
+    Ok(obj) => obj,
+    Err(err) => {
+      eprintln!("failed to parse {}: {err}", args.exe.display());
+      return ExitCode::from(2);
+    }
+  };
+
+  let endian = if object.is_little_endian() {
+    gimli::RunTimeEndian::Little
+  } else {
+    gimli::RunTimeEndian::Big
+  };
+
+  let mut load_section = |id: gimli::SectionId| -> Result<gimli::EndianArcSlice<gimli::RunTimeEndian>, gimli::Error> {
+    let data = match object.section_by_name(id.name()) {
+      Some(section) => section.uncompressed_data().unwrap_or(Cow::Borrowed(&[])),
+      None => Cow::Borrowed(&[] as &[u8]),
+    };
+    let data = match data {
+      Cow::Borrowed(b) => Arc::from(b),
+      Cow::Owned(o) => Arc::from(o),
+    };
+    Ok(gimli::EndianArcSlice::new(data, endian))
+  };
+
+  let dwarf = match gimli::Dwarf::load(&mut load_section) {
+    Ok(dwarf) => dwarf,
+    Err(err) => {
+      eprintln!("failed to load DWARF sections from {}: {err}", args.exe.display());
+      return ExitCode::from(2);
+    }
+  };
+
+  let ctx = match addr2line::Context::from_dwarf(dwarf) {
+    Ok(ctx) => ctx,
+    Err(err) => {
+      eprintln!("failed to load addr2line context from {}: {err}", args.exe.display());
+      return ExitCode::from(2);
+    }
+  };
+
+  for raw_addr in &args.addrs {
+    let mut addr = match parse_hex_u64(raw_addr) {
+      Ok(addr) => addr,
+      Err(err) => {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+      }
+    };
+
+    if let Some(base) = base {
+      addr = match addr.checked_sub(base) {
+        Some(v) => v,
+        None => {
+          eprintln!(
+            "address {raw_addr} is below base 0x{base:x} (use a correct --base for PIE/ASLR offsets)"
+          );
+          return ExitCode::from(2);
+        }
+      };
+    }
+
+    let mut file: Option<String> = None;
+    let mut line: Option<u32> = None;
+    let mut col: Option<u32> = None;
+    let mut function: Option<String> = None;
+    let mut have_line = false;
+
+    let mut frames = match ctx.find_frames(addr).skip_all_loads() {
+      Ok(frames) => frames,
+      Err(err) => {
+        eprintln!("failed to resolve 0x{addr:x}: {err}");
+        return ExitCode::from(2);
+      }
+    };
+
+    loop {
+      let frame = match frames.next() {
+        Ok(Some(frame)) => frame,
+        Ok(None) => break,
+        Err(err) => {
+          eprintln!("failed to resolve 0x{addr:x}: {err}");
+          return ExitCode::from(2);
+        }
+      };
+
+      if function.is_none() {
+        if let Some(func) = frame.function {
+          let rendered = if args.demangle {
+            func.demangle().unwrap_or_else(|_| func.raw_name().unwrap_or_default())
+          } else {
+            func.raw_name().unwrap_or_default()
+          };
+          if !rendered.is_empty() {
+            function = Some(rendered.to_string());
+          }
+        }
+      }
+
+      if !have_line {
+        if let Some(loc) = frame.location {
+          if let Some(f) = loc.file {
+            if let Some(l) = loc.line {
+              file = Some(f.to_string());
+              line = Some(l);
+              col = loc.column;
+              have_line = true;
+            } else if file.is_none() {
+              // Some toolchains omit line info for prologues; prefer a concrete
+              // line when available, but fall back to printing the file.
+              file = Some(f.to_string());
+              col = loc.column;
+            }
+          }
+        }
+      }
+    }
+
+    let file = file.unwrap_or_else(|| "??".to_string());
+    let line = line.unwrap_or(0);
+    let mut out = format!("{file}:{line}");
+    if let Some(col) = col {
+      out.push(':');
+      out.push_str(&col.to_string());
+    }
+    if let Some(function) = function {
+      out.push(' ');
+      out.push_str(&function);
+    }
+    println!("{out}");
+  }
+
+  ExitCode::SUCCESS
+}
+
+fn parse_hex_u64(raw: &str) -> Result<u64, String> {
+  let raw = raw.trim();
+  let no_prefix = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")).unwrap_or(raw);
+  let no_underscores = no_prefix.replace('_', "");
+  u64::from_str_radix(&no_underscores, 16)
+    .map_err(|err| format!("invalid hex address `{raw}`: {err}"))
 }
 
 fn collect_check_diagnostics(program: &Program, entry_file: FileId, extra_strict: bool) -> Vec<Diagnostic> {

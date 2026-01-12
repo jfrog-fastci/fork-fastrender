@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use diagnostics::paths::normalize_fs_path;
+use object::{Object, ObjectSymbol};
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
@@ -447,6 +448,71 @@ fn invalid_target_triple_is_rejected_by_cli() {
     .failure()
     .code(2)
     .stderr(predicate::str::contains("invalid --target"));
+}
+
+#[test]
+fn addr2line_resolves_main_symbol_to_typescript_location() {
+  fn tool_available(name: &str) -> bool {
+    StdCommand::new(name)
+      .arg("--version")
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .status()
+      .is_ok_and(|status| status.success())
+  }
+
+  let has_clang = tool_available("clang-18") || tool_available("clang");
+  let has_lld = tool_available("ld.lld-18")
+    || tool_available("ld.lld")
+    || tool_available("ld64.lld")
+    || tool_available("lld");
+  if !has_clang || !has_lld {
+    eprintln!("skipping addr2line test: clang/lld not available");
+    return;
+  }
+
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--debug")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let data = fs::read(&out).unwrap();
+  let obj = object::File::parse(&*data).unwrap();
+  let main_addr = obj
+    .symbols()
+    .chain(obj.dynamic_symbols())
+    .find_map(|sym| {
+      let name = sym.name().ok()?;
+      if name != "main" && name != "_main" {
+        return None;
+      }
+      let addr = sym.address();
+      (addr != 0).then_some(addr)
+    })
+    .expect("expected output to contain a `main` symbol");
+
+  // Use a hex address without 0x to verify parsing.
+  let addr_arg = format!("{main_addr:x}");
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("addr2line")
+    .arg(&out)
+    .arg(addr_arg)
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("entry.ts:1"))
+    .stdout(predicate::str::contains("main"));
 }
 
 #[test]

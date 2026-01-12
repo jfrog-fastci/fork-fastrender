@@ -9,10 +9,13 @@ publish = false
 default-run = "native-js-cli"
 
 [dependencies]
+addr2line = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 diagnostics = { workspace = true, features = ["serde"] }
+gimli = { workspace = true }
 inkwell = { workspace = true }
 native-js = { workspace = true }
+object = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 target-lexicon = { workspace = true }
