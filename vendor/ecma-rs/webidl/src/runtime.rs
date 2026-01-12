@@ -4,38 +4,10 @@
 //! operations. This module defines the minimal operations that the binding layer needs from an
 //! embedded JS engine.
 
-pub use crate::{InterfaceId, WebIdlHooks, WebIdlLimits};
-
-/// The kind of property described by a [`JsOwnPropertyDescriptor`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum JsPropertyKind<V> {
-  Data { value: V },
-  Accessor { get: V, set: V },
-}
-
-/// Subset of ECMAScript property descriptor data returned by `[[GetOwnProperty]]`.
-///
-/// This crate's legacy runtime interface only needs enumerability and the ability to distinguish
-/// data vs accessor descriptors. (The full attribute surface is handled by `vm-js`.)
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct JsOwnPropertyDescriptor<V> {
-  pub enumerable: bool,
-  pub kind: JsPropertyKind<V>,
-}
-
-/// Derive a stable [`InterfaceId`] from an interface name.
-///
-/// This uses the 32-bit FNV-1a hash of the UTF-8 bytes. It is primarily intended for unit tests and
-/// scaffolding runtimes (like `VmJsRuntime`) that store interface names but still want to
-/// participate in InterfaceId-based hooks.
-pub fn interface_id_from_name(name: &str) -> InterfaceId {
-  let mut hash: u32 = 0x811c_9dc5;
-  for &b in name.as_bytes() {
-    hash ^= b as u32;
-    hash = hash.wrapping_mul(0x0100_0193);
-  }
-  InterfaceId(hash)
-}
+pub use crate::{
+  interface_id_from_name, InterfaceId, JsOwnPropertyDescriptor, JsPropertyKind, WebIdlHooks,
+  WebIdlLimits,
+};
 
 /// ECMAScript "IteratorRecord" (ECMA-262).
 ///
