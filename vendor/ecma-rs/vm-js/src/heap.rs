@@ -7871,7 +7871,11 @@ mod detached_array_buffer_tests {
       Ok(_) => panic!("expected error for out-of-bounds Uint8Array view"),
     }
 
+    // Out-of-bounds views behave like empty typed arrays for host byte writes.
+    let before = scope.heap().array_buffer_data(ab)?.to_vec();
     assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
+    let after = scope.heap().array_buffer_data(ab)?.to_vec();
+    assert_eq!(after, before);
 
     Ok(())
   }
