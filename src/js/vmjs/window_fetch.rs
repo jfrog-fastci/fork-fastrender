@@ -6039,6 +6039,27 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             Ok(())
           });
 
+          // If wrapper construction failed, clean up the backing store entry. In this code path
+          // the `CoreResponse` is inserted into env state before the JS wrapper exists, so there is
+          // no `response_wrappers` entry yet; without this cleanup we'd retain the response forever.
+          if call_result.is_err() {
+            let _ = with_env_state_mut(env_id, heap, |state| {
+              if !state.response_wrappers.contains_key(&response_id) {
+                state.responses.remove(&response_id);
+                if let Some(stream_id) = state.response_body_streams.remove(&response_id) {
+                  if let Some(stream_state) = state.readable_streams.remove(&stream_id) {
+                    if let Some(reader_id) = stream_state.current_reader_id {
+                      state.readable_stream_readers.remove(&reader_id);
+                      state.readable_stream_reader_wrappers.remove(&reader_id);
+                    }
+                  }
+                  state.readable_stream_wrappers.remove(&stream_id);
+                }
+              }
+              Ok(())
+            });
+          }
+
           // Remove roots even if resolution fails.
           heap.remove_root(resolve_root);
           heap.remove_root(reject_root);
@@ -11388,6 +11409,135 @@ mod tests {
     drop(scope);
     drop(bindings);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_env_gc_sweeps_wrapper_backing_state() -> Result<(), VmError> {
+    let mut opts = JsExecutionOptions::default();
+    // This test allocates many wrapper objects; allow extra time so it doesn't trip the default
+    // per-run wall-time limit.
+    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
+    let mut host = EventLoopHost::new_with_js_execution_options(opts);
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+    let env_id = bindings.env_id();
+
+    let baseline = with_env_state(env_id, host.window.heap(), |state| {
+      Ok((
+        state.requests.len(),
+        state.responses.len(),
+        state.owned_headers.len(),
+        state.headers_iterators.len(),
+      ))
+    })?;
+
+    // Allocate many temporary wrapper objects so the per-env Rust registries grow.
+    host.window.exec_script(
+      "(function(){\
+          for (let i = 0; i < 250; i++) new Request('https://example.invalid/' + i);\
+          for (let j = 0; j < 250; j++) new Response('hi');\
+          for (let k = 0; k < 250; k++) new Headers({ a: 'b' });\
+          const h = new Headers({ a: 'b' });\
+          for (let l = 0; l < 250; l++) h.entries();\
+        })()",
+    )?;
+
+    let grown = with_env_state(env_id, host.window.heap(), |state| {
+      Ok((
+        state.requests.len(),
+        state.responses.len(),
+        state.owned_headers.len(),
+        state.headers_iterators.len(),
+      ))
+    })?;
+
+    // Force a GC cycle, then trigger the opportunistic sweep path.
+    host.window.heap_mut().collect_garbage();
+    sweep_env_state_if_gc_ran(env_id, host.window.heap())?;
+
+    let swept = with_env_state(env_id, host.window.heap(), |state| {
+      Ok((
+        state.requests.len(),
+        state.responses.len(),
+        state.owned_headers.len(),
+        state.headers_iterators.len(),
+      ))
+    })?;
+    assert!(
+      swept.0 <= baseline.0 + 2,
+      "requests not swept: grown={grown:?} swept={swept:?} baseline={baseline:?}"
+    );
+    assert!(
+      swept.1 <= baseline.1 + 2,
+      "responses not swept: grown={grown:?} swept={swept:?} baseline={baseline:?}"
+    );
+    assert!(
+      swept.2 <= baseline.2 + 2,
+      "owned_headers not swept: grown={grown:?} swept={swept:?} baseline={baseline:?}"
+    );
+    assert!(
+      swept.3 <= baseline.3 + 2,
+      "headers_iterators not swept: grown={grown:?} swept={swept:?} baseline={baseline:?}"
+    );
+
+    drop(bindings);
+    Ok(())
+  }
+
+  #[test]
+  fn headers_wrapper_keeps_response_alive_across_gc_sweep() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+    let env_id = bindings.env_id();
+
+    let baseline_responses = with_env_state(env_id, host.window.heap(), |state| Ok(state.responses.len()))?;
+
+    host.window.exec_script(
+      "(function(){\
+          let r = new Response('hi', { headers: { 'X-Test': '1' } });\
+          globalThis.__h = r.headers;\
+          r = null;\
+        })()",
+    )?;
+
+    host.window.heap_mut().collect_garbage();
+    sweep_env_state_if_gc_ran(env_id, host.window.heap())?;
+
+    // The Headers wrapper should still work after GC even though the owning Response variable was
+    // cleared.
+    let value = host.window.exec_script("globalThis.__h.get('x-test')")?;
+    let Value::String(value_s) = value else {
+      return Err(VmError::InvariantViolation(
+        "Headers.get should return a string for an existing header",
+      ));
+    };
+    assert_eq!(host.window.heap().get_string(value_s)?.to_utf8_lossy(), "1");
+
+    // The response backing state should not have been swept while Headers is alive.
+    let responses_after_gc = with_env_state(env_id, host.window.heap(), |state| Ok(state.responses.len()))?;
+    assert_eq!(responses_after_gc, baseline_responses + 1);
+
+    // Once the Headers wrapper is dropped, the Response should be eligible for sweeping again.
+    host.window.exec_script("globalThis.__h = null")?;
+    host.window.heap_mut().collect_garbage();
+    sweep_env_state_if_gc_ran(env_id, host.window.heap())?;
+
+    let responses_after_drop = with_env_state(env_id, host.window.heap(), |state| Ok(state.responses.len()))?;
+    assert_eq!(responses_after_drop, baseline_responses);
+
+    drop(bindings);
     Ok(())
   }
 
