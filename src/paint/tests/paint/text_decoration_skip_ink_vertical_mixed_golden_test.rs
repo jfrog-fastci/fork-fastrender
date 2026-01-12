@@ -1,0 +1,74 @@
+use crate::testing::{compare_config_from_env, compare_pngs, CompareEnvVars};
+use crate::image_output::{encode_image, OutputFormat};
+use crate::text::font_db::FontConfig;
+use crate::{FastRender, RenderOptions};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const HTML_PATH: &str = "tests/fixtures/html/text_decoration_skip_ink_vertical_mixed.html";
+const GOLDEN_PATH: &str = "tests/fixtures/golden/text_decoration_skip_ink_vertical_mixed.png";
+const DIFF_DIR: &str = "target/text_decoration_skip_ink_vertical_mixed_diffs";
+const VIEWPORT: (u32, u32) = (440, 560);
+
+fn run_with_large_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+  std::thread::Builder::new()
+    .stack_size(8 * 1024 * 1024)
+    .spawn(f)
+    .expect("spawn thread")
+    .join()
+    .expect("join thread")
+}
+
+fn render_fixture() -> Vec<u8> {
+  run_with_large_stack(|| {
+    let html = fs::read_to_string(HTML_PATH).expect("read html fixture");
+    let mut renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("renderer");
+    let options = RenderOptions::new().with_viewport(VIEWPORT.0, VIEWPORT.1);
+    let pixmap = renderer
+      .render_html_with_options(&html, options)
+      .expect("render html");
+    encode_image(&pixmap, OutputFormat::Png).expect("encode png")
+  })
+}
+
+#[test]
+fn text_decoration_skip_ink_vertical_mixed_matches_golden() {
+  let compare_config =
+    compare_config_from_env(CompareEnvVars::fixtures()).expect("compare configuration");
+  let rendered = render_fixture();
+  let golden_path = Path::new(GOLDEN_PATH);
+  let diff_dir = PathBuf::from(DIFF_DIR);
+
+  if std::env::var("UPDATE_GOLDEN").is_ok() {
+    fs::write(golden_path, &rendered).expect("write golden");
+    return;
+  }
+
+  let golden = fs::read(golden_path).unwrap_or_else(|e| {
+    panic!(
+      "Missing golden {} ({}): {}",
+      golden_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy(),
+      golden_path.display(),
+      e
+    )
+  });
+
+  compare_pngs(
+    golden_path
+      .file_name()
+      .unwrap_or_default()
+      .to_string_lossy()
+      .as_ref(),
+    &rendered,
+    &golden,
+    &compare_config,
+    &diff_dir,
+  )
+  .unwrap_or_else(|e| panic!("{}", e));
+}

@@ -42,5 +42,5 @@ FastRender follows the behavior of our in-repo reference engine (resvg) for omit
 - When `in2` is **missing** (or `in2=""`), it also defaults to the **previous filter primitive
   result** (not `SourceGraphic`).
 
-Regression coverage lives in the `svg_filter_resvg_*` integration tests (resvg parity checks for
-omitted `in` / `in2`).
+Regression coverage lives in the `svg_filter_resvg_*` unit tests in
+`src/paint/tests/paint/svg_filter_resvg_compare.rs` (resvg parity checks for omitted `in` / `in2`).

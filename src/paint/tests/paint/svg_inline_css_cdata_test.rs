@@ -1,0 +1,100 @@
+use crate::css::parser::extract_css;
+use crate::dom;
+use crate::image_loader::ImageCache;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::media::MediaContext;
+use crate::tree::box_generation::generate_box_tree;
+use crate::tree::box_tree::{BoxNode, BoxType, ReplacedType, SvgContent};
+use roxmltree::Document;
+
+fn serialized_inline_svg(html: &str, width: f32, height: f32) -> Option<SvgContent> {
+  let dom = dom::parse_html(html).ok()?;
+  let stylesheet = extract_css(&dom).ok()?;
+  let media = MediaContext::screen(width, height);
+  let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+  let box_tree = generate_box_tree(&styled).ok()?;
+
+  fn find_svg(node: &BoxNode) -> Option<SvgContent> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Svg { content } = &repl.replaced_type {
+        return Some(content.clone());
+      }
+    }
+    for child in node.children.iter() {
+      if let Some(content) = find_svg(child) {
+        return Some(content);
+      }
+    }
+    None
+  }
+
+  find_svg(&box_tree.root)
+}
+
+#[test]
+fn inline_svg_wraps_document_css_in_cdata() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let html = r#"
+      <style>
+        svg .shape {
+          background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><rect width='1' height='1'/></svg>?a&b]]>");
+        }
+      </style>
+      <svg width="10" height="10" viewBox="0 0 10 10">
+        <rect class="shape" width="10" height="10" />
+      </svg>
+      "#;
+
+      let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+      let injection = serialized
+        .document_css_injection
+        .as_ref()
+        .expect("document CSS injection should be captured");
+      assert!(
+        injection.style_element.contains("<![CDATA["),
+        "embedded document CSS should be wrapped in CDATA"
+      );
+      assert!(
+        injection.style_element.contains("]]]]><![CDATA[>"),
+        "]]> terminators inside CSS should be split across CDATA sections"
+      );
+
+      let mut svg_with_css = String::with_capacity(
+        serialized.svg.len() + injection.style_element.len(),
+      );
+      svg_with_css.push_str(&serialized.svg[..injection.insert_pos]);
+      svg_with_css.push_str(injection.style_element.as_ref());
+      svg_with_css.push_str(&serialized.svg[injection.insert_pos..]);
+
+      Document::parse(&serialized.svg).expect("serialized svg should be parseable XML");
+      let doc = Document::parse(&svg_with_css).expect("parse serialized svg with injected CSS");
+      let style_text = doc
+        .descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "style")
+        .map(|n| {
+          n.descendants()
+            .filter(|t| t.is_text())
+            .filter_map(|t| t.text())
+            .collect::<String>()
+        })
+        .expect("style element text");
+      assert!(
+        style_text.contains("background-image"),
+        "style text should be preserved after CDATA wrapping"
+      );
+      assert!(
+        style_text.contains("]]>"),
+        "original CSS content containing CDATA terminators should round-trip"
+      );
+
+      let cache = ImageCache::new();
+      cache
+        .render_svg(&svg_with_css)
+        .expect("render serialized svg with CDATA-wrapped CSS");
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}

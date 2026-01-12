@@ -114,7 +114,8 @@ When adding or tightening conformance:
 2. **Add tests**:
    - Prefer unit tests in `src/` (module `#[cfg(test)]` blocks) for internal behavior.
    - Use integration tests under `tests/` (modules included by `tests/integration.rs`) for public API, fixtures, and WPT coverage (roots: [tests/common/mod.rs](../tests/common/mod.rs), [tests/api/mod.rs](../tests/api/mod.rs), [tests/fixtures/mod.rs](../tests/fixtures/mod.rs), [tests/wpt/mod.rs](../tests/wpt/mod.rs)).
-   - Use `tests/allocation_failure.rs` only when a custom global allocator is required.
+   - Paint/backdrop rendering regressions live under `src/paint/tests/`.
+   - Use `tests/allocation_failure_tests.rs` only when a custom global allocator is required.
    - Keep the Implementation/Tests links above accurate so doc presence tests stay green.
 3. **Link rationale**: If design choices reference research or internal notes, add links in the section above (or create a new short note under `docs/notes/`).
 4. **Keep status accurate**: Mark entries as ⚠️ when behavior is partial but spec-correct for the implemented subset; use 🚫 for intentional gaps.

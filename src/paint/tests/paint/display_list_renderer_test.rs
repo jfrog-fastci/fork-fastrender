@@ -1,0 +1,4288 @@
+use super::util::bounding_box_for_color;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use crate::css::types::BoxShadow;
+use crate::css::types::ColorStop;
+use crate::css::types::Transform as CssTransform;
+use crate::geometry::Point;
+use crate::geometry::Rect;
+use crate::image_compare::{compare_images as compare_rgba_images, decode_png, CompareConfig};
+use crate::image_loader::ImageCache;
+use crate::paint::display_list::BlendMode;
+use crate::paint::display_list::BorderRadii;
+use crate::paint::display_list::ClipItem;
+use crate::paint::display_list::ClipShape;
+use crate::paint::display_list::DecorationPaint;
+use crate::paint::display_list::DecorationStroke;
+use crate::paint::display_list::DisplayItem;
+use crate::paint::display_list::DisplayList;
+use crate::paint::display_list::FillRectItem;
+use crate::paint::display_list::GlyphInstance;
+use crate::paint::display_list::GradientSpread;
+use crate::paint::display_list::GradientStop;
+use crate::paint::display_list::ImageData;
+use crate::paint::display_list::ImageFilterQuality;
+use crate::paint::display_list::ImageItem;
+use crate::paint::display_list::LinearGradientItem;
+use crate::paint::display_list::MaskReferenceRects;
+use crate::paint::display_list::OutlineItem;
+use crate::paint::display_list::ResolvedFilter;
+use crate::paint::display_list::ResolvedMask;
+use crate::paint::display_list::ResolvedMaskImage;
+use crate::paint::display_list::ResolvedMaskLayer;
+use crate::paint::display_list::StackingContextItem;
+use crate::paint::display_list::TextDecorationItem;
+use crate::paint::display_list::TextItem;
+use crate::paint::display_list::TextShadowItem;
+use crate::paint::display_list::Transform3D;
+use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
+use crate::paint::painter::scale_pixmap_for_dpr;
+use crate::style::color::Color;
+use crate::style::types::BackfaceVisibility;
+use crate::style::types::BackgroundImage;
+use crate::style::types::BackgroundImageUrl;
+use crate::style::types::BackgroundLayer;
+use crate::style::types::BackgroundPosition;
+use crate::style::types::BackgroundPositionComponent;
+use crate::style::types::BackgroundRepeat;
+use crate::style::types::BackgroundRepeatKeyword;
+use crate::style::types::BackgroundSize;
+use crate::style::types::BackgroundSizeComponent;
+use crate::style::types::BasicShape;
+use crate::style::types::BorderImage;
+use crate::style::types::BorderImageSlice;
+use crate::style::types::BorderImageSliceValue;
+use crate::style::types::BorderImageSource;
+use crate::style::types::BorderStyle;
+use crate::style::types::BoxDecorationBreak;
+use crate::style::types::ClipPath;
+use crate::style::types::FillRule as StyleFillRule;
+use crate::style::types::ImageRendering;
+use crate::style::types::MaskClip;
+use crate::style::types::MaskComposite;
+use crate::style::types::MaskMode;
+use crate::style::types::MaskOrigin;
+use crate::style::types::MixBlendMode;
+use crate::style::types::Overflow;
+use crate::style::types::ShapeRadius;
+use crate::style::types::TextDecorationStyle;
+use crate::style::types::TransformStyle;
+use crate::style::values::Length;
+use crate::text::font_db::FontConfig;
+use crate::text::font_db::FontStretch;
+use crate::text::font_db::FontStyle as DbFontStyle;
+use crate::text::font_loader::FontContext;
+use crate::tree::fragment_tree::FragmentNode;
+use crate::tree::fragment_tree::FragmentSliceInfo;
+use crate::ComputedStyle;
+use crate::Rgba;
+use image::codecs::png::PngEncoder;
+use image::ExtendedColorType;
+use image::ImageEncoder;
+use image::RgbaImage;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use tiny_skia::FillRule as SkFillRule;
+use tiny_skia::Pixmap;
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+  let r = r as f32 / 255.0;
+  let g = g as f32 / 255.0;
+  let b = b as f32 / 255.0;
+  let max = r.max(g).max(b);
+  let min = r.min(g).min(b);
+  let l = (max + min) / 2.0;
+
+  if (max - min).abs() < f32::EPSILON {
+    return (0.0, 0.0, l);
+  }
+
+  let d = max - min;
+  let s = if l > 0.5 {
+    d / (2.0 - max - min)
+  } else {
+    d / (max + min)
+  };
+  let h = if (max - r).abs() < f32::EPSILON {
+    (g - b) / d + if g < b { 6.0 } else { 0.0 }
+  } else if (max - g).abs() < f32::EPSILON {
+    (b - r) / d + 2.0
+  } else {
+    (r - g) / d + 4.0
+  } / 6.0;
+
+  (h, s, l)
+}
+
+fn hue_to_rgb(p: f32, q: f32, t: f32) -> f32 {
+  let mut t = t;
+  if t < 0.0 {
+    t += 1.0;
+  }
+  if t > 1.0 {
+    t -= 1.0;
+  }
+  if t < 1.0 / 6.0 {
+    return p + (q - p) * 6.0 * t;
+  }
+  if t < 1.0 / 2.0 {
+    return q;
+  }
+  if t < 2.0 / 3.0 {
+    return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+  }
+  p
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+  if s <= 0.0 {
+    let v = (l * 255.0).round().clamp(0.0, 255.0) as u8;
+    return (v, v, v);
+  }
+
+  let q = if l < 0.5 {
+    l * (1.0 + s)
+  } else {
+    l + s - l * s
+  };
+  let p = 2.0 * l - q;
+  let r = hue_to_rgb(p, q, h + 1.0 / 3.0);
+  let g = hue_to_rgb(p, q, h);
+  let b = hue_to_rgb(p, q, h - 1.0 / 3.0);
+  (
+    (r * 255.0).round().clamp(0.0, 255.0) as u8,
+    (g * 255.0).round().clamp(0.0, 255.0) as u8,
+    (b * 255.0).round().clamp(0.0, 255.0) as u8,
+  )
+}
+
+fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+  let r = r as f32 / 255.0;
+  let g = g as f32 / 255.0;
+  let b = b as f32 / 255.0;
+  let max = r.max(g).max(b);
+  let min = r.min(g).min(b);
+  let v = max;
+  let d = max - min;
+  if d.abs() < f32::EPSILON {
+    return (0.0, 0.0, v);
+  }
+  let s = if max > 0.0 { d / max } else { 0.0 };
+  let h = if (max - r).abs() < f32::EPSILON {
+    (g - b) / d + if g < b { 6.0 } else { 0.0 }
+  } else if (max - g).abs() < f32::EPSILON {
+    (b - r) / d + 2.0
+  } else {
+    (r - g) / d + 4.0
+  } / 6.0;
+  (h, s, v)
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+  if s <= 0.0 {
+    let v_u8 = (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    return (v_u8, v_u8, v_u8);
+  }
+  let hh = (h * 6.0) % 6.0;
+  let i = hh.floor();
+  let f = hh - i;
+  let p = v * (1.0 - s);
+  let q = v * (1.0 - s * f);
+  let t = v * (1.0 - s * (1.0 - f));
+  let (r, g, b) = match i as i32 {
+    0 => (v, t, p),
+    1 => (q, v, p),
+    2 => (p, v, t),
+    3 => (p, q, v),
+    4 => (t, p, v),
+    _ => (v, p, q),
+  };
+  (
+    (r * 255.0).round().clamp(0.0, 255.0) as u8,
+    (g * 255.0).round().clamp(0.0, 255.0) as u8,
+    (b * 255.0).round().clamp(0.0, 255.0) as u8,
+  )
+}
+
+fn srgb_to_linear(v: f32) -> f32 {
+  if v <= 0.04045 {
+    v / 12.92
+  } else {
+    ((v + 0.055) / 1.055).powf(2.4)
+  }
+}
+
+fn linear_to_srgb(v: f32) -> f32 {
+  if v <= 0.0031308 {
+    v * 12.92
+  } else {
+    1.055 * v.powf(1.0 / 2.4) - 0.055
+  }
+}
+
+fn rgb_to_oklch(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+  let r = srgb_to_linear(r as f32 / 255.0);
+  let g = srgb_to_linear(g as f32 / 255.0);
+  let b = srgb_to_linear(b as f32 / 255.0);
+  let l = 0.412_221_46 * r + 0.536_332_54 * g + 0.051_445_996 * b;
+  let m = 0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b;
+  let s = 0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b;
+
+  let l_ = l.cbrt();
+  let m_ = m.cbrt();
+  let s_ = s.cbrt();
+
+  let l_ok = 0.210_454_26 * l_ + 0.793_617_8 * m_ - 0.004_072_047 * s_;
+  let a_ok = 1.977_998_5 * l_ - 2.428_592_2 * m_ + 0.450_593_7 * s_;
+  let b_ok = 0.025_904_037 * l_ + 0.782_771_77 * m_ - 0.808_675_77 * s_;
+  let c = (a_ok * a_ok + b_ok * b_ok).sqrt();
+  let h = b_ok.atan2(a_ok).to_degrees().rem_euclid(360.0);
+  (l_ok, c, h)
+}
+
+fn oklch_to_rgb(l: f32, c: f32, h: f32) -> (u8, u8, u8) {
+  let hr = h.to_radians();
+  let a = c * hr.cos();
+  let b = c * hr.sin();
+  let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
+  let m_ = l - 0.105_561_35 * a - 0.063_854_17 * b;
+  let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
+
+  let l3 = l_.powf(3.0);
+  let m3 = m_.powf(3.0);
+  let s3 = s_.powf(3.0);
+
+  let r = 4.076_741_7 * l3 - 3.307_711_6 * m3 + 0.230_969_94 * s3;
+  let g = -1.268_438_ * l3 + 2.609_757_4 * m3 - 0.341_319_38 * s3;
+  let b = 0.004_421_97 * l3 - 0.703_418_6 * m3 + 1.698_594_8 * s3;
+
+  (
+    (linear_to_srgb(r).clamp(0.0, 1.0) * 255.0)
+      .round()
+      .clamp(0.0, 255.0) as u8,
+    (linear_to_srgb(g).clamp(0.0, 1.0) * 255.0)
+      .round()
+      .clamp(0.0, 255.0) as u8,
+    (linear_to_srgb(b).clamp(0.0, 1.0) * 255.0)
+      .round()
+      .clamp(0.0, 255.0) as u8,
+  )
+}
+
+fn blend_hue(src: (u8, u8, u8), dst: (u8, u8, u8)) -> (u8, u8, u8) {
+  let (sh, _, _) = rgb_to_hsl(src.0, src.1, src.2);
+  let (_, ds, dl) = rgb_to_hsl(dst.0, dst.1, dst.2);
+  hsl_to_rgb(sh, ds, dl)
+}
+
+fn blend_saturation(src: (u8, u8, u8), dst: (u8, u8, u8)) -> (u8, u8, u8) {
+  let (_, ss, _) = rgb_to_hsl(src.0, src.1, src.2);
+  let (dh, _, dl) = rgb_to_hsl(dst.0, dst.1, dst.2);
+  hsl_to_rgb(dh, ss, dl)
+}
+
+fn blend_color(src: (u8, u8, u8), dst: (u8, u8, u8)) -> (u8, u8, u8) {
+  let (sh, ss, _) = rgb_to_hsl(src.0, src.1, src.2);
+  let (_, _, dl) = rgb_to_hsl(dst.0, dst.1, dst.2);
+  hsl_to_rgb(sh, ss, dl)
+}
+
+fn blend_luminosity(src: (u8, u8, u8), dst: (u8, u8, u8)) -> (u8, u8, u8) {
+  let (_, _, sl) = rgb_to_hsl(src.0, src.1, src.2);
+  let (dh, ds, _) = rgb_to_hsl(dst.0, dst.1, dst.2);
+  hsl_to_rgb(dh, ds, sl)
+}
+
+fn blend_hue_hsv(src: (u8, u8, u8), dst: (u8, u8, u8)) -> (u8, u8, u8) {
+  let (sh, _, _) = rgb_to_hsv(src.0, src.1, src.2);
+  let (_, ds, dv) = rgb_to_hsv(dst.0, dst.1, dst.2);
+  hsv_to_rgb(sh, ds, dv)
+}
+
+fn blend_color_oklch(src: (u8, u8, u8), dst: (u8, u8, u8)) -> (u8, u8, u8) {
+  let (_sl, sc, sh) = rgb_to_oklch(src.0, src.1, src.2);
+  let (dl, _, _) = rgb_to_oklch(dst.0, dst.1, dst.2);
+  // Hue and chroma from source, lightness from destination.
+  oklch_to_rgb(dl, sc, sh)
+}
+
+fn hue_delta(a: f32, b: f32) -> f32 {
+  let d = (a - b).abs();
+  d.min(1.0 - d)
+}
+
+fn assert_hsl_components(
+  actual: (u8, u8, u8),
+  expected_hsl: (f32, f32, f32),
+  tol_h: f32,
+  tol_s: f32,
+  tol_l: f32,
+  context: &str,
+) {
+  let (h, s, l) = rgb_to_hsl(actual.0, actual.1, actual.2);
+  assert!(
+    hue_delta(h, expected_hsl.0) <= tol_h
+      && (s - expected_hsl.1).abs() <= tol_s
+      && (l - expected_hsl.2).abs() <= tol_l,
+    "{context}: expected hsl {:?}, got hsl ({h:.3},{s:.3},{l:.3})",
+    expected_hsl
+  );
+}
+
+fn assert_oklch_components(
+  actual: (u8, u8, u8),
+  expected: (f32, f32, f32),
+  tol_l: f32,
+  tol_c: f32,
+  tol_h: f32,
+  context: &str,
+) {
+  let (al, ac, ah) = rgb_to_oklch(actual.0, actual.1, actual.2);
+  assert!(
+    (al - expected.0).abs() <= tol_l
+      && (ac - expected.1).abs() <= tol_c
+      && hue_delta(ah / 360.0, expected.2 / 360.0) * 360.0 <= tol_h,
+    "{context}: expected oklch {:?}, got oklch ({al:.3},{ac:.3},{ah:.3})",
+    expected
+  );
+}
+
+fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
+  let px = pixmap.pixel(x, y).unwrap();
+  (px.red(), px.green(), px.blue(), px.alpha())
+}
+
+fn downsample_half(pixmap: Pixmap) -> Pixmap {
+  scale_pixmap_for_dpr(pixmap, 0.5).expect("downsample pixmap")
+}
+
+fn mean_abs_diff(a: &Pixmap, b: &Pixmap) -> f32 {
+  assert_eq!(a.width(), b.width());
+  assert_eq!(a.height(), b.height());
+
+  let mut total: u64 = 0;
+  let mut count: u64 = 0;
+  for (pa, pb) in a.data().chunks_exact(4).zip(b.data().chunks_exact(4)) {
+    for i in 0..4 {
+      total += pa[i].abs_diff(pb[i]) as u64;
+      count += 1;
+    }
+  }
+  total as f32 / count as f32
+}
+
+fn project_point_2d(transform: &Transform3D, point: (f32, f32)) -> Option<(f32, f32)> {
+  let (tx, ty, _tz, tw) = transform.transform_point(point.0, point.1, 0.0);
+  if tw.abs() < 1e-3 {
+    None
+  } else {
+    Some((tx / tw, ty / tw))
+  }
+}
+
+fn project_quad(transform: &Transform3D, rect: Rect) -> Option<[(f32, f32); 4]> {
+  Some([
+    project_point_2d(transform, (rect.min_x(), rect.min_y()))?,
+    project_point_2d(transform, (rect.max_x(), rect.min_y()))?,
+    project_point_2d(transform, (rect.max_x(), rect.max_y()))?,
+    project_point_2d(transform, (rect.min_x(), rect.max_y()))?,
+  ])
+}
+
+fn quad_orientation(quad: &[(f32, f32); 4]) -> f32 {
+  let mut area = 0.0;
+  for i in 0..4 {
+    let (x1, y1) = quad[i];
+    let (x2, y2) = quad[(i + 1) % 4];
+    area += x1 * y2 - x2 * y1;
+  }
+  area * 0.5
+}
+
+fn quad_bounds(quad: &[(f32, f32); 4]) -> (f32, f32, f32, f32) {
+  let mut min_x = f32::INFINITY;
+  let mut min_y = f32::INFINITY;
+  let mut max_x = f32::NEG_INFINITY;
+  let mut max_y = f32::NEG_INFINITY;
+  for (x, y) in quad {
+    min_x = min_x.min(*x);
+    min_y = min_y.min(*y);
+    max_x = max_x.max(*x);
+    max_y = max_y.max(*y);
+  }
+  (min_x, min_y, max_x, max_y)
+}
+
+fn edge_outside_points(quad: &[(f32, f32); 4], margin: f32) -> Vec<(f32, f32)> {
+  let orientation = quad_orientation(quad);
+  let mut out = Vec::with_capacity(4);
+  for i in 0..4 {
+    let (x1, y1) = quad[i];
+    let (x2, y2) = quad[(i + 1) % 4];
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 1e-3 {
+      continue;
+    }
+    let (nx, ny) = if orientation >= 0.0 {
+      (dy / len, -dx / len)
+    } else {
+      (-dy / len, dx / len)
+    };
+    out.push(((x1 + x2) * 0.5 + nx * margin, (y1 + y2) * 0.5 + ny * margin));
+  }
+  out
+}
+
+fn sample_pixel_at(pixmap: &tiny_skia::Pixmap, point: (f32, f32)) -> Option<(u8, u8, u8, u8)> {
+  if !point.0.is_finite() || !point.1.is_finite() {
+    return None;
+  }
+  let x = point.0.round() as i32;
+  let y = point.1.round() as i32;
+  if x < 0 || y < 0 || x >= pixmap.width() as i32 || y >= pixmap.height() as i32 {
+    return None;
+  }
+  Some(pixel(pixmap, x as u32, y as u32))
+}
+
+#[test]
+fn mix_blend_mode_multiplies_backdrop_when_not_isolated() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    mix_blend_mode: BlendMode::Multiply,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let center = pixel(&pixmap, 5, 5);
+  assert!(
+    center.0 < 10 && center.1 < 10 && center.2 < 10,
+    "multiply should darken the red backdrop, got {center:?}"
+  );
+}
+
+#[test]
+fn isolation_does_not_disable_mix_blend_mode_backdrop() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    mix_blend_mode: BlendMode::Multiply,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let center = pixel(&pixmap, 5, 5);
+  assert!(
+    center.0 < 10 && center.1 < 10 && center.2 < 10,
+    "multiply should still darken the backdrop for isolated contexts, got {center:?}"
+  );
+}
+
+#[test]
+fn backdrop_filter_does_not_disable_mix_blend_mode() {
+  let mut list = DisplayList::new();
+  // Backdrop starts red.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    color: Rgba::RED,
+  }));
+
+  // Apply blur to ensure backdrop filters are present but shouldn't affect blending mode choice.
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    mix_blend_mode: BlendMode::Multiply,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Blur(0.1)],
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Backdrop filters still composite the element into the backdrop, so mix-blend-mode applies.
+  let px = pixel(&pixmap, 1, 1);
+  assert!(
+    px.0 < 10 && px.1 < 10 && px.2 < 10,
+    "multiply should still darken the backdrop when backdrop-filter is present, got {px:?}"
+  );
+}
+
+#[test]
+fn matrix3d_transforms_translate_content() {
+  let renderer = DisplayListRenderer::new(20, 20, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: Some(Transform3D {
+      m: [
+        1.0, 0.0, 0.0, 0.0, // column 1
+        0.0, 1.0, 0.0, 0.0, // column 2
+        0.0, 0.0, 1.0, 0.0, // column 3
+        5.0, 7.0, 0.0, 1.0, // column 4 (translation)
+      ],
+    }),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    color: Rgba::BLACK,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  assert_eq!(pixel(&pixmap, 5, 7), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
+}
+
+#[test]
+fn perspective_depth_changes_projection_size() {
+  let renderer = DisplayListRenderer::new(40, 40, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  let perspective =
+    Transform3D::perspective(500.0).multiply(&Transform3D::translate(0.0, 0.0, 200.0));
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: Some(perspective),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let Some((min_x, min_y, max_x, max_y)) =
+    bounding_box_for_color(&pixmap, |(r, g, b, a)| a > 0 && r > g && r > b)
+  else {
+    panic!("expected painted content");
+  };
+  let width = max_x - min_x + 1;
+  let height = max_y - min_y + 1;
+  assert!(
+    width >= 15 && height >= 15,
+    "perspective should expand projected size, got {width}x{height} from bbox ({min_x},{min_y})-({max_x},{max_y})"
+  );
+}
+
+#[test]
+fn perspective_blur_preserves_outsets() {
+  let mut list = DisplayList::new();
+  let transform =
+    Transform3D::perspective(400.0).multiply(&Transform3D::translate(0.0, 0.0, 150.0));
+  let rect = Rect::from_xywh(20.0, 20.0, 20.0, 20.0);
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: rect,
+    plane_rect: rect,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Blur(10.0)],
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect,
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = DisplayListRenderer::new(80, 80, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  let Some((min_x, min_y, max_x, max_y)) =
+    bounding_box_for_color(&pixmap, |(r, g, b, a)| a > 0 && r > g && r > b)
+  else {
+    panic!("expected red pixels after blur+perspective");
+  };
+  let width = max_x - min_x + 1;
+  let height = max_y - min_y + 1;
+  assert!(
+    width > 20 && height > 20,
+    "blurred content should extend beyond original bounds: width={width} height={height} bbox=({min_x},{min_y})-({max_x},{max_y})"
+  );
+  assert_ne!(pixel(&pixmap, 15, 15), (255, 255, 255, 255));
+}
+
+#[test]
+fn perspective_rotation_blur_preserves_outsets() {
+  let transform =
+    Transform3D::perspective(500.0).multiply(&Transform3D::rotate_y(std::f32::consts::FRAC_PI_4));
+  let rect = Rect::from_xywh(10.0, 10.0, 20.0, 20.0);
+  let red_predicate = |(r, g, b, a)| a > 0 && r > g && r > b;
+
+  let render = |filters: Vec<ResolvedFilter>| {
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      is_root: false,
+      establishes_backdrop_root: !filters.is_empty(),
+      has_backdrop_sensitive_descendants: false,
+      bounds: rect,
+      plane_rect: rect,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: Some(transform),
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters,
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      mask_border: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect,
+      color: Rgba::RED,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    DisplayListRenderer::new(80, 80, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap()
+  };
+
+  let baseline = render(Vec::new());
+  let blurred = render(vec![ResolvedFilter::Blur(8.0)]);
+
+  let baseline_bbox = bounding_box_for_color(&baseline, red_predicate).expect("baseline red bbox");
+  let blurred_bbox = bounding_box_for_color(&blurred, red_predicate).expect("blurred red bbox");
+
+  assert!(
+    blurred_bbox.0 <= baseline_bbox.0
+      && blurred_bbox.1 <= baseline_bbox.1
+      && blurred_bbox.2 >= baseline_bbox.2
+      && blurred_bbox.3 >= baseline_bbox.3,
+    "blurred bounds should enclose baseline bounds: baseline={baseline_bbox:?} blurred={blurred_bbox:?}"
+  );
+
+  let mut found_outset = false;
+  for y in 0..blurred.height() {
+    for x in 0..blurred.width() {
+      if x >= baseline_bbox.0
+        && x <= baseline_bbox.2
+        && y >= baseline_bbox.1
+        && y <= baseline_bbox.3
+      {
+        continue;
+      }
+      let rgba = pixel(&blurred, x, y);
+      if red_predicate(rgba) {
+        found_outset = true;
+        break;
+      }
+    }
+    if found_outset {
+      break;
+    }
+  }
+  assert!(
+    found_outset,
+    "expected some blurred pixels outside baseline bbox"
+  );
+}
+
+#[test]
+fn many_perspective_layers_use_cropped_surfaces() {
+  let renderer = DisplayListRenderer::new(4000, 4000, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+
+  for i in 0..50 {
+    let x = (i % 10) as f32 * 50.0 + 5.0;
+    let y = (i / 10) as f32 * 50.0 + 5.0;
+    let transform =
+      Transform3D::perspective(500.0).multiply(&Transform3D::translate(x, y, 80.0 + i as f32));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      is_root: false,
+      establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
+      bounds: Rect::from_xywh(x, y, 10.0, 10.0),
+      plane_rect: Rect::from_xywh(x, y, 10.0, 10.0),
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: Some(transform),
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      mask_border: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(x, y, 10.0, 10.0),
+      color: Rgba::BLACK,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+  }
+
+  let pixmap = renderer.render(&list).expect("render");
+  let painted = bounding_box_for_color(&pixmap, |(_, _, _, a)| a > 0);
+  assert!(painted.is_some(), "expected rendered content");
+}
+
+#[test]
+fn perspective_respects_border_radius_clip() {
+  let renderer = DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new()).unwrap();
+  let bounds = Rect::from_xywh(30.0, 30.0, 40.0, 40.0);
+  let center = bounds.center();
+  let transform = Transform3D::perspective(500.0)
+    .multiply(&Transform3D::translate(0.0, 0.0, 120.0))
+    .multiply(&Transform3D::translate(center.x, center.y, 0.0))
+    .multiply(&Transform3D::rotate_y(std::f32::consts::FRAC_PI_4))
+    .multiply(&Transform3D::translate(-center.x, -center.y, 0.0));
+  let quad = project_quad(&transform, bounds).expect("projected quad");
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::uniform(12.0),
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+
+  let Some((min_x, min_y, max_x, max_y)) =
+    bounding_box_for_color(&pixmap, |(r, g, b, a)| a > 0 && r > g && r > b)
+  else {
+    panic!("expected projected content");
+  };
+
+  let center_proj = project_point_2d(&transform, (center.x, center.y)).expect("center projected");
+  let center_sample = sample_pixel_at(&pixmap, center_proj).expect("center sample");
+  assert!(
+    center_sample.0 > center_sample.1 && center_sample.0 > center_sample.2 && center_sample.3 > 0,
+    "center should stay filled after projection, got {center_sample:?}"
+  );
+
+  for pt in edge_outside_points(&quad, 3.0) {
+    if let Some(sample) = sample_pixel_at(&pixmap, pt) {
+      assert_eq!(
+        sample,
+        (255, 255, 255, 255),
+        "pixels outside warped outline should remain background at {pt:?}"
+      );
+    }
+  }
+
+  let width = max_x - min_x + 1;
+  let height = max_y - min_y + 1;
+  assert!(
+    width < pixmap.width() && height < pixmap.height(),
+    "projected area should be contained, got bbox {min_x},{min_y} to {max_x},{max_y}"
+  );
+}
+
+#[test]
+fn perspective_blur_preserves_outsets_with_border_radius() {
+  let renderer = DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new()).unwrap();
+  let bounds = Rect::from_xywh(30.0, 30.0, 40.0, 40.0);
+  let center = bounds.center();
+  let blur_radius = 6.0;
+  let blur_outset = blur_radius * 3.0;
+  let transform = Transform3D::perspective(500.0)
+    .multiply(&Transform3D::translate(0.0, 0.0, 120.0))
+    .multiply(&Transform3D::translate(center.x, center.y, 0.0))
+    .multiply(&Transform3D::rotate_y(std::f32::consts::FRAC_PI_4))
+    .multiply(&Transform3D::translate(-center.x, -center.y, 0.0));
+  let quad = project_quad(&transform, bounds).expect("projected quad");
+  let expanded_bounds = bounds.inflate(blur_outset);
+  let expanded_quad = project_quad(&transform, expanded_bounds).expect("projected expanded quad");
+  let (quad_min_x, quad_min_y, quad_max_x, quad_max_y) = quad_bounds(&expanded_quad);
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Blur(blur_radius)],
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::uniform(12.0),
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::GREEN,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+
+  let Some((min_x, min_y, max_x, max_y)) =
+    bounding_box_for_color(&pixmap, |(r, g, b, a)| a > 0 && g > r && g > b)
+  else {
+    panic!("expected blurred content");
+  };
+
+  let mut found_outset = false;
+  for pt in edge_outside_points(&quad, 3.0) {
+    if let Some(sample) = sample_pixel_at(&pixmap, pt) {
+      if sample.3 > 0 && sample.1 > sample.0 && sample.1 > sample.2 {
+        found_outset = true;
+        break;
+      }
+    }
+  }
+  assert!(
+    found_outset,
+    "expected blur to produce pixels outside the projected bounds (filter outsets)"
+  );
+
+  for pt in edge_outside_points(&expanded_quad, 3.0) {
+    if let Some(sample) = sample_pixel_at(&pixmap, pt) {
+      assert_eq!(
+        sample,
+        (255, 255, 255, 255),
+        "blur should stay within the projected filter outsets at {pt:?}"
+      );
+    }
+  }
+
+  let width = max_x - min_x + 1;
+  let height = max_y - min_y + 1;
+  assert!(
+    min_x as f32 >= quad_min_x.floor() - 2.0
+      && min_y as f32 >= quad_min_y.floor() - 2.0
+      && max_x as f32 <= quad_max_x.ceil() + 2.0
+      && max_y as f32 <= quad_max_y.ceil() + 2.0,
+    "blurred clip should stay near projected bounds; bbox=({min_x},{min_y})-({max_x},{max_y}), quad=({quad_min_x},{quad_min_y})-({quad_max_x},{quad_max_y})"
+  );
+  assert!(
+    width < pixmap.width() && height < pixmap.height(),
+    "blurred region should not cover full canvas"
+  );
+}
+
+#[test]
+fn clip_path_warped_with_perspective_transform() {
+  let renderer = DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new()).unwrap();
+  let bounds = Rect::from_xywh(30.0, 30.0, 40.0, 40.0);
+  let center = bounds.center();
+  let transform = Transform3D::perspective(500.0)
+    .multiply(&Transform3D::translate(0.0, 0.0, 120.0))
+    .multiply(&Transform3D::translate(center.x, center.y, 0.0))
+    .multiply(&Transform3D::rotate_y(std::f32::consts::FRAC_PI_4))
+    .multiply(&Transform3D::translate(-center.x, -center.y, 0.0));
+
+  let mut unclipped = DisplayList::new();
+  unclipped.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  unclipped.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::BLUE,
+  }));
+  unclipped.push(DisplayItem::PopStackingContext);
+  let unclipped_pixmap = DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&unclipped)
+    .unwrap();
+  let Some((unclipped_min_x, unclipped_min_y, unclipped_max_x, unclipped_max_y)) =
+    bounding_box_for_color(&unclipped_pixmap, |(r, g, b, a)| a > 0 && b > r && b > g)
+  else {
+    panic!("expected unclipped content");
+  };
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Path {
+      path: crate::paint::clip_path::ResolvedClipPath::Circle {
+        center,
+        radius: 16.0,
+      },
+    },
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopClip);
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let Some((min_x, min_y, max_x, max_y)) =
+    bounding_box_for_color(&pixmap, |(r, g, b, a)| a > 0 && b > r && b > g)
+  else {
+    panic!("expected clipped content");
+  };
+
+  let center_proj = project_point_2d(&transform, (center.x, center.y)).expect("center projected");
+  let center_sample = sample_pixel_at(&pixmap, center_proj).expect("center sample");
+  assert!(
+    center_sample.2 > center_sample.0 && center_sample.2 > center_sample.1 && center_sample.3 > 0,
+    "center should be inside warped clip-path"
+  );
+
+  for corner in [
+    (bounds.min_x(), bounds.min_y()),
+    (bounds.max_x(), bounds.min_y()),
+    (bounds.max_x(), bounds.max_y()),
+    (bounds.min_x(), bounds.max_y()),
+  ] {
+    if let Some(sample) =
+      project_point_2d(&transform, corner).and_then(|p| sample_pixel_at(&pixmap, p))
+    {
+      assert_eq!(
+        sample,
+        (255, 255, 255, 255),
+        "corners outside the clip-path should remain background"
+      );
+    }
+  }
+
+  let width = max_x - min_x + 1;
+  let height = max_y - min_y + 1;
+  assert!(
+    min_x >= unclipped_min_x
+      && min_y >= unclipped_min_y
+      && max_x <= unclipped_max_x
+      && max_y <= unclipped_max_y,
+    "clipped bounds should stay within projected rect bounds: clipped=({min_x},{min_y})-({max_x},{max_y}) unclipped=({unclipped_min_x},{unclipped_min_y})-({unclipped_max_x},{unclipped_max_y})"
+  );
+  let unclipped_width = unclipped_max_x - unclipped_min_x + 1;
+  let unclipped_height = unclipped_max_y - unclipped_min_y + 1;
+  assert!(
+    width <= unclipped_width
+      && height <= unclipped_height
+      && (width < unclipped_width || height < unclipped_height),
+    "clip-path should tighten the projected bounds: clipped={width}x{height} unclipped={unclipped_width}x{unclipped_height}"
+  );
+}
+
+#[test]
+fn perspective_transform_matches_when_downsampled_from_hidpi() {
+  let mut child_style = ComputedStyle::default();
+  child_style.background_color = Rgba::RED;
+  child_style.perspective = Some(Length::px(320.0));
+  child_style.transform = vec![
+    CssTransform::RotateY(30.0),
+    CssTransform::Translate(Length::px(8.0), Length::px(0.0)),
+  ];
+  let child_style = Arc::new(child_style);
+
+  let mut root_style = ComputedStyle::default();
+  root_style.background_color = Rgba::WHITE;
+  let root_style = Arc::new(root_style);
+
+  let child =
+    FragmentNode::new_block_styled(Rect::from_xywh(20.0, 12.0, 36.0, 28.0), vec![], child_style);
+  let root = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 80.0, 60.0),
+    vec![child],
+    root_style,
+  );
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+
+  let baseline_renderer =
+    DisplayListRenderer::new_scaled(80, 60, Rgba::WHITE, FontContext::new(), 1.0).unwrap();
+  let baseline = baseline_renderer.render(&list).expect("render 1x");
+
+  let hidpi_renderer =
+    DisplayListRenderer::new_scaled(80, 60, Rgba::WHITE, FontContext::new(), 2.0).unwrap();
+  let hidpi = hidpi_renderer.render(&list).expect("render 2x");
+  let hidpi_down = downsample_half(hidpi);
+
+  let red_predicate = |(r, g, b, a): (u8, u8, u8, u8)| {
+    a > 0 && (r as u16) > (g as u16 + 10) && (r as u16) > (b as u16 + 10)
+  };
+  let bbox_base = bounding_box_for_color(&baseline, red_predicate).expect("baseline bbox");
+  let bbox_down = bounding_box_for_color(&hidpi_down, red_predicate).expect("hidpi bbox");
+
+  assert!(
+    bbox_base.0.abs_diff(bbox_down.0) <= 1
+      && bbox_base.1.abs_diff(bbox_down.1) <= 1
+      && bbox_base.2.abs_diff(bbox_down.2) <= 1
+      && bbox_base.3.abs_diff(bbox_down.3) <= 1,
+    "expected similar projected bounds: {:?} vs {:?}",
+    bbox_base,
+    bbox_down
+  );
+
+  let center_x = (bbox_base.0 + bbox_base.2) / 2;
+  let center_y = (bbox_base.1 + bbox_base.3) / 2;
+  let center_base = pixel(&baseline, center_x, center_y);
+  let center_down = pixel(&hidpi_down, center_x, center_y);
+  let max_center_delta = center_base
+    .0
+    .abs_diff(center_down.0)
+    .max(center_base.1.abs_diff(center_down.1))
+    .max(center_base.2.abs_diff(center_down.2));
+  assert!(
+    max_center_delta <= 4,
+    "center color should remain consistent after downsampling (base {:?}, hidpi {:?})",
+    center_base,
+    center_down
+  );
+
+  let avg_diff = mean_abs_diff(&baseline, &hidpi_down);
+  assert!(
+    avg_diff <= 3.0,
+    "overall difference should stay small after downsampling, got {avg_diff}"
+  );
+}
+
+#[test]
+fn backface_hidden_culls_rotated_context() {
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: Some(Transform3D::rotate_x(std::f32::consts::PI)),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Hidden,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let bbox = bounding_box_for_color(&pixmap, |(r, g, b, _)| r < 250 || g < 250 || b < 250);
+  assert!(
+    bbox.is_none(),
+    "backface-hidden context should be culled, found {bbox:?}"
+  );
+}
+
+fn two_color_data_url() -> String {
+  let pixels: [u8; 8] = [255, 0, 0, 255, 0, 0, 255, 255];
+  let mut buf = Vec::new();
+  PngEncoder::new(&mut buf)
+    .write_image(&pixels, 2, 1, ExtendedColorType::Rgba8)
+    .expect("encode png");
+  format!("data:image/png;base64,{}", STANDARD.encode(&buf))
+}
+
+fn simple_mask(image: ResolvedMaskImage, mode: MaskMode, bounds: Rect) -> ResolvedMask {
+  let default_position = BackgroundPosition::Position {
+    x: BackgroundPositionComponent {
+      alignment: 0.0,
+      offset: Length::percent(0.0),
+    },
+    y: BackgroundPositionComponent {
+      alignment: 0.0,
+      offset: Length::percent(0.0),
+    },
+  };
+  ResolvedMask {
+    layers: vec![ResolvedMaskLayer {
+      image,
+      repeat: BackgroundRepeat::no_repeat(),
+      position: default_position,
+      size: BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto),
+      origin: MaskOrigin::BorderBox,
+      clip: MaskClip::BorderBox,
+      mode,
+      composite: MaskComposite::Add,
+    }],
+    text_clip: None,
+    color: Rgba::BLACK,
+    used_dark_color_scheme: false,
+    forced_colors: false,
+    font_size: 16.0,
+    root_font_size: 16.0,
+    viewport: None,
+    rects: MaskReferenceRects {
+      border: bounds,
+      padding: bounds,
+      content: bounds,
+    },
+  }
+}
+
+#[test]
+fn mask_url_image_applies_alpha() {
+  let renderer = DisplayListRenderer::new(2, 1, Rgba::BLUE, FontContext::new()).unwrap();
+  let bounds = Rect::from_xywh(0.0, 0.0, 2.0, 1.0);
+
+  let mask = simple_mask(
+    ResolvedMaskImage::Raster(ImageData::new_pixels(
+      2,
+      1,
+      vec![0, 0, 0, 0, 255, 0, 0, 255],
+    )),
+    MaskMode::Alpha,
+    bounds,
+  );
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: Some(mask),
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  assert_eq!(pixel(&pixmap, 0, 0), (0, 0, 255, 255));
+  assert_eq!(pixel(&pixmap, 1, 0), (255, 0, 0, 255));
+}
+
+#[test]
+fn mask_luminance_mode_uses_channel_values() {
+  let renderer = DisplayListRenderer::new(2, 1, Rgba::GREEN, FontContext::new()).unwrap();
+  let bounds = Rect::from_xywh(0.0, 0.0, 2.0, 1.0);
+  let mask = simple_mask(
+    ResolvedMaskImage::Raster(ImageData::new_pixels(
+      2,
+      1,
+      vec![0, 0, 0, 255, 255, 255, 255, 255],
+    )),
+    MaskMode::Luminance,
+    bounds,
+  );
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: Some(mask),
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  assert_eq!(pixel(&pixmap, 0, 0), (0, 255, 0, 255));
+  assert_eq!(pixel(&pixmap, 1, 0), (255, 0, 0, 255));
+}
+
+#[test]
+fn builder_clip_path_masks_rendered_output() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_color = Rgba::RED;
+  style.clip_path = ClipPath::BasicShape(
+    Box::new(BasicShape::Circle {
+      radius: ShapeRadius::Length(Length::px(3.0)),
+      position: BackgroundPosition::Position {
+        x: BackgroundPositionComponent {
+          alignment: 0.5,
+          offset: Length::px(0.0),
+        },
+        y: BackgroundPositionComponent {
+          alignment: 0.5,
+          offset: Length::px(0.0),
+        },
+      },
+    }),
+    None,
+  );
+
+  let fragment = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    vec![],
+    Arc::new(style),
+  );
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Center pixel should be clipped in, corner should remain the clear background.
+  assert_eq!(pixel(&pixmap, 5, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
+}
+
+#[test]
+fn builder_clip_path_polygon_masks_rendered_output() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_color = Rgba::RED;
+  style.clip_path = ClipPath::BasicShape(
+    Box::new(BasicShape::Polygon {
+      fill: StyleFillRule::NonZero,
+      points: vec![
+        (Length::px(0.0), Length::px(0.0)),
+        (Length::px(0.0), Length::px(10.0)),
+        (Length::px(10.0), Length::px(0.0)),
+      ],
+    }),
+    None,
+  );
+
+  let fragment = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    vec![],
+    Arc::new(style),
+  );
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Pixel inside triangle should be filled; bottom-right should stay white.
+  assert_eq!(pixel(&pixmap, 2, 2), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 9, 9), (255, 255, 255, 255));
+}
+
+#[test]
+fn builder_clip_path_inset_masks_rendered_output() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_color = Rgba::RED;
+  style.clip_path = ClipPath::BasicShape(
+    Box::new(BasicShape::Inset {
+      top: Length::px(2.0),
+      right: Length::px(2.0),
+      bottom: Length::px(2.0),
+      left: Length::px(2.0),
+      border_radius: Box::new(None),
+    }),
+    None,
+  );
+
+  let fragment = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    vec![],
+    Arc::new(style),
+  );
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Center pixels should be clipped in; corners remain white per the background.
+  assert_eq!(pixel(&pixmap, 5, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));
+}
+
+#[test]
+fn color_mix_srgb_renders_expected_color() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_color = Color::parse("color-mix(in srgb, red 25%, blue 75%)")
+    .unwrap()
+    .to_rgba(Rgba::BLACK);
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![], Arc::new(style));
+
+  let list = DisplayListBuilder::new().build(&fragment);
+  let pixmap = DisplayListRenderer::new(1, 1, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  let expected = Color::parse("color-mix(in srgb, red 25%, blue 75%)")
+    .unwrap()
+    .to_rgba(Rgba::BLACK);
+  assert_eq!(
+    pixel(&pixmap, 0, 0),
+    (expected.r, expected.g, expected.b, expected.alpha_u8())
+  );
+}
+
+#[test]
+fn color_mix_srgb_linear_matches_resolved_color() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_color = Color::parse("color-mix(in srgb-linear, red 50%, blue 50%)")
+    .unwrap()
+    .to_rgba(Rgba::BLACK);
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![], Arc::new(style));
+
+  let list = DisplayListBuilder::new().build(&fragment);
+  let pixmap = DisplayListRenderer::new(1, 1, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  let expected = Color::parse("color-mix(in srgb-linear, red 50%, blue 50%)")
+    .unwrap()
+    .to_rgba(Rgba::BLACK);
+  assert_eq!(
+    pixel(&pixmap, 0, 0),
+    (expected.r, expected.g, expected.b, expected.alpha_u8())
+  );
+}
+
+#[test]
+fn color_mix_current_color_resolves_in_renderer() {
+  let mut style = crate::ComputedStyle::default();
+  style.color = Rgba::GREEN;
+  style.background_color = Color::parse("color-mix(in srgb, currentColor 50%, blue 50%)")
+    .unwrap()
+    .to_rgba(style.color);
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![], Arc::new(style));
+
+  let list = DisplayListBuilder::new().build(&fragment);
+  let pixmap = DisplayListRenderer::new(1, 1, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  let expected = Color::parse("color-mix(in srgb, currentColor 50%, blue 50%)")
+    .unwrap()
+    .to_rgba(Rgba::GREEN);
+  assert_eq!(
+    pixel(&pixmap, 0, 0),
+    (expected.r, expected.g, expected.b, expected.alpha_u8())
+  );
+}
+
+#[test]
+fn display_list_renderer_paints_text_decoration_color() {
+  let mut list = DisplayList::new();
+  let decoration = DecorationPaint {
+    style: TextDecorationStyle::Solid,
+    color: Rgba::RED,
+    underline: Some(DecorationStroke {
+      center: 5.0,
+      thickness: 2.0,
+      segments: None,
+    }),
+    overline: None,
+    line_through: None,
+  };
+
+  list.push(DisplayItem::TextDecoration(TextDecorationItem {
+    bounds: Rect::from_xywh(0.0, 0.0, 20.0, 10.0),
+    line_start: 0.0,
+    line_width: 20.0,
+    inline_vertical: false,
+    decorations: vec![decoration],
+  }));
+
+  let renderer = DisplayListRenderer::new(20, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  assert_eq!(pixel(&pixmap, 10, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 10, 0), (255, 255, 255, 255));
+}
+
+#[test]
+fn text_decoration_segments_offset_by_line_start() {
+  // Ensure decoration segments are translated by line_start when rendering (skip-ink segments).
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::TextDecoration(TextDecorationItem {
+    bounds: Rect::from_xywh(0.0, 0.0, 30.0, 10.0),
+    line_start: 10.0,
+    line_width: 10.0,
+    inline_vertical: false,
+    decorations: vec![DecorationPaint {
+      style: TextDecorationStyle::Solid,
+      color: Rgba::BLACK,
+      underline: Some(DecorationStroke {
+        center: 5.0,
+        thickness: 2.0,
+        segments: Some(vec![(2.0, 4.0)]),
+      }),
+      overline: None,
+      line_through: None,
+    }],
+  }));
+
+  let renderer = DisplayListRenderer::new(30, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Painted pixels should appear around x ~12–13 (line_start + segment start/end).
+  let mut min_x = u32::MAX;
+  let mut max_x = 0;
+  for (idx, chunk) in pixmap.data().chunks(4).enumerate() {
+    if chunk[0] == 255 && chunk[1] == 255 && chunk[2] == 255 {
+      continue;
+    }
+    let x = (idx as u32) % pixmap.width();
+    min_x = min_x.min(x);
+    max_x = max_x.max(x);
+  }
+
+  assert!(
+    (10..=13).contains(&min_x),
+    "min_x out of expected range: {}",
+    min_x
+  );
+  assert!(
+    (12..=14).contains(&max_x),
+    "max_x out of expected range: {}",
+    max_x
+  );
+}
+
+#[test]
+fn text_decoration_currentcolor_resolves_in_display_list() {
+  // Ensure currentColor on text decorations resolves against the text color when emitting display list items.
+  let mut style = crate::ComputedStyle::default();
+  style.color = Rgba::rgb(10, 20, 30);
+  style.text_decoration.lines = crate::style::types::TextDecorationLine::UNDERLINE;
+  style.text_decoration.color = None; // currentColor
+  style.text_decoration.thickness =
+    crate::style::types::TextDecorationThickness::Length(Length::px(2.0));
+
+  let mut fragment =
+    FragmentNode::new_text(Rect::from_xywh(0.0, 0.0, 20.0, 10.0), "hi".to_string(), 0.0);
+  fragment.style = Some(Arc::new(style));
+
+  let list = DisplayListBuilder::new().build(&fragment);
+  let deco = list
+    .items()
+    .iter()
+    .find_map(|i| match i {
+      DisplayItem::TextDecoration(d) => Some(d),
+      _ => None,
+    })
+    .expect("decoration item");
+
+  let underline = deco
+    .decorations
+    .first()
+    .and_then(|d| d.underline.as_ref())
+    .expect("underline present");
+
+  // currentColor should resolve to the text color with the specified thickness
+  assert_eq!(
+    deco.decorations.first().unwrap().color,
+    Rgba::rgb(10, 20, 30)
+  );
+  assert_eq!(underline.thickness, 2.0);
+
+  let pixmap = DisplayListRenderer::new(30, 20, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .expect("render");
+
+  // Verify some pixels are non-white (decoration rendered) and dominated by the text color channels.
+  let mut max_r = 0u8;
+  let mut max_g = 0u8;
+  let mut max_b = 0u8;
+  for chunk in pixmap.data().chunks(4) {
+    if chunk[0] == 255 && chunk[1] == 255 && chunk[2] == 255 {
+      continue;
+    }
+    max_r = max_r.max(chunk[0]);
+    max_g = max_g.max(chunk[1]);
+    max_b = max_b.max(chunk[2]);
+  }
+  assert!(
+    max_r >= 10 && max_g >= 20 && max_b >= 30,
+    "decoration should resolve currentColor"
+  );
+}
+
+fn bbox_for_color(
+  pixmap: &Pixmap,
+  pred: impl Fn((u8, u8, u8, u8)) -> bool,
+) -> Option<(u32, u32, u32, u32)> {
+  let mut min_x = u32::MAX;
+  let mut min_y = u32::MAX;
+  let mut max_x = 0u32;
+  let mut max_y = 0u32;
+
+  let width = pixmap.width();
+  let data = pixmap.data();
+  for y in 0..pixmap.height() {
+    for x in 0..width {
+      let idx = ((y * width + x) * 4) as usize;
+      let p = (data[idx], data[idx + 1], data[idx + 2], data[idx + 3]);
+      if pred(p) {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+      }
+    }
+  }
+
+  if min_x == u32::MAX {
+    None
+  } else {
+    Some((min_x, min_y, max_x, max_y))
+  }
+}
+
+fn pixmap_to_rgba(pixmap: &Pixmap) -> RgbaImage {
+  let width = pixmap.width();
+  let height = pixmap.height();
+  let mut rgba = RgbaImage::new(width, height);
+
+  for (dst, src) in rgba
+    .as_mut()
+    .chunks_exact_mut(4)
+    .zip(pixmap.data().chunks_exact(4))
+  {
+    let b = src[0];
+    let g = src[1];
+    let r = src[2];
+    let a = src[3];
+
+    if a == 0 {
+      dst.copy_from_slice(&[0, 0, 0, 0]);
+      continue;
+    }
+
+    let alpha = a as f32 / 255.0;
+    dst[0] = ((r as f32 / alpha).min(255.0)) as u8;
+    dst[1] = ((g as f32 / alpha).min(255.0)) as u8;
+    dst[2] = ((b as f32 / alpha).min(255.0)) as u8;
+    dst[3] = a;
+  }
+
+  rgba
+}
+
+#[test]
+fn marker_text_shadow_is_rendered_in_display_list() {
+  let mut style = ComputedStyle::default();
+  style.display = crate::style::display::Display::Inline;
+  style.color = Rgba::BLACK;
+  style.font_size = 16.0;
+  style.text_shadow = vec![crate::css::types::TextShadow {
+    offset_x: Length::px(3.0),
+    offset_y: Length::px(0.0),
+    blur_radius: Length::px(0.0),
+    color: Some(Rgba::from_rgba8(255, 0, 0, 255)),
+  }]
+  .into();
+  let style = Arc::new(style);
+
+  let mut marker = FragmentNode::new_text(
+    Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+    "•".to_string(),
+    16.0,
+  );
+  marker.content = crate::tree::fragment_tree::FragmentContent::Text {
+    text: "•".to_string().into(),
+    box_id: None,
+    source_range: None,
+    baseline_offset: 16.0,
+    shaped: None,
+    is_marker: true,
+    emphasis_offset: Default::default(),
+  };
+  marker.style = Some(style);
+
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 40.0, 30.0), vec![marker]);
+  let list = DisplayListBuilder::new().build(&root);
+
+  let pixmap = DisplayListRenderer::new(60, 40, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .expect("render");
+
+  let glyph_bbox = bbox_for_color(&pixmap, |(r, g, b, a)| a > 0 && r < 32 && g < 32 && b < 32)
+    .expect("marker glyph");
+  let shadow_bbox = bbox_for_color(&pixmap, |(r, g, b, _)| {
+    let (r, g, b) = (r as u16, g as u16, b as u16);
+    r > g + 20 && r > b + 20
+  })
+  .expect("marker shadow");
+
+  assert!(
+    shadow_bbox.0 > glyph_bbox.0,
+    "shadow should render to the inline end of the marker glyph"
+  );
+  assert!(
+    shadow_bbox.1.abs_diff(glyph_bbox.1) <= 2,
+    "shadow should stay vertically aligned with the marker glyph"
+  );
+}
+
+#[test]
+fn color_glyph_shadow_matches_golden() {
+  let font_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fonts");
+  let font_config = FontConfig::default()
+    .with_system_fonts(false)
+    .with_bundled_fonts(false)
+    .add_font_dir(font_dir);
+  let font_ctx = FontContext::with_config(font_config);
+
+  let families = vec!["ColorTestCOLR".to_string()];
+  let font = font_ctx
+    .get_font_full(&families, 400, DbFontStyle::Normal, FontStretch::Normal)
+    .expect("color font available");
+  let face = font.as_ttf_face().expect("color font face");
+  let glyph_id = face.glyph_index('A').expect("glyph A");
+  let units_per_em = face.units_per_em() as f32;
+  let font_size = 64.0;
+  let advance = face.glyph_hor_advance(glyph_id).unwrap_or(0) as f32 * (font_size / units_per_em);
+
+  let text = TextItem {
+    origin: Point::new(20.0, 96.0),
+    cached_bounds: None,
+    glyphs: vec![GlyphInstance {
+      glyph_id: glyph_id.0 as u32,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: advance,
+      y_advance: 0.0,
+    }],
+    color: Rgba::WHITE,
+    allow_subpixel_aa: true,
+    stroke_width: 0.0,
+    stroke_color: Rgba::TRANSPARENT,
+    font_smoothing: crate::style::types::FontSmoothing::Auto,
+    palette_overrides: Arc::new(Vec::new()),
+    palette_override_hash: 0,
+    rotation: crate::text::pipeline::RunRotation::None,
+    scale: 1.0,
+    shadows: vec![TextShadowItem {
+      offset: Point::new(10.0, 10.0),
+      blur_radius: 6.0,
+      color: Rgba::from_rgba8(0, 0, 0, 255),
+    }],
+    font_id: None,
+    font_size,
+    advance_width: advance,
+    font: Some(Arc::new(font.clone())),
+    palette_index: 0,
+    variations: Vec::new(),
+    synthetic_bold: 0.0,
+    synthetic_oblique: 0.0,
+    emphasis: None,
+    decorations: Vec::new(),
+  };
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::Text(text));
+
+  let pixmap = DisplayListRenderer::new(150, 150, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .render(&list)
+    .expect("render");
+
+  let golden_path =
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/golden/color_glyph_shadow.png");
+  let actual = pixmap_to_rgba(&pixmap);
+  if std::env::var("UPDATE_GOLDEN").is_ok() {
+    let mut buf = Vec::new();
+    PngEncoder::new(&mut buf)
+      .write_image(
+        actual.as_raw(),
+        actual.width(),
+        actual.height(),
+        ExtendedColorType::Rgba8,
+      )
+      .expect("encode golden image");
+    fs::write(&golden_path, &buf).expect("write golden image");
+    return;
+  }
+  if !golden_path.exists() {
+    let mut buf = Vec::new();
+    PngEncoder::new(&mut buf)
+      .write_image(
+        actual.as_raw(),
+        actual.width(),
+        actual.height(),
+        ExtendedColorType::Rgba8,
+      )
+      .expect("encode missing golden image");
+    fs::write(&golden_path, &buf).expect("write missing golden image");
+    panic!(
+      "Golden image missing, created at {}. Re-run tests.",
+      golden_path.display()
+    );
+  }
+
+  let golden_bytes = fs::read(&golden_path).expect("read golden image");
+  let golden = decode_png(&golden_bytes).expect("decode golden image");
+  let diff = compare_rgba_images(&actual, &golden, &CompareConfig::strict());
+  assert!(
+    diff.is_match(),
+    "color glyph shadow should match golden: {}",
+    diff.summary()
+  );
+}
+
+#[test]
+fn display_list_border_image_nine_slice() {
+  // Construct a 3x3 image with distinct corners/edges to verify nine-slice placement.
+  let mut img = RgbaImage::new(3, 3);
+  img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255])); // TL red
+  img.put_pixel(2, 0, image::Rgba([0, 0, 255, 255])); // TR blue
+  img.put_pixel(0, 2, image::Rgba([0, 255, 0, 255])); // BL green
+  img.put_pixel(2, 2, image::Rgba([255, 255, 0, 255])); // BR yellow
+  let edge = image::Rgba([0, 255, 255, 255]);
+  img.put_pixel(1, 0, edge);
+  img.put_pixel(1, 2, edge);
+  img.put_pixel(0, 1, edge);
+  img.put_pixel(2, 1, edge);
+  img.put_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+
+  let mut buf = Vec::new();
+  PngEncoder::new(&mut buf)
+    .write_image(img.as_raw(), 3, 3, ExtendedColorType::Rgba8)
+    .unwrap();
+  let data_url = format!("data:image/png;base64,{}", STANDARD.encode(&buf));
+
+  let mut style = crate::ComputedStyle::default();
+  style.border_top_width = Length::px(4.0);
+  style.border_right_width = Length::px(4.0);
+  style.border_bottom_width = Length::px(4.0);
+  style.border_left_width = Length::px(4.0);
+  style.border_top_style = BorderStyle::Solid;
+  style.border_right_style = BorderStyle::Solid;
+  style.border_bottom_style = BorderStyle::Solid;
+  style.border_left_style = BorderStyle::Solid;
+  style.border_image = BorderImage {
+    source: BorderImageSource::Image(Box::new(BackgroundImage::Url(BackgroundImageUrl::new(
+      data_url,
+    )))),
+    slice: BorderImageSlice {
+      top: BorderImageSliceValue::Number(1.0),
+      right: BorderImageSliceValue::Number(1.0),
+      bottom: BorderImageSliceValue::Number(1.0),
+      left: BorderImageSliceValue::Number(1.0),
+      fill: false,
+    },
+    ..BorderImage::default()
+  };
+
+  let fragment = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 16.0, 16.0),
+    vec![],
+    Arc::new(style),
+  );
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(16, 16, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let tl = pixel(&pixmap, 0, 0);
+  let tr = pixel(&pixmap, 15, 0);
+  let bl = pixel(&pixmap, 0, 15);
+  let br = pixel(&pixmap, 15, 15);
+  assert_eq!(tl, (255, 0, 0, 255));
+  assert_eq!(tr, (0, 0, 255, 255));
+  assert_eq!(bl, (0, 255, 0, 255));
+  assert_eq!(br, (255, 255, 0, 255));
+
+  let edge_top = pixel(&pixmap, 8, 1);
+  let edge_left = pixel(&pixmap, 1, 8);
+  assert_eq!(edge_top, (0, 255, 255, 255));
+  assert_eq!(edge_left, (0, 255, 255, 255));
+}
+
+#[test]
+fn background_attachment_local_clips_to_padding_box_in_display_list() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_color = Rgba::TRANSPARENT;
+  style.set_background_layers(vec![crate::style::types::BackgroundLayer {
+    image: Some(BackgroundImage::LinearGradient {
+      angle: 0.0,
+      stops: vec![
+        ColorStop {
+          color: crate::Color::Rgba(Rgba::RED),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
+        },
+        ColorStop {
+          color: crate::Color::Rgba(Rgba::BLUE),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
+        },
+      ],
+    }),
+    position: BackgroundPosition::Position {
+      x: BackgroundPositionComponent {
+        alignment: 0.0,
+        offset: Length::px(0.0),
+      },
+      y: BackgroundPositionComponent {
+        alignment: 0.0,
+        offset: Length::px(0.0),
+      },
+    },
+    size: crate::style::types::BackgroundSize::Keyword(
+      crate::style::types::BackgroundSizeKeyword::Contain,
+    ),
+    repeat: crate::style::types::BackgroundRepeat {
+      x: crate::style::types::BackgroundRepeatKeyword::NoRepeat,
+      y: crate::style::types::BackgroundRepeatKeyword::NoRepeat,
+    },
+    origin: crate::style::types::BackgroundBox::PaddingBox,
+    clip: crate::style::types::BackgroundBox::PaddingBox,
+    attachment: crate::style::types::BackgroundAttachment::Local,
+    ..Default::default()
+  }]);
+  style.padding_top = Length::px(2.0);
+  style.padding_right = Length::px(2.0);
+  style.padding_bottom = Length::px(2.0);
+  style.padding_left = Length::px(2.0);
+  let fragment = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    vec![],
+    Arc::new(style),
+  );
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Background should anchor to the padding box; interior should paint.
+  assert_ne!(pixel(&pixmap, 3, 3), (255, 255, 255, 255));
+}
+
+#[test]
+fn display_list_border_image_generated_uniform_color() {
+  let mut style = crate::ComputedStyle::default();
+  style.border_top_width = Length::px(4.0);
+  style.border_right_width = Length::px(4.0);
+  style.border_bottom_width = Length::px(4.0);
+  style.border_left_width = Length::px(4.0);
+  style.border_top_style = BorderStyle::Solid;
+  style.border_right_style = BorderStyle::Solid;
+  style.border_bottom_style = BorderStyle::Solid;
+  style.border_left_style = BorderStyle::Solid;
+  style.border_image = BorderImage {
+    source: BorderImageSource::Image(Box::new(BackgroundImage::LinearGradient {
+      angle: 0.0,
+      stops: vec![
+        ColorStop {
+          color: crate::Color::Rgba(Rgba::RED),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
+        },
+        ColorStop {
+          color: crate::Color::Rgba(Rgba::RED),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
+        },
+      ],
+    })),
+    slice: BorderImageSlice {
+      top: BorderImageSliceValue::Number(1.0),
+      right: BorderImageSliceValue::Number(1.0),
+      bottom: BorderImageSliceValue::Number(1.0),
+      left: BorderImageSliceValue::Number(1.0),
+      fill: false,
+    },
+    ..BorderImage::default()
+  };
+
+  let fragment = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 16.0, 16.0),
+    vec![],
+    Arc::new(style),
+  );
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(16, 16, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Uniform gradient should behave like a solid image for border painting.
+  let tl = pixel(&pixmap, 0, 0);
+  let tr = pixel(&pixmap, 15, 0);
+  let bl = pixel(&pixmap, 0, 15);
+  let br = pixel(&pixmap, 15, 15);
+  assert_eq!(tl, (255, 0, 0, 255));
+  assert_eq!(tr, (255, 0, 0, 255));
+  assert_eq!(bl, (255, 0, 0, 255));
+  assert_eq!(br, (255, 0, 0, 255));
+}
+
+#[test]
+fn display_list_background_pixelated_uses_nearest_sampling() {
+  let url = two_color_data_url();
+
+  let mut style = crate::ComputedStyle::default();
+  style.image_rendering = ImageRendering::Pixelated;
+  style.background_color = Rgba::WHITE;
+  style.background_layers = smallvec::smallvec![BackgroundLayer {
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
+    size: BackgroundSize::Explicit(
+      BackgroundSizeComponent::Length(Length::px(5.0)),
+      BackgroundSizeComponent::Length(Length::px(1.0)),
+    ),
+    repeat: BackgroundRepeat {
+      x: BackgroundRepeatKeyword::NoRepeat,
+      y: BackgroundRepeatKeyword::NoRepeat,
+    },
+    ..BackgroundLayer::default()
+  }];
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 5.0, 1.0), vec![], Arc::new(style));
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(5, 1, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Pixelated sampling should keep the left half fully red and the right half blue without purple blending.
+  assert_eq!(pixel(&pixmap, 1, 0), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 3, 0), (0, 0, 255, 255));
+}
+
+#[test]
+fn display_list_background_smooth_blends_when_upscaled() {
+  let url = two_color_data_url();
+
+  let mut style = crate::ComputedStyle::default();
+  style.image_rendering = ImageRendering::Auto;
+  style.background_color = Rgba::WHITE;
+  style.background_layers = smallvec::smallvec![BackgroundLayer {
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
+    size: BackgroundSize::Explicit(
+      BackgroundSizeComponent::Length(Length::px(5.0)),
+      BackgroundSizeComponent::Length(Length::px(1.0)),
+    ),
+    repeat: BackgroundRepeat {
+      x: BackgroundRepeatKeyword::NoRepeat,
+      y: BackgroundRepeatKeyword::NoRepeat,
+    },
+    ..BackgroundLayer::default()
+  }];
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 5.0, 1.0), vec![], Arc::new(style));
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(5, 1, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let mid = pixel(&pixmap, 2, 0);
+  // Linear sampling should blend the two source pixels, producing a non-primary color.
+  assert_ne!(mid, (255, 0, 0, 255));
+  assert_ne!(mid, (0, 0, 255, 255));
+  assert!(
+    mid.0 > 0 && mid.2 > 0,
+    "mid pixel should be blended: {:?}",
+    mid
+  );
+}
+
+#[test]
+fn display_list_image_downscale_uses_skia_bilinear_rounding() {
+  // `tiny-skia`'s bilinear resampling historically disagreed with Chrome/Skia for mildly-downscaled
+  // raster images, especially around exact-halfway values (e.g. 127.5). We keep fixture diffs more
+  // stable by pre-scaling into a cached pixmap using our own Skia-aligned sampler.
+  let mut pixels = Vec::new();
+  for _y in 0..4 {
+    for x in 0..4 {
+      if x < 2 {
+        pixels.extend_from_slice(&[255, 0, 0, 255]);
+      } else {
+        pixels.extend_from_slice(&[0, 0, 255, 255]);
+      }
+    }
+  }
+
+  let image = Arc::new(ImageData::new_pixels(4, 4, pixels));
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::Image(ImageItem {
+    dest_rect: Rect::from_xywh(0.0, 0.0, 3.0, 3.0),
+    image,
+    filter_quality: ImageFilterQuality::Linear,
+    src_rect: None,
+  }));
+
+  let renderer = DisplayListRenderer::new(3, 3, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Center column should be the 50/50 blend between the red and blue stripes.
+  // Chrome/Skia floors fractional channel values, so (255 + 0) / 2 = 127.5 becomes 127.
+  assert_eq!(pixel(&pixmap, 1, 1), (127, 0, 127, 255));
+}
+
+#[test]
+fn display_list_image_downscale_with_clip_still_uses_skia_bilinear_rounding() {
+  // When an image draw is clipped (common with `object-fit: cover`), the renderer may crop the
+  // source rectangle and then rely on `draw_pixmap` to scale. Ensure we still pre-scale the cropped
+  // region so bilinear rounding matches Chrome/Skia.
+  let mut pixels = Vec::new();
+  for _y in 0..8 {
+    for x in 0..8 {
+      if x < 4 {
+        pixels.extend_from_slice(&[255, 0, 0, 255]);
+      } else {
+        pixels.extend_from_slice(&[0, 0, 255, 255]);
+      }
+    }
+  }
+
+  let image = Arc::new(ImageData::new_pixels(8, 8, pixels));
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Rect {
+      rect: Rect::from_xywh(0.0, 0.0, 3.0, 3.0),
+      radii: None,
+    },
+  }));
+  list.push(DisplayItem::Image(ImageItem {
+    // The image is drawn larger than the clip and partially off-canvas, forcing the renderer to
+    // crop the source rectangle.
+    dest_rect: Rect::from_xywh(-1.5, -1.5, 6.0, 6.0),
+    image,
+    filter_quality: ImageFilterQuality::Linear,
+    src_rect: None,
+  }));
+  list.push(DisplayItem::PopClip);
+
+  let renderer = DisplayListRenderer::new(3, 3, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // The clip selects a centered 50% slice of the downscaled image. The center pixel is again the
+  // exact-halfway blend between red and blue, so we should see 127 rather than 128.
+  assert_eq!(pixel(&pixmap, 1, 1), (127, 0, 127, 255));
+}
+
+#[test]
+fn display_list_linear_gradient_respects_background_size() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_layers = smallvec::smallvec![BackgroundLayer {
+    image: Some(BackgroundImage::LinearGradient {
+      angle: 0.0,
+      stops: vec![
+        ColorStop {
+          color: crate::Color::Rgba(Rgba::RED),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
+        },
+        ColorStop {
+          color: crate::Color::Rgba(Rgba::RED),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
+        },
+      ],
+    }),
+    size: BackgroundSize::Explicit(
+      BackgroundSizeComponent::Length(Length::px(2.0)),
+      BackgroundSizeComponent::Length(Length::px(2.0)),
+    ),
+    repeat: BackgroundRepeat {
+      x: BackgroundRepeatKeyword::NoRepeat,
+      y: BackgroundRepeatKeyword::NoRepeat,
+    },
+    ..Default::default()
+  }];
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 4.0, 4.0), vec![], Arc::new(style));
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Gradient tile should be confined to the 2x2 background-size at the top-left.
+  assert_eq!(pixel(&pixmap, 1, 1), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 3, 3), (255, 255, 255, 255));
+}
+
+#[test]
+fn linear_gradient_rasterization_matches_endpoints() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::LinearGradient(LinearGradientItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 1.0),
+    start: Point::new(0.0, 0.0),
+    end: Point::new(4.0, 0.0),
+    stops: vec![
+      GradientStop {
+        position: 0.0,
+        color: Rgba::RED,
+      },
+      GradientStop {
+        position: 1.0,
+        color: Rgba::BLUE,
+      },
+    ],
+    spread: GradientSpread::Pad,
+  }));
+
+  let renderer = DisplayListRenderer::new(4, 1, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let left = pixel(&pixmap, 0, 0);
+  let right = pixel(&pixmap, 3, 0);
+  assert!(
+    left.0 > left.2 && right.2 > right.0 && left.3 == 255 && right.3 == 255,
+    "gradient endpoints should preserve dominant channels: left {:?} right {:?}",
+    left,
+    right
+  );
+  let mid = pixel(&pixmap, 1, 0);
+  assert!(
+    mid.0 > 0 && mid.2 > 0,
+    "middle sample should contain blended red/blue channels: {:?}",
+    mid
+  );
+}
+
+#[test]
+fn linear_gradient_dither_phase_matches_skia() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::LinearGradient(LinearGradientItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    start: Point::new(0.0, 0.0),
+    end: Point::new(4.0, 0.0),
+    stops: vec![
+      GradientStop {
+        position: 0.0,
+        color: Rgba::BLACK,
+      },
+      GradientStop {
+        position: 1.0,
+        color: Rgba::WHITE,
+      },
+    ],
+    spread: GradientSpread::Pad,
+  }));
+
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let expected: [[u8; 4]; 4] = [
+    [32, 95, 160, 223],
+    [32, 96, 159, 223],
+    [32, 96, 159, 223],
+    [31, 96, 159, 224],
+  ];
+  for (y, row) in expected.iter().enumerate() {
+    for (x, v) in row.iter().enumerate() {
+      assert_eq!(
+        pixel(&pixmap, x as u32, y as u32),
+        (*v, *v, *v, 255),
+        "pixel {x},{y}"
+      );
+    }
+  }
+}
+
+#[test]
+fn linear_gradient_dither_phase_matches_skia_with_fractional_position() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::LinearGradient(LinearGradientItem {
+    rect: Rect::from_xywh(0.0, 0.984_375, 4.0, 4.0),
+    start: Point::new(0.0, 0.0),
+    end: Point::new(4.0, 0.0),
+    stops: vec![
+      GradientStop {
+        position: 0.0,
+        color: Rgba::BLACK,
+      },
+      GradientStop {
+        position: 1.0,
+        color: Rgba::WHITE,
+      },
+    ],
+    spread: GradientSpread::Pad,
+  }));
+
+  let renderer = DisplayListRenderer::new(4, 5, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  for x in 0..4 {
+    assert_eq!(pixel(&pixmap, x, 0), (0, 0, 0, 0), "pixel {x},0");
+  }
+
+  let expected: [[u8; 4]; 4] = [
+    [32, 95, 160, 223],
+    [32, 96, 159, 223],
+    [32, 96, 159, 223],
+    [31, 96, 159, 224],
+  ];
+  for (y, row) in expected.iter().enumerate() {
+    for (x, v) in row.iter().enumerate() {
+      assert_eq!(
+        pixel(&pixmap, x as u32, y as u32 + 1),
+        (*v, *v, *v, 255),
+        "pixel {x},{}",
+        y + 1
+      );
+    }
+  }
+}
+
+#[test]
+fn transformed_linear_gradient_uses_bilinear_sampling() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushTransform(crate::TransformItem {
+    transform: Transform3D::from_2d(&crate::Transform2D::scale(2.0, 1.0)),
+  }));
+  list.push(DisplayItem::LinearGradient(LinearGradientItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 1.0),
+    // Pick start/end points so the rasterized 2px gradient's samples land exactly on the stops:
+    // t = (x + 0.5 - start.x) / (end.x - start.x).
+    // With start.x=0.5 and end.x=1.5, the 2px raster yields t=[0.0, 1.0] (stop colors only).
+    //
+    // When we then scale the rasterized gradient by 2x, nearest-neighbor sampling will pick the
+    // first stop color for pixel x=1, while bilinear sampling will interpolate between the two
+    // stop pixels.
+    start: Point::new(0.5, 0.0),
+    end: Point::new(1.5, 0.0),
+    stops: vec![
+      GradientStop {
+        position: 0.0,
+        color: Rgba::new(0, 0, 0, 1.0),
+      },
+      GradientStop {
+        position: 1.0,
+        color: Rgba::new(255, 0, 0, 1.0),
+      },
+    ],
+    spread: GradientSpread::Pad,
+  }));
+  list.push(DisplayItem::PopTransform);
+
+  let renderer = DisplayListRenderer::new(4, 1, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  assert_eq!(pixel(&pixmap, 1, 0), (64, 0, 0, 255));
+}
+
+#[test]
+fn filters_apply_to_stacking_context_layer() {
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Invert(1.0)],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // Inverting blue yields yellow.
+  assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 0, 255));
+}
+
+#[test]
+fn opacity_filter_modulates_alpha() {
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Opacity(0.5)],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let (r, g, b, a) = pixel(&pixmap, 0, 0);
+  assert_eq!((r, g, b), (128, 0, 0));
+  assert!(
+    (a as i16 - 128).abs() <= 1,
+    "expected ~50% alpha, got {}",
+    a
+  );
+}
+
+#[test]
+fn zero_opacity_fragments_render_nothing() {
+  let mut style = ComputedStyle::default();
+  style.background_color = Rgba::RED;
+  style.opacity = 0.0;
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 4.0, 4.0), vec![], Arc::new(style));
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // All pixels should remain the white background since the fragment is fully transparent.
+  for y in 0..4 {
+    for x in 0..4 {
+      assert_eq!(pixel(&pixmap, x, y), (255, 255, 255, 255));
+    }
+  }
+}
+
+#[test]
+fn backdrop_filters_modify_backdrop_region() {
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
+    plane_rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // Inside backdrop-filtered region red should invert to cyan.
+  assert_eq!(pixel(&pixmap, 1, 1), (0, 255, 255, 255));
+  // Outside region remains red.
+  assert_eq!(pixel(&pixmap, 0, 0), (255, 0, 0, 255));
+}
+
+#[test]
+fn backdrop_filter_clips_to_affine_transformed_bounds() {
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::RED, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+
+  let rect = Rect::from_xywh(2.0, 2.0, 4.0, 4.0);
+  let center_x = rect.x() + rect.width() * 0.5;
+  let center_y = rect.y() + rect.height() * 0.5;
+  let transform = Transform3D::translate(center_x, center_y, 0.0)
+    .multiply(&Transform3D::rotate_z(std::f32::consts::FRAC_PI_4))
+    .multiply(&Transform3D::translate(-center_x, -center_y, 0.0));
+
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: rect,
+    plane_rect: rect,
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // Center of the rotated rect should be inverted.
+  assert_eq!(pixel(&pixmap, 4, 4), (0, 255, 255, 255));
+  // Corner of the AABB but outside the rotated quad should remain unfiltered.
+  assert_eq!(pixel(&pixmap, 1, 2), (255, 0, 0, 255));
+}
+
+#[test]
+fn backdrop_filter_respects_clip_path_mask() {
+  let renderer = DisplayListRenderer::new(8, 8, Rgba::RED, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  let triangle = crate::paint::clip_path::ResolvedClipPath::Polygon {
+    points: vec![
+      crate::geometry::Point::new(1.0, 1.0),
+      crate::geometry::Point::new(5.0, 1.0),
+      crate::geometry::Point::new(1.0, 5.0),
+    ],
+    fill_rule: SkFillRule::Winding,
+  };
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Path { path: triangle },
+  }));
+  list.push(DisplayItem::PopClip);
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).expect("render");
+  assert_eq!(pixel(&pixmap, 2, 2), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 4, 4), (255, 0, 0, 255));
+}
+
+#[test]
+fn backdrop_filter_respects_rounded_clip_rect() {
+  let renderer = DisplayListRenderer::new(8, 8, Rgba::RED, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(1.0, 1.0, 6.0, 6.0),
+    plane_rect: Rect::from_xywh(1.0, 1.0, 6.0, 6.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Rect {
+      rect: Rect::from_xywh(1.0, 1.0, 6.0, 6.0),
+      radii: Some(BorderRadii::uniform(2.0)),
+    },
+  }));
+  list.push(DisplayItem::PopClip);
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).expect("render");
+  assert_eq!(pixel(&pixmap, 3, 3), (0, 255, 255, 255));
+  // The rounded clip edge is anti-aliased, so pixels near the corner may be a blend of filtered
+  // and unfiltered content. Ensure the corner stays predominantly red (i.e., not fully inverted).
+  let corner = pixel(&pixmap, 1, 1);
+  assert!(
+    corner.0 > corner.1 && corner.0 > corner.2,
+    "expected corner pixel to remain mostly red, got {:?}",
+    corner
+  );
+}
+
+#[test]
+fn background_blend_mode_combines_multiple_layers() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_color = Rgba::WHITE;
+
+  let top_layer = BackgroundLayer {
+    image: Some(BackgroundImage::LinearGradient {
+      angle: 0.0,
+      stops: vec![
+        ColorStop {
+          color: Color::Rgba(Rgba::GREEN),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
+        },
+        ColorStop {
+          color: Color::Rgba(Rgba::GREEN),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
+        },
+      ],
+    }),
+    repeat: BackgroundRepeat::no_repeat(),
+    blend_mode: MixBlendMode::Multiply,
+    ..BackgroundLayer::default()
+  };
+
+  let bottom_layer = BackgroundLayer {
+    image: Some(BackgroundImage::LinearGradient {
+      angle: 0.0,
+      stops: vec![
+        ColorStop {
+          color: Color::Rgba(Rgba::RED),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
+        },
+        ColorStop {
+          color: Color::Rgba(Rgba::RED),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
+        },
+      ],
+    }),
+    repeat: BackgroundRepeat::no_repeat(),
+    blend_mode: MixBlendMode::Normal,
+    ..BackgroundLayer::default()
+  };
+
+  style.set_background_layers(vec![top_layer, bottom_layer]);
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 2.0, 2.0), vec![], Arc::new(style));
+  let list = DisplayListBuilder::new().build(&fragment);
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).expect("renderer");
+  let pixmap = renderer.render(&list).expect("render backgrounds");
+
+  // Green multiplied by red should produce black in the covered area.
+  assert_eq!(pixel(&pixmap, 1, 1), (0, 0, 0, 255));
+}
+
+#[test]
+fn drop_shadow_filter_renders_shadow() {
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::DropShadow {
+      offset_x: 1.0,
+      offset_y: 0.0,
+      blur_radius: 0.0,
+      spread: 0.0,
+      color: Rgba::BLACK,
+    }],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // Shadow offset right by 1px should leave black pixel at (2,0).
+  assert_eq!(pixel(&pixmap, 2, 0), (0, 0, 0, 255));
+  // Original content stays blue.
+  assert_eq!(pixel(&pixmap, 0, 0), (0, 0, 255, 255));
+}
+
+#[test]
+fn drop_shadow_filter_offsets_with_bounded_layer() {
+  let renderer = DisplayListRenderer::new(6, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  let bounds = Rect::from_xywh(2.0, 1.0, 2.0, 2.0);
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::DropShadow {
+      offset_x: 1.0,
+      offset_y: 0.0,
+      blur_radius: 0.0,
+      spread: 0.0,
+      color: Rgba::BLACK,
+    }],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  assert_eq!(pixel(&pixmap, 2, 1), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 3, 1), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 4, 1), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));
+}
+
+#[test]
+fn blur_filters_arent_clipped_by_border_radii() {
+  use crate::paint::display_list::BorderRadii;
+
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
+    plane_rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Blur(1.0)],
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::uniform(0.5),
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // Blur should spill outside the original bounds; left neighbor gains alpha.
+  let (_, _, _, alpha) = pixel(&pixmap, 0, 1);
+  assert!(
+    alpha > 0,
+    "expected blur outside rounded rect to remain visible; alpha at (0,1) was {alpha}"
+  );
+  // Farther away should be at most a faint blur, not clipped but low alpha.
+  let (_, _, _, corner_alpha) = pixel(&pixmap, 0, 0);
+  assert!(
+    corner_alpha < 64,
+    "expected distant blur to be faint; alpha at (0,0) was {corner_alpha}"
+  );
+}
+
+#[test]
+fn grayscale_filter_converts_to_luma() {
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Grayscale(1.0)],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  // Pure blue content becomes luma gray (~18/255 per channel).
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(0, 0, 255, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let (r, g, b, a) = pixel(&pixmap, 0, 0);
+  assert_eq!(a, 255);
+  assert!(
+    r.abs_diff(18) <= 1 && g.abs_diff(18) <= 1 && b.abs_diff(18) <= 1,
+    "expected grayscale ~18, got {:?}",
+    (r, g, b, a)
+  );
+}
+
+#[test]
+fn color_blend_mode_uses_destination_luminance() {
+  use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
+
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  // Destination: mid-gray.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(128, 128, 128, 255),
+  }));
+  // Apply color blend with vivid red source: hue/saturation from source, luminance from destination.
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::Color,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let (r, g, b, a) = pixel(&pixmap, 0, 0);
+  assert_eq!(a, 255);
+  let expected = blend_color((255, 0, 0), (128, 128, 128));
+  let (eh, es, el) = rgb_to_hsl(expected.0, expected.1, expected.2);
+  assert_hsl_components((r, g, b), (eh, es, el), 0.02, 0.05, 0.05, "color blend");
+}
+
+#[test]
+fn hue_blend_mode_uses_source_hue() {
+  use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
+
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  let dst = (30u8, 120u8, 220u8);
+  let src = (200u8, 30u8, 30u8);
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(dst.0, dst.1, dst.2, 255),
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::Hue,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(src.0, src.1, src.2, 255),
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let (r, g, b, _) = pixel(&pixmap, 0, 0);
+  let expected = blend_hue(src, dst);
+  let (eh, es, el) = rgb_to_hsl(expected.0, expected.1, expected.2);
+  assert_hsl_components((r, g, b), (eh, es, el), 0.02, 0.05, 0.05, "hue blend");
+}
+
+#[test]
+fn hue_hsv_blend_mode_uses_source_hue() {
+  use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
+
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  let dst = (255u8, 255u8, 0u8); // yellow
+  let src = (0u8, 0u8, 255u8); // blue
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(dst.0, dst.1, dst.2, 255),
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::HueHsv,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(src.0, src.1, src.2, 255),
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let (r, g, b, _) = pixel(&pixmap, 0, 0);
+  let expected = blend_hue_hsv(src, dst);
+  assert_eq!((r, g, b), expected);
+}
+
+#[test]
+fn saturation_blend_mode_uses_source_saturation() {
+  use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
+
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  let dst = (60u8, 140u8, 200u8);
+  let src = (255u8, 40u8, 200u8);
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(dst.0, dst.1, dst.2, 255),
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::Saturation,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(src.0, src.1, src.2, 255),
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let (r, g, b, _) = pixel(&pixmap, 0, 0);
+  let expected = blend_saturation(src, dst);
+  let (eh, es, el) = rgb_to_hsl(expected.0, expected.1, expected.2);
+  assert_hsl_components(
+    (r, g, b),
+    (eh, es, el),
+    0.02,
+    0.05,
+    0.05,
+    "saturation blend",
+  );
+}
+
+#[test]
+fn color_oklch_blend_uses_source_chroma_and_hue() {
+  use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
+
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  let dst = (120u8, 120u8, 120u8);
+  let src = (0u8, 200u8, 0u8);
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(dst.0, dst.1, dst.2, 255),
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::ColorOklch,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(src.0, src.1, src.2, 255),
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let (r, g, b, _) = pixel(&pixmap, 0, 0);
+  let expected = blend_color_oklch(src, dst);
+  let expected_oklch = rgb_to_oklch(expected.0, expected.1, expected.2);
+  assert_oklch_components(
+    (r, g, b),
+    expected_oklch,
+    0.02,
+    0.02,
+    1.0,
+    "color oklch blend",
+  );
+}
+
+#[test]
+fn plus_lighter_blend_adds_colors() {
+  use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
+
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(100, 100, 100, 255),
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::PlusLighter,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(200, 0, 0, 255),
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let pixmap = renderer.render(&list).unwrap();
+  assert_eq!(pixel(&pixmap, 0, 0), (255, 100, 100, 255));
+}
+
+#[test]
+fn plus_darker_blend_clamps_to_black() {
+  use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
+
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  // Destination: solid red.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::PlusDarker,
+  }));
+  // Source: solid blue.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let pixmap = renderer.render(&list).unwrap();
+  assert_eq!(pixel(&pixmap, 0, 0), (0, 0, 0, 255));
+}
+
+#[test]
+fn renderer_respects_device_scale() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+    color: Rgba::rgb(255, 0, 0),
+  }));
+
+  let renderer =
+    DisplayListRenderer::new_scaled(2, 1, Rgba::WHITE, FontContext::new(), 2.0).unwrap();
+  let pixmap = renderer.render(&list).unwrap();
+  assert_eq!(pixmap.width(), 4);
+  assert_eq!(pixmap.height(), 2);
+
+  let red_pixels = pixmap
+    .pixels()
+    .iter()
+    .filter(|p| p.red() == 255 && p.green() == 0 && p.blue() == 0 && p.alpha() == 255)
+    .count();
+  assert!(
+    red_pixels >= 4,
+    "expected at least a 2x2 red block after scaling, got {}",
+    red_pixels
+  );
+}
+
+#[test]
+fn luminosity_blend_mode_uses_source_luminance() {
+  use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
+
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  let dst = (30u8, 200u8, 60u8);
+  let src = (220u8, 40u8, 40u8);
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(dst.0, dst.1, dst.2, 255),
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::Luminosity,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::from_rgba8(src.0, src.1, src.2, 255),
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let pixmap = renderer.render(&list).unwrap();
+  let (r, g, b, _) = pixel(&pixmap, 0, 0);
+  let expected = blend_luminosity(src, dst);
+  let (eh, es, el) = rgb_to_hsl(expected.0, expected.1, expected.2);
+  assert_hsl_components(
+    (r, g, b),
+    (eh, es, el),
+    0.02,
+    0.05,
+    0.05,
+    "luminosity blend",
+  );
+}
+
+#[test]
+fn backdrop_blur_samples_outside_bounds() {
+  let renderer = DisplayListRenderer::new(6, 1, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  // Backdrop: blue on the left, red on the right.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 3.0, 1.0),
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(3.0, 0.0, 3.0, 1.0),
+    color: Rgba::RED,
+  }));
+  // Apply a backdrop blur over the red half; the blur should pull in blue from outside the bounds.
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(3.0, 0.0, 3.0, 1.0),
+    plane_rect: Rect::from_xywh(3.0, 0.0, 3.0, 1.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Blur(1.0)],
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // Pixel just inside the blurred region should pick up some blue from the left half.
+  let (r, g, b, a) = pixel(&pixmap, 3, 0);
+  assert_eq!(a, 255);
+  assert!(
+    b > 0 && r < 255,
+    "expected blur to sample blue neighbor; got ({r},{g},{b})"
+  );
+}
+
+#[test]
+fn filter_blur_not_clipped_to_bounds() {
+  let renderer = DisplayListRenderer::new(4, 1, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
+    plane_rect: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Blur(1.0)],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // Blur should leak outside the original rect into pixel 0.
+  let (r, g, b, a) = pixel(&pixmap, 0, 0);
+  assert_eq!(a, 255);
+  assert!(
+    r > g && r > b && (g < 250 || b < 250),
+    "expected red-dominant blur outside bounds; got ({r},{g},{b})"
+  );
+}
+
+#[test]
+fn filter_blur_zero_has_no_effect() {
+  let renderer = DisplayListRenderer::new(4, 1, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
+    plane_rect: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Blur(0.0)],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // No blur: red stays confined to its rect and does not leak to neighbors.
+  assert_eq!(pixel(&pixmap, 1, 0), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
+}
+
+#[test]
+fn svg_filter_lengths_scale_with_device_pixel_ratio() {
+  let svg = r#"<svg xmlns='http://www.w3.org/2000/svg'>
+    <filter id='f'>
+      <feGaussianBlur in='SourceAlpha' stdDeviation='3' result='blur'/>
+      <feOffset in='blur' dx='5' dy='0' result='offset'/>
+      <feFlood flood-color='rgb(0,0,255)' result='blue'/>
+      <feComposite in='blue' in2='offset' operator='in' result='shadow'/>
+      <feMerge>
+        <feMergeNode in='shadow'/>
+        <feMergeNode in='SourceGraphic'/>
+      </feMerge>
+    </filter>
+  </svg>"#;
+  let data_url = format!("data:image/svg+xml;base64,{}", STANDARD.encode(svg));
+  let cache = ImageCache::new();
+  let filter =
+    crate::paint::svg_filter::load_svg_filter(&data_url, &cache).expect("parsed svg filter");
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 80.0, 40.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 40.0),
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::SvgFilter(filter.clone())],
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(25.0, 15.0, 20.0, 10.0),
+    color: Rgba::from_rgba8(0, 0, 255, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let render = |scale: f32| -> Pixmap {
+    DisplayListRenderer::new_scaled(80, 40, Rgba::WHITE, FontContext::new(), scale)
+      .expect("renderer")
+      .render(&list)
+      .expect("render")
+  };
+
+  let bbox_for = |pixmap: &Pixmap| -> (u32, u32, u32, u32) {
+    bounding_box_for_color(pixmap, |(r, g, b, a)| a > 0 && b > r && b > g)
+      .expect("blue filter output")
+  };
+
+  let bbox1 = bbox_for(&render(1.0));
+  let bbox2 = bbox_for(&render(2.0));
+
+  let width_ratio = (bbox2.2 - bbox2.0 + 1) as f32 / (bbox1.2 - bbox1.0 + 1) as f32;
+  let height_ratio = (bbox2.3 - bbox2.1 + 1) as f32 / (bbox1.3 - bbox1.1 + 1) as f32;
+
+  assert!(
+    (width_ratio - 2.0).abs() < 0.2 && (height_ratio - 2.0).abs() < 0.2,
+    "expected svg filter footprint to scale with DPR (w_ratio={width_ratio}, h_ratio={height_ratio})"
+  );
+}
+
+#[test]
+fn clip_path_masks_after_filters() {
+  let mut list = DisplayList::new();
+  let circle = crate::paint::clip_path::ResolvedClipPath::Circle {
+    center: crate::geometry::Point::new(5.0, 5.0),
+    radius: 4.0,
+  };
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Path { path: circle },
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopClip);
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Blur(2.0)],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let renderer = DisplayListRenderer::new(12, 12, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("rendered");
+  assert_eq!(pixel(&pixmap, 6, 6), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 11, 11), (255, 255, 255, 255));
+}
+
+#[test]
+fn clip_path_masks_bounded_layer_with_offset() {
+  let mut list = DisplayList::new();
+  let triangle = crate::paint::clip_path::ResolvedClipPath::Polygon {
+    points: vec![
+      crate::geometry::Point::new(2.0, 1.0),
+      crate::geometry::Point::new(6.0, 1.0),
+      crate::geometry::Point::new(2.0, 5.0),
+    ],
+    fill_rule: tiny_skia::FillRule::Winding,
+  };
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Path { path: triangle },
+  }));
+  let bounds = Rect::from_xywh(2.0, 1.0, 4.0, 4.0);
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: vec![ResolvedFilter::Invert(1.0)],
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+  list.push(DisplayItem::PopClip);
+
+  let renderer = DisplayListRenderer::new(8, 6, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("rendered");
+
+  assert_eq!(pixel(&pixmap, 3, 1), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 5, 3), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));
+}
+
+#[test]
+fn color_mix_background_renders_purple() {
+  let mut style = crate::ComputedStyle::default();
+  style.set_background_layers(vec![BackgroundLayer {
+    image: Some(BackgroundImage::LinearGradient {
+      angle: 0.0,
+      stops: vec![ColorStop {
+        color: crate::Color::parse("color-mix(in srgb, red 50%, blue 50%)").unwrap(),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
+      }],
+    }),
+    ..Default::default()
+  }]);
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 4.0, 4.0), vec![], Arc::new(style));
+
+  let list = DisplayListBuilder::new().build(&fragment);
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let (r, g, b, _) = pixel(&pixmap, 2, 2);
+  assert!(
+    r > 0 && b > 0 && (r as i32 - b as i32).abs() <= 1,
+    "expected purple mix, got ({r},{g},{b})"
+  );
+  assert_eq!(g, 0);
+}
+
+#[test]
+fn blend_mode_multiply_modulates_destination() {
+  // Red source over green destination with multiply should produce black in the overlap.
+  let mut list = DisplayList::new();
+  // Destination: green rect at the top-left.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    color: Rgba::GREEN,
+  }));
+  // Source: red rect overlapping destination at (0,0)-(2,2).
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: crate::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Top-left pixel should be the multiply of red over green -> black.
+  assert_eq!(pixel(&pixmap, 0, 0), (0, 0, 0, 255));
+  // Outside the overlap, destination remains green.
+  assert_eq!(pixel(&pixmap, 3, 3), (0, 255, 0, 255));
+}
+
+#[test]
+fn stacking_context_hsl_blend_preserves_backdrop_luminance() {
+  use crate::paint::display_list::BlendMode;
+
+  let dst = (60u8, 140u8, 200u8);
+  let src = (200u8, 40u8, 200u8);
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    color: Rgba::from_rgba8(dst.0, dst.1, dst.2, 255),
+  }));
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: false,
+    bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    mix_blend_mode: BlendMode::Hue,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    color: Rgba::from_rgba8(src.0, src.1, src.2, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+  let (r, g, b, _) = pixel(&pixmap, 1, 1);
+
+  let expected = blend_hue(src, dst);
+  let (eh, es, el) = rgb_to_hsl(expected.0, expected.1, expected.2);
+  assert_hsl_components(
+    (r, g, b),
+    (eh, es, el),
+    0.02,
+    0.05,
+    0.05,
+    "hue stacking blend",
+  );
+}
+
+#[test]
+fn color_mix_oklch_renders_expected_color() {
+  let mut style = crate::ComputedStyle::default();
+  style.background_color = Color::parse("color-mix(in oklch, red 40%, blue 60%)")
+    .unwrap()
+    .to_rgba(Rgba::BLACK);
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![], Arc::new(style));
+
+  let list = DisplayListBuilder::new().build(&fragment);
+  let pixmap = DisplayListRenderer::new(1, 1, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  let expected = Color::parse("color-mix(in oklch, red 40%, blue 60%)")
+    .unwrap()
+    .to_rgba(Rgba::BLACK);
+  assert_eq!(
+    pixel(&pixmap, 0, 0),
+    (expected.r, expected.g, expected.b, expected.alpha_u8())
+  );
+}
+
+#[test]
+fn color_mix_handles_transparent_components() {
+  let mut style = ComputedStyle::default();
+  style.color = Rgba::BLACK;
+  style.background_color = Rgba::TRANSPARENT;
+  style.set_background_layers(vec![BackgroundLayer {
+    image: Some(BackgroundImage::LinearGradient {
+      angle: 0.0,
+      stops: vec![
+        ColorStop {
+          color: Color::parse(
+            "color-mix(in srgb, rgba(255, 0, 0, 0.0) 50%, rgba(0, 0, 255, 1) 50%)",
+          )
+          .unwrap(),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
+        },
+        ColorStop {
+          color: Color::parse(
+            "color-mix(in srgb, rgba(255, 0, 0, 0.0) 50%, rgba(0, 0, 255, 1) 50%)",
+          )
+          .unwrap(),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
+        },
+      ],
+    }),
+    repeat: BackgroundRepeat::no_repeat(),
+    ..BackgroundLayer::default()
+  }]);
+
+  let fragment =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 2.0, 2.0), vec![], Arc::new(style));
+
+  let list = DisplayListBuilder::new().build(&fragment);
+  let renderer = DisplayListRenderer::new(2, 2, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  let (r, g, b, a) = pixel(&pixmap, 1, 1);
+  assert_eq!((r, g), (0, 0));
+  // Mixing transparent red with opaque blue should yield ~50% transparent blue. The exact
+  // premultiplication/quantization can differ by a single LSB depending on rounding.
+  assert!(
+    (b as i32 - 128).abs() <= 1 && (a as i32 - 128).abs() <= 1,
+    "expected ~half-transparent blue, got ({r}, {g}, {b}, {a})"
+  );
+}
+
+#[test]
+fn perspective_rotate_y_renders_projective_shape() {
+  let rect = Rect::from_xywh(20.0, 20.0, 20.0, 20.0);
+  let center = (
+    rect.x() + rect.width() * 0.5,
+    rect.y() + rect.height() * 0.5,
+  );
+  let angle = std::f32::consts::FRAC_PI_3;
+  let transform = Transform3D::translate(center.0, center.1, 0.0)
+    .multiply(&Transform3D::perspective(200.0))
+    .multiply(&Transform3D::rotate_y(angle))
+    .multiply(&Transform3D::translate(-center.0, -center.1, 0.0));
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds: rect,
+    plane_rect: rect,
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect,
+    color: Rgba::RED,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let renderer = DisplayListRenderer::new(80, 80, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+  let bbox = bounding_box_for_color(&pixmap, |(r, g, b, _)| r != 255 || g != 255 || b != 255)
+    .expect("red pixels");
+  let actual_width = (bbox.2 as i32 - bbox.0 as i32 + 1) as f32;
+  let actual_height = (bbox.3 as i32 - bbox.1 as i32 + 1) as f32;
+
+  let corners = [
+    (rect.min_x(), rect.min_y()),
+    (rect.max_x(), rect.min_y()),
+    (rect.max_x(), rect.max_y()),
+    (rect.min_x(), rect.max_y()),
+  ];
+  let projective_bounds = {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for (x, y) in corners {
+      let (tx, ty, _tz, tw) = transform.transform_point(x, y, 0.0);
+      let w = if tw.abs() < 1e-6 { 1.0 } else { tw };
+      let px = tx / w;
+      let py = ty / w;
+      min_x = min_x.min(px);
+      min_y = min_y.min(py);
+      max_x = max_x.max(px);
+      max_y = max_y.max(py);
+    }
+    (min_x, min_y, max_x, max_y)
+  };
+  let affine_bounds = {
+    let affine = transform.approximate_2d();
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for (x, y) in corners {
+      let ax = affine.a * x + affine.c * y + affine.e;
+      let ay = affine.b * x + affine.d * y + affine.f;
+      min_x = min_x.min(ax);
+      min_y = min_y.min(ay);
+      max_x = max_x.max(ax);
+      max_y = max_y.max(ay);
+    }
+    (min_x, min_y, max_x, max_y)
+  };
+  let span = |min_v: f32, max_v: f32| (max_v.ceil() - min_v.floor()).max(0.0);
+  let proj_width = span(projective_bounds.0, projective_bounds.2);
+  let proj_height = span(projective_bounds.1, projective_bounds.3);
+  let affine_width = span(affine_bounds.0, affine_bounds.2);
+  let affine_height = span(affine_bounds.1, affine_bounds.3);
+
+  assert!(
+    (proj_width - affine_width).abs() > 0.5 || (proj_height - affine_height).abs() > 0.5,
+    "projective and affine bounds should differ"
+  );
+  let proj_error = (actual_width - proj_width).abs() + (actual_height - proj_height).abs();
+  let affine_error = (actual_width - affine_width).abs() + (actual_height - affine_height).abs();
+  assert!(
+    proj_error < affine_error,
+    "projective warp should better match perspective mapping (proj_error {}, affine_error {})",
+    proj_error,
+    affine_error
+  );
+}
+
+#[test]
+fn rotate_y_without_perspective_stays_affine() {
+  let rect = Rect::from_xywh(10.0, 10.0, 20.0, 20.0);
+  let center = (
+    rect.x() + rect.width() * 0.5,
+    rect.y() + rect.height() * 0.5,
+  );
+  let transform = Transform3D::translate(center.0, center.1, 0.0)
+    .multiply(&Transform3D::rotate_y(std::f32::consts::FRAC_PI_4))
+    .multiply(&Transform3D::translate(-center.0, -center.1, 0.0));
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds: rect,
+    plane_rect: rect,
+    mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: true,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect,
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let renderer = DisplayListRenderer::new(60, 60, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+  let bbox = bounding_box_for_color(&pixmap, |(r, g, b, _)| r != 255 || g != 255 || b != 255)
+    .expect("blue pixels");
+  let actual_width = (bbox.2 as i32 - bbox.0 as i32 + 1) as f32;
+
+  let expected_width = rect.width() * std::f32::consts::FRAC_PI_4.cos();
+  assert!(
+    (actual_width - expected_width).abs() <= 1.0,
+    "expected affine projection width around {}, got {}",
+    expected_width,
+    actual_width
+  );
+}
+
+#[test]
+fn outline_ignores_clip_path() {
+  let renderer = DisplayListRenderer::new(40, 40, Rgba::WHITE, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+
+  let triangle = crate::paint::clip_path::ResolvedClipPath::Polygon {
+    points: vec![
+      crate::geometry::Point::new(10.0, 10.0),
+      crate::geometry::Point::new(14.0, 10.0),
+      crate::geometry::Point::new(10.0, 14.0),
+    ],
+    fill_rule: tiny_skia::FillRule::Winding,
+  };
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Path { path: triangle },
+  }));
+  list.push(DisplayItem::Outline(OutlineItem {
+    rect: Rect::from_xywh(5.0, 5.0, 20.0, 20.0),
+    radii: BorderRadii::ZERO,
+    width: 4.0,
+    style: BorderStyle::Solid,
+    color: Rgba::RED,
+    offset: 0.0,
+    invert: false,
+  }));
+  list.push(DisplayItem::PopClip);
+
+  let pixmap = renderer.render(&list).expect("render");
+  // Find any red stroke pixel in the band left of the clip path (x < 8) to verify it isn't clipped.
+  let mut found = false;
+  for y in 0..40 {
+    for x in 0..8 {
+      if pixel(&pixmap, x, y) == (255, 0, 0, 255) {
+        found = true;
+        break;
+      }
+    }
+    if found {
+      break;
+    }
+  }
+  assert!(
+    found,
+    "outline stroke should be visible outside the clip path"
+  );
+}
+
+#[test]
+fn overflow_hidden_preserves_outer_box_shadow() {
+  let mut style = ComputedStyle::default();
+  style.background_color = Rgba::from_rgba8(0, 255, 0, 255);
+  style.position = crate::style::position::Position::Relative;
+  style.z_index = Some(0);
+  style.overflow_x = Overflow::Hidden;
+  style.overflow_y = Overflow::Hidden;
+  style.box_shadow = vec![BoxShadow {
+    offset_x: Length::px(0.0),
+    offset_y: Length::px(0.0),
+    blur_radius: Length::px(0.0),
+    spread_radius: Length::px(4.0),
+    color: Rgba::from_rgba8(255, 0, 0, 255),
+    inset: false,
+  }];
+
+  let element = FragmentNode::new_block_styled(
+    Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+    vec![],
+    Arc::new(style),
+  );
+
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 40.0, 40.0), vec![element]);
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+  let renderer = DisplayListRenderer::new(40, 40, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  assert_eq!(
+    pixel(&pixmap, 8, 20),
+    (255, 0, 0, 255),
+    "outer box shadow should remain visible outside overflow clipping"
+  );
+  assert_eq!(
+    pixel(&pixmap, 20, 20),
+    (0, 255, 0, 255),
+    "element interior should still render"
+  );
+}
+
+#[test]
+fn clip_path_clips_outer_box_shadow() {
+  let mut style = ComputedStyle::default();
+  style.background_color = Rgba::from_rgba8(0, 255, 0, 255);
+  style.position = crate::style::position::Position::Relative;
+  style.z_index = Some(0);
+  style.box_shadow = vec![BoxShadow {
+    offset_x: Length::px(0.0),
+    offset_y: Length::px(0.0),
+    blur_radius: Length::px(0.0),
+    spread_radius: Length::px(4.0),
+    color: Rgba::from_rgba8(255, 0, 0, 255),
+    inset: false,
+  }];
+  style.clip_path = ClipPath::BasicShape(
+    Box::new(BasicShape::Inset {
+      top: Length::px(0.0),
+      right: Length::px(0.0),
+      bottom: Length::px(0.0),
+      left: Length::px(0.0),
+      border_radius: Box::new(None),
+    }),
+    None,
+  );
+
+  let element = FragmentNode::new_block_styled(
+    Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+    vec![],
+    Arc::new(style),
+  );
+
+  // Give the root fragment an explicit background so the "outside" sample point is stable (and
+  // does not depend on canvas background propagation heuristics).
+  let mut root_style = ComputedStyle::default();
+  root_style.background_color = Rgba::WHITE;
+  let root_style = Arc::new(root_style);
+  let dummy = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![]);
+  let root = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+    vec![element, dummy],
+    root_style,
+  );
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+  let renderer = DisplayListRenderer::new(40, 40, Rgba::WHITE, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  assert_eq!(
+    pixel(&pixmap, 8, 20),
+    (255, 255, 255, 255),
+    "clip-path should clip box shadows painted outside the element"
+  );
+  assert_eq!(
+    pixel(&pixmap, 20, 20),
+    (0, 255, 0, 255),
+    "clip-path should still allow the element to paint inside the clip"
+  );
+}
+
+#[test]
+fn box_decoration_break_slice_only_paints_outer_edges() {
+  let mut style = ComputedStyle::default();
+  style.background_color = Rgba::WHITE;
+  style.border_top_width = Length::px(4.0);
+  style.border_bottom_width = Length::px(4.0);
+  style.border_top_style = BorderStyle::Solid;
+  style.border_bottom_style = BorderStyle::Solid;
+  style.border_top_color = Rgba::BLACK;
+  style.border_bottom_color = Rgba::BLACK;
+  let style = Arc::new(style);
+
+  let total_height = 200.0;
+  let first_height = 120.0;
+  let mut first = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 40.0, first_height),
+    vec![],
+    style.clone(),
+  );
+  first.fragment_count = 2;
+  first.slice_info = FragmentSliceInfo {
+    is_first: true,
+    is_last: false,
+    slice_offset: 0.0,
+    original_block_size: total_height,
+  };
+
+  let mut second = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, first_height, 40.0, total_height - first_height),
+    vec![],
+    style.clone(),
+  );
+  second.fragment_index = 1;
+  second.fragment_count = 2;
+  second.slice_info = FragmentSliceInfo {
+    is_first: false,
+    is_last: true,
+    slice_offset: first_height,
+    original_block_size: total_height,
+  };
+
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 40.0, total_height),
+    vec![first, second],
+  );
+
+  let list = DisplayListBuilder::new().build(&root);
+  let pixmap = DisplayListRenderer::new(40, total_height as u32, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  assert_eq!(
+    pixel(&pixmap, 5, 1),
+    (0, 0, 0, 255),
+    "top border paints once"
+  );
+  assert_eq!(
+    pixel(&pixmap, 5, 118),
+    (255, 255, 255, 255),
+    "slice should skip bottom border on first fragment"
+  );
+  assert_eq!(
+    pixel(&pixmap, 5, 121),
+    (255, 255, 255, 255),
+    "slice should skip top border on continuation"
+  );
+  assert_eq!(
+    pixel(&pixmap, 5, 197),
+    (0, 0, 0, 255),
+    "bottom border should appear on last fragment"
+  );
+}
+
+#[test]
+fn box_decoration_break_clone_paints_each_fragment() {
+  let mut style = ComputedStyle::default();
+  style.background_color = Rgba::WHITE;
+  style.border_top_width = Length::px(4.0);
+  style.border_bottom_width = Length::px(4.0);
+  style.border_top_style = BorderStyle::Solid;
+  style.border_bottom_style = BorderStyle::Solid;
+  style.border_top_color = Rgba::BLACK;
+  style.border_bottom_color = Rgba::BLACK;
+  style.box_decoration_break = BoxDecorationBreak::Clone;
+  let style = Arc::new(style);
+
+  let total_height = 200.0;
+  let first_height = 120.0;
+  let mut first = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 40.0, first_height),
+    vec![],
+    style.clone(),
+  );
+  first.fragment_count = 2;
+  first.slice_info = FragmentSliceInfo {
+    is_first: true,
+    is_last: false,
+    slice_offset: 0.0,
+    original_block_size: total_height,
+  };
+
+  let mut second = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, first_height, 40.0, total_height - first_height),
+    vec![],
+    style.clone(),
+  );
+  second.fragment_index = 1;
+  second.fragment_count = 2;
+  second.slice_info = FragmentSliceInfo {
+    is_first: false,
+    is_last: true,
+    slice_offset: first_height,
+    original_block_size: total_height,
+  };
+
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 40.0, total_height),
+    vec![first, second],
+  );
+
+  let list = DisplayListBuilder::new().build(&root);
+  let pixmap = DisplayListRenderer::new(40, total_height as u32, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  assert_eq!(pixel(&pixmap, 5, 1), (0, 0, 0, 255), "top border paints");
+  assert_eq!(
+    pixel(&pixmap, 5, 118),
+    (0, 0, 0, 255),
+    "clone should paint bottom border on first fragment"
+  );
+  assert_eq!(
+    pixel(&pixmap, 5, 121),
+    (0, 0, 0, 255),
+    "clone should paint top border on continuation"
+  );
+  assert_eq!(
+    pixel(&pixmap, 5, 197),
+    (0, 0, 0, 255),
+    "bottom border paints on last fragment"
+  );
+}
+
+#[test]
+fn parallel_renderer_uses_multiple_threads_on_large_list() {
+  let mut list = DisplayList::new();
+  for y in 0..20 {
+    for x in 0..20 {
+      let idx = (y * 20 + x) as u8;
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh((x * 10) as f32, (y * 10) as f32, 8.0, 8.0),
+        color: Rgba::new(idx.wrapping_mul(3), idx.wrapping_mul(5), 120, 1.0),
+      }));
+    }
+  }
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(512, 512, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial render");
+
+  let parallelism = PaintParallelism {
+    tile_size: 64,
+    ..PaintParallelism::adaptive()
+  };
+  let pool = rayon::ThreadPoolBuilder::new()
+    .num_threads(4)
+    .build()
+    .unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(512, 512, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel render")
+  });
+
+  let cpu_budget = crate::system::cpu_budget();
+  if cpu_budget > 1 {
+    assert!(
+      report.parallel_used,
+      "parallel renderer should tile large scenes"
+    );
+    assert!(
+      report.parallel_threads > 1,
+      "expected multiple threads to render tiles (got {})",
+      report.parallel_threads
+    );
+    assert!(
+      report.parallel_tasks > 1,
+      "expected multiple tiles to be rendered in parallel"
+    );
+    assert!(
+      report.parallel_duration > Duration::ZERO,
+      "parallel render should record elapsed time"
+    );
+    assert!(
+      report.serial_duration < report.duration,
+      "serial overhead should be captured separately"
+    );
+  }
+  assert_eq!(serial.data(), report.pixmap.data());
+}

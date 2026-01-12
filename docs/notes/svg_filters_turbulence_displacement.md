@@ -268,6 +268,8 @@ In practice, `filterRes` is ignored for graphs containing `feDisplacementMap`, s
 Regression coverage:
 
 - `displacement_map_scales_per_axis` (`src/paint/svg_filter.rs`)
+- `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width` (`src/paint/tests/paint/svg_filter_test.rs`)
+- `displacement_map_applies_scale_without_extra_multiplier` (`src/paint/tests/paint/svg_filter_test.rs`)
 
 ### Displacement math + sampling (Chrome behavior)
 
@@ -354,6 +356,9 @@ When the step uses `sRGB`, no conversion is performed.
 Regression coverage:
 
 - `displacement_map_honors_color_interpolation_filters_for_map_sampling` (`src/paint/svg_filter.rs`)
+- `displacement_map_interprets_map_channels_as_unpremultiplied` (`src/paint/tests/paint/svg_filter_test.rs`)
+- `displacement_map_semitransparent_map_channels_differ_from_resvg` (`src/paint/tests/paint/svg_filter_test.rs`)
+- `displacement_map_interprets_map_channels_in_color_interpolation_space` (`src/paint/tests/paint/svg_filter_test.rs`)
 
 ### `filterRes` interaction
 
@@ -362,7 +367,8 @@ For Chrome parity, `filterRes` is ignored whenever the filter graph contains `fe
 
 Regression coverage:
 
-- `svg_filter_turbulence_displacement_matches_golden` (fixture includes `filterRes` and `feDisplacementMap`)
+- `displacement_map_ignores_filter_res` (`src/paint/tests/paint/svg_filter_test.rs`)
+- `svg_filter_turbulence_displacement_matches_golden` (`src/paint/tests/paint/svg_filter_turbulence_displacement_golden.rs`, fixture includes `filterRes` and `feDisplacementMap`)
 
 ## Regression coverage (tests + fixtures)
 
@@ -404,16 +410,23 @@ Regression coverage:
   - `displacement_map_clamps_map_to_primitive_subregion`
   - `displacement_map_region_inflates_by_half_scale_and_clips_to_filter_region`
   - `displacement_map_region_respects_per_axis_scaling`
+- `src/paint/tests/paint/svg_filter_test.rs`:
+  - `displacement_map_applies_scale_without_extra_multiplier`
+  - `displacement_map_interprets_map_channels_as_unpremultiplied`
+  - `displacement_map_semitransparent_map_channels_differ_from_resvg`
+  - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
+  - `displacement_map_ignores_filter_res`
+  - `displacement_map_interprets_map_channels_in_color_interpolation_space`
 - Semi-transparent map-channel semantics probe (validated against Chrome):
   - Fixture: `tests/pages/fixtures/svg_filter_displacement_map_alpha_semantics/index.html`
 - Displacement-map semantics golden (validated against Chrome):
   - Fixture: `tests/fixtures/html/svg_filter_displacement_map_semantics.html`
-  - Golden test: `svg_filter_displacement_map_semantics_match_golden`
+  - Golden test: `svg_filter_displacement_map_semantics_match_golden` (in `src/paint/tests/paint/svg_filter_displacement_map_semantics_golden.rs`)
   - Golden image: `tests/fixtures/golden/svg_filter_displacement_map_semantics.png`
 - CIF golden fixture (includes `feDisplacementMap` under both CIF modes):
   - Fixture: `tests/fixtures/html/svg_filter_color_interpolation_filters.html`
     (`filter id="cif-displacement-*"`).
-  - Golden test: `svg_filter_color_interpolation_filters_match_golden`
+  - Golden test: `svg_filter_color_interpolation_filters_match_golden` (in `src/paint/tests/paint/svg_filter_color_interpolation_golden.rs`)
   - Golden image: `tests/fixtures/golden/svg_filter_color_interpolation_filters.png`
 
 ### Additional repro inputs

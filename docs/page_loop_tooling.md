@@ -228,7 +228,7 @@ bash scripts/cargo_agent.sh run --release --bin inspect_frag -- \
 
 Live pages motivate fixes, but regressions keep them fixed. Prefer (in order):
 
-1. **Unit tests** in `src/` next to the code you’re changing (parsing/cascade/layout/paint internals).
+1. **Unit tests** in `src/` next to the code you’re changing (parsing/cascade/layout/paint internals, including paint/backdrop regressions under `src/paint/tests/`).
 2. **Integration tests** in `tests/` only when you need to exercise the public API (fixtures, WPT, or consumer-style end-to-end behavior).
 3. A **tiny offline page fixture** only when necessary to reproduce a real-world interaction.
 

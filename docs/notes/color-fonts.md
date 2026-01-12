@@ -106,9 +106,9 @@ limitations.
 - Net effect: `@font-palette-values override-colors` is applied end-to-end via the
   default display list renderer, and the override hash participates in caching so
   different override sets do not alias.
-- Regressions: integration tests like `display_list_preserves_font_palette_overrides_for_text`
-  compare display list output against direct `TextRasterizer` output and assert
-  that overridden palette colors are present in the final pixmap.
+- Regressions: unit tests like `display_list_preserves_font_palette_overrides_for_text` compare
+  display list output against direct `TextRasterizer` output and assert that overridden palette
+  colors are present in the final pixmap.
 
 ## COLR v1 coverage and variations
 
@@ -162,7 +162,7 @@ Implemented COLRv1 features include:
   treat that pixmap as an alpha mask: the mask is tinted to the `text-shadow` color
   (silhouette shadow) and then blurred/composited. Embedded COLR/SVG/bitmap colors
   are **not** preserved in the shadow (see
-  the `color_glyph_shadow_matches_golden` golden test).
+  `src/paint/tests/paint/display_list_renderer_test.rs::color_glyph_shadow_matches_golden`).
   Palette overrides are still passed through to the shadow rasterization step
   (notably affecting alpha when an override introduces transparency).
 

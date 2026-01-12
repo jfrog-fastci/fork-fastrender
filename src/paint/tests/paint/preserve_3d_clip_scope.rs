@@ -1,0 +1,96 @@
+use crate::paint::display_list::{
+  BlendMode, BorderRadii, ClipItem, ClipShape, DisplayItem, DisplayList, FillRectItem,
+  StackingContextItem,
+};
+use crate::paint::display_list_renderer::DisplayListRenderer;
+use crate::style::color::Rgba;
+use crate::style::types::{BackfaceVisibility, TransformStyle};
+use crate::text::font_loader::FontContext;
+use crate::Rect;
+
+fn stacking_context(bounds: Rect, transform_style: TransformStyle) -> StackingContextItem {
+  StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    is_root: false,
+    establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    mask_border: None,
+    has_clip_path: false,
+  }
+}
+
+#[test]
+fn preserve_3d_clip_scope_wraps_child_stacking_context() {
+  let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+  let clip_rect = Rect::from_xywh(0.0, 0.0, 5.0, 10.0);
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushStackingContext(stacking_context(
+    bounds,
+    TransformStyle::Preserve3d,
+  )));
+
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Rect {
+      rect: clip_rect,
+      radii: None,
+    },
+  }));
+  list.push(DisplayItem::PushStackingContext(stacking_context(
+    bounds,
+    TransformStyle::Flat,
+  )));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::BLACK,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+  list.push(DisplayItem::PopClip);
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = DisplayListRenderer::new(10, 10, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  let inside = pixmap.pixel(2, 5).expect("pixel in-bounds");
+  assert_eq!(
+    (inside.red(), inside.green(), inside.blue(), inside.alpha()),
+    (0, 0, 0, 255),
+    "expected black pixel inside clip scope, got rgba({}, {}, {}, {})",
+    inside.red(),
+    inside.green(),
+    inside.blue(),
+    inside.alpha()
+  );
+
+  let outside = pixmap.pixel(7, 5).expect("pixel in-bounds");
+  assert_eq!(
+    (
+      outside.red(),
+      outside.green(),
+      outside.blue(),
+      outside.alpha()
+    ),
+    (255, 255, 255, 255),
+    "expected background pixel outside clip scope, got rgba({}, {}, {}, {})",
+    outside.red(),
+    outside.green(),
+    outside.blue(),
+    outside.alpha()
+  );
+}

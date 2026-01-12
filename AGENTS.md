@@ -204,7 +204,8 @@ fi
 
 Live pages motivate fixes, but regressions keep them fixed:
 
-- Prefer **unit tests** in `src/` for parsing/cascade/value computation and internal algorithms.
+- Prefer **unit tests** in `src/` for parsing/cascade/value computation and internal algorithms
+  (including paint/backdrop rendering regressions under `src/paint/tests/`).
 - Use **integration tests** in `tests/` only for public API coverage and data-driven runners (fixtures, WPT).
 - Use an **offline fixture** only when necessary to reproduce real-world interactions end-to-end.
 

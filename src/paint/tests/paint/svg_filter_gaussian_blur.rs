@@ -1,0 +1,263 @@
+use crate::debug::runtime;
+use crate::debug::runtime::RuntimeToggles;
+use crate::geometry::Rect;
+use crate::image_loader::ImageCache;
+use crate::paint::svg_filter::{
+  apply_svg_filter, parse_svg_filter_from_svg_document, ColorInterpolationFilters, EdgeMode,
+  FilterInput, FilterPrimitive, FilterStep, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
+};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tiny_skia::{Pixmap, PremultipliedColorU8};
+
+fn parse_blur(std_deviation: &str) -> (f32, f32) {
+  let svg = format!(
+    r#"
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="f">
+        <feGaussianBlur stdDeviation="{}" />
+      </filter>
+    </svg>
+  "#,
+    std_deviation
+  );
+  let filter =
+    parse_svg_filter_from_svg_document(&svg, Some("f"), &ImageCache::new()).expect("parse filter");
+  match &filter.steps[0].primitive {
+    FilterPrimitive::GaussianBlur { std_dev, .. } => *std_dev,
+    other => panic!("expected gaussian blur primitive, got {:?}", other),
+  }
+}
+
+#[test]
+fn gaussian_blur_single_value_applies_to_both_axes() {
+  let (x, y) = parse_blur("4");
+  assert!((x - 4.0).abs() < f32::EPSILON);
+  assert!((y - 4.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn gaussian_blur_two_values_are_parsed() {
+  let (x, y) = parse_blur("3 1");
+  assert!((x - 3.0).abs() < f32::EPSILON);
+  assert!((y - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn gaussian_blur_negative_values_are_clamped() {
+  let (x, y) = parse_blur("-3 -5");
+  assert_eq!(x, 0.0);
+  assert_eq!(y, 0.0);
+}
+
+fn opaque_bounds(pixmap: &Pixmap) -> Option<(u32, u32, u32, u32)> {
+  let mut min_x = pixmap.width();
+  let mut min_y = pixmap.height();
+  let mut max_x = 0;
+  let mut max_y = 0;
+  let mut seen = false;
+  for y in 0..pixmap.height() {
+    for x in 0..pixmap.width() {
+      let px = pixmap.pixel(x, y).unwrap();
+      if px.alpha() > 0 {
+        seen = true;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+      }
+    }
+  }
+  if seen {
+    Some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
+  } else {
+    None
+  }
+}
+
+fn draw_rect(
+  pixmap: &mut Pixmap,
+  x: u32,
+  y: u32,
+  width: u32,
+  height: u32,
+  color: PremultipliedColorU8,
+) {
+  let stride = pixmap.width() as usize;
+  for iy in y..y + height {
+    for ix in x..x + width {
+      let idx = (iy * stride as u32 + ix) as usize;
+      pixmap.pixels_mut()[idx] = color;
+    }
+  }
+}
+
+#[test]
+fn gaussian_blur_resolves_single_value_per_axis_in_object_bbox_units() {
+  let bbox = Rect::from_xywh(0.0, 0.0, 100.0, 50.0);
+  let mut pixmap = Pixmap::new(bbox.width() as u32, bbox.height() as u32).expect("pixmap");
+  let opaque = PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("color");
+  draw_rect(&mut pixmap, 45, 20, 10, 10, opaque);
+
+  let mut filter = SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::GaussianBlur {
+        input: FilterInput::SourceGraphic,
+        std_dev: (0.1, 0.1),
+        edge_mode: EdgeMode::Duplicate,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(bbox.width()),
+      height: SvgLength::Number(bbox.height()),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::ObjectBoundingBox,
+    fingerprint: 0,
+  };
+  filter.refresh_fingerprint();
+  // Lock blur algorithm selection to keep the bounds check deterministic regardless of host env.
+  // This test is about `primitiveUnits="objectBoundingBox"` scaling, not blur implementation details.
+  runtime::with_thread_runtime_toggles(
+    Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FAST_BLUR".to_string(),
+      "1".to_string(),
+    )]))),
+    || apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap(),
+  );
+
+  let bounds = opaque_bounds(&pixmap).expect("blurred content should be visible");
+  let (min_x, min_y, width, height) = bounds;
+
+  assert!(
+    (min_x as i32 - 18).abs() <= 1,
+    "expected blur to expand more along x (min_x={min_x})",
+  );
+  assert!(
+    (min_y as i32 - 7).abs() <= 1,
+    "expected blur to expand based on bbox height (min_y={min_y})",
+  );
+  assert!(
+    (width as i32 - 64).abs() <= 2,
+    "expected horizontal spread to reflect bbox width (width={width})",
+  );
+  assert!(
+    (height as i32 - 36).abs() <= 2,
+    "expected vertical spread to reflect bbox height (height={height})",
+  );
+}
+
+#[test]
+fn gaussian_blur_parses_case_insensitive_attributes_and_edge_mode() {
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="f">
+        <feGaussianBlur stddeviation="4" edgemode="wrap" />
+      </filter>
+    </svg>
+  "#;
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("parse filter");
+  match &filter.steps[0].primitive {
+    FilterPrimitive::GaussianBlur {
+      std_dev, edge_mode, ..
+    } => {
+      assert_eq!(*std_dev, (4.0, 4.0));
+      assert!(matches!(edge_mode, EdgeMode::Wrap));
+    }
+    other => panic!("expected gaussian blur primitive, got {:?}", other),
+  }
+}
+
+#[test]
+fn gaussian_blur_edge_mode_none_fades_edges() {
+  let mut pixmap = Pixmap::new(3, 3).unwrap();
+  let opaque = PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("color");
+  for px in pixmap.pixels_mut() {
+    *px = opaque;
+  }
+
+  let mut filter = SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::GaussianBlur {
+        input: FilterInput::SourceGraphic,
+        std_dev: (1.0, 1.0),
+        edge_mode: EdgeMode::None,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(3.0),
+      height: SvgLength::Number(3.0),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    fingerprint: 0,
+  };
+  filter.refresh_fingerprint();
+
+  let bbox = Rect::from_xywh(0.0, 0.0, 3.0, 3.0);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  let corner = pixmap.pixel(0, 0).unwrap();
+  assert!(
+    corner.alpha() < 255,
+    "expected corner alpha to fade, got {}",
+    corner.alpha()
+  );
+}
+
+#[test]
+fn gaussian_blur_edge_mode_wrap_wraps_across_edges() {
+  let mut pixmap = Pixmap::new(5, 1).unwrap();
+  pixmap.pixels_mut().fill(PremultipliedColorU8::TRANSPARENT);
+  pixmap.pixels_mut()[0] = PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap();
+
+  let mut filter = SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::GaussianBlur {
+        input: FilterInput::SourceGraphic,
+        std_dev: (1.0, 0.0),
+        edge_mode: EdgeMode::Wrap,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(5.0),
+      height: SvgLength::Number(1.0),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    fingerprint: 0,
+  };
+  filter.refresh_fingerprint();
+
+  let bbox = Rect::from_xywh(0.0, 0.0, 5.0, 1.0);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  let right = pixmap.pixel(4, 0).unwrap();
+  assert!(
+    right.alpha() > 0,
+    "expected wrap to contribute across edge, got alpha {}",
+    right.alpha()
+  );
+}

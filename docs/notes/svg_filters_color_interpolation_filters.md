@@ -172,6 +172,6 @@ primitives.
 
 ## Regression tests
 
-- `svg_filter_color_interpolation_filters_match_golden` renders
+- `svg_filter_color_interpolation_filters_match_golden` (in `src/paint/tests/paint/svg_filter_color_interpolation_golden.rs`) renders
   `tests/fixtures/html/svg_filter_color_interpolation_filters.html` and compares it against
   `tests/fixtures/golden/svg_filter_color_interpolation_filters.png`.

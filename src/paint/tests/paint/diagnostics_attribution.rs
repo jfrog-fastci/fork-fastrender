@@ -1,0 +1,189 @@
+use base64::{engine::general_purpose, Engine as _};
+use crate::debug::runtime::RuntimeToggles;
+use crate::{DiagnosticsLevel, FastRender, RenderOptions};
+use image::codecs::png::PngEncoder;
+use image::{ColorType, ImageEncoder};
+use std::collections::HashMap;
+
+fn solid_png_data_url(width: u32, height: u32, rgba: [u8; 4]) -> String {
+  let mut pixels = vec![0u8; (width * height * 4) as usize];
+  for chunk in pixels.chunks_exact_mut(4) {
+    chunk.copy_from_slice(&rgba);
+  }
+  let mut png = Vec::new();
+  PngEncoder::new(&mut png)
+    .write_image(&pixels, width, height, ColorType::Rgba8.into())
+    .expect("encode png");
+  let b64 = general_purpose::STANDARD.encode(png);
+  format!("data:image/png;base64,{b64}")
+}
+
+#[test]
+fn paint_diagnostics_include_attribution_counters() {
+  let legacy_toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "legacy".to_string(),
+  )]));
+  let display_list_toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+
+  let data_url = solid_png_data_url(32, 32, [255, 0, 0, 255]);
+  let html = format!(
+    r#"
+      <style>
+        html, body {{ margin: 0; }}
+        .bg {{
+          width: 100px;
+          height: 100px;
+          background-image: url("{data_url}");
+          background-size: 20px 20px;
+          background-repeat: repeat;
+        }}
+        .bgx {{
+          width: 100px;
+          height: 20px;
+          background-image: url("{data_url}");
+          background-size: 20px 20px;
+          background-repeat: repeat-x;
+        }}
+        .clip {{
+          width: 60px;
+          height: 60px;
+          overflow: hidden;
+          border-radius: 8px;
+          opacity: 0.99;
+        }}
+        .inner {{
+          width: 120px;
+          height: 120px;
+          background: rgb(0, 120, 255);
+        }}
+        img {{ display: block; width: 32px; height: 32px; }}
+      </style>
+      <div class="bg"></div>
+      <div class="bgx"></div>
+      <div class="clip"><div class="inner"></div></div>
+      <img src="{data_url}">
+      <img src="{data_url}">
+    "#
+  );
+
+  let options = RenderOptions::new()
+    .with_viewport(140, 300)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+
+  let mut legacy = FastRender::new().expect("renderer");
+  let legacy_report = legacy
+    .render_html_with_diagnostics(
+      &html,
+      options.clone().with_runtime_toggles(legacy_toggles.clone()),
+    )
+    .expect("legacy render");
+  let legacy_stats = legacy_report
+    .diagnostics
+    .stats
+    .as_ref()
+    .expect("legacy stats should be present");
+  let legacy_paint = &legacy_stats.paint;
+  assert!(
+    legacy_paint.background_tiles.unwrap_or(0) > 0,
+    "expected background tile count"
+  );
+  assert!(
+    legacy_paint.background_ms.unwrap_or(0.0) > 0.0,
+    "expected background timing"
+  );
+  assert!(
+    legacy_paint.background_layers.unwrap_or(0) > 0,
+    "expected background layer count"
+  );
+  assert!(
+    legacy_paint.background_pattern_fast_paths.unwrap_or(0) > 0,
+    "expected background pattern fast paths"
+  );
+  assert!(
+    legacy_paint.image_pixmap_ms.unwrap_or(0.0) > 0.0,
+    "expected image pixmap conversion time"
+  );
+  assert!(
+    legacy_paint.image_pixmap_cache_misses.unwrap_or(0) > 0,
+    "expected legacy image pixmap cache misses"
+  );
+  assert!(
+    legacy_paint.image_pixmap_cache_hits.unwrap_or(0) > 0,
+    "expected legacy image pixmap cache hits"
+  );
+  assert!(
+    legacy_paint.clip_mask_calls.unwrap_or(0) > 0,
+    "expected clip mask calls"
+  );
+  assert!(
+    legacy_paint.clip_mask_pixels.unwrap_or(0) > 0,
+    "expected clip mask pixel accounting"
+  );
+  assert!(
+    legacy_paint.layer_allocations.unwrap_or(0) > 0,
+    "expected layer allocations"
+  );
+  assert!(
+    legacy_paint.layer_alloc_bytes.unwrap_or(0) > 0,
+    "expected layer allocation bytes"
+  );
+
+  let mut display_list = FastRender::new().expect("renderer");
+  let dl_report = display_list
+    .render_html_with_diagnostics(&html, options.with_runtime_toggles(display_list_toggles))
+    .expect("display list render");
+  let dl_stats = dl_report
+    .diagnostics
+    .stats
+    .as_ref()
+    .expect("display list stats should be present");
+  let dl_paint = &dl_stats.paint;
+  assert!(
+    dl_paint.background_tiles.unwrap_or(0) > 0,
+    "expected display list background tiles"
+  );
+  assert!(
+    dl_paint.background_ms.unwrap_or(0.0) > 0.0,
+    "expected display list background timing"
+  );
+  assert!(
+    dl_paint.background_layers.unwrap_or(0) > 0,
+    "expected display list background layer count"
+  );
+  assert!(
+    dl_paint.background_pattern_fast_paths.unwrap_or(0) > 0,
+    "expected display list background pattern fast paths"
+  );
+  assert!(
+    dl_paint.image_pixmap_cache_misses.unwrap_or(0) > 0,
+    "expected image pixmap cache misses"
+  );
+  assert!(
+    dl_paint.image_pixmap_cache_hits.unwrap_or(0) > 0,
+    "expected image pixmap cache hits"
+  );
+  assert!(
+    dl_paint.image_pixmap_ms.unwrap_or(0.0) > 0.0,
+    "expected image pixmap ms in display list renderer"
+  );
+  assert!(
+    dl_paint.clip_mask_calls.unwrap_or(0) > 0,
+    "expected clip mask calls in display list renderer"
+  );
+  assert!(
+    dl_paint.clip_mask_pixels.unwrap_or(0) > 0,
+    "expected clip mask pixel accounting in display list renderer"
+  );
+  assert!(
+    dl_paint.layer_allocations.unwrap_or(0) > 0,
+    "expected layer allocations in display list renderer"
+  );
+  assert!(
+    dl_paint.layer_alloc_bytes.unwrap_or(0) > 0,
+    "expected layer allocation bytes in display list renderer"
+  );
+}

@@ -37,6 +37,7 @@ FastRender uses the standard Rust split:
 
 - **Unit tests** live in `src/` alongside the code they test (typically in `#[cfg(test)] mod tests { ... }`).
   - Run: `bash scripts/cargo_agent.sh test -p fastrender --lib`
+  - Paint/backdrop rendering regressions live under `src/paint/tests/`.
 - **Integration tests** live in `tests/` and exercise the public API / external fixtures.
   - `tests/integration.rs` is the single “normal” integration-test binary, and it pulls in modules under `tests/` (directories and `mod.rs` files).
   - Run: `bash scripts/cargo_agent.sh test -p fastrender --test integration`
@@ -65,6 +66,9 @@ To run a subset, pass a test-name filter:
 ```bash
 # Unit tests:
 bash scripts/cargo_agent.sh test -p fastrender --lib <filter>
+
+# Paint unit tests only:
+bash scripts/cargo_agent.sh test -p fastrender --lib paint::tests
 
 # Integration tests:
 bash scripts/cargo_agent.sh test -p fastrender --test integration <filter>
