@@ -1138,6 +1138,37 @@ mod tests {
     let style = style_for_styled_node_id(&tree, 1).expect("style");
     assert_eq!(style.direction, Direction::Rtl);
   }
+
+  #[test]
+  fn label_hover_chain_includes_associated_control() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><label for=\"c\">Label</label><input id=\"c\"></body></html>",
+    )
+    .expect("parse");
+    let label_id = find_element_node_id(&mut dom, "label");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let index = DomIndexMut::new(&mut dom);
+    let chain = collect_element_chain_with_label_associated_controls(&index, label_id);
+    assert!(chain.contains(&label_id));
+    assert!(
+      chain.contains(&input_id),
+      "label chains should include the associated control (for=)"
+    );
+
+    let mut dom = crate::dom::parse_html(
+      "<html><body><label>Label <input id=\"c\"></label></body></html>",
+    )
+    .expect("parse");
+    let label_id = find_element_node_id(&mut dom, "label");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let index = DomIndexMut::new(&mut dom);
+    let chain = collect_element_chain_with_label_associated_controls(&index, label_id);
+    assert!(chain.contains(&label_id));
+    assert!(
+      chain.contains(&input_id),
+      "label chains should include the associated control (descendant)"
+    );
+  }
 }
 
 fn nearest_element_ancestor(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
@@ -1162,6 +1193,32 @@ fn collect_element_chain(index: &DomIndexMut, start: usize) -> Vec<usize> {
       chain.push(id);
     }
     current = index.parent.get(id).copied();
+  }
+  chain
+}
+
+fn collect_element_chain_with_label_associated_controls(
+  index: &DomIndexMut,
+  start: usize,
+) -> Vec<usize> {
+  let mut chain = collect_element_chain(index, start);
+  // HTML defines that a label's associated control also matches :hover/:active when the label
+  // itself matches. For interaction state, approximate this by unioning the element chain of any
+  // hovered/active label with the chain of its associated control.
+  //
+  // Note: We only scan the *original* chain for labels to avoid cascading into newly added
+  // ancestors; nested label associations are extremely rare and not worth the complexity here.
+  let baseline = chain.clone();
+  for id in baseline {
+    if index.node(id).is_some_and(is_label) {
+      if let Some(control) = find_label_associated_control(index, id) {
+        for control_id in collect_element_chain(index, control) {
+          if !chain.contains(&control_id) {
+            chain.push(control_id);
+          }
+        }
+      }
+    }
   }
   chain
 }
@@ -2812,7 +2869,7 @@ impl InteractionEngine {
     let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let new_chain = hit
       .and_then(|hit| nearest_element_ancestor(&index, hit.styled_node_id))
-      .map(|target| collect_element_chain(&index, target))
+      .map(|target| collect_element_chain_with_label_associated_controls(&index, target))
       .unwrap_or_default();
 
     let changed = self.state.hover_chain != new_chain;
@@ -2845,7 +2902,7 @@ impl InteractionEngine {
     let down_target = down_hit.as_ref().map(|hit| hit.dom_node_id);
     let mut index = DomIndexMut::new(dom);
     let new_chain = down_target
-      .map(|target| collect_element_chain(&index, target))
+      .map(|target| collect_element_chain_with_label_associated_controls(&index, target))
       .unwrap_or_default();
 
     let changed = self.state.active_chain != new_chain;
