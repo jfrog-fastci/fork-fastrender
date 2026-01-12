@@ -3,10 +3,13 @@
 //! This target is only active when `ecma-rs-fuzz` is built with the `typed` feature
 //! (enabled by default), which enables `optimize-js/typed`.
 //!
-//! Run (from the repo root) with CPU/memory limits:
+//! Run (from the repo root) with a hard timeout (via `timeout -k`) and the repo's fuzz wrapper:
 //! ```bash
-//! timeout -k 10 600 bash vendor/ecma-rs/scripts/run_limited.sh --as 16G -- \
-//!   cargo fuzz run optimize_js_compile_typed
+//! # One-time: create a gitignored output corpus directory.
+//! mkdir -p vendor/ecma-rs/fuzz/corpus/optimize_js_compile_typed
+//!
+//! timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run optimize_js_compile_typed \
+//!   fuzz/corpus/optimize_js_compile_typed -- -max_total_time=10
 //! ```
 #![no_main]
 
@@ -42,4 +45,3 @@ fuzz_target!(|data: &[u8]| {
 // doing no work.
 #[cfg(not(feature = "typed"))]
 fuzz_target!(|_data: &[u8]| {});
-

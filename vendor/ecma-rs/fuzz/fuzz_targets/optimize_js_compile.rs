@@ -1,9 +1,12 @@
 //! Fuzz `optimize-js` compilation + analysis driver.
 //!
-//! Run (from the repo root) with CPU/memory limits:
+//! Run (from the repo root) with a hard timeout (via `timeout -k`) and the repo's fuzz wrapper:
 //! ```bash
-//! timeout -k 10 600 bash vendor/ecma-rs/scripts/run_limited.sh --as 16G -- \
-//!   cargo fuzz run optimize_js_compile
+//! # One-time: create a gitignored output corpus directory.
+//! mkdir -p vendor/ecma-rs/fuzz/corpus/optimize_js_compile
+//!
+//! timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run optimize_js_compile \
+//!   fuzz/corpus/optimize_js_compile -- -max_total_time=10
 //! ```
 #![no_main]
 
@@ -32,4 +35,3 @@ fuzz_target!(|data: &[u8]| {
   // Exercise the whole-program analysis driver, including instruction metadata annotations.
   let _ = analysis::annotate_program(&mut program);
 });
-

@@ -1,9 +1,12 @@
 //! Fuzz `stackmap::relocate_statepoint_derived_roots` using synthetic statepoint records.
 //!
-//! Run (from the repo root) with CPU/memory limits:
+//! Run (from the repo root) with a hard timeout (via `timeout -k`) and the repo's fuzz wrapper:
 //! ```bash
-//! timeout -k 10 600 bash vendor/ecma-rs/scripts/run_limited.sh --as 16G -- \
-//!   cargo fuzz run stackmap_relocate_statepoint
+//! # One-time: create a gitignored output corpus directory.
+//! mkdir -p vendor/ecma-rs/fuzz/corpus/stackmap_relocate_statepoint
+//!
+//! timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run stackmap_relocate_statepoint \
+//!   fuzz/corpus/stackmap_relocate_statepoint -- -max_total_time=10
 //! ```
 #![no_main]
 
@@ -187,4 +190,3 @@ fuzz_target!(|data: &[u8]| {
     }
   });
 });
-
