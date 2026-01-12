@@ -99,6 +99,9 @@ fn wpt_local_suite_passes() {
 mod tests;
 
 #[cfg(test)]
+mod offline_invariants;
+
+#[cfg(test)]
 mod integration_tests {
   use super::*;
   use std::path::PathBuf;
