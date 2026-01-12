@@ -2519,6 +2519,11 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   // Element reflected attribute accessors.
   ELEMENT_CLASS_NAME_GET_KEY,
   ELEMENT_CLASS_NAME_SET_KEY,
+  ELEMENT_CLASS_LIST_ADD_KEY,
+  ELEMENT_CLASS_LIST_REMOVE_KEY,
+  ELEMENT_CLASS_LIST_TOGGLE_KEY,
+  ELEMENT_CLASS_LIST_CONTAINS_KEY,
+  ELEMENT_CLASS_LIST_REPLACE_KEY,
   ELEMENT_ID_GET_KEY,
   ELEMENT_ID_SET_KEY,
   ELEMENT_TITLE_GET_KEY,
@@ -2562,6 +2567,7 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   TEXTAREA_VALUE_SET_KEY,
   FORM_RESET_KEY,
   // CSSStyleDeclaration helpers.
+  CSS_STYLE_DECL_PROTOTYPE_KEY,
   STYLE_GET_PROPERTY_VALUE_KEY,
   STYLE_SET_PROPERTY_KEY,
   STYLE_REMOVE_PROPERTY_KEY,
@@ -8169,174 +8175,6 @@ fn get_or_create_node_wrapper(
   Ok(Value::Object(wrapper))
 }
 
-/// Copy the internal FastRender DOM shim function objects from `host_document_obj` onto
-/// `new_document_obj`.
-///
-/// `get_or_create_node_wrapper(..)` looks up these shims as *own* data properties on the owning
-/// document wrapper (via `Heap::object_get_own_data_property_value`). Detached documents created by
-/// DOMParser (or other cloning APIs) must therefore copy these keys so Node/Element wrappers created
-/// from the detached document expose the same API surface (e.g. `textContent`, traversal accessors,
-/// `appendChild`, etc).
-fn copy_document_internal_shims(
-  scope: &mut Scope<'_>,
-  host_document_obj: GcObject,
-  new_document_obj: GcObject,
-) -> Result<(), VmError> {
-  // Root objects while allocating property keys: `alloc_key` can trigger GC.
-  scope.push_root(Value::Object(host_document_obj))?;
-  scope.push_root(Value::Object(new_document_obj))?;
-
-  for key_name in [
-    // Node methods/accessors.
-    NODE_APPEND_CHILD_KEY,
-    NODE_INSERT_BEFORE_KEY,
-    NODE_REMOVE_CHILD_KEY,
-    NODE_REPLACE_CHILD_KEY,
-    NODE_CLONE_NODE_KEY,
-    NODE_PARENT_NODE_GET_KEY,
-    NODE_FIRST_CHILD_GET_KEY,
-    NODE_PREVIOUS_SIBLING_GET_KEY,
-    NODE_NEXT_SIBLING_GET_KEY,
-    NODE_REMOVE_KEY,
-    NODE_TEXT_CONTENT_GET_KEY,
-    NODE_TEXT_CONTENT_SET_KEY,
-    // EventTarget shims.
-    EVENT_TARGET_ADD_EVENT_LISTENER_KEY,
-    EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY,
-    EVENT_TARGET_DISPATCH_EVENT_KEY,
-    // Element attribute shims.
-    ELEMENT_GET_ATTRIBUTE_KEY,
-    ELEMENT_SET_ATTRIBUTE_KEY,
-    ELEMENT_REMOVE_ATTRIBUTE_KEY,
-    // Element query shims.
-    ELEMENT_QUERY_SELECTOR_KEY,
-    ELEMENT_QUERY_SELECTOR_ALL_KEY,
-    ELEMENT_MATCHES_KEY,
-    ELEMENT_CLOSEST_KEY,
-    ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY,
-    // Markup serialization shims.
-    ELEMENT_INNER_HTML_GET_KEY,
-    ELEMENT_INNER_HTML_SET_KEY,
-    ELEMENT_OUTER_HTML_GET_KEY,
-    ELEMENT_OUTER_HTML_SET_KEY,
-    // Adjacent insertion shims.
-    ELEMENT_INSERT_ADJACENT_HTML_KEY,
-    ELEMENT_INSERT_ADJACENT_ELEMENT_KEY,
-    ELEMENT_INSERT_ADJACENT_TEXT_KEY,
-    // Element reflected getters/setters and common properties.
-    ELEMENT_CLASS_NAME_GET_KEY,
-    ELEMENT_CLASS_NAME_SET_KEY,
-    ELEMENT_CLASS_LIST_ADD_KEY,
-    ELEMENT_CLASS_LIST_REMOVE_KEY,
-    ELEMENT_CLASS_LIST_TOGGLE_KEY,
-    ELEMENT_CLASS_LIST_CONTAINS_KEY,
-    ELEMENT_CLASS_LIST_REPLACE_KEY,
-    ELEMENT_ID_GET_KEY,
-    ELEMENT_ID_SET_KEY,
-    ELEMENT_TITLE_GET_KEY,
-    ELEMENT_TITLE_SET_KEY,
-    ELEMENT_LANG_GET_KEY,
-    ELEMENT_LANG_SET_KEY,
-    ELEMENT_DIR_GET_KEY,
-    ELEMENT_DIR_SET_KEY,
-    ELEMENT_HIDDEN_GET_KEY,
-    ELEMENT_HIDDEN_SET_KEY,
-    ELEMENT_SRC_GET_KEY,
-    ELEMENT_SRC_SET_KEY,
-    ELEMENT_SRCSET_GET_KEY,
-    ELEMENT_SRCSET_SET_KEY,
-    ELEMENT_SIZES_GET_KEY,
-    ELEMENT_SIZES_SET_KEY,
-    ELEMENT_HREF_GET_KEY,
-    ELEMENT_HREF_SET_KEY,
-    ELEMENT_REL_GET_KEY,
-    ELEMENT_REL_SET_KEY,
-    ELEMENT_TYPE_GET_KEY,
-    ELEMENT_TYPE_SET_KEY,
-    ELEMENT_CHARSET_GET_KEY,
-    ELEMENT_CHARSET_SET_KEY,
-    ELEMENT_CROSS_ORIGIN_GET_KEY,
-    ELEMENT_CROSS_ORIGIN_SET_KEY,
-    ELEMENT_ASYNC_GET_KEY,
-    ELEMENT_ASYNC_SET_KEY,
-    ELEMENT_DEFER_GET_KEY,
-    ELEMENT_DEFER_SET_KEY,
-    ELEMENT_HEIGHT_GET_KEY,
-    ELEMENT_HEIGHT_SET_KEY,
-    ELEMENT_WIDTH_GET_KEY,
-    ELEMENT_WIDTH_SET_KEY,
-    INPUT_VALUE_GET_KEY,
-    INPUT_VALUE_SET_KEY,
-    INPUT_CHECKED_GET_KEY,
-    INPUT_CHECKED_SET_KEY,
-    TEXTAREA_VALUE_GET_KEY,
-    TEXTAREA_VALUE_SET_KEY,
-    FORM_RESET_KEY,
-    // Optional style shims (used by wrapper style objects).
-    CSS_STYLE_DECL_PROTOTYPE_KEY,
-    STYLE_GET_PROPERTY_VALUE_KEY,
-    STYLE_SET_PROPERTY_KEY,
-    STYLE_REMOVE_PROPERTY_KEY,
-    STYLE_CSS_TEXT_GET_KEY,
-    STYLE_CSS_TEXT_SET_KEY,
-    STYLE_DISPLAY_GET_KEY,
-    STYLE_DISPLAY_SET_KEY,
-    STYLE_CURSOR_GET_KEY,
-    STYLE_CURSOR_SET_KEY,
-    STYLE_HEIGHT_GET_KEY,
-    STYLE_HEIGHT_SET_KEY,
-    STYLE_WIDTH_GET_KEY,
-    STYLE_WIDTH_SET_KEY,
-  ] {
-    let key = alloc_key(scope, key_name)?;
-    let value = match scope
-      .heap()
-      .object_get_own_data_property_value(host_document_obj, &key)
-    {
-      Ok(value) => value,
-      // Detached documents should tolerate missing optional shims.
-      Err(VmError::PropertyNotData) => None,
-      Err(err) => return Err(err),
-    };
-    let Some(value) = value else {
-      continue;
-    };
-    // Root values while defining the new property: `define_property` can allocate and trigger GC.
-    scope.push_root(value)?;
-    scope.define_property(new_document_obj, key, data_desc(value))?;
-  }
-
-  Ok(())
-}
-
-fn copy_own_property_descriptor(
-  scope: &mut Scope<'_>,
-  from_obj: GcObject,
-  to_obj: GcObject,
-  name: &str,
-) -> Result<(), VmError> {
-  // Root objects while allocating property keys: string allocation can trigger GC.
-  scope.push_root(Value::Object(from_obj))?;
-  scope.push_root(Value::Object(to_obj))?;
-  let key = alloc_key(scope, name)?;
-  let Some(desc) = scope.heap().object_get_own_property(from_obj, &key)? else {
-    return Ok(());
-  };
-
-  match &desc.kind {
-    PropertyKind::Data { value, .. } => {
-      scope.push_root(*value)?;
-    }
-    PropertyKind::Accessor { get, set } => {
-      scope.push_root(*get)?;
-      scope.push_root(*set)?;
-    }
-  }
-
-  scope.define_property(to_obj, key, desc)?;
-  Ok(())
-}
-
 fn node_wrapper_document_obj(
   scope: &mut Scope<'_>,
   wrapper_obj: GcObject,
@@ -10832,6 +10670,234 @@ fn dom_implementation_create_document_type_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
+fn dom_parser_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DOMParser constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn dom_parser_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  // Brand-check for DOMParser.prototype.parseFromString.
+  let brand_key = alloc_key(scope, DOM_PARSER_BRAND_KEY)?;
+  scope.define_property(
+    obj,
+    brand_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn dom_parser_parse_from_string_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Brand check.
+  let Value::Object(parser_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let brand_key = alloc_key(scope, DOM_PARSER_BRAND_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(parser_obj, &brand_key)?
+  {
+    Some(Value::Bool(true)) => {}
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  // Slot 0: host `window.document` wrapper object.
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let host_document_obj = match slots
+    .get(DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "DOMParser.parseFromString native missing host document slot",
+      ))
+    }
+  };
+
+  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_value = scope.heap_mut().to_string(html_value)?;
+  let html = scope
+    .heap()
+    .get_string(html_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let type_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let type_value = scope.heap_mut().to_string(type_value)?;
+  let ty = scope
+    .heap()
+    .get_string(type_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  if ty.to_ascii_lowercase() != "text/html" {
+    return Err(VmError::TypeError(
+      "DOMParser.parseFromString only supports 'text/html'",
+    ));
+  }
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "DOMParser.parseFromString requires a DOM-backed document",
+  ))?;
+
+  let parsed_dom = crate::dom::parse_html_with_options(
+    html.as_ref(),
+    crate::dom::DomParseOptions::with_scripting_enabled(false),
+  )
+  .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?;
+
+  // Create a detached document root node inside the shared `dom2::Document`.
+  let document_id = dom
+    .clone_node(dom.root(), /* deep */ false)
+    .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to create a Document"))?;
+
+  if let crate::dom::DomNodeType::Document { quirks_mode, .. } = &parsed_dom.node_type {
+    dom.node_mut(document_id).kind = NodeKind::Document {
+      quirks_mode: *quirks_mode,
+    };
+  }
+
+  crate::dom2::import::import_domnode_into_parent(dom, document_id, &parsed_dom);
+
+  // Construct a detached Document wrapper.
+  //
+  // Keep `window.document` as the prototype to inherit the full Document API surface (e.g. `body`,
+  // `getElementById`), but copy internal `__fastrender_*` shim keys onto the new object as *own*
+  // properties so `get_or_create_node_wrapper(..)` can install Node/Element methods for nodes in
+  // the detached tree.
+  let document_obj = scope.alloc_object_with_prototype(Some(host_document_obj))?;
+  scope.push_root(Value::Object(document_obj))?;
+
+  // Detached documents have no associated window.
+  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
+  scope.push_root(Value::String(about_blank_s))?;
+  let default_view_key = alloc_key(scope, "defaultView")?;
+  scope.define_property(
+    document_obj,
+    default_view_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Null,
+        writable: false,
+      },
+    },
+  )?;
+  let url_key = alloc_key(scope, "URL")?;
+  scope.define_property(document_obj, url_key, data_desc(Value::String(about_blank_s)))?;
+  let location_key = alloc_key(scope, "location")?;
+  scope.define_property(
+    document_obj,
+    location_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Null,
+        writable: false,
+      },
+    },
+  )?;
+
+  // Register the detached document node with `DomPlatform` so Document methods that brand-check via
+  // `require_document_id` can be called on this wrapper.
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
+    "DOMParser.parseFromString requires a DOM-backed realm",
+  ))?;
+  let document_key = vm_js::WeakGcObject::from(document_obj);
+  platform.register_wrapper(
+    scope.heap(),
+    document_obj,
+    document_key,
+    document_id,
+    DomInterface::Document,
+  );
+
+  // The document wrapper is also a Node wrapper. Populate the same internal properties used by
+  // other wrapper nodes so generic bindings can treat the detached document like any other Node.
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  scope.define_property(
+    document_obj,
+    node_id_key,
+    data_desc(Value::Number(document_id.index() as f64)),
+  )?;
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  scope.define_property(
+    document_obj,
+    wrapper_document_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(document_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Copy internal shim function objects from the host document so Node/Element wrappers created
+  // from the detached document expose core APIs (`textContent`, traversal getters, mutation
+  // methods, etc).
+  copy_wrapper_shared_methods(scope, host_document_obj, document_obj)?;
+
+  Ok(Value::Object(document_obj))
+}
+
 fn define_event_default_properties(scope: &mut Scope<'_>, obj: GcObject) -> Result<(), VmError> {
   // WHATWG DOM: core Event attributes must exist from construction time (or `createEvent`), with
   // default values until dispatch populates them.
@@ -13116,187 +13182,6 @@ fn mutation_observer_constructor_construct_native(
   )?;
 
   Ok(Value::Object(obj))
-}
-
-fn dom_parser_constructor_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Err(VmError::TypeError(
-    "DOMParser constructor cannot be invoked without 'new'",
-  ))
-}
-
-fn dom_parser_constructor_construct_native(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _args: &[Value],
-  new_target: Value,
-) -> Result<Value, VmError> {
-  let ctor = match new_target {
-    Value::Object(obj) => obj,
-    _ => callee,
-  };
-
-  let prototype_key = alloc_key(scope, "prototype")?;
-  let proto = scope
-    .heap()
-    .object_get_own_data_property_value(ctor, &prototype_key)?
-    .and_then(|v| match v {
-      Value::Object(obj) => Some(obj),
-      _ => None,
-    });
-
-  let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj))?;
-  if let Some(proto) = proto {
-    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
-  }
-
-  Ok(Value::Object(obj))
-}
-
-fn dom_parser_parse_from_string_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let Value::Object(_parser_obj) = this else {
-    return Err(VmError::TypeError(
-      "DOMParser.parseFromString must be called on a DOMParser object",
-    ));
-  };
-
-  // Note: DOMParser accepts `TrustedHTML | DOMString`; for now we treat everything as `DOMString`.
-  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let html_value = scope.heap_mut().to_string(html_value)?;
-  let html = scope
-    .heap()
-    .get_string(html_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
-
-  let ty_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let ty_value = scope.heap_mut().to_string(ty_value)?;
-  let ty = scope
-    .heap()
-    .get_string(ty_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
-
-  if !ty.eq_ignore_ascii_case("text/html") {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
-      "NotSupportedError",
-      "DOMParser.parseFromString only supports type=\"text/html\"",
-    )?));
-  }
-
-  let dom = dom2::parse_html(&html).map_err(|_| {
-    VmError::TypeError("DOMParser.parseFromString failed to parse HTML")
-  })?;
-
-  let host_document_obj = vm
-    .user_data::<WindowRealmUserData>()
-    .and_then(|data| data.document_obj)
-    .ok_or(VmError::TypeError("DOMParser.parseFromString requires window.document"))?;
-
-  // Construct a detached Document wrapper. Use the canonical `window.document` as the prototype
-  // so the returned object continues to pass `instanceof Document` checks and inherits Document
-  // APIs (even if most of them are no-ops today).
-  let document_obj = scope.alloc_object_with_prototype(Some(host_document_obj))?;
-
-  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
-  scope.push_root(Value::Object(document_obj))?;
-  scope.push_root(Value::String(about_blank_s))?;
-
-  {
-    // Root while allocating property keys: string allocation can trigger GC.
-    let mut scope = scope.reborrow();
-    scope.push_root(Value::Object(document_obj))?;
-    scope.push_root(Value::String(about_blank_s))?;
-
-    let default_view_key = alloc_key(&mut scope, "defaultView")?;
-    scope.define_property(
-      document_obj,
-      default_view_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Data {
-          value: Value::Null,
-          writable: false,
-        },
-      },
-    )?;
-
-    let url_key = alloc_key(&mut scope, "URL")?;
-    scope.define_property(
-      document_obj,
-      url_key,
-      data_desc(Value::String(about_blank_s)),
-    )?;
-
-    let location_key = alloc_key(&mut scope, "location")?;
-    scope.define_property(
-      document_obj,
-      location_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Data {
-          value: Value::Null,
-          writable: false,
-        },
-      },
-    )?;
-  }
-
-  // `get_or_create_node_wrapper` installs many methods by reading internal keys from the owning
-  // document wrapper. Copy the canonical document's shared method objects so detached DOMParser
-  // documents behave like `window.document`.
-  copy_wrapper_shared_methods(scope, host_document_obj, document_obj)?;
-
-  // Populate `documentElement` as an eager data property (sufficient for DOMParser consumers).
-  if let Some(node_id) = dom.document_element() {
-    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(&dom), node_id)?;
-    scope.push_root(wrapper)?;
-    let key = alloc_key(scope, "documentElement")?;
-    scope.define_property(
-      document_obj,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Data {
-          value: wrapper,
-          writable: false,
-        },
-      },
-    )?;
-  }
-
-  let document_id = gc_object_id(document_obj);
-  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-    return Err(VmError::InvariantViolation(
-      "WindowRealm missing WindowRealmUserData",
-    ));
-  };
-  data.owned_dom2_documents.insert(document_id, Box::new(dom));
-
-  Ok(Value::Object(document_obj))
 }
 
 fn mutation_observer_id_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<u64, VmError> {
@@ -31231,65 +31116,6 @@ fn init_window_globals(
     global,
     mutation_observer_key,
     data_desc(Value::Object(mutation_observer_ctor_func)),
-  )?;
-
-  // DOMParser constructor + prototype.
-  let dom_parser_proto = scope.alloc_object()?;
-  scope.push_root(Value::Object(dom_parser_proto))?;
-
-  let dom_parser_parse_from_string_call_id =
-    vm.register_native_call(dom_parser_parse_from_string_native)?;
-  let dom_parser_parse_from_string_name = scope.alloc_string("parseFromString")?;
-  scope.push_root(Value::String(dom_parser_parse_from_string_name))?;
-  let dom_parser_parse_from_string_func = scope.alloc_native_function(
-    dom_parser_parse_from_string_call_id,
-    None,
-    dom_parser_parse_from_string_name,
-    2,
-  )?;
-  scope.heap_mut().object_set_prototype(
-    dom_parser_parse_from_string_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(dom_parser_parse_from_string_func))?;
-  let dom_parser_parse_from_string_key = alloc_key(&mut scope, "parseFromString")?;
-  scope.define_property(
-    dom_parser_proto,
-    dom_parser_parse_from_string_key,
-    data_desc(Value::Object(dom_parser_parse_from_string_func)),
-  )?;
-
-  let dom_parser_ctor_call_id = vm.register_native_call(dom_parser_constructor_native)?;
-  let dom_parser_ctor_construct_id =
-    vm.register_native_construct(dom_parser_constructor_construct_native)?;
-  let dom_parser_ctor_name = scope.alloc_string("DOMParser")?;
-  scope.push_root(Value::String(dom_parser_ctor_name))?;
-  let dom_parser_ctor_func = scope.alloc_native_function(
-    dom_parser_ctor_call_id,
-    Some(dom_parser_ctor_construct_id),
-    dom_parser_ctor_name,
-    0,
-  )?;
-  scope.heap_mut().object_set_prototype(
-    dom_parser_ctor_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(dom_parser_ctor_func))?;
-  scope.define_property(
-    dom_parser_ctor_func,
-    prototype_key,
-    data_desc(Value::Object(dom_parser_proto)),
-  )?;
-  scope.define_property(
-    dom_parser_proto,
-    constructor_key,
-    data_desc(Value::Object(dom_parser_ctor_func)),
-  )?;
-  let dom_parser_key = alloc_key(&mut scope, "DOMParser")?;
-  scope.define_property(
-    global,
-    dom_parser_key,
-    data_desc(Value::Object(dom_parser_ctor_func)),
   )?;
 
   // --- DOMRectReadOnly / DOMRect ------------------------------------------------
