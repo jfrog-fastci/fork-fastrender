@@ -715,9 +715,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
     // tick deadline when needed.
-    app.drive_animation_tick();
-    app.drive_viewport_throttle();
-    app.update_control_flow_for_animation_ticks(control_flow);
+    app.drive_periodic_tasks_and_update_control_flow(control_flow);
   });
 }
 
@@ -1591,6 +1589,19 @@ error: {err}",
       .and_then(|tab| tab.latest_frame_meta.as_ref())
       .is_some_and(|meta| meta.wants_ticks);
     wants_ticks.then_some(tab_id)
+  }
+
+  fn drive_periodic_tasks_and_update_control_flow(
+    &mut self,
+    control_flow: &mut winit::event_loop::ControlFlow,
+  ) {
+    // In a multi-window event loop, this should be called for every live window/app after handling
+    // the current event so that:
+    // - animation ticks are driven even when a given window is otherwise idle, and
+    // - the global `ControlFlow::WaitUntil` deadline accounts for the earliest wakeup across all windows.
+    self.drive_animation_tick();
+    self.drive_viewport_throttle();
+    self.update_control_flow_for_animation_ticks(control_flow);
   }
 
   fn drive_animation_tick(&mut self) {
