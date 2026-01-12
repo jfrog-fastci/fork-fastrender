@@ -42,7 +42,6 @@ fn conformance_doc_links_to_real_code_and_tests() {
       "src/html/encoding.rs",
       "src/html/viewport.rs",
       "src/css/parser.rs",
-      "src/css/loader.rs",
       "src/css/selectors.rs",
       "src/css/types.rs",
       "src/style/cascade.rs",
@@ -88,12 +87,13 @@ fn conformance_doc_links_to_real_code_and_tests() {
       "src/js/fetch.rs",
       "src/js/vmjs/window_fetch.rs",
       "src/js/legacy/quickjs/fetch.rs",
-      // Integration test module roots (included by `tests/integration.rs`).
+      // Integration tests (kept in `tests/` and referenced by the support matrix).
       "tests/integration.rs",
-      "tests/common/mod.rs",
-      "tests/api/mod.rs",
-      "tests/fixtures/mod.rs",
-      "tests/wpt/mod.rs",
+      "tests/bin/fetch_and_render_js_test.rs",
+      "tests/bin/fetch_and_render_animation_time_test.rs",
+      "tests/js_harness/timers.rs",
+      "tests/wpt/tests/style/conditional/",
+      "tests/wpt/tests/style/container_queries/",
     ]
   } else {
     &[
