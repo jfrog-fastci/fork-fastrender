@@ -5,7 +5,8 @@
 //!
 //! - `new XMLHttpRequest()`
 //! - `open()` / `setRequestHeader()` / `send()` / `abort()`
-//! - `readyState`, `status`, `statusText`, `responseType`, `responseText`, `response`
+//! - `getResponseHeader()` / `getAllResponseHeaders()`
+//! - `readyState`, `status`, `statusText`, `responseType`, `timeout`, `responseText`, `response`
 //! - Event handler properties (`onload`, `onerror`, etc) and `addEventListener`/`removeEventListener`
 //!
 //! The primary goal is to avoid `ReferenceError: XMLHttpRequest is not defined` crashes when
@@ -23,10 +24,13 @@ use crate::resource::{
   FetchedResource, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
 use http::StatusCode;
+use serde_json::Value as JsonValue;
 use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+use std::{sync::mpsc, thread};
 use vm_js::{
   GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
   PropertyKind, Realm, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -56,6 +60,9 @@ const XHR_HEADER_VALUE_TOO_LONG_ERROR: &str =
 const XHR_BODY_TOO_LONG_ERROR: &str = "XMLHttpRequest.send body exceeds maximum length";
 const XHR_RESPONSE_TYPE_TOO_LONG_ERROR: &str = "XMLHttpRequest.responseType exceeds maximum length";
 const XHR_EVENT_TYPE_TOO_LONG_ERROR: &str = "XMLHttpRequest event type exceeds maximum length";
+const XHR_INVALID_RESPONSE_TYPE_ERROR: &str = "XMLHttpRequest.responseType unsupported value";
+const XHR_RESPONSE_HEADER_NAME_TOO_LONG_ERROR: &str =
+  "XMLHttpRequest.getResponseHeader name exceeds maximum length";
 
 #[derive(Clone)]
 pub struct WindowXhrEnv {
@@ -120,10 +127,12 @@ struct XhrState {
   response_type: String,
   response_bytes: Vec<u8>,
   response_text: String,
+  response_headers: Vec<(String, String)>,
   status: u16,
   status_text: String,
   with_credentials: bool,
   async_flag: bool,
+  timeout_ms: u64,
 
   request: Option<RequestSnapshot>,
   // Monotonic counter incremented for each `send()`. Used to ignore stale tasks.
@@ -142,10 +151,12 @@ impl Default for XhrState {
       response_type: String::new(),
       response_bytes: Vec::new(),
       response_text: String::new(),
+      response_headers: Vec::new(),
       status: 0,
       status_text: String::new(),
       with_credentials: false,
       async_flag: true,
+      timeout_ms: 0,
       request: None,
       request_seq: 0,
       send_in_progress: false,
@@ -327,6 +338,37 @@ fn to_rust_string_limited(
 ) -> Result<String, VmError> {
   let s = heap.to_string(value)?;
   js_string_to_rust_string_limited(heap, s, max_bytes, error)
+}
+
+fn clamp_response_headers(headers: Vec<(String, String)>, limits: &WebFetchLimits) -> Vec<(String, String)> {
+  if headers.is_empty() {
+    return headers;
+  }
+  let mut out: Vec<(String, String)> = Vec::new();
+  let mut bytes: usize = 0;
+  for (name, value) in headers.into_iter() {
+    if out.len() >= limits.max_header_count {
+      break;
+    }
+    let add = name.len().saturating_add(value.len());
+    if bytes.saturating_add(add) > limits.max_total_header_bytes {
+      break;
+    }
+    bytes = bytes.saturating_add(add);
+    out.push((name, value));
+  }
+  out
+}
+
+fn truncate_string_to_max_bytes(value: &mut String, max_bytes: usize) {
+  if value.len() <= max_bytes {
+    return;
+  }
+  let mut idx = max_bytes;
+  while idx > 0 && !value.is_char_boundary(idx) {
+    idx = idx.saturating_sub(1);
+  }
+  value.truncate(idx);
 }
 
 fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
@@ -539,10 +581,8 @@ fn xhr_response_type_set(
     "" => "",
     "text" => "text",
     "arraybuffer" => "arraybuffer",
-    _ => {
-      // Ignore unknown values (MVP behavior).
-      return Ok(Value::Undefined);
-    }
+    "json" => "json",
+    _ => return Err(VmError::TypeError(XHR_INVALID_RESPONSE_TYPE_ERROR)),
   };
 
   with_env_state_mut(env_id, |state| {
@@ -600,6 +640,62 @@ fn xhr_with_credentials_set(
   Ok(Value::Undefined)
 }
 
+fn xhr_timeout_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
+  let timeout_ms = with_env_state(env_id, |state| {
+    let xhr = state
+      .xhrs
+      .get(&xhr_id)
+      .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+    Ok(xhr.timeout_ms)
+  })?;
+  Ok(Value::Number(timeout_ms as f64))
+}
+
+fn xhr_timeout_set(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
+  let raw = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut ms = scope.heap_mut().to_number(raw)?;
+  if !ms.is_finite() || ms.is_nan() {
+    ms = 0.0;
+  }
+  ms = ms.trunc();
+  if ms < 0.0 {
+    ms = 0.0;
+  }
+  if ms > u64::MAX as f64 {
+    ms = u64::MAX as f64;
+  }
+  let timeout_ms = ms as u64;
+
+  with_env_state_mut(env_id, |state| {
+    let xhr = state
+      .xhrs
+      .get_mut(&xhr_id)
+      .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+    xhr.timeout_ms = timeout_ms;
+    Ok(())
+  })?;
+
+  Ok(Value::Undefined)
+}
+
 fn xhr_response_text_get(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -618,7 +714,7 @@ fn xhr_response_text_get(
     Ok((xhr.response_type.clone(), xhr.response_text.clone()))
   })?;
 
-  if response_type == "arraybuffer" {
+  if response_type == "arraybuffer" || response_type == "json" {
     let s = scope.alloc_string("")?;
     return Ok(Value::String(s));
   }
@@ -660,8 +756,54 @@ fn xhr_response_get(
     return Ok(Value::Object(ab));
   }
 
+  if response_type == "json" {
+    let parsed: Result<JsonValue, _> = serde_json::from_slice(&bytes);
+    return match parsed {
+      Ok(value) => json_to_js(vm, scope, &value),
+      Err(_) => Ok(Value::Null),
+    };
+  }
+
   let s = scope.alloc_string(&text)?;
   Ok(Value::String(s))
+}
+
+fn json_to_js(vm: &mut Vm, scope: &mut Scope<'_>, value: &JsonValue) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  match value {
+    JsonValue::Null => Ok(Value::Null),
+    JsonValue::Bool(b) => Ok(Value::Bool(*b)),
+    JsonValue::Number(n) => Ok(Value::Number(n.as_f64().unwrap_or(f64::NAN))),
+    JsonValue::String(s) => {
+      let js = scope.alloc_string(s)?;
+      Ok(Value::String(js))
+    }
+    JsonValue::Array(items) => {
+      let arr = scope.alloc_array(items.len())?;
+      scope
+        .heap_mut()
+        .object_set_prototype(arr, Some(intr.array_prototype()))?;
+      scope.push_root(Value::Object(arr))?;
+      for (idx, item) in items.iter().enumerate() {
+        let key = alloc_key(scope, &idx.to_string())?;
+        let js_value = json_to_js(vm, scope, item)?;
+        scope.define_property(arr, key, data_desc(js_value, true))?;
+      }
+      Ok(Value::Object(arr))
+    }
+    JsonValue::Object(map) => {
+      let obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+      scope.push_root(Value::Object(obj))?;
+      for (k, v) in map {
+        let key = alloc_key(scope, k)?;
+        let js_value = json_to_js(vm, scope, v)?;
+        scope.define_property(obj, key, data_desc(js_value, true))?;
+      }
+      Ok(Value::Object(obj))
+    }
+  }
 }
 
 fn xhr_open_native<Host: WindowRealmHost + 'static>(
@@ -714,6 +856,7 @@ fn xhr_open_native<Host: WindowRealmHost + 'static>(
     xhr.status_text.clear();
     xhr.response_bytes.clear();
     xhr.response_text.clear();
+    xhr.response_headers.clear();
     xhr.send_in_progress = false;
     xhr.aborted = false;
     xhr.async_flag = async_flag;
@@ -797,6 +940,129 @@ fn xhr_set_request_header_native(
   Ok(Value::Undefined)
 }
 
+fn is_forbidden_response_header_name(name: &str) -> bool {
+  name.eq_ignore_ascii_case("set-cookie") || name.eq_ignore_ascii_case("set-cookie2")
+}
+
+fn xhr_get_response_header_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
+  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
+  let name_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name = to_rust_string_limited(
+    scope.heap_mut(),
+    name_val,
+    limits.max_total_header_bytes,
+    XHR_RESPONSE_HEADER_NAME_TOO_LONG_ERROR,
+  )?;
+  let name = name.trim();
+  if name.is_empty() {
+    return Ok(Value::Null);
+  }
+  if is_forbidden_response_header_name(name) {
+    return Ok(Value::Null);
+  }
+  if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+    return Ok(Value::Null);
+  }
+
+  let (ready_state, headers) = with_env_state(env_id, |state| {
+    let xhr = state
+      .xhrs
+      .get(&xhr_id)
+      .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+    Ok((xhr.ready_state, xhr.response_headers.clone()))
+  })?;
+
+  if ready_state < XHR_HEADERS_RECEIVED {
+    return Ok(Value::Null);
+  }
+
+  let mut values: Vec<String> = Vec::new();
+  for (k, v) in headers {
+    if k.eq_ignore_ascii_case(name) && !is_forbidden_response_header_name(&k) {
+      values.push(v);
+    }
+  }
+
+  if values.is_empty() {
+    return Ok(Value::Null);
+  }
+
+  let mut combined = values.join(", ");
+  truncate_string_to_max_bytes(&mut combined, limits.max_total_header_bytes);
+  let s = scope.alloc_string(&combined)?;
+  Ok(Value::String(s))
+}
+
+fn xhr_get_all_response_headers_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
+  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
+
+  let (ready_state, headers) = with_env_state(env_id, |state| {
+    let xhr = state
+      .xhrs
+      .get(&xhr_id)
+      .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+    Ok((xhr.ready_state, xhr.response_headers.clone()))
+  })?;
+
+  if ready_state < XHR_HEADERS_RECEIVED {
+    let s = scope.alloc_string("")?;
+    return Ok(Value::String(s));
+  }
+
+  // Combine duplicates using comma separation while preserving first-seen order.
+  let mut order: Vec<String> = Vec::new();
+  let mut combined: HashMap<String, (String, Vec<String>)> = HashMap::new();
+  for (name, value) in headers.into_iter() {
+    if is_forbidden_response_header_name(&name) {
+      continue;
+    }
+    let key = name.to_ascii_lowercase();
+    if !combined.contains_key(&key) {
+      order.push(key.clone());
+      combined.insert(key.clone(), (name, vec![value]));
+    } else if let Some((_original, values)) = combined.get_mut(&key) {
+      values.push(value);
+    }
+  }
+
+  let mut out = String::new();
+  for key in order {
+    let Some((original, values)) = combined.remove(&key) else {
+      continue;
+    };
+    let value = values.join(", ");
+    out.push_str(&original);
+    out.push_str(": ");
+    out.push_str(&value);
+    out.push_str("\r\n");
+    if out.len() > limits.max_total_header_bytes {
+      truncate_string_to_max_bytes(&mut out, limits.max_total_header_bytes);
+      break;
+    }
+  }
+
+  let s = scope.alloc_string(&out)?;
+  Ok(Value::String(s))
+}
+
 fn xhr_send_native<Host: WindowRealmHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -850,7 +1116,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     return Err(VmError::TypeError(XHR_BODY_TOO_LONG_ERROR));
   }
   // Snapshot request data and transition to "in-flight" under the env lock.
-  let (request_seq, request, async_flag, credentials_mode) = with_env_state_mut(env_id, |state| {
+  let (request_seq, request, async_flag, credentials_mode, timeout_ms) = with_env_state_mut(env_id, |state| {
     let xhr = state
       .xhrs
       .get_mut(&xhr_id)
@@ -864,16 +1130,18 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       FetchCredentialsMode::SameOrigin
     };
     let async_flag = xhr.async_flag;
-    let mut req = xhr.request.clone().ok_or(VmError::TypeError(
-      "XMLHttpRequest.open must be called first",
-    ))?;
+    let timeout_ms = xhr.timeout_ms;
+    let mut req = xhr
+      .request
+      .clone()
+      .ok_or(VmError::TypeError("XMLHttpRequest.open must be called first"))?;
     req.body = body;
     xhr.request = Some(req.clone());
     xhr.send_in_progress = true;
     xhr.aborted = false;
     xhr.request_seq = xhr.request_seq.saturating_add(1);
     let seq = xhr.request_seq;
-    Ok((seq, req, async_flag, credentials_mode))
+    Ok((seq, req, async_flag, credentials_mode, timeout_ms))
   })?;
 
   if !async_flag {
@@ -906,6 +1174,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     let mut status: u16 = 0;
     let mut status_text: String = String::new();
     let mut bytes: Vec<u8> = Vec::new();
+    let mut response_headers: Vec<(String, String)> = Vec::new();
     match result {
       Ok(res) => {
         bytes = res.bytes;
@@ -921,6 +1190,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
           if status_text.len() > XHR_STATUS_TEXT_MAX_BYTES {
             status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
           }
+          response_headers = clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
         }
       }
       Err(_) => {
@@ -940,11 +1210,13 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         xhr.status_text.clear();
         xhr.response_bytes.clear();
         xhr.response_text.clear();
+        xhr.response_headers.clear();
       } else {
         xhr.status = status;
         xhr.status_text = status_text;
         xhr.response_text = String::from_utf8_lossy(&bytes).to_string();
         xhr.response_bytes = bytes;
+        xhr.response_headers = response_headers;
       }
       Ok(true)
     })?;
@@ -954,7 +1226,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     }
 
     let outcome_event: &'static str = if is_error { "error" } else { "load" };
-    let events = ["readystatechange", outcome_event, "loadend"];
+    let events = ["loadstart", "readystatechange", outcome_event, "loadend"];
     for event_type in events {
       dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, event_type)?;
     }
@@ -978,6 +1250,25 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     Ok(())
   })?;
 
+  // Dispatch `loadstart` in its own task so user callbacks never run inside the networking work.
+  let queue_loadstart = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+    let events = ["loadstart"];
+    dispatch_xhr_events::<Host>(host, event_loop, env_id, xhr_id, request_seq, &events, false)
+  });
+
+  if let Err(e) = queue_loadstart {
+    // If queueing fails, ensure we don't leak the persistent root.
+    scope.heap_mut().remove_root(root);
+    let _ = with_env_state_mut(env_id, |state| {
+      if let Some(xhr) = state.xhrs.get_mut(&xhr_id) {
+        xhr.root = None;
+        xhr.send_in_progress = false;
+      }
+      Ok(())
+    });
+    return Err(throw_error(scope, &format!("{e}")));
+  }
+
   let queue_result = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
     // Check the request is still current (not aborted/re-opened) before doing any network work.
     let should_run = with_env_state(env_id, |state| {
@@ -992,36 +1283,73 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       return Ok(());
     }
 
-    let fetch_req = {
-      let mut fr = FetchRequest::new(&request.url, FetchDestination::Fetch)
-        .with_credentials_mode(credentials_mode);
-      if let Some(referrer) = document_url.as_deref() {
-        fr = fr.with_referrer_url(referrer);
-      }
-      if let Some(origin) = document_origin.as_ref() {
-        fr = fr.with_client_origin(origin);
-      }
-      fr = fr.with_referrer_policy(referrer_policy);
-      fr
-    };
+    let recv_result: Result<crate::error::Result<FetchedResource>, mpsc::RecvTimeoutError> =
+      if timeout_ms > 0 {
+        let (tx, rx) = mpsc::channel::<crate::error::Result<FetchedResource>>();
+        let fetcher = Arc::clone(&fetcher);
 
-    let http_req = HttpRequest {
-      fetch: fetch_req,
-      method: &request.method,
-      redirect: crate::resource::web_fetch::RequestRedirect::Follow,
-      headers: request.headers.as_slice(),
-      body: request.body.as_deref(),
-    };
+        // Run the blocking fetch on a worker thread so the networking task can enforce timeouts.
+        let _handle = thread::spawn(move || {
+          let fetch_req = {
+            let mut fr = FetchRequest::new(&request.url, FetchDestination::Fetch)
+              .with_credentials_mode(credentials_mode);
+            if let Some(referrer) = document_url.as_deref() {
+              fr = fr.with_referrer_url(referrer);
+            }
+            if let Some(origin) = document_origin.as_ref() {
+              fr = fr.with_client_origin(origin);
+            }
+            fr = fr.with_referrer_policy(referrer_policy);
+            fr
+          };
 
-    let result: crate::error::Result<FetchedResource> = fetcher.fetch_http_request(http_req);
+          let http_req = HttpRequest {
+            fetch: fetch_req,
+            method: &request.method,
+            redirect: crate::resource::web_fetch::RequestRedirect::Follow,
+            headers: request.headers.as_slice(),
+            body: request.body.as_deref(),
+          };
 
-    // Update XHR state (no JS execution here).
+          let result: crate::error::Result<FetchedResource> = fetcher.fetch_http_request(http_req);
+          let _ = tx.send(result);
+        });
+
+        rx.recv_timeout(Duration::from_millis(timeout_ms))
+      } else {
+        let fetch_req = {
+          let mut fr = FetchRequest::new(&request.url, FetchDestination::Fetch)
+            .with_credentials_mode(credentials_mode);
+          if let Some(referrer) = document_url.as_deref() {
+            fr = fr.with_referrer_url(referrer);
+          }
+          if let Some(origin) = document_origin.as_ref() {
+            fr = fr.with_client_origin(origin);
+          }
+          fr = fr.with_referrer_policy(referrer_policy);
+          fr
+        };
+
+        let http_req = HttpRequest {
+          fetch: fetch_req,
+          method: &request.method,
+          redirect: crate::resource::web_fetch::RequestRedirect::Follow,
+          headers: request.headers.as_slice(),
+          body: request.body.as_deref(),
+        };
+
+        Ok(fetcher.fetch_http_request(http_req))
+      };
+
+    let mut is_timeout = false;
     let mut is_error = false;
     let mut status: u16 = 0;
     let mut status_text: String = String::new();
     let mut bytes: Vec<u8> = Vec::new();
-    match result {
-      Ok(res) => {
+    let mut response_headers: Vec<(String, String)> = Vec::new();
+
+    match recv_result {
+      Ok(Ok(res)) => {
         bytes = res.bytes;
         if bytes.len() > limits.max_response_body_bytes {
           is_error = true;
@@ -1035,10 +1363,14 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
           if status_text.len() > XHR_STATUS_TEXT_MAX_BYTES {
             status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
           }
+          response_headers = clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
         }
       }
-      Err(_) => {
+      Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
         is_error = true;
+      }
+      Err(mpsc::RecvTimeoutError::Timeout) => {
+        is_timeout = true;
       }
     }
 
@@ -1053,16 +1385,18 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       }
       xhr.send_in_progress = false;
       xhr.ready_state = XHR_DONE;
-      if is_error {
+      if is_timeout || is_error {
         xhr.status = 0;
         xhr.status_text.clear();
         xhr.response_bytes.clear();
         xhr.response_text.clear();
+        xhr.response_headers.clear();
       } else {
         xhr.status = status;
         xhr.status_text = status_text;
         xhr.response_text = String::from_utf8_lossy(&bytes).to_string();
         xhr.response_bytes = bytes;
+        xhr.response_headers = response_headers;
       }
       Ok(true)
     }) {
@@ -1075,8 +1409,13 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     }
 
     // Dispatch events on a follow-up task so user callbacks never run inside the networking work.
-    let outcome_event: &'static str = if is_error { "error" } else { "load" };
-    let events = ["readystatechange", outcome_event, "loadend"];
+    let events: [&'static str; 3] = if is_timeout {
+      ["readystatechange", "timeout", "loadend"]
+    } else {
+      let outcome_event: &'static str = if is_error { "error" } else { "load" };
+      ["readystatechange", outcome_event, "loadend"]
+    };
+
     let queue_dispatch = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
       dispatch_xhr_events::<Host>(host, event_loop, env_id, xhr_id, request_seq, &events, true)
     });
@@ -1151,6 +1490,7 @@ fn xhr_abort_native<Host: WindowRealmHost + 'static>(
     xhr.status_text.clear();
     xhr.response_bytes.clear();
     xhr.response_text.clear();
+    xhr.response_headers.clear();
     xhr.request_seq = xhr.request_seq.saturating_add(1);
     Ok((xhr.request_seq, true))
   })?;
@@ -1418,6 +1758,7 @@ fn dispatch_xhr_event(
     "error" => "onerror",
     "abort" => "onabort",
     "timeout" => "ontimeout",
+    "loadstart" => "onloadstart",
     "loadend" => "onloadend",
     other => {
       // Fallback: `on${type}`.
@@ -1525,11 +1866,12 @@ fn dispatch_xhr_events<Host: WindowRealmHost + 'static>(
       if xhr.request_seq != request_seq {
         return Ok((Value::Undefined, None));
       }
-      let root = if finalize { xhr.root.take() } else { None };
-      let value = root
+      let root_id = xhr.root;
+      let root_to_remove = if finalize { xhr.root.take() } else { None };
+      let value = root_id
         .and_then(|id| heap.get_root(id))
         .unwrap_or(Value::Undefined);
-      Ok((value, root))
+      Ok((value, root_to_remove))
     })?;
 
     let result = (|| {
@@ -1697,6 +2039,38 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
     true,
   )?;
 
+  let get_response_header_id = vm.register_native_call(xhr_get_response_header_native)?;
+  let get_response_header_name = scope.alloc_string("getResponseHeader")?;
+  scope.push_root(Value::String(get_response_header_name))?;
+  let get_response_header_fn =
+    scope.alloc_native_function(get_response_header_id, None, get_response_header_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(get_response_header_fn, Some(func_proto))?;
+  set_data_prop(
+    &mut scope,
+    proto,
+    "getResponseHeader",
+    Value::Object(get_response_header_fn),
+    true,
+  )?;
+
+  let get_all_response_headers_id = vm.register_native_call(xhr_get_all_response_headers_native)?;
+  let get_all_response_headers_name = scope.alloc_string("getAllResponseHeaders")?;
+  scope.push_root(Value::String(get_all_response_headers_name))?;
+  let get_all_response_headers_fn =
+    scope.alloc_native_function(get_all_response_headers_id, None, get_all_response_headers_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(get_all_response_headers_fn, Some(func_proto))?;
+  set_data_prop(
+    &mut scope,
+    proto,
+    "getAllResponseHeaders",
+    Value::Object(get_all_response_headers_fn),
+    true,
+  )?;
+
   let send_id = vm.register_native_call(xhr_send_native::<Host>)?;
   let send_name = scope.alloc_string("send")?;
   scope.push_root(Value::String(send_name))?;
@@ -1848,6 +2222,27 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
     accessor_desc(Value::Object(wc_get_fn), Value::Object(wc_set_fn)),
   )?;
 
+  let timeout_get_id = vm.register_native_call(xhr_timeout_get)?;
+  let timeout_get_name = scope.alloc_string("get timeout")?;
+  scope.push_root(Value::String(timeout_get_name))?;
+  let timeout_get_fn = scope.alloc_native_function(timeout_get_id, None, timeout_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(timeout_get_fn, Some(func_proto))?;
+  let timeout_set_id = vm.register_native_call(xhr_timeout_set)?;
+  let timeout_set_name = scope.alloc_string("set timeout")?;
+  scope.push_root(Value::String(timeout_set_name))?;
+  let timeout_set_fn = scope.alloc_native_function(timeout_set_id, None, timeout_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(timeout_set_fn, Some(func_proto))?;
+  let timeout_key = alloc_key(&mut scope, "timeout")?;
+  scope.define_property(
+    proto,
+    timeout_key,
+    accessor_desc(Value::Object(timeout_get_fn), Value::Object(timeout_set_fn)),
+  )?;
+
   let response_text_get_id = vm.register_native_call(xhr_response_text_get)?;
   let response_text_get_name = scope.alloc_string("get responseText")?;
   scope.push_root(Value::String(response_text_get_name))?;
@@ -1883,6 +2278,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   set_data_prop(&mut scope, proto, "onerror", Value::Null, true)?;
   set_data_prop(&mut scope, proto, "onabort", Value::Null, true)?;
   set_data_prop(&mut scope, proto, "ontimeout", Value::Null, true)?;
+  set_data_prop(&mut scope, proto, "onloadstart", Value::Null, true)?;
   set_data_prop(&mut scope, proto, "onloadend", Value::Null, true)?;
 
   // Expose global constructor.
@@ -1930,8 +2326,24 @@ mod tests {
         return Err(crate::error::Error::Other("network error".to_string()));
       }
 
-      let mut res = FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string()));
+      if req.fetch.url.contains("slow") {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+      }
+
+      let mut res = if req.fetch.url.contains("json") {
+        FetchedResource::new(br#"{"answer":42}"#.to_vec(), Some("application/json".to_string()))
+      } else {
+        FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string()))
+      };
       res.status = Some(200);
+      if req.fetch.url.contains("headers") {
+        res.response_headers = Some(vec![
+          ("X-Test".to_string(), "value".to_string()),
+          ("X-Multi".to_string(), "a".to_string()),
+          ("X-Multi".to_string(), "b".to_string()),
+          ("Set-Cookie".to_string(), "secret=yes".to_string()),
+        ]);
+      }
       Ok(res)
     }
   }
@@ -2220,4 +2632,180 @@ mod tests {
     assert!(!log.iter().any(|s| s == "listener"), "log={log:?}");
     Ok(())
   }
-}
+
+  #[test]
+  fn xhr_response_type_json_parses_object() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__answer = null;\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.responseType = 'json';\n\
+         xhr.onload = function(){ globalThis.__answer = xhr.response.answer; };\n\
+         xhr.open('GET', '/json', true);\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    assert_eq!(get_prop(&mut scope, global, "__answer"), Value::Number(42.0));
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_response_headers_apis_work() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__hdr = null;\n\
+         globalThis.__multi = null;\n\
+         globalThis.__cookie = null;\n\
+         globalThis.__all = null;\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.onload = function(){\n\
+           globalThis.__hdr = xhr.getResponseHeader('X-Test');\n\
+           globalThis.__multi = xhr.getResponseHeader('X-Multi');\n\
+           globalThis.__cookie = xhr.getResponseHeader('Set-Cookie');\n\
+           globalThis.__all = xhr.getAllResponseHeaders();\n\
+         };\n\
+         xhr.open('GET', '/headers', true);\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    assert_eq!(get_string(scope.heap(), get_prop(&mut scope, global, "__hdr")), "value");
+    assert_eq!(
+      get_string(scope.heap(), get_prop(&mut scope, global, "__multi")),
+      "a, b"
+    );
+    assert_eq!(get_prop(&mut scope, global, "__cookie"), Value::Null);
+    let all = get_string(scope.heap(), get_prop(&mut scope, global, "__all"));
+    assert!(all.contains("X-Test: value\r\n"), "all={all:?}");
+    assert!(all.contains("X-Multi: a, b\r\n"), "all={all:?}");
+    assert!(!all.to_ascii_lowercase().contains("set-cookie"), "all={all:?}");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_timeout_fires_ontimeout() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__log = [];\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.timeout = 1;\n\
+         xhr.onload = function(){ globalThis.__log.push('load'); };\n\
+         xhr.ontimeout = function(){ globalThis.__log.push('timeout:' + xhr.readyState + ':' + xhr.status); };\n\
+         xhr.open('GET', '/slow', true);\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    let Value::Object(arr) = get_prop(&mut scope, global, "__log") else {
+      panic!("expected array");
+    };
+    let log = read_log(vm, &mut scope, arr);
+    assert!(log.iter().any(|s| s == "timeout:4:0"), "log={log:?}");
+    assert!(!log.iter().any(|s| s == "load"), "log={log:?}");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_abort_prevents_load() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__log = [];\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.onload = function(){ globalThis.__log.push('load'); };\n\
+         xhr.onabort = function(){ globalThis.__log.push('abort'); };\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.send();\n\
+         xhr.abort();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    let Value::Object(arr) = get_prop(&mut scope, global, "__log") else {
+      panic!("expected array");
+    };
+    let log = read_log(vm, &mut scope, arr);
+    assert!(log.iter().any(|s| s == "abort"), "log={log:?}");
+    assert!(!log.iter().any(|s| s == "load"), "log={log:?}");
+    Ok(())
+  }
+} 
