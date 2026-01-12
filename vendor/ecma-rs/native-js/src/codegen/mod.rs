@@ -138,8 +138,7 @@ fn ts_function_sig_kind(
   let sigs = program.call_signatures(func_ty);
   if sigs.is_empty() {
     if is_entrypoint {
-      return Err(vec![Diagnostic::error(
-        "NJS0123",
+      return Err(vec![codes::HIR_CODEGEN_MAIN_SIGNATURE_MISSING.error(
         "failed to resolve call signature for exported `main`",
         Span::new(file, TextRange::new(0, 0)),
       )]);
@@ -250,15 +249,13 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
   fn compile(&mut self, entry_file: FileId, entrypoint: Entrypoint) -> Result<(), Vec<Diagnostic>> {
     let Some(lowered) = self.program.hir_lowered(entry_file) else {
-      return Err(vec![Diagnostic::error(
-        "NJS0100",
+      return Err(vec![codes::HIR_CODEGEN_MISSING_ENTRY_HIR.error(
         "failed to access lowered HIR for entry file",
         Span::new(entry_file, TextRange::new(0, 0)),
       )]);
     };
     if matches!(lowered.hir.file_kind, FileKind::Dts) {
-      return Err(vec![Diagnostic::error(
-        "NJS0100",
+      return Err(vec![codes::HIR_CODEGEN_MISSING_ENTRY_HIR.error(
         "entry file must not be a declaration file",
         Span::new(entry_file, TextRange::new(0, 0)),
       )]);
@@ -311,8 +308,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     let Some(main_fn) = self.functions.get(&main_def).copied() else {
-      return Err(vec![Diagnostic::error(
-        "NJS0101",
+      return Err(vec![codes::HIR_CODEGEN_MISSING_FUNCTION_HIR.error(
         "failed to locate exported `main` function for codegen",
         Span::new(entry_file, TextRange::new(0, 0)),
       )]);
@@ -419,8 +415,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       } else {
         formatted.join(" -> ")
       };
-      vec![Diagnostic::error(
-        "NJS0146",
+      vec![codes::HIR_CODEGEN_CYCLIC_MODULE_DEPENDENCY.error(
         format!("cyclic module dependency detected: {cycle_text}"),
         cycle.span,
       )]
@@ -514,15 +509,13 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       return Ok(());
     };
     let hir_body = lowered.body(body_id).ok_or_else(|| {
-      vec![Diagnostic::error(
-        "NJS0101",
+      vec![codes::HIR_CODEGEN_MISSING_FUNCTION_HIR.error(
         "failed to access lowered HIR for function body",
         Span::new(file, TextRange::new(0, 0)),
       )]
     })?;
     let Some(function_meta) = hir_body.function.as_ref() else {
-      return Err(vec![Diagnostic::error(
-        "NJS0102",
+      return Err(vec![codes::HIR_CODEGEN_MISSING_FUNCTION_META.error(
         "missing function metadata",
         Span::new(file, hir_body.span),
       )]);
@@ -547,8 +540,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         .for_file(file)
         .resolve_pat_ident(hir_body, param.pat)
         .ok_or_else(|| {
-          vec![Diagnostic::error(
-            "NJS0122",
+          vec![codes::HIR_CODEGEN_INVALID_CONTINUE_OR_BINDING.error(
             "unsupported parameter pattern",
             Span::new(file, hir_body.span),
           )]
@@ -602,8 +594,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
               .build_return(Some(&cg.cg.i32_ty.const_zero()))
               .expect("failed to build implicit return");
           } else {
-            return Err(vec![Diagnostic::error(
-              "NJS0115",
+            return Err(vec![codes::HIR_CODEGEN_MISSING_RETURN.error(
               "not all control-flow paths return a value in this codegen subset",
               Span::new(file, hir_body.span),
             )]);
@@ -667,8 +658,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     let Some(kind) = self.program.def_kind(def) else {
-      return Err(vec![Diagnostic::error(
-        "NJS0140",
+      return Err(vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_DEF_KIND.error(
         "failed to resolve definition kind for global binding",
         span,
       )]);
@@ -690,14 +680,12 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           let target = self.resolve_export_def(target_file, import.original.as_str(), span)?;
           self.ensure_global_var(target, span)
         }
-        _ => Err(vec![Diagnostic::error(
-          "NJS0141",
+        _ => Err(vec![codes::HIR_CODEGEN_UNRESOLVED_IMPORT_BINDING.error(
           "unresolved import in codegen",
           span,
         )]),
       },
-      other => Err(vec![Diagnostic::error(
-        "NJS0142",
+      other => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_GLOBAL_BINDING.error(
         format!("unsupported global binding kind in codegen: {other:?}"),
         span,
       )]),
@@ -708,8 +696,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let (symbol, local_def) = {
       let exports = self.program.exports_of(file);
       let Some(entry) = exports.get(name) else {
-        return Err(vec![Diagnostic::error(
-          "NJS0141",
+        return Err(vec![codes::HIR_CODEGEN_UNRESOLVED_IMPORT_BINDING.error(
           format!("failed to resolve imported binding `{name}`"),
           span,
         )]);
@@ -720,8 +707,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     local_def
       .or_else(|| self.program.symbol_info(symbol).and_then(|info| info.def))
       .ok_or_else(|| {
-        vec![Diagnostic::error(
-          "NJS0141",
+        vec![codes::HIR_CODEGEN_UNRESOLVED_IMPORT_BINDING.error(
           format!("failed to resolve imported binding `{name}`"),
           span,
         )]
@@ -733,16 +719,14 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let mut seen = HashSet::<DefId>::new();
     loop {
       if !seen.insert(cur) {
-        return Err(vec![Diagnostic::error(
-          "NJS0141",
+        return Err(vec![codes::HIR_CODEGEN_UNRESOLVED_IMPORT_BINDING.error(
           "cyclic import resolution in codegen",
           span,
         )]);
       }
 
       let Some(kind) = self.program.def_kind(cur) else {
-        return Err(vec![Diagnostic::error(
-          "NJS0140",
+        return Err(vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_DEF_KIND.error(
           "failed to resolve definition kind for imported binding",
           span,
         )]);
@@ -757,8 +741,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           cur = self.resolve_export_def(target_file, import.original.as_str(), span)?;
         }
         _ => {
-          return Err(vec![Diagnostic::error(
-            "NJS0141",
+          return Err(vec![codes::HIR_CODEGEN_UNRESOLVED_IMPORT_BINDING.error(
             "unresolved import in codegen",
             span,
           )]);
@@ -874,8 +857,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
   fn stmt(&self, stmt: StmtId) -> Result<&hir_js::Stmt, Vec<Diagnostic>> {
     self.body.stmts.get(stmt.0 as usize).ok_or_else(|| {
-      vec![Diagnostic::error(
-        "NJS0112",
+      vec![codes::HIR_CODEGEN_STMT_ID_OUT_OF_BOUNDS.error(
         "statement id out of bounds",
         Span::new(self.file, self.body.span),
       )]
@@ -884,8 +866,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
   fn expr_data(&self, expr: ExprId) -> Result<&hir_js::Expr, Vec<Diagnostic>> {
     self.body.exprs.get(expr.0 as usize).ok_or_else(|| {
-      vec![Diagnostic::error(
-        "NJS0103",
+      vec![codes::HIR_CODEGEN_EXPR_ID_OUT_OF_BOUNDS.error(
         "expression id out of bounds",
         Span::new(self.file, self.body.span),
       )]
@@ -961,7 +942,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         Ok(true)
       }
       StmtKind::Return(Some(_)) if matches!(self.return_kind, ReturnKind::Void) => Err(vec![
-        Diagnostic::error("NJS0116", "`return <expr>` is not supported here", span),
+        codes::HIR_CODEGEN_UNSUPPORTED_RETURN.error("`return <expr>` is not supported here", span),
       ]),
       StmtKind::Return(Some(expr)) => {
         let value = self.codegen_expr(expr)?;
@@ -990,15 +971,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .expect("failed to build return");
         Ok(false)
       }
-      StmtKind::Return(None) => Err(vec![Diagnostic::error(
-        "NJS0116",
+      StmtKind::Return(None) => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_RETURN.error(
         "`return` without a value is not supported in this codegen subset",
         span,
       )]),
       StmtKind::Decl(_) => match self.mode {
         CodegenMode::FileInit => Ok(true),
-        CodegenMode::TsFunction => Err(vec![Diagnostic::error(
-          "NJS0113",
+        CodegenMode::TsFunction => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_STMT.error(
           "nested declarations are not supported in this codegen subset",
           span,
         )]),
@@ -1035,28 +1014,23 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       StmtKind::Break(label) => self.codegen_break(label, span),
       StmtKind::Continue(label) => self.codegen_continue(label, span),
       StmtKind::Labeled { label, body } => self.codegen_labeled(label, body, span),
-      StmtKind::Switch { .. } => Err(vec![Diagnostic::error(
-        "NJS0113",
+      StmtKind::Switch { .. } => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_STMT.error(
         "`switch` statements are not supported yet",
         span,
       )]),
-      StmtKind::Try { .. } => Err(vec![Diagnostic::error(
-        "NJS0113",
+      StmtKind::Try { .. } => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_STMT.error(
         "`try` statements are not supported yet",
         span,
       )]),
-      StmtKind::Throw(_) => Err(vec![Diagnostic::error(
-        "NJS0113",
+      StmtKind::Throw(_) => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_STMT.error(
         "`throw` statements are not supported yet",
         span,
       )]),
-      StmtKind::ForIn { .. } => Err(vec![Diagnostic::error(
-        "NJS0113",
+      StmtKind::ForIn { .. } => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_STMT.error(
         "`for-in` / `for-of` loops are not supported yet",
         span,
       )]),
-      StmtKind::With { .. } => Err(vec![Diagnostic::error(
-        "NJS0113",
+      StmtKind::With { .. } => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_STMT.error(
         "`with` statements are not supported yet",
         span,
       )]),
@@ -1140,8 +1114,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       self.loop_stack.last().copied()
     };
     let Some(ctx) = target else {
-      return Err(vec![Diagnostic::error(
-        if label.is_some() { "NJS0119" } else { "NJS0120" },
+      let code = if label.is_some() {
+        codes::HIR_CODEGEN_UNKNOWN_BREAK_LABEL
+      } else {
+        codes::HIR_CODEGEN_BREAK_OUTSIDE_LOOP
+      };
+      return Err(vec![code.error(
         if let Some(label) = label {
           let lbl = self.names.resolve(label).unwrap_or("<label>");
           format!("unknown loop label `{lbl}` for `break`")
@@ -1170,8 +1148,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       self.loop_stack.last().copied()
     };
     let Some(ctx) = target else {
-      return Err(vec![Diagnostic::error(
-        if label.is_some() { "NJS0121" } else { "NJS0122" },
+      let code = if label.is_some() {
+        codes::HIR_CODEGEN_UNKNOWN_CONTINUE_LABEL
+      } else {
+        codes::HIR_CODEGEN_INVALID_CONTINUE_OR_BINDING
+      };
+      return Err(vec![code.error(
         if let Some(label) = label {
           let lbl = self.names.resolve(label).unwrap_or("<label>");
           format!("unknown loop label `{lbl}` for `continue`")
@@ -1204,8 +1186,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         update,
         body,
       } => self.codegen_for(Some(label), init.as_ref(), test, update, body, span),
-      _ => Err(vec![Diagnostic::error(
-        "NJS0124",
+      _ => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_LABEL.error(
         "only labeled loops are supported in native-js codegen",
         span,
       )]),
@@ -1550,8 +1531,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     match decl.kind {
       VarDeclKind::Var | VarDeclKind::Let | VarDeclKind::Const => {}
       _ => {
-        return Err(vec![Diagnostic::error(
-          "NJS0113",
+        return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_STMT.error(
           "unsupported variable declaration kind in native-js codegen",
           span,
         )]);
@@ -1571,8 +1551,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .get(declarator.pat.0 as usize)
             .map(|pat| pat.span)
             .unwrap_or(span.range);
-          vec![Diagnostic::error(
-            "NJS0122",
+          vec![codes::HIR_CODEGEN_INVALID_CONTINUE_OR_BINDING.error(
             "unsupported variable binding pattern",
             Span::new(self.file, pat_span),
           )]
@@ -1589,8 +1568,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .unwrap_or("local");
 
       let Some(init) = declarator.init else {
-        return Err(vec![Diagnostic::error(
-          "NJS0118",
+        return Err(vec![codes::HIR_CODEGEN_VAR_DECL_MISSING_INIT.error(
           "variable declarations must have an initializer in native-js codegen",
           span,
         )]);
@@ -1631,8 +1609,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         let global = self.cg.ensure_global_var(def, span)?;
         Ok(global.as_pointer_value())
       }
-      _ => Err(vec![Diagnostic::error(
-        "NJS0114",
+      _ => Err(vec![codes::HIR_CODEGEN_UNKNOWN_IDENTIFIER.error(
         "use of unknown/unbound identifier in native-js codegen",
         span,
       )]),
@@ -1653,8 +1630,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.codegen_expr(expr),
       ExprKind::Literal(Literal::Number(raw)) => parse_i32_const(self.cg.i32_ty, &raw).ok_or_else(|| {
-        vec![Diagnostic::error(
-          "NJS0104",
+        vec![codes::HIR_CODEGEN_LITERAL_NOT_I32.error(
           format!("unsupported numeric literal `{raw}` (expected 32-bit integer)"),
           span,
         )]
@@ -1677,12 +1653,11 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .expect("failed to build compare");
             Ok(self.bool_to_i32(is_false))
           }
-          UnaryOp::BitNot => Ok(self
-            .builder
-            .build_not(inner, "bitnot")
-            .expect("failed to build bitnot")),
-          _ => Err(vec![Diagnostic::error(
-            "NJS0105",
+           UnaryOp::BitNot => Ok(self
+             .builder
+             .build_not(inner, "bitnot")
+             .expect("failed to build bitnot")),
+          _ => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_UNARY_OP.error(
             format!("unsupported unary operator `{op:?}`"),
             span,
           )]),
@@ -1758,8 +1733,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             self.bool_to_i32(cmp)
           }
           _ => {
-            return Err(vec![Diagnostic::error(
-              "NJS0106",
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_BINARY_OP.error(
               format!("unsupported binary operator `{op:?}`"),
               span,
             )]);
@@ -1776,7 +1750,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .resolver
             .for_file(self.file)
             .resolve_expr_ident(self.body, expr)
-            .ok_or_else(|| vec![Diagnostic::error("NJS0130", "failed to resolve identifier", span)])?
+            .ok_or_else(|| vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error("failed to resolve identifier", span)])?
         };
 
         if let Some(ptr) = self.locals.get(&binding).copied() {
@@ -1802,8 +1776,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           }
           _ => {
             let label = self.names.resolve(name).unwrap_or("<unknown>");
-            Err(vec![Diagnostic::error(
-              "NJS0114",
+            Err(vec![codes::HIR_CODEGEN_UNKNOWN_IDENTIFIER.error(
               format!("unknown identifier `{label}` in native-js codegen"),
               span,
             )])
@@ -1827,8 +1800,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                   .get(target.0 as usize)
                   .map(|pat| pat.span)
                   .unwrap_or(span.range);
-                vec![Diagnostic::error(
-                  "NJS0132",
+                vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
                   "unsupported assignment target",
                   Span::new(self.file, pat_span),
                 )]
@@ -1841,14 +1813,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .for_file(self.file)
             .resolve_pat_ident(self.body, target)
             .ok_or_else(|| {
-              let pat_span = self
-                .body
-                .pats
-                .get(target.0 as usize)
-                .map(|pat| pat.span)
-                .unwrap_or(span.range);
-              vec![Diagnostic::error(
-                "NJS0132",
+               let pat_span = self
+                 .body
+                 .pats
+                 .get(target.0 as usize)
+                 .map(|pat| pat.span)
+                 .unwrap_or(span.range);
+              vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
                 "unsupported assignment target",
                 Span::new(self.file, pat_span),
               )]
@@ -1862,8 +1833,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       ExprKind::Update { op, expr, prefix } => {
         let inner = self.expr_data(expr)?;
         let ExprKind::Ident(name) = inner.kind else {
-          return Err(vec![Diagnostic::error(
-            "NJS0107",
+          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
             "unsupported update target (expected identifier)",
             Span::new(self.file, inner.span),
           )]);
@@ -1878,8 +1848,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .for_file(self.file)
             .resolve_expr_ident(self.body, expr)
             .ok_or_else(|| {
-              vec![Diagnostic::error(
-                "NJS0130",
+              vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error(
                 "failed to resolve update target",
                 Span::new(self.file, inner.span),
               )]
@@ -1911,8 +1880,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       }
       ExprKind::Call(call) => {
         if call.optional || call.is_new {
-          return Err(vec![Diagnostic::error(
-            "NJS0144",
+          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
             "unsupported call syntax in codegen",
             span,
           )]);
@@ -1922,10 +1890,9 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .body
           .exprs
           .get(call.callee.0 as usize)
-          .ok_or_else(|| vec![Diagnostic::error("NJS0103", "callee id out of bounds", span)])?;
+          .ok_or_else(|| vec![codes::HIR_CODEGEN_EXPR_ID_OUT_OF_BOUNDS.error("callee id out of bounds", span)])?;
         if !matches!(callee_expr.kind, ExprKind::Ident(_)) {
-          return Err(vec![Diagnostic::error(
-            "NJS0144",
+          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
             "only direct identifier calls are supported in this codegen subset",
             span,
           )]);
@@ -1936,10 +1903,11 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .resolver
           .for_file(self.file)
           .resolve_expr_ident(self.body, call.callee)
-          .ok_or_else(|| vec![Diagnostic::error("NJS0130", "failed to resolve call callee", span)])?;
+          .ok_or_else(|| {
+            vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error("failed to resolve call callee", span)]
+          })?;
         let BindingId::Def(def) = binding else {
-          return Err(vec![Diagnostic::error(
-            "NJS0144",
+          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
             "callee must resolve to a global function definition",
             span,
           )]);
@@ -1947,8 +1915,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
         let resolved = self.cg.resolve_import_def(def, span)?;
         let Some(target) = self.cg.functions.get(&resolved).copied() else {
-          return Err(vec![Diagnostic::error(
-            "NJS0145",
+          return Err(vec![codes::HIR_CODEGEN_INVALID_CALL.error(
             "call to unknown function in codegen",
             span,
           )]);
@@ -1959,8 +1926,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
         for arg in &call.args {
           if arg.spread {
-            return Err(vec![Diagnostic::error(
-              "NJS0144",
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
               "spread arguments are not supported in this codegen subset",
               span,
             )]);
@@ -1968,8 +1934,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         }
         let expected = target.count_params() as usize;
         if call.args.len() != expected {
-          return Err(vec![Diagnostic::error(
-            "NJS0144",
+          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
             format!(
               "wrong number of arguments (expected {expected}, got {})",
               call.args.len()
@@ -1992,12 +1957,11 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         let ret = call
           .try_as_basic_value()
           .left()
-          .ok_or_else(|| vec![Diagnostic::error("NJS0145", "void call not supported", span)])?
+          .ok_or_else(|| vec![codes::HIR_CODEGEN_INVALID_CALL.error("void call not supported", span)])?
           .into_int_value();
         Ok(ret)
       }
-      _ => Err(vec![Diagnostic::error(
-        "NJS0107",
+      _ => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
         "unsupported expression in native-js codegen",
         span,
       )]),
@@ -2048,8 +2012,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         }
       }
       _ => {
-        return Err(vec![Diagnostic::error(
-          "NJS0134",
+        return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_OP.error(
           format!("unsupported assignment operator `{op:?}`"),
           span,
         )]);

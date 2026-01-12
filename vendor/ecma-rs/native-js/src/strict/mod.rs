@@ -22,6 +22,7 @@
 //! - `NJS0110`: exported `main` must be a function with a body
 //! - `NJS0111`: exported `main` must have a supported signature (no params, not async/generator)
 
+use crate::codes;
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
   BinaryOp, BodyKind, ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind,
@@ -29,20 +30,6 @@ use hir_js::{
 use std::collections::{HashMap, HashSet};
 use typecheck_ts::{BodyCheckResult, BodyId, DefId, FileId, ImportTarget, Program, TypeId, TypeKindSummary};
 use types_ts_interned as tti;
-
-const CODE_ANY: &str = "NJS0001";
-const CODE_TYPE_ASSERTION: &str = "NJS0002";
-const CODE_NON_NULL_ASSERTION: &str = "NJS0003";
-const CODE_EVAL: &str = "NJS0004";
-const CODE_NEW_FUNCTION: &str = "NJS0005";
-const CODE_WITH_STMT: &str = "NJS0006";
-const CODE_DYNAMIC_MEMBER: &str = "NJS0007";
-const CODE_ARGUMENTS: &str = "NJS0008";
-
-const CODE_ENTRYPOINT_MISSING: &str = "NJS0108";
-const CODE_ENTRYPOINT_NOT_LOCAL: &str = "NJS0109";
-const CODE_ENTRYPOINT_NOT_FUNCTION: &str = "NJS0110";
-const CODE_ENTRYPOINT_BAD_SIGNATURE: &str = "NJS0111";
 
 /// Validate that the given files use only the native-js strict TypeScript subset.
 ///
@@ -213,7 +200,10 @@ fn check_any_in_type_exprs(file: FileId, lowered: &hir_js::LowerResult, out: &mu
         continue;
       }
       out.push(
-        Diagnostic::error(CODE_ANY, "`any` is not allowed in native-js strict mode", Span::new(file, ty_expr.span))
+        codes::STRICT_ANY_TYPE.error(
+          "`any` is not allowed in native-js strict mode",
+          Span::new(file, ty_expr.span),
+        )
           .with_note("add a precise type annotation or refactor to avoid `any`"),
       );
     }
@@ -239,11 +229,8 @@ fn check_any_in_body(
       .or_else(|| lowered.body(body).and_then(|b| b.exprs.get(idx)).map(|e| Span::new(file, e.span)));
     let Some(span) = span else { continue };
     out.push(
-      Diagnostic::error(
-        CODE_ANY,
-        "`any` is not allowed in native-js strict mode",
-        span,
-      )
+      codes::STRICT_ANY_TYPE
+        .error("`any` is not allowed in native-js strict mode", span)
       .with_note("add a precise type annotation or refactor to avoid `any`"),
     );
   }
@@ -258,11 +245,8 @@ fn check_any_in_body(
       .or_else(|| lowered.body(body).and_then(|b| b.pats.get(idx)).map(|p| Span::new(file, p.span)));
     let Some(span) = span else { continue };
     out.push(
-      Diagnostic::error(
-        CODE_ANY,
-        "`any` is not allowed in native-js strict mode",
-        span,
-      )
+      codes::STRICT_ANY_TYPE
+        .error("`any` is not allowed in native-js strict mode", span)
       .with_note("add a precise type annotation or refactor to avoid `any`"),
     );
   }
@@ -283,15 +267,13 @@ fn check_hir_body(
   for expr in body_data.exprs.iter() {
     match &expr.kind {
       ExprKind::TypeAssertion { .. } => {
-        out.push(Diagnostic::error(
-          CODE_TYPE_ASSERTION,
+        out.push(codes::STRICT_TYPE_ASSERTION.error(
           "type assertions are not allowed in native-js strict mode",
           Span::new(file, expr.span),
         ));
       }
       ExprKind::NonNull { .. } => {
-        out.push(Diagnostic::error(
-          CODE_NON_NULL_ASSERTION,
+        out.push(codes::STRICT_NON_NULL_ASSERTION.error(
           "non-null assertions (`!`) are not allowed in native-js strict mode",
           Span::new(file, expr.span),
         ));
@@ -299,16 +281,11 @@ fn check_hir_body(
       ExprKind::Call(call) => {
         if !call.is_new && call_targets_name(body_data, lowered, call.callee, "eval") {
           let span = span_of_expr(body_data, file, call.callee).unwrap_or(Span::new(file, expr.span));
-          out.push(Diagnostic::error(
-            CODE_EVAL,
-            "`eval()` is not allowed in native-js strict mode",
-            span,
-          ));
+          out.push(codes::STRICT_EVAL.error("`eval()` is not allowed in native-js strict mode", span));
         }
         if call_targets_name(body_data, lowered, call.callee, "Function") {
           let span = span_of_expr(body_data, file, call.callee).unwrap_or(Span::new(file, expr.span));
-          out.push(Diagnostic::error(
-            CODE_NEW_FUNCTION,
+          out.push(codes::STRICT_FUNCTION_CTOR.error(
             if call.is_new {
               "`new Function()` is not allowed in native-js strict mode"
             } else {
@@ -350,36 +327,34 @@ fn check_hir_body(
               Some(TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_))
             );
 
-          if !is_literal && !is_array_index {
-            let span = span_of_expr(body_data, file, key_expr).unwrap_or(Span::new(file, expr.span));
-            out.push(
-              Diagnostic::error(
-                CODE_DYNAMIC_MEMBER,
-                "computed property access requires a literal string/number key in native-js strict mode",
-                span,
-              )
-              .with_note("rewrite as `obj[\"prop\"]`/`obj[0]` or use a safer typed API"),
+           if !is_literal && !is_array_index {
+             let span = span_of_expr(body_data, file, key_expr).unwrap_or(Span::new(file, expr.span));
+             out.push(
+              codes::STRICT_DYNAMIC_MEMBER
+                .error(
+                  "computed property access requires a literal string/number key in native-js strict mode",
+                  span,
+                )
+                .with_note("rewrite as `obj[\"prop\"]`/`obj[0]` or use a safer typed API"),
             );
-          }
-        }
-      }
-      ExprKind::Ident(name) => {
-        if lowered.names.resolve(*name) == Some("arguments") {
-          out.push(Diagnostic::error(
-            CODE_ARGUMENTS,
+           }
+         }
+       }
+       ExprKind::Ident(name) => {
+         if lowered.names.resolve(*name) == Some("arguments") {
+          out.push(codes::STRICT_ARGUMENTS.error(
             "the `arguments` object is not allowed in native-js strict mode",
             Span::new(file, expr.span),
           ));
-        }
-      }
-      _ => {}
-    }
+         }
+       }
+       _ => {}
+     }
   }
 
   for stmt in body_data.stmts.iter() {
     if matches!(stmt.kind, StmtKind::With { .. }) {
-      out.push(Diagnostic::error(
-        CODE_WITH_STMT,
+      out.push(codes::STRICT_WITH_STMT.error(
         "`with` statements are not allowed in native-js strict mode",
         Span::new(file, stmt.span),
       ));
@@ -390,8 +365,7 @@ fn check_hir_body(
   for pat in body_data.pats.iter() {
     if let PatKind::Ident(name) = &pat.kind {
       if lowered.names.resolve(*name) == Some("arguments") {
-        out.push(Diagnostic::error(
-          CODE_ARGUMENTS,
+        out.push(codes::STRICT_ARGUMENTS.error(
           "the `arguments` identifier is not allowed in native-js strict mode",
           Span::new(file, pat.span),
         ));
@@ -435,11 +409,11 @@ fn check_any_in_exported_defs(
 
     if any_checker.contains_any(ty) {
       out.push(
-        Diagnostic::error(
-          CODE_ANY,
-          "exported definition uses `any`, which is not allowed in native-js strict mode",
-          def_span,
-        )
+        codes::STRICT_ANY_TYPE
+          .error(
+            "exported definition uses `any`, which is not allowed in native-js strict mode",
+            def_span,
+          )
         .with_note("add a precise exported type to keep native codegen sound"),
       );
     }
@@ -572,8 +546,7 @@ fn resolve_export_def(program: &Program, def: DefId) -> Option<DefId> {
 pub fn entrypoint(program: &Program, entry_file: FileId) -> Result<Entrypoint, Vec<Diagnostic>> {
   let exports = program.exports_of(entry_file);
   let Some(entry) = exports.get("main") else {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_MISSING,
+    return Err(vec![codes::ENTRYPOINT_MISSING_MAIN_EXPORT.error(
       "entry file must export a `main` function",
       Span::new(entry_file, TextRange::new(0, 0)),
     )]);
@@ -585,8 +558,7 @@ pub fn entrypoint(program: &Program, entry_file: FileId) -> Result<Entrypoint, V
     .or(entry.def)
     .and_then(|def| resolve_export_def(program, def))
     .ok_or_else(|| {
-      vec![Diagnostic::error(
-        CODE_ENTRYPOINT_NOT_LOCAL,
+      vec![codes::ENTRYPOINT_UNRESOLVED_MAIN.error(
         "failed to resolve exported `main` definition",
         Span::new(entry_file, TextRange::new(0, 0)),
       )]
@@ -597,66 +569,57 @@ pub fn entrypoint(program: &Program, entry_file: FileId) -> Result<Entrypoint, V
     .unwrap_or_else(|| Span::new(entry_file, TextRange::new(0, 0)));
 
   let Some(def_kind) = program.def_kind(def) else {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_FUNCTION,
+    return Err(vec![codes::ENTRYPOINT_MAIN_NOT_FUNCTION.error(
       "failed to resolve exported `main` definition",
       span,
     )]);
   };
   if !matches!(def_kind, typecheck_ts::DefKind::Function(_)) {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_FUNCTION,
+    return Err(vec![codes::ENTRYPOINT_MAIN_NOT_FUNCTION.error(
       "exported `main` must be a function",
       span,
     )]);
   }
 
   let Some(body) = program.body_of_def(def) else {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_FUNCTION,
+    return Err(vec![codes::ENTRYPOINT_MAIN_NOT_FUNCTION.error(
       "exported `main` must have a body",
       span,
     )]);
   };
 
   let Some(lowered) = program.hir_lowered(def.file()) else {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_FUNCTION,
+    return Err(vec![codes::ENTRYPOINT_MAIN_NOT_FUNCTION.error(
       "failed to access lowered HIR for `main` file",
       span,
     )]);
   };
   let Some(hir_body) = lowered.body(body) else {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_FUNCTION,
+    return Err(vec![codes::ENTRYPOINT_MAIN_NOT_FUNCTION.error(
       "failed to access lowered HIR for `main` body",
       span,
     )]);
   };
   if hir_body.kind != BodyKind::Function {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_FUNCTION,
+    return Err(vec![codes::ENTRYPOINT_MAIN_NOT_FUNCTION.error(
       "exported `main` must be a function body",
       span,
     )]);
   }
   let Some(function) = hir_body.function.as_ref() else {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_NOT_FUNCTION,
+    return Err(vec![codes::ENTRYPOINT_MAIN_NOT_FUNCTION.error(
       "missing function metadata for `main` body",
       span,
     )]);
   };
   if !function.params.is_empty() {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_BAD_SIGNATURE,
+    return Err(vec![codes::ENTRYPOINT_MAIN_BAD_SIGNATURE.error(
       "`main` must not accept parameters in native-js strict mode",
       span,
     )]);
   }
   if function.async_ || function.generator {
-    return Err(vec![Diagnostic::error(
-      CODE_ENTRYPOINT_BAD_SIGNATURE,
+    return Err(vec![codes::ENTRYPOINT_MAIN_BAD_SIGNATURE.error(
       "`main` must not be async or a generator in native-js strict mode",
       span,
     )]);
