@@ -1990,3 +1990,398 @@ fn dispatch_event_clears_event_path_after_dispatch() {
     "event.path must be cleared after dispatch returns"
   );
 }
+
+#[test]
+fn transfer_node_listeners_moves_listeners_between_registries_and_remaps_node_ids() {
+  let (src_doc, _a, _b, old_node_id) = make_dom_abc();
+
+  // Create a second document with a different node indexing so `old_node_id != new_node_id`.
+  // Document → <a> → <b> → <x> → <c>
+  let root = DomNode {
+    node_type: DomNodeType::Document {
+      quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
+    },
+    children: vec![element(
+      "a",
+      vec![element("b", vec![element("x", vec![element("c", vec![])])])],
+    )],
+  };
+  let dst_doc = Document::from_renderer_dom(&root);
+  let dst_root_id = dst_doc.root();
+  let dst_a = dst_doc.node(dst_root_id).children[0];
+  let dst_b = dst_doc.node(dst_a).children[0];
+  let dst_x = dst_doc.node(dst_b).children[0];
+  let new_node_id = dst_doc.node(dst_x).children[0];
+
+  assert_ne!(
+    old_node_id, new_node_id,
+    "expected different node IDs across documents to validate remapping"
+  );
+
+  let src = EventListenerRegistry::new();
+  let dst = EventListenerRegistry::new();
+
+  let type_x = "x";
+  let type_y = "y";
+
+  let id_bubble_1 = ListenerId::new(1);
+  let id_capture_1 = ListenerId::new(2);
+  let id_bubble_2 = ListenerId::new(3);
+  let id_capture_once = ListenerId::new(4);
+  let id_other_type = ListenerId::new(5);
+
+  // Add a mix of listeners to the source registry.
+  assert!(src.add_event_listener(
+    EventTargetId::Node(old_node_id),
+    type_x,
+    id_bubble_1,
+    AddEventListenerOptions::default(),
+  ));
+  assert!(src.add_event_listener(
+    EventTargetId::Node(old_node_id),
+    type_x,
+    id_capture_1,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    },
+  ));
+  assert!(src.add_event_listener(
+    EventTargetId::Node(old_node_id),
+    type_x,
+    id_bubble_2,
+    AddEventListenerOptions::default(),
+  ));
+  assert!(src.add_event_listener(
+    EventTargetId::Node(old_node_id),
+    type_x,
+    id_capture_once,
+    AddEventListenerOptions {
+      capture: true,
+      once: true,
+      ..Default::default()
+    },
+  ));
+  assert!(src.add_event_listener(
+    EventTargetId::Node(old_node_id),
+    type_y,
+    id_other_type,
+    AddEventListenerOptions::default(),
+  ));
+
+  // Snapshot the source registry so we can compare dispatch ordering without mutating the live
+  // registry (some listeners are `once`).
+  let src_snapshot = src.clone();
+  let mut invoker_before = RecordingInvoker::new(
+    &src_snapshot,
+    EventTargetId::Node(old_node_id),
+    [
+      (
+        id_bubble_1,
+        Behavior {
+          label: "bubble_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(old_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_capture_1,
+        Behavior {
+          label: "capture_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(old_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_bubble_2,
+        Behavior {
+          label: "bubble_2",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(old_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_capture_once,
+        Behavior {
+          label: "capture_once",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(old_node_id),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(
+    type_x,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(old_node_id),
+    &mut event,
+    &src_doc,
+    &src_snapshot,
+    &mut invoker_before,
+  )
+  .unwrap();
+  let calls_before = invoker_before.calls.clone();
+
+  // Transfer listeners to the destination registry.
+  src.transfer_node_listeners(&dst, &[(old_node_id, new_node_id)]);
+
+  assert!(
+    !src.has_event_listeners(EventTargetId::Node(old_node_id), type_x),
+    "source registry should no longer have listeners for transferred node/type"
+  );
+  assert!(
+    !src.has_event_listeners(EventTargetId::Node(old_node_id), type_y),
+    "source registry should no longer have listeners for transferred node/other-type"
+  );
+  assert!(
+    dst.has_event_listeners(EventTargetId::Node(new_node_id), type_x),
+    "destination registry should have listeners for new node/type"
+  );
+  assert!(
+    dst.has_event_listeners(EventTargetId::Node(new_node_id), type_y),
+    "destination registry should have listeners for new node/other-type"
+  );
+
+  // Dispatch the same event in the destination document. Callback ordering should match the
+  // pre-transfer snapshot.
+  let mut invoker_after = RecordingInvoker::new(
+    &dst,
+    EventTargetId::Node(new_node_id),
+    [
+      (
+        id_bubble_1,
+        Behavior {
+          label: "bubble_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_capture_1,
+        Behavior {
+          label: "capture_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_bubble_2,
+        Behavior {
+          label: "bubble_2",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_capture_once,
+        Behavior {
+          label: "capture_once",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(
+    type_x,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(new_node_id),
+    &mut event,
+    &dst_doc,
+    &dst,
+    &mut invoker_after,
+  )
+  .unwrap();
+
+  assert_eq!(
+    invoker_after.calls.as_slice(),
+    calls_before.as_slice(),
+    "listener invocation order must be preserved across transfer"
+  );
+
+  // The `once` listener should have been removed by the prior dispatch.
+  let mut invoker_once_check = RecordingInvoker::new(
+    &dst,
+    EventTargetId::Node(new_node_id),
+    [
+      (
+        id_capture_1,
+        Behavior {
+          label: "capture_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_bubble_1,
+        Behavior {
+          label: "bubble_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_bubble_2,
+        Behavior {
+          label: "bubble_2",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(type_x, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(new_node_id),
+    &mut event,
+    &dst_doc,
+    &dst,
+    &mut invoker_once_check,
+  )
+  .unwrap();
+  assert_eq!(
+    invoker_once_check.calls.as_slice(),
+    &["capture_1", "bubble_1", "bubble_2"]
+  );
+
+  // Adding new listeners after transfer must not break removal-during-dispatch semantics (guards
+  // against `record_id` collisions in the destination registry).
+  let id_new_1 = ListenerId::new(10);
+  let id_new_2 = ListenerId::new(11);
+  let id_new_3 = ListenerId::new(12);
+  let id_new_4 = ListenerId::new(13);
+  let id_new_5 = ListenerId::new(14);
+
+  for id in [id_new_1, id_new_2, id_new_3, id_new_4, id_new_5] {
+    assert!(dst.add_event_listener(
+      EventTargetId::Node(new_node_id),
+      type_x,
+      id,
+      AddEventListenerOptions::default(),
+    ));
+  }
+
+  let mut invoker_collision_check = RecordingInvoker::new(
+    &dst,
+    EventTargetId::Node(new_node_id),
+    [
+      (
+        id_capture_1,
+        Behavior {
+          label: "capture_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_bubble_1,
+        Behavior {
+          label: "bubble_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::RemoveListener {
+            target: EventTargetId::Node(new_node_id),
+            type_: type_x,
+            listener_id: id_bubble_2,
+            capture: false,
+            expect_removed: Some(true),
+          },
+        },
+      ),
+      (
+        id_bubble_2,
+        Behavior {
+          label: "bubble_2",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_new_1,
+        Behavior {
+          label: "new_1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_new_2,
+        Behavior {
+          label: "new_2",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_new_3,
+        Behavior {
+          label: "new_3",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_new_4,
+        Behavior {
+          label: "new_4",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_new_5,
+        Behavior {
+          label: "new_5",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(new_node_id),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(type_x, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(new_node_id),
+    &mut event,
+    &dst_doc,
+    &dst,
+    &mut invoker_collision_check,
+  )
+  .unwrap();
+  assert_eq!(
+    invoker_collision_check.calls.as_slice(),
+    &["capture_1", "bubble_1", "new_1", "new_2", "new_3", "new_4", "new_5"]
+  );
+}

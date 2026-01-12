@@ -590,6 +590,93 @@ impl EventListenerRegistry {
     true
   }
 
+  /// Transfers all event listeners registered on node targets from this registry into `dest`,
+  /// remapping the node IDs.
+  ///
+  /// For each `(old, new)` pair in `mapping`:
+  /// - removes all listeners registered under `EventTargetId::Node(old)` from `self`
+  /// - appends them under `EventTargetId::Node(new)` in `dest` (preserving per-type registration order)
+  ///
+  /// Only node targets are transferred. `Window`/`Document`/`Opaque` targets are not modified.
+  ///
+  /// To preserve "removal during dispatch" semantics, transferred listeners are assigned fresh
+  /// `record_id`s allocated from the destination registry.
+  pub fn transfer_node_listeners(
+    &self,
+    dest: &EventListenerRegistry,
+    mapping: &[(dom2::NodeId, dom2::NodeId)],
+  ) {
+    if mapping.is_empty() {
+      return;
+    }
+
+    // Remapping within the same registry should not attempt to borrow the listener RefCell twice.
+    // Keep `record_id`s intact in this case: they are already unique within a single registry.
+    if std::ptr::eq(self, dest) {
+      let mut listeners = self.listeners.borrow_mut();
+      let mut extracted: Vec<(EventTargetId, FxHashMap<String, Vec<RegisteredListener>>)> =
+        Vec::new();
+
+      for &(old, new) in mapping {
+        // `dom2::NodeId` index 0 is the document node; event listeners on that node normalize to
+        // `EventTargetId::Document` and are not part of the node-target transfer surface.
+        if old.index() == 0 || new.index() == 0 {
+          continue;
+        }
+        let old_target = EventTargetId::Node(old);
+        let new_target = EventTargetId::Node(new);
+        if let Some(by_type) = listeners.remove(&old_target) {
+          extracted.push((new_target, by_type));
+        }
+      }
+
+      for (new_target, mut by_type) in extracted {
+        let dst_by_type = listeners.entry(new_target).or_default();
+        for (type_, mut list) in by_type.drain() {
+          dst_by_type.entry(type_).or_default().append(&mut list);
+        }
+      }
+      return;
+    }
+
+    let extracted: Vec<(EventTargetId, FxHashMap<String, Vec<RegisteredListener>>)> = {
+      let mut listeners = self.listeners.borrow_mut();
+      let mut extracted: Vec<(EventTargetId, FxHashMap<String, Vec<RegisteredListener>>)> =
+        Vec::new();
+
+      for &(old, new) in mapping {
+        if old.index() == 0 || new.index() == 0 {
+          continue;
+        }
+        let old_target = EventTargetId::Node(old);
+        let new_target = EventTargetId::Node(new);
+        if let Some(by_type) = listeners.remove(&old_target) {
+          extracted.push((new_target, by_type));
+        }
+      }
+
+      extracted
+    };
+
+    if extracted.is_empty() {
+      return;
+    }
+
+    let mut dst_listeners = dest.listeners.borrow_mut();
+    for (new_target, mut by_type) in extracted {
+      let dst_by_type = dst_listeners.entry(new_target).or_default();
+      for (type_, list) in by_type.drain() {
+        let dst_list = dst_by_type.entry(type_).or_default();
+        for listener in list {
+          dst_list.push(RegisteredListener {
+            record_id: dest.alloc_record_id(),
+            ..listener
+          });
+        }
+      }
+    }
+  }
+
   pub(crate) fn register_opaque_target(&self, id: u64, target: WeakGcObject) {
     self.opaque_targets.borrow_mut().insert(id, target);
   }
