@@ -936,6 +936,10 @@ fn readable_stream_pipe_through_native(
   let Value::Object(stream_obj) = this else {
     return Err(VmError::TypeError("ReadableStream.pipeThrough: illegal invocation"));
   };
+  // Root the source stream across allocations in this helper. The VM call frame roots `this`, but we
+  // also invoke other native helpers directly from Rust, which can allocate/GC before they root
+  // their receivers.
+  scope.push_root(Value::Object(stream_obj))?;
 
   // Ensure this is one of our streams (and not e.g. an arbitrary object inheriting the prototype).
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
@@ -993,6 +997,9 @@ fn readable_stream_pipe_through_native(
       "ReadableStream.pipeThrough: getWriter did not return an object",
     ));
   };
+  // Root writer across subsequent allocations (not otherwise reachable until we capture it in the
+  // Promise reaction callbacks).
+  scope.push_root(Value::Object(writer_obj))?;
 
   // Lock the source stream and start an asynchronous pump:
   //
@@ -1004,6 +1011,9 @@ fn readable_stream_pipe_through_native(
       "ReadableStream.getReader must return an object",
     ));
   };
+  // Root reader across subsequent allocations (not otherwise reachable until we capture it in the
+  // Promise reaction callbacks).
+  scope.push_root(Value::Object(reader_obj))?;
 
   let read_promise = reader_read_native(vm, scope, host, hooks, callee, Value::Object(reader_obj), &[])?;
   let Value::Object(read_promise_obj) = read_promise else {
