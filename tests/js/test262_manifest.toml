@@ -454,6 +454,42 @@ status = "pass"
 reason = "Object.fromEntries passes the curated test262 corpus; keep failures actionable to catch iterator-close regressions."
 
 [[expectations]]
+glob = "built-ins/Object/assign/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/keys/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/values/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/entries/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/getPrototypeOf/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/setPrototypeOf/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/hasOwn/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/prototype/valueOf/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/prototype/isPrototypeOf/**"
+status = "pass"
+
+[[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-2-38.js"
 status = "xfail"
 reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
