@@ -751,6 +751,40 @@ mod tests {
   }
 
   #[test]
+  fn bidi_arrow_down_selection_collapse_preserves_split_caret_affinity() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><textarea dir=\"ltr\">ABC אבג</textarea></body></html>")
+        .expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    // Extend selection from the start to the split-caret boundary at char_idx=4 ("ABC ").
+    set_text_selection_caret(&mut engine, &mut dom, textarea_id, 0);
+    for _ in 0..4 {
+      assert!(engine.key_action(&mut dom, KeyAction::ShiftArrowRight));
+    }
+
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), Some((0, 4)));
+    assert_eq!(edit.caret, 4);
+    assert_eq!(
+      edit.caret_affinity,
+      CaretAffinity::Upstream,
+      "expected selection end at split caret to land on the upstream (LTR) side"
+    );
+
+    // ArrowDown collapses selection (without moving in a single-line textarea) and should preserve
+    // the caret's visual side at the split-caret boundary.
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowDown));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), None);
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+  }
+
+  #[test]
   fn home_clears_selection_in_text_controls() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
@@ -4330,7 +4364,17 @@ impl InteractionEngine {
             } else {
               end
             };
-            edit.set_caret_and_maybe_extend_selection(next, false);
+            if next == edit.caret {
+              // Preserve the current caret affinity when collapsing to the caret edge (important at
+              // split-caret bidi boundaries).
+              edit.set_caret_with_affinity_and_maybe_extend_selection(
+                next,
+                edit.caret_affinity,
+                false,
+              );
+            } else {
+              edit.set_caret_and_maybe_extend_selection(next, false);
+            }
           } else if focused_is_textarea {
             // Vertical caret movement between newline-separated lines (no soft-wrap support yet).
             let mut line_starts: Vec<usize> = vec![0];
