@@ -1522,14 +1522,12 @@ impl Intrinsics {
       data_desc(Value::Object(generator_prototype), false, false, true),
     )?;
     // GeneratorFunction.prototype[@@toStringTag]
-    {
-      let tag = scope.alloc_string("GeneratorFunction")?;
-      scope.define_property(
-        generator_function_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(tag), false, false, true),
-      )?;
-    }
+    install_to_string_tag(
+      scope,
+      generator_function_prototype,
+      well_known_symbols.to_string_tag,
+      "GeneratorFunction",
+    )?;
 
     // GeneratorPrototype.constructor
     scope.define_property(
@@ -1586,14 +1584,12 @@ impl Intrinsics {
       )?;
     }
     // GeneratorPrototype[@@toStringTag]
-    {
-      let tag = scope.alloc_string("Generator")?;
-      scope.define_property(
-        generator_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(tag), false, false, true),
-      )?;
-    }
+    install_to_string_tag(
+      scope,
+      generator_prototype,
+      well_known_symbols.to_string_tag,
+      "Generator",
+    )?;
 
     // `%Array%`
     let array_call = vm.register_native_call(builtins::array_constructor_call)?;
@@ -1734,11 +1730,11 @@ impl Intrinsics {
       PropertyKey::from_string(array_iterator_next_name),
       data_desc(Value::Object(array_iterator_next), true, false, true),
     )?;
-    let array_iterator_tag = scope.alloc_string("Array Iterator")?;
-    scope.define_property(
+    install_to_string_tag(
+      scope,
       array_iterator_prototype,
-      PropertyKey::Symbol(well_known_symbols.to_string_tag),
-      data_desc(Value::String(array_iterator_tag), false, false, true),
+      well_known_symbols.to_string_tag,
+      "Array Iterator",
     )?;
 
       // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / concat / reverse / sort / join / slice / push / pop / shift / unshift / splice
@@ -2727,11 +2723,11 @@ impl Intrinsics {
         PropertyKey::from_string(next_name),
         data_desc(Value::Object(next_fn), true, false, true),
       )?;
-      let string_iterator_tag = scope.alloc_string("String Iterator")?;
-      scope.define_property(
+      install_to_string_tag(
+        scope,
         string_iterator_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(string_iterator_tag), false, false, true),
+        well_known_symbols.to_string_tag,
+        "String Iterator",
       )?;
 
       let iter_name = scope.alloc_string("[Symbol.iterator]")?;
@@ -3837,14 +3833,7 @@ impl Intrinsics {
     }
 
     // Symbol.prototype[Symbol.toStringTag]
-    {
-      let to_string_tag_value = scope.alloc_string("Symbol")?;
-      scope.define_property(
-        symbol_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(to_string_tag_value), false, false, true),
-      )?;
-    }
+    install_to_string_tag(scope, symbol_prototype, well_known_symbols.to_string_tag, "Symbol")?;
 
     // Symbol.for / Symbol.keyFor
     {
@@ -4987,14 +4976,7 @@ impl Intrinsics {
         .object_set_prototype(func, Some(function_prototype))?;
       scope.define_property(json, key, data_desc(Value::Object(func), true, false, true))?;
     }
-    {
-      let to_string_tag_value = scope.alloc_string("JSON")?;
-      scope.define_property(
-        json,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(to_string_tag_value), false, false, true),
-      )?;
-    }
+    install_to_string_tag(scope, json, well_known_symbols.to_string_tag, "JSON")?;
 
     // `%Reflect%`
     let reflect = alloc_rooted_object(scope, roots)?;
@@ -5031,14 +5013,7 @@ impl Intrinsics {
       define_method("setPrototypeOf", reflect_set_prototype_of, 2)?;
     }
 
-    {
-      let to_string_tag_value = scope.alloc_string("Reflect")?;
-      scope.define_property(
-        reflect,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(to_string_tag_value), false, false, true),
-      )?;
-    }
+    install_to_string_tag(scope, reflect, well_known_symbols.to_string_tag, "Reflect")?;
     // --- Error + subclasses ---
     let error_call = vm.register_native_call(builtins::error_constructor_call)?;
     let error_construct = vm.register_native_construct(builtins::error_constructor_construct)?;
