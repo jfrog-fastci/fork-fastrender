@@ -2,6 +2,7 @@ use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
 use crate::error_object::new_error;
 use crate::async_iterator;
 use crate::for_in::ForInEnumerator;
+use crate::heap::{GeneratorContinuation, GeneratorState, Trace, Tracer};
 use crate::iterator;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
@@ -47,6 +48,12 @@ pub struct Thrown {
   pub stack: Vec<StackFrame>,
 }
 
+impl Trace for Thrown {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    tracer.trace_value(self.value);
+  }
+}
+
 /// An ECMAScript completion record (ECMA-262).
 ///
 /// We model the "empty" completion value explicitly as `None` so statement-list evaluation can
@@ -90,6 +97,25 @@ impl Completion {
       Completion::Break(target, None) => Completion::Break(target, value),
       Completion::Continue(target, None) => Completion::Continue(target, value),
       other => other,
+    }
+  }
+}
+
+impl Trace for Completion {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    match self {
+      Completion::Normal(v) => {
+        if let Some(v) = v {
+          tracer.trace_value(*v);
+        }
+      }
+      Completion::Throw(thrown) => thrown.trace(tracer),
+      Completion::Return(v) => tracer.trace_value(*v),
+      Completion::Break(_, v) | Completion::Continue(_, v) => {
+        if let Some(v) = v {
+          tracer.trace_value(*v);
+        }
+      }
     }
   }
 }
@@ -550,11 +576,27 @@ enum ClassBinding<'a> {
 pub(crate) struct RuntimeEnv {
   global_object: GcObject,
   lexical_env: GcEnv,
-  lexical_root: EnvRootId,
+  /// Persistent env root used while this `RuntimeEnv` is stored outside the GC heap (e.g. on the
+  /// Rust stack during normal execution, or in `AsyncContinuation`).
+  ///
+  /// Generator continuations are GC-owned, so they must not keep persistent roots alive across
+  /// yields; generator code sets this to `None` before storing the env in the heap, and may attach a
+  /// temporary root only for the duration of a single `.next/.throw/.return` call.
+  lexical_root: Option<EnvRootId>,
   var_env: VarEnv,
   source: Arc<SourceText>,
   base_offset: u32,
   prefix_len: u32,
+}
+
+impl Trace for RuntimeEnv {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    tracer.trace_value(Value::Object(self.global_object));
+    tracer.trace_env(self.lexical_env);
+    if let VarEnv::Env(env) = self.var_env {
+      tracer.trace_env(env);
+    }
+  }
 }
 
 impl RuntimeEnv {
@@ -564,7 +606,7 @@ impl RuntimeEnv {
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global_object))?;
     scope.push_env_root(lexical_env)?;
-    let lexical_root = scope.heap_mut().add_env_root(lexical_env)?;
+    let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
 
     Ok(Self {
       global_object,
@@ -589,7 +631,7 @@ impl RuntimeEnv {
     scope.push_env_root(lexical_env)?;
     scope.push_env_root(var_env)?;
 
-    let lexical_root = scope.heap_mut().add_env_root(lexical_env)?;
+    let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
 
     Ok(Self {
       global_object,
@@ -611,7 +653,7 @@ impl RuntimeEnv {
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global_object))?;
     scope.push_env_root(lexical_env)?;
-    let lexical_root = scope.heap_mut().add_env_root(lexical_env)?;
+    let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
 
     Ok(Self {
       global_object,
@@ -625,12 +667,16 @@ impl RuntimeEnv {
   }
 
   pub(crate) fn teardown(&mut self, heap: &mut Heap) {
-    heap.remove_env_root(self.lexical_root);
+    if let Some(root) = self.lexical_root.take() {
+      heap.remove_env_root(root);
+    }
   }
 
   pub(crate) fn set_lexical_env(&mut self, heap: &mut Heap, env: GcEnv) {
     self.lexical_env = env;
-    heap.set_env_root(self.lexical_root, env);
+    if let Some(root) = self.lexical_root {
+      heap.set_env_root(root, env);
+    }
   }
 
   pub(crate) fn set_source_info(
@@ -9290,6 +9336,170 @@ enum AsyncEval<T> {
   Suspend(AsyncSuspend),
 }
 
+/// Persistent continuation frames for generator function execution.
+///
+/// This is an explicit reification of the evaluator call stack needed to resume execution after a
+/// `yield` suspension point.
+#[derive(Debug)]
+pub(crate) enum GenFrame {
+  /// Root frame for block-bodied generator functions (`function* f(){...}`).
+  RootBlockBody,
+
+  /// Resume statement-list evaluation after a suspended statement completes.
+  StmtList {
+    stmts: *const Vec<Node<Stmt>>,
+    next_index: usize,
+    last_value: Option<Value>,
+  },
+
+  /// Restore the outer lexical environment after finishing a block/catch/finally body.
+  RestoreLexEnv {
+    outer: GcEnv,
+  },
+
+  /// Finish a return statement after its value expression is evaluated.
+  Return,
+
+  /// Continue a `var`/`let`/`const` declaration after a declarator initializer completes.
+  VarDecl {
+    decl: *const VarDecl,
+    next_declarator_index: usize,
+  },
+
+  /// Continue an `if` statement after evaluating the test expression.
+  IfAfterTest {
+    consequent: *const Node<Stmt>,
+    alternate: Option<*const Node<Stmt>>,
+  },
+
+  /// Continue a `while` loop after evaluating the test expression.
+  WhileAfterTest {
+    stmt: *const WhileStmt,
+    label_set: Vec<String>,
+    v: Value,
+  },
+  /// Continue a `while` loop after evaluating the body statement.
+  WhileAfterBody {
+    stmt: *const WhileStmt,
+    label_set: Vec<String>,
+    v: Value,
+  },
+
+  /// Continue a `try` statement after evaluating the wrapped block.
+  TryAfterWrapped {
+    stmt: *const TryStmt,
+  },
+  /// Continue a `try` statement after evaluating the catch block.
+  TryAfterCatch {
+    stmt: *const TryStmt,
+  },
+  /// Continue a `try` statement after evaluating the finally block.
+  TryAfterFinally {
+    pending: Completion,
+  },
+
+  /// Continue evaluating a unary `yield` after its operand expression completes (nested yield).
+  YieldAfterOperand,
+  /// Continue evaluating a non-`yield` unary expression after its operand completes.
+  UnaryAfterArgument {
+    expr: *const UnaryExpr,
+  },
+
+  /// Continue a member access after evaluating the base value.
+  MemberAfterBase {
+    expr: *const MemberExpr,
+  },
+  /// Continue a computed member access after evaluating the base value.
+  ComputedMemberAfterBase {
+    expr: *const ComputedMemberExpr,
+  },
+  /// Continue a computed member access after evaluating the member expression.
+  ComputedMemberAfterMember {
+    expr: *const ComputedMemberExpr,
+    base: Value,
+  },
+
+  /// Continue a conditional expression after evaluating the test.
+  CondAfterTest {
+    expr: *const CondExpr,
+  },
+
+  /// Continue a binary expression after evaluating the left operand.
+  BinaryAfterLeft {
+    expr: *const BinaryExpr,
+  },
+  /// Continue a binary expression after evaluating the right operand.
+  BinaryAfterRight {
+    expr: *const BinaryExpr,
+    left: Value,
+  },
+
+  /// Continue a call expression while evaluating arguments.
+  CallAfterCallee {
+    expr: *const CallExpr,
+  },
+  CallMemberAfterBase {
+    expr: *const CallExpr,
+    member: *const MemberExpr,
+  },
+  CallComputedMemberAfterBase {
+    expr: *const CallExpr,
+    member: *const ComputedMemberExpr,
+  },
+  CallComputedMemberAfterMember {
+    expr: *const CallExpr,
+    member: *const ComputedMemberExpr,
+    base: Value,
+  },
+  CallArgs {
+    expr: *const CallExpr,
+    callee: Value,
+    this: Value,
+    args: Vec<Value>,
+    arg_index: usize,
+  },
+}
+
+impl Trace for GenFrame {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    match self {
+      GenFrame::StmtList { last_value, .. } => {
+        if let Some(v) = last_value {
+          tracer.trace_value(*v);
+        }
+      }
+      GenFrame::RestoreLexEnv { outer } => tracer.trace_env(*outer),
+      GenFrame::WhileAfterTest { v, .. } | GenFrame::WhileAfterBody { v, .. } => tracer.trace_value(*v),
+      GenFrame::TryAfterFinally { pending } => pending.trace(tracer),
+      GenFrame::ComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::BinaryAfterRight { left, .. } => tracer.trace_value(*left),
+      GenFrame::CallArgs {
+        callee, this, args, ..
+      } => {
+        tracer.trace_value(*callee);
+        tracer.trace_value(*this);
+        for v in args.iter().copied() {
+          tracer.trace_value(v);
+        }
+      }
+      _ => {}
+    }
+  }
+}
+
+#[derive(Debug)]
+struct GenSuspend {
+  yield_value: Value,
+  frames: VecDeque<GenFrame>,
+}
+
+#[derive(Debug)]
+enum GenEval<T> {
+  Complete(T),
+  Suspend(GenSuspend),
+}
+
 #[derive(Debug)]
 struct RootedCompletion {
   kind: RootedCompletionKind,
@@ -9616,542 +9826,6 @@ pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: Async
   for mut frame in cont.frames {
     async_teardown_frame(scope.heap_mut(), &mut frame);
   }
-}
-
-const GENERATOR_CONTINUATION_ID_MARKER: &str = "vm-js.internal.GeneratorContinuationId";
-const GENERATOR_STATE_MARKER: &str = "vm-js.internal.GeneratorState";
-
-#[derive(Debug)]
-pub(crate) struct GeneratorContinuation {
-  env: RuntimeEnv,
-  strict: bool,
-  this_root: RootId,
-  new_target_root: RootId,
-  // Rooted arguments passed to the generator function call (bound on first `.next()`).
-  arg_roots: Vec<RootId>,
-  // Cached parsed function AST for this generator function's body.
-  func: Arc<Node<Func>>,
-  started: bool,
-  frames: VecDeque<AsyncFrame>,
-}
-
-fn generator_teardown_continuation(scope: &mut Scope<'_>, mut cont: GeneratorContinuation) {
-  cont.env.teardown(scope.heap_mut());
-  scope.heap_mut().remove_root(cont.this_root);
-  scope.heap_mut().remove_root(cont.new_target_root);
-  for id in cont.arg_roots.drain(..) {
-    scope.heap_mut().remove_root(id);
-  }
-  for mut frame in cont.frames {
-    async_teardown_frame(scope.heap_mut(), &mut frame);
-  }
-}
-
-fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
-  let marker = scope.alloc_string(s)?;
-  scope.push_root(Value::String(marker))?;
-  let marker_sym = scope.heap_mut().symbol_for(marker)?;
-  Ok(PropertyKey::from_symbol(marker_sym))
-}
-
-fn create_iterator_result_object(
-  scope: &mut Scope<'_>,
-  proto: GcObject,
-  value: Value,
-  done: bool,
-) -> Result<GcObject, VmError> {
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(proto))?;
-  scope.push_root(value)?;
-
-  let out = scope.alloc_object()?;
-  scope.push_root(Value::Object(out))?;
-  scope.heap_mut().object_set_prototype(out, Some(proto))?;
-
-  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
-  let done_key = PropertyKey::from_string(scope.alloc_string("done")?);
-
-  scope.define_property(
-    out,
-    value_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value,
-        writable: true,
-      },
-    },
-  )?;
-  scope.define_property(
-    out,
-    done_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Bool(done),
-        writable: true,
-      },
-    },
-  )?;
-  Ok(out)
-}
-
-pub(crate) fn create_generator_object(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
-  args: &[Value],
-  func_ast: Arc<Node<Func>>,
-  source: Arc<SourceText>,
-  base_offset: u32,
-  prefix_len: u32,
-  strict: bool,
-  global_object: GcObject,
-  outer: Option<GcEnv>,
-) -> Result<Value, VmError> {
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-  vm.reserve_generator_continuations(1)?;
-
-  // Root the callee, `this`, and argument list while allocating the generator object and rooting
-  // continuation state.
-  let mut gen_scope = scope.reborrow();
-  gen_scope.push_root(Value::Object(callee))?;
-  gen_scope.push_root(this)?;
-  gen_scope.push_roots(args)?;
-
-  // `OrdinaryCreateFromConstructor(F, "%GeneratorPrototype%")` shape:
-  // generator instances use `F.prototype` when it is an object, otherwise fall back to
-  // `%GeneratorPrototype%`.
-  let proto_key_s = gen_scope.alloc_string("prototype")?;
-  gen_scope.push_root(Value::String(proto_key_s))?;
-  let proto_key = PropertyKey::from_string(proto_key_s);
-  let proto_value = gen_scope.ordinary_get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    callee,
-    proto_key,
-    Value::Object(callee),
-  )?;
-  gen_scope.push_root(proto_value)?;
-  let proto_obj = match proto_value {
-    Value::Object(o) => o,
-    _ => intr.generator_prototype(),
-  };
-  gen_scope.push_root(Value::Object(proto_obj))?;
-
-  let gen_obj = gen_scope.alloc_object_with_prototype(Some(proto_obj))?;
-  gen_scope.push_root(Value::Object(gen_obj))?;
-
-  // Allocate the generator function environment now (without instantiating bindings) so the outer
-  // environment is kept alive even if the generator function object becomes unreachable.
-  let func_env = gen_scope.env_create(outer)?;
-  let mut env =
-    RuntimeEnv::new_with_var_env(gen_scope.heap_mut(), global_object, func_env, func_env)?;
-  env.set_source_info(source, base_offset, prefix_len);
-
-  // Root captured `this`/`new.target` and argument list for later instantiation/resumption.
-  let mut roots: Vec<RootId> = Vec::new();
-  roots
-    .try_reserve_exact(args.len().saturating_add(2))
-    .map_err(|_| VmError::OutOfMemory)?;
-  for &value in [this, Value::Undefined].iter() {
-    match gen_scope.heap_mut().add_root(value) {
-      Ok(id) => roots.push(id),
-      Err(e) => {
-        for id in roots.drain(..) {
-          gen_scope.heap_mut().remove_root(id);
-        }
-        env.teardown(gen_scope.heap_mut());
-        return Err(e);
-      }
-    }
-  }
-  let this_root = roots[0];
-  let new_target_root = roots[1];
-
-  let mut arg_roots: Vec<RootId> = Vec::new();
-  arg_roots
-    .try_reserve_exact(args.len())
-    .map_err(|_| VmError::OutOfMemory)?;
-  for &value in args {
-    match gen_scope.heap_mut().add_root(value) {
-      Ok(id) => arg_roots.push(id),
-      Err(e) => {
-        for id in roots.drain(..) {
-          gen_scope.heap_mut().remove_root(id);
-        }
-        for id in arg_roots.drain(..) {
-          gen_scope.heap_mut().remove_root(id);
-        }
-        env.teardown(gen_scope.heap_mut());
-        return Err(e);
-      }
-    }
-  }
-
-  let cont = GeneratorContinuation {
-    env,
-    strict,
-    this_root,
-    new_target_root,
-    arg_roots,
-    func: func_ast,
-    started: false,
-    frames: VecDeque::new(),
-  };
-  let id = vm.insert_generator_continuation_reserved(cont);
-
-  // Store the continuation id on the generator instance object.
-  //
-  // If this fails, tear down the continuation we just inserted to avoid leaking env/roots.
-  let res = (|| {
-    let id_key = internal_symbol_key(&mut gen_scope, GENERATOR_CONTINUATION_ID_MARKER)?;
-    gen_scope.define_property(
-      gen_obj,
-      id_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Data {
-          value: Value::Number(id as f64),
-          writable: true,
-        },
-      },
-    )?;
-
-    // Internal-slot-like marker used by `%GeneratorPrototype%` methods to validate receivers.
-    let state_key = internal_symbol_key(&mut gen_scope, GENERATOR_STATE_MARKER)?;
-    let state_s = gen_scope.alloc_string("suspendedStart")?;
-    gen_scope.push_root(Value::String(state_s))?;
-    gen_scope.define_property(
-      gen_obj,
-      state_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: false,
-        kind: PropertyKind::Data {
-          value: Value::String(state_s),
-          writable: true,
-        },
-      },
-    )?;
-    Ok::<(), VmError>(())
-  })();
-  if let Err(err) = res {
-    if let Some(cont) = vm.take_generator_continuation(id) {
-      generator_teardown_continuation(&mut gen_scope, cont);
-    }
-    return Err(err);
-  }
-
-  Ok(Value::Object(gen_obj))
-}
-
-/// `%GeneratorPrototype%.next` (minimal).
-pub(crate) fn generator_prototype_next(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-
-  let this_obj = match this {
-    Value::Object(o) => o,
-    _ => {
-      return Err(throw_type_error(
-        vm,
-        scope,
-        "Generator.prototype.next called on non-object",
-      )?)
-    }
-  };
-
-  let mut gen_scope = scope.reborrow();
-  gen_scope.push_root(Value::Object(this_obj))?;
-
-  let id_key = internal_symbol_key(&mut gen_scope, GENERATOR_CONTINUATION_ID_MARKER)?;
-  let id_desc = gen_scope
-    .heap()
-    .object_get_own_property_with_tick(this_obj, &id_key, || vm.tick())?;
-  let id_value = match id_desc {
-    Some(PropertyDescriptor {
-      kind: PropertyKind::Data { value, .. },
-      ..
-    }) => value,
-    Some(PropertyDescriptor {
-      kind: PropertyKind::Accessor { .. },
-      ..
-    }) => return Err(VmError::PropertyNotData),
-    None => {
-      return Err(throw_type_error(
-        vm,
-        &mut gen_scope,
-        "Generator.prototype.next called on incompatible receiver",
-      )?)
-    }
-  };
-
-  if matches!(id_value, Value::Undefined) {
-    let result = create_iterator_result_object(
-      &mut gen_scope,
-      intr.object_prototype(),
-      Value::Undefined,
-      true,
-    )?;
-    return Ok(Value::Object(result));
-  }
-
-  let id = match id_value {
-    Value::Number(n) => n as u32,
-    _ => {
-      return Err(throw_type_error(
-        vm,
-        &mut gen_scope,
-        "Generator.prototype.next missing continuation id",
-      )?)
-    }
-  };
-
-  let Some(mut cont) = vm.take_generator_continuation(id) else {
-    return Err(VmError::InvariantViolation(
-      "generator continuation missing for id",
-    ));
-  };
-
-  let this_binding = gen_scope.heap().get_root(cont.this_root).ok_or(
-    VmError::InvariantViolation("generator continuation missing this root"),
-  )?;
-  let new_target = gen_scope.heap().get_root(cont.new_target_root).ok_or(
-    VmError::InvariantViolation("generator continuation missing new.target root"),
-  )?;
-
-  let mut evaluator = Evaluator {
-    vm,
-    host,
-    hooks,
-    env: &mut cont.env,
-    strict: cont.strict,
-    this: this_binding,
-    new_target,
-  };
-
-  let result = if !cont.started {
-    cont.started = true;
-
-    let mut call_args: Vec<Value> = Vec::new();
-    call_args
-      .try_reserve_exact(cont.arg_roots.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-    for id in cont.arg_roots.iter().copied() {
-      let v = gen_scope.heap().get_root(id).ok_or(VmError::InvariantViolation(
-        "generator continuation missing argument root",
-      ))?;
-      call_args.push(v);
-    }
-
-    evaluator.instantiate_function(&mut gen_scope, cont.func.as_ref(), &call_args)?;
-    async_start_body(&mut evaluator, &mut gen_scope, &cont.func)
-  } else {
-    let resume_value = args.get(0).copied().unwrap_or(Value::Undefined);
-    let frames = mem::take(&mut cont.frames);
-    async_resume_from_frames(&mut evaluator, &mut gen_scope, frames, Ok(resume_value))
-  };
-
-  match result {
-    Ok(AsyncBodyResult::Await { await_value, frames }) => {
-      cont.frames = frames;
-      if let Err(err) = vm.reserve_generator_continuations(1) {
-        generator_teardown_continuation(&mut gen_scope, cont);
-        // Best-effort mark as completed.
-        let _ = gen_scope.define_property(
-          this_obj,
-          id_key,
-          PropertyDescriptor {
-            enumerable: false,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: Value::Undefined,
-              writable: true,
-            },
-          },
-        );
-        return Err(err);
-      }
-      vm.replace_generator_continuation_reserved(id, cont);
-
-      let result =
-        create_iterator_result_object(&mut gen_scope, intr.object_prototype(), await_value, false)?;
-      Ok(Value::Object(result))
-    }
-    Ok(AsyncBodyResult::CompleteOk(v)) => {
-      generator_teardown_continuation(&mut gen_scope, cont);
-      // Mark as completed by setting the continuation id to `undefined` (keeping the property so
-      // subsequent `.next()` calls return `{ value: undefined, done: true }` instead of throwing).
-      gen_scope.define_property(
-        this_obj,
-        id_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Data {
-            value: Value::Undefined,
-            writable: true,
-          },
-        },
-      )?;
-
-      let result = create_iterator_result_object(&mut gen_scope, intr.object_prototype(), v, true)?;
-      Ok(Value::Object(result))
-    }
-    Ok(AsyncBodyResult::CompleteThrow(reason)) => {
-      generator_teardown_continuation(&mut gen_scope, cont);
-      gen_scope.define_property(
-        this_obj,
-        id_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Data {
-            value: Value::Undefined,
-            writable: true,
-          },
-        },
-      )?;
-      Err(VmError::Throw(reason))
-    }
-    Err(err) => {
-      // Fatal error during resumption: clean up roots/env to avoid leaks.
-      generator_teardown_continuation(&mut gen_scope, cont);
-      Err(err)
-    }
-  }
-}
-
-/// `%GeneratorPrototype%.return` (minimal).
-///
-/// This is primarily needed so iterator-closing operations (array/call spread, `for...of`, etc)
-/// can call `IteratorClose`, which invokes `iterator.return()` on abrupt completion.
-///
-/// Full `GeneratorResumeAbrupt` semantics (running `finally` blocks, yielding again, etc) are not
-/// implemented yet; we conservatively mark the generator as completed and return `{ value, done:
-/// true }`.
-pub(crate) fn generator_prototype_return(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-
-  let this_obj = match this {
-    Value::Object(o) => o,
-    _ => {
-      return Err(throw_type_error(
-        vm,
-        scope,
-        "Generator.prototype.return called on non-object",
-      )?)
-    }
-  };
-
-  let return_value = args.get(0).copied().unwrap_or(Value::Undefined);
-
-  let mut gen_scope = scope.reborrow();
-  gen_scope.push_root(Value::Object(this_obj))?;
-  gen_scope.push_root(return_value)?;
-
-  let id_key = internal_symbol_key(&mut gen_scope, GENERATOR_CONTINUATION_ID_MARKER)?;
-  let id_desc = gen_scope
-    .heap()
-    .object_get_own_property_with_tick(this_obj, &id_key, || vm.tick())?;
-  let id_value = match id_desc {
-    Some(PropertyDescriptor {
-      kind: PropertyKind::Data { value, .. },
-      ..
-    }) => value,
-    Some(PropertyDescriptor {
-      kind: PropertyKind::Accessor { .. },
-      ..
-    }) => return Err(VmError::PropertyNotData),
-    None => {
-      return Err(throw_type_error(
-        vm,
-        &mut gen_scope,
-        "Generator.prototype.return called on incompatible receiver",
-      )?)
-    }
-  };
-
-  // Completed generator.
-  if matches!(id_value, Value::Undefined) {
-    let result = create_iterator_result_object(
-      &mut gen_scope,
-      intr.object_prototype(),
-      return_value,
-      true,
-    )?;
-    return Ok(Value::Object(result));
-  }
-
-  let id = match id_value {
-    Value::Number(n) => n as u32,
-    _ => {
-      return Err(throw_type_error(
-        vm,
-        &mut gen_scope,
-        "Generator.prototype.return missing continuation id",
-      )?)
-    }
-  };
-
-  let Some(cont) = vm.take_generator_continuation(id) else {
-    return Err(VmError::InvariantViolation(
-      "generator continuation missing for id",
-    ));
-  };
-
-  generator_teardown_continuation(&mut gen_scope, cont);
-  // Mark as completed by setting the continuation id to `undefined` (keeping the property so
-  // subsequent `.next()` calls return `{ value: undefined, done: true }` instead of throwing).
-  gen_scope.define_property(
-    this_obj,
-    id_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Undefined,
-        writable: true,
-      },
-    },
-  )?;
-
-  let result = create_iterator_result_object(
-    &mut gen_scope,
-    intr.object_prototype(),
-    return_value,
-    true,
-  )?;
-  Ok(Value::Object(result))
 }
 
 fn async_handle_body_result(
@@ -10641,6 +10315,140 @@ fn for_in_of_lhs_contains_await(lhs: &ForInOfLhs) -> bool {
   }
 }
 
+fn pat_contains_yield(pat: &Pat) -> bool {
+  match pat {
+    Pat::Id(_) => false,
+    Pat::Obj(obj) => obj_pat_contains_yield(&obj.stx),
+    Pat::Arr(arr) => arr_pat_contains_yield(&arr.stx),
+    Pat::AssignTarget(expr) => expr_contains_yield(expr),
+  }
+}
+
+fn obj_pat_contains_yield(pat: &ObjPat) -> bool {
+  pat.properties.iter().any(|prop| {
+    let key_has_yield = match &prop.stx.key {
+      ClassOrObjKey::Direct(_) => false,
+      ClassOrObjKey::Computed(expr) => expr_contains_yield(expr),
+    };
+    key_has_yield
+      || pat_contains_yield(&prop.stx.target.stx)
+      || prop.stx.default_value.as_ref().is_some_and(expr_contains_yield)
+  }) || pat.rest.as_ref().is_some_and(|rest| pat_contains_yield(&rest.stx))
+}
+
+fn arr_pat_contains_yield(pat: &ArrPat) -> bool {
+  pat
+    .elements
+    .iter()
+    .any(|elem| match elem {
+      Some(elem) => {
+        pat_contains_yield(&elem.target.stx) || elem.default_value.as_ref().is_some_and(expr_contains_yield)
+      }
+      None => false,
+    })
+    || pat.rest.as_ref().is_some_and(|rest| pat_contains_yield(&rest.stx))
+}
+
+fn expr_contains_yield(expr: &Node<Expr>) -> bool {
+  match &*expr.stx {
+    Expr::Unary(unary) => {
+      matches!(
+        unary.stx.operator,
+        OperatorName::Yield | OperatorName::YieldDelegated
+      ) || expr_contains_yield(&unary.stx.argument)
+    }
+    Expr::UnaryPostfix(unary) => expr_contains_yield(&unary.stx.argument),
+    Expr::Binary(binary) => {
+      expr_contains_yield(&binary.stx.left) || expr_contains_yield(&binary.stx.right)
+    }
+    Expr::Cond(cond) => {
+      expr_contains_yield(&cond.stx.test)
+        || expr_contains_yield(&cond.stx.consequent)
+        || expr_contains_yield(&cond.stx.alternate)
+    }
+    Expr::Member(member) => expr_contains_yield(&member.stx.left),
+    Expr::ComputedMember(member) => {
+      expr_contains_yield(&member.stx.object) || expr_contains_yield(&member.stx.member)
+    }
+    Expr::Call(call) => {
+      expr_contains_yield(&call.stx.callee)
+        || call
+          .stx
+          .arguments
+          .iter()
+          .any(|arg| expr_contains_yield(&arg.stx.value))
+    }
+    Expr::Import(import) => {
+      expr_contains_yield(&import.stx.module)
+        || import
+          .stx
+          .attributes
+          .as_ref()
+          .is_some_and(|attrs| expr_contains_yield(attrs))
+    }
+    Expr::TaggedTemplate(tag) => {
+      expr_contains_yield(&tag.stx.function)
+        || tag.stx.parts.iter().any(|part| match part {
+          LitTemplatePart::Substitution(expr) => expr_contains_yield(expr),
+          LitTemplatePart::String(_) => false,
+        })
+    }
+    Expr::LitArr(arr) => arr.stx.elements.iter().any(|elem| match elem {
+      LitArrElem::Single(expr) | LitArrElem::Rest(expr) => expr_contains_yield(expr),
+      LitArrElem::Empty => false,
+    }),
+    Expr::LitObj(obj) => obj.stx.members.iter().any(|member| match &member.stx.typ {
+      ObjMemberType::Valued { key, val } => {
+        let key_has_yield = match key {
+          ClassOrObjKey::Direct(_) => false,
+          ClassOrObjKey::Computed(expr) => expr_contains_yield(expr),
+        };
+
+        let val_has_yield = match val {
+          ClassOrObjVal::Prop(Some(expr)) => expr_contains_yield(expr),
+          ClassOrObjVal::Prop(None) => false,
+          // Function-valued members: the function body is not evaluated at object creation time.
+          ClassOrObjVal::Getter(_)
+          | ClassOrObjVal::Setter(_)
+          | ClassOrObjVal::Method(_)
+          | ClassOrObjVal::IndexSignature(_)
+          | ClassOrObjVal::StaticBlock(_) => false,
+        };
+
+        key_has_yield || val_has_yield
+      }
+      ObjMemberType::Shorthand { .. } => false,
+      ObjMemberType::Rest { val } => expr_contains_yield(val),
+    }),
+    Expr::LitTemplate(tpl) => tpl.stx.parts.iter().any(|part| match part {
+      LitTemplatePart::Substitution(expr) => expr_contains_yield(expr),
+      LitTemplatePart::String(_) => false,
+    }),
+
+    Expr::ArrPat(arr) => arr_pat_contains_yield(&arr.stx),
+    Expr::ObjPat(obj) => obj_pat_contains_yield(&obj.stx),
+
+    // Nested functions are not evaluated when the function value is created.
+    Expr::Func(_) | Expr::ArrowFunc(_) => false,
+
+    Expr::Class(class) => {
+      class.stx.extends.as_ref().is_some_and(expr_contains_yield)
+        || class.stx.members.iter().any(|member| match &member.stx.key {
+          ClassOrObjKey::Direct(_) => false,
+          ClassOrObjKey::Computed(expr) => expr_contains_yield(expr),
+        })
+    }
+
+    // TypeScript-only nodes: only the wrapped expression is evaluated.
+    Expr::Instantiation(inst) => expr_contains_yield(&inst.stx.expression),
+    Expr::TypeAssertion(expr) => expr_contains_yield(&expr.stx.expression),
+    Expr::NonNullAssertion(expr) => expr_contains_yield(&expr.stx.expression),
+    Expr::SatisfiesExpr(expr) => expr_contains_yield(&expr.stx.expression),
+
+    _ => false,
+  }
+}
+
 fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
   match &*stmt.stx {
     Stmt::Empty(_)
@@ -10750,6 +10558,59 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     }
     Stmt::Label(label) => stmt_contains_await(&label.stx.statement),
     // Conservatively assume unsupported statement kinds do not contain await so we preserve the
+    // existing synchronous evaluator behaviour for them.
+    _ => false,
+  }
+}
+
+fn stmt_contains_yield(stmt: &Node<Stmt>) -> bool {
+  match &*stmt.stx {
+    Stmt::Empty(_)
+    | Stmt::Debugger(_)
+    | Stmt::Import(_)
+    | Stmt::ExportList(_)
+    | Stmt::FunctionDecl(_)
+    | Stmt::ClassDecl(_)
+    | Stmt::Break(_)
+    | Stmt::Continue(_) => false,
+    Stmt::Expr(expr_stmt) => expr_contains_yield(&expr_stmt.stx.expr),
+    Stmt::Return(ret) => ret.stx.value.as_ref().is_some_and(expr_contains_yield),
+    Stmt::Throw(throw_stmt) => expr_contains_yield(&throw_stmt.stx.value),
+    Stmt::VarDecl(decl) => decl
+      .stx
+      .declarators
+      .iter()
+      .any(|d| {
+        d.initializer.as_ref().is_some_and(expr_contains_yield)
+          || pat_contains_yield(&d.pattern.stx.pat.stx)
+      }),
+    Stmt::Block(block) => block.stx.body.iter().any(stmt_contains_yield),
+    Stmt::If(if_stmt) => {
+      expr_contains_yield(&if_stmt.stx.test)
+        || stmt_contains_yield(&if_stmt.stx.consequent)
+        || if_stmt.stx.alternate.as_ref().is_some_and(stmt_contains_yield)
+    }
+    Stmt::Try(try_stmt) => {
+      let catch_has_yield = try_stmt.stx.catch.as_ref().is_some_and(|c| {
+        c.stx
+          .parameter
+          .as_ref()
+          .is_some_and(|p| pat_contains_yield(&p.stx.pat.stx))
+          || c.stx.body.iter().any(stmt_contains_yield)
+      });
+
+      try_stmt.stx.wrapped.stx.body.iter().any(stmt_contains_yield)
+        || catch_has_yield
+        || try_stmt
+          .stx
+          .finally
+          .as_ref()
+          .is_some_and(|f| f.stx.body.iter().any(stmt_contains_yield))
+    }
+    Stmt::While(while_stmt) => {
+      expr_contains_yield(&while_stmt.stx.condition) || stmt_contains_yield(&while_stmt.stx.body)
+    }
+    // Conservatively assume unsupported statement kinds do not contain yield so we preserve the
     // existing synchronous evaluator behaviour for them.
     _ => false,
   }
@@ -23662,11 +23523,1993 @@ fn async_resume_from_frames(
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum GeneratorResumeInput {
+  Next(Value),
+  Throw(Value),
+  Return(Value),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum GeneratorResumeOutcome {
+  Yield(Value),
+  Done(Value),
+}
+
+fn gen_frames_push(frames: &mut VecDeque<GenFrame>, frame: GenFrame) -> Result<(), VmError> {
+  frames.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+  frames.push_back(frame);
+  Ok(())
+}
+
+fn gen_eval_stmt_list(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmts: &Vec<Node<Stmt>>,
+) -> Result<GenEval<Completion>, VmError> {
+  gen_eval_stmt_list_from(evaluator, scope, stmts, 0, None)
+}
+
+fn gen_eval_stmt_list_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmts: &Vec<Node<Stmt>>,
+  start_index: usize,
+  mut last_value: Option<Value>,
+) -> Result<GenEval<Completion>, VmError> {
+  // Root the running completion value so it cannot be collected while evaluating subsequent
+  // statements (which may allocate and trigger GC). Use a stack root so it does not survive across
+  // yields.
+  let mut list_scope = scope.reborrow();
+  let v_root_idx = list_scope.heap().root_stack.len();
+  list_scope.push_root(last_value.unwrap_or(Value::Undefined))?;
+
+  for (idx, stmt) in stmts.iter().enumerate().skip(start_index) {
+    let completion_eval = gen_eval_stmt_labelled(evaluator, &mut list_scope, stmt, &[]);
+    let completion = match completion_eval? {
+      GenEval::Complete(c) => c,
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::StmtList {
+            stmts: stmts as *const Vec<Node<Stmt>>,
+            next_index: idx.saturating_add(1),
+            last_value,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    };
+
+    let completion = completion.update_empty(last_value);
+    match completion {
+      Completion::Normal(v) => {
+        if let Some(v) = v {
+          last_value = Some(v);
+          list_scope.heap_mut().root_stack[v_root_idx] = v;
+        }
+      }
+      abrupt => return Ok(GenEval::Complete(abrupt)),
+    }
+  }
+
+  Ok(GenEval::Complete(Completion::Normal(last_value)))
+}
+
+fn gen_eval_block_stmt(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  block: &BlockStmt,
+) -> Result<GenEval<Completion>, VmError> {
+  if block.body.is_empty() {
+    return Ok(GenEval::Complete(Completion::empty()));
+  }
+
+  let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
+    Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+    Stmt::ClassDecl(_) => true,
+    Stmt::FunctionDecl(_) => evaluator.strict,
+    _ => false,
+  });
+  if !needs_lexical_env {
+    return gen_eval_stmt_list(evaluator, scope, &block.body);
+  }
+
+  let outer = evaluator.env.lexical_env;
+  let block_env = scope.env_create(Some(outer))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+
+  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &block.body) {
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+    return Err(err);
+  }
+
+  match gen_eval_stmt_list(evaluator, scope, &block.body)? {
+    GenEval::Complete(c) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(GenEval::Complete(c))
+    }
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer })?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_catch(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  catch: &CatchBlock,
+  thrown: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let outer = evaluator.env.lexical_env;
+  let catch_env = scope.env_create(Some(outer))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), catch_env);
+
+  {
+    // Root thrown across catch binding instantiation which may allocate.
+    let mut catch_scope = scope.reborrow();
+    catch_scope.push_root(thrown)?;
+    evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, catch_env, &catch.body)?;
+    if let Some(param) = &catch.parameter {
+      evaluator.bind_catch_param(&mut catch_scope, &param.stx, thrown, catch_env)?;
+    }
+  }
+
+  match gen_eval_stmt_list(evaluator, scope, &catch.body)? {
+    GenEval::Complete(c) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(GenEval::Complete(c))
+    }
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer })?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_try(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &TryStmt,
+) -> Result<GenEval<Completion>, VmError> {
+  match gen_eval_block_stmt(evaluator, scope, &stmt.wrapped.stx)? {
+    GenEval::Complete(c) => gen_try_after_wrapped(evaluator, scope, stmt, c),
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::TryAfterWrapped {
+          stmt: stmt as *const TryStmt,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_try_after_wrapped(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &TryStmt,
+  mut result: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  if matches!(result, Completion::Throw(_)) {
+    if let Some(catch) = &stmt.catch {
+      let thrown = match result {
+        Completion::Throw(thrown) => thrown.value,
+        _ => unreachable!(),
+      };
+      match gen_eval_catch(evaluator, scope, &catch.stx, thrown)? {
+        GenEval::Complete(c) => result = c,
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::TryAfterCatch {
+              stmt: stmt as *const TryStmt,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      }
+    }
+  }
+
+  gen_try_after_catch(evaluator, scope, stmt, result)
+}
+
+fn gen_try_after_catch(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &TryStmt,
+  result: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  let Some(finally) = &stmt.finally else {
+    return Ok(GenEval::Complete(result.update_empty(Some(Value::Undefined))));
+  };
+
+  let pending = result;
+  match gen_eval_block_stmt(evaluator, scope, &finally.stx)? {
+    GenEval::Complete(finally_result) => {
+      let result = if finally_result.is_abrupt() {
+        finally_result
+      } else {
+        pending
+      };
+      Ok(GenEval::Complete(result.update_empty(Some(Value::Undefined))))
+    }
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(&mut suspend.frames, GenFrame::TryAfterFinally { pending })?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_var_decl(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  decl: &VarDecl,
+  start_declarator_index: usize,
+) -> Result<GenEval<Completion>, VmError> {
+  for (idx, declarator) in decl
+    .declarators
+    .iter()
+    .enumerate()
+    .skip(start_declarator_index)
+  {
+    let Some(init) = &declarator.initializer else {
+      match decl.mode {
+        VarDeclMode::Var => {
+          evaluator.tick()?;
+          if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+            return Err(VmError::Unimplemented(
+              "destructuring var without initializer",
+            ));
+          }
+          continue;
+        }
+        VarDeclMode::Let => {
+          let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
+            return Err(VmError::Unimplemented(
+              "destructuring let without initializer",
+            ));
+          };
+          evaluator.tick()?;
+          let name = id.stx.name.as_str();
+          if !scope.heap().env_has_binding(evaluator.env.lexical_env, name)? {
+            scope.env_create_mutable_binding(evaluator.env.lexical_env, name)?;
+          }
+          scope
+            .heap_mut()
+            .env_initialize_binding(evaluator.env.lexical_env, name, Value::Undefined)?;
+          continue;
+        }
+        VarDeclMode::Const => {
+          return Err(syntax_error(
+            declarator.pattern.loc,
+            "Missing initializer in const declaration",
+          ));
+        }
+        _ => return Err(VmError::Unimplemented("var declaration kind")),
+      }
+    };
+
+    match gen_eval_expr(evaluator, scope, init)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => {
+          gen_bind_var_declarator_value(
+            evaluator,
+            scope,
+            decl,
+            idx,
+            v.unwrap_or(Value::Undefined),
+          )?;
+        }
+        abrupt => return Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::VarDecl {
+            decl: decl as *const VarDecl,
+            next_declarator_index: idx,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+
+  Ok(GenEval::Complete(Completion::empty()))
+}
+
+fn gen_bind_var_declarator_value(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  decl: &VarDecl,
+  declarator_index: usize,
+  value: Value,
+) -> Result<(), VmError> {
+  let declarator = decl
+    .declarators
+    .get(declarator_index)
+    .ok_or(VmError::InvariantViolation(
+      "generator var decl continuation out of bounds",
+    ))?;
+
+  match decl.mode {
+    VarDeclMode::Var => bind_pattern(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      scope,
+      evaluator.env,
+      &declarator.pattern.stx.pat.stx,
+      value,
+      BindingKind::Var,
+      evaluator.strict,
+      evaluator.this,
+    )?,
+    VarDeclMode::Let => {
+      let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
+        bind_pattern(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          evaluator.env,
+          &declarator.pattern.stx.pat.stx,
+          value,
+          BindingKind::Let,
+          evaluator.strict,
+          evaluator.this,
+        )?;
+        return Ok(());
+      };
+
+      let name = id.stx.name.as_str();
+      if !scope.heap().env_has_binding(evaluator.env.lexical_env, name)? {
+        scope.env_create_mutable_binding(evaluator.env.lexical_env, name)?;
+      }
+      scope
+        .heap_mut()
+        .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+    }
+    VarDeclMode::Const => {
+      if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+        bind_pattern(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          evaluator.env,
+          &declarator.pattern.stx.pat.stx,
+          value,
+          BindingKind::Const,
+          evaluator.strict,
+          evaluator.this,
+        )?;
+        return Ok(());
+      }
+
+      let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
+        return Err(VmError::InvariantViolation(
+          "internal error: const declaration pattern mismatch",
+        ));
+      };
+      let name = id.stx.name.as_str();
+      if !scope.heap().env_has_binding(evaluator.env.lexical_env, name)? {
+        scope.env_create_immutable_binding(evaluator.env.lexical_env, name)?;
+      }
+      scope
+        .heap_mut()
+        .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+    }
+    _ => return Err(VmError::Unimplemented("var declaration kind")),
+  }
+
+  Ok(())
+}
+
+fn gen_eval_while(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &WhileStmt,
+  label_set: &[String],
+) -> Result<GenEval<Completion>, VmError> {
+  // Root `V` across the loop so it can't be collected between iterations. Use a stack root so it
+  // does not survive across yields.
+  let mut loop_scope = scope.reborrow();
+  let v_root_idx = loop_scope.heap().root_stack.len();
+  loop_scope.push_root(Value::Undefined)?;
+  let v = Value::Undefined;
+
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  match gen_eval_expr(evaluator, &mut loop_scope, &stmt.condition)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(test) => gen_while_after_test(
+        evaluator,
+        &mut loop_scope,
+        stmt,
+        label_vec,
+        v_root_idx,
+        v,
+        test.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::WhileAfterTest {
+          stmt: stmt as *const WhileStmt,
+          label_set: label_vec,
+          v,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_while_after_test(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &WhileStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  v: Value,
+  test_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+
+  if !to_boolean(scope.heap(), test_value)? {
+    let result = Evaluator::normalise_iteration_break(Completion::normal(v));
+    return Ok(GenEval::Complete(result));
+  }
+
+  match gen_eval_stmt_labelled(evaluator, scope, &stmt.body, &label_set)? {
+    GenEval::Complete(c) => gen_while_after_body(evaluator, scope, stmt, label_set, v_root_idx, c),
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::WhileAfterBody {
+          stmt: stmt as *const WhileStmt,
+          label_set,
+          v,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_while_after_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &WhileStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  body_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut v = scope.heap().root_stack[v_root_idx];
+
+  if !Evaluator::loop_continues(&body_completion, &label_set) {
+    let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+    return Ok(GenEval::Complete(result));
+  }
+
+  if let Some(value) = body_completion.value() {
+    v = value;
+    scope.heap_mut().root_stack[v_root_idx] = value;
+  }
+
+  // Re-enter loop condition evaluation.
+  match gen_eval_expr(evaluator, scope, &stmt.condition)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(test) => gen_while_after_test(
+        evaluator,
+        scope,
+        stmt,
+        label_set,
+        v_root_idx,
+        v,
+        test.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::WhileAfterTest {
+          stmt: stmt as *const WhileStmt,
+          label_set,
+          v,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_stmt_labelled(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &Node<Stmt>,
+  label_set: &[String],
+) -> Result<GenEval<Completion>, VmError> {
+  evaluator.tick()?;
+
+  if !stmt_contains_yield(stmt) {
+    return Ok(GenEval::Complete(
+      evaluator.eval_stmt_labelled(scope, stmt, label_set)?,
+    ));
+  }
+
+  let res = match &*stmt.stx {
+    Stmt::Empty(_) | Stmt::Debugger(_) | Stmt::Import(_) | Stmt::ExportList(_) | Stmt::FunctionDecl(_) | Stmt::ClassDecl(_) => {
+      Ok(GenEval::Complete(Completion::empty()))
+    }
+    Stmt::Expr(expr_stmt) => gen_eval_expr(evaluator, scope, &expr_stmt.stx.expr),
+    Stmt::Return(ret) => {
+      let Some(value_expr) = &ret.stx.value else {
+        return Ok(GenEval::Complete(Completion::Return(Value::Undefined)));
+      };
+
+      match gen_eval_expr(evaluator, scope, value_expr)? {
+        GenEval::Complete(c) => Ok(GenEval::Complete(match c {
+          Completion::Normal(v) => Completion::Return(v.unwrap_or(Value::Undefined)),
+          other => other,
+        })),
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(&mut suspend.frames, GenFrame::Return)?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    Stmt::VarDecl(decl) => gen_eval_var_decl(evaluator, scope, &decl.stx, 0),
+    Stmt::Block(block) => gen_eval_block_stmt(evaluator, scope, &block.stx),
+    Stmt::If(if_stmt) => match gen_eval_expr(evaluator, scope, &if_stmt.stx.test)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => {
+          let test_value = v.unwrap_or(Value::Undefined);
+          if to_boolean(scope.heap(), test_value)? {
+            gen_eval_stmt_labelled(evaluator, scope, &if_stmt.stx.consequent, label_set)
+          } else if let Some(alt) = &if_stmt.stx.alternate {
+            gen_eval_stmt_labelled(evaluator, scope, alt, label_set)
+          } else {
+            Ok(GenEval::Complete(Completion::empty()))
+          }
+        }
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::IfAfterTest {
+            consequent: &if_stmt.stx.consequent as *const Node<Stmt>,
+            alternate: if_stmt
+              .stx
+              .alternate
+              .as_ref()
+              .map(|alt| alt as *const Node<Stmt>),
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    Stmt::Try(try_stmt) => gen_eval_try(evaluator, scope, &try_stmt.stx),
+    Stmt::While(while_stmt) => gen_eval_while(evaluator, scope, &while_stmt.stx, label_set),
+    // Conservatively punt on other statement forms for now.
+    _ => Err(VmError::Unimplemented("yield in statement type")),
+  };
+
+  // Generator evaluation does not go through `Evaluator::eval_stmt_labelled`, so we must ensure
+  // `VmError::Throw(..)` propagates as a JS throw completion (catchable by `try/catch`) rather than
+  // bubbling out as a fatal internal error.
+  match res {
+    Ok(v) => Ok(v),
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+      match err {
+        VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+        other => Err(other),
+      }
+    }
+  }
+}
+
+fn gen_eval_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+) -> Result<GenEval<Completion>, VmError> {
+  evaluator.tick()?;
+
+  if !expr_contains_yield(expr) {
+    return match evaluator.eval_expr(scope, expr) {
+      Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+      Err(err) => {
+        let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+        Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+      }
+    };
+  }
+
+  let res = match &*expr.stx {
+    Expr::Unary(unary) if unary.stx.operator == OperatorName::Yield => {
+      match gen_eval_expr(evaluator, scope, &unary.stx.argument)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => Ok(GenEval::Suspend(GenSuspend {
+            yield_value: v.unwrap_or(Value::Undefined),
+            frames: VecDeque::new(),
+          })),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(&mut suspend.frames, GenFrame::YieldAfterOperand)?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    Expr::Unary(unary) if unary.stx.operator == OperatorName::YieldDelegated => {
+      Err(VmError::Unimplemented("yield*"))
+    }
+    // For now, defer to the async-style continuation evaluator for expression forms that can nest
+    // yield within larger expressions.
+    Expr::Unary(unary) => match gen_eval_expr(evaluator, scope, &unary.stx.argument)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => match gen_apply_unary_operator(
+          evaluator,
+          scope,
+          &unary.stx,
+          v.unwrap_or(Value::Undefined),
+        ) {
+          Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+          Err(err) => {
+            let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+            Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+          }
+        },
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::UnaryAfterArgument {
+            expr: &*unary.stx as *const UnaryExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => match gen_member_after_base(
+          evaluator,
+          scope,
+          &member.stx,
+          v.unwrap_or(Value::Undefined),
+        ) {
+          Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+          Err(err) => {
+            let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+            Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+          }
+        },
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::MemberAfterBase {
+            expr: &*member.stx as *const MemberExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    Expr::ComputedMember(member) => match gen_eval_expr(evaluator, scope, &member.stx.object)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_computed_member_after_base(
+          evaluator,
+          scope,
+          &member.stx,
+          v.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ComputedMemberAfterBase {
+            expr: &*member.stx as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    Expr::Call(call) => gen_eval_call(evaluator, scope, &call.stx),
+    Expr::Cond(cond) => match gen_eval_expr(evaluator, scope, &cond.stx.test)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => {
+          let test_value = v.unwrap_or(Value::Undefined);
+          if to_boolean(scope.heap(), test_value)? {
+            gen_eval_expr(evaluator, scope, &cond.stx.consequent)
+          } else {
+            gen_eval_expr(evaluator, scope, &cond.stx.alternate)
+          }
+        }
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::CondAfterTest {
+            expr: &*cond.stx as *const CondExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    Expr::Binary(binary) => match gen_eval_expr(evaluator, scope, &binary.stx.left)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => {
+          gen_binary_after_left(evaluator, scope, &binary.stx, v.unwrap_or(Value::Undefined))
+        }
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::BinaryAfterLeft {
+            expr: &*binary.stx as *const BinaryExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    _ => Err(VmError::Unimplemented("yield in expression type")),
+  };
+
+  // Similar to `async_eval_expr`, generator expression evaluation should treat JS errors as
+  // catchable throw completions rather than bubbling them out as fatal internal errors.
+  match res {
+    Ok(v) => Ok(v),
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+      match err {
+        VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+        other => Err(other),
+      }
+    }
+  }
+}
+
+fn gen_apply_unary_operator(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+  argument: Value,
+) -> Result<Value, VmError> {
+  match expr.operator {
+    OperatorName::LogicalNot => Ok(Value::Bool(!to_boolean(scope.heap(), argument)?)),
+    OperatorName::UnaryPlus => Ok(Value::Number(evaluator.to_number_operator(scope, argument)?)),
+    OperatorName::UnaryNegation => {
+      let num = evaluator.to_numeric(scope, argument)?;
+      Ok(match num {
+        NumericValue::Number(n) => Value::Number(-n),
+        NumericValue::BigInt(b) => Value::BigInt(b.negate()),
+      })
+    }
+    OperatorName::BitwiseNot => {
+      let num = evaluator.to_numeric(scope, argument)?;
+      Ok(match num {
+        NumericValue::Number(n) => Value::Number((!to_int32(n)) as f64),
+        NumericValue::BigInt(b) => {
+          let Some(out) = b.checked_bitwise_not() else {
+            return Err(VmError::Unimplemented("BigInt bitwise not out of range"));
+          };
+          Value::BigInt(out)
+        }
+      })
+    }
+    OperatorName::Typeof => {
+      let t = typeof_name(scope.heap(), argument)?;
+      let s = scope.alloc_string(t)?;
+      Ok(Value::String(s))
+    }
+    OperatorName::Void => Ok(Value::Undefined),
+    _ => Err(VmError::Unimplemented("yield in unary operator")),
+  }
+}
+
+fn gen_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &MemberExpr,
+  base: Value,
+) -> Result<Value, VmError> {
+  if expr.optional_chaining && is_nullish(base) {
+    return Ok(Value::Undefined);
+  }
+
+  let mut key_scope = scope.reborrow();
+  key_scope.push_root(base)?;
+  let key_s = key_scope.alloc_string(&expr.right)?;
+  let reference = Reference::Property {
+    base,
+    key: PropertyKey::from_string(key_s),
+  };
+  evaluator.get_value_from_reference(&mut key_scope, &reference)
+}
+
+fn gen_computed_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &ComputedMemberExpr,
+  base: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if expr.optional_chaining && is_nullish(base) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+  }
+
+  match gen_eval_expr(evaluator, scope, &expr.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => match gen_computed_member_after_member(
+        evaluator,
+        scope,
+        expr,
+        base,
+        v.unwrap_or(Value::Undefined),
+      ) {
+        Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+        Err(err) => {
+          let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+      },
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      // Root the base value so it survives until the next yield boundary.
+      scope.push_root(base)?;
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ComputedMemberAfterMember {
+          expr: expr as *const ComputedMemberExpr,
+          base,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  _expr: &ComputedMemberExpr,
+  base: Value,
+  member_value: Value,
+) -> Result<Value, VmError> {
+  let mut key_scope = scope.reborrow();
+  key_scope.push_root(base)?;
+  key_scope.push_root(member_value)?;
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
+  let reference = Reference::Property { base, key };
+  evaluator.get_value_from_reference(&mut key_scope, &reference)
+}
+
+fn gen_binary_after_left(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  left: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  match expr.operator {
+    OperatorName::LogicalAnd => {
+      if !to_boolean(scope.heap(), left)? {
+        return Ok(GenEval::Complete(Completion::normal(left)));
+      }
+      gen_eval_expr(evaluator, scope, &expr.right)
+    }
+    OperatorName::LogicalOr => {
+      if to_boolean(scope.heap(), left)? {
+        return Ok(GenEval::Complete(Completion::normal(left)));
+      }
+      gen_eval_expr(evaluator, scope, &expr.right)
+    }
+    OperatorName::NullishCoalescing => {
+      if !is_nullish(left) {
+        return Ok(GenEval::Complete(Completion::normal(left)));
+      }
+      gen_eval_expr(evaluator, scope, &expr.right)
+    }
+    OperatorName::Addition => match gen_eval_expr(evaluator, scope, &expr.right)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => match evaluator.addition_operator(scope, left, v.unwrap_or(Value::Undefined)) {
+          Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+          Err(err) => {
+            let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+            Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+          }
+        },
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        // Root the left operand so it survives until the next yield boundary.
+        scope.push_root(left)?;
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::BinaryAfterRight {
+            expr: expr as *const BinaryExpr,
+            left,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    _ => Err(VmError::Unimplemented("yield in binary operator")),
+  }
+}
+
+fn gen_eval_call(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &CallExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  match &*expr.callee.stx {
+    Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_call_member_after_base(
+          evaluator,
+          scope,
+          expr,
+          &member.stx,
+          v.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::CallMemberAfterBase {
+            expr: expr as *const CallExpr,
+            member: &*member.stx as *const MemberExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    Expr::ComputedMember(member) => match gen_eval_expr(evaluator, scope, &member.stx.object)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_call_computed_member_after_base(
+          evaluator,
+          scope,
+          expr,
+          &member.stx,
+          v.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::CallComputedMemberAfterBase {
+            expr: expr as *const CallExpr,
+            member: &*member.stx as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    _ => match gen_eval_expr(evaluator, scope, &expr.callee)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_call_begin(
+          evaluator,
+          scope,
+          expr,
+          v.unwrap_or(Value::Undefined),
+          Value::Undefined,
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::CallAfterCallee {
+            expr: expr as *const CallExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+  }
+}
+
+fn gen_call_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  member: &MemberExpr,
+  base: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining && is_nullish(base) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+  }
+  if is_nullish(base) {
+    let err = throw_type_error(
+      evaluator.vm,
+      scope,
+      "Cannot convert undefined or null to object",
+    )?;
+    return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+  }
+
+  let callee_value = {
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(base)?;
+    let key_s = key_scope.alloc_string(&member.right)?;
+    let reference = Reference::Property {
+      base,
+      key: PropertyKey::from_string(key_s),
+    };
+    evaluator.get_value_from_reference(&mut key_scope, &reference)
+  };
+  let callee_value = match callee_value {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  gen_call_begin(evaluator, scope, call, callee_value, base)
+}
+
+fn gen_call_computed_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  member: &ComputedMemberExpr,
+  base: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining && is_nullish(base) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+  }
+
+  match gen_eval_expr(evaluator, scope, &member.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_call_computed_member_after_member(
+        evaluator,
+        scope,
+        call,
+        member,
+        base,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      scope.push_root(base)?;
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::CallComputedMemberAfterMember {
+          expr: call as *const CallExpr,
+          member: member as *const ComputedMemberExpr,
+          base,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_call_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  _member: &ComputedMemberExpr,
+  base: Value,
+  member_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut key_scope = scope.reborrow();
+  key_scope.push_root(base)?;
+  key_scope.push_root(member_value)?;
+  let key = match evaluator.to_property_key_operator(&mut key_scope, member_value) {
+    Ok(k) => k,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  if is_nullish(base) {
+    let err = throw_type_error(
+      evaluator.vm,
+      &mut key_scope,
+      "Cannot convert undefined or null to object",
+    )?;
+    return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+  }
+
+  let reference = Reference::Property { base, key };
+  let callee_value = match evaluator.get_value_from_reference(&mut key_scope, &reference) {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  drop(key_scope);
+  gen_call_begin(evaluator, scope, call, callee_value, base)
+}
+
+fn gen_call_begin(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  callee_value: Value,
+  this_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if call.optional_chaining && is_nullish(callee_value) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+  }
+
+  if call.arguments.is_empty() {
+    let mut call_scope = scope.reborrow();
+    call_scope.push_roots(&[callee_value, this_value])?;
+    let res = evaluator.call(&mut call_scope, callee_value, this_value, &[]);
+    return match res {
+      Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+      Err(err) => {
+        let err = coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err);
+        Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+      }
+    };
+  }
+
+  gen_call_continue_args(evaluator, scope, call, callee_value, this_value, Vec::new(), 0)
+}
+
+fn gen_call_continue_args(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  callee_value: Value,
+  this_value: Value,
+  mut args: Vec<Value>,
+  start_index: usize,
+) -> Result<GenEval<Completion>, VmError> {
+  for (idx, arg) in call.arguments.iter().enumerate().skip(start_index) {
+    match gen_eval_expr(evaluator, scope, &arg.stx.value)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => {
+          let value = v.unwrap_or(Value::Undefined);
+          if let Err(err) =
+            gen_call_store_arg_value(evaluator, scope, arg.stx.spread, value, &mut args)
+          {
+            let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+            match err {
+              VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+                return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+              }
+              other => return Err(other),
+            }
+          }
+        }
+        abrupt => return Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        // Root the callee/this/args so they survive until the next yield boundary.
+        let mut roots: Vec<Value> = Vec::new();
+        roots
+          .try_reserve_exact(args.len().saturating_add(2))
+          .map_err(|_| VmError::OutOfMemory)?;
+        roots.push(callee_value);
+        roots.push(this_value);
+        roots.extend_from_slice(&args);
+        scope.push_roots(&roots)?;
+
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::CallArgs {
+            expr: call as *const CallExpr,
+            callee: callee_value,
+            this: this_value,
+            args,
+            arg_index: idx,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+
+  let res = evaluator.call(scope, callee_value, this_value, &args);
+  match res {
+    Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+      Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+    }
+  }
+}
+
+fn gen_call_store_arg_value(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  spread: bool,
+  value: Value,
+  args: &mut Vec<Value>,
+) -> Result<(), VmError> {
+  if spread {
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(value)?;
+    let mut iter = iterator::get_iterator(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut iter_scope,
+      value,
+    )?;
+    iter_scope.push_roots(&[iter.iterator, iter.next_method])?;
+    while let Some(v) = iterator::iterator_step_value(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut iter_scope,
+      &mut iter,
+    )? {
+      evaluator.tick()?;
+      args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      args.push(v);
+    }
+  } else {
+    args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    args.push(value);
+  }
+  Ok(())
+}
+
+fn gen_start_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  func: &Arc<Node<Func>>,
+  args: &[Value],
+) -> Result<GenEval<Completion>, VmError> {
+  if let Err(err) = evaluator.instantiate_function(scope, func.as_ref(), args) {
+    let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+    return match err {
+      VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+        Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+      }
+      other => Err(other),
+    };
+  }
+
+  let Some(body) = &func.stx.body else {
+    return Err(VmError::Unimplemented("function without body"));
+  };
+
+  match body {
+    FuncBody::Expression(_) => Err(VmError::Unimplemented("generator expression body")),
+    FuncBody::Block(stmts) => match gen_eval_stmt_list(evaluator, scope, stmts)? {
+      GenEval::Complete(c) => Ok(GenEval::Complete(c)),
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(&mut suspend.frames, GenFrame::RootBlockBody)?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+  }
+}
+
+fn gen_error_to_completion(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  err: VmError,
+) -> Result<Completion, VmError> {
+  let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+  match err {
+    VmError::Throw(_) | VmError::ThrowWithStack { .. } => completion_from_expr_result(Err(err)),
+    other => Err(other),
+  }
+}
+
+fn gen_resume_from_frames(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  mut frames: VecDeque<GenFrame>,
+  mut state: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  loop {
+    evaluator.tick()?;
+    let Some(frame) = frames.pop_front() else {
+      return Err(VmError::InvariantViolation(
+        "generator continuation resumed with empty frame stack",
+      ));
+    };
+
+    match frame {
+      GenFrame::RootBlockBody => match state {
+        Completion::Normal(_) | Completion::Return(_) | Completion::Throw(_) => {
+          return Ok(GenEval::Complete(state))
+        }
+        Completion::Break(..) => return Err(VmError::Unimplemented("break outside of loop")),
+        Completion::Continue(..) => return Err(VmError::Unimplemented("continue outside of loop")),
+      },
+
+      GenFrame::YieldAfterOperand => match state {
+        Completion::Normal(v) => {
+          return Ok(GenEval::Suspend(GenSuspend {
+            yield_value: v.unwrap_or(Value::Undefined),
+            frames,
+          }))
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::UnaryAfterArgument { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_apply_unary_operator(evaluator, scope, expr, v.unwrap_or(Value::Undefined)) {
+            Ok(out) => state = Completion::normal(out),
+            Err(err) => {
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              state = completion_from_expr_result(Err(err))?;
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::MemberAfterBase { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_member_after_base(evaluator, scope, expr, v.unwrap_or(Value::Undefined)) {
+            Ok(v) => state = Completion::normal(v),
+            Err(err) => {
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              state = completion_from_expr_result(Err(err))?;
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::ComputedMemberAfterBase { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_computed_member_after_base(evaluator, scope, expr, v.unwrap_or(Value::Undefined)) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::ComputedMemberAfterMember { expr, base } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_computed_member_after_member(
+            evaluator,
+            scope,
+            expr,
+            base,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(v) => state = Completion::normal(v),
+            Err(err) => {
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              state = completion_from_expr_result(Err(err))?;
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::CondAfterTest { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let test_value = v.unwrap_or(Value::Undefined);
+          let branch = if to_boolean(scope.heap(), test_value)? {
+            &expr.consequent
+          } else {
+            &expr.alternate
+          };
+          match gen_eval_expr(evaluator, scope, branch)? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BinaryAfterLeft { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_binary_after_left(evaluator, scope, expr, v.unwrap_or(Value::Undefined))? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BinaryAfterRight { expr, left } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match expr.operator {
+            OperatorName::Addition => match evaluator.addition_operator(scope, left, v.unwrap_or(Value::Undefined)) {
+              Ok(v) => state = Completion::normal(v),
+              Err(err) => {
+                let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+                state = completion_from_expr_result(Err(err))?;
+              }
+            },
+            _ => return Err(VmError::Unimplemented("yield in binary operator")),
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::CallAfterCallee { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_call_begin(
+            evaluator,
+            scope,
+            expr,
+            v.unwrap_or(Value::Undefined),
+            Value::Undefined,
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::CallMemberAfterBase { expr, member } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let member = unsafe { &*member };
+          match gen_call_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            member,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::CallComputedMemberAfterBase { expr, member } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let member = unsafe { &*member };
+          match gen_call_computed_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            member,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::CallComputedMemberAfterMember { expr, member, base } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let member = unsafe { &*member };
+          match gen_call_computed_member_after_member(
+            evaluator,
+            scope,
+            expr,
+            member,
+            base,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::CallArgs {
+        expr,
+        callee,
+        this,
+        mut args,
+        arg_index,
+      } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let Some(arg) = expr.arguments.get(arg_index) else {
+            return Err(VmError::InvariantViolation(
+              "generator call args continuation out of bounds",
+            ));
+          };
+
+          if let Err(err) = gen_call_store_arg_value(
+            evaluator,
+            scope,
+            arg.stx.spread,
+            v.unwrap_or(Value::Undefined),
+            &mut args,
+          ) {
+            state = gen_error_to_completion(evaluator, scope, err)?;
+            continue;
+          }
+
+          match gen_call_continue_args(
+            evaluator,
+            scope,
+            expr,
+            callee,
+            this,
+            args,
+            arg_index.saturating_add(1),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::StmtList {
+        stmts,
+        next_index,
+        last_value,
+      } => {
+        let stmts = unsafe { &*stmts };
+        let completion = state.update_empty(last_value);
+        match completion {
+          Completion::Normal(v) => {
+            let mut last_value = last_value;
+            if let Some(v) = v {
+              last_value = Some(v);
+            }
+            match gen_eval_stmt_list_from(evaluator, scope, stmts, next_index, last_value)? {
+              GenEval::Complete(c) => state = c,
+              GenEval::Suspend(mut suspend) => {
+                suspend.frames.append(&mut frames);
+                return Ok(GenEval::Suspend(suspend));
+              }
+            }
+          }
+          abrupt => state = abrupt,
+        }
+      }
+
+      GenFrame::RestoreLexEnv { outer } => {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      }
+
+      GenFrame::Return => match state {
+        Completion::Normal(v) => state = Completion::Return(v.unwrap_or(Value::Undefined)),
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::VarDecl {
+        decl,
+        next_declarator_index,
+      } => match state {
+        Completion::Normal(v) => {
+          let decl = unsafe { &*decl };
+          let value = v.unwrap_or(Value::Undefined);
+          if let Err(err) =
+            gen_bind_var_declarator_value(evaluator, scope, decl, next_declarator_index, value)
+          {
+            state = gen_error_to_completion(evaluator, scope, err)?;
+            continue;
+          }
+          match gen_eval_var_decl(
+            evaluator,
+            scope,
+            decl,
+            next_declarator_index.saturating_add(1),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::IfAfterTest {
+        consequent,
+        alternate,
+      } => match state {
+        Completion::Normal(v) => {
+          let test_value = v.unwrap_or(Value::Undefined);
+          let next_stmt = if to_boolean(scope.heap(), test_value)? {
+            unsafe { &*consequent }
+          } else if let Some(alt) = alternate {
+            unsafe { &*alt }
+          } else {
+            state = Completion::empty();
+            continue;
+          };
+          match gen_eval_stmt_labelled(evaluator, scope, next_stmt, &[])? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::WhileAfterTest { stmt, label_set, v } => match state {
+        Completion::Normal(test) => {
+          // Create a fresh stack root slot for `v` for this resumption.
+          let v_root_idx = scope.heap().root_stack.len();
+          scope.push_root(v)?;
+          let stmt = unsafe { &*stmt };
+          match gen_while_after_test(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            v_root_idx,
+            v,
+            test.unwrap_or(Value::Undefined),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::WhileAfterBody { stmt, label_set, v } => {
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(v)?;
+        let stmt = unsafe { &*stmt };
+        match gen_while_after_body(evaluator, scope, stmt, label_set, v_root_idx, state)? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            suspend.frames.append(&mut frames);
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
+      GenFrame::TryAfterWrapped { stmt } => {
+        let stmt = unsafe { &*stmt };
+        match gen_try_after_wrapped(evaluator, scope, stmt, state)? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            suspend.frames.append(&mut frames);
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
+      GenFrame::TryAfterCatch { stmt } => {
+        let stmt = unsafe { &*stmt };
+        match gen_try_after_catch(evaluator, scope, stmt, state)? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            suspend.frames.append(&mut frames);
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
+      GenFrame::TryAfterFinally { pending } => {
+        let result = if state.is_abrupt() { state } else { pending };
+        state = result.update_empty(Some(Value::Undefined));
+      }
+    }
+  }
+}
+
+fn gen_root_values_for_continuation(
+  scope: &mut Scope<'_>,
+  cont: &GeneratorContinuation,
+) -> Result<(), VmError> {
+  let mut values: Vec<Value> = Vec::new();
+  values
+    .try_reserve_exact(
+      2usize
+        .saturating_add(cont.args.len())
+        .saturating_add(cont.frames.len()),
+    )
+    .map_err(|_| VmError::OutOfMemory)?;
+  values.push(cont.this);
+  values.push(cont.new_target);
+  values.extend_from_slice(&cont.args);
+
+  for frame in cont.frames.iter() {
+    match frame {
+      GenFrame::StmtList { last_value, .. } => {
+        if let Some(v) = last_value {
+          values.push(*v);
+        }
+      }
+      GenFrame::WhileAfterTest { v, .. } | GenFrame::WhileAfterBody { v, .. } => values.push(*v),
+      GenFrame::TryAfterFinally { pending } => {
+        if let Some(v) = pending.value() {
+          values.push(v);
+        }
+      }
+      GenFrame::ComputedMemberAfterMember { base, .. }
+      | GenFrame::CallComputedMemberAfterMember { base, .. } => values.push(*base),
+      GenFrame::BinaryAfterRight { left, .. } => values.push(*left),
+      GenFrame::CallArgs {
+        callee, this, args, ..
+      } => {
+        values.push(*callee);
+        values.push(*this);
+        values.extend_from_slice(args);
+      }
+      _ => {}
+    }
+  }
+
+  scope.push_roots_with_extra_roots(&values, &[], &[cont.env.lexical_env()])?;
+  Ok(())
+}
+
+pub(crate) fn generator_resume(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  gen_obj: GcObject,
+  input: GeneratorResumeInput,
+) -> Result<GeneratorResumeOutcome, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(gen_obj))?;
+
+  let state = scope.heap().generator_state(gen_obj)?;
+  match state {
+    GeneratorState::Executing => {
+      return Err(throw_type_error(vm, &mut scope, "Generator is already running")?)
+    }
+    GeneratorState::Completed => match input {
+      GeneratorResumeInput::Next(_) => Ok(GeneratorResumeOutcome::Done(Value::Undefined)),
+      GeneratorResumeInput::Return(v) => Ok(GeneratorResumeOutcome::Done(v)),
+      GeneratorResumeInput::Throw(err) => Err(VmError::Throw(err)),
+    },
+    GeneratorState::SuspendedStart => match input {
+      GeneratorResumeInput::Throw(err) => {
+        scope
+          .heap_mut()
+          .generator_set_state(gen_obj, GeneratorState::Completed)?;
+        scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+        Err(VmError::Throw(err))
+      }
+      GeneratorResumeInput::Return(v) => {
+        scope
+          .heap_mut()
+          .generator_set_state(gen_obj, GeneratorState::Completed)?;
+        scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+        Ok(GeneratorResumeOutcome::Done(v))
+      }
+      GeneratorResumeInput::Next(_) => {
+        scope
+          .heap_mut()
+          .generator_set_state(gen_obj, GeneratorState::Executing)?;
+
+        let Some(mut cont) = scope.heap_mut().generator_take_continuation(gen_obj)? else {
+          return Err(VmError::InvariantViolation(
+            "generator missing continuation in suspendedStart",
+          ));
+        };
+
+        gen_root_values_for_continuation(&mut scope, &cont)?;
+        cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
+
+        let this = cont.this;
+        let new_target = cont.new_target;
+        let func = cont.func.clone();
+        let args: &[Value] = &cont.args;
+
+        let result = {
+          let mut evaluator = Evaluator {
+            vm,
+            host,
+            hooks,
+            env: &mut cont.env,
+            strict: cont.strict,
+            this,
+            new_target,
+          };
+          gen_start_body(&mut evaluator, &mut scope, &func, args)
+        };
+
+        match result {
+          Ok(GenEval::Suspend(suspend)) => {
+            cont.frames = suspend.frames;
+            cont.env.teardown(scope.heap_mut());
+            scope
+              .heap_mut()
+              .generator_set_state(gen_obj, GeneratorState::SuspendedYield)?;
+            scope
+              .heap_mut()
+              .generator_set_continuation(gen_obj, Some(cont))?;
+            Ok(GeneratorResumeOutcome::Yield(suspend.yield_value))
+          }
+          Ok(GenEval::Complete(completion)) => {
+            cont.env.teardown(scope.heap_mut());
+            scope
+              .heap_mut()
+              .generator_set_state(gen_obj, GeneratorState::Completed)?;
+            scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+
+            match completion {
+              Completion::Normal(_) => Ok(GeneratorResumeOutcome::Done(Value::Undefined)),
+              Completion::Return(v) => Ok(GeneratorResumeOutcome::Done(v)),
+              Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+                value: thrown.value,
+                stack: thrown.stack,
+              }),
+              Completion::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
+              Completion::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+            }
+          }
+          Err(err) => {
+            // Fatal error: close the generator to avoid leaving it stuck in `executing`.
+            cont.env.teardown(scope.heap_mut());
+            scope
+              .heap_mut()
+              .generator_set_state(gen_obj, GeneratorState::Completed)?;
+            scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+            Err(err)
+          }
+        }
+      }
+    },
+    GeneratorState::SuspendedYield => {
+      scope
+        .heap_mut()
+        .generator_set_state(gen_obj, GeneratorState::Executing)?;
+
+      let Some(mut cont) = scope.heap_mut().generator_take_continuation(gen_obj)? else {
+        return Err(VmError::InvariantViolation(
+          "generator missing continuation in suspendedYield",
+        ));
+      };
+
+      gen_root_values_for_continuation(&mut scope, &cont)?;
+      cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
+
+      let this = cont.this;
+      let new_target = cont.new_target;
+      let frames = mem::take(&mut cont.frames);
+
+      let resume_completion = match input {
+        GeneratorResumeInput::Next(v) => Completion::normal(v),
+        GeneratorResumeInput::Throw(err) => Completion::Throw(Thrown {
+          value: err,
+          stack: Vec::new(),
+        }),
+        GeneratorResumeInput::Return(v) => Completion::Return(v),
+      };
+
+      let result = {
+        let mut evaluator = Evaluator {
+          vm,
+          host,
+          hooks,
+          env: &mut cont.env,
+          strict: cont.strict,
+          this,
+          new_target,
+        };
+        gen_resume_from_frames(&mut evaluator, &mut scope, frames, resume_completion)
+      };
+
+      match result {
+        Ok(GenEval::Suspend(suspend)) => {
+          cont.frames = suspend.frames;
+          cont.env.teardown(scope.heap_mut());
+          scope
+            .heap_mut()
+            .generator_set_state(gen_obj, GeneratorState::SuspendedYield)?;
+          scope
+            .heap_mut()
+            .generator_set_continuation(gen_obj, Some(cont))?;
+          Ok(GeneratorResumeOutcome::Yield(suspend.yield_value))
+        }
+        Ok(GenEval::Complete(completion)) => {
+          cont.env.teardown(scope.heap_mut());
+          scope
+            .heap_mut()
+            .generator_set_state(gen_obj, GeneratorState::Completed)?;
+          scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+
+          match completion {
+            Completion::Normal(_) => Ok(GeneratorResumeOutcome::Done(Value::Undefined)),
+            Completion::Return(v) => Ok(GeneratorResumeOutcome::Done(v)),
+            Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+              value: thrown.value,
+              stack: thrown.stack,
+            }),
+            Completion::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
+            Completion::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+          }
+        }
+        Err(err) => {
+          cont.env.teardown(scope.heap_mut());
+          scope
+            .heap_mut()
+            .generator_set_state(gen_obj, GeneratorState::Completed)?;
+          scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+          Err(err)
+        }
+      }
+    }
+  }
+}
+
 pub(crate) fn run_ecma_function(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
   env: &mut RuntimeEnv,
   source: Arc<SourceText>,
   base_offset: u32,
@@ -23677,13 +25520,72 @@ pub(crate) fn run_ecma_function(
   func: Arc<Node<Func>>,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  env.set_source_info(source, base_offset, prefix_len);
+
   if func.stx.generator {
     if func.stx.async_ {
       return Err(VmError::Unimplemented("async generator functions"));
     }
-    return Err(VmError::Unimplemented("generator functions"));
+
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    // Root `this`, `new_target`, and arguments while we allocate the generator object/continuation
+    // in case allocation triggers a GC.
+    let mut init_scope = scope.reborrow();
+    init_scope.push_root(Value::Object(callee))?;
+    init_scope.push_root(this)?;
+    init_scope.push_root(new_target)?;
+    init_scope.push_roots(args)?;
+
+    // `OrdinaryCreateFromConstructor(F, "%GeneratorPrototype%")` (ECMA-262): generator instances use
+    // `F.prototype` when it is an object, otherwise fall back to `%GeneratorPrototype%`.
+    let proto_key_s = init_scope.alloc_string("prototype")?;
+    init_scope.push_root(Value::String(proto_key_s))?;
+    let proto_key = PropertyKey::from_string(proto_key_s);
+    let proto_value = init_scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      callee,
+      proto_key,
+      Value::Object(callee),
+    )?;
+    init_scope.push_root(proto_value)?;
+    let proto_obj = match proto_value {
+      Value::Object(o) => o,
+      _ => intr.generator_prototype(),
+    };
+
+    let mut boxed_args: Vec<Value> = Vec::new();
+    boxed_args
+      .try_reserve_exact(args.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    boxed_args.extend_from_slice(args);
+
+    // The generator continuation is GC-owned by the generator object, so it must not keep
+    // persistent env roots alive across yields.
+    let mut gen_env = env.clone();
+    gen_env.lexical_root = None;
+
+    let cont = GeneratorContinuation {
+      env: gen_env,
+      strict,
+      this,
+      new_target,
+      func: func.clone(),
+      args: boxed_args.into_boxed_slice(),
+      frames: VecDeque::new(),
+    };
+
+    let gen_obj = init_scope.alloc_generator_with_prototype(
+      Some(proto_obj),
+      GeneratorState::SuspendedStart,
+      Some(Box::new(cont)),
+    )?;
+    return Ok(Value::Object(gen_obj));
   }
-  env.set_source_info(source, base_offset, prefix_len);
 
   let Some(body) = &func.stx.body else {
     return Err(VmError::Unimplemented("function without body"));

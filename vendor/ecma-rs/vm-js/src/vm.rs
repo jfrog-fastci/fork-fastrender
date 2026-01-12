@@ -1,7 +1,7 @@
 use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
-use crate::exec::{AsyncContinuation, GeneratorContinuation, RuntimeEnv};
+use crate::exec::{AsyncContinuation, RuntimeEnv};
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptOrModule;
@@ -318,8 +318,6 @@ pub struct Vm {
   async_iterator_close_on_rejected_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, AsyncContinuation>,
-  next_generator_continuation_id: u32,
-  generator_continuations: HashMap<u32, GeneratorContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
   ///
   /// This enables dynamic `import()` expressions evaluated from the AST interpreter (`exec.rs`) to
@@ -360,10 +358,6 @@ impl std::fmt::Debug for Vm {
     ds.field("ecma_function_cache", &self.ecma_function_cache.len());
     ds.field("template_registry", &self.template_registry.len());
     ds.field("async_continuations", &self.async_continuations.len());
-    ds.field(
-      "generator_continuations",
-      &self.generator_continuations.len(),
-    );
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("intrinsics", &self.intrinsics);
     #[cfg(test)]
@@ -563,8 +557,6 @@ impl Vm {
       async_iterator_close_on_rejected_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
-      next_generator_continuation_id: 0,
-      generator_continuations: HashMap::new(),
       module_graph: None,
       intrinsics: None,
       #[cfg(test)]
@@ -644,16 +636,6 @@ impl Vm {
   pub(crate) fn reserve_async_continuations(&mut self, additional: usize) -> Result<(), VmError> {
     self
       .async_continuations
-      .try_reserve(additional)
-      .map_err(|_| VmError::OutOfMemory)
-  }
-
-  pub(crate) fn reserve_generator_continuations(
-    &mut self,
-    additional: usize,
-  ) -> Result<(), VmError> {
-    self
-      .generator_continuations
       .try_reserve(additional)
       .map_err(|_| VmError::OutOfMemory)
   }
@@ -805,29 +787,6 @@ impl Vm {
 
   pub(crate) fn take_async_continuation(&mut self, id: u32) -> Option<AsyncContinuation> {
     self.async_continuations.remove(&id)
-  }
-
-  pub(crate) fn insert_generator_continuation_reserved(&mut self, cont: GeneratorContinuation) -> u32 {
-    let id = self.next_generator_continuation_id;
-    self.next_generator_continuation_id = self.next_generator_continuation_id.wrapping_add(1);
-    // `create_generator_object` calls `reserve_generator_continuations` up-front to ensure the
-    // insertion is infallible (avoiding process-aborting allocations).
-    self.generator_continuations.insert(id, cont);
-    id
-  }
-
-  pub(crate) fn take_generator_continuation(&mut self, id: u32) -> Option<GeneratorContinuation> {
-    self.generator_continuations.remove(&id)
-  }
-
-  pub(crate) fn replace_generator_continuation_reserved(
-    &mut self,
-    id: u32,
-    cont: GeneratorContinuation,
-  ) {
-    // Callers are expected to call `reserve_generator_continuations` before taking a continuation
-    // out of the table so reinsertion cannot allocate (and therefore cannot abort the process).
-    self.generator_continuations.insert(id, cont);
   }
 
   pub(crate) fn replace_async_continuation(
@@ -3214,38 +3173,17 @@ impl Vm {
       .get(code_id.0 as usize)
       .ok_or_else(|| VmError::invalid_handle())?;
 
-    if func_ast.stx.generator {
-      if func_ast.stx.async_ {
-        return Err(VmError::Unimplemented("async generator functions"));
-      }
-      return crate::exec::create_generator_object(
-        self,
-        scope,
-        host,
-        hooks,
-        callee,
-        this,
-        args,
-        func_ast.clone(),
-        code_meta.source.clone(),
-        code_meta.span_start,
-        code_meta.prefix_len,
-        is_strict,
-        global_object,
-        outer,
-      );
-    }
-
     let func_env = scope.env_create(outer)?;
     let mut env =
       RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
 
-    let is_async = func_ast.stx.async_;
+    let is_async = func_ast.stx.async_ && !func_ast.stx.generator;
     let result = crate::exec::run_ecma_function(
       self,
       scope,
       host,
       hooks,
+      callee,
       &mut env,
       code_meta.source.clone(),
       code_meta.span_start,
@@ -3399,6 +3337,7 @@ impl Vm {
       &mut this_scope,
       host,
       hooks,
+      callee,
       &mut env,
       code_meta.source.clone(),
       code_meta.span_start,

@@ -39,6 +39,7 @@ pub struct Intrinsics {
   array_iterator_prototype: GcObject,
   array_prototype: GcObject,
   string_iterator_prototype: GcObject,
+  array_iterator_next: GcObject,
   string_prototype: GcObject,
   regexp_prototype: GcObject,
   number_prototype: GcObject,
@@ -578,6 +579,11 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(array_prototype, Some(object_prototype))?;
+
+    let generator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(generator_prototype, Some(object_prototype))?;
 
     let string_prototype = alloc_rooted_object(scope, roots)?;
     scope
@@ -1760,7 +1766,8 @@ impl Intrinsics {
       "Array Iterator",
     )?;
 
-      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / concat / reverse / sort / join / slice / push / pop / shift / unshift / splice
+    // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find /
+    // findIndex / concat / reverse / sort / join / slice / push / pop / shift / unshift / splice
       {
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
@@ -5527,6 +5534,7 @@ impl Intrinsics {
       array_iterator_prototype,
       array_prototype,
       string_iterator_prototype,
+      array_iterator_next,
       string_prototype,
       regexp_prototype,
       number_prototype,
