@@ -1836,10 +1836,7 @@ pub fn array_buffer_prototype_slice(
   let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
 
   let bytes = {
-    let data = scope
-      .heap()
-      .array_buffer_data(obj)
-      ?;
+    let data = scope.heap().array_buffer_data(obj)?;
     let slice = &data[start..end];
     let mut out: Vec<u8> = Vec::new();
     out
@@ -2271,13 +2268,22 @@ pub fn typed_array_prototype_subarray(
     .typed_array_length(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
 
-  let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
-  let bytes_per_element = kind.bytes_per_element();
-
+  // Spec: `%TypedArray%.prototype.subarray` validates the typed array (including detached buffer
+  // checks) before coercing start/end arguments.
+  //
+  // Ensure detached buffers throw *before* `slice_range_from_args`, which can execute user code via
+  // `valueOf`/`toString`.
   let buffer = scope
     .heap()
     .typed_array_buffer(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
+  if scope.heap().array_buffer_data(buffer).is_err() {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+
+  let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
+  let bytes_per_element = kind.bytes_per_element();
+
   let byte_offset = scope
     .heap()
     .typed_array_byte_offset(obj)
@@ -2326,13 +2332,22 @@ pub fn typed_array_prototype_slice(
     .typed_array_length(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
 
-  let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
-  let bytes_per_element = kind.bytes_per_element();
-
+  // Spec: `%TypedArray%.prototype.slice` validates the typed array (including detached buffer
+  // checks) before coercing start/end arguments.
+  //
+  // Ensure detached buffers throw *before* `slice_range_from_args`, which can execute user code via
+  // `valueOf`/`toString`.
   let buffer = scope
     .heap()
     .typed_array_buffer(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
+  if scope.heap().array_buffer_data(buffer).is_err() {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+
+  let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
+  let bytes_per_element = kind.bytes_per_element();
+
   let byte_offset = scope
     .heap()
     .typed_array_byte_offset(obj)
