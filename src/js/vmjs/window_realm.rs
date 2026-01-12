@@ -12100,6 +12100,20 @@ fn dom_parser_constructor_construct_native(
   Ok(Value::Object(obj))
 }
 
+fn dom_parser_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DOMParser constructor cannot be invoked without 'new'",
+  ))
+}
+
 fn dom_parser_parse_from_string_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
