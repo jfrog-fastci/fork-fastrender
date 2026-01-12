@@ -862,6 +862,24 @@ mod tests {
       .collect()
   }
 
+  fn left_click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+    vec![
+      egui::Event::PointerMoved(pos),
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+      },
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+      },
+    ]
+  }
+
   #[test]
   fn address_bar_blur_reverts_uncommitted_text() {
     let mut app = BrowserAppState::new();
@@ -1624,9 +1642,25 @@ mod tests {
       false,
     );
 
-    // The first tab label should appear near the top-left of the chrome panel.
     let ctx = egui::Context::default();
-    begin_frame(&ctx, middle_click_at(egui::pos2(10.0, 10.0)));
+
+    // Frame 1: warm up layout (some egui widgets adjust their final size after their first frame).
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: measure the first tab rect.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let (_strip_rect, tab_rects) =
+      super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let tab_rect = tab_rects
+      .first()
+      .copied()
+      .expect("expected first tab rect to be recorded");
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, middle_click_at(tab_rect.center()));
     let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
@@ -1654,7 +1688,24 @@ mod tests {
     );
 
     let ctx = egui::Context::default();
-    begin_frame(&ctx, middle_click_at(egui::pos2(10.0, 10.0)));
+
+    // Frame 1: warm up layout.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: measure the first tab rect.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let (_strip_rect, tab_rects) =
+      super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let tab_rect = tab_rects
+      .first()
+      .copied()
+      .expect("expected first tab rect to be recorded");
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, middle_click_at(tab_rect.center()));
     let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
@@ -1723,6 +1774,43 @@ mod tests {
       distinct_rows(&narrow_tabs),
       1,
       "expected narrow layout to have a single tab row"
+    );
+  }
+
+  #[test]
+  fn many_tabs_keeps_new_tab_button_clickable() {
+    let mut app = BrowserAppState::new();
+    for i in 0..32_u64 {
+      let tab_id = TabId(i + 1);
+      app.push_tab(
+        BrowserTabState::new(tab_id, format!("https://example.com/{i}")),
+        i == 0,
+      );
+    }
+
+    let ctx = egui::Context::default();
+
+    // Frame 1: warm up layout.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: grab the tab strip rect so we can click the "+" button (pinned to the right edge).
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let (strip_rect, _tab_rects) =
+      super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let _ = ctx.end_frame();
+
+    // Frame 3: click the "+" button and ensure we get the expected action.
+    let click_pos = egui::pos2(strip_rect.max.x - 10.0, strip_rect.center().y);
+    begin_frame(&ctx, left_click_at(click_pos));
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
+      "expected ChromeAction::NewTab, got {actions:?}"
     );
   }
 
