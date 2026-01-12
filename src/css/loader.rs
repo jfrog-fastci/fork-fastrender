@@ -3549,6 +3549,69 @@ mod tests {
   }
 
   #[test]
+  fn absolutizes_css_urls_cow_fast_path_does_not_skip_image_set_string_candidates() {
+    reset_absolutize_css_urls_tokenize_count();
+    let css = r#"body { background-image: IMAGE-SET("bg.png" 1x); }"#;
+    let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
+    assert_eq!(
+      absolutize_css_urls_tokenize_count(),
+      1,
+      "expected tokenizer to run for image-set() string candidates"
+    );
+
+    // If image-set() string-candidate rewriting is implemented, ensure the relative URL is
+    // absolutized. Otherwise, the output is expected to be unchanged.
+    if out.as_ref() != css {
+      assert!(
+        out.as_ref()
+          .contains("https://example.com/styles/bg.png"),
+        "expected image-set() string candidate to be absolutized, got: {}",
+        out.as_ref()
+      );
+    }
+  }
+
+  #[test]
+  fn absolutizes_css_urls_cow_fast_path_does_not_skip_webkit_image_set_string_candidates() {
+    reset_absolutize_css_urls_tokenize_count();
+    let css = r#"body { background-image: -WEBKIT-IMAGE-SET("bg.png" 1x); }"#;
+    let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
+    assert_eq!(
+      absolutize_css_urls_tokenize_count(),
+      1,
+      "expected tokenizer to run for -webkit-image-set() string candidates"
+    );
+
+    // If string-candidate rewriting is implemented, ensure the relative URL is absolutized.
+    if out.as_ref() != css {
+      assert!(
+        out.as_ref()
+          .contains("https://example.com/styles/bg.png"),
+        "expected -webkit-image-set() string candidate to be absolutized, got: {}",
+        out.as_ref()
+      );
+    }
+  }
+
+  #[test]
+  fn absolutizes_css_urls_cow_fast_path_skips_image_set_inside_comments_and_strings() {
+    reset_absolutize_css_urls_tokenize_count();
+    let css = r#"
+      /* image-set("should-not-tokenize.png" 1x) */
+      .icon::before { content: "image-set('in-string.png' 1x)"; }
+      body { color: red; }
+    "#;
+    let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
+    assert!(matches!(out, Cow::Borrowed(_)));
+    assert_eq!(out.as_ref(), css);
+    assert_eq!(
+      absolutize_css_urls_tokenize_count(),
+      0,
+      "expected image-set() occurrences inside comments/strings to not trigger tokenization"
+    );
+  }
+
+  #[test]
   fn absolutizes_css_urls_cow_rewrites_relative_urls() {
     reset_absolutize_css_urls_tokenize_count();
     let css = "body { background: url(\"images/bg.png\"); }";
