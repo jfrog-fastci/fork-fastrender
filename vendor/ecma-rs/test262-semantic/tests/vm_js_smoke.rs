@@ -123,18 +123,20 @@ assert.sameValue = function (actual, expected) {
 
   let test_dir = temp.path().join("test");
   fs::create_dir_all(&test_dir).unwrap();
+  let sub_dir = test_dir.join("sub");
+  fs::create_dir_all(&sub_dir).unwrap();
 
   // Module dependency imported via a relative path.
   //
   // It also calls `assert.sameValue` to ensure the harness prelude created a *global* `assert`
   // binding visible from all modules (not just the entry module).
   fs::write(
-    test_dir.join("dep2.js"),
+    sub_dir.join("dep2.js"),
     "assert.sameValue(1, 1);\nexport const z = 1;\n",
   )
   .unwrap();
   fs::write(
-    test_dir.join("dep.js"),
+    sub_dir.join("dep.js"),
     "import { z } from './dep2.js';\nassert.sameValue(z, 1);\nexport const y = z;\n",
   )
   .unwrap();
@@ -147,7 +149,7 @@ assert.sameValue = function (actual, expected) {
     r#"/*---
 flags: [module]
 ---*/
-import { y } from "./dep.js";
+import { y } from "./sub/dep.js";
 assert.sameValue(y, 1);
 "#,
   )
