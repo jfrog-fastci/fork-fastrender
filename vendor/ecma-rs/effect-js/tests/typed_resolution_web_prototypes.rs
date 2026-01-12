@@ -88,6 +88,8 @@ declare class Response {
   json(): Promise<any>;
 }
 
+declare const resp: Response;
+
 declare class EventTarget {
   addEventListener(type: string, listener: () => void): void;
 }
@@ -117,6 +119,36 @@ interface Promise<T> {
   then<U>(onfulfilled: (value: T) => U): Promise<U>;
 }
 
+declare class Storage {
+  readonly length: number;
+  getItem(key: string): string | null;
+}
+
+declare const localStorage: Storage;
+
+declare class MessagePort extends EventTarget {
+  postMessage(message: string): void;
+}
+
+declare class MessageChannel {
+  readonly port1: MessagePort;
+  readonly port2: MessagePort;
+}
+
+declare class BroadcastChannel extends EventTarget {
+  postMessage(message: string): void;
+  close(): void;
+}
+
+declare const bc: BroadcastChannel;
+
+declare class WebSocket extends EventTarget {
+  send(data: string): void;
+  close(): void;
+}
+
+declare const ws: WebSocket;
+
 new URL("https://x").pathname;
 new URL("https://x").searchParams;
 new URL("https://x").toString();
@@ -124,7 +156,7 @@ new URLSearchParams("a=1").get("a");
 new URLSearchParams("a=1").size;
 fetch("x").then(r => r.status);
 fetch("x").then(r => r.ok);
-fetch("x").then(r => r.json());
+resp.json();
 controller.signal.addEventListener("abort", () => {});
 file.text();
 file.size;
@@ -133,6 +165,19 @@ const date = new Date();
 date.toISOString();
 const re = new RegExp("a");
 re.test("a");
+localStorage.getItem("k");
+localStorage.length;
+const channel = new MessageChannel();
+channel.port1;
+channel.port2;
+channel.port1.postMessage("hi");
+channel.port1.addEventListener("message", () => {});
+bc.postMessage("hi");
+bc.addEventListener("message", () => {});
+bc.close();
+ws.send("hi");
+ws.addEventListener("open", () => {});
+ws.close();
 "#;
 
   let file = FileKey::new("index.ts");
@@ -239,7 +284,7 @@ re.test("a");
     ApiId::from_name("Response.prototype.ok")
   );
 
-  let json_span = range_of(source, "r.json()");
+  let json_span = range_of(source, "resp.json()");
   let (json_body, json_expr) = find_call_expr(lower, json_span);
   let json_body_ref = lower.body(json_body).expect("body");
   let resolved_json = resolve_call(
@@ -353,5 +398,189 @@ re.test("a");
   assert_eq!(
     resolved_regexp_test.api_id,
     ApiId::from_name("RegExp.prototype.test")
+  );
+
+  let storage_get_span = range_of(source, r#"localStorage.getItem("k")"#);
+  let (storage_get_body, storage_get_expr) = find_call_expr(lower, storage_get_span);
+  let storage_get_body_ref = lower.body(storage_get_body).expect("body");
+  let resolved_storage_get_item = resolve_call(
+    lower,
+    storage_get_body,
+    storage_get_body_ref,
+    storage_get_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve Storage.getItem()");
+  assert_eq!(resolved_storage_get_item.api, "Storage.prototype.getItem");
+  assert_eq!(
+    resolved_storage_get_item.api_id,
+    ApiId::from_name("Storage.prototype.getItem")
+  );
+
+  let storage_length_span = range_of(source, "localStorage.length");
+  let (storage_length_body, storage_length_expr) = find_member_expr(lower, storage_length_span);
+  let resolved_storage_length = resolve_member(
+    &kb,
+    lower,
+    storage_length_body,
+    storage_length_expr,
+    &types,
+  )
+  .expect("resolve Storage.length");
+  assert_eq!(resolved_storage_length.api, "Storage.prototype.length");
+  assert_eq!(
+    resolved_storage_length.api_id,
+    ApiId::from_name("Storage.prototype.length")
+  );
+
+  let port1_span = range_of(source, "channel.port1");
+  let (port1_body, port1_expr) = find_member_expr(lower, port1_span);
+  let resolved_port1 = resolve_member(&kb, lower, port1_body, port1_expr, &types)
+    .expect("resolve MessageChannel.port1");
+  assert_eq!(resolved_port1.api, "MessageChannel.prototype.port1");
+  assert_eq!(
+    resolved_port1.api_id,
+    ApiId::from_name("MessageChannel.prototype.port1")
+  );
+
+  let port2_span = range_of(source, "channel.port2");
+  let (port2_body, port2_expr) = find_member_expr(lower, port2_span);
+  let resolved_port2 = resolve_member(&kb, lower, port2_body, port2_expr, &types)
+    .expect("resolve MessageChannel.port2");
+  assert_eq!(resolved_port2.api, "MessageChannel.prototype.port2");
+  assert_eq!(
+    resolved_port2.api_id,
+    ApiId::from_name("MessageChannel.prototype.port2")
+  );
+
+  let post_message_span = range_of(source, r#"channel.port1.postMessage("hi")"#);
+  let (post_message_body, post_message_expr) = find_call_expr(lower, post_message_span);
+  let post_message_body_ref = lower.body(post_message_body).expect("body");
+  let resolved_post_message = resolve_call(
+    lower,
+    post_message_body,
+    post_message_body_ref,
+    post_message_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve MessagePort.postMessage()");
+  assert_eq!(resolved_post_message.api, "MessagePort.prototype.postMessage");
+  assert_eq!(
+    resolved_post_message.api_id,
+    ApiId::from_name("MessagePort.prototype.postMessage")
+  );
+
+  let port_add_listener_span = range_of(
+    source,
+    r#"channel.port1.addEventListener("message", () => {})"#,
+  );
+  let (port_add_listener_body, port_add_listener_expr) =
+    find_call_expr(lower, port_add_listener_span);
+  let port_add_listener_body_ref = lower.body(port_add_listener_body).expect("body");
+  let resolved_port_add_listener = resolve_call(
+    lower,
+    port_add_listener_body,
+    port_add_listener_body_ref,
+    port_add_listener_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve MessagePort.addEventListener()");
+  assert_eq!(
+    resolved_port_add_listener.api,
+    "EventTarget.prototype.addEventListener"
+  );
+  assert_eq!(
+    resolved_port_add_listener.api_id,
+    ApiId::from_name("EventTarget.prototype.addEventListener")
+  );
+
+  let broadcast_post_message_span = range_of(source, r#"bc.postMessage("hi")"#);
+  let (broadcast_post_message_body, broadcast_post_message_expr) =
+    find_call_expr(lower, broadcast_post_message_span);
+  let broadcast_post_message_body_ref = lower.body(broadcast_post_message_body).expect("body");
+  let resolved_broadcast_post_message = resolve_call(
+    lower,
+    broadcast_post_message_body,
+    broadcast_post_message_body_ref,
+    broadcast_post_message_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve BroadcastChannel.postMessage()");
+  assert_eq!(
+    resolved_broadcast_post_message.api,
+    "BroadcastChannel.prototype.postMessage"
+  );
+  assert_eq!(
+    resolved_broadcast_post_message.api_id,
+    ApiId::from_name("BroadcastChannel.prototype.postMessage")
+  );
+
+  let broadcast_add_listener_span = range_of(
+    source,
+    r#"bc.addEventListener("message", () => {})"#,
+  );
+  let (broadcast_add_listener_body, broadcast_add_listener_expr) =
+    find_call_expr(lower, broadcast_add_listener_span);
+  let broadcast_add_listener_body_ref =
+    lower.body(broadcast_add_listener_body).expect("body");
+  let resolved_broadcast_add_listener = resolve_call(
+    lower,
+    broadcast_add_listener_body,
+    broadcast_add_listener_body_ref,
+    broadcast_add_listener_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve BroadcastChannel.addEventListener()");
+  assert_eq!(
+    resolved_broadcast_add_listener.api,
+    "EventTarget.prototype.addEventListener"
+  );
+  assert_eq!(
+    resolved_broadcast_add_listener.api_id,
+    ApiId::from_name("EventTarget.prototype.addEventListener")
+  );
+
+  let ws_send_span = range_of(source, r#"ws.send("hi")"#);
+  let (ws_send_body, ws_send_expr) = find_call_expr(lower, ws_send_span);
+  let ws_send_body_ref = lower.body(ws_send_body).expect("body");
+  let resolved_ws_send = resolve_call(
+    lower,
+    ws_send_body,
+    ws_send_body_ref,
+    ws_send_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve WebSocket.send()");
+  assert_eq!(resolved_ws_send.api, "WebSocket.prototype.send");
+  assert_eq!(
+    resolved_ws_send.api_id,
+    ApiId::from_name("WebSocket.prototype.send")
+  );
+
+  let ws_add_listener_span = range_of(source, r#"ws.addEventListener("open", () => {})"#);
+  let (ws_add_listener_body, ws_add_listener_expr) = find_call_expr(lower, ws_add_listener_span);
+  let ws_add_listener_body_ref = lower.body(ws_add_listener_body).expect("body");
+  let resolved_ws_add_listener = resolve_call(
+    lower,
+    ws_add_listener_body,
+    ws_add_listener_body_ref,
+    ws_add_listener_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve WebSocket.addEventListener()");
+  assert_eq!(
+    resolved_ws_add_listener.api,
+    "EventTarget.prototype.addEventListener"
+  );
+  assert_eq!(
+    resolved_ws_add_listener.api_id,
+    ApiId::from_name("EventTarget.prototype.addEventListener")
   );
 }

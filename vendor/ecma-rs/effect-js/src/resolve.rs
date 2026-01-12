@@ -358,6 +358,39 @@ impl<'a> ApiCallResolver<'a> {
       }
     }
 
+    if types.expr_is_named_ref(body, member.object, "MessagePort") {
+      if let Some(api) = resolve_prototype_call("MessagePort") {
+        return Some(api);
+      }
+      // `MessagePort` extends `EventTarget`; listener methods are modeled on
+      // `EventTarget.prototype.*`.
+      if let Some(api) = resolve_prototype_call("EventTarget") {
+        return Some(api);
+      }
+    }
+
+    if types.expr_is_named_ref(body, member.object, "BroadcastChannel") {
+      if let Some(api) = resolve_prototype_call("BroadcastChannel") {
+        return Some(api);
+      }
+      // `BroadcastChannel` extends `EventTarget`; listener methods are modeled on
+      // `EventTarget.prototype.*`.
+      if let Some(api) = resolve_prototype_call("EventTarget") {
+        return Some(api);
+      }
+    }
+
+    if types.expr_is_named_ref(body, member.object, "WebSocket") {
+      if let Some(api) = resolve_prototype_call("WebSocket") {
+        return Some(api);
+      }
+      // `WebSocket` extends `EventTarget`; listener methods are modeled on
+      // `EventTarget.prototype.*`.
+      if let Some(api) = resolve_prototype_call("EventTarget") {
+        return Some(api);
+      }
+    }
+
     for ty in [
       "URL",
       "URLSearchParams",
@@ -373,6 +406,7 @@ impl<'a> ApiCallResolver<'a> {
       "EventTarget",
       "Date",
       "RegExp",
+      "Storage",
     ] {
       if types.expr_is_named_ref(body, member.object, ty) {
         if let Some(api) = resolve_prototype_call(ty) {
@@ -918,6 +952,10 @@ pub fn resolve_member_for_target(
     resolve_prototype_get("FormData")
   } else if receiver_is_named_ref(types, body, member.object, "EventTarget") {
     resolve_prototype_get("EventTarget")
+  } else if receiver_is_named_ref(types, body, member.object, "MessageChannel") {
+    resolve_prototype_get("MessageChannel")
+  } else if receiver_is_named_ref(types, body, member.object, "Storage") {
+    resolve_prototype_get("Storage")
   } else {
     None
   }?;
