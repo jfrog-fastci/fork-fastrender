@@ -85,7 +85,7 @@ fn array_concat_spreads_proxy_to_array() -> Result<(), VmError> {
     .object_set_prototype(handler, Some(intr.object_prototype()))?;
 
   // Proxy -> target array
-  let proxy = scope.alloc_proxy(target_obj, handler)?;
+  let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
 
   // [].concat(proxy)
   let concat = get_data_property(&mut scope, empty_obj, "concat")?.unwrap();
@@ -206,7 +206,7 @@ fn array_concat_throws_on_revoked_proxy() -> Result<(), VmError> {
     .heap_mut()
     .object_set_prototype(handler, Some(intr.object_prototype()))?;
 
-  let proxy = scope.alloc_proxy(target_obj, handler)?;
+  let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
   scope.heap_mut().proxy_revoke(proxy)?;
 
   let concat = get_data_property(&mut scope, empty_obj, "concat")?.unwrap();
@@ -218,5 +218,100 @@ fn array_concat_throws_on_revoked_proxy() -> Result<(), VmError> {
     matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }),
     "expected a thrown TypeError, got {err:?}"
   );
+  Ok(())
+}
+
+#[test]
+fn array_is_array_returns_true_for_proxy_to_array() -> Result<(), VmError> {
+  let mut rt = TestRt::new(HeapLimits::new(1024 * 1024, 1024 * 1024))?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+
+  let array_ctor = Value::Object(intr.array_constructor());
+  let Value::Object(array_ctor_obj) = array_ctor else {
+    return Err(VmError::InvariantViolation("Array constructor is not an object"));
+  };
+
+  let target = rt.vm.construct_without_host(
+    &mut scope,
+    array_ctor,
+    &[Value::Number(1.0), Value::Number(2.0)],
+    array_ctor,
+  )?;
+  let Value::Object(target_obj) = target else {
+    return Err(VmError::Unimplemented("Array constructor did not return object"));
+  };
+
+  let handler = scope.alloc_object()?;
+  scope
+    .heap_mut()
+    .object_set_prototype(handler, Some(intr.object_prototype()))?;
+  let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
+
+  let is_array = get_data_property(&mut scope, array_ctor_obj, "isArray")?.unwrap();
+  let result = rt.vm.call_without_host(
+    &mut scope,
+    is_array,
+    Value::Object(array_ctor_obj),
+    &[Value::Object(proxy)],
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn array_is_array_throws_on_revoked_proxy() -> Result<(), VmError> {
+  let mut rt = TestRt::new(HeapLimits::new(1024 * 1024, 1024 * 1024))?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+
+  let array_ctor = Value::Object(intr.array_constructor());
+  let Value::Object(array_ctor_obj) = array_ctor else {
+    return Err(VmError::InvariantViolation("Array constructor is not an object"));
+  };
+
+  let target = rt
+    .vm
+    .construct_without_host(&mut scope, array_ctor, &[Value::Number(1.0)], array_ctor)?;
+  let Value::Object(target_obj) = target else {
+    return Err(VmError::Unimplemented("Array constructor did not return object"));
+  };
+
+  let handler = scope.alloc_object()?;
+  scope
+    .heap_mut()
+    .object_set_prototype(handler, Some(intr.object_prototype()))?;
+
+  let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
+  scope.heap_mut().proxy_revoke(proxy)?;
+
+  let is_array = get_data_property(&mut scope, array_ctor_obj, "isArray")?.unwrap();
+  let err = rt
+    .vm
+    .call_without_host(
+      &mut scope,
+      is_array,
+      Value::Object(array_ctor_obj),
+      &[Value::Object(proxy)],
+    )
+    .unwrap_err();
+
+  let thrown = match err {
+    VmError::Throw(v) => v,
+    VmError::ThrowWithStack { value, .. } => value,
+    other => panic!("expected throw, got {other:?}"),
+  };
+  scope.push_root(thrown)?;
+  let Value::Object(err_obj) = thrown else {
+    panic!("expected thrown object, got {thrown:?}");
+  };
+  scope.push_root(Value::Object(err_obj))?;
+
+  let Value::String(name) = get_data_property(&mut scope, err_obj, "name")?.unwrap() else {
+    return Err(VmError::Unimplemented("TypeError.name was not a string"));
+  };
+  assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "TypeError");
   Ok(())
 }

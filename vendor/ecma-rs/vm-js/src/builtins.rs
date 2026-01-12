@@ -1475,19 +1475,16 @@ pub fn array_constructor_call(
 
 /// `Array.isArray(arg)` (ECMA-262).
 pub fn array_is_array(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  let is_array = match arg0 {
-    Value::Object(obj) => scope.heap().object_is_array(obj)?,
-    _ => false,
-  };
+  let is_array = crate::spec_ops::is_array_with_host_and_hooks(vm, scope, host, hooks, arg0)?;
   Ok(Value::Bool(is_array))
 }
 
