@@ -4113,11 +4113,30 @@ fn apply_vertical_text_orientation(
   }
 }
 
-fn apply_sideways_text_orientation(runs: Vec<FontRun>) -> Vec<FontRun> {
+fn apply_sideways_text_orientation(
+  runs: Vec<FontRun>,
+  mode: crate::style::types::WritingMode,
+) -> Vec<FontRun> {
+  use crate::style::types::WritingMode;
+
+  debug_assert!(
+    is_sideways_writing_mode(mode),
+    "apply_sideways_text_orientation_with_mode called with non-sideways writing mode: {mode:?}"
+  );
+
+  let rotation = match mode {
+    WritingMode::SidewaysRl => RunRotation::Cw90,
+    WritingMode::SidewaysLr => RunRotation::Ccw90,
+    _ => RunRotation::Cw90,
+  };
+
   runs
     .into_iter()
     .map(|mut run| {
-      run.rotation = RunRotation::Cw90;
+      run.rotation = rotation;
+      // Sideways writing modes use horizontal typographic metrics (they rotate at paint time but
+      // do not participate in vertical shaping).
+      run.vertical = false;
       run
     })
     .collect()
@@ -6605,7 +6624,7 @@ impl ShapingPipeline {
     if is_vertical_typographic_mode(style.writing_mode) {
       font_runs = apply_vertical_text_orientation(font_runs, style.text_orientation);
     } else if is_sideways_writing_mode(style.writing_mode) {
-      font_runs = apply_sideways_text_orientation(font_runs);
+      font_runs = apply_sideways_text_orientation(font_runs, style.writing_mode);
     }
 
     let shape_timer = text_diagnostics_timer(TextDiagnosticsStage::Shape);
@@ -10423,8 +10442,21 @@ mod tests {
     let ctx = FontContext::new();
     let shaped = ShapingPipeline::new().shape("Abc", &style, &ctx).unwrap();
     assert!(
+      shaped.iter().all(|r| r.rotation == RunRotation::Ccw90),
+      "sideways-lr should rotate glyphs counter-clockwise (toward the left) while still using horizontal metrics"
+    );
+  }
+
+  #[test]
+  fn sideways_writing_rl_rotates_runs_clockwise() {
+    let mut style = ComputedStyle::default();
+    style.writing_mode = crate::style::types::WritingMode::SidewaysRl;
+    style.text_orientation = crate::style::types::TextOrientation::Mixed;
+    let ctx = FontContext::new();
+    let shaped = ShapingPipeline::new().shape("Abc", &style, &ctx).unwrap();
+    assert!(
       shaped.iter().all(|r| r.rotation == RunRotation::Cw90),
-      "sideways writing should rotate text using horizontal metrics regardless of text-orientation"
+      "sideways-rl should rotate glyphs clockwise (toward the right)"
     );
   }
 
