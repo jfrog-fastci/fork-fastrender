@@ -74,30 +74,36 @@ fn find_function_ir(ir: &str, symbol: &str) -> String {
     .join("\n")
 }
 
+fn fn_ir_uses_f64_numbers(fn_ir: &str) -> bool {
+  // When the checked backend switches `number` to `double`, LLVM IR for even simple numeric code
+  // should contain `double` in instructions/constants (e.g. `double 1.000000e+00`, `fmul double`).
+  fn_ir.contains("double")
+}
+
 #[test]
 fn arithmetic_codegen_emits_mul_add() {
   let (ir, ts_main_sym) = codegen_ir(
     "export function main(): number { let a = 1; let b = 2; let c = 3; return a + b * c; }",
   );
   let fn_ir = find_function_ir(&ir, &ts_main_sym);
-  assert!(
-    fn_ir.contains("mul i32") || fn_ir.contains("fmul"),
-    "IR did not contain mul/fmul:\n{fn_ir}"
-  );
-  assert!(
-    fn_ir.contains("add i32") || fn_ir.contains("fadd"),
-    "IR did not contain add/fadd:\n{fn_ir}"
-  );
+  if fn_ir_uses_f64_numbers(&fn_ir) {
+    assert!(fn_ir.contains("fmul"), "IR did not contain fmul:\n{fn_ir}");
+    assert!(fn_ir.contains("fadd"), "IR did not contain fadd:\n{fn_ir}");
+  } else {
+    assert!(fn_ir.contains("mul i32"), "IR did not contain mul i32:\n{fn_ir}");
+    assert!(fn_ir.contains("add i32"), "IR did not contain add i32:\n{fn_ir}");
+  }
 }
 
 #[test]
 fn comparison_codegen_emits_cmp() {
   let (ir, ts_main_sym) = codegen_ir("export function main(): boolean { let a = 1; let b = 2; return a < b; }");
   let fn_ir = find_function_ir(&ir, &ts_main_sym);
-  assert!(
-    fn_ir.contains("icmp slt") || fn_ir.contains("fcmp olt"),
-    "IR did not contain comparison (`icmp slt` / `fcmp olt`):\n{fn_ir}"
-  );
+  if fn_ir_uses_f64_numbers(&fn_ir) {
+    assert!(fn_ir.contains("fcmp olt"), "IR did not contain fcmp olt:\n{fn_ir}");
+  } else {
+    assert!(fn_ir.contains("icmp slt"), "IR did not contain icmp slt:\n{fn_ir}");
+  }
 }
 
 #[test]
