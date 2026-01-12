@@ -832,6 +832,51 @@ fn parse_image_set_resolution(token: &str) -> Option<f32> {
     })
 }
 
+fn parse_image_set_type_descriptor(token: &str) -> Option<String> {
+  let trimmed = trim_ascii_whitespace(token);
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let tok = parser.next_including_whitespace_and_comments().ok()?;
+  let name = match tok {
+    Token::Function(name) => name,
+    _ => return None,
+  };
+  if !name.eq_ignore_ascii_case("type") {
+    return None;
+  }
+
+  let mime = parser
+    .parse_nested_block(|nested| {
+      let mut mime: Option<String> = None;
+      while !nested.is_exhausted() {
+        match nested.next_including_whitespace_and_comments()? {
+          Token::WhiteSpace(_) | Token::Comment(_) => continue,
+          Token::QuotedString(s) => {
+            if mime.is_some() {
+              return Err(nested.new_custom_error(()));
+            }
+            mime = Some(s.as_ref().to_string());
+          }
+          _ => return Err(nested.new_custom_error(())),
+        }
+      }
+      mime.ok_or_else(|| nested.new_custom_error(()))
+    })
+    .ok()?;
+
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return None;
+  }
+
+  if trim_ascii_whitespace(&mime).is_empty() {
+    None
+  } else {
+    Some(mime)
+  }
+}
+
 fn split_image_set_candidates(inner: &str) -> Vec<String> {
   let mut paren = 0usize;
   let mut bracket = 0usize;
@@ -1080,21 +1125,12 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
         density_specified = true;
         continue;
       }
-      if starts_with_ignore_ascii_case(trim_ascii_whitespace(token), "type(")
-        && trim_ascii_whitespace(token).ends_with(')')
-      {
+      if let Some(mime) = parse_image_set_type_descriptor(token) {
         if mime_type.is_some() {
           valid = false;
           break;
         }
-        let open = token.find('(').unwrap_or(0);
-        let inner = trim_ascii_whitespace(token.get(open + 1..token.len() - 1).unwrap_or(""))
-          .trim_matches(|c| c == '"' || c == '\'');
-        if inner.is_empty() {
-          valid = false;
-          break;
-        }
-        mime_type = Some(inner.to_string());
+        mime_type = Some(mime);
         continue;
       }
 
@@ -33965,6 +34001,15 @@ mod tests {
     let parsed =
       parse_image_set("image-set(url(\"a.png\")/*comment*/1x, url(\"b.png\")2x)").expect("image-set");
     assert_eq!(parsed, BackgroundImage::Url("a.png".to_string()));
+  }
+
+  #[test]
+  fn image_set_rejects_unquoted_type_descriptor() {
+    let parsed = parse_image_set(
+      "image-set(url(\"bad.png\") 1x type(image/png), url(\"good.png\") 1x)",
+    )
+    .expect("image-set");
+    assert_eq!(parsed, BackgroundImage::Url("good.png".to_string()));
   }
 
   #[test]
