@@ -160,21 +160,21 @@ enum OmniboxSuggestionIcon {
 fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> OmniboxSuggestionIcon {
   match suggestion.source {
     OmniboxSuggestionSource::Primary => match &suggestion.action {
-      OmniboxAction::NavigateToUrl(_) => OmniboxSuggestionIcon::Text("↵"),
-      OmniboxAction::Search(_) => OmniboxSuggestionIcon::Text("S"),
-      OmniboxAction::ActivateTab(_) => OmniboxSuggestionIcon::Text("T"),
+      OmniboxAction::NavigateToUrl(_) => OmniboxSuggestionIcon::Icon(BrowserIcon::Forward),
+      OmniboxAction::Search(_) => OmniboxSuggestionIcon::Icon(BrowserIcon::Search),
+      OmniboxAction::ActivateTab(_) => OmniboxSuggestionIcon::Icon(BrowserIcon::Tab),
     },
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => OmniboxSuggestionIcon::Text("T"),
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => OmniboxSuggestionIcon::Icon(BrowserIcon::Tab),
     OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => {
       OmniboxSuggestionIcon::Icon(BrowserIcon::Info)
     }
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => {
       OmniboxSuggestionIcon::Icon(BrowserIcon::BookmarkFilled)
     }
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => OmniboxSuggestionIcon::Text("↩"),
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => OmniboxSuggestionIcon::Text("H"),
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => OmniboxSuggestionIcon::Icon(BrowserIcon::History),
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => OmniboxSuggestionIcon::Icon(BrowserIcon::History),
     OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => {
-      OmniboxSuggestionIcon::Text("S")
+      OmniboxSuggestionIcon::Icon(BrowserIcon::Search)
     }
   }
 }
