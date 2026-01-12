@@ -42,20 +42,21 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
       for attr in node.attributes() {
         attributes.push((attr.name().to_string(), attr.value().to_string()));
       }
-      let kind = if namespace.is_empty() && local_name.eq_ignore_ascii_case("slot") && prefix.is_none() {
-        NodeKind::Slot {
-          namespace: namespace.clone(),
-          attributes,
-          assigned: false,
-        }
-      } else {
-        NodeKind::Element {
-          tag_name: local_name,
-          namespace,
-          prefix,
-          attributes,
-        }
-      };
+      let kind =
+        if namespace.is_empty() && local_name.eq_ignore_ascii_case("slot") && prefix.is_none() {
+          NodeKind::Slot {
+            namespace: namespace.clone(),
+            attributes,
+            assigned: false,
+          }
+        } else {
+          NodeKind::Element {
+            tag_name: local_name,
+            namespace,
+            prefix,
+            attributes,
+          }
+        };
       let id = doc.push_node(
         kind,
         Some(parent),

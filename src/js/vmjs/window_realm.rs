@@ -15632,6 +15632,22 @@ pub(crate) fn alloc_intersection_observer_entry_object_with_dom_rects(
   Ok(obj)
 }
 
+fn alloc_intersection_observer_entry_object(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  root_bounds: Option<(f64, f64, f64, f64)>,
+  bounding_client_rect: (f64, f64, f64, f64),
+  intersection_rect: (f64, f64, f64, f64),
+) -> Result<GcObject, VmError> {
+  alloc_intersection_observer_entry_dom_rects_object(
+    scope,
+    global,
+    root_bounds,
+    bounding_client_rect,
+    intersection_rect,
+  )
+}
+
 /// Allocates a `ResizeObserverEntry`-shaped object.
 #[allow(dead_code)]
 pub(crate) fn alloc_resize_observer_entry_dom_rect_object(
