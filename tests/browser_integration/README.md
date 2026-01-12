@@ -47,13 +47,21 @@ Notes:
 - Some tests are feature-gated behind `--features browser_ui` (the `browser` binary and the
   UI↔worker protocol types are `browser_ui`-only). If a test needs to spawn `browser` or drive the
   headless worker loop via `UiToWorker`/`WorkerToUi`, run with `--features browser_ui`.
-- Many browser integration tests share process-global state. To avoid cross-test interference while
-  still allowing the overall integration test suite to run with default libtest parallelism, tests
-  that touch shared global state should acquire `stage_listener_test_lock()` (see below).
-- Under `--features browser_ui`, `FontConfig::default()` prefers bundled fonts by default (so headless
-  environments without a reliable system font database still render deterministically). Tests that
-  need deterministic fonts outside that configuration should pass `FontConfig::bundled_only()` /
-  `support::deterministic_renderer()` explicitly instead of relying on process-global env vars.
+- Rust's test harness runs tests in parallel threads by default. Many browser integration tests
+  share process-global state. To avoid cross-test interference while still allowing the overall
+  integration test suite to run with default libtest parallelism, tests that touch shared global
+  state should acquire `stage_listener_test_lock()` (see below) (or the shared lock in
+  `tests/common/global_state`).
+- If you need fully single-threaded execution (e.g. when debugging a flaky global-state
+  interaction), run with:
+
+  ```bash
+  bash scripts/cargo_agent.sh test -p fastrender --test integration browser_integration:: -- --test-threads 1
+  ```
+- Browser integration tests should be hermetic with respect to fonts: prefer
+  `support::deterministic_renderer()` / `support::deterministic_factory()` (or pass an explicit
+  `FontConfig`, such as `FontConfig::bundled_only()`) so text rendering does not depend on
+  system-installed fonts or process-global env vars.
 
 ## Headless constraints (no winit/wgpu/egui)
 
@@ -106,6 +114,8 @@ It provides (among other things):
 
 - Consistent timeout helpers for channel receives (`recv_until`, `drain_for`, `DEFAULT_TIMEOUT`).
 - `TempSite` for creating temporary `file://` fixtures and getting correct `file://` URLs.
+- Deterministic renderer/factory helpers (`deterministic_renderer`, `deterministic_factory`) so tests
+  do not depend on system-installed fonts.
 - Pixmap sampling helpers (`rgba_at`) for rendering assertions.
 - `WorkerToUi` debug formatting (`format_messages`) for clearer assertion failures.
 
@@ -113,7 +123,8 @@ It provides (among other things):
 
 Some browser integration tests use process-global test hooks (for example
 `render_control::set_test_render_delay_ms`) and other shared state. To avoid cross-test
-interference, acquire the global lock for the duration of the test:
+interference, acquire the global lock for the duration of the test (see also
+`tests/common/global_state` for the shared lock used across integration suites):
 
 ```rust
 let _lock = crate::browser_integration::stage_listener_test_lock();
