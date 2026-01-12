@@ -3799,10 +3799,6 @@ impl<'a> Checker<'a> {
     }
     let callee_ty = self.check_expr(&call.stx.callee);
 
-    if matches!(call.stx.callee.stx.as_ref(), AstExpr::Super(_)) {
-      return self.check_super_call_expr(call, contextual_return);
-    }
-
     let call_optional = call.stx.optional_chaining || self.is_optional_chain_expr(&call.stx.callee);
 
     let callee_base = if call_optional {
@@ -4296,6 +4292,449 @@ impl<'a> Checker<'a> {
       ty = self.store.union(vec![ty, prim.undefined]);
     }
     ty
+  }
+
+  fn check_super_call_expr(
+    &mut self,
+    call: &Node<parse_js::ast::expr::CallExpr>,
+    contextual_return: Option<TypeId>,
+  ) -> TypeId {
+    let prim = self.store.primitive_ids();
+
+    // Ensure we record the type of the `super` keyword itself (for consistency
+    // with normal `check_expr` bookkeeping), even though the call resolution
+    // uses the base constructor type.
+    let _ = self.check_expr(&call.stx.callee);
+
+    let callee_ty = self
+      .this_super_context
+      .super_value_ty
+      .unwrap_or(self.current_super_ctor_ty);
+    let callee_ty = self.expand_callable_type(callee_ty);
+
+    let arg_exprs = call.stx.arguments.as_slice();
+    let all_candidate_sigs =
+      construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);
+    let mut candidate_sigs = all_candidate_sigs.clone();
+    let has_spread = arg_exprs.iter().any(|arg| arg.stx.spread);
+    let mut callee_for_resolution = callee_ty;
+    let sigs_for_context = {
+      let base_for_context = if has_spread {
+        let sigs_without_excess_props: Vec<_> = all_candidate_sigs
+          .iter()
+          .copied()
+          .filter(|sig_id| {
+            let sig = self.store.signature(*sig_id);
+            arg_exprs
+              .iter()
+              .enumerate()
+              .take_while(|(_, arg)| !arg.stx.spread)
+              .all(|(idx, arg)| {
+                let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, idx) else {
+                  return false;
+                };
+                !self.has_contextual_excess_properties(&arg.stx.value, param_ty)
+              })
+          })
+          .collect();
+
+        if sigs_without_excess_props.is_empty() {
+          candidate_sigs.clone()
+        } else {
+          candidate_sigs = sigs_without_excess_props;
+
+          let mut shape = Shape::new();
+          shape.construct_signatures = candidate_sigs.clone();
+          let shape_id = self.store.intern_shape(shape);
+          let obj_id = self.store.intern_object(ObjectType { shape: shape_id });
+          callee_for_resolution = self.store.intern_type(TypeKind::Object(obj_id));
+
+          candidate_sigs.clone()
+        }
+      } else {
+        let sigs_by_arity: Vec<_> = all_candidate_sigs
+          .iter()
+          .copied()
+          .filter(|sig_id| {
+            let sig = self.store.signature(*sig_id);
+            signature_allows_arg_count(self.store.as_ref(), &sig, arg_exprs.len())
+          })
+          .collect();
+
+        let sigs_without_excess_props: Vec<_> = sigs_by_arity
+          .iter()
+          .copied()
+          .filter(|sig_id| {
+            let sig = self.store.signature(*sig_id);
+            arg_exprs.iter().enumerate().all(|(idx, arg)| {
+              let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, idx) else {
+                return false;
+              };
+              !self.has_contextual_excess_properties(&arg.stx.value, param_ty)
+            })
+          })
+          .collect();
+
+        if sigs_without_excess_props.is_empty() {
+          if sigs_by_arity.is_empty() {
+            all_candidate_sigs.clone()
+          } else {
+            sigs_by_arity
+          }
+        } else {
+          candidate_sigs = sigs_without_excess_props;
+
+          let mut shape = Shape::new();
+          shape.construct_signatures = candidate_sigs.clone();
+          let shape_id = self.store.intern_shape(shape);
+          let obj_id = self.store.intern_object(ObjectType { shape: shape_id });
+          callee_for_resolution = self.store.intern_type(TypeKind::Object(obj_id));
+
+          candidate_sigs.clone()
+        }
+      };
+
+      let specialized: Vec<_> = base_for_context
+        .iter()
+        .copied()
+        .filter(|sig_id| {
+          let sig = self.store.signature(*sig_id);
+          signature_contains_literal_types(self.store.as_ref(), &sig)
+        })
+        .collect();
+
+      if specialized.is_empty() {
+        base_for_context
+      } else {
+        specialized
+      }
+    };
+
+    let mut arg_types = Vec::with_capacity(arg_exprs.len());
+    let mut const_arg_types = Vec::with_capacity(arg_exprs.len());
+    // For each argument expression, record which parameter index it corresponds
+    // to. Spread arguments (and arguments after an unknown-length spread) have no
+    // stable mapping.
+    let mut param_index_map = Vec::with_capacity(arg_exprs.len());
+    let mut spread_param_index_map = Vec::with_capacity(arg_exprs.len());
+    let mut mapping_known = true;
+    let mut next_param_index = 0usize;
+
+    for arg in arg_exprs.iter() {
+      if arg.stx.spread {
+        spread_param_index_map.push(mapping_known.then_some(next_param_index));
+        let ty = if mapping_known {
+          match arg.stx.value.stx.as_ref() {
+            AstExpr::LitArr(arr) => {
+              use parse_js::ast::expr::lit::LitArrElem;
+
+              if arr
+                .stx
+                .elements
+                .iter()
+                .all(|elem| matches!(elem, LitArrElem::Single(_)))
+              {
+                let arity = arr.stx.elements.len();
+                let mut expected_elems = Vec::with_capacity(arity);
+                for offset in 0..arity {
+                  let param_index = next_param_index.saturating_add(offset);
+                  let mut expected_tys = Vec::new();
+                  for sig_id in sigs_for_context.iter().copied() {
+                    let sig = self.store.signature(sig_id);
+                    if let Some(param_ty) =
+                      expected_arg_type_at(self.store.as_ref(), &sig, param_index)
+                    {
+                      expected_tys.push(param_ty);
+                    }
+                  }
+                  let expected = if expected_tys.is_empty() {
+                    prim.unknown
+                  } else {
+                    self.store.union(expected_tys)
+                  };
+                  expected_elems.push(types_ts_interned::TupleElem {
+                    ty: expected,
+                    optional: false,
+                    rest: false,
+                    readonly: false,
+                  });
+                }
+                let expected_tuple = self.store.intern_type(TypeKind::Tuple(expected_elems));
+                self.check_expr_with_expected(&arg.stx.value, expected_tuple)
+              } else {
+                self.check_expr(&arg.stx.value)
+              }
+            }
+            _ => self.check_expr(&arg.stx.value),
+          }
+        } else {
+          self.check_expr(&arg.stx.value)
+        };
+        arg_types.push(CallArgType::spread(ty));
+        const_arg_types.push(self.const_inference_type(&arg.stx.value));
+        param_index_map.push(None);
+
+        if mapping_known {
+          let mut seen = HashSet::new();
+          let fixed_len = fixed_spread_len(self.store.as_ref(), ty, self.ref_expander, &mut seen);
+          if let Some(fixed_len) = fixed_len {
+            next_param_index = next_param_index.saturating_add(fixed_len);
+          } else {
+            mapping_known = false;
+          }
+        }
+        continue;
+      }
+
+      let param_index = mapping_known.then_some(next_param_index);
+      param_index_map.push(param_index);
+      spread_param_index_map.push(None);
+
+      let ty = if let Some(param_index) = param_index {
+        let mut expected_tys = Vec::new();
+        for sig_id in sigs_for_context.iter().copied() {
+          let sig = self.store.signature(sig_id);
+          if let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, param_index) {
+            expected_tys.push(param_ty);
+          }
+        }
+        let expected = if expected_tys.is_empty() {
+          prim.unknown
+        } else {
+          self.store.union(expected_tys)
+        };
+        self.check_expr_with_expected(&arg.stx.value, expected)
+      } else {
+        self.check_expr(&arg.stx.value)
+      };
+
+      arg_types.push(CallArgType::new(ty));
+      const_arg_types.push(self.const_inference_type(&arg.stx.value));
+      if mapping_known {
+        next_param_index = next_param_index.saturating_add(1);
+      }
+    }
+    let span = Span {
+      file: self.file,
+      range: loc_to_range(self.file, call.loc),
+    };
+    let mut resolution = resolve_construct(
+      &self.store,
+      &self.relate,
+      &self.instantiation_cache,
+      callee_for_resolution,
+      &arg_types,
+      Some(&const_arg_types),
+      None,
+      contextual_return,
+      span,
+      self.ref_expander,
+    );
+
+    if let Some(sig_id) = resolution.signature.or(resolution.contextual_signature) {
+      let sig = self.store.signature(sig_id);
+      let mut refined = false;
+      for (idx, arg) in arg_exprs.iter().enumerate() {
+        if arg.stx.spread {
+          let Some(param_index) = spread_param_index_map.get(idx).and_then(|idx| *idx) else {
+            continue;
+          };
+          let AstExpr::LitArr(arr) = arg.stx.value.stx.as_ref() else {
+            continue;
+          };
+          use parse_js::ast::expr::lit::LitArrElem;
+          if arr
+            .stx
+            .elements
+            .iter()
+            .any(|elem| !matches!(elem, LitArrElem::Single(_)))
+          {
+            continue;
+          }
+
+          let arity = arr.stx.elements.len();
+          let mut expected_elems = Vec::with_capacity(arity);
+          for offset in 0..arity {
+            let Some(param_ty) = expected_arg_type_at(
+              self.store.as_ref(),
+              &sig,
+              param_index.saturating_add(offset),
+            ) else {
+              expected_elems.clear();
+              break;
+            };
+            expected_elems.push(types_ts_interned::TupleElem {
+              ty: param_ty,
+              optional: false,
+              rest: false,
+              readonly: false,
+            });
+          }
+          if expected_elems.is_empty() {
+            continue;
+          }
+
+          let expected_tuple = self.store.intern_type(TypeKind::Tuple(expected_elems));
+          let spread_ty = self.check_expr_with_expected(&arg.stx.value, expected_tuple);
+          if let Some(slot) = arg_types.get_mut(idx) {
+            slot.ty = spread_ty;
+            refined = true;
+          }
+          if let Some(slot) = const_arg_types.get_mut(idx) {
+            *slot = spread_ty;
+          }
+          continue;
+        }
+
+        let Some(param_index) = param_index_map.get(idx).and_then(|idx| *idx) else {
+          continue;
+        };
+        let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, param_index) else {
+          continue;
+        };
+        let Some(func) = (match arg.stx.value.stx.as_ref() {
+          AstExpr::ArrowFunc(arrow) => Some(&arrow.stx.func),
+          AstExpr::Func(func) => Some(&func.stx.func),
+          _ => None,
+        }) else {
+          continue;
+        };
+
+        let Some(refined_ty) = self.refine_function_expr_with_expected(func, param_ty) else {
+          continue;
+        };
+        if let Some(slot) = arg_types.get_mut(idx) {
+          slot.ty = refined_ty;
+          refined = true;
+        }
+        if let Some(slot) = const_arg_types.get_mut(idx) {
+          *slot = refined_ty;
+        }
+        self.record_expr_type(arg.stx.value.loc, refined_ty);
+      }
+
+      if refined {
+        let next = resolve_construct(
+          &self.store,
+          &self.relate,
+          &self.instantiation_cache,
+          callee_for_resolution,
+          &arg_types,
+          Some(&const_arg_types),
+          None,
+          contextual_return,
+          span,
+          self.ref_expander,
+        );
+        if next.diagnostics.is_empty() && next.signature.is_some() {
+          resolution = next;
+        }
+      }
+    }
+
+    let allow_assignable_fallback = resolution.diagnostics.len() == 1
+      && resolution.diagnostics[0].code.as_str() == codes::NO_OVERLOAD.as_str()
+      && candidate_sigs.len() == 1;
+    let mut reported_assignability = false;
+    if allow_assignable_fallback {
+      if let Some(sig_id) = resolution
+        .contextual_signature
+        .or_else(|| candidate_sigs.first().copied())
+      {
+        let sig = self.store.signature(sig_id);
+        let before = self.diagnostics.len();
+        for (idx, arg) in arg_exprs.iter().enumerate() {
+          let Some(param_index) = param_index_map.get(idx).and_then(|idx| *idx) else {
+            continue;
+          };
+          let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, param_index) else {
+            continue;
+          };
+          let arg_ty = arg_types.get(idx).map(|arg| arg.ty).unwrap_or(prim.unknown);
+          let expected = match self.store.type_kind(param_ty) {
+            TypeKind::TypeParam(id) => sig
+              .type_params
+              .iter()
+              .find(|tp| tp.id == id)
+              .and_then(|tp| tp.constraint)
+              .unwrap_or(param_ty),
+            _ => param_ty,
+          };
+          self.check_assignable_with_code(
+            &arg.stx.value,
+            arg_ty,
+            expected,
+            None,
+            &codes::ARGUMENT_TYPE_MISMATCH,
+          );
+        }
+        reported_assignability = self.diagnostics.len() > before;
+      }
+    }
+
+    if !reported_assignability {
+      for diag in &resolution.diagnostics {
+        self.diagnostics.push(diag.clone());
+      }
+    }
+    if resolution.diagnostics.is_empty() {
+      if let Some(sig_id) = resolution.signature {
+        let sig = self.store.signature(sig_id);
+        for (idx, arg) in arg_exprs.iter().enumerate() {
+          let Some(param_index) = param_index_map.get(idx).and_then(|idx| *idx) else {
+            continue;
+          };
+          let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, param_index) else {
+            continue;
+          };
+          let arg_expr = &arg.stx.value;
+          let arg_ty = match arg_expr.stx.as_ref() {
+            AstExpr::LitObj(_) | AstExpr::LitArr(_) => {
+              let contextual = self.check_expr_with_expected(arg_expr, param_ty);
+              if let Some(slot) = arg_types.get_mut(idx) {
+                slot.ty = contextual;
+              }
+              contextual
+            }
+            _ => arg_types.get(idx).map(|arg| arg.ty).unwrap_or(prim.unknown),
+          };
+          self.check_assignable_with_code(
+            arg_expr,
+            arg_ty,
+            param_ty,
+            None,
+            &codes::ARGUMENT_TYPE_MISMATCH,
+          );
+        }
+      }
+    }
+    let contextual_sig = resolution
+      .signature
+      .or(resolution.contextual_signature)
+      .or_else(|| candidate_sigs.first().copied());
+    if let Some(sig_id) = contextual_sig {
+      let sig = self.store.signature(sig_id);
+      for (idx, arg) in arg_exprs.iter().enumerate() {
+        let Some(param_index) = param_index_map.get(idx).and_then(|idx| *idx) else {
+          continue;
+        };
+        let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, param_index) else {
+          continue;
+        };
+        let arg_ty = arg_types.get(idx).map(|arg| arg.ty).unwrap_or(prim.unknown);
+        let contextual = match arg.stx.value.stx.as_ref() {
+          AstExpr::ArrowFunc(_) | AstExpr::Func(_)
+            if self.first_callable_signature(param_ty).is_some() =>
+          {
+            arg_ty
+          }
+          _ => self.contextual_arg_type(arg_ty, param_ty),
+        };
+        self.record_expr_type(arg.stx.value.loc, contextual);
+      }
+    }
+    self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
+    resolution.return_type
   }
 
   fn check_new_expr(
