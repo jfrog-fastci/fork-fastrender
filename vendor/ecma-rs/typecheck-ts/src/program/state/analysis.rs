@@ -301,6 +301,21 @@ impl ProgramState {
             continue;
           };
           self.hir_lowered.insert(file, Arc::clone(&lowered));
+          if (self.compiler_options.native_strict || self.compiler_options.strict_native)
+            && !matches!(file_kind, FileKind::Dts)
+          {
+            for arenas in lowered.types.values() {
+              for ty_expr in arenas.type_exprs.iter() {
+                if !matches!(ty_expr.kind, hir_js::TypeExprKind::Any) {
+                  continue;
+                }
+                self.push_program_diagnostic(codes::NATIVE_STRICT_ANY.error(
+                  "`any` is forbidden when `native_strict` is enabled",
+                  Span::new(file, ty_expr.span),
+                ));
+              }
+            }
+          }
           let _bound_sem_hir = self.bind_file(file, ast.as_ref(), host, &mut queue);
           let _ = self.align_definitions_with_hir(file, lowered.as_ref());
           self.map_hir_bodies(file, lowered.as_ref());

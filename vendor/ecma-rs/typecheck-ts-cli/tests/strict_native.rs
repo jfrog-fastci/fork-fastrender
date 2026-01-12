@@ -29,6 +29,52 @@ fn strict_native_reports_explicit_any() {
 }
 
 #[test]
+fn native_strict_reports_any_in_unused_type_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(&entry, "type T = any;\n").expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg(entry.as_os_str())
+    .assert()
+    .success();
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--native-strict")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_ANY.as_str()));
+}
+
+#[test]
+fn native_strict_reports_any_in_unused_interface_member() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(&entry, "interface X { x: any }\n").expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg(entry.as_os_str())
+    .assert()
+    .success();
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--native-strict")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_ANY.as_str()));
+}
+
+#[test]
 fn strict_native_json_includes_compiler_option() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
