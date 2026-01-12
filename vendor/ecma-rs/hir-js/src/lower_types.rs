@@ -860,21 +860,39 @@ impl<'a> TypeLowerer<'a> {
 
   fn lower_heritage_expr(&mut self, expr: &Node<AstExpr>) -> TypeExprId {
     let span = self.ctx.to_range(expr.loc);
-    if let Some(name) = self.type_name_from_expr(expr) {
-      self.alloc_type_expr(
-        span,
-        TypeExprKind::TypeRef(TypeRef {
-          name,
-          type_args: Vec::new(),
-        }),
-      )
-    } else {
-      self.warn_heritage(
-        span,
-        "heritage clause expression could not be lowered; using `any`",
-      );
-      self.alloc_type_expr(span, TypeExprKind::Any)
-    }
+    let (name, type_args) = match &*expr.stx {
+      AstExpr::Instantiation(inst) => {
+        let Some(name) = self.type_name_from_expr(inst.stx.expression.as_ref()) else {
+          self.warn_heritage(
+            span,
+            "heritage clause expression could not be lowered; using `any`",
+          );
+          return self.alloc_type_expr(span, TypeExprKind::Any);
+        };
+        let type_args = inst
+          .stx
+          .type_arguments
+          .iter()
+          .map(|arg| self.lower_type_expr(arg))
+          .collect();
+        (name, type_args)
+      }
+      _ => {
+        let Some(name) = self.type_name_from_expr(expr) else {
+          self.warn_heritage(
+            span,
+            "heritage clause expression could not be lowered; using `any`",
+          );
+          return self.alloc_type_expr(span, TypeExprKind::Any);
+        };
+        (name, Vec::new())
+      }
+    };
+
+    self.alloc_type_expr(
+      span,
+      TypeExprKind::TypeRef(TypeRef { name, type_args }),
+    )
   }
 
   fn type_name_from_expr(&mut self, expr: &Node<AstExpr>) -> Option<TypeName> {

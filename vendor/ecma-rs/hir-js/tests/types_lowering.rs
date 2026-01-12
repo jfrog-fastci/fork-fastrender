@@ -1927,6 +1927,76 @@ fn lowers_class_type_info_basic() {
 }
 
 #[test]
+fn lowers_class_type_info_extends_with_type_args() {
+  let result = lower_from_source("class C extends Base<string> {}").expect("lower");
+  let def = result
+    .defs
+    .iter()
+    .find(|def| result.names.resolve(def.name).unwrap() == "C")
+    .expect("class definition");
+  let info = def.type_info.as_ref().expect("type info present");
+  let arenas = result
+    .type_arenas(def.id)
+    .expect("type arenas present for class");
+
+  let extends = match info {
+    DefTypeInfo::Class { extends, .. } => extends.expect("extends clause"),
+    other => panic!("expected class type info, got {other:?}"),
+  };
+  let base_expr = &arenas.type_exprs[extends.0 as usize];
+  match &base_expr.kind {
+    TypeExprKind::TypeRef(reference) => {
+      match &reference.name {
+        TypeName::Ident(id) => assert_eq!(result.names.resolve(*id).unwrap(), "Base"),
+        other => panic!("unexpected base name {other:?}"),
+      }
+      assert_eq!(reference.type_args.len(), 1);
+      assert!(matches!(
+        arenas.type_exprs[reference.type_args[0].0 as usize].kind,
+        TypeExprKind::String
+      ));
+    }
+    other => panic!("unexpected extends kind {other:?}"),
+  }
+}
+
+#[test]
+fn lowers_class_type_info_implements_with_type_args() {
+  let result = lower_from_source("class C implements IFace<string> {}").expect("lower");
+  let def = result
+    .defs
+    .iter()
+    .find(|def| result.names.resolve(def.name).unwrap() == "C")
+    .expect("class definition");
+  let info = def.type_info.as_ref().expect("type info present");
+  let arenas = result
+    .type_arenas(def.id)
+    .expect("type arenas present for class");
+
+  let implements = match info {
+    DefTypeInfo::Class { implements, .. } => implements,
+    other => panic!("expected class type info, got {other:?}"),
+  };
+  assert_eq!(implements.len(), 1);
+
+  let iface_expr = &arenas.type_exprs[implements[0].0 as usize];
+  match &iface_expr.kind {
+    TypeExprKind::TypeRef(reference) => {
+      match &reference.name {
+        TypeName::Ident(id) => assert_eq!(result.names.resolve(*id).unwrap(), "IFace"),
+        other => panic!("unexpected implements name {other:?}"),
+      }
+      assert_eq!(reference.type_args.len(), 1);
+      assert!(matches!(
+        arenas.type_exprs[reference.type_args[0].0 as usize].kind,
+        TypeExprKind::String
+      ));
+    }
+    other => panic!("unexpected implements kind {other:?}"),
+  }
+}
+
+#[test]
 fn lowers_enum_type_info() {
   let result = lower_from_source(r#"enum E { A, B = 2, C = "c" }"#).expect("lower");
   let def = result
