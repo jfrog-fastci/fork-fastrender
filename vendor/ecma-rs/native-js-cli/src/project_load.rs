@@ -53,6 +53,11 @@ pub fn load_program(
     compiler_options.types = type_libs::effective_type_packages(cfg, &compiler_options, &type_roots);
   }
 
+  // Canonicalize casing/ordering so downstream resolution behavior and serialized
+  // program snapshots are deterministic regardless of how options were specified
+  // (tsconfig vs CLI flags).
+  compiler_options = compiler_options.normalize();
+
   let mut extra_libs = Vec::new();
   extra_libs.push(match mode {
     LoadMode::Project => native_js::builtins::project_builtins_lib(),
