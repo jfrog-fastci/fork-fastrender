@@ -7765,13 +7765,22 @@ impl<'a> Checker<'a> {
     }
     let mut shape = Shape::new();
     for member in obj.stx.members.iter() {
-          match &member.stx.typ {
+      match &member.stx.typ {
         ObjMemberType::Valued { key, val } => {
           let prop_key = match key {
             ClassOrObjKey::Direct(direct) => {
-              PropKey::String(self.store.intern_name_ref(&direct.stx.key))
+              Some(PropKey::String(self.store.intern_name_ref(&direct.stx.key)))
             }
-            ClassOrObjKey::Computed(_) => continue,
+            ClassOrObjKey::Computed(expr) => {
+              let key_ty = self.check_expr(expr);
+              match self.store.type_kind(key_ty) {
+                TypeKind::StringLiteral(id) => Some(PropKey::String(id)),
+                TypeKind::NumberLiteral(num) => Some(PropKey::String(
+                  self.store.intern_name(num.0.to_string()),
+                )),
+                _ => None,
+              }
+            }
           };
           match val {
             ClassOrObjVal::Prop(Some(expr)) => {
@@ -7781,18 +7790,20 @@ impl<'a> Checker<'a> {
               } else {
                 ty
               };
-              shape.properties.push(types_ts_interned::Property {
-                key: prop_key,
-                data: PropData {
-                  ty,
-                  optional: false,
-                  readonly: false,
-                  accessibility: None,
-                  is_method: false,
-                  origin: None,
-                  declared_on: None,
-                },
-              });
+              if let Some(prop_key) = prop_key {
+                shape.properties.push(types_ts_interned::Property {
+                  key: prop_key,
+                  data: PropData {
+                    ty,
+                    optional: false,
+                    readonly: false,
+                    accessibility: None,
+                    is_method: false,
+                    origin: None,
+                    declared_on: None,
+                  },
+                });
+              }
             }
             ClassOrObjVal::Method(method) => {
               let ty = self.function_type(&method.stx.func);
@@ -7800,18 +7811,20 @@ impl<'a> Checker<'a> {
               // spans (keyed by `method.loc`), so ensure we record an expression type
               // for `type_at` queries.
               self.record_expr_type(method.loc, ty);
-              shape.properties.push(types_ts_interned::Property {
-                key: prop_key,
-                data: PropData {
-                  ty,
-                  optional: false,
-                  readonly: false,
-                  accessibility: None,
-                  is_method: true,
-                  origin: None,
-                  declared_on: None,
-                },
-              });
+              if let Some(prop_key) = prop_key {
+                shape.properties.push(types_ts_interned::Property {
+                  key: prop_key,
+                  data: PropData {
+                    ty,
+                    optional: false,
+                    readonly: false,
+                    accessibility: None,
+                    is_method: true,
+                    origin: None,
+                    declared_on: None,
+                  },
+                });
+              }
             }
             _ => {}
           }
@@ -7855,12 +7868,28 @@ impl<'a> Checker<'a> {
     for member in obj.stx.members.iter() {
       match &member.stx.typ {
         ObjMemberType::Valued { key, val } => {
-          let name = match key {
-            ClassOrObjKey::Direct(direct) => direct.stx.key.clone(),
-            ClassOrObjKey::Computed(_) => continue,
+          let (prop_key, expected_prop) = match key {
+            ClassOrObjKey::Direct(direct) => (
+              Some(PropKey::String(self.store.intern_name_ref(&direct.stx.key))),
+              self.member_type(expected, &direct.stx.key),
+            ),
+            ClassOrObjKey::Computed(expr) => {
+              let key_ty = self.check_expr(expr);
+              match self.store.type_kind(key_ty) {
+                TypeKind::StringLiteral(id) => {
+                  let name = self.store.name(id);
+                  (Some(PropKey::String(id)), self.member_type(expected, &name))
+                }
+                TypeKind::NumberLiteral(num) => {
+                  let name = num.0.to_string();
+                  let expected_prop = self.member_type(expected, &name);
+                  let prop_key = Some(PropKey::String(self.store.intern_name(name)));
+                  (prop_key, expected_prop)
+                }
+                _ => (None, prim.unknown),
+              }
+            }
           };
-          let prop_key = PropKey::String(self.store.intern_name_ref(&name));
-          let expected_prop = self.member_type(expected, &name);
           match val {
             ClassOrObjVal::Prop(Some(expr)) => {
               let expr_ty = if expected_prop != prim.unknown {
@@ -7896,18 +7925,20 @@ impl<'a> Checker<'a> {
               } else {
                 expr_ty
               };
-              shape.properties.push(types_ts_interned::Property {
-                key: prop_key,
-                data: PropData {
-                  ty,
-                  optional: false,
-                  readonly: false,
-                  accessibility: None,
-                  is_method: false,
-                  origin: None,
-                  declared_on: None,
-                },
-              });
+              if let Some(prop_key) = prop_key {
+                shape.properties.push(types_ts_interned::Property {
+                  key: prop_key,
+                  data: PropData {
+                    ty,
+                    optional: false,
+                    readonly: false,
+                    accessibility: None,
+                    is_method: false,
+                    origin: None,
+                    declared_on: None,
+                  },
+                });
+              }
             }
             ClassOrObjVal::Method(method) => {
               let mut ty = self.function_type(&method.stx.func);
@@ -7922,18 +7953,20 @@ impl<'a> Checker<'a> {
                 }
               }
               self.record_expr_type(method.loc, ty);
-              shape.properties.push(types_ts_interned::Property {
-                key: prop_key,
-                data: PropData {
-                  ty,
-                  optional: false,
-                  readonly: false,
-                  accessibility: None,
-                  is_method: true,
-                  origin: None,
-                  declared_on: None,
-                },
-              });
+              if let Some(prop_key) = prop_key {
+                shape.properties.push(types_ts_interned::Property {
+                  key: prop_key,
+                  data: PropData {
+                    ty,
+                    optional: false,
+                    readonly: false,
+                    accessibility: None,
+                    is_method: true,
+                    origin: None,
+                    declared_on: None,
+                  },
+                });
+              }
             }
             _ => {}
           }
