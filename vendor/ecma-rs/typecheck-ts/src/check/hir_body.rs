@@ -1175,6 +1175,7 @@ enum ArrayLiteralContext {
 struct JsxActualProps {
   ty: TypeId,
   props: HashSet<String>,
+  named_props: Vec<(String, TextRange)>,
   explicit_attr_count: usize,
 }
 
@@ -4421,6 +4422,7 @@ impl<'a> Checker<'a> {
     let prim = self.store.primitive_ids();
     let explicit_attr_count = attrs.len();
     let mut props = HashSet::new();
+    let mut named_props = Vec::new();
     let mut shape = Shape::new();
     let mut spreads = Vec::new();
     let children_key = self.jsx_children_prop_key(loc);
@@ -4443,7 +4445,9 @@ impl<'a> Checker<'a> {
           // doesn't include a corresponding string-literal key. `tsc` excludes these keys from
           // excess property checking, so only track non-hyphenated attribute names here.
           if !key_string.contains('-') {
-            props.insert(key_string.clone());
+            if props.insert(key_string.clone()) {
+              named_props.push((key_string.clone(), loc_to_range(self.file, name.loc)));
+            }
           }
           let key = PropKey::String(self.store.intern_name_ref(&key_string));
           let value_ty = match value {
@@ -4562,6 +4566,7 @@ impl<'a> Checker<'a> {
     JsxActualProps {
       ty,
       props,
+      named_props,
       explicit_attr_count,
     }
   }
@@ -5003,9 +5008,22 @@ impl<'a> Checker<'a> {
     };
 
     if !self.type_accepts_props(expected, props_for_excess_check) {
+      let mut single = HashSet::with_capacity(1);
+      let mut range = None;
+      for (prop, prop_range) in actual.named_props.iter() {
+        if !props_for_excess_check.contains(prop) {
+          continue;
+        }
+        single.clear();
+        single.insert(prop.clone());
+        if !self.type_accepts_props(expected, &single) {
+          range = Some(*prop_range);
+          break;
+        }
+      }
       self.diagnostics.push(codes::EXCESS_PROPERTY.error(
         "excess property",
-        Span::new(self.file, loc_to_range(self.file, loc)),
+        Span::new(self.file, range.unwrap_or_else(|| loc_to_range(self.file, loc))),
       ));
       return;
     }

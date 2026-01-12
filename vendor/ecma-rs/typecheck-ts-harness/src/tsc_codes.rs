@@ -37,7 +37,10 @@ pub(crate) fn mapped_tsc_codes_for_rust_code(raw: &str) -> Option<&'static [u32]
     // Cannot find name 'x'.
     "TC0005" => Some(&[2304]),
     // Object literal may only specify known properties...
-    "TC0006" => Some(&[2353]),
+    //
+    // Note: in JSX attribute contexts, tsc reports excess properties as TS2322
+    // ("Type '{ ... }' is not assignable to type '{ ... }'. Property 'x' does not exist ...").
+    "TC0006" => Some(&[2353, 2322]),
     // Type is not assignable to type...
     //
     // Used for general assignability checks; `tsc` uses different codes for
