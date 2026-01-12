@@ -25,13 +25,13 @@ use crate::js::{
   TaskSource, WindowHostState,
 };
 use crate::render_control;
+use crate::Rect;
 use crate::resource::{
   cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success,
   ensure_script_mime_sane, origin_from_url, CorsMode, FetchDestination, FetchRequest,
   ReferrerPolicy, ResourceFetcher,
 };
 use crate::style::media::MediaContext;
-use crate::Rect;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
 use base64::Engine as _;
@@ -11910,6 +11910,20 @@ fn dom_implementation_create_document_type_native(
   };
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
+fn dom_parser_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DOMParser constructor cannot be invoked without 'new'",
+  ))
 }
 
 fn dom_parser_constructor_construct_native(
@@ -25972,6 +25986,9 @@ fn html_slot_element_assigned_nodes_native(
     }
   };
 
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "HTMLSlotElement.assignedNodes requires a DOM-backed document",
+  ))?;
   let assigned = if flatten {
     dom.find_flattened_slottables_for_slot(handle.node_id)
   } else {
@@ -26052,6 +26069,9 @@ fn html_slot_element_assigned_elements_native(
     }
   };
 
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "HTMLSlotElement.assignedElements requires a DOM-backed document",
+  ))?;
   let assigned = if flatten {
     dom.find_flattened_slottables_for_slot(handle.node_id)
   } else {

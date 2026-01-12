@@ -1490,7 +1490,7 @@ fn parse_property_value_in_context_internal(
     return Some(cached);
   }
 
-  // If the value contains an "arbitrary substitution function" (var()/if()/attr()), keep the raw
+  // If the value contains an "arbitrary substitution function" (var()/if()/attr()/toggle()), keep the raw
   // string so it can be resolved later during cascade/computed value resolution.
   //
   // Note: this happens *after* the parsed-value cache lookup so repeated var-free values avoid

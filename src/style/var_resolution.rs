@@ -8,7 +8,8 @@ use crate::css::properties::{parse_length, parse_property_value_after_var_resolu
 use crate::css::types::PropertyValue;
 use crate::dom::DomNode;
 use crate::geometry::Size;
-use crate::style::color::Color;
+use crate::style::color::{Color, Rgba};
+use crate::style::ComputedStyle;
 use crate::style::custom_property_store::CustomPropertyStore;
 use crate::style::media::{ColorScheme, MediaContext, MediaQuery};
 use cssparser::ParseError;
@@ -43,6 +44,7 @@ std::thread_local! {
 #[derive(Clone, Copy)]
 struct SubstitutionContext {
   element: *const DomNode,
+  parent_style: *const ComputedStyle,
   viewport: Size,
   color_scheme_pref: ColorScheme,
 }
@@ -68,6 +70,7 @@ impl Drop for SubstitutionContextGuard {
 
 pub(crate) fn push_substitution_context(
   element: &DomNode,
+  parent_style: &ComputedStyle,
   viewport: Size,
   color_scheme_pref: ColorScheme,
 ) -> SubstitutionContextGuard {
@@ -75,6 +78,7 @@ pub(crate) fn push_substitution_context(
     let prev = cell.get();
     cell.set(Some(SubstitutionContext {
       element: element as *const DomNode,
+      parent_style: parent_style as *const ComputedStyle,
       viewport,
       color_scheme_pref,
     }));
@@ -84,11 +88,12 @@ pub(crate) fn push_substitution_context(
 
 pub(crate) fn with_substitution_context<R>(
   element: &DomNode,
+  parent_style: &ComputedStyle,
   viewport: Size,
   color_scheme_pref: ColorScheme,
   f: impl FnOnce() -> R,
 ) -> R {
-  let _guard = push_substitution_context(element, viewport, color_scheme_pref);
+  let _guard = push_substitution_context(element, parent_style, viewport, color_scheme_pref);
   f()
 }
 
@@ -104,6 +109,16 @@ fn current_style_element() -> Option<&'static DomNode> {
   // Safety: the pointer was installed by `with_substitution_context` and is only accessed while
   // that guard is live on the same thread.
   Some(unsafe { &*ctx.element })
+}
+
+fn current_parent_style() -> Option<&'static ComputedStyle> {
+  let ctx = current_substitution_context()?;
+  if ctx.parent_style.is_null() {
+    return None;
+  }
+  // Safety: the pointer was installed by `with_substitution_context` and is only accessed while
+  // that guard is live on the same thread.
+  Some(unsafe { &*ctx.parent_style })
 }
 
 fn current_viewport() -> Option<Size> {
@@ -477,6 +492,18 @@ fn contains_ascii_case_insensitive_substitution_call(raw: &str) -> bool {
           && bytes[idx + 2].to_ascii_lowercase() == b't'
           && bytes[idx + 3].to_ascii_lowercase() == b'r'
           && bytes[idx + 4] == b'('
+        {
+          return true;
+        }
+      }
+      b't' => {
+        if idx + 6 < bytes.len()
+          && bytes[idx + 1].to_ascii_lowercase() == b'o'
+          && bytes[idx + 2].to_ascii_lowercase() == b'g'
+          && bytes[idx + 3].to_ascii_lowercase() == b'g'
+          && bytes[idx + 4].to_ascii_lowercase() == b'l'
+          && bytes[idx + 5].to_ascii_lowercase() == b'e'
+          && bytes[idx + 6] == b'('
         {
           return true;
         }
@@ -1103,6 +1130,14 @@ where
           push_css_with_token_splice_boundary(&mut output, resolved.as_str());
         }
       }
+      Token::Function(name) if name.eq_ignore_ascii_case("toggle") => {
+        let nested = parser.parse_nested_block(|nested| {
+          parse_toggle_function(nested, custom_properties, stack, depth, property_name)
+            .map_err(|err| nested.new_custom_error(err))
+        });
+        let resolved = map_nested_result(nested, "toggle")?;
+        push_css_with_token_splice_boundary(&mut output, resolved.as_str());
+      }
       Token::Function(name) => {
         push_css_with_token_splice_boundary(&mut output, name.as_ref());
         output.push('(');
@@ -1290,6 +1325,162 @@ where
   }
 
   Err(VarResolutionResult::InvalidSyntax("first-valid".into()))
+}
+
+fn parse_toggle_function<'a, 'i, 't>(
+  parser: &mut Parser<'i, 't>,
+  custom_properties: &'a CustomPropertyStore,
+  stack: &mut Vec<String>,
+  depth: usize,
+  property_name: &str,
+) -> Result<String, VarResolutionResult<'a>>
+where
+  'a: 'i,
+{
+  fn parse_toggle_values<'i, 't>(
+    parser: &mut Parser<'i, 't>,
+  ) -> Result<Vec<String>, ParseError<'i, ()>> {
+    let mut values: Vec<String> = Vec::new();
+    let mut current = String::new();
+
+    fn flush_value<'i, 't>(
+      parser: &Parser<'i, 't>,
+      values: &mut Vec<String>,
+      current: &mut String,
+    ) -> Result<(), ParseError<'i, ()>> {
+      let trimmed = trim_css_whitespace(current);
+      if trimmed.is_empty() {
+        return Err(parser.new_custom_error(()));
+      }
+      values.push(trimmed.to_string());
+      current.clear();
+      Ok(())
+    }
+
+    while let Ok(token) = parser.next_including_whitespace_and_comments() {
+      match token {
+        Token::Comma => {
+          flush_value(parser, &mut values, &mut current)?;
+        }
+        Token::Function(name) => {
+          push_css_with_token_splice_boundary(&mut current, name.as_ref());
+          current.push('(');
+          let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+          current.push_str(&nested);
+          current.push(')');
+        }
+        Token::ParenthesisBlock => {
+          push_css_with_token_splice_boundary(&mut current, "(");
+          let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+          current.push_str(&nested);
+          current.push(')');
+        }
+        Token::SquareBracketBlock => {
+          push_css_with_token_splice_boundary(&mut current, "[");
+          let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+          current.push_str(&nested);
+          current.push(']');
+        }
+        Token::CurlyBracketBlock => {
+          push_css_with_token_splice_boundary(&mut current, "{");
+          let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+          current.push_str(&nested);
+          current.push('}');
+        }
+        other => push_token_to_css(&mut current, &other),
+      }
+    }
+
+    flush_value(parser, &mut values, &mut current)?;
+    Ok(values)
+  }
+
+  // CSS Values 5: `toggle()` is an arbitrary substitution function whose result depends on the
+  // parent's computed value for the property being computed.
+  //
+  // FastRender currently only supports computed-value matching for `<color>` properties; other
+  // uses are treated as invalid at computed-value time so the declaration computes to `unset`.
+  let parent = current_parent_style().ok_or_else(|| VarResolutionResult::InvalidSyntax("toggle".into()))?;
+
+  let base_color = if property_name.eq_ignore_ascii_case("background-color") {
+    Some(parent.background_color)
+  } else if property_name.eq_ignore_ascii_case("color") {
+    Some(parent.color)
+  } else if property_name.eq_ignore_ascii_case("border-top-color") {
+    Some(parent.border_top_color)
+  } else if property_name.eq_ignore_ascii_case("border-right-color") {
+    Some(parent.border_right_color)
+  } else if property_name.eq_ignore_ascii_case("border-bottom-color") {
+    Some(parent.border_bottom_color)
+  } else if property_name.eq_ignore_ascii_case("border-left-color") {
+    Some(parent.border_left_color)
+  } else {
+    None
+  }
+  .ok_or_else(|| VarResolutionResult::InvalidSyntax("toggle".into()))?;
+
+  let raw_values =
+    parse_toggle_values(parser).map_err(|_| VarResolutionResult::InvalidSyntax("toggle".into()))?;
+  if raw_values.is_empty() {
+    return Err(VarResolutionResult::InvalidSyntax("toggle".into()));
+  }
+
+  let mut resolved_values: Vec<String> = Vec::with_capacity(raw_values.len());
+  let mut computed_values: Vec<Option<Rgba>> = Vec::with_capacity(raw_values.len());
+
+  for raw in raw_values {
+    let raw = trim_css_whitespace(&raw);
+    let resolved = if !contains_ascii_case_insensitive_substitution_call(raw)
+      && (!raw.as_bytes().contains(&b'\\') || !raw.as_bytes().contains(&b'('))
+    {
+      raw.to_string()
+    } else {
+      resolve_value_tokens(raw, custom_properties, stack, depth + 1, property_name)?
+    };
+
+    let computed = Color::parse(trim_css_whitespace(&resolved))
+      .ok()
+      .map(|color| {
+        color.to_rgba_with_scheme_and_forced_colors(
+          parent.color,
+          parent.used_dark_color_scheme,
+          parent.forced_colors,
+        )
+      });
+
+    resolved_values.push(resolved);
+    computed_values.push(computed);
+  }
+
+  let mut match_index: Option<usize> = None;
+  for (idx, value) in computed_values.iter().enumerate() {
+    if value.is_some_and(|color| color == base_color) {
+      match_index = Some(idx);
+    }
+  }
+
+  let selected_index = match_index
+    .map(|idx| (idx + 1) % computed_values.len())
+    .unwrap_or(0);
+
+  if computed_values[selected_index].is_none() {
+    return Err(VarResolutionResult::InvalidSyntax("toggle".into()));
+  }
+
+  let selected = resolved_values
+    .get(selected_index)
+    .map(|s| trim_css_whitespace(s).to_string())
+    .filter(|s| !s.is_empty())
+    .ok_or_else(|| VarResolutionResult::InvalidSyntax("toggle".into()))?;
+
+  // Ensure nested substitution functions inside the selected value are resolved before returning.
+  if !contains_ascii_case_insensitive_substitution_call(&selected)
+    && (!selected.as_bytes().contains(&b'\\') || !selected.as_bytes().contains(&b'('))
+  {
+    return Ok(selected);
+  }
+
+  resolve_value_tokens(&selected, custom_properties, stack, depth + 1, property_name)
 }
 
 fn serialize_css_string_token(value: &str) -> String {
@@ -2169,6 +2360,20 @@ fn contains_var_or_if_substitution_function(value: &str) -> bool {
       return true;
     }
 
+    // `toggle(`
+    if !prev_is_ident
+      && i + 6 < bytes.len()
+      && byte.to_ascii_lowercase() == b't'
+      && bytes[i + 1].to_ascii_lowercase() == b'o'
+      && bytes[i + 2].to_ascii_lowercase() == b'g'
+      && bytes[i + 3].to_ascii_lowercase() == b'g'
+      && bytes[i + 4].to_ascii_lowercase() == b'l'
+      && bytes[i + 5].to_ascii_lowercase() == b'e'
+      && bytes[i + 6] == b'('
+    {
+      return true;
+    }
+
     i += 1;
   }
 
@@ -2193,7 +2398,8 @@ fn contains_var_or_if_substitution_function_in_parser<'i, 't>(parser: &mut Parse
       Token::Function(name)
         if name.eq_ignore_ascii_case("var")
           || name.eq_ignore_ascii_case("if")
-          || name.eq_ignore_ascii_case("first-valid") =>
+          || name.eq_ignore_ascii_case("first-valid")
+          || name.eq_ignore_ascii_case("toggle") =>
       {
         found = true;
         let _ = parser.parse_nested_block(|nested| {
@@ -2466,8 +2672,8 @@ pub fn contains_var(value: &str) -> bool {
 /// computed-value time.
 ///
 /// This is a superset of [`contains_var`] that additionally detects CSS Values 5 `if()`,
-/// `first-valid()`, and typed `attr()` functions. Like `var()`, these functions must not be eagerly
-/// parsed at stylesheet parse time because their substitution result is only knowable at
+/// `first-valid()`, typed `attr()`, and `toggle()` functions. Like `var()`, these functions must not
+/// be eagerly parsed at stylesheet parse time because their substitution result is only knowable at
 /// computed-value time.
 ///
 /// The detector ignores occurrences inside comments and strings, and has a correctness slow-path
@@ -2592,6 +2798,20 @@ pub fn contains_arbitrary_substitution_function(value: &str) -> bool {
       return true;
     }
 
+    // `toggle(`
+    if !prev_is_ident
+      && i + 6 < bytes.len()
+      && byte.to_ascii_lowercase() == b't'
+      && bytes[i + 1].to_ascii_lowercase() == b'o'
+      && bytes[i + 2].to_ascii_lowercase() == b'g'
+      && bytes[i + 3].to_ascii_lowercase() == b'g'
+      && bytes[i + 4].to_ascii_lowercase() == b'l'
+      && bytes[i + 5].to_ascii_lowercase() == b'e'
+      && bytes[i + 6] == b'('
+    {
+      return true;
+    }
+
     i += 1;
   }
 
@@ -2618,7 +2838,8 @@ fn contains_arbitrary_substitution_function_in_parser<'i, 't>(parser: &mut Parse
         if name.eq_ignore_ascii_case("var")
           || name.eq_ignore_ascii_case("if")
           || name.eq_ignore_ascii_case("attr")
-          || name.eq_ignore_ascii_case("first-valid") =>
+          || name.eq_ignore_ascii_case("first-valid")
+          || name.eq_ignore_ascii_case("toggle") =>
       {
         found = true;
         let _ = parser.parse_nested_block(|nested| {
@@ -2770,6 +2991,42 @@ mod tests {
       store.insert(name.into(), CustomPropertyValue::new(value, None));
     }
     store
+  }
+
+  #[test]
+  fn toggle_function_resolves_based_on_parent_computed_value_for_background_color() {
+    use crate::dom::DomNodeType;
+    use crate::style::ComputedStyle;
+    use crate::style::media::ColorScheme;
+
+    let node = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        attributes: Vec::new(),
+      },
+      children: Vec::new(),
+    };
+
+    let mut parent = ComputedStyle::default();
+    parent.background_color = Rgba::rgb(0, 128, 0);
+
+    let props = CustomPropertyStore::default();
+    let value = PropertyValue::Keyword("toggle(green, red)".to_string());
+
+    let result = with_substitution_context(&node, &parent, Size::new(0.0, 0.0), ColorScheme::Light, || {
+      resolve_var_for_property(&value, &props, "background-color")
+    });
+
+    let resolved = match result {
+      VarResolutionResult::Resolved { value, .. } => value.into_owned(),
+      other => panic!("expected resolved toggle(), got {other:?}"),
+    };
+
+    match resolved {
+      PropertyValue::Color(Color::Rgba(rgba)) => assert_eq!(rgba, Rgba::RED),
+      other => panic!("expected `red`, got {other:?}"),
+    }
   }
 
   // Basic var() resolution tests

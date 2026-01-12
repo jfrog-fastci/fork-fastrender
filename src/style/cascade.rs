@@ -16890,7 +16890,41 @@ fn compute_base_styles<'a>(
       || !styles.current_color_dependent_declarations.is_empty()
       || !ua_styles.current_color_dependent_declarations.is_empty();
 
-    let mut recompute_var_and_current_color = || {
+    if needs_substitution_context {
+      crate::style::var_resolution::with_substitution_context(
+        node,
+        parent_styles,
+        viewport,
+        color_scheme_pref,
+        || {
+          styles.recompute_var_dependent_properties_with_container_query_context(
+            parent_styles,
+            viewport,
+            node_id,
+            container_query_ancestor_ids.as_ref(),
+            container_ctx,
+          );
+          styles.recompute_current_color_dependent_properties(parent_styles, viewport);
+        },
+      );
+
+      crate::style::var_resolution::with_substitution_context(
+        node,
+        parent_ua_styles,
+        viewport,
+        color_scheme_pref,
+        || {
+          ua_styles.recompute_var_dependent_properties_with_container_query_context(
+            parent_ua_styles,
+            viewport,
+            node_id,
+            container_query_ancestor_ids.as_ref(),
+            container_ctx,
+          );
+          ua_styles.recompute_current_color_dependent_properties(parent_ua_styles, viewport);
+        },
+      );
+    } else {
       styles.recompute_var_dependent_properties_with_container_query_context(
         parent_styles,
         viewport,
@@ -16907,19 +16941,6 @@ fn compute_base_styles<'a>(
       );
       styles.recompute_current_color_dependent_properties(parent_styles, viewport);
       ua_styles.recompute_current_color_dependent_properties(parent_ua_styles, viewport);
-    };
-
-    if needs_substitution_context {
-      crate::style::var_resolution::with_substitution_context(
-        node,
-        viewport,
-        color_scheme_pref,
-        || {
-          recompute_var_and_current_color();
-        },
-      );
-    } else {
-      recompute_var_and_current_color();
     }
 
     current_root_font_size = if is_root {
@@ -36544,7 +36565,12 @@ fn apply_cascaded_declarations<'a, F>(
   }
 
   let _substitution_guard = needs_substitution_context.then(|| {
-    crate::style::var_resolution::push_substitution_context(node, viewport, color_scheme_pref)
+    crate::style::var_resolution::push_substitution_context(
+      node,
+      parent_styles,
+      viewport,
+      color_scheme_pref,
+    )
   });
 
   // Track `revert-layer` bases for registered custom properties without cloning full `ComputedStyle`

@@ -4721,7 +4721,7 @@ pub struct Declaration {
   pub raw_value: String,
   pub important: bool,
   /// Whether the authored value contained an "arbitrary substitution function" that must be
-  /// resolved at computed-value time (currently: `var()`, `if()`, `attr()`).
+  /// resolved at computed-value time (currently: `var()`, `if()`, `attr()`, `toggle()`).
   ///
   /// The cascade hot path needs to know whether substitution can be skipped for a declaration.
   /// Storing this bit on the declaration avoids re-scanning the same token string for every element
