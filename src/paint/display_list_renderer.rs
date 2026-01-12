@@ -4863,6 +4863,57 @@ impl DisplayListRenderer {
   }
 
   #[inline]
+  fn snap_rect_to_near_integer_edges_or_size(rect: Rect, epsilon: f32) -> Option<Rect> {
+    let (min_x, min_y, w, h) = (rect.min_x(), rect.min_y(), rect.width(), rect.height());
+    if !(min_x.is_finite()
+      && min_y.is_finite()
+      && w.is_finite()
+      && h.is_finite()
+      && w > 0.0
+      && h > 0.0)
+    {
+      return None;
+    }
+
+    let max_x = min_x + w;
+    let max_y = min_y + h;
+
+    let sx0 = Self::snap_near_integer(min_x, epsilon);
+    let sx1 = Self::snap_near_integer(max_x, epsilon);
+    let sw = Self::snap_near_integer(w, epsilon);
+
+    let sy0 = Self::snap_near_integer(min_y, epsilon);
+    let sy1 = Self::snap_near_integer(max_y, epsilon);
+    let sh = Self::snap_near_integer(h, epsilon);
+
+    let (out_x0, out_x1, snapped_x) = match (sx0, sx1, sw) {
+      (Some(x0), Some(x1), _) => (x0, x1, true),
+      (Some(x0), None, Some(w)) => (x0, x0 + w, true),
+      (None, Some(x1), Some(w)) => (x1 - w, x1, true),
+      _ => (min_x, max_x, false),
+    };
+
+    let (out_y0, out_y1, snapped_y) = match (sy0, sy1, sh) {
+      (Some(y0), Some(y1), _) => (y0, y1, true),
+      (Some(y0), None, Some(h)) => (y0, y0 + h, true),
+      (None, Some(y1), Some(h)) => (y1 - h, y1, true),
+      _ => (min_y, max_y, false),
+    };
+
+    if !snapped_x && !snapped_y {
+      return None;
+    }
+
+    let out_w = out_x1 - out_x0;
+    let out_h = out_y1 - out_y0;
+    if !(out_w.is_finite() && out_h.is_finite() && out_w > 0.0 && out_h > 0.0) {
+      return None;
+    }
+
+    Some(Rect::from_xywh(out_x0, out_y0, out_w, out_h))
+  }
+
+  #[inline]
   fn snap_axis_aligned_stroke_center_to_device_pixels(coord: f32, width: f32) -> f32 {
     if width <= 0.0 || !coord.is_finite() || !width.is_finite() {
       return coord;
@@ -16892,10 +16943,11 @@ impl DisplayListRenderer {
 
     // When an image is scaled with linear sampling, tiny floating-point drift in the destination
     // rectangle (e.g. `0.05px` instead of `0px`) can shift sampling phase and produce large diffs.
-    // If all rect edges are *near* integers, snap them to the integer grid so the resample matches
-    // the common integer-aligned case.
+    //
+    // If the rect is *already* very close to integer device pixels, snap it so the resample uses
+    // the stable integer-aligned phase.
     let mut snapped_item: Option<ImageItem> = None;
-    let item = if item.filter_quality == ImageFilterQuality::Linear
+    if item.filter_quality == ImageFilterQuality::Linear
       && item.src_rect.is_none()
       && self.scale.is_finite()
       && self.scale > 0.0
@@ -16920,9 +16972,16 @@ impl DisplayListRenderer {
           let scale_y = dest_device.height() / src_h;
           let scaled_draw = (scale_x - 1.0).abs() > 1e-6 || (scale_y - 1.0).abs() > 1e-6;
           if scaled_draw {
-            const SNAP_EPSILON: f32 = 0.1;
+            // Fractional CSS layout often produces values that are very close to device pixels
+            // (e.g. `34.944px` instead of `35px`). Preserving those tiny errors can shift bilinear
+            // sampling phase and produce large diffs across photo-heavy regions.
+            //
+            // Snap the destination rect to the device pixel grid when either its edges or its
+            // origin+size are close to integer pixels. Do this per-axis so we can snap the
+            // horizontal phase without forcing a vertical snap (and vice versa).
+            const SNAP_EPSILON: f32 = 0.125;
             if let Some(snapped_device) =
-              Self::snap_rect_edges_to_near_integers(dest_device, SNAP_EPSILON)
+              Self::snap_rect_to_near_integer_edges_or_size(dest_device, SNAP_EPSILON)
             {
               let inv_scale = 1.0 / self.scale;
               let mut snapped = item.clone();
@@ -16933,22 +16992,13 @@ impl DisplayListRenderer {
                 snapped_device.height() * inv_scale,
               );
               snapped_item = Some(snapped);
-              snapped_item.as_ref().unwrap_or(item)
-            } else {
-              item
             }
-          } else {
-            item
           }
-        } else {
-          item
         }
-      } else {
-        item
       }
-    } else {
-      item
-    };
+    }
+
+    let item = snapped_item.as_ref().unwrap_or(item);
 
     let mut dest_rect = self.ds_rect(item.dest_rect);
     if self.canvas.apply_clip(dest_rect).is_none() {
@@ -21436,6 +21486,27 @@ mod tests {
     assert_eq!(snapped.y(), 20.0);
     assert_eq!(snapped.width(), 115.0);
     assert_eq!(snapped.height(), 115.0);
+  }
+
+  #[test]
+  fn snap_rect_to_near_integer_edges_or_size_snaps_one_axis() {
+    // Regression test: even if a scaled image's rect is only "nearly" integer-aligned on one axis,
+    // snapping that axis can materially reduce bilinear phase drift vs Chrome while leaving the
+    // other axis untouched.
+    let rect = Rect::from_xywh(34.944427, 345.91968, 529.88794, 309.4463);
+    let snapped =
+      DisplayListRenderer::snap_rect_to_near_integer_edges_or_size(rect, 0.125).expect("snapped");
+    assert_eq!(snapped.x(), 35.0);
+    assert_eq!(snapped.width(), 530.0);
+    assert!((snapped.y() - rect.y()).abs() < 1e-6);
+    assert!((snapped.height() - rect.height()).abs() < 1e-6);
+
+    // If only the origin is near-integer but the size isn't, do not snap.
+    let rect2 = Rect::from_xywh(34.944427, 0.0, 529.6, 10.0);
+    assert!(
+      DisplayListRenderer::snap_rect_to_near_integer_edges_or_size(rect2, 0.125).is_none(),
+      "rect2 should not snap"
+    );
   }
 
   #[test]

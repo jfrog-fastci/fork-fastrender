@@ -14,7 +14,7 @@
     "layout": 51.03656623690773,
     "paint": 250.17924625935163
   },
-  "notes": "",
+  "notes": "Visually good. Remaining diffs vs Chrome are dominated by pixel-level rasterization differences in the scaled JPEG carousel photos and the #splash SVG background (sampling/antialiasing), not layout/stacking correctness.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 245266,
