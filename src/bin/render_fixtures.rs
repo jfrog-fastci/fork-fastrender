@@ -438,6 +438,18 @@ fn fixture_runtime_toggles_from_env_map(
   raw
     .entry("FASTR_TEXT_HINTING".to_string())
     .or_insert_with(|| default_hinting.to_string());
+  // Headless Chrome baselines are captured with `--disable-font-subpixel-positioning` to reduce
+  // pixel jitter when LCD text is disabled. Match that behaviour so fixture-vs-Chrome diffs are not
+  // dominated by fractional per-glyph placement.
+  //
+  // FastRender's text rasterizer can still enable snapping automatically in deterministic hinted
+  // mode, but fixture-chrome mode should match Chrome regardless of hinting toggles unless the
+  // caller explicitly opts out.
+  if patch_html_for_chrome_baseline {
+    raw
+      .entry("FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string())
+      .or_insert_with(|| "1".to_string());
+  }
   // Interactive Chrome typically uses LCD/subpixel anti-aliasing for text, but the headless
   // screenshot pipeline used by `xtask chrome-baseline-fixtures` / `xtask page-loop` appears
   // closer to grayscale AA. Enabling FastRender's LCD-style AA introduces colored fringes and
@@ -2205,6 +2217,23 @@ mod tests {
     raw.insert("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string());
     let toggles = fixture_runtime_toggles_from_env_map(raw, true);
     assert_eq!(toggles.get("FASTR_TEXT_SUBPIXEL_AA"), Some("1"));
+  }
+
+  #[test]
+  fn fixture_runtime_toggles_defaults_snap_glyph_positions_in_chrome_diff_mode() {
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), false);
+    assert_eq!(toggles.get("FASTR_TEXT_SNAP_GLYPH_POSITIONS"), None);
+
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), true);
+    assert_eq!(toggles.get("FASTR_TEXT_SNAP_GLYPH_POSITIONS"), Some("1"));
+
+    let mut raw = HashMap::new();
+    raw.insert(
+      "FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(),
+      "0".to_string(),
+    );
+    let toggles = fixture_runtime_toggles_from_env_map(raw, true);
+    assert_eq!(toggles.get("FASTR_TEXT_SNAP_GLYPH_POSITIONS"), Some("0"));
   }
 
   #[test]

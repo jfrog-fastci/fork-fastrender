@@ -218,6 +218,13 @@ pub fn build_inspect_frag_command(
     // Match `render_fixtures` defaults when diffing against Chrome baselines.
     cmd.env("FASTR_TEXT_HINTING", "1");
   }
+  if args.patch_html_for_chrome_baseline
+    && std::env::var_os("FASTR_TEXT_SNAP_GLYPH_POSITIONS").is_none()
+  {
+    // Chrome baseline harness disables font subpixel positioning; keep inspect output aligned with
+    // `render_fixtures` fixture-chrome mode defaults.
+    cmd.env("FASTR_TEXT_SNAP_GLYPH_POSITIONS", "1");
+  }
   if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_TEXT_SUBPIXEL_AA").is_none() {
     // Keep inspect overlays aligned with `render_fixtures` fixture-chrome mode defaults.
     cmd.env("FASTR_TEXT_SUBPIXEL_AA", "0");
