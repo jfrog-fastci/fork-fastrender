@@ -32845,7 +32845,51 @@ mod tests {
            if (e.message !== 'Illegal invocation') return false;\n\
          }\n\
          return true;\n\
-       })()",
+        })()",
+    )?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_element_instanceof_uses_dom_platform_prototypes() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      "<!doctype html><html><body>\n\
+        <input id=\"i\">\n\
+        <div id=\"d\"></div>\n\
+        <svg id=\"s\"></svg>\n\
+      </body></html>",
+      RenderOptions::default(),
+    )
+    .expect("document");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+        const input = document.getElementById('i');\n\
+        const div = document.getElementById('d');\n\
+        const svg = document.getElementById('s');\n\
+\n\
+        if (typeof HTMLElement !== 'function') return false;\n\
+        if (typeof HTMLInputElement !== 'function') return false;\n\
+        if (typeof HTMLDivElement !== 'function') return false;\n\
+\n\
+        if (!(input instanceof HTMLInputElement)) return false;\n\
+        if (!(input instanceof HTMLElement)) return false;\n\
+        if (!(div instanceof HTMLDivElement)) return false;\n\
+        if (!(div instanceof HTMLElement)) return false;\n\
+        if (svg instanceof HTMLElement) return false;\n\
+        if (!(svg instanceof Element)) return false;\n\
+\n\
+        if (HTMLElement.prototype === Element.prototype) return false;\n\
+        if (Object.getPrototypeOf(HTMLElement.prototype) !== Element.prototype) return false;\n\
+        if (Object.getPrototypeOf(HTMLInputElement.prototype) !== HTMLElement.prototype) return false;\n\
+        return true;\n\
+      })()",
     )?;
     assert_eq!(value, Value::Bool(true));
     Ok(())
