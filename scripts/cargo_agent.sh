@@ -748,7 +748,23 @@ run_cargo() {
 # case. We still enforce the per-command RLIMIT_AS cap and optional `-j` throttling.
 if [[ -n "${FASTR_CARGO_SLOT:-}" ]]; then
   jobs_label="${jobs:-auto}"
-  echo "cargo_agent: nested slot=${FASTR_CARGO_SLOT} jobs=${jobs_label} as=${limit_as}" >&2
+  nested_as_label="${limit_as}"
+  # Nested invocations inherit the parent's RLIMIT_AS already (e.g. when `scripts/cargo_agent.sh xtask`
+  # runs the xtask binary under `scripts/run_limited.sh`). Re-applying the wrapper's default `--as`
+  # limit here would *narrow* that inherited ceiling (e.g. 96G → 64G) and can cause unexpected OOMs.
+  #
+  # If the caller explicitly requested a limit via `FASTR_CARGO_LIMIT_AS`/`LIMIT_AS`, honor it even in
+  # nested mode. Otherwise, preserve any existing RLIMIT_AS.
+  if [[ "${limit_as_defaulted}" -eq 1 ]]; then
+    current_as_kib="$(ulimit -v 2>/dev/null || echo "")"
+    if [[ -n "${current_as_kib}" && "${current_as_kib}" != "unlimited" && "${current_as_kib}" != "0" ]]; then
+      # Preserve the inherited RLIMIT_AS instead of resetting to our default. Use the `K` suffix to
+      # express the limit in KiB because `scripts/run_limited.sh` treats bare numbers as MiB.
+      limit_as="${current_as_kib}K"
+      nested_as_label="inherit"
+    fi
+  fi
+  echo "cargo_agent: nested slot=${FASTR_CARGO_SLOT} jobs=${jobs_label} as=${nested_as_label}" >&2
   run_cargo "$@"
   exit $?
 fi
