@@ -1933,7 +1933,11 @@ pub fn chrome_ui_with_bookmarks(
     None
   };
 
-  let zoom_text = format!("{}%", zoom::zoom_percent(status_zoom));
+  let zoom_text = if (status_zoom - zoom::DEFAULT_ZOOM).abs() > 1e-3 {
+    Some(format!("{}%", zoom::zoom_percent(status_zoom)))
+  } else {
+    None
+  };
 
   egui::TopBottomPanel::bottom("status_bar")
     .resizable(false)
@@ -1944,10 +1948,10 @@ pub fn chrome_ui_with_bookmarks(
       // Use right-to-left layout so we can add right-side fields (zoom/loading) and then allocate
       // the remaining space to the hovered URL preview, which will elide when it doesn't fit.
       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        // Right: zoom level.
-        ui.add(
-          egui::Label::new(egui::RichText::new(&zoom_text).small()).wrap(false),
-        );
+        // Right (optional): zoom level.
+        if let Some(zoom_text) = zoom_text.as_deref() {
+          ui.add(egui::Label::new(egui::RichText::new(zoom_text).small()).wrap(false));
+        }
 
         // Right (optional): loading stage/progress.
         if let Some(loading_text) = loading_text.as_deref() {
