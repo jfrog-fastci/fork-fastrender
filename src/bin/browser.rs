@@ -3103,10 +3103,11 @@ impl App {
     }
 
     const MENU_CONTENT_WIDTH: f32 = 220.0;
-    const MENU_INNER_MARGIN: f32 = 4.0;
     const MENU_ITEM_HEIGHT: f32 = 28.0;
     const MENU_SEPARATOR_HEIGHT: f32 = 9.0;
     const MENU_EDGE_MARGIN: f32 = 4.0;
+
+    let menu_inner_margin = self.theme.sizing.padding * 0.5;
 
     let mut menu_entries = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -3239,8 +3240,8 @@ impl App {
       })
       .sum::<f32>();
     let menu_size = fastrender::Size::new(
-      MENU_CONTENT_WIDTH + MENU_INNER_MARGIN * 2.0,
-      content_height + MENU_INNER_MARGIN * 2.0,
+      MENU_CONTENT_WIDTH + menu_inner_margin * 2.0,
+      content_height + menu_inner_margin * 2.0,
     );
     let menu_origin = fastrender::ui::context_menu::place_menu(
       fastrender::Point::new(anchor_points.x, anchor_points.y),
@@ -3260,37 +3261,20 @@ impl App {
       .order(egui::Order::Foreground)
       .fixed_pos(egui::pos2(menu_origin.x, menu_origin.y))
       .show(ctx, |ui| {
-        let dark_mode = ui.visuals().dark_mode;
         let selection_bg_fill = ui.visuals().selection.bg_fill;
-        let hovered_bg_fill = ui.visuals().widgets.hovered.bg_fill;
-
-        let bg_fill = if dark_mode {
-          egui::Color32::from_rgb(32, 33, 36)
-        } else {
-          egui::Color32::from_rgb(255, 255, 255)
-        };
-        let border = if dark_mode {
-          egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 64, 67))
-        } else {
-          egui::Stroke::new(1.0, egui::Color32::from_rgb(218, 220, 224))
+        let hovered_bg_fill = {
+          // Use a subtle text-colored scrim so hover remains visible even when the theme's hovered
+          // widget fill matches the popup background.
+          let base = ui.visuals().text_color();
+          let alpha = if ui.visuals().dark_mode { 24 } else { 14 };
+          egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
         };
 
-        // Slightly softer shadow than egui's default popup style.
-        let shadow_color = if dark_mode {
-          egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180)
-        } else {
-          egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90)
-        };
-
-        let frame = egui::Frame::none()
-          .fill(bg_fill)
-          .stroke(border)
-          .rounding(egui::Rounding::same(8.0))
-          .shadow(egui::epaint::Shadow {
-            extrusion: 12.0,
-            color: shadow_color,
-          })
-          .inner_margin(egui::Margin::same(MENU_INNER_MARGIN));
+        let mut frame = egui::Frame::popup(ui.style());
+        frame.inner_margin = egui::Margin::same(menu_inner_margin);
+        // Ensure the context menu matches the theme's rounded + shadowed popups.
+        frame.rounding = ui.visuals().menu_rounding;
+        frame.shadow.extrusion = frame.shadow.extrusion.max(12.0);
 
         let frame = frame.show(ui, |ui| {
           ui.set_min_width(MENU_CONTENT_WIDTH);
@@ -3300,7 +3284,7 @@ impl App {
           let mut action: Option<PageContextMenuAction> = None;
           let mut selected_idx = selected_idx;
 
-          let item_rounding = egui::Rounding::same(4.0);
+          let item_rounding = egui::Rounding::same(self.theme.sizing.corner_radius * 0.6);
           let selected_fill = selection_bg_fill;
           let hover_fill = hovered_bg_fill;
 
@@ -3358,11 +3342,7 @@ impl App {
                 );
                 let y = sep_rect.center().y;
                 let inset = 8.0;
-                let separator_color = if dark_mode {
-                  egui::Color32::from_rgb(70, 70, 70)
-                } else {
-                  egui::Color32::from_rgb(200, 200, 200)
-                };
+                let separator_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
                 ui.painter().line_segment(
                   [
                     egui::pos2(sep_rect.min.x + inset, y),
@@ -3542,8 +3522,11 @@ impl App {
       ),
     };
 
+    let theme_padding = self.theme.sizing.padding;
+    let theme_corner_radius = self.theme.sizing.corner_radius;
+
     // Popup frame margin (used when translating from outer max size → inner scroll area max size).
-    let popup_margin = egui::Margin::same(4.0);
+    let popup_margin = egui::Margin::same(theme_padding * 0.5);
     let inner_width = (placement.rect.width() - popup_margin.left - popup_margin.right).max(0.0);
     let inner_max_height =
       (placement.rect.height() - popup_margin.top - popup_margin.bottom).max(0.0);
@@ -3559,7 +3542,7 @@ impl App {
     .show(ctx, |ui| {
       let mut frame = egui::Frame::popup(ui.style());
       frame.inner_margin = popup_margin;
-      frame.rounding = egui::Rounding::same(8.0);
+      frame.rounding = egui::Rounding::same(theme_corner_radius);
       frame.shadow.extrusion = frame.shadow.extrusion.max(12.0);
 
       let frame = frame.show(ui, |ui| {
@@ -3608,7 +3591,7 @@ impl App {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
             let row_height = 26.0;
-            let row_rounding = egui::Rounding::same(5.0);
+            let row_rounding = egui::Rounding::same(theme_corner_radius * 0.7);
             let row_bg_inset_x = 4.0;
             let check_col_width = 18.0;
             let base_padding_x = 10.0;
@@ -5614,9 +5597,15 @@ impl App {
                   .clamp(0.0, 255.0) as u8
               };
 
-              let dark = ui.visuals().dark_mode;
-              let (fill_r, fill_g, fill_b) = if dark { (240, 240, 240) } else { (0, 0, 0) };
-              let (stroke_r, stroke_g, stroke_b) = if dark { (0, 0, 0) } else { (255, 255, 255) };
+              let visuals = ui.visuals();
+              // Use theme-aware colors (dark mode uses light thumbs, light mode uses dark thumbs)
+              // so overlay scrollbars remain visible against both light and dark content.
+              let fill_color = visuals.text_color();
+              let stroke_color = if visuals.dark_mode {
+                visuals.panel_fill
+              } else {
+                visuals.window_fill
+              };
 
               let cursor_pos = self.last_cursor_pos_points;
               let cursor = cursor_pos.map(|pos| fastrender::Point::new(pos.x, pos.y));
@@ -5652,9 +5641,9 @@ impl App {
                     track,
                     egui::Rounding::same((thickness * 0.5).max(0.0)),
                     egui::Color32::from_rgba_unmultiplied(
-                      fill_r,
-                      fill_g,
-                      fill_b,
+                      fill_color.r(),
+                      fill_color.g(),
+                      fill_color.b(),
                       clamp_alpha(track_alpha),
                     ),
                   );
@@ -5665,9 +5654,9 @@ impl App {
                   thumb,
                   rounding,
                   egui::Color32::from_rgba_unmultiplied(
-                    fill_r,
-                    fill_g,
-                    fill_b,
+                    fill_color.r(),
+                    fill_color.g(),
+                    fill_color.b(),
                     clamp_alpha(thumb_alpha),
                   ),
                 );
@@ -5677,9 +5666,9 @@ impl App {
                   egui::Stroke::new(
                     1.0,
                     egui::Color32::from_rgba_unmultiplied(
-                      stroke_r,
-                      stroke_g,
-                      stroke_b,
+                      stroke_color.r(),
+                      stroke_color.g(),
+                      stroke_color.b(),
                       clamp_alpha(36),
                     ),
                   ),
@@ -5724,18 +5713,24 @@ impl App {
           painter.rect_filled(response.rect, egui::Rounding::same(0.0), scrim);
 
           let center = response.rect.center();
+          let overlay_padding = self.theme.sizing.padding;
+          let spinner_size = 18.0;
+          let overlay_size = spinner_size + overlay_padding * 2.0;
           egui::Area::new(egui::Id::new(("fastr_page_loading_overlay", active_tab.0)))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(center.x - 19.0, center.y - 19.0))
+            .fixed_pos(egui::pos2(
+              center.x - overlay_size * 0.5,
+              center.y - overlay_size * 0.5,
+            ))
             .show(&ctx, |ui| {
-              let fill = ui.visuals().panel_fill;
+              let fill = ui.visuals().window_fill;
               let fill = egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 220);
               egui::Frame::none()
                 .fill(fill)
-                .rounding(egui::Rounding::same(10.0))
-                .inner_margin(egui::Margin::same(10.0))
+                .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
+                .inner_margin(egui::Margin::same(overlay_padding))
                 .show(ui, |ui| {
-                  ui.add(egui::Spinner::new().size(18.0));
+                  ui.add(egui::Spinner::new().size(spinner_size));
                 });
             });
         }
