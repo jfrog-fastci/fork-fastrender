@@ -84,3 +84,69 @@ fn module_non_utf8_file_rejects_with_typeerror_reason() {
     js.message
   );
 }
+
+#[test]
+fn module_unsupported_import_attribute_rejects_with_syntaxerror_reason() {
+  let temp = tempdir().unwrap();
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+  fs::write(test_dir.join("dep.js"), "export const x = 1;\n").unwrap();
+
+  let case = module_case(&temp, "entry.js");
+  let executor = default_executor();
+  let cancel = Arc::new(AtomicBool::new(false));
+
+  let err = executor
+    .execute(&case, r#"import "./dep.js" with { foo: "bar" };"#, &cancel)
+    .unwrap_err();
+
+  let ExecError::Js(js) = err else {
+    panic!("expected JS error, got {err:?}");
+  };
+
+  assert_eq!(js.phase, ExecPhase::Resolution);
+  assert_eq!(js.typ.as_deref(), Some("SyntaxError"));
+  assert!(
+    !js.message.trim().is_empty() && js.message != "undefined",
+    "expected non-empty rejection message, got: {:?}",
+    js.message
+  );
+  assert!(
+    js.message.contains("Unsupported import attribute"),
+    "expected helpful message, got: {:?}",
+    js.message
+  );
+}
+
+#[test]
+fn module_unsupported_module_type_rejects_with_syntaxerror_reason() {
+  let temp = tempdir().unwrap();
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+  fs::write(test_dir.join("dep.js"), "export const x = 1;\n").unwrap();
+
+  let case = module_case(&temp, "entry.js");
+  let executor = default_executor();
+  let cancel = Arc::new(AtomicBool::new(false));
+
+  let err = executor
+    .execute(&case, r#"import "./dep.js" with { type: "css" };"#, &cancel)
+    .unwrap_err();
+
+  let ExecError::Js(js) = err else {
+    panic!("expected JS error, got {err:?}");
+  };
+
+  assert_eq!(js.phase, ExecPhase::Resolution);
+  assert_eq!(js.typ.as_deref(), Some("SyntaxError"));
+  assert!(
+    !js.message.trim().is_empty() && js.message != "undefined",
+    "expected non-empty rejection message, got: {:?}",
+    js.message
+  );
+  assert!(
+    js.message.contains("Unsupported module type"),
+    "expected helpful message, got: {:?}",
+    js.message
+  );
+}
