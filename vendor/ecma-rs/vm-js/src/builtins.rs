@@ -6357,59 +6357,6 @@ pub fn array_prototype_concat(
   let length_key = string_key(&mut scope, "length")?;
   let mut n = 0usize;
 
-  fn has_property_proxy_aware(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    obj: GcObject,
-    key: PropertyKey,
-  ) -> Result<bool, VmError> {
-    let mut current = obj;
-    let mut steps = 0usize;
-    loop {
-      if steps != 0 && steps % 1024 == 0 {
-        vm.tick()?;
-      }
-      steps = steps.saturating_add(1);
-      if !scope.heap().is_proxy_object(current) {
-        return scope.ordinary_has_property_with_tick(current, key, || vm.tick());
-      }
-      let Some(target) = scope.heap().proxy_target(current)? else {
-        return Err(VmError::TypeError(
-          "Cannot perform 'has' on a revoked Proxy",
-        ));
-      };
-      current = target;
-    }
-  }
-
-  fn get_proxy_aware(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    obj: GcObject,
-    key: PropertyKey,
-    receiver: Value,
-  ) -> Result<Value, VmError> {
-    let mut current = obj;
-    let mut steps = 0usize;
-    loop {
-      if steps != 0 && steps % 1024 == 0 {
-        vm.tick()?;
-      }
-      steps = steps.saturating_add(1);
-      if !scope.heap().is_proxy_object(current) {
-        return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
-      }
-      let Some(target) = scope.heap().proxy_target(current)? else {
-        return Err(VmError::TypeError(
-          "Cannot perform 'get' on a revoked Proxy",
-        ));
-      };
-      current = target;
-    }
-  }
-
   // Per spec, concat starts with `this` and then processes each argument.
   let mut process_item = |item: Value, n: &mut usize| -> Result<(), VmError> {
     if crate::spec_ops::is_concat_spreadable_with_host_and_hooks(vm, &mut scope, host, hooks, item)? {
@@ -6420,7 +6367,7 @@ pub fn array_prototype_concat(
       };
 
       // Spread array-like elements (holes preserved via length tracking).
-      let source_len_value = get_proxy_aware(
+      let source_len_value = crate::spec_ops::internal_get_with_host_and_hooks(
         vm,
         &mut scope,
         host,
@@ -6439,8 +6386,15 @@ pub fn array_prototype_concat(
 
         let key_s = iter_scope.alloc_string(&k.to_string())?;
         let key = PropertyKey::from_string(key_s);
-        if has_property_proxy_aware(vm, &mut iter_scope, source_obj, key)? {
-          let value = get_proxy_aware(
+        if crate::spec_ops::internal_has_property_with_host_and_hooks(
+          vm,
+          &mut iter_scope,
+          host,
+          hooks,
+          source_obj,
+          key,
+        )? {
+          let value = crate::spec_ops::internal_get_with_host_and_hooks(
             vm,
             &mut iter_scope,
             host,
@@ -12268,8 +12222,9 @@ pub fn json_stringify(
       scope.push_root(replacer_fn)?;
     }
 
-    let mut value = scope.ordinary_get_with_host_and_hooks(
+    let mut value = crate::spec_ops::internal_get_with_host_and_hooks(
       vm,
+      &mut scope,
       host,
       hooks,
       holder,
@@ -12281,8 +12236,9 @@ pub fn json_stringify(
     // 1. If value is an Object, call `toJSON` if present.
     if let Value::Object(obj) = value {
       scope.push_root(Value::Object(obj))?;
-      let to_json = scope.ordinary_get_with_host_and_hooks(
+      let to_json = crate::spec_ops::internal_get_with_host_and_hooks(
         vm,
+        &mut scope,
         host,
         hooks,
         obj,
@@ -12367,7 +12323,7 @@ pub fn json_stringify(
       }
       Value::String(s) => quote_json_string(vm, scope, out, s),
       Value::Object(obj) => {
-        if scope.heap().object_is_array(obj)? {
+        if crate::spec_ops::is_array_with_host_and_hooks(vm, scope, host, hooks, Value::Object(obj))? {
           serialize_json_array(vm, scope, host, hooks, state, out, obj)
         } else {
           serialize_json_object(vm, scope, host, hooks, state, out, obj)
@@ -12397,8 +12353,9 @@ pub fn json_stringify(
     vec_try_extend_from_slice(&mut state.indent, &state.gap)?;
 
     // len = ToLength(Get(array, "length"))
-    let len_value = scope.ordinary_get_with_host_and_hooks(
+    let len_value = crate::spec_ops::internal_get_with_host_and_hooks(
       vm,
+      scope,
       host,
       hooks,
       obj,
@@ -12603,13 +12560,20 @@ pub fn json_stringify(
   if scope.heap().is_callable(replacer)? {
     replacer_function = Some(replacer);
   } else if let Value::Object(replacer_obj) = replacer {
-    if scope.heap().object_is_array(replacer_obj)? {
+    if crate::spec_ops::is_array_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      Value::Object(replacer_obj),
+    )? {
       // propertyList from replacer array.
       let length_key_s = scope.alloc_string("length")?;
       scope.push_root(Value::String(length_key_s))?;
       let length_key = PropertyKey::from_string(length_key_s);
-      let len_value = scope.ordinary_get_with_host_and_hooks(
+      let len_value = crate::spec_ops::internal_get_with_host_and_hooks(
         vm,
+        &mut scope,
         host,
         hooks,
         replacer_obj,
@@ -12630,8 +12594,9 @@ pub fn json_stringify(
         }
         let idx_s = alloc_string_from_usize(&mut scope, i)?;
         scope.push_root(Value::String(idx_s))?;
-        let v = scope.ordinary_get_with_host_and_hooks(
+        let v = crate::spec_ops::internal_get_with_host_and_hooks(
           vm,
+          &mut scope,
           host,
           hooks,
           replacer_obj,

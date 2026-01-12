@@ -28,7 +28,13 @@ fn to_length(n: f64) -> usize {
   }
 }
 
-fn get_with_host_and_hooks_internal(
+/// ECMAScript `[[Get]](P, Receiver)` internal method dispatch for ordinary and Proxy exotic objects.
+///
+/// This is a minimal implementation today:
+/// - Ordinary objects delegate to `Scope::ordinary_get_with_host_and_hooks`
+/// - Proxy objects implement `Proxy.[[Get]]` with support for the `"get"` trap (when present)
+/// - Revoked proxies throw a TypeError
+pub fn internal_get_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -37,26 +43,98 @@ fn get_with_host_and_hooks_internal(
   key: PropertyKey,
   receiver: Value,
 ) -> Result<Value, VmError> {
-  // Proxy-aware `[[Get]]` internal method dispatch.
-  //
-  // This is intentionally minimal today: `vm-js` does not yet implement full Proxy trap semantics,
-  // but Proxy objects can still exist as host-created values (or future builtins). Per spec, any
-  // attempt to perform `[[Get]]` on a revoked Proxy must throw a TypeError.
-  let mut current = obj;
-  let mut steps = 0usize;
-  loop {
-    if steps != 0 && steps % 1024 == 0 {
-      vm.tick()?;
-    }
-    steps = steps.saturating_add(1);
-    if !scope.heap().is_proxy_object(current) {
-      return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
-    }
-    let Some(target) = scope.heap().proxy_target(current)? else {
-      return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
-    };
-    current = target;
+  // Root `obj`/`receiver`/`key` across any allocations (trap lookup, trap calls).
+  let mut scope = scope.reborrow();
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  scope.push_roots(&[Value::Object(obj), key_root, receiver])?;
+
+  // Fast path: ordinary object.
+  if !scope.heap().is_proxy_object(obj) {
+    return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, receiver);
   }
+
+  // Proxy.[[Get]]
+  let proxy = scope
+    .heap()
+    .get_proxy_data(obj)?
+    .ok_or(VmError::invalid_handle())?;
+  let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+    return Err(VmError::TypeError(
+      "Cannot perform 'get' on a proxy that has been revoked",
+    ));
+  };
+
+  // trap = ? GetMethod(handler, "get")
+  let get_key_s = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_key_s))?;
+  let get_key = PropertyKey::from_string(get_key_s);
+  let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), get_key)?;
+  let Some(trap) = trap else {
+    // No trap: forward to target with the original receiver.
+    return internal_get_with_host_and_hooks(vm, &mut scope, host, hooks, target, key, receiver);
+  };
+  // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
+  scope.push_root(trap)?;
+
+  // trapResult = ? Call(trap, handler, « target, P, Receiver »)
+  let trap_args = [Value::Object(target), key_root, receiver];
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &trap_args)
+}
+
+/// ECMAScript `[[HasProperty]](P)` internal method dispatch for ordinary and Proxy exotic objects.
+///
+/// This is host-aware because Proxy `"has"` traps can invoke user code.
+pub fn internal_has_property_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<bool, VmError> {
+  // Root `obj`/`key` for the duration of the operation.
+  let mut scope = scope.reborrow();
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  scope.push_roots(&[Value::Object(obj), key_root])?;
+
+  if !scope.heap().is_proxy_object(obj) {
+    return scope.ordinary_has_property_with_tick(obj, key, || vm.tick());
+  }
+
+  // Proxy.[[HasProperty]]
+  let proxy = scope
+    .heap()
+    .get_proxy_data(obj)?
+    .ok_or(VmError::invalid_handle())?;
+  let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+    return Err(VmError::TypeError(
+      "Cannot perform 'has' on a proxy that has been revoked",
+    ));
+  };
+
+  // trap = ? GetMethod(handler, "has")
+  let has_key_s = scope.alloc_string("has")?;
+  scope.push_root(Value::String(has_key_s))?;
+  let has_key = PropertyKey::from_string(has_key_s);
+  let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), has_key)?;
+  let Some(trap) = trap else {
+    // No trap: forward to target.
+    return internal_has_property_with_host_and_hooks(vm, &mut scope, host, hooks, target, key);
+  };
+  // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
+  scope.push_root(trap)?;
+
+  // trapResult = ToBoolean(? Call(trap, handler, « target, P »))
+  let trap_args = [Value::Object(target), key_root];
+  let trap_result =
+    vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &trap_args)?;
+  scope.heap().to_boolean(trap_result)
 }
 
 /// `IsArray(argument)` (ECMA-262).
@@ -83,8 +161,11 @@ pub fn is_array_with_host_and_hooks(
       }
       steps = steps.saturating_add(1);
 
-      let Some(target) = scope.heap().proxy_target(obj)? else {
-        return Err(VmError::TypeError("Cannot perform 'IsArray' on a revoked Proxy"));
+      let (target, handler) = (scope.heap().proxy_target(obj)?, scope.heap().proxy_handler(obj)?);
+      let (Some(target), Some(_handler)) = (target, handler) else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'IsArray' on a proxy that has been revoked",
+        ));
       };
       obj = target;
       continue;
@@ -119,7 +200,7 @@ pub fn is_concat_spreadable_with_host_and_hooks(
   let key = PropertyKey::from_symbol(sym);
 
   // 1. Let spreadable be ? Get(O, @@isConcatSpreadable).
-  let spreadable = get_with_host_and_hooks_internal(
+  let spreadable = internal_get_with_host_and_hooks(
     vm,
     &mut scope,
     host,
