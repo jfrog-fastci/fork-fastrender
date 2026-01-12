@@ -146,7 +146,25 @@ fn data_view_get_set_and_is_view_work() -> Result<(), VmError> {
         ArrayBuffer.isView(dv) === true &&
         ArrayBuffer.isView({}) === false;
 
-      ok_le && ok_be && ok_view && ok_is_view
+      // `DataView` uses `ToIndex` for the byteOffset argument.
+      var ok_get_default_index = dv.getUint8() === 4; // undefined -> 0
+      var ok_get_fractional_index = dv.getUint8(1.9) === 3; // 1.9 -> 1
+
+      var ok_get_oob_range_error = false;
+      try { dv.getUint8(8); } catch (e) { ok_get_oob_range_error = e.name === "RangeError"; }
+
+      var ok_get_negative_range_error = false;
+      try { dv.getUint8(-1); } catch (e) { ok_get_negative_range_error = e.name === "RangeError"; }
+
+      // `ToIndex` also applies to setters.
+      dv.setUint8(undefined, 9);
+      dv.setUint8(1.9, 7);
+      var ok_set_to_index = dv.getUint8(0) === 9 && dv.getUint8(1) === 7;
+
+      ok_le && ok_be && ok_view && ok_is_view &&
+        ok_get_default_index && ok_get_fractional_index &&
+        ok_get_oob_range_error && ok_get_negative_range_error &&
+        ok_set_to_index
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
@@ -162,4 +180,3 @@ fn typed_array_allocation_hits_oom_under_small_heap_limits() {
     Err(e) => panic!("expected OutOfMemory, got Err({e:?})"),
   }
 }
-

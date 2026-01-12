@@ -3455,6 +3455,36 @@ pub fn typed_array_prototype_set(
   Ok(Value::Undefined)
 }
 
+fn to_index_from_value(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<usize, VmError> {
+  // ECMA-262 `ToIndex(value)`.
+  //
+  // This conversion can invoke user code (`@@toPrimitive`, `valueOf`, `toString`) via `ToNumber`,
+  // so call sites must ensure any live GC handles are properly rooted.
+  //
+  // Spec: https://tc39.es/ecma262/#sec-toindex
+  const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+  let integer_index = scope.to_integer_or_infinity(vm, host, hooks, value)?;
+  if integer_index < 0.0 {
+    return Err(VmError::RangeError("index must be a non-negative integer"));
+  }
+  // `ToLength` clamps Infinity and numbers larger than MAX_SAFE_INTEGER. `ToIndex` requires
+  // `SameValue(integerIndex, index)` and therefore must reject Infinity / out-of-range integers.
+  if !integer_index.is_finite() || integer_index > MAX_SAFE_INTEGER {
+    return Err(VmError::RangeError("index out of range"));
+  }
+  if integer_index > usize::MAX as f64 {
+    return Err(VmError::RangeError("index out of range"));
+  }
+  Ok(integer_index as usize)
+}
+
 pub fn data_view_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -3470,8 +3500,8 @@ pub fn data_view_constructor_call(
 pub fn data_view_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
   _new_target: Value,
@@ -3482,21 +3512,14 @@ pub fn data_view_constructor_construct(
   let Value::Object(buffer) = arg0 else {
     return Err(VmError::TypeError("DataView constructor expects an ArrayBuffer"));
   };
+  scope.push_root(Value::Object(buffer))?;
   let buf_len = scope
     .heap()
     .array_buffer_byte_length(buffer)
     .map_err(|_| VmError::TypeError("DataView constructor expects an ArrayBuffer"))?;
 
   let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
-  let byte_offset = if matches!(byte_offset_val, Value::Undefined) {
-    0usize
-  } else {
-    let n = scope.heap_mut().to_number(byte_offset_val)?;
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-      return Err(VmError::TypeError("DataView byteOffset must be a non-negative integer"));
-    }
-    n as usize
-  };
+  let byte_offset = to_index_from_value(vm, scope, host, hooks, byte_offset_val)?;
   // Per ECMAScript, DataView construction on a detached ArrayBuffer throws (even for a 0-length
   // view). The detachment check happens after ToIndex(byteOffset) conversion.
   if scope
@@ -3507,24 +3530,20 @@ pub fn data_view_constructor_construct(
     return Err(VmError::TypeError("DataView constructor on detached ArrayBuffer"));
   }
   if byte_offset > buf_len {
-    return Err(VmError::TypeError("DataView view out of bounds"));
+    return Err(VmError::RangeError("DataView view out of bounds"));
   }
 
   let byte_length_val = args.get(2).copied().unwrap_or(Value::Undefined);
   let byte_length = if matches!(byte_length_val, Value::Undefined) {
     buf_len - byte_offset
   } else {
-    let n = scope.heap_mut().to_number(byte_length_val)?;
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-      return Err(VmError::TypeError("DataView byteLength must be a non-negative integer"));
-    }
-    n as usize
+    to_index_from_value(vm, scope, host, hooks, byte_length_val)?
   };
   let end = byte_offset
     .checked_add(byte_length)
-    .ok_or(VmError::OutOfMemory)?;
+    .ok_or(VmError::RangeError("DataView view out of bounds"))?;
   if end > buf_len {
-    return Err(VmError::TypeError("DataView view out of bounds"));
+    return Err(VmError::RangeError("DataView view out of bounds"));
   }
 
   let view = scope.alloc_data_view(buffer, byte_offset, byte_length)?;
@@ -3676,13 +3695,14 @@ fn data_view_get_impl(
   let Value::Object(view_obj) = this else {
     return Err(VmError::TypeError("DataView method called on non-object"));
   };
+  scope.push_root(Value::Object(view_obj))?;
   let byte_length = scope
     .heap()
-    .data_view_byte_length(view_obj)
+    .data_view_byte_length_slot(view_obj)
     .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
   let view_byte_offset = scope
     .heap()
-    .data_view_byte_offset(view_obj)
+    .data_view_byte_offset_slot(view_obj)
     .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
   let buffer = scope
     .heap()
@@ -3690,11 +3710,7 @@ fn data_view_get_impl(
     .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
 
   let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let offset_num = scope.to_number(vm, host, hooks, offset_val)?;
-  if !offset_num.is_finite() || offset_num < 0.0 || offset_num.fract() != 0.0 {
-    return Err(VmError::TypeError("DataView offset must be a non-negative integer"));
-  }
-  let offset = offset_num as usize;
+  let offset = to_index_from_value(vm, scope, host, hooks, offset_val)?;
 
   let little_endian = match args.get(1).copied().unwrap_or(Value::Undefined) {
     Value::Undefined => false,
@@ -3709,11 +3725,23 @@ fn data_view_get_impl(
   {
     return Err(VmError::TypeError("ArrayBuffer is detached"));
   }
+  let buffer_byte_length = scope
+    .heap()
+    .array_buffer_byte_length(buffer)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+  let view_end = view_byte_offset
+    .checked_add(byte_length)
+    .ok_or(VmError::TypeError("DataView view out of bounds"))?;
+  if view_end > buffer_byte_length {
+    return Err(VmError::TypeError("DataView view out of bounds"));
+  }
 
   let size = kind.size();
-  let end = offset.checked_add(size).ok_or(VmError::OutOfMemory)?;
+  let end = offset
+    .checked_add(size)
+    .ok_or(VmError::RangeError("DataView offset out of bounds"))?;
   if end > byte_length {
-    return Err(VmError::TypeError("DataView offset out of bounds"));
+    return Err(VmError::RangeError("DataView offset out of bounds"));
   }
 
   scope.push_root(Value::Object(buffer))?;
@@ -3822,27 +3850,28 @@ fn data_view_set_impl(
   let Value::Object(view_obj) = this else {
     return Err(VmError::TypeError("DataView method called on non-object"));
   };
+  scope.push_root(Value::Object(view_obj))?;
   let byte_length = scope
     .heap()
-    .data_view_byte_length(view_obj)
+    .data_view_byte_length_slot(view_obj)
     .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
   let view_byte_offset = scope
     .heap()
-    .data_view_byte_offset(view_obj)
+    .data_view_byte_offset_slot(view_obj)
     .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
   let buffer = scope
     .heap()
     .data_view_buffer(view_obj)
     .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
 
-  let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let offset_num = scope.to_number(vm, host, hooks, offset_val)?;
-  if !offset_num.is_finite() || offset_num < 0.0 || offset_num.fract() != 0.0 {
-    return Err(VmError::TypeError("DataView offset must be a non-negative integer"));
-  }
-  let offset = offset_num as usize;
-
   let value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let offset = to_index_from_value(vm, scope, host, hooks, offset_val)?;
+
+  // Convert via ToNumber (like typed arrays). Spec: `SetViewValue` performs value coercion before
+  // checking for detached/out-of-bounds views.
+  let n = scope.to_number(vm, host, hooks, value)?;
+
   let little_endian = match args.get(2).copied().unwrap_or(Value::Undefined) {
     Value::Undefined => false,
     v => scope.heap().to_boolean(v)?,
@@ -3856,15 +3885,24 @@ fn data_view_set_impl(
   {
     return Err(VmError::TypeError("ArrayBuffer is detached"));
   }
-
-  let size = kind.size();
-  let end = offset.checked_add(size).ok_or(VmError::OutOfMemory)?;
-  if end > byte_length {
-    return Err(VmError::TypeError("DataView offset out of bounds"));
+  let buffer_byte_length = scope
+    .heap()
+    .array_buffer_byte_length(buffer)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+  let view_end = view_byte_offset
+    .checked_add(byte_length)
+    .ok_or(VmError::TypeError("DataView view out of bounds"))?;
+  if view_end > buffer_byte_length {
+    return Err(VmError::TypeError("DataView view out of bounds"));
   }
 
-  // Convert via ToNumber (like typed arrays).
-  let n = scope.to_number(vm, host, hooks, value)?;
+  let size = kind.size();
+  let end = offset
+    .checked_add(size)
+    .ok_or(VmError::RangeError("DataView offset out of bounds"))?;
+  if end > byte_length {
+    return Err(VmError::RangeError("DataView offset out of bounds"));
+  }
 
   let bytes: Vec<u8> = match kind {
     DataViewElementKind::Int8 => {

@@ -114,3 +114,30 @@ fn dataview_methods_coerce_args_before_throwing_on_detached_arraybuffer() -> Res
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn dataview_set_coerces_value_before_throwing_on_detached_arraybuffer() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let ab = rt.exec_script("var ab = new ArrayBuffer(8); var dv = new DataView(ab, 0, 8); ab")?;
+  let Value::Object(ab) = ab else {
+    panic!("expected ArrayBuffer object");
+  };
+
+  rt.heap_mut().detach_array_buffer(ab)?;
+
+  let value = rt.exec_script(
+    r#"
+    var called = false;
+    var threw = false;
+    try {
+      dv.setUint8(0, { valueOf(){ called = true; return 1; } });
+    } catch (e) {
+      threw = e.name === "TypeError";
+    }
+    called && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
