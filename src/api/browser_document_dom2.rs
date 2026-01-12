@@ -14,8 +14,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Duration;
-use vm_js::{Scope, Value, Vm, VmError};
-use webidl_vm_js::WebIdlBindingsHost;
 
 use super::browser_document::prepare_dom_inner;
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
@@ -2375,43 +2373,8 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   }
 }
 
-// `BrowserDocumentDom2` is frequently used as the embedder `VmHost` context for vm-js execution
-// boundaries. Some code paths (notably legacy WebIDL host dispatch fallback) expect the active host
-// context to implement `webidl-vm-js`'s `WebIdlBindingsHost` trait.
-//
-// The full WebIDL binding surface for the browser document is still implemented elsewhere (native
-// DOM shims + explicit host dispatch). Keep this impl as a stub so non-WebIDL call sites can build
-// without requiring `BrowserDocumentDom2` to own WebIDL dispatch state.
-impl WebIdlBindingsHost for BrowserDocumentDom2 {
-  fn call_operation(
-    &mut self,
-    _vm: &mut Vm,
-    _scope: &mut Scope<'_>,
-    _receiver: Option<Value>,
-    _interface: &'static str,
-    _operation: &'static str,
-    _overload: usize,
-    _args: &[Value],
-  ) -> std::result::Result<Value, VmError> {
-    Err(VmError::Unimplemented(
-      "WebIDL binding dispatch not implemented for operation",
-    ))
-  }
-
-  fn call_constructor(
-    &mut self,
-    _vm: &mut Vm,
-    _scope: &mut Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[Value],
-    _new_target: Value,
-  ) -> std::result::Result<Value, VmError> {
-    Err(VmError::Unimplemented(
-      "WebIDL binding dispatch not implemented for constructor",
-    ))
-  }
-}
+// NOTE: `BrowserDocumentDom2` intentionally does not implement `WebIdlBindingsHost` here; WebIDL
+// host dispatch lives in `src/js/webidl/vmjs_host_dispatch.rs`.
 #[cfg(test)]
 mod tests {
   use super::*;
