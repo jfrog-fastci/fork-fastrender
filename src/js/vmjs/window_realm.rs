@@ -2280,6 +2280,7 @@ const HOST_EXOTIC_DOM_STRING_MAP: u64 = u64::from_be_bytes(*b"FRDOMDSM");
 const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
+const DOCUMENT_SELECTION_KEY: &str = "__fastrender_document_selection";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
 const EVENT_IS_TRUSTED_VALUE_KEY: &str = "__fastrender_event_is_trusted";
@@ -8683,6 +8684,215 @@ fn document_scrolling_element_get_native(
   };
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
+fn selection_range_count_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Number(0.0))
+}
+
+fn selection_to_string_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::String(scope.alloc_string("")?))
+}
+
+fn selection_remove_all_ranges_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
+fn selection_add_range_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
+fn get_or_create_selection_stub(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  let selection_key = alloc_key(scope, DOCUMENT_SELECTION_KEY)?;
+  if let Some(Value::Object(existing)) = scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &selection_key)?
+  {
+    return Ok(existing);
+  }
+
+  let intrinsics = vm.intrinsics();
+
+  let selection_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(selection_obj))?;
+  if let Some(intrinsics) = intrinsics {
+    scope
+      .heap_mut()
+      .object_set_prototype(selection_obj, Some(intrinsics.object_prototype()))?;
+  }
+
+  // selection.rangeCount (getter only)
+  let range_count_get_call_id = vm.register_native_call(selection_range_count_get_native)?;
+  let range_count_get_name = scope.alloc_string("get rangeCount")?;
+  scope.push_root(Value::String(range_count_get_name))?;
+  let range_count_get_func =
+    scope.alloc_native_function(range_count_get_call_id, None, range_count_get_name, 0)?;
+  if let Some(intrinsics) = intrinsics {
+    scope.heap_mut().object_set_prototype(
+      range_count_get_func,
+      Some(intrinsics.function_prototype()),
+    )?;
+  }
+  scope.push_root(Value::Object(range_count_get_func))?;
+  let range_count_key = alloc_key(scope, "rangeCount")?;
+  scope.define_property(
+    selection_obj,
+    range_count_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(range_count_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  // selection.toString()
+  let to_string_call_id = vm.register_native_call(selection_to_string_native)?;
+  let to_string_name = scope.alloc_string("toString")?;
+  scope.push_root(Value::String(to_string_name))?;
+  let to_string_func = scope.alloc_native_function(to_string_call_id, None, to_string_name, 0)?;
+  if let Some(intrinsics) = intrinsics {
+    scope
+      .heap_mut()
+      .object_set_prototype(to_string_func, Some(intrinsics.function_prototype()))?;
+  }
+  scope.push_root(Value::Object(to_string_func))?;
+  let to_string_key = alloc_key(scope, "toString")?;
+  scope.define_property(
+    selection_obj,
+    to_string_key,
+    data_desc(Value::Object(to_string_func)),
+  )?;
+
+  // selection.removeAllRanges()
+  let remove_all_ranges_call_id = vm.register_native_call(selection_remove_all_ranges_native)?;
+  let remove_all_ranges_name = scope.alloc_string("removeAllRanges")?;
+  scope.push_root(Value::String(remove_all_ranges_name))?;
+  let remove_all_ranges_func = scope.alloc_native_function(
+    remove_all_ranges_call_id,
+    None,
+    remove_all_ranges_name,
+    0,
+  )?;
+  if let Some(intrinsics) = intrinsics {
+    scope.heap_mut().object_set_prototype(
+      remove_all_ranges_func,
+      Some(intrinsics.function_prototype()),
+    )?;
+  }
+  scope.push_root(Value::Object(remove_all_ranges_func))?;
+  let remove_all_ranges_key = alloc_key(scope, "removeAllRanges")?;
+  scope.define_property(
+    selection_obj,
+    remove_all_ranges_key,
+    data_desc(Value::Object(remove_all_ranges_func)),
+  )?;
+
+  // selection.addRange(range)
+  let add_range_call_id = vm.register_native_call(selection_add_range_native)?;
+  let add_range_name = scope.alloc_string("addRange")?;
+  scope.push_root(Value::String(add_range_name))?;
+  let add_range_func = scope.alloc_native_function(add_range_call_id, None, add_range_name, 1)?;
+  if let Some(intrinsics) = intrinsics {
+    scope
+      .heap_mut()
+      .object_set_prototype(add_range_func, Some(intrinsics.function_prototype()))?;
+  }
+  scope.push_root(Value::Object(add_range_func))?;
+  let add_range_key = alloc_key(scope, "addRange")?;
+  scope.define_property(
+    selection_obj,
+    add_range_key,
+    data_desc(Value::Object(add_range_func)),
+  )?;
+
+  scope.define_property(
+    document_obj,
+    selection_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(selection_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(selection_obj)
+}
+
+fn get_selection_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let canonical_document_obj = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj);
+
+  let mut document_obj = None;
+  if let Value::Object(receiver) = this {
+    let is_document = dom_platform_mut(vm)
+      .and_then(|platform| {
+        platform
+          .require_document_id(scope.heap(), Value::Object(receiver))
+          .ok()
+      })
+      .is_some();
+    if is_document {
+      document_obj = Some(receiver);
+    }
+  }
+
+  let Some(document_obj) = document_obj.or(canonical_document_obj) else {
+    return Ok(Value::Null);
+  };
+
+  let selection_obj = get_or_create_selection_stub(vm, scope, document_obj)?;
+  Ok(Value::Object(selection_obj))
 }
 
 fn document_get_element_by_id_native(
@@ -33255,6 +33465,41 @@ fn init_window_globals(
     report_error_key,
     data_desc(Value::Object(report_error_func)),
   )?;
+
+  // getSelection()
+  //
+  // Minimal stub to keep common libraries (e.g. rich text editors) from crashing when probing for
+  // selection APIs. This intentionally does not depend on Range.
+  let get_selection_call_id = vm.register_native_call(get_selection_native)?;
+  let get_selection_name = scope.alloc_string("getSelection")?;
+  scope.push_root(Value::String(get_selection_name))?;
+  let get_selection_func =
+    scope.alloc_native_function(get_selection_call_id, None, get_selection_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    get_selection_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(get_selection_func))?;
+  let get_selection_key = alloc_key(&mut scope, "getSelection")?;
+  scope.define_property(
+    global,
+    get_selection_key,
+    data_desc(Value::Object(get_selection_func)),
+  )?;
+  if let Some(platform) = dom_platform.as_ref() {
+    let document_proto = platform.prototype_for(DomInterface::Document);
+    scope.define_property(
+      document_proto,
+      get_selection_key,
+      data_desc(Value::Object(get_selection_func)),
+    )?;
+  } else {
+    scope.define_property(
+      document_obj,
+      get_selection_key,
+      data_desc(Value::Object(get_selection_func)),
+    )?;
+  }
 
   // --- Deterministic browser environment shims ---------------------------------
   //
