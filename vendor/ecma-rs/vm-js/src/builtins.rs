@@ -838,14 +838,18 @@ pub fn object_from_entries(
     Ok(v) => Ok(v),
     Err(err) => {
       if !iterator_record.done {
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        let original_is_throw = err.is_throw_completion();
         let pending_root = err.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
         let close_res = crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
         }
         if let Err(close_err) = close_res {
-          return Err(close_err);
+          if original_is_throw {
+            return Err(close_err);
+          }
         }
       }
       Err(err)
@@ -2264,7 +2268,9 @@ fn aggregate_error_iterable_to_list_array(
     Ok(()) => Ok(array),
     Err(err) => {
       if !iterator_record.done {
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        let original_is_throw = err.is_throw_completion();
         let pending_root = err
           .thrown_value()
           .map(|v| scope.heap_mut().add_root(v))
@@ -2274,7 +2280,9 @@ fn aggregate_error_iterable_to_list_array(
           scope.heap_mut().remove_root(root);
         }
         if let Err(close_err) = close_res {
-          return Err(close_err);
+          if original_is_throw {
+            return Err(close_err);
+          }
         }
       }
       Err(err)
@@ -4289,12 +4297,18 @@ pub fn promise_all(
     Err(err) => {
       let mut completion = err;
       if !iterator_record.done {
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        let original_is_throw = completion.is_throw_completion();
         let pending_root =
           completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
         match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
           Ok(()) => {}
-          Err(close_err) => completion = close_err,
+          Err(close_err) => {
+            if original_is_throw {
+              completion = close_err;
+            }
+          }
         }
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
@@ -4385,12 +4399,18 @@ pub fn promise_race(
     Err(err) => {
       let mut completion = err;
       if !iterator_record.done {
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        let original_is_throw = completion.is_throw_completion();
         let pending_root =
           completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
         match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
           Ok(()) => {}
-          Err(close_err) => completion = close_err,
+          Err(close_err) => {
+            if original_is_throw {
+              completion = close_err;
+            }
+          }
         }
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
@@ -4591,12 +4611,18 @@ pub fn promise_all_settled(
     Err(err) => {
       let mut completion = err;
       if !iterator_record.done {
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        let original_is_throw = completion.is_throw_completion();
         let pending_root =
           completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
         match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
           Ok(()) => {}
-          Err(close_err) => completion = close_err,
+          Err(close_err) => {
+            if original_is_throw {
+              completion = close_err;
+            }
+          }
         }
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
@@ -4781,12 +4807,18 @@ pub fn promise_any(
     Err(err) => {
       let mut completion = err;
       if !iterator_record.done {
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        let original_is_throw = completion.is_throw_completion();
         let pending_root =
           completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
         match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
           Ok(()) => {}
-          Err(close_err) => completion = close_err,
+          Err(close_err) => {
+            if original_is_throw {
+              completion = close_err;
+            }
+          }
         }
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);

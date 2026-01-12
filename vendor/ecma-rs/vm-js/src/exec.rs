@@ -1390,25 +1390,6 @@ impl<'a> Evaluator<'a> {
       .call_with_host_and_hooks(&mut *self.host, scope, &mut *self.hooks, callee, this, args)
   }
 
-  /// Returns `true` if `err` is treated as a JS `throw` completion by the statement evaluator.
-  ///
-  /// `VmError::Termination`/`VmError::OutOfMemory`/etc are **not** catchable from JS and must never
-  /// be replaced by iterator-closing errors (otherwise scripts could accidentally/hostilely
-  /// "catch" termination and continue).
-  fn error_is_throw_completion(err: &VmError) -> bool {
-    matches!(
-      err,
-      VmError::Throw(_)
-        | VmError::ThrowWithStack { .. }
-        | VmError::TypeError(_)
-        | VmError::NotCallable
-        | VmError::NotConstructable
-        | VmError::PrototypeCycle
-        | VmError::PrototypeChainTooDeep
-        | VmError::InvalidPropertyDescriptorPatch
-    )
-  }
-
   /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
   ///
   /// - If the original error is a JS-throw completion, a closing error overrides it.
@@ -1424,8 +1405,8 @@ impl<'a> Evaluator<'a> {
       return err;
     }
  
-    let original_is_throw = Self::error_is_throw_completion(&err);
- 
+    let original_is_throw = err.is_throw_completion();
+  
     // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
     if original_is_throw {
       if let Some(thrown) = err.thrown_value() {
@@ -11165,7 +11146,7 @@ fn async_iterator_close_on_error(
   // Only replace the original error with a closing error when the original is a JS throw. For
   // fatal/non-catchable errors (OOM, termination, etc), attempt to close best-effort but preserve
   // the original error.
-  let original_is_throw = Evaluator::error_is_throw_completion(&err);
+  let original_is_throw = err.is_throw_completion();
 
   // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
   if original_is_throw {

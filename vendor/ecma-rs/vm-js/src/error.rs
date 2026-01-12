@@ -125,6 +125,27 @@ impl VmError {
       _ => None,
     }
   }
+
+  /// Returns `true` if this error represents a JavaScript *throw completion* (i.e. catchable by
+  /// `try/catch`) or an internal helper error that is coerced into a JS throw when intrinsics are
+  /// available.
+  ///
+  /// This is useful for implementing spec algorithms like `IteratorClose` where iterator-closing
+  /// errors override *throw* completions, but must never replace VM-internal fatal errors such as
+  /// `Termination`/`OutOfMemory`.
+  pub fn is_throw_completion(&self) -> bool {
+    matches!(
+      self,
+      VmError::Throw(_)
+        | VmError::ThrowWithStack { .. }
+        | VmError::TypeError(_)
+        | VmError::NotCallable
+        | VmError::NotConstructable
+        | VmError::PrototypeCycle
+        | VmError::PrototypeChainTooDeep
+        | VmError::InvalidPropertyDescriptorPatch
+    )
+  }
 }
 
 /// A non-catchable error that terminates execution.
