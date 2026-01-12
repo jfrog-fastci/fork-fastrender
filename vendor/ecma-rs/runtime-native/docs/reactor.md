@@ -106,10 +106,11 @@ All file descriptors registered with the reactor **must be nonblocking** (`O_NON
 keeps the reactor contract explicit and avoids surprising cross-cutting side effects (e.g. changing a
 shared fd's flags behind the caller's back).
 
-Callers must set `O_NONBLOCK` **before** registering fds through any of these surfaces:
+Callers must set `O_NONBLOCK` **before** registering fds (and keep fds `O_NONBLOCK` for the lifetime
+of the registration) through any of these surfaces:
 
 - `reactor::Reactor::{register,reregister}`
-- `async_rt::AsyncRuntime::{register_fd,register_io,register_io_with_drop}`
+- `async_rt::AsyncRuntime::{register_fd,register_io,register_io_rooted,register_io_with_drop,update_io}`
 - C ABI: `rt_io_{register,register_with_drop,register_rooted,register_rooted_h,register_handle,register_handle_with_drop,update,unregister}`
 - Rust convenience API: `io::AsyncFd` (fails with `InvalidInput` on first await if the fd is blocking)
 
