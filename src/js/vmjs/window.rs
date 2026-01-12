@@ -1841,6 +1841,22 @@ mod tests {
   }
 
   #[test]
+  fn node_constants_are_visible_on_node_instances() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    assert_eq!(host.exec_script("document.ELEMENT_NODE === 1")?, Value::Bool(true));
+    assert_eq!(host.exec_script("document.TEXT_NODE === 3")?, Value::Bool(true));
+    assert_eq!(host.exec_script("document.DOCUMENT_NODE === 9")?, Value::Bool(true));
+    assert_eq!(
+      host.exec_script("document.DOCUMENT_FRAGMENT_NODE === 11")?,
+      Value::Bool(true)
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn element_dataset_and_style_reflect_to_dom_attributes() -> Result<()> {
     // Build a tiny DOM with a single element so `document.getElementById` can find it.
     let mut dom = dom2::Document::new(QuirksMode::NoQuirks);

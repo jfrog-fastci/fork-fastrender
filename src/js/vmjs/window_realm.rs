@@ -20362,18 +20362,16 @@ fn init_window_globals(
       ("DOCUMENT_FRAGMENT_NODE", 11.0),
     ] {
       let key = alloc_key(&mut scope, name)?;
-      scope.define_property(
-        node_ctor,
-        key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: false,
-          kind: PropertyKind::Data {
-            value: Value::Number(value),
-            writable: false,
-          },
+      let desc = PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Number(value),
+          writable: false,
         },
-      )?;
+      };
+      scope.define_property(node_ctor, key, desc)?;
+      scope.define_property(node_proto, key, desc)?;
     }
 
     let element_ctor = make_illegal_ctor(&mut scope, "Element")?;
