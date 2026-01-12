@@ -286,64 +286,6 @@ fn root_property_key(scope: &mut Scope<'_>, key: PropertyKey) -> Result<(), VmEr
   Ok(())
 }
 
-// https://tc39.es/ecma262/#sec-topropertydescriptor
-fn to_property_descriptor_patch(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  value: Value,
-) -> Result<PropertyDescriptorPatch, VmError> {
-  let Value::Object(desc_obj) = value else {
-    return Err(VmError::TypeError("property descriptor must be an object"));
-  };
-
-  // Root `desc_obj` for the duration of the conversion so `HasProperty`/`Get` can allocate freely.
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(desc_obj))?;
-
-  let mut out = PropertyDescriptorPatch::default();
-
-  // Helper to read `HasProperty` + `Get` (so we can distinguish "absent" from "present with
-  // undefined") per `ToPropertyDescriptor`.
-  let mut read_prop = |scope: &mut Scope<'_>, name: &str| -> Result<Option<Value>, VmError> {
-    let key = string_key(scope, name)?;
-    if !scope.ordinary_has_property_with_tick(desc_obj, key, || vm.tick())? {
-      return Ok(None);
-    }
-    let v = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, desc_obj, key, Value::Object(desc_obj))?;
-    Ok(Some(v))
-  };
-
-  if let Some(v) = read_prop(&mut scope, "enumerable")? {
-    out.enumerable = Some(scope.heap().to_boolean(v)?);
-  }
-  if let Some(v) = read_prop(&mut scope, "configurable")? {
-    out.configurable = Some(scope.heap().to_boolean(v)?);
-  }
-  if let Some(v) = read_prop(&mut scope, "value")? {
-    out.value = Some(v);
-  }
-  if let Some(v) = read_prop(&mut scope, "writable")? {
-    out.writable = Some(scope.heap().to_boolean(v)?);
-  }
-  if let Some(v) = read_prop(&mut scope, "get")? {
-    if !matches!(v, Value::Undefined) && !scope.heap().is_callable(v)? {
-      return Err(VmError::TypeError("getter must be callable"));
-    }
-    out.get = Some(v);
-  }
-  if let Some(v) = read_prop(&mut scope, "set")? {
-    if !matches!(v, Value::Undefined) && !scope.heap().is_callable(v)? {
-      return Err(VmError::TypeError("setter must be callable"));
-    }
-    out.set = Some(v);
-  }
-
-  out.validate()?;
-  Ok(out)
-}
-
 // https://tc39.es/ecma262/#sec-frompropertydescriptor
 fn from_property_descriptor(
   vm: &mut Vm,
@@ -400,7 +342,21 @@ fn define_properties(
   // are reachable even if GC is triggered during `Get` or descriptor conversion.
   scope.push_roots(&[Value::Object(target), Value::Object(props_obj)])?;
 
-  let keys = scope.ordinary_own_property_keys_with_tick(props_obj, || vm.tick())?;
+  let mut tick = Vm::tick;
+  let keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, props_obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `props_obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
   let mut descriptors: Vec<(PropertyKey, PropertyDescriptorPatch)> = Vec::new();
   descriptors
     .try_reserve_exact(keys.len())
@@ -414,15 +370,21 @@ fn define_properties(
     }
 
     // `descValue = ? Get(properties, key)`
-    let desc_value =
-      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, props_obj, key, Value::Object(props_obj))?;
+    let desc_value = scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      props_obj,
+      key,
+      Value::Object(props_obj),
+    )?;
 
     // Root `key` + `desc_value` during conversion so `ToPropertyDescriptor` can allocate freely.
     let desc = {
       let mut convert_scope = scope.reborrow();
-      root_property_key(&mut convert_scope, key)?;
       convert_scope.push_root(desc_value)?;
-      to_property_descriptor_patch(vm, &mut convert_scope, host, hooks, desc_value)?
+      let desc_obj = require_object(desc_value)?;
+      crate::to_property_descriptor_with_host_and_hooks(vm, &mut convert_scope, host, hooks, desc_obj)?
     };
 
     // Persist any descriptor values across the subsequent define loop. These can be newly-allocated
@@ -436,7 +398,6 @@ fn define_properties(
     if let Some(v) = desc.set {
       scope.push_root(v)?;
     }
-    root_property_key(scope, key)?;
 
     descriptors.push((key, desc));
   }
@@ -446,10 +407,7 @@ fn define_properties(
       vm.tick()?;
     }
     let mut define_scope = scope.reborrow();
-    let ok = define_scope.define_own_property_with_tick(target, key, desc, || vm.tick())?;
-    if !ok {
-      return Err(VmError::TypeError("DefineOwnProperty rejected"));
-    }
+    define_scope.define_property_or_throw_with_host_and_hooks(vm, host, hooks, target, key, desc)?;
   }
 
   Ok(())
@@ -834,7 +792,21 @@ pub fn object_get_own_property_descriptors(
   let obj = scope.to_object(vm, host, hooks, obj_val)?;
   scope.push_root(Value::Object(obj))?;
 
-  let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut tick = Vm::tick;
+  let keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
   let is_proxy = scope.heap().get_proxy_data(obj)?.is_some();
 
   let intr = require_intrinsics(vm)?;
@@ -849,7 +821,9 @@ pub fn object_get_own_property_descriptors(
       vm.tick()?;
     }
 
-    let Some(mut desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
+    let Some(mut desc) =
+      scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
+    else {
       continue;
     };
 
@@ -1475,7 +1449,7 @@ pub fn object_from_entries(
       };
 
       let zero_key = string_key(&mut step_scope, "0")?;
-      let key_val = step_scope.ordinary_get_with_host_and_hooks(
+      let key_val = step_scope.get_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -1486,7 +1460,7 @@ pub fn object_from_entries(
       step_scope.push_root(key_val)?;
 
       let one_key = string_key(&mut step_scope, "1")?;
-      let value = step_scope.ordinary_get_with_host_and_hooks(
+      let value = step_scope.get_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -8438,8 +8412,8 @@ pub fn object_prototype___proto___get(
 pub fn object_prototype___proto___set(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -8462,37 +8436,9 @@ pub fn object_prototype___proto___set(
     _ => return Ok(Value::Undefined),
   };
 
-  // Minimal Proxy forwarding: `[[SetPrototypeOf]]` trap semantics are not yet implemented, but we
-  // must avoid crashing on Proxy objects.
-  let mut current = obj;
-  let mut steps = 0usize;
-  while scope.heap().is_proxy_object(current) {
-    if steps != 0 && steps % 1024 == 0 {
-      vm.tick()?;
-    }
-    steps = steps.saturating_add(1);
-    let Some(target) = scope.heap().proxy_target(current)? else {
-      return Err(VmError::TypeError(
-        "Cannot perform 'setPrototypeOf' on a proxy that has been revoked",
-      ));
-    };
-    current = target;
-  }
-
-  // Ordinary `[[SetPrototypeOf]]` semantics: if the target is not extensible and the requested
-  // prototype differs, the operation fails silently (returns `undefined`, no change).
-  let current_proto = scope.object_get_prototype(current)?;
-  if current_proto != proto && !scope.object_is_extensible(current)? {
-    return Ok(Value::Undefined);
-  }
-
-  // Spec: `Object.prototype.__proto__` returns `undefined` even when setting the prototype fails.
-  // We swallow known prototype mutation failures and only propagate unexpected VM errors.
-  match scope.heap_mut().object_set_prototype(current, proto) {
-    Ok(()) => Ok(Value::Undefined),
-    Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Undefined),
-    Err(err) => Err(err),
-  }
+  // `[[SetPrototypeOf]]` returns a boolean; per spec we return `undefined` regardless of success.
+  let _ = scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, obj, proto)?;
+  Ok(Value::Undefined)
 }
 
 /// `Object.prototype.__defineGetter__(P, getter)` (Annex B).
@@ -8715,11 +8661,11 @@ pub fn object_prototype_is_prototype_of(
 
   let mut steps = 0usize;
   loop {
-    if steps >= crate::heap::MAX_PROTOTYPE_CHAIN {
-      return Err(VmError::PrototypeChainTooDeep);
-    }
     if steps % 1024 == 0 {
       vm.tick()?;
+    }
+    if steps >= crate::heap::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
     }
 
     // Spec uses `[[GetPrototypeOf]]`, which is Proxy-aware (trap + revoked proxy errors).
