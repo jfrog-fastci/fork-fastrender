@@ -74,15 +74,29 @@ impl ProgramState {
         .typecheck_db
         .set_type_store(crate::db::types::SharedTypeStore(Arc::clone(&self.store)));
     }
-    let libs = collect_libs(&options, host.lib_files(), &self.lib_manager);
-    if libs.is_empty() && options.no_default_lib {
-      self.lib_diagnostics.clear();
+    let collected = collect_libs(&options, host.lib_files(), &self.lib_manager);
+    if collected.files.is_empty() {
+      // `no_default_lib` is allowed to suppress all lib loading, but still surface
+      // any diagnostics that occurred while resolving explicit `--lib` entries.
+      if options.no_default_lib && options.libs.is_empty() && collected.diagnostics.is_empty() {
+        self.lib_diagnostics.clear();
+        return Ok(Vec::new());
+      }
+      if collected.diagnostics.is_empty() {
+        let validated = validate_libs(Vec::new(), |_| FileId(u32::MAX));
+        self.lib_diagnostics = validated.diagnostics;
+      } else {
+        self.lib_diagnostics = collected.diagnostics;
+      }
       return Ok(Vec::new());
     }
-    let validated = validate_libs(libs, |lib| {
+
+    let validated = validate_libs(collected.files, |lib| {
       self.intern_file_key(lib.key.clone(), FileOrigin::Lib)
     });
-    self.lib_diagnostics = validated.diagnostics.clone();
+    let mut lib_diagnostics = collected.diagnostics;
+    lib_diagnostics.extend(validated.diagnostics.clone());
+    self.lib_diagnostics = lib_diagnostics;
 
     let mut dts_libs = Vec::new();
     for (lib, file_id) in validated.libs.into_iter() {

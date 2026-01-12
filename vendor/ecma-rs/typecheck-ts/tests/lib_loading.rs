@@ -452,6 +452,34 @@ fn host_file_named_like_bundled_lib_has_distinct_text() {
   );
 }
 
+#[cfg(feature = "bundled-libs")]
+#[test]
+fn invalid_lib_option_emits_ts6046_and_still_loads_valid_libs() {
+  let mut options = CompilerOptions::default();
+  options.libs = vec![
+    LibName::parse("es5").expect("es5 lib"),
+    LibName::parse("notareallib").expect("invalid lib parses"),
+  ];
+  let entry = FileKey::new("entry.ts");
+  let host = TestHost::new(options).with_file(entry.clone(), "export {};");
+  let program = Program::new(host, vec![entry]);
+
+  let diagnostics = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| program.check()))
+    .expect("invalid libs should not panic");
+  assert!(
+    diagnostics
+      .iter()
+      .any(|diag| diag.code.as_str() == codes::INVALID_LIB_OPTION.as_str()),
+    "expected TS6046 diagnostic for invalid lib option, got {diagnostics:?}"
+  );
+
+  let globals = program.global_bindings();
+  assert!(
+    globals.contains_key("Array"),
+    "expected valid ES lib to populate Array; got globals {globals:?}"
+  );
+}
+
 #[test]
 fn imported_type_alias_resolves_interned_type() {
   let mut options = CompilerOptions::default();

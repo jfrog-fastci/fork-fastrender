@@ -11,6 +11,7 @@ use crate::codes;
 pub struct LoadedLibs {
   pub lib_set: LibSet,
   pub files: Vec<LibFile>,
+  pub diagnostics: Vec<Diagnostic>,
 }
 
 impl LoadedLibs {
@@ -18,6 +19,7 @@ impl LoadedLibs {
     LoadedLibs {
       lib_set: LibSet::empty(),
       files: Vec::new(),
+      diagnostics: Vec::new(),
     }
   }
 }
@@ -53,10 +55,11 @@ impl LibManager {
     }
 
     let lib_set = LibSet::for_options(options);
-    let files = load_bundled(&lib_set);
+    let BundledLoadResult { files, diagnostics } = load_bundled(&lib_set);
     let result = LoadedLibs {
       lib_set: lib_set.clone(),
       files,
+      diagnostics,
     };
     *cache = Some((options.clone(), result.clone()));
     self.load_count.fetch_add(1, Ordering::SeqCst);
@@ -64,7 +67,13 @@ impl LibManager {
   }
 }
 
-fn load_bundled(lib_set: &LibSet) -> Vec<LibFile> {
+#[derive(Debug)]
+struct BundledLoadResult {
+  files: Vec<LibFile>,
+  diagnostics: Vec<Diagnostic>,
+}
+
+fn load_bundled(lib_set: &LibSet) -> BundledLoadResult {
   #[cfg(feature = "bundled-libs")]
   {
     bundled::load_bundled(lib_set)
@@ -73,17 +82,23 @@ fn load_bundled(lib_set: &LibSet) -> Vec<LibFile> {
   #[cfg(not(feature = "bundled-libs"))]
   {
     if lib_set.libs().is_empty() {
-      return Vec::new();
+      return BundledLoadResult {
+        files: Vec::new(),
+        diagnostics: Vec::new(),
+      };
     }
 
-    vec![fallback_core_globals_lib()]
+    BundledLoadResult {
+      files: vec![fallback_core_globals_lib()],
+      diagnostics: Vec::new(),
+    }
   }
 }
 
 pub fn bundled_lib_file(name: super::LibName) -> Option<LibFile> {
   #[cfg(feature = "bundled-libs")]
   {
-    Some(bundled::lib_file(name))
+    bundled::lib_file(name)
   }
 
   #[cfg(not(feature = "bundled-libs"))]
@@ -173,12 +188,17 @@ mod bundled {
   use std::collections::{BTreeSet, VecDeque};
   use std::sync::Arc;
 
+  use diagnostics::{Diagnostic, FileId, Span, TextRange};
+
   use super::super::{FileKind, LibFile, LibName, LibSet};
+  use crate::codes;
   use crate::FileKey;
 
-  pub(super) fn lib_file(name: LibName) -> LibFile {
-    lib_file_by_option_name(name.as_str())
-      .unwrap_or_else(|| panic!("missing bundled TypeScript lib '{}'", name.as_str()))
+  const LIB_OPTION_SPAN: Span = Span::new(FileId(u32::MAX), TextRange::new(0, 0));
+
+  pub(super) fn lib_file(name: LibName) -> Option<LibFile> {
+    let canonical = LibName::parse(name.as_str())?;
+    lib_file_by_filename(&canonical.file_name())
   }
 
   pub(super) fn lib_file_by_option_name(option_name: &str) -> Option<LibFile> {
@@ -199,33 +219,63 @@ mod bundled {
     })
   }
 
-  pub fn load_bundled(lib_set: &LibSet) -> Vec<LibFile> {
+  pub fn load_bundled(lib_set: &LibSet) -> super::BundledLoadResult {
     let mut required: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
+    let mut invalid_libs: BTreeSet<String> = BTreeSet::new();
 
     for name in lib_set.libs() {
-      let file = name.file_name();
+      let Some(canonical) = LibName::parse(name.as_str()) else {
+        invalid_libs.insert(name.as_str().trim().to_string());
+        continue;
+      };
+      let option_name = canonical.as_str().to_string();
+      let file = canonical.file_name();
+      if bundled_lib_text(&file).is_none() {
+        invalid_libs.insert(option_name);
+        continue;
+      }
       if required.insert(file.clone()) {
         queue.push_back(file);
       }
     }
 
     while let Some(file) = queue.pop_front() {
-      let text = bundled_lib_text_or_panic(&file);
+      let Some(text) = bundled_lib_text(&file) else {
+        invalid_libs.insert(file.clone());
+        continue;
+      };
       for dep in referenced_libs(text).into_iter() {
+        if bundled_lib_text(&dep).is_none() {
+          invalid_libs.insert(dep.clone());
+          continue;
+        }
         if required.insert(dep.clone()) {
           queue.push_back(dep);
         }
       }
     }
 
-    required
+    let files: Vec<LibFile> = required
       .into_iter()
-      .map(|filename| {
-        lib_file_by_filename(&filename)
-          .unwrap_or_else(|| panic!("missing bundled TypeScript lib '{filename}'"))
+      .filter_map(|filename| lib_file_by_filename(&filename))
+      .collect();
+
+    let diagnostics: Vec<Diagnostic> = invalid_libs
+      .into_iter()
+      .filter(|name| !name.trim().is_empty())
+      .map(|name| {
+        codes::INVALID_LIB_OPTION.error(
+          format!(
+            "Invalid value for '--lib': '{}'. The '--lib' option expects known TypeScript library names.",
+            name
+          ),
+          LIB_OPTION_SPAN,
+        )
       })
-      .collect()
+      .collect();
+
+    super::BundledLoadResult { files, diagnostics }
   }
 
   mod generated {
@@ -241,11 +291,6 @@ mod bundled {
       Ok(idx) => Some(generated::LIBS[idx].1),
       Err(_) => None,
     }
-  }
-
-  fn bundled_lib_text_or_panic(filename: &str) -> &'static str {
-    bundled_lib_text(filename)
-      .unwrap_or_else(|| panic!("missing bundled TypeScript lib '{filename}'"))
   }
 
   fn referenced_libs(text: &str) -> Vec<String> {
@@ -315,15 +360,25 @@ impl LibValidationResult {
   }
 }
 
+/// Lib files collected from both the host and the bundled TypeScript distribution.
+#[derive(Clone, Debug)]
+pub struct CollectedLibs {
+  pub files: Vec<LibFile>,
+  pub diagnostics: Vec<Diagnostic>,
+}
+
 /// Merge host-provided libs with bundled libs selected from [`CompilerOptions`].
 pub fn collect_libs(
   options: &CompilerOptions,
   mut host_libs: Vec<LibFile>,
   lib_manager: &LibManager,
-) -> Vec<LibFile> {
+) -> CollectedLibs {
   let bundled = lib_manager.bundled_libs(options);
   host_libs.extend(bundled.files);
-  host_libs
+  CollectedLibs {
+    files: host_libs,
+    diagnostics: bundled.diagnostics,
+  }
 }
 
 /// Filter out non-`.d.ts` libraries, emitting diagnostics for any ignored entries

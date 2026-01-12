@@ -445,6 +445,22 @@ pub const FILE_NOT_FOUND: Code = Code::new(
   &[],
 );
 
+/// TS6046: Invalid value supplied for a compiler option.
+///
+/// TypeScript emits this diagnostic when `--lib` / `compilerOptions.lib`
+/// contains an unknown entry.
+///
+/// - Primary span: placeholder span (tsc reports `file: null` with `0..0` range).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const INVALID_LIB_OPTION: Code = Code::new(
+  "TS6046",
+  "invalid `--lib` option value",
+  "placeholder span when compilerOptions.lib contains an invalid value",
+  &["primary: placeholder span"],
+  &[],
+);
+
 /// TS2688: Triple-slash `reference types` package could not be resolved.
 ///
 /// - Primary span: the package name inside the triple-slash directive (excluding quotes).
