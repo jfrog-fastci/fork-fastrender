@@ -66,6 +66,10 @@ node scripts/typescript_probe.js
 
 - The harness ships a pinned `typecheck-ts-harness/package-lock.json`; `npm ci`
   installs the exact `typescript` version used for baselines.
+- For determinism, the harness only loads `typescript` from:
+  - `typecheck-ts-harness/node_modules` (installed via `npm ci`), or
+  - `TYPECHECK_TS_HARNESS_TYPESCRIPT_DIR` (a directory containing `node_modules/typescript`).
+  It does **not** fall back to a globally-installed `typescript` package.
 - Use `--node /path/to/node` if `node` is not on `PATH` or you want a specific
   runtime.
 - Missing Node / TypeScript:

@@ -1,10 +1,19 @@
 const fs = require("fs");
 const path = require("path");
-const { createRequire } = require("module");
 
 function formatAttempt(label, basePath, err) {
   const suffix = err ? `: ${err.message ?? String(err)}` : "";
   return `- ${label} (${basePath})${suffix}`;
+}
+
+function tryRequireTypeScript(label, dir, attempts) {
+  const basePath = path.resolve(dir, "node_modules", "typescript");
+  try {
+    return require(basePath);
+  } catch (err) {
+    attempts.push(formatAttempt(label, basePath, err));
+    return null;
+  }
 }
 
 function loadTypeScript() {
@@ -12,44 +21,21 @@ function loadTypeScript() {
 
   const envDir = process.env.TYPECHECK_TS_HARNESS_TYPESCRIPT_DIR;
   if (envDir) {
-    const basePath = path.resolve(envDir, "package.json");
-    try {
-      return createRequire(basePath)("typescript");
-    } catch (err) {
-      attempts.push(formatAttempt("env TYPECHECK_TS_HARNESS_TYPESCRIPT_DIR", basePath, err));
+    const loaded = tryRequireTypeScript("env TYPECHECK_TS_HARNESS_TYPESCRIPT_DIR", envDir, attempts);
+    if (loaded) {
+      return loaded;
     }
   }
 
   const harnessRoot = path.resolve(__dirname, "..");
   const harnessPkg = path.join(harnessRoot, "package.json");
   if (fs.existsSync(harnessPkg)) {
-    try {
-      return createRequire(harnessPkg)("typescript");
-    } catch (err) {
-      attempts.push(formatAttempt("typecheck-ts-harness/package.json", harnessPkg, err));
+    const loaded = tryRequireTypeScript("typecheck-ts-harness/package.json", harnessRoot, attempts);
+    if (loaded) {
+      return loaded;
     }
   } else {
     attempts.push(formatAttempt("typecheck-ts-harness/package.json missing", harnessPkg, null));
-  }
-
-  const repoRoot = path.resolve(__dirname, "..", "..");
-  const tsSubmodulePkg = path.join(repoRoot, "parse-js", "tests", "TypeScript", "package.json");
-  if (fs.existsSync(tsSubmodulePkg)) {
-    try {
-      return createRequire(tsSubmodulePkg)("typescript");
-    } catch (err) {
-      attempts.push(formatAttempt("parse-js/tests/TypeScript/package.json", tsSubmodulePkg, err));
-    }
-  } else {
-    attempts.push(
-      formatAttempt("parse-js/tests/TypeScript/package.json missing", tsSubmodulePkg, null),
-    );
-  }
-
-  try {
-    return require("typescript");
-  } catch (err) {
-    attempts.push(formatAttempt("default Node resolution", "require('typescript')", err));
   }
 
   const help = [
@@ -60,6 +46,9 @@ function loadTypeScript() {
     "",
     "Or point the harness at an existing install:",
     "  export TYPECHECK_TS_HARNESS_TYPESCRIPT_DIR=/path/to/dir/with/node_modules",
+    "",
+    "Note: for deterministic difftsc/conformance output, the harness does not fall back",
+    "to a globally-installed `typescript` package. Install it locally or use the env var.",
     "",
     "Load attempts:",
     ...attempts,
