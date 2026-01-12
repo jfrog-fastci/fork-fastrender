@@ -435,6 +435,15 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::HoverChanged { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::DownloadStarted { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::DownloadProgress { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::DownloadFinished { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   None
 }
 
@@ -621,6 +630,60 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
         &mut out,
         "SetClipboardText(tab={}, text={text:?})",
         tab_id.0
+      );
+      continue;
+    }
+    if let WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id,
+      url,
+      path,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "DownloadStarted(tab={}, id={}, url={url}, path={})",
+        tab_id.0,
+        download_id.0,
+        path.display()
+      );
+      continue;
+    }
+    if let WorkerToUi::DownloadProgress {
+      tab_id,
+      download_id,
+      received_bytes,
+      total_bytes,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "DownloadProgress(tab={}, id={}, received={}, total={:?})",
+        tab_id.0,
+        download_id.0,
+        received_bytes,
+        total_bytes
+      );
+      continue;
+    }
+    if let WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id,
+      path,
+      success,
+      cancelled,
+      error,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "DownloadFinished(tab={}, id={}, success={}, cancelled={}, path={:?}, error={:?})",
+        tab_id.0,
+        download_id.0,
+        success,
+        cancelled,
+        path.as_ref().map(|p| p.display().to_string()),
+        error
       );
       continue;
     }

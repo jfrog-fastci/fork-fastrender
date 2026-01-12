@@ -110,6 +110,8 @@ mod ui_worker_tab_scroll_preservation;
 mod ui_worker_tabs;
 mod ui_worker_text_editing;
 mod ui_worker_title;
+mod ui_worker_download_cancel_cleans_up;
+mod ui_worker_download_filename_collision_suffix;
 mod ui_worker_unsupported_scheme;
 mod ui_worker_viewport_changed;
 mod ui_worker_viewport_limits;

@@ -3,8 +3,9 @@
 use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::tree::box_tree::SelectControl;
-use fastrender::ui::messages::{CursorKind, RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{CursorKind, DownloadId, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -95,6 +96,26 @@ pub enum WorkerToUiEvent {
     match_count: usize,
     active_match_index: Option<usize>,
   },
+  DownloadStarted {
+    tab_id: TabId,
+    download_id: DownloadId,
+    url: String,
+    path: PathBuf,
+  },
+  DownloadProgress {
+    tab_id: TabId,
+    download_id: DownloadId,
+    received_bytes: u64,
+    total_bytes: Option<u64>,
+  },
+  DownloadFinished {
+    tab_id: TabId,
+    download_id: DownloadId,
+    path: Option<PathBuf>,
+    success: bool,
+    cancelled: bool,
+    error: Option<String>,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +137,9 @@ pub enum WorkerEventKind {
   ContextMenu,
   HoverChanged,
   FindResult,
+  DownloadStarted,
+  DownloadProgress,
+  DownloadFinished,
 }
 
 impl WorkerToUiEvent {
@@ -138,6 +162,9 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::ContextMenu { .. } => WorkerEventKind::ContextMenu,
       WorkerToUiEvent::HoverChanged { .. } => WorkerEventKind::HoverChanged,
       WorkerToUiEvent::FindResult { .. } => WorkerEventKind::FindResult,
+      WorkerToUiEvent::DownloadStarted { .. } => WorkerEventKind::DownloadStarted,
+      WorkerToUiEvent::DownloadProgress { .. } => WorkerEventKind::DownloadProgress,
+      WorkerToUiEvent::DownloadFinished { .. } => WorkerEventKind::DownloadFinished,
     }
   }
 }
@@ -273,19 +300,49 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
-    WorkerToUi::FindResult {
+    WorkerToUi::DownloadStarted {
       tab_id,
-      query,
-      case_sensitive,
-      match_count,
-      active_match_index,
+      download_id,
+      url,
+      path,
     } => (
-      WorkerToUiEvent::FindResult {
+      WorkerToUiEvent::DownloadStarted {
         tab_id,
-        query,
-        case_sensitive,
-        match_count,
-        active_match_index,
+        download_id,
+        url,
+        path,
+      },
+      None,
+    ),
+    WorkerToUi::DownloadProgress {
+      tab_id,
+      download_id,
+      received_bytes,
+      total_bytes,
+    } => (
+      WorkerToUiEvent::DownloadProgress {
+        tab_id,
+        download_id,
+        received_bytes,
+        total_bytes,
+      },
+      None,
+    ),
+    WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id,
+      path,
+      success,
+      cancelled,
+      error,
+    } => (
+      WorkerToUiEvent::DownloadFinished {
+        tab_id,
+        download_id,
+        path,
+        success,
+        cancelled,
+        error,
       },
       None,
     ),

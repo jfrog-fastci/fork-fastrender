@@ -1,0 +1,190 @@
+use std::path::{Path, PathBuf};
+
+/// Return the `.part` path used while writing a download.
+///
+/// The worker writes to a sibling `*.part` file and renames to the final path on success to avoid
+/// leaving partially-written final filenames behind.
+pub fn part_path_for_final(final_path: &Path) -> PathBuf {
+  let Some(file_name) = final_path.file_name() else {
+    return final_path.with_extension("part");
+  };
+  let mut part_name = file_name.to_os_string();
+  part_name.push(".part");
+  final_path.with_file_name(part_name)
+}
+
+/// Best-effort cross-platform download filename sanitization.
+///
+/// Semantics (Chrome-like):
+/// - Strip path separators (`/` and `\`) and control characters.
+/// - Replace Windows-illegal characters (`<>:"|?*`) with `_`.
+/// - Trim trailing dots/spaces (Windows compatibility).
+/// - Avoid reserved Windows device names by prefixing `_`.
+/// - If the result would be empty, fall back to `"download"`.
+pub fn sanitize_download_filename(raw: &str) -> String {
+  let mut out = String::with_capacity(raw.len());
+
+  for c in raw.chars() {
+    if c == '/' || c == '\\' || c.is_control() {
+      continue;
+    }
+
+    // Keep filenames broadly compatible with Windows.
+    if matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
+      out.push('_');
+    } else {
+      out.push(c);
+    }
+  }
+
+  // Windows forbids filenames ending in a dot or space.
+  while out.ends_with('.') || out.ends_with(' ') {
+    out.pop();
+  }
+
+  if out.is_empty() {
+    return "download".to_string();
+  }
+
+  // Windows device names are reserved even when followed by an extension (e.g. `CON.txt`).
+  // Use the name before the *first* dot for the check, matching Windows' behavior.
+  let base = out.split_once('.').map(|(b, _)| b).unwrap_or(&out);
+  if is_windows_reserved_device_name(base) {
+    out.insert(0, '_');
+  }
+
+  if out.is_empty() {
+    "download".to_string()
+  } else {
+    out
+  }
+}
+
+fn is_windows_reserved_device_name(name: &str) -> bool {
+  let upper = name.to_ascii_uppercase();
+  if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+    return true;
+  }
+
+  // COM1..COM9, LPT1..LPT9
+  for prefix in ["COM", "LPT"] {
+    if let Some(num) = upper.strip_prefix(prefix) {
+      if let Ok(n) = num.parse::<u8>() {
+        return (1..=9).contains(&n);
+      }
+    }
+  }
+
+  false
+}
+
+fn split_stem_ext(name: &str) -> (&str, Option<&str>) {
+  let Some(dot_idx) = name.rfind('.') else {
+    return (name, None);
+  };
+  if dot_idx == 0 || dot_idx + 1 >= name.len() {
+    return (name, None);
+  }
+  (&name[..dot_idx], Some(&name[dot_idx + 1..]))
+}
+
+/// Choose a deterministic non-colliding path in `download_dir` for `requested_name`.
+///
+/// If `foo.ext` exists, we try `foo (1).ext`, `foo (2).ext`, ... (Chrome-like). The suffix is added
+/// before the last extension; for extensionless names it is appended at the end.
+pub fn choose_unique_download_path(download_dir: &Path, requested_name: &str) -> PathBuf {
+  let sanitized = sanitize_download_filename(requested_name);
+  let (stem, ext) = split_stem_ext(&sanitized);
+  let stem = if stem.is_empty() { "download" } else { stem };
+
+  for idx in 0u32.. {
+    let candidate = if idx == 0 {
+      sanitized.clone()
+    } else if let Some(ext) = ext {
+      format!("{stem} ({idx}).{ext}")
+    } else {
+      format!("{stem} ({idx})")
+    };
+
+    let final_path = download_dir.join(&candidate);
+    let part_path = part_path_for_final(&final_path);
+
+    if !final_path.exists() && !part_path.exists() {
+      return final_path;
+    }
+  }
+
+  unreachable!("u32::MAX exhausted while searching for a unique download filename")
+}
+
+/// Derive a default filename for a download URL (used when no `<a download="...">` name is given).
+pub fn filename_from_url(url: &str) -> String {
+  let parsed = url::Url::parse(url).ok();
+
+  let derived = parsed.as_ref().and_then(|url| {
+    if url.scheme() == "file" {
+      let path = url.to_file_path().ok()?;
+      return path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string());
+    }
+    url
+      .path_segments()
+      .and_then(|segments| segments.last())
+      .filter(|seg| !seg.is_empty())
+      .map(|seg| seg.to_string())
+  });
+
+  derived.unwrap_or_else(|| "download".to_string())
+}
+
+/// Resolve the base download directory for the browser UI worker.
+///
+/// The integration tests override this via `FASTR_DOWNLOAD_DIR` to keep downloads deterministic and
+/// self-contained.
+pub fn default_download_dir() -> PathBuf {
+  if let Some(raw) = std::env::var_os("FASTR_DOWNLOAD_DIR") {
+    return PathBuf::from(raw);
+  }
+
+  #[cfg(feature = "browser_ui")]
+  if let Some(user_dirs) = directories::UserDirs::new() {
+    if let Some(dir) = user_dirs.download_dir() {
+      return dir.to_path_buf();
+    }
+  }
+
+  std::env::temp_dir().join("fastrender-downloads")
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn sanitize_strips_separators_and_controls() {
+    assert_eq!(
+      sanitize_download_filename("a/b\\c\u{0000}d"),
+      "abcd".to_string()
+    );
+  }
+
+  #[test]
+  fn sanitize_trims_trailing_dots_and_spaces() {
+    assert_eq!(sanitize_download_filename("foo. "), "foo".to_string());
+  }
+
+  #[test]
+  fn sanitize_avoids_windows_device_names() {
+    assert_eq!(sanitize_download_filename("CON"), "_CON".to_string());
+    assert_eq!(sanitize_download_filename("con.txt"), "_con.txt".to_string());
+    assert_eq!(sanitize_download_filename("LPT9"), "_LPT9".to_string());
+  }
+
+  #[test]
+  fn sanitize_empty_falls_back_to_download() {
+    assert_eq!(sanitize_download_filename("/"), "download".to_string());
+    assert_eq!(sanitize_download_filename("   "), "download".to_string());
+  }
+}
+

@@ -13,6 +13,7 @@ pub use crate::interaction::KeyAction;
 use tiny_skia::Pixmap;
 
 static NEXT_TAB_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_DOWNLOAD_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(test)]
 pub(crate) static TAB_ID_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -35,6 +36,26 @@ impl TabId {
     // in a single process), skip over 0 and keep going rather than panicking.
     loop {
       let id = NEXT_TAB_ID.fetch_add(1, Ordering::Relaxed);
+      if id != 0 {
+        return Self(id);
+      }
+    }
+  }
+}
+
+/// Identifier for a download managed by the browser UI worker.
+///
+/// Download ids are process-unique and are used by UIs/tests to refer to a specific in-flight
+/// download (e.g. for cancellation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DownloadId(pub u64);
+
+impl DownloadId {
+  /// Generate a new process-unique download id.
+  pub fn new() -> Self {
+    // `0` is reserved as an "invalid" `DownloadId` value, mirroring `TabId`.
+    loop {
+      let id = NEXT_DOWNLOAD_ID.fetch_add(1, Ordering::Relaxed);
       if id != 0 {
         return Self(id);
       }
@@ -465,6 +486,10 @@ pub enum UiToWorker {
     select_node_id: usize,
     item_index: usize,
   },
+  /// Cancel an in-progress download.
+  CancelDownload {
+    download_id: DownloadId,
+  },
 }
 
 impl UiToWorker {
@@ -603,6 +628,33 @@ pub enum WorkerToUi {
   SetClipboardText {
     tab_id: TabId,
     text: String,
+  },
+  /// A download was initiated for a tab (typically by clicking a `<a download>` link).
+  DownloadStarted {
+    tab_id: TabId,
+    download_id: DownloadId,
+    url: String,
+    /// Final path the download will be written to on success.
+    path: std::path::PathBuf,
+  },
+  /// Incremental progress for an in-flight download.
+  DownloadProgress {
+    tab_id: TabId,
+    download_id: DownloadId,
+    received_bytes: u64,
+    total_bytes: Option<u64>,
+  },
+  /// Terminal status for a download.
+  ///
+  /// Exactly one `DownloadFinished` message must be emitted per download id.
+  DownloadFinished {
+    tab_id: TabId,
+    download_id: DownloadId,
+    /// Final path on success; `None` when cancelled or when no final file was produced.
+    path: Option<std::path::PathBuf>,
+    success: bool,
+    cancelled: bool,
+    error: Option<String>,
   },
 }
 

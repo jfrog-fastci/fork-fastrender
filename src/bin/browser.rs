@@ -2550,6 +2550,7 @@ impl App {
 
     let tab_id = match &msg {
       UiToWorker::SetDownloadDirectory { .. } => None,
+      UiToWorker::CancelDownload { .. } => None,
       UiToWorker::CreateTab { tab_id, .. }
       | UiToWorker::NewTab { tab_id, .. }
       | UiToWorker::CloseTab { tab_id }

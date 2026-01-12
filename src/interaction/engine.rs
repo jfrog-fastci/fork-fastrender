@@ -47,6 +47,14 @@ pub enum InteractionAction {
   OpenInNewTab {
     href: String,
   },
+  /// Trigger a download for the resolved URL (typically from `<a download>`).
+  Download {
+    href: String,
+    /// Suggested filename from the element's `download` attribute (when present and non-empty).
+    ///
+    /// When `None`, the worker should derive a filename from the URL.
+    file_name: Option<String>,
+  },
   /// Navigation that carries an explicit HTTP method and optional body (used for form POST).
   NavigateRequest {
     request: FormSubmission,
@@ -4457,6 +4465,15 @@ impl InteractionEngine {
                   dom_changed = true;
                 }
 
+                let download_attr = index
+                  .node(target_id)
+                  .and_then(|node| node.get_attribute_ref("download"));
+                let is_download = download_attr.is_some();
+                let download_name = download_attr
+                  .map(trim_ascii_whitespace)
+                  .filter(|v| !v.is_empty())
+                  .map(|v| v.to_string());
+
                 let target_blank = index
                   .node(target_id)
                   .and_then(|node| node.get_attribute_ref("target"))
@@ -4467,7 +4484,12 @@ impl InteractionEngine {
                 let gesture_new_tab = matches!(button, PointerButton::Middle)
                   || (matches!(button, PointerButton::Primary) && modifiers.command());
 
-                action = if target_blank || gesture_new_tab {
+                action = if is_download {
+                  InteractionAction::Download {
+                    href: resolved,
+                    file_name: download_name,
+                  }
+                } else if target_blank || gesture_new_tab {
                   InteractionAction::OpenInNewTab { href: resolved }
                 } else {
                   InteractionAction::Navigate { href: resolved }
@@ -6048,11 +6070,22 @@ impl InteractionEngine {
             if self.state.visited_links.insert(focused) {
               changed = true;
             }
+            let download_attr = index.node(focused).and_then(|node| node.get_attribute_ref("download"));
+            let is_download = download_attr.is_some();
+            let download_name = download_attr
+              .map(trim_ascii_whitespace)
+              .filter(|v| !v.is_empty())
+              .map(|v| v.to_string());
             let target_blank = index
               .node(focused)
               .and_then(|node| node.get_attribute_ref("target"))
               .is_some_and(|target| trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank"));
-            action = if target_blank {
+            action = if is_download {
+              InteractionAction::Download {
+                href: resolved,
+                file_name: download_name,
+              }
+            } else if target_blank {
               InteractionAction::OpenInNewTab { href: resolved }
             } else {
               InteractionAction::Navigate { href: resolved }
@@ -6187,6 +6220,7 @@ impl InteractionEngine {
       action,
       InteractionAction::Navigate { .. }
         | InteractionAction::OpenInNewTab { .. }
+        | InteractionAction::Download { .. }
         | InteractionAction::NavigateRequest { .. }
     ) && self.state.focused != prev_focus
     {

@@ -30,18 +30,20 @@ use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
 use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
-  CursorKind, NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker,
+  CursorKind, DownloadId, NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker,
   WorkerToUi,
 };
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
 use image::imageops::FilterType;
 use std::collections::{HashMap, VecDeque};
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "browser_ui")]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // -----------------------------------------------------------------------------
 // Test hooks
@@ -764,12 +766,22 @@ fn combine_cancel_callbacks(
   }
 }
 
+struct ActiveDownload {
+  cancel: Arc<AtomicBool>,
+  done: Arc<AtomicBool>,
+}
+
 struct BrowserRuntime {
   ui_rx: Receiver<UiToWorker>,
   ui_tx: Sender<WorkerToUi>,
   factory: FastRenderFactory,
   limits: BrowserLimits,
   download_dir: PathBuf,
+  /// In-flight downloads keyed by ID.
+  ///
+  /// This is shared across threads so cancellation requests can take effect even while the main
+  /// worker thread is busy (e.g. rendering a frame).
+  downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
   tabs: HashMap<TabId, TabState>,
   active_tab: Option<TabId>,
   /// Messages deferred during scroll coalescing that should be handled before blocking for the next
@@ -782,13 +794,15 @@ impl BrowserRuntime {
     ui_rx: Receiver<UiToWorker>,
     ui_tx: Sender<WorkerToUi>,
     factory: FastRenderFactory,
+    downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
   ) -> Self {
     Self {
       ui_rx,
       ui_tx,
       factory,
       limits: BrowserLimits::from_env(),
-      download_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+      download_dir: crate::ui::downloads::default_download_dir(),
+      downloads,
       tabs: HashMap::new(),
       active_tab: None,
       deferred_msgs: VecDeque::new(),
@@ -1021,6 +1035,12 @@ impl BrowserRuntime {
   }
 
   fn handle_message(&mut self, msg: UiToWorker) {
+    // Best-effort cleanup of completed downloads.
+    {
+      let mut downloads = self.downloads.lock().unwrap_or_else(|err| err.into_inner());
+      downloads.retain(|_, download| !download.done.load(Ordering::Acquire));
+    }
+
     match msg {
       UiToWorker::CreateTab {
         tab_id,
@@ -1543,7 +1563,287 @@ impl BrowserRuntime {
         tab.needs_repaint = true;
         tab.force_repaint = true;
       }
+      UiToWorker::CancelDownload { download_id } => {
+        self.cancel_download(download_id);
+      }
     }
+  }
+
+  fn cancel_download(&mut self, download_id: DownloadId) {
+    let downloads = self.downloads.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(download) = downloads.get(&download_id) {
+      download.cancel.store(true, Ordering::Release);
+    }
+  }
+
+  fn start_download(&mut self, tab_id: TabId, url: String, file_name: Option<String>) {
+    let download_id = DownloadId::new();
+
+    let download_dir = self.download_dir.clone();
+    if let Err(err) = std::fs::create_dir_all(&download_dir) {
+      let _ = self.ui_tx.send(WorkerToUi::DownloadFinished {
+        tab_id,
+        download_id,
+        path: None,
+        success: false,
+        cancelled: false,
+        error: Some(format!("failed to create download dir {}: {err}", download_dir.display())),
+      });
+      return;
+    }
+
+    let requested_name = file_name
+      .as_deref()
+      .map(str::trim)
+      .filter(|v| !v.is_empty())
+      .map(|v| v.to_string())
+      .unwrap_or_else(|| crate::ui::downloads::filename_from_url(&url));
+
+    let final_path = crate::ui::downloads::choose_unique_download_path(&download_dir, &requested_name);
+    let part_path = crate::ui::downloads::part_path_for_final(&final_path);
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    {
+      let mut downloads = self.downloads.lock().unwrap_or_else(|err| err.into_inner());
+      downloads.insert(
+        download_id,
+        ActiveDownload {
+          cancel: Arc::clone(&cancel),
+          done: Arc::clone(&done),
+        },
+      );
+    }
+
+    let _ = self.ui_tx.send(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id,
+      url: url.clone(),
+      path: final_path.clone(),
+    });
+
+    let ui_tx = self.ui_tx.clone();
+    let thread_name = format!("fastr-download-{}", download_id.0);
+    let _ = std::thread::Builder::new()
+      .name(thread_name)
+      .spawn(move || {
+        struct DoneGuard(Arc<AtomicBool>);
+        impl Drop for DoneGuard {
+          fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+          }
+        }
+        let _done_guard = DoneGuard(done);
+
+        let finish = |success: bool,
+                      cancelled: bool,
+                      error: Option<String>,
+                      path: Option<PathBuf>| {
+          let _ = ui_tx.send(WorkerToUi::DownloadFinished {
+            tab_id,
+            download_id,
+            path,
+            success,
+            cancelled,
+            error,
+          });
+        };
+
+        // Best-effort cleanup helper (ignore errors: file may not exist / be already removed).
+        let cleanup_part = || {
+          let _ = std::fs::remove_file(&part_path);
+        };
+
+        if cancel.load(Ordering::Acquire) {
+          cleanup_part();
+          finish(false, true, None, None);
+          return;
+        }
+
+        let parsed = match url::Url::parse(&url) {
+          Ok(parsed) => parsed,
+          Err(err) => {
+            finish(false, false, Some(format!("invalid download URL {url:?}: {err}")), None);
+            return;
+          }
+        };
+
+        let (mut reader, total_bytes): (Box<dyn std::io::Read>, Option<u64>) = match parsed.scheme() {
+          "file" => {
+            let path = match parsed.to_file_path() {
+              Ok(path) => path,
+              Err(()) => {
+                finish(
+                  false,
+                  false,
+                  Some(format!("failed to convert file:// URL to path: {url:?}")),
+                  None,
+                );
+                return;
+              }
+            };
+            let total = std::fs::metadata(&path).ok().map(|m| m.len());
+            let file = match std::fs::File::open(&path) {
+              Ok(file) => file,
+              Err(err) => {
+                finish(
+                  false,
+                  false,
+                  Some(format!("failed to open download source {}: {err}", path.display())),
+                  None,
+                );
+                return;
+              }
+            };
+            (Box::new(file), total)
+          }
+          "http" | "https" => {
+            let client = match reqwest::blocking::Client::builder()
+              .redirect(reqwest::redirect::Policy::limited(10))
+              .build()
+            {
+              Ok(client) => client,
+              Err(err) => {
+                finish(false, false, Some(format!("failed to build HTTP client: {err}")), None);
+                return;
+              }
+            };
+
+            let resp = match client.get(&url).send() {
+              Ok(resp) => resp,
+              Err(err) => {
+                finish(false, false, Some(format!("HTTP request failed for {url}: {err}")), None);
+                return;
+              }
+            };
+
+            if !resp.status().is_success() {
+              finish(
+                false,
+                false,
+                Some(format!("HTTP status {} for {url}", resp.status())),
+                None,
+              );
+              return;
+            }
+
+            let total = resp.content_length();
+            (Box::new(resp), total)
+          }
+          other => {
+            finish(
+              false,
+              false,
+              Some(format!("unsupported download URL scheme: {other}")),
+              None,
+            );
+            return;
+          }
+        };
+
+        let mut writer = match std::fs::OpenOptions::new()
+          .write(true)
+          .create_new(true)
+          .open(&part_path)
+        {
+          Ok(file) => file,
+          Err(err) => {
+            finish(
+              false,
+              false,
+              Some(format!(
+                "failed to create temp download file {}: {err}",
+                part_path.display()
+              )),
+              None,
+            );
+            return;
+          }
+        };
+
+        const READ_CHUNK: usize = 16 * 1024;
+        const PROGRESS_STRIDE: u64 = 64 * 1024;
+
+        let mut buf = vec![0u8; READ_CHUNK];
+        let mut received: u64 = 0;
+        let mut last_progress_sent: u64 = 0;
+
+        loop {
+          if cancel.load(Ordering::Acquire) {
+            drop(writer);
+            cleanup_part();
+            finish(false, true, None, None);
+            return;
+          }
+
+          let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) => {
+              drop(writer);
+              cleanup_part();
+              finish(false, false, Some(format!("download read failed: {err}")), None);
+              return;
+            }
+          };
+
+          if let Err(err) = writer.write_all(&buf[..n]) {
+            drop(writer);
+            cleanup_part();
+            finish(false, false, Some(format!("download write failed: {err}")), None);
+            return;
+          }
+
+          received = received.saturating_add(n as u64);
+
+          let should_emit_progress =
+            last_progress_sent == 0 || received.saturating_sub(last_progress_sent) >= PROGRESS_STRIDE;
+
+          if should_emit_progress {
+            last_progress_sent = received;
+            let _ = ui_tx.send(WorkerToUi::DownloadProgress {
+              tab_id,
+              download_id,
+              received_bytes: received,
+              total_bytes,
+            });
+          }
+
+          // Cooperate with cancellation/other threads even when downloading from fast local sources.
+          std::thread::yield_now();
+        }
+
+        if let Err(err) = writer.flush() {
+          drop(writer);
+          cleanup_part();
+          finish(false, false, Some(format!("download flush failed: {err}")), None);
+          return;
+        }
+        drop(writer);
+
+        if cancel.load(Ordering::Acquire) {
+          cleanup_part();
+          finish(false, true, None, None);
+          return;
+        }
+
+        if let Err(err) = std::fs::rename(&part_path, &final_path) {
+          cleanup_part();
+          finish(
+            false,
+            false,
+            Some(format!(
+              "failed to finalize download (rename {} -> {}): {err}",
+              part_path.display(),
+              final_path.display()
+            )),
+            None,
+          );
+          return;
+        }
+
+        finish(true, false, None, Some(final_path));
+      });
   }
 
   fn schedule_navigation(&mut self, tab_id: TabId, url: String, reason: NavigationReason) {
@@ -2935,27 +3235,40 @@ impl BrowserRuntime {
       }
     }
 
+    let mut navigate_to: Option<String> = None;
+    let mut navigate_request: Option<FormSubmission> = None;
+    let mut open_in_new_tab: Option<String> = None;
+    let mut download_to_start: Option<(String, Option<String>)> = None;
+
     match action {
       InteractionAction::Navigate { href } => {
         if default_allowed {
-          self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
+          navigate_to = Some(href);
         } else if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
       }
       InteractionAction::OpenInNewTab { href } => {
         if default_allowed {
-          let _ = self
-            .ui_tx
-            .send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+          open_in_new_tab = Some(href);
         }
+        if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
+      }
+      InteractionAction::Download { href, file_name } => {
+        if default_allowed {
+          download_to_start = Some((href, file_name));
+        }
+        // Downloads do not navigate away from the current page; repaint so visited-link styles and
+        // other DOM mutations become visible.
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
       }
       InteractionAction::NavigateRequest { request } => {
         if default_allowed {
-          self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
+          navigate_request = Some(request);
         } else if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
@@ -2992,6 +3305,23 @@ impl BrowserRuntime {
           tab.needs_repaint = true;
         }
       }
+    }
+
+    // `start_download` mutates global worker state; ensure we end our borrow of `tab` first.
+    //
+    // `drop(tab)` would work but triggers the `dropping_references` lint; moving into `_` is the
+    // conventional way to end the borrow early.
+    let _ = tab;
+    if let Some((href, file_name)) = download_to_start {
+      self.start_download(tab_id, href, file_name);
+    }
+    if let Some(url) = open_in_new_tab {
+      let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url });
+    }
+    if let Some(url) = navigate_to {
+      self.schedule_navigation(tab_id, url, NavigationReason::LinkClick);
+    } else if let Some(request) = navigate_request {
+      self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
     }
   }
 
@@ -3265,6 +3595,7 @@ impl BrowserRuntime {
     let mut navigate_to: Option<String> = None;
     let mut navigate_request: Option<FormSubmission> = None;
     let mut keyboard_scroll: Option<UiToWorker> = None;
+    let mut download_to_start: Option<(String, Option<String>)> = None;
 
     {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -3417,6 +3748,7 @@ impl BrowserRuntime {
         action,
         InteractionAction::Navigate { .. }
           | InteractionAction::OpenInNewTab { .. }
+          | InteractionAction::Download { .. }
           | InteractionAction::NavigateRequest { .. }
       ) {
         if let Some(submitter_id) = form_submitter {
@@ -3504,6 +3836,15 @@ impl BrowserRuntime {
             let _ = self
               .ui_tx
               .send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+          }
+          if changed || scroll_changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
+        }
+        InteractionAction::Download { href, file_name } => {
+          if default_allowed {
+            download_to_start = Some((href, file_name));
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
@@ -3607,6 +3948,10 @@ impl BrowserRuntime {
           }
         }
       }
+    }
+
+    if let Some((href, file_name)) = download_to_start {
+      self.start_download(tab_id, href, file_name);
     }
 
     if let Some(href) = navigate_to {
@@ -4776,6 +5121,7 @@ fn spawn_worker_with_factory_inner(
   let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
 
+  let router_thread_name = format!("{name}-router");
   let join = std::thread::Builder::new()
     .name(name)
     .stack_size(crate::system::DEFAULT_RENDER_STACK_SIZE)
@@ -4795,8 +5141,37 @@ fn spawn_worker_with_factory_inner(
         TestRenderDelayGuard
       });
 
-      let mut runtime = BrowserRuntime::new(ui_to_worker_rx, worker_to_ui_tx, factory);
+      // Route UI messages through a lightweight forwarder thread so time-sensitive operations
+      // (e.g. download cancellation) can be observed even while the main worker is busy rendering.
+      let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+      let (runtime_tx, runtime_rx) = std::sync::mpsc::channel::<UiToWorker>();
+
+      let router_downloads = Arc::clone(&downloads);
+      let router_join = std::thread::Builder::new()
+        .name(router_thread_name)
+        .spawn(move || {
+          while let Ok(msg) = ui_to_worker_rx.recv() {
+            // Apply cancellation immediately so it can interrupt long-running downloads even while
+            // the render loop is busy with prepare/paint work.
+            if let UiToWorker::CancelDownload { download_id } = &msg {
+              let downloads = router_downloads.lock().unwrap_or_else(|err| err.into_inner());
+              if let Some(download) = downloads.get(download_id) {
+                download.cancel.store(true, Ordering::Release);
+              }
+            }
+
+            if runtime_tx.send(msg).is_err() {
+              break;
+            }
+          }
+        })
+        .expect("spawn UI worker router thread");
+
+      let mut runtime = BrowserRuntime::new(runtime_rx, worker_to_ui_tx, factory, downloads);
       runtime.run();
+
+      let _ = router_join.join();
     })?;
 
   Ok(UiThreadWorkerHandle {

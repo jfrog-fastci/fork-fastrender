@@ -1095,6 +1095,14 @@ impl BrowserAppState {
         // model does not store clipboard contents.
         update.request_redraw = true;
       }
+      WorkerToUi::DownloadStarted { .. }
+      | WorkerToUi::DownloadProgress { .. }
+      | WorkerToUi::DownloadFinished { .. } => {
+        // Downloads are currently managed by the front-end; the shared state model does not yet
+        // surface download UI, but we still request a redraw so UIs can react (e.g. show a
+        // downloads panel/toolbar indicator in the future).
+        update.request_redraw = true;
+      }
     }
 
     update

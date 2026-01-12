@@ -27,6 +27,7 @@ pub mod visited;
 pub mod omnibox;
 pub mod load_progress;
 pub mod messages;
+pub mod downloads;
 pub mod render_worker;
 pub mod scrollbars;
 pub mod shortcuts;
@@ -79,7 +80,7 @@ pub mod session_autosave;
 pub mod browser_cli;
 
 pub use messages::{
-  CursorKind, NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason,
+  CursorKind, DownloadId, NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason,
   TabId, UiToWorker, WorkerToUi,
 };
 

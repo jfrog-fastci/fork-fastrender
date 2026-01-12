@@ -66,42 +66,20 @@ fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
       tab_id: msg_tab, ..
     }
     | WorkerToUi::SelectDropdownClosed { tab_id: msg_tab }
-    | WorkerToUi::NavigationStarted {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::NavigationCommitted {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::NavigationFailed {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::ScrollStateUpdated {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::LoadingState {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::Warning {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::ContextMenu {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::RequestOpenInNewTab {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::HoverChanged {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::FindResult {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::SetClipboardText {
-      tab_id: msg_tab, ..
-    }
-    | WorkerToUi::FindResult {
-      tab_id: msg_tab, ..
-    } => *msg_tab == tab_id,
+    | WorkerToUi::NavigationStarted { tab_id: msg_tab, .. }
+    | WorkerToUi::NavigationCommitted { tab_id: msg_tab, .. }
+    | WorkerToUi::NavigationFailed { tab_id: msg_tab, .. }
+    | WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. }
+    | WorkerToUi::LoadingState { tab_id: msg_tab, .. }
+    | WorkerToUi::Warning { tab_id: msg_tab, .. }
+    | WorkerToUi::ContextMenu { tab_id: msg_tab, .. }
+    | WorkerToUi::RequestOpenInNewTab { tab_id: msg_tab, .. }
+    | WorkerToUi::HoverChanged { tab_id: msg_tab, .. }
+    | WorkerToUi::FindResult { tab_id: msg_tab, .. }
+    | WorkerToUi::SetClipboardText { tab_id: msg_tab, .. }
+    | WorkerToUi::DownloadStarted { tab_id: msg_tab, .. }
+    | WorkerToUi::DownloadProgress { tab_id: msg_tab, .. }
+    | WorkerToUi::DownloadFinished { tab_id: msg_tab, .. } => *msg_tab == tab_id,
     WorkerToUi::DebugLog { .. } => false,
   }
 }
