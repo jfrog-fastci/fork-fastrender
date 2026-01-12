@@ -361,6 +361,47 @@ impl Program {
     })
   }
 
+  /// Type of the innermost expression at the given offset, using cached body results.
+  ///
+  /// Unlike [`Program::type_at`], this will **not** trigger body checking; it only
+  /// consults results previously seeded into the program's internal salsa
+  /// database by [`Program::check_body`](crate::Program::check_body).
+  ///
+  /// Returns `None` when no cached [`BodyCheckResult`] is available (for example,
+  /// when the relevant body has not been checked yet).
+  pub fn type_at_cached(&self, file: FileId, offset: u32) -> Option<TypeId> {
+    match self.type_at_cached_fallible(file, offset) {
+      Ok(ty) => ty,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        None
+      }
+    }
+  }
+
+  pub fn type_at_cached_fallible(
+    &self,
+    file: FileId,
+    offset: u32,
+  ) -> Result<Option<TypeId>, FatalError> {
+    self.with_interned_state(|state| {
+      if state.snapshot_loaded {
+        let Some((body, expr)) = state.expr_at(file, offset) else {
+          return Ok(None);
+        };
+        let Some(result) = state.body_results.get(&body) else {
+          return Ok(None);
+        };
+        if let Some((_, ty)) = result.expr_at(offset) {
+          return Ok(Some(ty));
+        }
+        return Ok(result.expr_type(expr));
+      }
+
+      Ok(db::type_at(&state.typecheck_db, file, offset))
+    })
+  }
+
   /// Resolved signature for the innermost call/construct expression covering an offset.
   pub fn call_signature_at(&self, file: FileId, offset: u32) -> Option<tti::SignatureId> {
     match self.call_signature_at_fallible(file, offset) {
