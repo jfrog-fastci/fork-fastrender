@@ -2426,6 +2426,7 @@ const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const PLATFORM_DOCUMENT_KEY: &str = "__fastrender_platform_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const DOCUMENT_SELECTION_KEY: &str = "__fastrender_document_selection";
+const DOM_IMPLEMENTATION_BRAND_KEY: &str = "__fastrender_dom_implementation";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
 const EVENT_INITIALIZED_KEY: &str = "__fastrender_event_initialized";
@@ -6792,6 +6793,26 @@ fn should_run_dom_side_effects_for_document(
   }
   Ok(document_window_from_document(scope, document_obj)?.is_some())
 }
+
+/// Returns the value of a data property from `obj` or its prototype chain.
+///
+/// This mirrors [`Heap::object_get_own_data_property_value`] but searches prototypes as well, which
+/// allows realm-owned documents created via `document.implementation.createHTMLDocument()` to
+/// inherit shared shim function objects from the host `window.document`.
+fn object_get_data_property_value(
+  heap: &Heap,
+  obj: GcObject,
+  key: &PropertyKey,
+) -> Result<Option<Value>, VmError> {
+  match heap.get_property(obj, key)? {
+    Some(desc) => match desc.kind {
+      PropertyKind::Data { value, .. } => Ok(Some(value)),
+      PropertyKind::Accessor { .. } => Err(VmError::PropertyNotData),
+    },
+    None => Ok(None),
+  }
+}
+
 fn get_or_create_node_wrapper(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -6850,27 +6871,19 @@ fn get_or_create_node_wrapper(
 
   let element_query_selector = {
     let key = alloc_key(scope, ELEMENT_QUERY_SELECTOR_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let element_query_selector_all = {
     let key = alloc_key(scope, ELEMENT_QUERY_SELECTOR_ALL_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let element_matches = {
     let key = alloc_key(scope, ELEMENT_MATCHES_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let element_closest = {
     let key = alloc_key(scope, ELEMENT_CLOSEST_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
 
   let slot_assigned_nodes = {
@@ -6894,52 +6907,36 @@ fn get_or_create_node_wrapper(
 
   let element_get_bounding_client_rect = {
     let key = alloc_key(scope, ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
 
   let input_value_get = {
     let key = alloc_key(scope, INPUT_VALUE_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let input_value_set = {
     let key = alloc_key(scope, INPUT_VALUE_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let input_checked_get = {
     let key = alloc_key(scope, INPUT_CHECKED_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let input_checked_set = {
     let key = alloc_key(scope, INPUT_CHECKED_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let textarea_value_get = {
     let key = alloc_key(scope, TEXTAREA_VALUE_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let textarea_value_set = {
     let key = alloc_key(scope, TEXTAREA_VALUE_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let form_reset = {
     let key = alloc_key(scope, FORM_RESET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let select_options_get = {
     let key = alloc_key(scope, SELECT_OPTIONS_GET_KEY)?;
@@ -6986,89 +6983,71 @@ fn get_or_create_node_wrapper(
 
   let class_name_get = {
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let class_name_set = {
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let class_list_add = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_ADD_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let class_list_remove = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_REMOVE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let class_list_toggle = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_TOGGLE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let class_list_contains = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_CONTAINS_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let class_list_replace = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_REPLACE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let id_get = {
     let key = alloc_key(scope, ELEMENT_ID_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let id_set = {
     let key = alloc_key(scope, ELEMENT_ID_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let title_get = {
     let key = alloc_key(scope, ELEMENT_TITLE_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let title_set = {
     let key = alloc_key(scope, ELEMENT_TITLE_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let lang_get = {
     let key = alloc_key(scope, ELEMENT_LANG_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let lang_set = {
     let key = alloc_key(scope, ELEMENT_LANG_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let dir_get = {
     let key = alloc_key(scope, ELEMENT_DIR_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let dir_set = {
     let key = alloc_key(scope, ELEMENT_DIR_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let hidden_get = {
     let key = alloc_key(scope, ELEMENT_HIDDEN_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let hidden_set = {
     let key = alloc_key(scope, ELEMENT_HIDDEN_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let slot_get = {
     let key = alloc_key(scope, ELEMENT_SLOT_GET_KEY)?;
@@ -7080,379 +7059,255 @@ fn get_or_create_node_wrapper(
   };
   let src_get = {
     let key = alloc_key(scope, ELEMENT_SRC_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let src_set = {
     let key = alloc_key(scope, ELEMENT_SRC_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let srcset_get = {
     let key = alloc_key(scope, ELEMENT_SRCSET_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let srcset_set = {
     let key = alloc_key(scope, ELEMENT_SRCSET_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let sizes_get = {
     let key = alloc_key(scope, ELEMENT_SIZES_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let sizes_set = {
     let key = alloc_key(scope, ELEMENT_SIZES_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let href_get = {
     let key = alloc_key(scope, ELEMENT_HREF_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let href_set = {
     let key = alloc_key(scope, ELEMENT_HREF_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let rel_get = {
     let key = alloc_key(scope, ELEMENT_REL_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let rel_set = {
     let key = alloc_key(scope, ELEMENT_REL_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let type_get = {
     let key = alloc_key(scope, ELEMENT_TYPE_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let type_set = {
     let key = alloc_key(scope, ELEMENT_TYPE_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let charset_get = {
     let key = alloc_key(scope, ELEMENT_CHARSET_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let charset_set = {
     let key = alloc_key(scope, ELEMENT_CHARSET_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let cross_origin_get = {
     let key = alloc_key(scope, ELEMENT_CROSS_ORIGIN_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let cross_origin_set = {
     let key = alloc_key(scope, ELEMENT_CROSS_ORIGIN_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let async_get = {
     let key = alloc_key(scope, ELEMENT_ASYNC_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let async_set = {
     let key = alloc_key(scope, ELEMENT_ASYNC_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let defer_get = {
     let key = alloc_key(scope, ELEMENT_DEFER_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let defer_set = {
     let key = alloc_key(scope, ELEMENT_DEFER_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let height_get = {
     let key = alloc_key(scope, ELEMENT_HEIGHT_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let height_set = {
     let key = alloc_key(scope, ELEMENT_HEIGHT_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let width_get = {
     let key = alloc_key(scope, ELEMENT_WIDTH_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let width_set = {
     let key = alloc_key(scope, ELEMENT_WIDTH_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let append_child = {
     let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let insert_before = {
     let key = alloc_key(scope, NODE_INSERT_BEFORE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let remove_child = {
     let key = alloc_key(scope, NODE_REMOVE_CHILD_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let replace_child = {
     let key = alloc_key(scope, NODE_REPLACE_CHILD_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let clone_node = {
     let key = alloc_key(scope, NODE_CLONE_NODE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let parent_node_get = {
     let key = alloc_key(scope, NODE_PARENT_NODE_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let first_child_get = {
     let key = alloc_key(scope, NODE_FIRST_CHILD_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let previous_sibling_get = {
     let key = alloc_key(scope, NODE_PREVIOUS_SIBLING_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let next_sibling_get = {
     let key = alloc_key(scope, NODE_NEXT_SIBLING_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let node_remove = {
     let key = alloc_key(scope, NODE_REMOVE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let text_content_get = {
     let key = alloc_key(scope, NODE_TEXT_CONTENT_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let text_content_set = {
     let key = alloc_key(scope, NODE_TEXT_CONTENT_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let add_event_listener = {
     let key = alloc_key(scope, EVENT_TARGET_ADD_EVENT_LISTENER_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let remove_event_listener = {
     let key = alloc_key(scope, EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let dispatch_event = {
     let key = alloc_key(scope, EVENT_TARGET_DISPATCH_EVENT_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let get_attribute = {
     let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let set_attribute = {
     let key = alloc_key(scope, ELEMENT_SET_ATTRIBUTE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let remove_attribute = {
     let key = alloc_key(scope, ELEMENT_REMOVE_ATTRIBUTE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let inner_html_get = {
     let key = alloc_key(scope, ELEMENT_INNER_HTML_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let inner_html_set = {
     let key = alloc_key(scope, ELEMENT_INNER_HTML_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let outer_html_get = {
     let key = alloc_key(scope, ELEMENT_OUTER_HTML_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let outer_html_set = {
     let key = alloc_key(scope, ELEMENT_OUTER_HTML_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let insert_adjacent_html = {
     let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_HTML_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let insert_adjacent_element = {
     let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_ELEMENT_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let insert_adjacent_text = {
     let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_TEXT_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_get_property_value = {
     let key = alloc_key(scope, STYLE_GET_PROPERTY_VALUE_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_set_property = {
     let key = alloc_key(scope, STYLE_SET_PROPERTY_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_remove_property = {
     let key = alloc_key(scope, STYLE_REMOVE_PROPERTY_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_css_text_get = {
     let key = alloc_key(scope, STYLE_CSS_TEXT_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_css_text_set = {
     let key = alloc_key(scope, STYLE_CSS_TEXT_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_display_get = {
     let key = alloc_key(scope, STYLE_DISPLAY_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_display_set = {
     let key = alloc_key(scope, STYLE_DISPLAY_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_cursor_get = {
     let key = alloc_key(scope, STYLE_CURSOR_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_cursor_set = {
     let key = alloc_key(scope, STYLE_CURSOR_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_height_get = {
     let key = alloc_key(scope, STYLE_HEIGHT_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_height_set = {
     let key = alloc_key(scope, STYLE_HEIGHT_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_width_get = {
     let key = alloc_key(scope, STYLE_WIDTH_GET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let style_width_set = {
     let key = alloc_key(scope, STYLE_WIDTH_SET_KEY)?;
-    scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let css_style_decl_proto = {
     let key = alloc_key(scope, CSS_STYLE_DECL_PROTOTYPE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
 
   let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
@@ -9226,18 +9081,19 @@ fn document_document_element_get_native(
     return Ok(Value::Null);
   };
 
-  let document_id = match dom_platform_mut(vm) {
-    Some(platform) => match platform.require_document_id(scope.heap(), Value::Object(document_obj)) {
-      Ok(id) => id,
-      Err(_) => return Ok(Value::Null),
-    },
+  let document_id = match dom_platform_mut(vm)
+    .and_then(|platform| platform.require_document_handle(scope.heap(), Value::Object(document_obj)).ok())
+  {
+    Some(key) => key.document_id,
     None => return Ok(Value::Null),
   };
 
-  let Some(dom) = dom_from_vm_host(host) else {
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, document_id) else {
     return Ok(Value::Null);
   };
-  let Some(node_id) = dom.document_element_for(document_id) else {
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(node_id) = dom.document_element() else {
     return Ok(Value::Null);
   };
 
@@ -9257,18 +9113,19 @@ fn document_head_get_native(
     return Ok(Value::Null);
   };
 
-  let document_id = match dom_platform_mut(vm) {
-    Some(platform) => match platform.require_document_id(scope.heap(), Value::Object(document_obj)) {
-      Ok(id) => id,
-      Err(_) => return Ok(Value::Null),
-    },
+  let document_id = match dom_platform_mut(vm)
+    .and_then(|platform| platform.require_document_handle(scope.heap(), Value::Object(document_obj)).ok())
+  {
+    Some(key) => key.document_id,
     None => return Ok(Value::Null),
   };
 
-  let Some(dom) = dom_from_vm_host(host) else {
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, document_id) else {
     return Ok(Value::Null);
   };
-  let Some(node_id) = dom.head_for(document_id) else {
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(node_id) = dom.head() else {
     return Ok(Value::Null);
   };
 
@@ -9288,18 +9145,19 @@ fn document_body_get_native(
     return Ok(Value::Null);
   };
 
-  let document_id = match dom_platform_mut(vm) {
-    Some(platform) => match platform.require_document_id(scope.heap(), Value::Object(document_obj)) {
-      Ok(id) => id,
-      Err(_) => return Ok(Value::Null),
-    },
+  let document_id = match dom_platform_mut(vm)
+    .and_then(|platform| platform.require_document_handle(scope.heap(), Value::Object(document_obj)).ok())
+  {
+    Some(key) => key.document_id,
     None => return Ok(Value::Null),
   };
 
-  let Some(dom) = dom_from_vm_host(host) else {
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, document_id) else {
     return Ok(Value::Null);
   };
-  let Some(node_id) = dom.body_for(document_id) else {
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(node_id) = dom.body() else {
     return Ok(Value::Null);
   };
 
@@ -10690,6 +10548,14 @@ fn document_create_element_native(
     ));
   };
 
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(
+      "document.createElement must be called on a document object",
+    ))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError("document.createElement must be called on a document object"))?
+    .document_id;
+
   let tag_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let tag_value = scope.heap_mut().to_string(tag_value)?;
   let tag_name = scope
@@ -10698,9 +10564,12 @@ fn document_create_element_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "document.createElement requires a DOM-backed document",
-  ))?;
+  let mut dom_ptr =
+    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+      "document.createElement requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
   // DOM: createElement() uses the HTML namespace only for HTML documents; XML documents default to
   // the null namespace.
   let namespace = if dom.is_html_document() { "" } else { dom2::NULL_NAMESPACE };
@@ -10962,6 +10831,14 @@ fn document_create_text_node_native(
     ));
   };
 
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(
+      "document.createTextNode must be called on a document object",
+    ))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError("document.createTextNode must be called on a document object"))?
+    .document_id;
+
   let data_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let data_value = scope.heap_mut().to_string(data_value)?;
   let data = scope
@@ -10970,9 +10847,12 @@ fn document_create_text_node_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "document.createTextNode requires a DOM-backed document",
-  ))?;
+  let mut dom_ptr =
+    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+      "document.createTextNode requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
   let node_id = dom.create_text(&data);
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
@@ -11201,7 +11081,7 @@ fn dom_parser_constructor_construct_native(
 fn dom_parser_parse_from_string_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
+  _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
@@ -11263,35 +11143,10 @@ fn dom_parser_parse_from_string_native(
     ));
   }
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "DOMParser.parseFromString requires a DOM-backed document",
-  ))?;
-
-  let parsed_dom = crate::dom::parse_html_with_options(
-    html.as_ref(),
-    crate::dom::DomParseOptions::with_scripting_enabled(false),
-  )
-  .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?;
-
-  // Create a detached document root node inside the shared `dom2::Document`.
-  let document_id = dom
-    .clone_node(dom.root(), /* deep */ false)
-    .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to create a Document"))?;
-
-  if let crate::dom::DomNodeType::Document { quirks_mode, .. } = &parsed_dom.node_type {
-    dom.node_mut(document_id).kind = NodeKind::Document {
-      quirks_mode: *quirks_mode,
-    };
-  }
-
-  crate::dom2::import::import_domnode_into_parent(dom, document_id, &parsed_dom);
+  let dom = dom2::parse_html(&html)
+    .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?;
 
   // Construct a detached Document wrapper.
-  //
-  // Keep `window.document` as the prototype to inherit the full Document API surface (e.g. `body`,
-  // `getElementById`), but copy internal `__fastrender_*` shim keys onto the new object as *own*
-  // properties so `get_or_create_node_wrapper(..)` can install Node/Element methods for nodes in
-  // the detached tree.
   let document_obj = scope.alloc_object_with_prototype(Some(host_document_obj))?;
   scope.push_root(Value::Object(document_obj))?;
   scope.heap_mut().object_set_host_slots(
@@ -11302,45 +11157,66 @@ fn dom_parser_parse_from_string_native(
     },
   )?;
 
-  // Detached documents have no associated window.
-  let default_view_key = alloc_key(scope, "defaultView")?;
-  scope.define_property(
-    document_obj,
-    default_view_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Null,
-        writable: false,
-      },
-    },
-  )?;
-  let location_key = alloc_key(scope, "location")?;
-  scope.define_property(
-    document_obj,
-    location_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Null,
-        writable: false,
-      },
-    },
-  )?;
+  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
+  scope.push_root(Value::String(about_blank_s))?;
 
-  // Register the detached document node with `DomPlatform` so Document methods that brand-check via
-  // `require_document_id` can be called on this wrapper.
-  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
-    "DOMParser.parseFromString requires a DOM-backed realm",
-  ))?;
-  let host_document_key = vm_js::WeakGcObject::from(host_document_obj);
+  {
+    // Root while allocating property keys: string allocation can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    scope.push_root(Value::String(about_blank_s))?;
+
+    let default_view_key = alloc_key(&mut scope, "defaultView")?;
+    scope.define_property(
+      document_obj,
+      default_view_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+
+    let url_key = alloc_key(&mut scope, "URL")?;
+    scope.define_property(
+      document_obj,
+      url_key,
+      data_desc(Value::String(about_blank_s)),
+    )?;
+
+    let location_key = alloc_key(&mut scope, "location")?;
+    scope.define_property(
+      document_obj,
+      location_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+  }
+
+  // Register this `Document` wrapper with the DOM platform so Document methods that brand-check via
+  // `require_document_handle` can be called on the returned object.
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let Some(platform) = data.dom_platform_mut() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let document_key = vm_js::WeakGcObject::from(document_obj);
+  // `dom2`'s document node is always index 0.
   platform.register_wrapper(
     scope.heap(),
     document_obj,
-    host_document_key,
-    document_id,
+    document_key,
+    NodeId::from_index(0),
     DomInterface::Document,
   );
 
@@ -11350,7 +11226,7 @@ fn dom_parser_parse_from_string_native(
   scope.define_property(
     document_obj,
     node_id_key,
-    data_desc(Value::Number(document_id.index() as f64)),
+    data_desc(Value::Number(0.0)),
   )?;
   let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
   scope.define_property(
@@ -11388,7 +11264,105 @@ fn dom_parser_parse_from_string_native(
   // methods, etc).
   copy_wrapper_shared_methods(scope, host_document_obj, document_obj)?;
 
+  let document_id = gc_object_id(document_obj);
+  data.owned_dom2_documents.insert(document_id, Box::new(dom));
+
   Ok(Value::Object(document_obj))
+}
+
+fn document_import_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "Document.importNode must be called on a document object",
+    ));
+  };
+
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
+    "Document.importNode must be called on a document object",
+  ))?;
+  let target_document_id = platform
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError("Document.importNode must be called on a document object"))?
+    .document_id;
+
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node_key = platform
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("Document.importNode requires a node argument"))?;
+
+  let deep = if args.len() >= 2 {
+    scope.heap().to_boolean(args[1])?
+  } else {
+    false
+  };
+
+  let src_dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id).ok_or(
+    VmError::TypeError("Document.importNode requires a DOM-backed source document"),
+  )?;
+  let mut dst_dom_ptr = dom_ptr_for_document_id_mut(vm, host, target_document_id).ok_or(
+    VmError::TypeError("Document.importNode requires a DOM-backed target document"),
+  )?;
+
+  // SAFETY: `dom_ptr_*` are valid for the duration of this native call.
+  let src_dom = unsafe { src_dom_ptr.as_ref() };
+  let dst_dom = unsafe { dst_dom_ptr.as_mut() };
+
+  let imported = dst_dom
+    .import_node_from(src_dom, node_key.node_id, deep)
+    .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dst_dom), imported)
+}
+
+fn document_adopt_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "Document.adoptNode must be called on a document object",
+    ));
+  };
+
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
+    "Document.adoptNode must be called on a document object",
+  ))?;
+  let target_document_id = platform
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError("Document.adoptNode must be called on a document object"))?
+    .document_id;
+
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node_key = platform
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("Document.adoptNode requires a node argument"))?;
+
+  if node_key.document_id == target_document_id {
+    // No-op adoption: keep the same node object and document association.
+    return Ok(node_value);
+  }
+
+  let target_dom_ptr = dom_ptr_for_document_id_mut(vm, host, target_document_id).ok_or(
+    VmError::TypeError("Document.adoptNode requires a DOM-backed target document"),
+  )?;
+  // Delegate to the shared adoption helper so wrapper remapping and aliasing document arena cases
+  // stay consistent with insertion APIs (appendChild/insertBefore/etc).
+  let _ = maybe_adopt_node_into_document(vm, scope, host, document_obj, target_dom_ptr, node_key)?;
+
+  Ok(node_value)
 }
 fn define_event_default_properties(scope: &mut Scope<'_>, obj: GcObject) -> Result<(), VmError> {
   // WHATWG DOM: core Event attributes must exist from construction time (or `createEvent`), with
@@ -21966,14 +21940,16 @@ fn node_append_child_native(
       .iter()
       .copied()
       .filter(|&child| {
-        child.index() < child_dom.nodes_len()
-          && child_dom.node(child).parent == Some(child_handle.node_id)
+        child.index() < child_dom.nodes_len() && child_dom.node(child).parent == Some(child_handle.node_id)
       })
       .collect()
   } else {
     Vec::new()
   };
-  let old_parent = (!child_is_fragment).then(|| child_dom.parent_node(child_handle.node_id)).flatten();
+
+  let old_parent = (!child_is_fragment)
+    .then(|| child_dom.parent_node(child_handle.node_id))
+    .flatten();
 
   let inserted_roots: Vec<NodeId> = if child_is_fragment && child_handle.document_id != parent_handle.document_id {
     // Cross-document fragment insertion: fragment stays in its original document; its children are
@@ -21991,7 +21967,10 @@ fn node_append_child_native(
           dom_ptr,
           DomNodeKey::new(child_handle.document_id, child_id),
         )
-        .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
+        .map_err(|err| match err {
+          VmError::TypeError(_) => VmError::TypeError("Node.appendChild requires a node argument"),
+          err => err,
+        })?;
       }
       fragment_children.clone()
     } else {
@@ -22005,7 +21984,10 @@ fn node_append_child_native(
           dom_ptr,
           DomNodeKey::new(child_handle.document_id, child_id),
         )
-        .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
+        .map_err(|err| match err {
+          VmError::TypeError(_) => VmError::TypeError("Node.appendChild requires a node argument"),
+          err => err,
+        })?;
         if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, adopted.node_id) {
           return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
         }
@@ -22018,7 +22000,10 @@ fn node_append_child_native(
       child_handle.node_id
     } else {
       maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, child_handle)
-        .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?
+        .map_err(|err| match err {
+          VmError::TypeError(_) => VmError::TypeError("Node.appendChild requires a node argument"),
+          err => err,
+        })?
         .node_id
     };
 
@@ -22071,26 +22056,36 @@ fn node_append_child_native(
     )?;
   }
 
-  run_dynamic_script_insertion_steps(
-    vm,
-    scope,
-    host,
-    hooks,
-    document_obj,
-    dom_ptr,
-    &inserted_roots,
-  )?;
-  run_dynamic_script_children_changed_steps(
-    vm,
-    scope,
-    host,
-    hooks,
-    document_obj,
-    dom_ptr,
-    parent_handle.node_id,
-  )?;
+  // Owned documents do not currently participate in dynamic script insertion; only run these steps
+  // for the host document.
+  if is_host_document_id(vm, parent_handle.document_id) {
+    run_dynamic_script_insertion_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      &inserted_roots,
+    )?;
+    run_dynamic_script_children_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      parent_handle.node_id,
+    )?;
+  }
+
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  if child_dom_ptr != dom_ptr {
+    let source_needs_microtask = unsafe { child_dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, child_document_obj, source_needs_microtask)?;
+  }
 
   Ok(child_value)
 }
@@ -22703,30 +22698,27 @@ fn node_traversal_getter(
     return Ok(Value::Null);
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => return Ok(Value::Null),
+  let node_key = match dom_platform_mut(vm).and_then(|platform| {
+    platform
+      .require_node_handle(scope.heap(), Value::Object(wrapper_obj))
+      .ok()
+  }) {
+    Some(key) => key,
+    None => return Ok(Value::Null),
   };
 
-  let Some(dom) = dom_from_vm_host(host) else {
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, node_key.document_id) else {
     return Ok(Value::Null);
   };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
-  let node_id = match dom.node_id_from_index(node_index) {
-    Ok(id) => id,
-    Err(_) => return Ok(Value::Null),
-  };
-
-  let document_obj = match node_wrapper_document_obj(scope, wrapper_obj, node_id) {
+  let document_obj = match node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id) {
     Ok(obj) => obj,
     Err(_) => return Ok(Value::Null),
   };
 
-  match f(dom, node_id) {
+  match f(dom, node_key.node_id) {
     Some(found) => get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found),
     None => Ok(Value::Null),
   }
@@ -23243,12 +23235,11 @@ fn node_child_nodes_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
-
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let child_nodes_key = alloc_key(scope, NODE_CHILD_NODES_KEY)?;
   let array = match scope
@@ -23280,7 +23271,7 @@ fn node_child_nodes_get_native(
     }
   };
 
-  sync_child_nodes_array(vm, scope, document_obj, dom, node_id, array)?;
+  sync_child_nodes_array(vm, scope, handle.document_obj, dom, handle.node_id, array)?;
   Ok(Value::Object(array))
 }
 
@@ -23909,13 +23900,15 @@ fn text_data_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let text_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_text_id(scope.heap(), Value::Object(text_obj))?;
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let node_key = platform.require_text_handle(scope.heap(), Value::Object(text_obj))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let data = dom
-    .text_data(text_id)
+    .text_data(node_key.node_id)
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok(Value::String(scope.alloc_string(data)?))
 }
@@ -23933,16 +23926,9 @@ fn text_data_set_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let Some(document_obj) = vm
-    .user_data::<WindowRealmUserData>()
-    .and_then(|data| data.document_obj)
-  else {
-    return Ok(Value::Undefined);
-  };
-
-  let text_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_text_id(scope.heap(), Value::Object(text_obj))?;
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let node_key = platform.require_text_handle(scope.heap(), Value::Object(text_obj))?;
+  let document_obj = node_wrapper_document_obj(scope, text_obj, node_key.node_id)?;
 
   let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let new_value = scope.heap_mut().to_string(new_value)?;
@@ -23952,40 +23938,51 @@ fn text_data_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let mut dom_ptr =
-    dom_ptr_for_event_registry(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let mut dom_ptr = if is_host_document_id(vm, node_key.document_id) {
+    dom_ptr_for_event_registry(host).ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    dom_ptr_for_document_id_mut(vm, host, node_key.document_id).ok_or(VmError::TypeError("Illegal invocation"))?
+  };
 
-  let (changed, maybe_script_parent) =
-    mutate_dom_for_vm_host(host, |dom| match dom.set_text_data(text_id, &new_value) {
-      Ok(changed) => {
-        let maybe_script_parent = changed
-          .then(|| dom.node(text_id).parent)
-          .flatten()
-          .filter(|&parent| is_html_script_element(dom, parent));
-        (Ok((changed, maybe_script_parent)), changed)
-      }
-      Err(err) => {
-        let exc = match make_dom_exception(scope, err.code(), "") {
-          Ok(v) => VmError::Throw(v),
-          Err(e) => e,
-        };
-        (Err(exc), false)
-      }
-    })
-    .ok_or(VmError::TypeError("Illegal invocation"))??;
+  let maybe_script_parent = if is_host_document_id(vm, node_key.document_id) {
+    let (_changed, maybe_script_parent) =
+      mutate_dom_for_vm_host(host, |dom| match dom.set_text_data(node_key.node_id, &new_value) {
+        Ok(changed) => {
+          let maybe_script_parent = changed
+            .then(|| dom.node(node_key.node_id).parent)
+            .flatten()
+            .filter(|&parent| is_html_script_element(dom, parent));
+          (Ok((changed, maybe_script_parent)), changed)
+        }
+        Err(err) => {
+          let exc = match make_dom_exception(scope, err.code(), "") {
+            Ok(v) => VmError::Throw(v),
+            Err(e) => e,
+          };
+          (Err(exc), false)
+        }
+      })
+      .ok_or(VmError::TypeError("Illegal invocation"))??;
+    maybe_script_parent
+  } else {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    dom
+      .set_text_data(node_key.node_id, &new_value)
+      .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
+    None
+  };
 
-  if changed {
-    if let Some(parent) = maybe_script_parent {
-      run_dynamic_script_children_changed_steps(
-        vm,
-        scope,
-        host,
-        hooks,
-        document_obj,
-        dom_ptr,
-        parent,
-      )?;
-    }
+  if let Some(parent) = maybe_script_parent {
+    run_dynamic_script_children_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      parent,
+    )?;
   }
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
@@ -24300,6 +24297,13 @@ struct ElementHandle {
   document_obj: GcObject,
 }
 
+#[derive(Clone, Copy)]
+struct NodeHandle {
+  document_id: DocumentId,
+  node_id: NodeId,
+  document_obj: GcObject,
+}
+
 fn is_host_document_id(vm: &mut Vm, document_id: DocumentId) -> bool {
   let Some(data) = vm.user_data::<WindowRealmUserData>() else {
     return false;
@@ -24340,6 +24344,25 @@ fn element_handle_from_wrapper_obj_opt(
     .ok()?;
   let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id).ok()?;
   Some(ElementHandle {
+    document_id: node_key.document_id,
+    node_id: node_key.node_id,
+    document_obj,
+  })
+}
+
+fn node_handle_from_wrapper_obj(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  wrapper_obj: GcObject,
+  error_message: &'static str,
+) -> Result<NodeHandle, VmError> {
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(error_message))?;
+  let node_key = platform
+    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))
+    .map_err(|_| VmError::TypeError(error_message))?;
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id)
+    .map_err(|_| VmError::TypeError(error_message))?;
+  Ok(NodeHandle {
     document_id: node_key.document_id,
     node_id: node_key.node_id,
     document_obj,
@@ -30740,47 +30763,44 @@ fn init_window_globals(
     },
   )?;
 
-  // `Document.implementation`.
+  // Document.implementation / DOMImplementation.
   //
-  // A minimal DOMImplementation shim is enough for many real-world scripts (and WPT) that create
-  // windowless documents via `document.implementation.createHTMLDocument()`.
-  let implementation_key = alloc_key(&mut scope, "implementation")?;
-  let implementation_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(implementation_obj))?;
-
-  let create_html_document_call_id = vm.register_native_call(dom_implementation_create_html_document_native)?;
+  // This is the entry point for creating detached documents
+  // (`document.implementation.createHTMLDocument()`).
+  let dom_implementation_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(dom_implementation_obj))?;
+  let dom_implementation_brand_key = alloc_key(&mut scope, DOM_IMPLEMENTATION_BRAND_KEY)?;
+  scope.define_property(
+    dom_implementation_obj,
+    dom_implementation_brand_key,
+    non_configurable_read_only_data_desc(Value::Bool(true)),
+  )?;
+  let create_html_document_key = alloc_key(&mut scope, "createHTMLDocument")?;
+  let create_html_document_call_id =
+    vm.register_native_call(dom_implementation_create_html_document_native)?;
   let create_html_document_name = scope.alloc_string("createHTMLDocument")?;
   scope.push_root(Value::String(create_html_document_name))?;
-  let create_html_document_func = scope.alloc_native_function_with_slots(
+  let create_html_document_func = scope.alloc_native_function(
     create_html_document_call_id,
     None,
     create_html_document_name,
     1,
-    &[Value::Object(document_obj)],
   )?;
   scope.heap_mut().object_set_prototype(
     create_html_document_func,
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(create_html_document_func))?;
-  let create_html_document_key = alloc_key(&mut scope, "createHTMLDocument")?;
   scope.define_property(
-    implementation_obj,
+    dom_implementation_obj,
     create_html_document_key,
     data_desc(Value::Object(create_html_document_func)),
   )?;
-
+  let implementation_key = alloc_key(&mut scope, "implementation")?;
   scope.define_property(
     document_obj,
     implementation_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Object(implementation_obj),
-        writable: false,
-      },
-    },
+    read_only_data_desc(Value::Object(dom_implementation_obj)),
   )?;
 
   // Document.title.
@@ -31389,7 +31409,6 @@ fn init_window_globals(
   //
   // WPT expects `document.implementation.createDocumentType()` to exist and return a `DocumentType`
   // node.
-  let dom_implementation_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(dom_implementation_obj))?;
   let create_document_type_call_id =
     vm.register_native_call(dom_implementation_create_document_type_native)?;
@@ -31413,11 +31432,39 @@ fn init_window_globals(
     create_document_type_key,
     data_desc(Value::Object(create_document_type_func)),
   )?;
-  let implementation_key = alloc_key(&mut scope, "implementation")?;
+
+  // document.importNode
+  let import_node_key = alloc_key(&mut scope, "importNode")?;
+  let import_node_call_id = vm.register_native_call(document_import_node_native)?;
+  let import_node_name = scope.alloc_string("importNode")?;
+  scope.push_root(Value::String(import_node_name))?;
+  let import_node_func = scope.alloc_native_function(import_node_call_id, None, import_node_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    import_node_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(import_node_func))?;
   scope.define_property(
     document_obj,
-    implementation_key,
-    read_only_data_desc(Value::Object(dom_implementation_obj)),
+    import_node_key,
+    data_desc(Value::Object(import_node_func)),
+  )?;
+
+  // document.adoptNode
+  let adopt_node_key = alloc_key(&mut scope, "adoptNode")?;
+  let adopt_node_call_id = vm.register_native_call(document_adopt_node_native)?;
+  let adopt_node_name = scope.alloc_string("adoptNode")?;
+  scope.push_root(Value::String(adopt_node_name))?;
+  let adopt_node_func = scope.alloc_native_function(adopt_node_call_id, None, adopt_node_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    adopt_node_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(adopt_node_func))?;
+  scope.define_property(
+    document_obj,
+    adopt_node_key,
+    data_desc(Value::Object(adopt_node_func)),
   )?;
 
   // --- DOM Events (MVP): Event / CustomEvent / StorageEvent / document.createEvent --------------
@@ -31772,8 +31819,7 @@ fn init_window_globals(
   // --- DOMParser -------------------------------------------------------------------------------
   //
   // `DOMParser.parseFromString` returns a detached `Document`. We implement detached documents as
-  // additional `NodeKind::Document` roots stored inside the same `dom2::Document` so they can reuse
-  // the existing mutation/traversal/query machinery.
+  // separate `dom2::Document` instances stored in `WindowRealmUserData::owned_dom2_documents`.
   let dom_parser_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(dom_parser_proto))?;
 
