@@ -214,6 +214,12 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
     emitted first (so CI can upload artifacts for triage).
 - `--trace` enables structured tracing logs on stderr (JSONL), keeping stdout
   parseable when `--json` is enabled. Redirect with `2> trace.jsonl`.
+- `--trace-resolution` captures structured module resolution events from both:
+  - the Rust checker (calls to `Host::resolve`), emitted as `rust_resolution_trace`
+  - the `tsc` oracle (compiler host resolution hooks), emitted as `tsc_resolution_trace`
+  This is intended for diagnosing difftsc/conformance mismatches where Rust and
+  `tsc` resolve a specifier differently. (Enabled runs are slower; `tsc` tracing
+  only applies when the harness is running live `tsc`.)
 - `--profile` is forwarded to the checker.
 - Bundled fixture suites:
   - `typecheck-ts-harness/fixtures/conformance-mini`: tiny smoke corpus + examples.
@@ -377,6 +383,10 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc 
 
 # Print raw tsc payloads for mismatches
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --print-tsc
+
+# Include module resolution traces (Rust + tsc) in the JSON report (useful for
+# diagnosing module-resolution mismatches).
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust --json --trace-resolution
 
 # Limit parallel workers (defaults to CPU count)
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust --use-baselines --jobs 4
