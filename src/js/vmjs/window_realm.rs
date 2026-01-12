@@ -1456,6 +1456,20 @@ fn non_configurable_read_only_data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn ctor_link_desc(value: Value) -> PropertyDescriptor {
+  non_configurable_read_only_data_desc(value)
+}
+
+fn const_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: false,
+    kind: PropertyKind::Data {
+      value,
+      writable: false,
+    },
+  }
+}
 fn create_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -24330,12 +24344,12 @@ fn init_window_globals(
   scope.define_property(
     event_target_ctor_func,
     prototype_key,
-    data_desc(Value::Object(event_target_proto)),
+    ctor_link_desc(Value::Object(event_target_proto)),
   )?;
   scope.define_property(
     event_target_proto,
     constructor_key,
-    data_desc(Value::Object(event_target_ctor_func)),
+    ctor_link_desc(Value::Object(event_target_ctor_func)),
   )?;
   let event_target_key = alloc_key(&mut scope, "EventTarget")?;
   scope.define_property(
@@ -24473,12 +24487,12 @@ fn init_window_globals(
     scope.define_property(
       node_ctor,
       prototype_key,
-      data_desc(Value::Object(node_proto)),
+      ctor_link_desc(Value::Object(node_proto)),
     )?;
     scope.define_property(
       node_proto,
       constructor_key,
-      data_desc(Value::Object(node_ctor)),
+      ctor_link_desc(Value::Object(node_ctor)),
     )?;
     let node_key = alloc_key(&mut scope, "Node")?;
     scope.define_property(global, node_key, data_desc(Value::Object(node_ctor)))?;
@@ -24495,15 +24509,8 @@ fn init_window_globals(
       ("DOCUMENT_FRAGMENT_NODE", 11.0),
     ] {
       let key = alloc_key(&mut scope, name)?;
-      let desc = PropertyDescriptor {
-        enumerable: false,
-        configurable: false,
-        kind: PropertyKind::Data {
-          value: Value::Number(value),
-          writable: false,
-        },
-      };
-      scope.define_property(node_ctor, key, desc)?;
+      let desc = const_desc(Value::Number(value));
+      scope.define_property(node_ctor, key, desc.clone())?;
       scope.define_property(node_proto, key, desc)?;
     }
 
@@ -24512,12 +24519,12 @@ fn init_window_globals(
     scope.define_property(
       element_ctor,
       prototype_key,
-      data_desc(Value::Object(element_proto)),
+      ctor_link_desc(Value::Object(element_proto)),
     )?;
     scope.define_property(
       element_proto,
       constructor_key,
-      data_desc(Value::Object(element_ctor)),
+      ctor_link_desc(Value::Object(element_ctor)),
     )?;
     let element_key = alloc_key(&mut scope, "Element")?;
     scope.define_property(global, element_key, data_desc(Value::Object(element_ctor)))?;
@@ -24545,12 +24552,12 @@ fn init_window_globals(
     scope.define_property(
       document_ctor,
       prototype_key,
-      data_desc(Value::Object(document_proto)),
+      ctor_link_desc(Value::Object(document_proto)),
     )?;
     scope.define_property(
       document_proto,
       constructor_key,
-      data_desc(Value::Object(document_ctor)),
+      ctor_link_desc(Value::Object(document_ctor)),
     )?;
     let document_key = alloc_key(&mut scope, "Document")?;
     scope.define_property(
@@ -24564,12 +24571,12 @@ fn init_window_globals(
     scope.define_property(
       document_fragment_ctor,
       prototype_key,
-      data_desc(Value::Object(document_fragment_proto)),
+      ctor_link_desc(Value::Object(document_fragment_proto)),
     )?;
     scope.define_property(
       document_fragment_proto,
       constructor_key,
-      data_desc(Value::Object(document_fragment_ctor)),
+      ctor_link_desc(Value::Object(document_fragment_ctor)),
     )?;
     let document_fragment_key = alloc_key(&mut scope, "DocumentFragment")?;
     scope.define_property(
@@ -24583,12 +24590,12 @@ fn init_window_globals(
     scope.define_property(
       text_ctor,
       prototype_key,
-      data_desc(Value::Object(text_proto)),
+      ctor_link_desc(Value::Object(text_proto)),
     )?;
     scope.define_property(
       text_proto,
       constructor_key,
-      data_desc(Value::Object(text_ctor)),
+      ctor_link_desc(Value::Object(text_ctor)),
     )?;
     let text_key = alloc_key(&mut scope, "Text")?;
     scope.define_property(global, text_key, data_desc(Value::Object(text_ctor)))?;

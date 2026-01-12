@@ -1181,6 +1181,44 @@ mod tests {
   }
 
   #[test]
+  fn dom_constructor_property_descriptors_match_webidl_expectations() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let ok = host.exec_script(
+      r#"
+      (() => {
+        const nodeProtoDesc = Object.getOwnPropertyDescriptor(Node, 'prototype');
+        const nodeCtorDesc = Object.getOwnPropertyDescriptor(Node.prototype, 'constructor');
+        const nodeElementNodeDesc = Object.getOwnPropertyDescriptor(Node, 'ELEMENT_NODE');
+        const eventTargetProtoDesc = Object.getOwnPropertyDescriptor(EventTarget, 'prototype');
+        const eventTargetCtorDesc = Object.getOwnPropertyDescriptor(EventTarget.prototype, 'constructor');
+
+        return (
+          nodeProtoDesc &&
+            nodeProtoDesc.writable === false &&
+            nodeProtoDesc.configurable === false &&
+          nodeCtorDesc &&
+            nodeCtorDesc.writable === false &&
+            nodeCtorDesc.configurable === false &&
+          nodeElementNodeDesc &&
+            nodeElementNodeDesc.enumerable === true &&
+            nodeElementNodeDesc.configurable === false &&
+          eventTargetProtoDesc &&
+            eventTargetProtoDesc.writable === false &&
+            eventTargetProtoDesc.configurable === false &&
+          eventTargetCtorDesc &&
+            eventTargetCtorDesc.writable === false &&
+            eventTargetCtorDesc.configurable === false
+        );
+      })()
+      "#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn generated_vmjs_window_ops_installer_does_not_clobber_existing_timers() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
