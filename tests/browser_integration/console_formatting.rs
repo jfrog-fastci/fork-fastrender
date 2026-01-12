@@ -15,6 +15,7 @@ fn console_logs(tab: &BrowserTab) -> Vec<String> {
 
 #[test]
 fn browser_tab_formats_console_percent_placeholders() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>

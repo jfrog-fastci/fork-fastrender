@@ -244,6 +244,7 @@ fn run_script_case(
 
 #[test]
 fn script_crossorigin_missing_does_not_enforce_acao() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
     "FASTR_FETCH_ENFORCE_CORS".to_string(),
     "1".to_string(),
@@ -263,6 +264,7 @@ fn script_crossorigin_missing_does_not_enforce_acao() -> Result<()> {
 
 #[test]
 fn script_crossorigin_anonymous_enforces_acao() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
     "FASTR_FETCH_ENFORCE_CORS".to_string(),
     "1".to_string(),
@@ -296,6 +298,7 @@ fn script_crossorigin_anonymous_enforces_acao() -> Result<()> {
 
 #[test]
 fn script_crossorigin_anonymous_allows_wildcard_acao() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
     "FASTR_FETCH_ENFORCE_CORS".to_string(),
     "1".to_string(),
@@ -316,6 +319,7 @@ fn script_crossorigin_anonymous_allows_wildcard_acao() -> Result<()> {
 
 #[test]
 fn script_crossorigin_use_credentials_requires_acac_and_rejects_wildcard() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
     "FASTR_FETCH_ENFORCE_CORS".to_string(),
     "1".to_string(),

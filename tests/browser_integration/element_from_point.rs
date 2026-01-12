@@ -35,6 +35,7 @@ fn value_to_string(realm: &WindowRealm, value: Value) -> String {
 
 #[test]
 fn document_element_from_point_returns_topmost_element() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -71,6 +72,7 @@ fn document_element_from_point_returns_topmost_element() -> Result<()> {
 
 #[test]
 fn document_element_from_point_skips_pointer_events_none() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -107,6 +109,7 @@ fn document_element_from_point_skips_pointer_events_none() -> Result<()> {
 
 #[test]
 fn document_element_from_point_out_of_viewport_returns_null() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -145,6 +148,7 @@ fn document_element_from_point_out_of_viewport_returns_null() -> Result<()> {
 
 #[test]
 fn document_elements_from_point_matches_element_from_point() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -185,6 +189,7 @@ fn document_elements_from_point_matches_element_from_point() -> Result<()> {
 
 #[test]
 fn document_element_from_point_is_safe_noop_without_renderer_host() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let mut realm =
     WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
   let mut host_ctx = ();

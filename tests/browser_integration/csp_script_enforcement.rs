@@ -42,6 +42,7 @@ impl BrowserTabJsExecutor for LogExecutor {
 
 #[test]
 fn csp_script_blocks_external_data_url_when_disallowed() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let log = Rc::new(RefCell::new(Vec::<String>::new()));
 
   let html = r#"<!doctype html>
@@ -71,6 +72,7 @@ fn csp_script_blocks_external_data_url_when_disallowed() -> Result<()> {
 
 #[test]
 fn csp_script_allows_external_data_url_when_permitted() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let log = Rc::new(RefCell::new(Vec::<String>::new()));
 
   let html = r#"<!doctype html>
@@ -96,6 +98,7 @@ fn csp_script_allows_external_data_url_when_permitted() -> Result<()> {
 
 #[test]
 fn csp_script_blocks_inline_without_nonce() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let log = Rc::new(RefCell::new(Vec::<String>::new()));
 
   let html = r#"<!doctype html>
@@ -124,6 +127,7 @@ fn csp_script_blocks_inline_without_nonce() -> Result<()> {
 
 #[test]
 fn csp_script_allows_inline_with_matching_nonce() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let log = Rc::new(RefCell::new(Vec::<String>::new()));
 
   let html = r#"<!doctype html>
@@ -148,6 +152,7 @@ fn csp_script_allows_inline_with_matching_nonce() -> Result<()> {
 
 #[test]
 fn csp_script_allows_inline_with_matching_sha256_hash() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   use base64::{engine::general_purpose, Engine as _};
   use sha2::{Digest, Sha256};
 
