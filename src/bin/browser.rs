@@ -9,6 +9,32 @@ Run:\n\
   std::process::exit(2);
 }
 
+// The debug log UI (a developer-focused overlay) should be opt-in for normal browsing sessions.
+// Keep the env parsing outside the `browser_ui` feature so unit tests can run without pulling in
+// the full winit/wgpu/egui stack.
+#[cfg(feature = "browser_ui")]
+const ENV_BROWSER_DEBUG_LOG: &str = "FASTR_BROWSER_DEBUG_LOG";
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn parse_env_bool(raw: Option<&str>) -> bool {
+  let Some(raw) = raw else {
+    return false;
+  };
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+  match trimmed.to_ascii_lowercase().as_str() {
+    "0" | "false" | "no" | "off" => false,
+    _ => true,
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn should_show_debug_log_ui(debug_build: bool, env_value: Option<&str>) -> bool {
+  debug_build || parse_env_bool(env_value)
+}
+
 #[cfg(feature = "browser_ui")]
 fn main() {
   if let Err(err) = run() {
@@ -999,6 +1025,14 @@ fn apply_address_space_limit_from_env() {
 }
 
 #[cfg(feature = "browser_ui")]
+fn debug_log_ui_enabled() -> bool {
+  should_show_debug_log_ui(
+    cfg!(debug_assertions),
+    std::env::var(ENV_BROWSER_DEBUG_LOG).ok().as_deref(),
+  )
+}
+
+#[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
 struct OpenSelectDropdown {
   tab_id: fastrender::ui::TabId,
@@ -1171,6 +1205,9 @@ struct App {
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
   debug_log: std::collections::VecDeque<String>,
+  debug_log_ui_enabled: bool,
+  debug_log_ui_open: bool,
+  debug_log_filter: String,
   hud: Option<BrowserHud>,
 
   /// Periodic tick driver state for animated documents.
@@ -1422,6 +1459,7 @@ error: {err}",
     surface.configure(&device, &surface_config);
 
     let egui_renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1);
+    let debug_log_ui_enabled = debug_log_ui_enabled();
 
     Ok(Self {
       window,
@@ -1478,6 +1516,9 @@ error: {err}",
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
       debug_log: std::collections::VecDeque::new(),
+      debug_log_ui_enabled,
+      debug_log_ui_open: debug_log_ui_enabled,
+      debug_log_filter: String::new(),
       hud: if browser_hud_enabled_from_env() {
         Some(BrowserHud::new())
       } else {
@@ -2025,16 +2066,17 @@ error: {err}",
 
     if let fastrender::ui::WorkerToUi::DebugLog { tab_id, line } = &msg {
       eprintln!("[worker:{tab_id:?}] {line}");
-      let line = line.trim_end();
-      if !line.is_empty() {
-        if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
-          self.debug_log.pop_front();
+      if self.debug_log_ui_enabled {
+        let line = line.trim_end();
+        if !line.is_empty() {
+          if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+            self.debug_log.pop_front();
+          }
+          self
+            .debug_log
+            .push_back(format!("[tab {}] {}", tab_id.0, line));
+          request_redraw = true;
         }
-        self
-          .debug_log
-          .push_back(format!("[tab {}] {}", tab_id.0, line));
-        // Debug log is rendered via a bottom panel regardless of active tab.
-        request_redraw = true;
       }
     }
 
@@ -2374,6 +2416,131 @@ error: {err}",
             );
           });
       });
+  }
+  fn render_debug_log_overlay(&mut self, ctx: &egui::Context) {
+    if !self.debug_log_ui_enabled {
+      return;
+    }
+    let margin = self.theme.sizing.padding;
+
+    if !self.debug_log_ui_open {
+      egui::Area::new(egui::Id::new("fastr_debug_log_reopen"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-margin, -margin))
+        .show(ctx, |ui| {
+          let label = if self.debug_log.is_empty() {
+            "Debug log".to_string()
+          } else {
+            format!("Debug log ({})", self.debug_log.len())
+          };
+          let button = egui::Button::new(egui::RichText::new(label).small());
+          if ui.add(button).clicked() {
+            self.debug_log_ui_open = true;
+          }
+        });
+      return;
+    }
+
+    let fill = egui::Color32::from_rgba_unmultiplied(
+      self.theme.colors.raised.r(),
+      self.theme.colors.raised.g(),
+      self.theme.colors.raised.b(),
+      230,
+    );
+    let frame = egui::Frame::none()
+      .fill(fill)
+      .stroke(egui::Stroke::new(
+        self.theme.sizing.stroke_width,
+        self.theme.colors.border,
+      ))
+      .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
+      .inner_margin(egui::Margin::symmetric(
+        self.theme.sizing.padding,
+        self.theme.sizing.padding * 0.75,
+      ));
+
+    let mut open = self.debug_log_ui_open;
+    egui::Window::new("Debug log")
+      .open(&mut open)
+      .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-margin, -margin))
+      .collapsible(true)
+      .resizable(true)
+      .min_width(260.0)
+      .min_height(120.0)
+      .default_width(560.0)
+      .default_height(200.0)
+      .frame(frame)
+      .show(ctx, |ui| {
+        let mut wants_copy = false;
+        ui.horizontal(|ui| {
+          if ui.button("Clear").clicked() {
+            self.debug_log.clear();
+          }
+
+          wants_copy = ui.button("Copy all").clicked();
+
+          ui.separator();
+
+          ui.label(egui::RichText::new("Filter:").small());
+          ui.add(
+            egui::TextEdit::singleline(&mut self.debug_log_filter)
+              .hint_text("text")
+              .desired_width(160.0),
+          );
+          if !self.debug_log_filter.is_empty() && ui.small_button("×").clicked() {
+            self.debug_log_filter.clear();
+          }
+        });
+
+        let filter_raw = self.debug_log_filter.trim();
+        let filter = if filter_raw.is_empty() {
+          None
+        } else {
+          Some(filter_raw.to_ascii_lowercase())
+        };
+
+        let matches_filter = |line: &str| {
+          let Some(filter) = filter.as_deref() else {
+            return true;
+          };
+          line.to_ascii_lowercase().contains(filter)
+        };
+
+        if wants_copy {
+          let mut out = String::new();
+          for (idx, line) in self
+            .debug_log
+            .iter()
+            .filter(|line| matches_filter(line))
+            .enumerate()
+          {
+            if idx > 0 {
+              out.push('\n');
+            }
+            out.push_str(line);
+          }
+          ctx.output_mut(|o| o.copied_text = out);
+        }
+
+        ui.separator();
+
+        let total_lines = self.debug_log.len();
+        egui::ScrollArea::vertical()
+          .auto_shrink([false, false])
+          .stick_to_bottom(true)
+          .show(ui, |ui| {
+            if total_lines == 0 {
+              ui.label(egui::RichText::new("No debug log lines yet.").italics().small());
+              return;
+            }
+
+            for line in self.debug_log.iter().filter(|line| matches_filter(line)) {
+              ui.label(egui::RichText::new(line).monospace().small());
+            }
+          });
+      });
+
+    self.debug_log_ui_open = open;
   }
 
   fn render_context_menu(&mut self, ctx: &egui::Context) {
@@ -4190,25 +4357,6 @@ error: {err}",
       }
     }
 
-    if !self.debug_log.is_empty() {
-      egui::TopBottomPanel::bottom("debug_log")
-        .resizable(true)
-        .default_height(140.0)
-        .show(&ctx, |ui| {
-          egui::CollapsingHeader::new("Debug log")
-            .default_open(false)
-            .show(ui, |ui| {
-              egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                  for line in &self.debug_log {
-                    ui.label(line);
-                  }
-                });
-            });
-        });
-    }
-
     egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
 
@@ -4623,6 +4771,7 @@ error: {err}",
     });
 
     self.render_hud(&ctx);
+    self.render_debug_log_overlay(&ctx);
     // Hovered-link URLs are rendered by `ui::chrome_ui` in the bottom status bar.
     self.render_select_dropdown(&ctx);
     self.render_context_menu(&ctx);
@@ -4822,4 +4971,36 @@ fn map_modifiers(modifiers: winit::event::ModifiersState) -> fastrender::ui::Poi
     out |= PointerModifiers::META;
   }
   out
+}
+
+#[cfg(test)]
+mod debug_log_env_tests {
+  use super::{parse_env_bool, should_show_debug_log_ui};
+
+  #[test]
+  fn env_bool_parsing() {
+    assert!(!parse_env_bool(None));
+    assert!(!parse_env_bool(Some("")));
+    assert!(!parse_env_bool(Some("   ")));
+    assert!(!parse_env_bool(Some("0")));
+    assert!(!parse_env_bool(Some("false")));
+    assert!(!parse_env_bool(Some("FALSE")));
+    assert!(!parse_env_bool(Some("no")));
+    assert!(!parse_env_bool(Some("off")));
+
+    assert!(parse_env_bool(Some("1")));
+    assert!(parse_env_bool(Some("true")));
+    assert!(parse_env_bool(Some("TRUE")));
+    assert!(parse_env_bool(Some("yes")));
+    assert!(parse_env_bool(Some("on")));
+    assert!(parse_env_bool(Some("anything")));
+  }
+
+  #[test]
+  fn debug_log_enablement_logic() {
+    assert!(!should_show_debug_log_ui(false, None));
+    assert!(!should_show_debug_log_ui(false, Some("0")));
+    assert!(should_show_debug_log_ui(false, Some("1")));
+    assert!(should_show_debug_log_ui(true, None));
+  }
 }
