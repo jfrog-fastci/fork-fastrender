@@ -1021,6 +1021,19 @@ mod tests {
   }
 
   #[test]
+  fn resolves_promise_all_call_with_instantiation_untyped() {
+    let db = crate::load_default_api_database();
+    let promise_all_id = db.id_of("Promise.all").expect("Promise.all in KB");
+    let lowered = hir_js::lower_from_source_with_kind(FileKind::Ts, "Promise.all<string>(promises);")
+      .unwrap();
+    let (body_id, call_expr) = first_stmt_expr(&lowered);
+    assert_eq!(
+      resolve_api_call_untyped(&db, &lowered, body_id, call_expr),
+      Some(promise_all_id)
+    );
+  }
+
+  #[test]
   fn resolves_global_this_promise_race_call_untyped() {
     let db = crate::load_default_api_database();
     let promise_race_id = db.id_of("Promise.race").expect("Promise.race in KB");

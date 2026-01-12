@@ -1630,47 +1630,70 @@ pub fn recognize_patterns_typed(
         continue;
       };
       match pat {
-        crate::semantic_patterns::RecognizedPattern::ArrayChain { base, ops, terminal } => {
-          let ops = ops
-            .iter()
-            .map(|op| match op {
-              crate::semantic_patterns::ArrayChainOp::Map { callback } => ArrayChainOp::Map {
-                callback: *callback,
-              },
-              crate::semantic_patterns::ArrayChainOp::Filter { callback } => ArrayChainOp::Filter {
-                callback: *callback,
-              },
-              crate::semantic_patterns::ArrayChainOp::FlatMap { callback } => ArrayChainOp::FlatMap {
-                callback: *callback,
-              },
-            })
-            .collect();
+        crate::semantic_patterns::RecognizedPattern::ArrayChain { array, ops } => {
+          let (terminal_op, chain_ops) = match ops.split_last() {
+            Some((last, prefix))
+              if matches!(
+                last,
+                crate::semantic_patterns::ArrayOp::Reduce { .. }
+                  | crate::semantic_patterns::ArrayOp::Find { .. }
+                  | crate::semantic_patterns::ArrayOp::Every { .. }
+                  | crate::semantic_patterns::ArrayOp::Some { .. }
+                  | crate::semantic_patterns::ArrayOp::ForEach { .. }
+              ) =>
+            {
+              (Some(last), prefix)
+            }
+            _ => (None, ops.as_slice()),
+          };
 
-          let terminal = terminal.as_ref().map(|t| match t {
-            crate::semantic_patterns::ArrayTerminal::Reduce { callback, init } => {
-              ArrayTerminal::Reduce {
-                callback: *callback,
-                init: *init,
+          let mut ok = true;
+          let mut chain_ops_out = Vec::<ArrayChainOp>::with_capacity(chain_ops.len());
+          for op in chain_ops {
+            match op {
+              crate::semantic_patterns::ArrayOp::Map { callback } => {
+                chain_ops_out.push(ArrayChainOp::Map { callback: *callback });
+              }
+              crate::semantic_patterns::ArrayOp::Filter { callback } => {
+                chain_ops_out.push(ArrayChainOp::Filter { callback: *callback });
+              }
+              crate::semantic_patterns::ArrayOp::FlatMap { callback } => {
+                chain_ops_out.push(ArrayChainOp::FlatMap { callback: *callback });
+              }
+              _ => {
+                ok = false;
+                break;
               }
             }
-            crate::semantic_patterns::ArrayTerminal::Find { callback } => ArrayTerminal::Find {
+          }
+          if !ok {
+            continue;
+          }
+
+          let terminal_out = terminal_op.map(|op| match op {
+            crate::semantic_patterns::ArrayOp::Reduce { callback, init } => ArrayTerminal::Reduce {
+              callback: *callback,
+              init: Some(*init),
+            },
+            crate::semantic_patterns::ArrayOp::Find { callback } => ArrayTerminal::Find {
               callback: *callback,
             },
-            crate::semantic_patterns::ArrayTerminal::Every { callback } => ArrayTerminal::Every {
+            crate::semantic_patterns::ArrayOp::Every { callback } => ArrayTerminal::Every {
               callback: *callback,
             },
-            crate::semantic_patterns::ArrayTerminal::Some { callback } => ArrayTerminal::Some {
+            crate::semantic_patterns::ArrayOp::Some { callback } => ArrayTerminal::Some {
               callback: *callback,
             },
-            crate::semantic_patterns::ArrayTerminal::ForEach { callback } => ArrayTerminal::ForEach {
+            crate::semantic_patterns::ArrayOp::ForEach { callback } => ArrayTerminal::ForEach {
               callback: *callback,
             },
+            _ => unreachable!("non-terminal op cannot be the ArrayChain terminal"),
           });
 
           patterns.push(RecognizedPattern::ArrayChain {
-            base: *base,
-            ops,
-            terminal,
+            base: *array,
+            ops: chain_ops_out,
+            terminal: terminal_out,
           });
         }
         crate::semantic_patterns::RecognizedPattern::PromiseAllFetch { urls } => {

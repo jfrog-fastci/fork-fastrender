@@ -113,8 +113,7 @@ fn callsite_info_for_args_with_kb(
   let callback_effects = callback.map(|cb| cb.effects);
   let callback_may_throw = callback_effects
     .map(|e| e.contains(EffectSet::MAY_THROW) || e.contains(EffectSet::UNKNOWN_CALL));
-  let associative =
-    callback.and_then(|_| infer_associative_inline_callback(lowered, body, callback_expr));
+  let associative = callback.and_then(|_| infer_associative_inline_callback(lowered, body, callback_expr));
   crate::db::CallSiteInfo {
     callback_purity,
     callback_effects,
@@ -347,8 +346,8 @@ fn strip_value_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
       return expr;
     };
     match &node.kind {
-      ExprKind::Instantiation { expr: inner, .. }
-      | ExprKind::TypeAssertion { expr: inner, .. }
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
@@ -2644,6 +2643,51 @@ mod tests {
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
     assert_eq!(info.callback_uses_index, Some(true));
+  }
+
+  #[test]
+  fn reduce_callback_second_param_does_not_count_as_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.reduce((a, b) => b);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn reduce_callback_third_param_counts_as_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.reduce((a, b, i) => i);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+
+    assert_eq!(info.callback_uses_index, Some(true));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn reduce_callback_fourth_param_counts_as_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.reduce((a, b, i, arr) => arr.length);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(true));
   }
 
   #[test]
