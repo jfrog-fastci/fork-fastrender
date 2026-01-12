@@ -1178,18 +1178,18 @@ mod tests {
         event_loop,
         r#"
         (() => {
-          let t = new EventTarget();
-          let n = 0;
-          function f() { n++; }
-          t.addEventListener('x', f);
-          t.dispatchEvent({ type: 'x' });
-          t.removeEventListener('x', f);
-          t.dispatchEvent({ type: 'x' });
-          return n;
-        })()
-        "#,
-      )?
-    };
+           let t = new EventTarget();
+           let n = 0;
+           function f() { n++; }
+           t.addEventListener('x', f);
+           t.dispatchEvent(new Event('x'));
+           t.removeEventListener('x', f);
+           t.dispatchEvent(new Event('x'));
+           return n;
+         })()
+         "#,
+       )?
+     };
     assert!(matches!(got, Value::Number(n) if n == 1.0));
 
     let got = {
@@ -1198,17 +1198,17 @@ mod tests {
         event_loop,
         r#"
         (() => {
-          let t = new EventTarget();
-          let n = 0;
-          function f() { n++; }
-          t.addEventListener('x', f, { once: true });
-          t.dispatchEvent({ type: 'x' });
-          t.dispatchEvent({ type: 'x' });
-          return n;
-        })()
-        "#,
-      )?
-    };
+           let t = new EventTarget();
+           let n = 0;
+           function f() { n++; }
+           t.addEventListener('x', f, { once: true });
+           t.dispatchEvent(new Event('x'));
+           t.dispatchEvent(new Event('x'));
+           return n;
+         })()
+         "#,
+       )?
+     };
     assert!(matches!(got, Value::Number(n) if n == 1.0));
 
     let got = {
@@ -2214,25 +2214,19 @@ mod tests {
 
     host.exec_script(
       r#"
-      globalThis.__host_ok_type = false;
       globalThis.__host_ok_getter = false;
       globalThis.__host_ok_callback = false;
+      globalThis.__type = "";
       globalThis.__err = "";
       try {
         const xhr = new XMLHttpRequest();
         Object.defineProperty(xhr, "onloadend", {
           get() {
             globalThis.__host_ok_getter = recordHost();
-            return () => { globalThis.__host_ok_callback = recordHost(); };
+            return (ev) => { globalThis.__host_ok_callback = recordHost(); globalThis.__type = ev.type; };
           }
         });
-        const ev = {};
-        Object.defineProperty(ev, "type", {
-          get() {
-            globalThis.__host_ok_type = recordHost();
-            return "loadend";
-          }
-        });
+        const ev = new Event("loadend");
         xhr.dispatchEvent(ev);
       } catch (e) {
         globalThis.__err = String(e && (e.stack || e.message) || e);
@@ -2245,10 +2239,6 @@ mod tests {
       ""
     );
     assert!(matches!(
-      get_global_prop(&mut host, "__host_ok_type"),
-      Value::Bool(true)
-    ));
-    assert!(matches!(
       get_global_prop(&mut host, "__host_ok_getter"),
       Value::Bool(true)
     ));
@@ -2256,6 +2246,10 @@ mod tests {
       get_global_prop(&mut host, "__host_ok_callback"),
       Value::Bool(true)
     ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__type").as_deref(),
+      Some("loadend")
+    );
     Ok(())
   }
 
@@ -2296,18 +2290,12 @@ mod tests {
     host.exec_script(
       r#"
       globalThis.__host_ok_cb = false;
-      globalThis.__host_ok_type = false;
+      globalThis.__type = "";
       globalThis.__err = "";
       try {
         const t = new EventTarget();
-        t.addEventListener('x', () => { globalThis.__host_ok_cb = recordHost(); });
-        const e = {};
-        Object.defineProperty(e, "type", {
-          get() {
-            globalThis.__host_ok_type = recordHost();
-            return "x";
-          }
-        });
+        t.addEventListener('x', (ev) => { globalThis.__host_ok_cb = recordHost(); globalThis.__type = ev.type; });
+        const e = new Event("x");
         t.dispatchEvent(e);
       } catch (e) {
         globalThis.__err = String(e && (e.stack || e.message) || e);
@@ -2323,10 +2311,7 @@ mod tests {
       get_global_prop(&mut host, "__host_ok_cb"),
       Value::Bool(true)
     ));
-    assert!(matches!(
-      get_global_prop(&mut host, "__host_ok_type"),
-      Value::Bool(true)
-    ));
+    assert_eq!(get_global_prop_utf8(&mut host, "__type").as_deref(), Some("x"));
     Ok(())
   }
 
@@ -2340,7 +2325,7 @@ mod tests {
       r#"
       globalThis.__host_ok = false;
       window.addEventListener('x', () => { globalThis.__host_ok = recordHost(); });
-      window.dispatchEvent({ type: 'x' });
+      window.dispatchEvent(new Event('x'));
       "#,
     )?;
 
@@ -2361,7 +2346,7 @@ mod tests {
       r#"
       globalThis.__host_ok = false;
       window.addEventListener('x', { handleEvent() { globalThis.__host_ok = recordHost(); } });
-      window.dispatchEvent({ type: 'x' });
+      window.dispatchEvent(new Event('x'));
       "#,
     )?;
 
