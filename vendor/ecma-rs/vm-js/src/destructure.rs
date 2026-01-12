@@ -1,4 +1,5 @@
 use crate::exec::{eval_expr, ResolvedBinding, RuntimeEnv};
+use crate::function::CallHandler;
 use crate::property::PropertyKey;
 use crate::{Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use parse_js::ast::class_or_object::ClassOrObjKey;
@@ -290,11 +291,22 @@ fn maybe_set_anonymous_function_name(
  
   // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
   // they are not function objects and should not have their `name` mutated.
-  let current_name = match scope.heap().get_function(func_obj) {
-    Ok(f) => f.name,
+  let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
+    Ok(f) => (
+      f.name,
+      matches!(f.call, CallHandler::Native(_)) && f.construct.is_none(),
+    ),
     Err(VmError::NotCallable) => return Ok(()),
     Err(err) => return Err(err),
   };
+  // Name inference only applies to "anonymous function definitions" (ECMA-262) which excludes
+  // anonymous built-in/native functions like Promise combinator element callbacks.
+  //
+  // `vm-js` represents user-defined class constructors as native functions (so they can throw when
+  // called without `new`), so keep name inference enabled for constructable native functions.
+  if is_native_non_constructable {
+    return Ok(());
+  }
   if !scope
     .heap()
     .get_string(current_name)?

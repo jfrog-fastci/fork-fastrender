@@ -8289,13 +8289,16 @@ impl<'a> Scope<'a> {
     let func = GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?);
 
     // Define standard function properties.
+    //
+    // Per ECMA-262 `CreateBuiltinFunction`, the order of property creation is observable via
+    // `Object.getOwnPropertyNames` and must be: `"length"` then `"name"` (test262 relies on this).
+    crate::function_properties::set_function_length(&mut scope, func, length)?;
     crate::function_properties::set_function_name(
       &mut scope,
       func,
       PropertyKey::String(name),
       None,
     )?;
-    crate::function_properties::set_function_length(&mut scope, func, length)?;
 
     // Constructors get a `.prototype` object.
     if make_constructor_prototype && construct.is_some() {

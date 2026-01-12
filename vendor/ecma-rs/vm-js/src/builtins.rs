@@ -6849,7 +6849,8 @@ fn perform_promise_all(
     write_internal_record_value(&mut step_scope, remaining, Value::Number(n + 1.0))?;
 
     // resolveElement = CreateBuiltinFunction(...)
-    let resolve_element_name = step_scope.alloc_string("resolveElement")?;
+    // Per ECMA-262, Promise element functions are anonymous built-in functions.
+    let resolve_element_name = step_scope.alloc_string("")?;
     // Root the name string: `alloc_native_function_with_slots` may allocate and trigger GC.
     step_scope.push_root(Value::String(resolve_element_name))?;
     let slots = [
@@ -7106,11 +7107,9 @@ fn perform_promise_all_settled(
     };
     write_internal_record_value(&mut step_scope, remaining, Value::Number(n + 1.0))?;
 
-    let on_fulfilled_name = step_scope.alloc_string("onFulfilled")?;
-    // Root the first name before allocating the second; allocations may GC.
-    step_scope.push_root(Value::String(on_fulfilled_name))?;
-    let on_rejected_name = step_scope.alloc_string("onRejected")?;
-    step_scope.push_root(Value::String(on_rejected_name))?;
+    // Per ECMA-262, Promise element functions are anonymous built-in functions.
+    let element_name = step_scope.alloc_string("")?;
+    step_scope.push_root(Value::String(element_name))?;
     let fulfilled_slots = [
       Value::Object(values),
       Value::Number(index as f64),
@@ -7128,26 +7127,16 @@ fn perform_promise_all_settled(
       Value::Bool(true),
     ];
 
-    let on_fulfilled = step_scope.alloc_native_function_with_slots(
-      element_call,
-      None,
-      on_fulfilled_name,
-      1,
-      &fulfilled_slots,
-    )?;
+    let on_fulfilled =
+      step_scope.alloc_native_function_with_slots(element_call, None, element_name, 1, &fulfilled_slots)?;
     step_scope
       .heap_mut()
       .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
     // Root the first closure while allocating the second: both share `alreadyCalled`.
     step_scope.push_root(Value::Object(on_fulfilled))?;
 
-    let on_rejected = step_scope.alloc_native_function_with_slots(
-      element_call,
-      None,
-      on_rejected_name,
-      1,
-      &rejected_slots,
-    )?;
+    let on_rejected =
+      step_scope.alloc_native_function_with_slots(element_call, None, element_name, 1, &rejected_slots)?;
     step_scope
       .heap_mut()
       .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
@@ -7310,7 +7299,8 @@ fn perform_promise_any(
     };
     write_internal_record_value(&mut step_scope, remaining, Value::Number(n + 1.0))?;
 
-    let reject_element_name = step_scope.alloc_string("rejectElement")?;
+    // Per ECMA-262, Promise element functions are anonymous built-in functions.
+    let reject_element_name = step_scope.alloc_string("")?;
     step_scope.push_root(Value::String(reject_element_name))?;
     let slots = [
       Value::Object(errors),
