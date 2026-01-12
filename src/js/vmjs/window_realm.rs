@@ -262,6 +262,7 @@ pub(crate) struct WindowRealmUserData {
   ///
   /// When present, `Vm::module_graph_ptr()` points into this boxed allocation.
   pub(crate) module_graph: Option<Box<ModuleGraph>>,
+  pub(crate) worker_registry: crate::js::window_worker::WorkerRegistry,
   dom_platform: Option<DomPlatform>,
   /// Deterministic per-realm PRNG state used by `window.crypto` RNG APIs.
   pub(crate) crypto_rng_state: u64,
@@ -295,6 +296,7 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
       .field("has_module_graph", &self.module_graph.is_some())
+      .field("worker_count", &self.worker_registry.len())
       .field("has_dom_platform", &self.dom_platform.is_some())
       .field("crypto_rng_state", &self.crypto_rng_state)
       .field("has_window_obj", &self.window_obj.is_some())
@@ -326,6 +328,7 @@ impl WindowRealmUserData {
       cookie_jar: CookieJar::new(),
       module_loader,
       module_graph: None,
+      worker_registry: crate::js::window_worker::WorkerRegistry::default(),
       dom_platform: None,
       crypto_rng_state,
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
@@ -545,6 +548,7 @@ impl WindowRealm {
       unregister_match_media_env(id);
     }
     if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      data.worker_registry.terminate_all(&mut self.runtime.heap);
       for entry in data.session_history.entries.drain(..) {
         self.runtime.heap.remove_root(entry.state_root);
       }
@@ -21797,6 +21801,7 @@ fn init_window_globals(
   crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;
   crate::js::window_file::install_window_file_bindings(vm, realm, heap)?;
   crate::js::window_form_data::install_window_form_data_bindings(vm, realm, heap)?;
+  crate::js::window_worker::install_window_worker_bindings(vm, realm, heap)?;
   crate::js::window_streams::install_window_streams_bindings(vm, realm, heap)?;
 
   Ok((

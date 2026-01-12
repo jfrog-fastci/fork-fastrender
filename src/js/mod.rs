@@ -117,6 +117,8 @@ pub mod window_text_encoding;
 pub mod window_timers;
 #[path = "vmjs/window_url.rs"]
 pub mod window_url;
+#[path = "vmjs/window_worker.rs"]
+pub mod window_worker;
 #[path = "vmjs/window_xhr.rs"]
 pub mod window_xhr;
 
