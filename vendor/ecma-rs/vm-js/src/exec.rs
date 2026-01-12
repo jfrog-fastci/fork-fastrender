@@ -387,7 +387,7 @@ impl RuntimeEnv {
     let unscopables_key = PropertyKey::from_symbol(intr.well_known_symbols().unscopables);
     let receiver = Value::Object(binding_object);
 
-    let unscopables = check_scope.ordinary_get_with_host_and_hooks(
+    let unscopables = check_scope.get_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -401,7 +401,7 @@ impl RuntimeEnv {
     };
 
     check_scope.push_root(Value::Object(unscopables_obj))?;
-    let blocked = check_scope.ordinary_get_with_host_and_hooks(
+    let blocked = check_scope.get_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -472,7 +472,7 @@ impl RuntimeEnv {
         key_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
         let receiver = Value::Object(binding_object);
-        let value = key_scope.ordinary_get_with_host_and_hooks(
+        let value = key_scope.get_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -513,7 +513,7 @@ impl RuntimeEnv {
     }
 
     let receiver = Value::Object(global_object);
-    Ok(Some(key_scope.ordinary_get_with_host_and_hooks(
+    Ok(Some(key_scope.get_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -4855,8 +4855,7 @@ impl<'a> Evaluator<'a> {
         let object = self.to_object_operator(&mut get_scope, base)?;
         // Root the boxed object so host hooks/accessors can allocate freely.
         get_scope.push_root(Value::Object(object))?;
-        get_scope
-          .ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, base)
+        get_scope.get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, base)
       }
     }
   }
@@ -5797,7 +5796,7 @@ impl<'a> Evaluator<'a> {
               continue;
             }
 
-            let value = key_scope.ordinary_get_with_host_and_hooks(
+            let value = key_scope.get_with_host_and_hooks(
               self.vm,
               &mut *self.host,
               &mut *self.hooks,
@@ -7073,7 +7072,7 @@ impl<'a> Evaluator<'a> {
       .has_instance;
     let has_instance_key = PropertyKey::from_symbol(has_instance_sym);
     let method = {
-      let value = scope.ordinary_get_with_host_and_hooks(
+      let value = scope.get_with_host_and_hooks(
         self.vm,
         &mut *self.host,
         &mut *self.hooks,
@@ -7151,7 +7150,7 @@ impl<'a> Evaluator<'a> {
     // P = Get(C, "prototype").
     let prototype_s = scope.alloc_string("prototype")?;
     scope.push_root(Value::String(prototype_s))?;
-    let prototype = scope.ordinary_get_with_host_and_hooks(
+    let prototype = scope.get_with_host_and_hooks(
       self.vm,
       &mut *self.host,
       &mut *self.hooks,
