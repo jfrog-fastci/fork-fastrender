@@ -195,19 +195,15 @@ fn hash_expr(hasher: &mut StableHasher, expr: &Expr) {
 
     // TypeScript expressions.
     Expr::Instantiation(node) => {
-      hasher.write_u64(38);
       hash_instantiation_expr(hasher, &node.stx);
     }
     Expr::TypeAssertion(node) => {
-      hasher.write_u64(35);
       hash_type_assertion_expr(hasher, &node.stx);
     }
     Expr::NonNullAssertion(node) => {
-      hasher.write_u64(36);
       hash_non_null_assertion_expr(hasher, &node.stx);
     }
     Expr::SatisfiesExpr(node) => {
-      hasher.write_u64(37);
       hash_satisfies_expr(hasher, &node.stx);
     }
   }
@@ -827,13 +823,11 @@ fn hash_pat(hasher: &mut StableHasher, pat: &Pat) {
 fn hash_instantiation_expr(hasher: &mut StableHasher, expr: &InstantiationExpr) {
   hash_expr_node(hasher, &expr.expression);
   // TypeScript-only field intentionally omitted: `type_arguments`.
-  hasher.write_u64(expr.type_arguments.len() as u64);
 }
 
 #[inline]
 fn hash_type_assertion_expr(hasher: &mut StableHasher, expr: &TypeAssertionExpr) {
   hash_expr_node(hasher, &expr.expression);
-  write_bool(hasher, expr.const_assertion);
   // TypeScript-only field intentionally omitted: `type_annotation`.
 }
 

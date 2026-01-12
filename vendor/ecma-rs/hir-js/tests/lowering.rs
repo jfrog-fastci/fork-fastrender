@@ -1952,6 +1952,36 @@ fn computed_member_fingerprint_ignores_spans() {
 }
 
 #[test]
+fn computed_member_fingerprint_ignores_ts_only_wrappers() {
+  let base_source = "const obj = { [foo]() {} };";
+  let base = lower_from_source_with_kind(FileKind::Ts, base_source).expect("lower base");
+  let base_methods = computed_methods(&base);
+  assert_eq!(base_methods.len(), 1);
+  let base_method = base_methods[0];
+  let base_name = base
+    .names
+    .resolve(base_method.path.name)
+    .expect("base computed name");
+
+  let variants = [
+    "const obj = { [foo<string>]() {} };",
+    "const obj = { [foo as any]() {} };",
+    "const obj = { [foo!]() {} };",
+    "const obj = { [foo satisfies any]() {} };",
+  ];
+
+  for source in variants {
+    let variant = lower_from_source_with_kind(FileKind::Ts, source).expect("lower variant");
+    let methods = computed_methods(&variant);
+    assert_eq!(methods.len(), 1, "expected one computed method in {source}");
+    let method = methods[0];
+    assert_eq!(base_name, variant.names.resolve(method.path.name).unwrap());
+    assert_eq!(base_method.path, method.path, "computed DefPath changed for {source}");
+    assert_eq!(base_method.id, method.id, "computed DefId changed for {source}");
+  }
+}
+
+#[test]
 fn computed_member_names_are_deterministic() {
   let source = "const obj = { [foo]() {}, [bar()]() {}, [foo]() {} };";
   let first = lower_from_source_with_kind(FileKind::Ts, source).expect("lower first");
