@@ -66,7 +66,7 @@ fn srcset_density_affects_object_fit_none() {
         width:4px;
         height:4px;
         object-fit:none;
-        object-position:left top;
+        object-position: 0 0;
       }}
     </style>
     <img srcset="{green_4x4} 2x">
@@ -76,14 +76,55 @@ fn srcset_density_affects_object_fit_none() {
   let mut renderer = FastRender::new().expect("renderer");
   let pixmap = renderer.render_html(&html, 4, 4).expect("render html");
 
-  // With `srcset` density=2, the chosen 4×4 image has a natural size of 2×2 CSS px, so
-  // `object-fit:none` paints only the top-left 2×2 of the 4×4 replaced box and leaves the
-  // bottom-right showing the red page background.
-  let px = pixmap.pixel(3, 3).expect("pixel (3,3)");
+  let inside = pixmap.pixel(1, 1).expect("inside pixel");
   assert_eq!(
-    (px.red(), px.green(), px.blue()),
+    (inside.red(), inside.green(), inside.blue()),
+    (0, 255, 0),
+    "expected pixel inside the 2×2 natural size to be green"
+  );
+
+  let outside = pixmap.pixel(3, 3).expect("outside pixel");
+  assert_eq!(
+    (outside.red(), outside.green(), outside.blue()),
     (255, 0, 0),
-    "expected bottom-right pixel to show red background"
+    "expected pixel outside the 2×2 natural size to show red background"
+  );
+}
+
+#[test]
+fn srcset_width_descriptor_density_affects_object_fit_none() {
+  let green_20x20 = solid_color_png(20, 20, [0, 255, 0, 255]);
+  let html = format!(
+    r#"
+    <style>
+      body {{ margin: 0; background: rgb(255 0 0); }}
+      img {{
+        display: block;
+        width: 20px;
+        height: 20px;
+        object-fit: none;
+        object-position: 0 0;
+      }}
+    </style>
+    <img srcset="{green_20x20} 40w">
+    "#
+  );
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let pixmap = renderer.render_html(&html, 20, 20).expect("render html");
+
+  let inside = pixmap.pixel(5, 5).expect("inside pixel");
+  assert_eq!(
+    (inside.red(), inside.green(), inside.blue()),
+    (0, 255, 0),
+    "expected pixel inside the 10×10 natural size to be green"
+  );
+
+  let outside = pixmap.pixel(15, 5).expect("outside pixel");
+  assert_eq!(
+    (outside.red(), outside.green(), outside.blue()),
+    (255, 0, 0),
+    "expected pixel outside the 10×10 natural size to show red background"
   );
 }
 

@@ -19380,6 +19380,15 @@ mod tests {
       .expect("cached decode");
     assert!(Arc::ptr_eq(&first, &second));
 
+    let overridden = builder
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, Some(2.0))
+      .expect("override decode");
+    assert!(!Arc::ptr_eq(&first, &overridden));
+    let overridden_cached = builder
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, Some(2.0))
+      .expect("cached override decode");
+    assert!(Arc::ptr_eq(&overridden, &overridden_cached));
+
     let mut rotated_style = ComputedStyle::default();
     rotated_style.image_orientation = ImageOrientation::Angle {
       quarter_turns: 1,
