@@ -53,9 +53,18 @@ impl EnvVarGuard {
       .push((key.to_os_string(), std::env::var_os(key)));
   }
 
+  fn assert_env_var_allowed(key: &OsStr) {
+    if key == OsStr::new("FASTR_USE_BUNDLED_FONTS") {
+      panic!(
+        "integration tests must not mutate FASTR_USE_BUNDLED_FONTS; configure the renderer with FontConfig::bundled_only() instead"
+      );
+    }
+  }
+
   /// Set an environment variable, saving the previous value for later restoration.
   pub fn set_var(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
     let key = key.as_ref();
+    Self::assert_env_var_allowed(key);
     self.save_if_needed(key);
     std::env::set_var(key, value);
   }
@@ -63,6 +72,7 @@ impl EnvVarGuard {
   /// Remove an environment variable, saving the previous value for later restoration.
   pub fn remove_var(&mut self, key: impl AsRef<OsStr>) {
     let key = key.as_ref();
+    Self::assert_env_var_allowed(key);
     self.save_if_needed(key);
     std::env::remove_var(key);
   }
