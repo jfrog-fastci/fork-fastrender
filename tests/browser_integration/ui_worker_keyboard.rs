@@ -117,6 +117,55 @@ fn make_test_page() -> (tempfile::TempDir, String) {
   (dir, url)
 }
 
+fn make_autofocus_page() -> (tempfile::TempDir, String) {
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0,0,0); }
+
+          /* The input comes first in the DOM so we can use adjacent sibling selectors, but it is
+             positioned below the box so pointer clicks do not affect the sampled pixels. */
+          #txt {
+            position: absolute;
+            left: 0;
+            top: 80px;
+            width: 140px;
+            height: 24px;
+          }
+
+          #box {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 64px;
+            height: 64px;
+            background: rgb(255,0,0);
+          }
+
+          input[value="abc"] + #box { background: rgb(0,0,255); }
+          input[value="ab"] + #box { background: rgb(0,255,0); }
+
+           /* Keep the background color reserved for input value assertions; use an outline to
+              indicate focus-visible and sample pixels outside the box. */
+          input:focus-visible + #box { outline: 4px solid rgb(255,255,0); }
+         </style>
+       </head>
+       <body>
+         <input id="txt" value="abc" autofocus />
+        <div id="box"></div>
+      </body>
+    </html>
+  "#;
+
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
+  (dir, url)
+}
+
 fn pixel_rgba(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   assert!(x < pixmap.width(), "x out of bounds");
   assert!(y < pixmap.height(), "y out of bounds");
@@ -194,6 +243,128 @@ fn make_tab_traversal_page() -> (tempfile::TempDir, String) {
 
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
   let url = format!("file://{}/index.html", dir.path().display());
+  (dir, url)
+}
+
+fn make_positive_tabindex_page() -> (tempfile::TempDir, String) {
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0,0,0); }
+
+          #a { position: absolute; left: 0; top: 30px; width: 80px; height: 20px; }
+          #b { position: absolute; left: 0; top: 60px; width: 80px; height: 20px; }
+          #c { position: absolute; left: 0; top: 90px; width: 80px; height: 20px; }
+
+          #status {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 20px;
+            height: 20px;
+            background: rgb(0,0,0);
+          }
+
+          /* The status box color encodes the currently focused element. */
+          #a:focus-visible ~ #status { background: rgb(255,0,0); }
+          #b:focus-visible ~ #status { background: rgb(0,255,0); }
+          #c:focus-visible ~ #status { background: rgb(0,0,255); }
+        </style>
+      </head>
+      <body>
+        <!-- DOM order: a, b, c -->
+        <input id="a" value="a" tabindex="0" />
+        <input id="b" value="b" tabindex="2" />
+        <input id="c" value="c" tabindex="1" />
+        <div id="status"></div>
+      </body>
+    </html>
+  "#;
+
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
+  (dir, url)
+}
+
+fn make_modal_focus_trap_page() -> (tempfile::TempDir, String) {
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0,0,0); }
+
+           dialog {
+             position: absolute;
+             /* Override the UA dialog centering (`inset: 0; margin: auto`) so our sampled pixels
+                deterministically hit the status box in the top-left corner. */
+             inset: auto;
+             margin: 0;
+             left: 0;
+             top: 0;
+             width: 100px;
+             height: 100px;
+             padding: 0;
+            border: none;
+            background: rgb(0,0,0);
+          }
+
+          #in1 { position: absolute; left: 0; top: 30px; width: 80px; height: 20px; }
+          #in2 { position: absolute; left: 0; top: 60px; width: 80px; height: 20px; }
+
+          #status {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 20px;
+            height: 20px;
+            background: rgb(0,0,0);
+          }
+
+          /* Focus-visible inside the dialog sets the status box. */
+          #in1:focus-visible ~ #status { background: rgb(255,0,0); }
+          #in2:focus-visible ~ #status { background: rgb(0,0,255); }
+
+          /* Marker that turns green if focus ever escapes to the outside input. */
+          #outside_marker {
+            position: absolute;
+            left: 110px;
+            top: 0;
+            width: 20px;
+            height: 20px;
+            background: rgb(0,0,0);
+          }
+          #outside {
+            position: absolute;
+            left: 0;
+            top: 140px;
+            width: 80px;
+            height: 20px;
+          }
+          #outside:focus-visible + #outside_marker { background: rgb(0,255,0); }
+        </style>
+      </head>
+      <body>
+        <dialog id="dlg" data-fastr-open="modal">
+          <input id="in1" value="a" />
+          <input id="in2" value="b" />
+          <div id="status"></div>
+        </dialog>
+
+        <input id="outside" value="outside" />
+        <div id="outside_marker"></div>
+      </body>
+    </html>
+  "#;
+
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
   (dir, url)
 }
 
@@ -415,6 +586,131 @@ fn key_action_sets_focus_visible() {
     .expect("Backspace");
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
   assert_pixel_rgb(&frame.pixmap, 66, 32, (255, 255, 0));
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn autofocus_focuses_element_and_sets_focus_visible_on_load() {
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_autofocus_page();
+
+  let handle = spawn_ui_worker("fastr-ui-worker-autofocus").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  // Autofocus should apply before the first frame, and should set focus-visible.
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 255));
+  // Sample outside the box (right edge) to see the focus-visible outline.
+  assert_pixel_rgb(&frame.pixmap, 66, 32, (255, 255, 0));
+
+  // Autofocused inputs should have an initialized caret so text editing works immediately.
+  ui_tx
+    .send(key_action(tab_id, KeyAction::Backspace))
+    .expect("Backspace");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 255, 0));
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn tab_order_honors_positive_tabindex_ordering() {
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_positive_tabindex_page();
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-keyboard-tabindex-order").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (120, 120), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  // No focus initially.
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 0));
+
+  // Tab order should be: tabindex=1 (#c), then tabindex=2 (#b), then tabindex=0 (#a).
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 255));
+
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 255, 0));
+
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (255, 0, 0));
+
+  // Wrap back to the first positive tabindex element.
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 255));
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn tab_focus_is_trapped_within_modal_dialog() {
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_modal_focus_trap_page();
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-keyboard-modal-focus-trap").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (140, 180), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  // No focus initially.
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 0));
+  assert_pixel_rgb(&frame.pixmap, 120, 10, (0, 0, 0));
+
+  // Tab should enter the modal and cycle between its focusable controls.
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (255, 0, 0));
+  assert_pixel_rgb(&frame.pixmap, 120, 10, (0, 0, 0));
+
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 255));
+  assert_pixel_rgb(&frame.pixmap, 120, 10, (0, 0, 0));
+
+  // Wrap within the modal (must not escape to the outside input).
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (255, 0, 0));
+  assert_pixel_rgb(&frame.pixmap, 120, 10, (0, 0, 0));
 
   drop(ui_tx);
   join.join().expect("join ui worker");

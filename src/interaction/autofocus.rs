@@ -173,3 +173,39 @@ pub fn interaction_state_for_autofocus(dom: &DomNode) -> Option<InteractionState
     ..InteractionState::default()
   })
 }
+
+/// Returns the pre-order DOM node id of the first eligible `[autofocus]` element, if any.
+///
+/// This shares the same best-effort eligibility rules as [`interaction_state_for_autofocus`], but
+/// only returns the node id. This is intended for interactive/browser UI integrations that manage
+/// their own [`crate::interaction::InteractionEngine`] state but still want spec-ish autofocus
+/// target selection.
+pub fn autofocus_target_node_id(dom: &DomNode) -> Option<usize> {
+  struct Frame<'a> {
+    node: &'a DomNode,
+    inert: bool,
+  }
+  let mut next_id = 1usize;
+  let mut stack = vec![Frame { node: dom, inert: false }];
+  while let Some(frame) = stack.pop() {
+    let id = next_id;
+    next_id = next_id.saturating_add(1);
+    let self_inert = frame.inert || node_self_is_inert_like(frame.node);
+    if frame.node.is_element()
+      && !self_inert
+      && frame.node.get_attribute_ref("autofocus").is_some()
+      && is_focusable_element_for_autofocus(frame.node)
+    {
+      return Some(id);
+    }
+
+    for child in frame.node.children.iter().rev() {
+      stack.push(Frame {
+        node: child,
+        inert: self_inert,
+      });
+    }
+  }
+
+  None
+}

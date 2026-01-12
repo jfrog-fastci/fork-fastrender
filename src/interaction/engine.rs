@@ -1525,6 +1525,9 @@ fn node_self_is_tab_inert(node: &DomNode) -> bool {
     // MVP: treat `disabled` as making the subtree unreachable via Tab, matching our other
     // interaction pruning which skips disabled ancestors.
     || node.get_attribute_ref("disabled").is_some()
+    // `hidden` is render- and interaction-suppressing; hidden subtrees should not participate in
+    // sequential focus navigation.
+    || node.get_attribute_ref("hidden").is_some()
 }
 
 fn parse_tabindex(node: &DomNode) -> Option<i32> {
@@ -1549,81 +1552,104 @@ fn collect_inert_subtree_flags(index: &DomIndexMut) -> Vec<bool> {
   inert
 }
 
-fn is_tab_focusable(index: &DomIndexMut, inert: &[bool], node_id: usize) -> bool {
+/// Returns the effective `tabindex` value for sequential focus navigation (Tab order).
+///
+/// - `Some(n >= 0)` => element is a tab stop with the given tabindex.
+/// - `None` => element is either not focusable, or focusable but not reachable via Tab
+///   (e.g. `tabindex < 0`).
+fn tab_stop_tabindex(index: &DomIndexMut, inert: &[bool], node_id: usize) -> Option<i32> {
   if inert.get(node_id).copied().unwrap_or(true) {
-    return false;
+    return None;
   }
   let Some(node) = index.node(node_id) else {
-    return false;
+    return None;
   };
   if !node.is_element() {
-    return false;
+    return None;
   }
   if node.get_attribute_ref("disabled").is_some() {
-    return false;
+    return None;
+  }
+  if node.get_attribute_ref("hidden").is_some() {
+    return None;
   }
   if is_input(node) && input_type(node).eq_ignore_ascii_case("hidden") {
-    return false;
+    return None;
   }
 
-  // MVP tabindex support:
-  // - `tabindex < 0` => skipped
-  // - `tabindex >= 0` => focusable (but we intentionally *ignore* the positive ordering rules and
-  //   keep DOM tree order).
-  // - parse failure => ignored (treated as unset)
-  if let Some(tabindex) = parse_tabindex(node) {
-    return tabindex >= 0;
+  let tabindex = parse_tabindex(node);
+
+  // `tabindex` makes any element focusable (even if it is not a native interactive element).
+  let focusable = if tabindex.is_some() {
+    true
+  } else {
+    is_focusable_anchor(node)
+      || is_input(node)
+      || is_textarea(node)
+      || is_select(node)
+      || is_button(node)
+  };
+  if !focusable {
+    return None;
   }
 
-  is_focusable_anchor(node)
-    || is_input(node)
-    || is_textarea(node)
-    || is_select(node)
-    || is_button(node)
+  match tabindex.unwrap_or(0) {
+    t if t < 0 => None,
+    t => Some(t),
+  }
 }
 
-fn collect_tab_focusables(index: &DomIndexMut) -> Vec<usize> {
+fn collect_tab_stops(index: &DomIndexMut) -> Vec<usize> {
   let inert = collect_inert_subtree_flags(index);
-  let mut focusables = Vec::new();
+  let mut positive: Vec<(i32, usize)> = Vec::new();
+  let mut zero: Vec<usize> = Vec::new();
+
   for node_id in 1..index.id_to_node.len() {
-    if is_tab_focusable(index, &inert, node_id) {
-      focusables.push(node_id);
+    let Some(tabindex) = tab_stop_tabindex(index, &inert, node_id) else {
+      continue;
+    };
+    if tabindex > 0 {
+      positive.push((tabindex, node_id));
+    } else {
+      // `tabindex == 0` (or omitted) participates in Tab order in DOM order.
+      zero.push(node_id);
     }
   }
-  focusables
+
+  // Positive tabindex values are visited first, in ascending order, with ties broken by DOM order.
+  positive.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+  let mut out = Vec::with_capacity(positive.len() + zero.len());
+  out.extend(positive.into_iter().map(|(_, node_id)| node_id));
+  out.extend(zero);
+  out
 }
 
 fn next_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize> {
   if focusables.is_empty() {
     return None;
   }
-  let Some(current) = current else {
-    return Some(focusables[0]);
-  };
-  // `focusables` is in DOM pre-order (increasing node id). Find the first focusable element after
-  // the current focused node. If none exists, wrap to the first.
-  focusables
-    .iter()
-    .copied()
-    .find(|id| *id > current)
-    .or_else(|| focusables.first().copied())
+  let idx = current.and_then(|current| focusables.iter().position(|id| *id == current));
+  match idx {
+    Some(i) => Some(focusables[(i + 1) % focusables.len()]),
+    // If the currently focused element is not a tab stop (or there is no focus), start at the
+    // first tab stop.
+    None => Some(focusables[0]),
+  }
 }
 
 fn prev_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize> {
   if focusables.is_empty() {
     return None;
   }
-  let Some(current) = current else {
-    return focusables.last().copied();
-  };
-  // `focusables` is in DOM pre-order (increasing node id). Find the last focusable element before
-  // the current focused node. If none exists, wrap to the last.
-  focusables
-    .iter()
-    .copied()
-    .rev()
-    .find(|id| *id < current)
-    .or_else(|| focusables.last().copied())
+  let idx = current.and_then(|current| focusables.iter().position(|id| *id == current));
+  match idx {
+    Some(0) => focusables.last().copied(),
+    Some(i) => focusables.get(i.wrapping_sub(1)).copied(),
+    // If the currently focused element is not a tab stop (or there is no focus), start at the
+    // last tab stop.
+    None => focusables.last().copied(),
+  }
 }
 
 fn node_is_disabled(index: &DomIndexMut, node_id: usize) -> bool {
@@ -4353,7 +4379,7 @@ impl InteractionEngine {
     if matches!(key, KeyAction::Tab | KeyAction::ShiftTab) {
       // Focus traversal (wraps at ends).
       let mut index = DomIndexMut::new(dom);
-      let focusables = collect_tab_focusables(&index);
+      let focusables = collect_tab_stops(&index);
       let next_focus = match key {
         KeyAction::Tab => next_tab_focus(self.state.focused, &focusables),
         KeyAction::ShiftTab => prev_tab_focus(self.state.focused, &focusables),

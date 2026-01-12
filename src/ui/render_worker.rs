@@ -3095,6 +3095,39 @@ impl BrowserRuntime {
     doc.set_scroll_state(scroll_state.clone());
 
     // -----------------------------
+    // Initial interaction state (autofocus)
+    // -----------------------------
+    //
+    // The browser UI always provides an interaction state for rendering, so static-render
+    // autofocus synthesis (which only runs when `interaction_state` is None) won't apply here.
+    // Instead, we proactively focus the first eligible `[autofocus]` element before the first
+    // paint so `:focus`/`:focus-visible` styles and caret/selection painting are visible
+    // immediately after navigation commits.
+    let mut interaction = InteractionEngine::new();
+    let autofocus_target = crate::interaction::autofocus::autofocus_target_node_id(doc.dom());
+    if let Some(target_id) = autofocus_target {
+      // `InteractionEngine::focus_node_id` does not mutate the DOM; avoid invalidating the cached
+      // layout from navigation preparation.
+      doc.mutate_dom(|dom| {
+        let _ = interaction.focus_node_id(dom, Some(target_id), true);
+        false
+      });
+
+      // Scroll to reveal the autofocus target (best-effort).
+      if let Some(prepared) = doc.prepared() {
+        if let Some(next_scroll) = crate::interaction::focus_scroll::scroll_state_for_focus(
+          prepared.box_tree(),
+          prepared.fragment_tree(),
+          &scroll_state,
+          target_id,
+        ) {
+          scroll_state = next_scroll;
+          doc.set_scroll_state(scroll_state.clone());
+        }
+      }
+    }
+
+    // -----------------------------
     // Initial paint stage
     // -----------------------------
     let paint_cancel_callback = combine_cancel_callbacks(
@@ -3105,12 +3138,29 @@ impl BrowserRuntime {
 
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-      match doc.render_if_needed_with_deadlines(Some(&paint_deadline)) {
-        Ok(Some(frame)) => Ok(Some(frame)),
-        Ok(None) => doc
-          .render_frame_with_deadlines(Some(&paint_deadline))
-          .map(Some),
-        Err(err) => Err(err),
+      let interaction_state = autofocus_target.map(|_| interaction.interaction_state());
+      if let Some(interaction_state) = interaction_state {
+        match doc.render_if_needed_with_deadlines_and_interaction_state(
+          Some(&paint_deadline),
+          Some(interaction_state),
+        ) {
+          Ok(Some(frame)) => Ok(Some(frame)),
+          Ok(None) => doc
+            .render_frame_with_deadlines_and_interaction_state(
+              Some(&paint_deadline),
+              Some(interaction_state),
+            )
+            .map(Some),
+          Err(err) => Err(err),
+        }
+      } else {
+        match doc.render_if_needed_with_deadlines(Some(&paint_deadline)) {
+          Ok(Some(frame)) => Ok(Some(frame)),
+          Ok(None) => doc
+            .render_frame_with_deadlines(Some(&paint_deadline))
+            .map(Some),
+          Err(err) => Err(err),
+        }
       }
     };
 
@@ -3137,7 +3187,7 @@ impl BrowserRuntime {
             .history
             .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
           tab.document = Some(doc);
-          tab.interaction = InteractionEngine::new();
+          tab.interaction = interaction;
           tab.tick_animation_time_ms = 0.0;
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
@@ -3266,7 +3316,7 @@ impl BrowserRuntime {
       .history
       .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
     tab.document = Some(doc);
-    tab.interaction = InteractionEngine::new();
+    tab.interaction = interaction;
     tab.tick_animation_time_ms = 0.0;
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
