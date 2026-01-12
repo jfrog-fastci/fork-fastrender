@@ -343,27 +343,24 @@ impl Dom2TreeSink {
         debug_assert!(false, "can_merge_prev implies a previous sibling exists");
         return;
       };
-      if doc.live_mutation.has_subscribers() {
-        let offset = match &doc.node(prev_id).kind {
-          NodeKind::Text { content } => utf16_len(content),
-          _ => 0,
-        };
-        let inserted_len = utf16_len(text);
-        doc
-          .live_mutation
-          .replace_data(prev_id, offset, /* removed_len */ 0, inserted_len);
-        if can_merge_next {
-          let next_len = match &doc.node(reference).kind {
+      let (prev_old_len, inserted_len) = if doc.live_mutation.has_subscribers() {
+        (
+          match &doc.node(prev_id).kind {
             NodeKind::Text { content } => utf16_len(content),
             _ => 0,
-          };
-          doc.live_mutation.replace_data(
-            prev_id,
-            offset + inserted_len,
-            /* removed_len */ 0,
-            next_len,
-          );
-        }
+          },
+          utf16_len(text),
+        )
+      } else {
+        (0, 0)
+      };
+      if doc.live_mutation.has_subscribers() {
+        doc.live_mutation.replace_data(
+          prev_id,
+          /* offset */ prev_old_len,
+          /* removed_len */ 0,
+          /* inserted_len */ inserted_len,
+        );
       }
       if let NodeKind::Text { content } = &mut doc.node_mut(prev_id).kind {
         content.push_str(text);
@@ -375,6 +372,14 @@ impl Dom2TreeSink {
           NodeKind::Text { content } => content.clone(),
           _ => String::new(),
         };
+        if doc.live_mutation.has_subscribers() {
+          doc.live_mutation.replace_data(
+            prev_id,
+            /* offset */ prev_old_len + inserted_len,
+            /* removed_len */ 0,
+            /* inserted_len */ utf16_len(&next_content),
+          );
+        }
         if let NodeKind::Text { content } = &mut doc.node_mut(prev_id).kind {
           content.push_str(&next_content);
         }
@@ -406,9 +411,9 @@ impl Dom2TreeSink {
       None,
       /* inert_subtree */ false,
     );
-    doc.node_mut(text_id).parent = Some(parent);
     doc.live_mutation.pre_insert(parent, insert_pos, 1);
     doc.node_mut(parent).children.insert(insert_pos, text_id);
+    doc.node_mut(text_id).parent = Some(parent);
   }
 
   fn record_ignored_insertion_point(
@@ -965,18 +970,20 @@ impl TreeSink for Dom2TreeSink {
         .live_mutation
         .pre_insert(*new_parent, old_len, moved_children_snapshot.len());
     }
-
     let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
     if moved_children.is_empty() {
       return;
     }
     for &child in &moved_children {
-      doc.node_mut(child).parent = Some(*new_parent);
+      doc.node_mut(child).parent = None;
     }
     doc
       .node_mut(*new_parent)
       .children
       .extend(moved_children.iter().copied());
+    for &child in &moved_children {
+      doc.node_mut(child).parent = Some(*new_parent);
+    }
 
     // Merge boundary text nodes if reparenting created a new adjacency.
     if old_len > 0 {
@@ -985,33 +992,28 @@ impl TreeSink for Dom2TreeSink {
       if matches!(&doc.node(prev).kind, NodeKind::Text { .. })
         && matches!(&doc.node(next).kind, NodeKind::Text { .. })
       {
-        let next_content = match &mut doc.node_mut(next).kind {
-          NodeKind::Text { content } => Some(std::mem::take(content)),
-          _ => {
-            debug_assert!(false, "kind checked above");
-            None
-          }
+        let next_content = match &doc.node(next).kind {
+          NodeKind::Text { content } => content.clone(),
+          _ => String::new(),
         };
-        if let Some(next_content) = next_content {
-           if doc.live_mutation.has_subscribers() {
-             let offset = match &doc.node(prev).kind {
-               NodeKind::Text { content } => utf16_len(content),
-               _ => 0,
-             };
-             doc.live_mutation.replace_data(
-               prev,
-               offset,
-               /* removed_len */ 0,
-               /* inserted_len */ utf16_len(&next_content),
-             );
-           }
-          if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
-            content.push_str(&next_content);
-          } else {
-            debug_assert!(false, "prev kind checked above");
-          }
-          Self::detach_from_parent(&mut doc, next);
+        if doc.live_mutation.has_subscribers() {
+          let offset = match &doc.node(prev).kind {
+            NodeKind::Text { content } => utf16_len(content),
+            _ => 0,
+          };
+          doc.live_mutation.replace_data(
+            prev,
+            offset,
+            /* removed_len */ 0,
+            /* inserted_len */ utf16_len(&next_content),
+          );
         }
+        if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
+          content.push_str(&next_content);
+        } else {
+          debug_assert!(false, "prev kind checked above");
+        }
+        Self::detach_from_parent(&mut doc, next);
       }
     }
 
@@ -1839,6 +1841,282 @@ mod base_url_tests {
     assert_eq!(
       tokenizer.sink.sink.current_base_url().as_deref(),
       Some("https://ex/base/")
+    );
+  }
+}
+
+#[cfg(test)]
+mod live_mutation_hook_tests {
+  use super::Dom2TreeSink;
+  use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
+  use crate::dom2::NodeKind;
+
+  use html5ever::tendril::StrTendril;
+  use html5ever::tokenizer::{BufferQueue, Tokenizer};
+  use html5ever::tree_builder::{TreeBuilder, TreeBuilderOpts, TreeSink};
+  use html5ever::{ParseOpts, TokenizerResult};
+
+  fn new_element(tag: &str) -> NodeKind {
+    NodeKind::Element {
+      tag_name: tag.to_string(),
+      namespace: String::new(),
+      prefix: None,
+      attributes: Vec::new(),
+    }
+  }
+
+  fn install_recorder(sink: &Dom2TreeSink) -> LiveMutationTestRecorder {
+    let recorder = LiveMutationTestRecorder::default();
+    sink
+      .document_mut()
+      .live_mutation
+      .set_hook(Some(Box::new(recorder.clone())));
+    recorder
+  }
+
+  #[test]
+  fn remove_from_parent_emits_pre_remove() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let (parent, child) = {
+      let mut doc = sink.document_mut();
+      let parent = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
+      let child = doc.push_node(new_element("span"), Some(parent), /* inert_subtree */ false);
+      (parent, child)
+    };
+
+    let recorder = install_recorder(&sink);
+    sink.remove_from_parent(&child);
+
+    let events = recorder.take();
+    assert_eq!(
+      events,
+      vec![LiveMutationEvent::PreRemove {
+        node: child,
+        old_parent: parent,
+        old_index: 0
+      }]
+    );
+  }
+
+  #[test]
+  fn insert_node_before_emits_pre_insert() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let (parent, child) = {
+      let mut doc = sink.document_mut();
+      let parent = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
+      let child = doc.push_node(new_element("span"), None, /* inert_subtree */ false);
+      (parent, child)
+    };
+
+    let recorder = install_recorder(&sink);
+
+    let inserted = {
+      let mut doc = sink.document_mut();
+      Dom2TreeSink::insert_node_before(&mut doc, parent, None, child)
+    };
+    assert!(inserted);
+
+    let events = recorder.take();
+    assert_eq!(
+      events,
+      vec![LiveMutationEvent::PreInsert {
+        parent,
+        index: 0,
+        count: 1
+      }]
+    );
+  }
+
+  #[test]
+  fn append_text_at_merges_prev_and_next_and_emits_replace_data_then_pre_remove() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let (parent, prev_text, next_text) = {
+      let mut doc = sink.document_mut();
+      let parent = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
+      let prev_text = doc.push_node(
+        NodeKind::Text {
+          content: "a".to_string(),
+        },
+        Some(parent),
+        /* inert_subtree */ false,
+      );
+      let next_text = doc.push_node(
+        NodeKind::Text {
+          content: "b".to_string(),
+        },
+        Some(parent),
+        /* inert_subtree */ false,
+      );
+      (parent, prev_text, next_text)
+    };
+
+    let recorder = install_recorder(&sink);
+
+    {
+      let mut doc = sink.document_mut();
+      Dom2TreeSink::append_text_at(&mut doc, parent, Some(next_text), "x", false);
+    }
+
+    let events = recorder.take();
+    assert_eq!(
+      events,
+      vec![
+        LiveMutationEvent::ReplaceData {
+          node: prev_text,
+          offset: 1,
+          removed_len: 0,
+          inserted_len: 1
+        },
+        LiveMutationEvent::ReplaceData {
+          node: prev_text,
+          offset: 2,
+          removed_len: 0,
+          inserted_len: 1
+        },
+        LiveMutationEvent::PreRemove {
+          node: next_text,
+          old_parent: parent,
+          old_index: 1
+        }
+      ]
+    );
+  }
+
+  #[test]
+  fn reparent_children_emits_bulk_hooks_and_boundary_merge_events() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let (from, to, to_text, moved_text) = {
+      let mut doc = sink.document_mut();
+      let from = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
+      let to = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
+      let to_text = doc.push_node(
+        NodeKind::Text {
+          content: "hello".to_string(),
+        },
+        Some(to),
+        /* inert_subtree */ false,
+      );
+      let moved_text = doc.push_node(
+        NodeKind::Text {
+          content: "world".to_string(),
+        },
+        Some(from),
+        /* inert_subtree */ false,
+      );
+      (from, to, to_text, moved_text)
+    };
+
+    let recorder = install_recorder(&sink);
+    sink.reparent_children(&from, &to);
+
+    let doc = sink.document();
+    assert!(doc.node(from).children.is_empty());
+    assert_eq!(doc.node(to).children.len(), 1);
+    let NodeKind::Text { content } = &doc.node(doc.node(to).children[0]).kind else {
+      panic!("expected merged text node");
+    };
+    assert_eq!(content, "helloworld");
+
+    let events = recorder.take();
+    assert_eq!(
+      events,
+      vec![
+        LiveMutationEvent::PreRemove {
+          node: moved_text,
+          old_parent: from,
+          old_index: 0
+        },
+        LiveMutationEvent::PreInsert {
+          parent: to,
+          index: 1,
+          count: 1
+        },
+        LiveMutationEvent::ReplaceData {
+          node: to_text,
+          offset: 5,
+          removed_len: 0,
+          inserted_len: 5
+        },
+        LiveMutationEvent::PreRemove {
+          node: moved_text,
+          old_parent: to,
+          old_index: 1
+        }
+      ]
+    );
+  }
+
+  #[test]
+  fn streaming_parse_after_script_pause_emits_live_hooks() {
+    let sink = Dom2TreeSink::new(None);
+    let opts = ParseOpts {
+      tree_builder: TreeBuilderOpts {
+        scripting_enabled: true,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
+    let tb = TreeBuilder::new(sink, opts.tree_builder);
+    let mut tokenizer = Tokenizer::new(tb, opts.tokenizer);
+    let mut input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(
+      "<!doctype html><html><body><p>before</p><script src=\"a.js\"></script><p id=after>after</p></body></html>",
+    ));
+
+    let script_handle = loop {
+      match tokenizer.feed(&mut input) {
+        TokenizerResult::Script(handle) => break handle,
+        TokenizerResult::Done => panic!("expected script pause"),
+      }
+    };
+
+    // Simulate script execution creating live objects: install the hook recorder while parsing is
+    // paused, then resume parsing and assert subsequent parser insertions emit hook events.
+    let recorder = {
+      let recorder = LiveMutationTestRecorder::default();
+      tokenizer
+        .sink
+        .sink
+        .document
+        .borrow_mut()
+        .live_mutation
+        .set_hook(Some(Box::new(recorder.clone())));
+      recorder
+    };
+
+    let _ = script_handle;
+    loop {
+      match tokenizer.feed(&mut input) {
+        TokenizerResult::Done => break,
+        TokenizerResult::Script(_) => panic!("unexpected extra script pause"),
+      }
+    }
+    tokenizer.end();
+
+    let doc = tokenizer.sink.sink.document.borrow().clone();
+    let body = doc.body().expect("expected <body>");
+    let after = doc.get_element_by_id("after").expect("expected <p id=after>");
+    let after_idx = doc
+      .index_of_child(body, after)
+      .expect("index_of_child")
+      .expect("expected after element to be a body child");
+
+    let events = recorder.take();
+    assert!(
+      events.iter().any(|event| matches!(
+        event,
+        LiveMutationEvent::PreInsert { parent, index, count }
+          if *parent == body && *index == after_idx && *count == 1
+      )),
+      "expected pre_insert hook for <p id=after> insertion into <body>, got {events:?}"
     );
   }
 }

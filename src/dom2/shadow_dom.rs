@@ -90,9 +90,7 @@ fn promote_template_to_shadow_root(
 ) {
   // Detach the template from the host.
   doc.node_iterator_pre_remove_steps(template);
-  doc
-    .live_mutation
-    .pre_remove(template, host, template_idx);
+  doc.live_mutation.pre_remove(template, host, template_idx);
   doc.nodes[host.index()].children.remove(template_idx);
   doc.nodes[template.index()].parent = None;
 
@@ -112,26 +110,27 @@ fn promote_template_to_shadow_root(
   for (idx, &child) in template_children.iter().enumerate() {
     if doc.nodes[child.index()].parent == Some(template) {
       doc.node_iterator_pre_remove_steps(child);
-      doc
-        .live_mutation
-        .pre_remove(child, template, idx);
     }
-  }
-  if !template_children.is_empty() {
-    doc
-      .live_mutation
-      .pre_insert(shadow_root, 0, template_children.len());
+    doc.live_mutation.pre_remove(child, template, idx);
   }
   let moved_children = std::mem::take(&mut doc.nodes[template.index()].children);
+  for &child in &moved_children {
+    doc.nodes[child.index()].parent = None;
+  }
+  if !moved_children.is_empty() {
+    doc
+      .live_mutation
+      .pre_insert(shadow_root, 0, moved_children.len());
+  }
   for &child in &moved_children {
     doc.nodes[child.index()].parent = Some(shadow_root);
   }
   doc.nodes[shadow_root.index()].children = moved_children;
 
   // Attach shadow root to host at index 0.
-  doc.nodes[shadow_root.index()].parent = Some(host);
   doc.live_mutation.pre_insert(host, 0, 1);
   doc.nodes[host.index()].children.insert(0, shadow_root);
+  doc.nodes[shadow_root.index()].parent = Some(host);
 }
 
 impl Document {
@@ -281,6 +280,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
   use crate::debug::snapshot::snapshot_dom;
   use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
   use selectors::context::QuirksMode;
@@ -655,6 +655,75 @@ mod tests {
     assert!(
       doc.node(host).children.contains(&template),
       "detached template should remain untouched"
+    );
+  }
+
+  #[test]
+  fn attach_shadow_roots_emits_live_mutation_hooks() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let root = doc.root();
+
+    let host = doc.push_node(
+      NodeKind::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        prefix: None,
+        attributes: Vec::new(),
+      },
+      Some(root),
+      /* inert_subtree */ false,
+    );
+    let template = doc.push_node(
+      NodeKind::Element {
+        tag_name: "template".to_string(),
+        namespace: String::new(),
+        prefix: None,
+        attributes: vec![("shadowroot".to_string(), "open".to_string())],
+      },
+      Some(host),
+      /* inert_subtree */ false,
+    );
+    let child = doc.push_node(
+      NodeKind::Text {
+        content: "shadow".to_string(),
+      },
+      Some(template),
+      /* inert_subtree */ false,
+    );
+
+    let recorder = LiveMutationTestRecorder::default();
+    doc
+      .live_mutation
+      .set_hook(Some(Box::new(recorder.clone())));
+
+    let expected_shadow_root = NodeId::from_index(doc.nodes_len());
+    doc.attach_shadow_roots();
+
+    let events = recorder.take();
+    assert_eq!(
+      events,
+      vec![
+        LiveMutationEvent::PreRemove {
+          node: template,
+          old_parent: host,
+          old_index: 0
+        },
+        LiveMutationEvent::PreRemove {
+          node: child,
+          old_parent: template,
+          old_index: 0
+        },
+        LiveMutationEvent::PreInsert {
+          parent: expected_shadow_root,
+          index: 0,
+          count: 1
+        },
+        LiveMutationEvent::PreInsert {
+          parent: host,
+          index: 0,
+          count: 1
+        }
+      ]
     );
   }
 }
