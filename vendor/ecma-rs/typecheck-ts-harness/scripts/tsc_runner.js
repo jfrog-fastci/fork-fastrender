@@ -342,62 +342,110 @@ function finalizeResolutionTrace(collector) {
 function installResolutionTracing(host, options, collector) {
   const mode = collector.mode;
 
+  const getCurrentDirectory = host.getCurrentDirectory
+    ? host.getCurrentDirectory.bind(host)
+    : () => VIRTUAL_ROOT;
+  const getCanonicalFileName = host.getCanonicalFileName
+    ? host.getCanonicalFileName.bind(host)
+    : (fileName) => fileName;
+
   const originalResolveModuleNameLiterals = host.resolveModuleNameLiterals
     ? host.resolveModuleNameLiterals.bind(host)
     : null;
-  if (originalResolveModuleNameLiterals) {
-    host.resolveModuleNameLiterals = (
+  // `ts.createCompilerHost` does not provide `resolveModuleNameLiterals` by
+  // default, but `ts.createProgram` will call it when present. Implement a
+  // default version so we can record structured traces without needing to
+  // monkey-patch TypeScript internals.
+  host.resolveModuleNameLiterals = (
+    moduleLiterals,
+    containingFile,
+    redirectedReference,
+    compilerOptions,
+    containingSourceFile,
+    reusedNames,
+  ) => {
+    const resolvedOptions = compilerOptions ?? options;
+    const moduleCache = ts.createModuleResolutionCache(
+      getCurrentDirectory(),
+      getCanonicalFileName,
+      resolvedOptions,
+    );
+    const results =
+      originalResolveModuleNameLiterals ??
+      ((literals) =>
+        literals.map((literal, index) => {
+          const specifier =
+            literal && typeof literal.text === "string" ? literal.text : String(literal);
+          let resolutionMode = null;
+          if (
+            containingSourceFile &&
+            typeof ts.getModeForResolutionAtIndex === "function"
+          ) {
+            try {
+              resolutionMode = ts.getModeForResolutionAtIndex(
+                containingSourceFile,
+                index,
+                resolvedOptions,
+              );
+            } catch {
+              resolutionMode = null;
+            }
+          }
+          return ts.resolveModuleName(
+            specifier,
+            containingFile,
+            resolvedOptions,
+            host,
+            moduleCache,
+            redirectedReference,
+            resolutionMode,
+          );
+        }));
+
+    const resolved = results(
       moduleLiterals,
       containingFile,
       redirectedReference,
       compilerOptions,
       containingSourceFile,
       reusedNames,
-    ) => {
-      const results = originalResolveModuleNameLiterals(
-        moduleLiterals,
-        containingFile,
-        redirectedReference,
-        compilerOptions,
-        containingSourceFile,
-        reusedNames,
-      );
-      for (let i = 0; i < moduleLiterals.length; i++) {
-        const literal = moduleLiterals[i];
-        const specifier =
-          literal && typeof literal.text === "string" ? literal.text : String(literal);
-        const resolved = results?.[i]?.resolvedModule?.resolvedFileName ?? null;
-        let kind = null;
-        if (
-          containingSourceFile &&
-          typeof ts.getModeForResolutionAtIndex === "function"
-        ) {
-          try {
-            const resolutionMode = ts.getModeForResolutionAtIndex(
-              containingSourceFile,
-              i,
-              compilerOptions ?? options,
-            );
-            if (resolutionMode === ts.ModuleKind.CommonJS) {
-              kind = "require";
-            } else if (resolutionMode != null) {
-              kind = "import";
-            }
-          } catch {
-            // ignore
+    );
+
+    for (let i = 0; i < moduleLiterals.length; i++) {
+      const literal = moduleLiterals[i];
+      const specifier =
+        literal && typeof literal.text === "string" ? literal.text : String(literal);
+      const resolvedFile = resolved?.[i]?.resolvedModule?.resolvedFileName ?? null;
+      let kind = null;
+      if (
+        containingSourceFile &&
+        typeof ts.getModeForResolutionAtIndex === "function"
+      ) {
+        try {
+          const resolutionMode = ts.getModeForResolutionAtIndex(
+            containingSourceFile,
+            i,
+            resolvedOptions,
+          );
+          if (resolutionMode === ts.ModuleKind.CommonJS) {
+            kind = "require";
+          } else if (resolutionMode != null) {
+            kind = "import";
           }
+        } catch {
+          // ignore
         }
-        recordResolutionTrace(collector, {
-          from: normalizePath(containingFile),
-          specifier,
-          resolved: resolved ? normalizePath(resolved) : null,
-          kind,
-          mode,
-        });
       }
-      return results;
-    };
-  }
+      recordResolutionTrace(collector, {
+        from: normalizePath(containingFile),
+        specifier,
+        resolved: resolvedFile ? normalizePath(resolvedFile) : null,
+        kind,
+        mode,
+      });
+    }
+    return resolved;
+  };
 
   const originalResolveModuleNames = host.resolveModuleNames
     ? host.resolveModuleNames.bind(host)
@@ -469,46 +517,78 @@ function installResolutionTracing(host, options, collector) {
     host.resolveTypeReferenceDirectiveReferences
       ? host.resolveTypeReferenceDirectiveReferences.bind(host)
       : null;
-  if (originalResolveTypeReferenceDirectiveReferences) {
-    host.resolveTypeReferenceDirectiveReferences = (
+  host.resolveTypeReferenceDirectiveReferences = (
+    typeDirectiveReferences,
+    containingFile,
+    redirectedReference,
+    compilerOptions,
+    containingSourceFile,
+    reusedNames,
+  ) => {
+    const resolvedOptions = compilerOptions ?? options;
+    const moduleCache = ts.createModuleResolutionCache(
+      getCurrentDirectory(),
+      getCanonicalFileName,
+      resolvedOptions,
+    );
+    const typeCache = ts.createTypeReferenceDirectiveResolutionCache(
+      getCurrentDirectory(),
+      getCanonicalFileName,
+      resolvedOptions,
+      moduleCache,
+      undefined,
+    );
+    const results =
+      originalResolveTypeReferenceDirectiveReferences ??
+      ((refs, from, redirected, opts) =>
+        refs.map((ref) => {
+          const specifier =
+            ref && typeof ref.fileName === "string"
+              ? ref.fileName
+              : ref && typeof ref.text === "string"
+                ? ref.text
+                : String(ref);
+          return ts.resolveTypeReferenceDirective(
+            specifier,
+            from,
+            opts,
+            host,
+            typeCache,
+            redirected,
+            null,
+          );
+        }));
+
+    const resolved = results(
       typeDirectiveReferences,
       containingFile,
       redirectedReference,
       compilerOptions,
       containingSourceFile,
       reusedNames,
-    ) => {
-      const results = originalResolveTypeReferenceDirectiveReferences(
-        typeDirectiveReferences,
-        containingFile,
-        redirectedReference,
-        compilerOptions,
-        containingSourceFile,
-        reusedNames,
-      );
-      for (let i = 0; i < typeDirectiveReferences.length; i++) {
-        const ref = typeDirectiveReferences[i];
-        const specifier =
-          ref && typeof ref.fileName === "string"
-            ? ref.fileName
-            : ref && typeof ref.text === "string"
-              ? ref.text
-              : String(ref);
-        const resolved =
-          results?.[i]?.resolvedTypeReferenceDirective?.resolvedFileName ??
-          results?.[i]?.resolvedFileName ??
-          null;
-        recordResolutionTrace(collector, {
-          from: normalizePath(containingFile),
-          specifier,
-          resolved: resolved ? normalizePath(resolved) : null,
-          kind: null,
-          mode,
-        });
-      }
-      return results;
-    };
-  }
+    );
+    for (let i = 0; i < typeDirectiveReferences.length; i++) {
+      const ref = typeDirectiveReferences[i];
+      const specifier =
+        ref && typeof ref.fileName === "string"
+          ? ref.fileName
+          : ref && typeof ref.text === "string"
+            ? ref.text
+            : String(ref);
+      const resolvedFile =
+        resolved?.[i]?.resolvedTypeReferenceDirective?.resolvedFileName ??
+        resolved?.[i]?.resolvedFileName ??
+        null;
+      recordResolutionTrace(collector, {
+        from: normalizePath(containingFile),
+        specifier,
+        resolved: resolvedFile ? normalizePath(resolvedFile) : null,
+        kind: null,
+        mode,
+      });
+    }
+    return resolved;
+  };
 }
 
 function renderType(checker, type, context) {
