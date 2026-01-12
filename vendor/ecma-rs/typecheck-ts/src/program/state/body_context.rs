@@ -55,25 +55,35 @@ impl ProgramState {
 
   fn ensure_def_types_for_body_check_context(&mut self) {
     let store = Arc::clone(&self.store);
-    // `type_of_def` can recursively check bodies (e.g. initializer inference).
-    // Running it for every local definition while the `ProgramState` write lock
-    // is held blocks concurrent read-only queries like `symbol_at`.
+    // `BodyCheckContext` only needs stable, cross-body definition types.
     //
-    // The body checker context only needs stable types for externally visible
-    // (root-scope) bindings; locals are checked as part of their enclosing body.
-    let mut def_ids: Vec<DefId> = Vec::new();
+    // `type_of_def` can recursively check bodies (e.g. initializer inference), so
+    // inferring types for every definition while the `ProgramState` write lock is
+    // held both wastes work (bodies are checked again later) and blocks
+    // concurrent read-only queries like `symbol_at`.
+    //
+    // Restrict inference to definitions that can be referenced from other bodies
+    // via global/file bindings and exports. Local bindings are seeded from
+    // parent body results instead.
+    let mut def_id_set: HashSet<DefId> = HashSet::new();
+    for binding in self.global_bindings.values() {
+      if let Some(def) = binding.def {
+        def_id_set.insert(def);
+      }
+    }
     for state in self.files.values() {
       for binding in state.bindings.values() {
         if let Some(def) = binding.def {
-          def_ids.push(def);
+          def_id_set.insert(def);
+        }
+      }
+      for entry in state.exports.values() {
+        if let Some(def) = entry.def {
+          def_id_set.insert(def);
         }
       }
     }
-    for binding in self.global_bindings.values() {
-      if let Some(def) = binding.def {
-        def_ids.push(def);
-      }
-    }
+    let mut def_ids: Vec<_> = def_id_set.into_iter().collect();
     def_ids.sort_by_key(|def| def.0);
     def_ids.dedup();
 

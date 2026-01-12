@@ -8,7 +8,7 @@ use types_ts_interned::{
 };
 
 use super::infer::infer_type_arguments_for_call;
-use super::instantiate::InstantiationCache;
+use super::instantiate::{InstantiationCache, Substituter};
 use crate::codes;
 
 const MAX_NOTES: usize = 5;
@@ -579,7 +579,16 @@ fn resolve_overload_set(
       &outcome.instantiated_sig,
       &inference.substitutions,
     );
-    let instantiated_sig = store.signature(instantiated_id);
+
+    let mut instantiated_id = instantiated_id;
+    let mut instantiated_sig = store.signature(instantiated_id);
+    if let Some(this_arg) = this_arg {
+      let mut substituter =
+        Substituter::new_with_this(Arc::clone(store), HashMap::new(), Some(this_arg));
+      instantiated_id = substituter.substitute_signature(&instantiated_sig);
+      instantiated_sig = store.signature(instantiated_id);
+    }
+
     outcome.instantiated_sig = instantiated_sig;
     outcome.instantiated_id = instantiated_id;
     outcome.return_rank = return_rank(store.as_ref(), outcome.instantiated_sig.ret);

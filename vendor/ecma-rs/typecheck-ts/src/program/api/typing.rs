@@ -137,8 +137,43 @@ impl Program {
         }
         state.body_check_context()
       };
+      // Top-level bodies are used as entry points for file-wide queries like
+      // `type_at_cached`. Those queries locate the innermost body at an offset,
+      // which can be an `Initializer` body nested inside the top-level span.
+      //
+      // Ensure we seed initializer body results alongside the top-level body so
+      // offset-based queries can observe types without triggering additional body
+      // checks from within salsa.
+      let initializer_bodies: Vec<BodyId> = match context.body_info.get(&body) {
+        Some(info) if info.kind == hir_js::BodyKind::TopLevel => {
+          let file = info.file;
+          let mut bodies: Vec<BodyId> = context
+            .body_info
+            .iter()
+            .filter_map(|(candidate_id, candidate)| {
+              if candidate.file != file {
+                return None;
+              }
+              if candidate.kind != hir_js::BodyKind::Initializer {
+                return None;
+              }
+              // Only seed initializer bodies that are immediate children of this
+              // top-level body. Initializers nested inside function/class bodies
+              // are checked when their parent bodies are checked.
+              (context.body_parents.get(candidate_id).copied() == Some(body)).then_some(*candidate_id)
+            })
+            .collect();
+          bodies.sort_by_key(|b| b.0);
+          bodies.dedup();
+          bodies
+        }
+        _ => Vec::new(),
+      };
       let db = BodyCheckDb::from_shared_context(context);
       let computed = db::queries::body_check::check_body(&db, body);
+      for init_body in initializer_bodies.iter().copied() {
+        let _ = db::queries::body_check::check_body(&db, init_body);
+      }
       let mut state = self.lock_state();
       let res = state
         .body_results
@@ -146,6 +181,13 @@ impl Program {
         .or_insert_with(|| Arc::clone(&computed))
         .clone();
       state.cache_body_result(body, Arc::clone(&res));
+      for init_body in initializer_bodies {
+        if init_body == body {
+          continue;
+        }
+        let init_res = db::queries::body_check::check_body(&db, init_body);
+        state.cache_body_result(init_body, init_res);
+      }
       Ok(res)
     })
   }

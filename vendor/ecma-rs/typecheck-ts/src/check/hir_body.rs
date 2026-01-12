@@ -3441,8 +3441,22 @@ impl<'a> Checker<'a> {
         // by intersecting rather than overwriting.
         if let Some(name) = func.stx.name.as_ref() {
           let name_str = name.stx.name.clone();
-          let fn_ty = self.function_type(&func.stx.function);
-          self.bind_function_decl_name(name_str, fn_ty);
+          if let Some(existing) = self.lookup(&name_str) {
+            let has_callables = !callable_signatures(self.store.as_ref(), existing.ty).is_empty();
+            if has_callables {
+              // Avoid calling `function_type` here when the declaration surface already provided
+              // callable signatures for this symbol. `function_type` can (transitively) check the
+              // function body for inference, which can produce spurious errors during top-level
+              // checking.
+              self.insert_binding(name_str, existing.ty, Vec::new());
+            } else {
+              let fn_ty = self.function_type(&func.stx.function);
+              self.bind_function_decl_name(name_str, fn_ty);
+            }
+          } else {
+            let fn_ty = self.function_type(&func.stx.function);
+            self.bind_function_decl_name(name_str, fn_ty);
+          }
         }
       }
       Stmt::ClassDecl(class_decl) => {
@@ -3722,7 +3736,14 @@ impl<'a> Checker<'a> {
         let prim = self.store.primitive_ids();
         self.resolve_type_ref(&["RegExp"]).unwrap_or(prim.unknown)
       }
-      AstExpr::This(_) => self.current_this_ty,
+      AstExpr::This(_) => {
+        let prim = self.store.primitive_ids();
+        if self.current_this_ty != prim.unknown {
+          self.store.intern_type(TypeKind::This)
+        } else {
+          prim.unknown
+        }
+      }
       AstExpr::Super(_) => self
         .this_super_context
         .super_instance_ty
@@ -3842,7 +3863,7 @@ impl<'a> Checker<'a> {
                 receiver_kind,
                 true,
               );
-              ty
+              substitute_this_type(&self.store, ty, base_obj_ty)
             }
             None => {
               if !matches!(
@@ -3933,7 +3954,7 @@ impl<'a> Checker<'a> {
             Some(ty) => {
               let key_range = loc_to_range(self.file, mem.stx.member.loc);
               self.check_member_access_for_type(base_obj_ty, &key, key_range, receiver_kind, false);
-              ty
+              substitute_this_type(&self.store, ty, base_obj_ty)
             }
             None => {
               if key_is_string_or_number
@@ -7934,13 +7955,24 @@ impl<'a> Checker<'a> {
   }
 
   fn member_type(&mut self, obj: TypeId, prop: &str) -> TypeId {
+    let receiver = self.store.canon(obj);
+    self.member_type_with_receiver(obj, prop, receiver)
+  }
+
+  fn member_type_with_receiver(&mut self, obj: TypeId, prop: &str, receiver: TypeId) -> TypeId {
     let prim = self.store.primitive_ids();
-    self.member_type_opt(obj, prop).unwrap_or(prim.unknown)
+    let ty = self.member_type_opt(obj, prop).unwrap_or(prim.unknown);
+    substitute_this_type(&self.store, ty, receiver)
   }
 
   fn member_type_opt(&mut self, obj: TypeId, prop: &str) -> Option<TypeId> {
     let prim = self.store.primitive_ids();
-    let obj = self.expand_callable_type(obj);
+    let lookup_obj = if matches!(self.store.type_kind(self.store.canon(obj)), TypeKind::This) {
+      self.current_this_ty
+    } else {
+      obj
+    };
+    let obj = self.expand_callable_type(lookup_obj);
     match self.store.type_kind(obj) {
       TypeKind::OmitConstructSignatures(inner) => self.member_type_opt(inner, prop),
       TypeKind::InheritConstructSignatures { .. } => None,
@@ -7989,6 +8021,7 @@ impl<'a> Checker<'a> {
         if matches!(prop, "apply" | "bind") && !shape.call_signatures.is_empty() {
           return Some(prim.any);
         }
+
         let key = if let Some(idx) = parse_canonical_index_str(prop) {
           PropKey::Number(idx)
         } else {
@@ -8500,43 +8533,59 @@ impl<'a> Checker<'a> {
   }
 
   fn member_type_for_index_key(&mut self, obj: TypeId, key_ty: TypeId) -> TypeId {
+    let receiver = self.store.canon(obj);
+    self.member_type_for_index_key_with_receiver(obj, key_ty, receiver)
+  }
+
+  fn member_type_for_index_key_with_receiver(
+    &mut self,
+    obj: TypeId,
+    key_ty: TypeId,
+    receiver: TypeId,
+  ) -> TypeId {
     let prim = self.store.primitive_ids();
     let key_ty = self.store.canon(key_ty);
-    let obj = self.expand_callable_type(obj);
-
+    let lookup_obj = if matches!(self.store.type_kind(self.store.canon(obj)), TypeKind::This) {
+      self.current_this_ty
+    } else {
+      obj
+    };
+    let obj = self.expand_callable_type(lookup_obj);
     match self.store.type_kind(key_ty) {
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_index_key(obj, member));
+          collected.push(self.member_type_for_index_key_with_receiver(obj, member, receiver));
         }
-        return self.store.union(collected);
+        return substitute_this_type(&self.store, self.store.union(collected), receiver);
       }
       TypeKind::Intersection(members) => {
         // Keep this conservative: treat intersections of key types similarly to unions.
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_index_key(obj, member));
+          collected.push(self.member_type_for_index_key_with_receiver(obj, member, receiver));
         }
-        return self.store.union(collected);
+        return substitute_this_type(&self.store, self.store.union(collected), receiver);
       }
       _ => {}
     }
 
-    match self.store.type_kind(obj) {
-      TypeKind::OmitConstructSignatures(inner) => self.member_type_for_index_key(inner, key_ty),
+    let ty = match self.store.type_kind(obj) {
+      TypeKind::OmitConstructSignatures(inner) => {
+        return self.member_type_for_index_key_with_receiver(inner, key_ty, receiver);
+      }
       TypeKind::InheritConstructSignatures { .. } => prim.unknown,
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_index_key(member, key_ty));
+          collected.push(self.member_type_for_index_key_with_receiver(member, key_ty, receiver));
         }
         self.store.union(collected)
       }
       TypeKind::Intersection(members) => {
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_index_key(member, key_ty));
+          collected.push(self.member_type_for_index_key_with_receiver(member, key_ty, receiver));
         }
         self.store.intersection(collected)
       }
@@ -8576,46 +8625,50 @@ impl<'a> Checker<'a> {
         TypeKind::NumberLiteral(num) => {
           let raw = num.0;
           if raw.fract() != 0.0 || raw < 0.0 {
-            return prim.unknown;
-          }
-          let idx = raw as usize;
-          if let Some(elem) = elems.get(idx) {
-            let mut ty = if elem.rest {
-              self.relate.spread_element_type(elem.ty)
-            } else {
-              elem.ty
-            };
-            if elem.optional && !self.relate.options.exact_optional_property_types {
-              ty = self.store.union(vec![ty, prim.undefined]);
-            }
-            ty
-          } else if let Some(rest) = elems.iter().find(|elem| elem.rest) {
-            self.relate.spread_element_type(rest.ty)
+            prim.unknown
           } else {
-            prim.undefined
+            let idx = raw as usize;
+            if let Some(elem) = elems.get(idx) {
+              let mut ty = if elem.rest {
+                self.relate.spread_element_type(elem.ty)
+              } else {
+                elem.ty
+              };
+              if elem.optional && !self.relate.options.exact_optional_property_types {
+                ty = self.store.union(vec![ty, prim.undefined]);
+              }
+              ty
+            } else if let Some(rest) = elems.iter().find(|elem| elem.rest) {
+              self.relate.spread_element_type(rest.ty)
+            } else {
+              prim.undefined
+            }
           }
         }
         _ => {
           if !self.relate.is_assignable(key_ty, prim.number) {
-            return prim.unknown;
-          }
-          let mut members = Vec::new();
-          for elem in elems {
-            let mut ty = if elem.rest {
-              self.relate.spread_element_type(elem.ty)
-            } else {
-              elem.ty
-            };
-            if elem.optional && !self.relate.options.exact_optional_property_types {
-              ty = self.store.union(vec![ty, prim.undefined]);
+            prim.unknown
+          } else {
+            let mut members = Vec::new();
+            for elem in elems {
+              let mut ty = if elem.rest {
+                self.relate.spread_element_type(elem.ty)
+              } else {
+                elem.ty
+              };
+              if elem.optional && !self.relate.options.exact_optional_property_types {
+                ty = self.store.union(vec![ty, prim.undefined]);
+              }
+              members.push(ty);
             }
-            members.push(ty);
+            self.store.union(members)
           }
-          self.store.union(members)
         }
       },
       _ => prim.unknown,
-    }
+    };
+
+    substitute_this_type(&self.store, ty, receiver)
   }
 
   fn indexer_key_matches(&self, indexer_key: TypeId, key_ty: TypeId) -> bool {
@@ -11940,6 +11993,13 @@ fn parse_canonical_index_str(s: &str) -> Option<i64> {
   } else {
     None
   }
+}
+
+fn substitute_this_type(store: &Arc<TypeStore>, ty: TypeId, receiver: TypeId) -> TypeId {
+  let receiver = store.canon(receiver);
+  let mut substituter =
+    Substituter::new_with_this(Arc::clone(store), HashMap::new(), Some(receiver));
+  substituter.substitute_type(ty)
 }
 
 fn fixed_spread_len(
@@ -16267,20 +16327,30 @@ impl<'a> FlowBodyChecker<'a> {
   }
 
   fn member_type_for_known_key(&self, obj: TypeId, key: &str) -> TypeId {
+    let receiver = self.store.canon(obj);
+    self.member_type_for_known_key_with_receiver(obj, key, receiver)
+  }
+
+  fn member_type_for_known_key_with_receiver(
+    &self,
+    obj: TypeId,
+    key: &str,
+    receiver: TypeId,
+  ) -> TypeId {
     let prim = self.store.primitive_ids();
-    let obj = self.expand_ref(obj);
-    match self.store.type_kind(obj) {
+    let expanded = self.expand_ref(obj);
+    let ty = match self.store.type_kind(expanded) {
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_known_key(member, key));
+          collected.push(self.member_type_for_known_key_with_receiver(member, key, receiver));
         }
         self.store.union(collected)
       }
       TypeKind::Intersection(members) => {
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_known_key(member, key));
+          collected.push(self.member_type_for_known_key_with_receiver(member, key, receiver));
         }
         self.store.intersection(collected)
       }
@@ -16318,46 +16388,59 @@ impl<'a> FlowBodyChecker<'a> {
           }
         }
       },
-      _ => self.object_prop_type(obj, key).unwrap_or(prim.unknown),
-    }
+      _ => self
+        .object_prop_type_with_receiver(obj, key, receiver)
+        .unwrap_or(prim.unknown),
+    };
+
+    substitute_this_type(&self.store, ty, receiver)
   }
 
   fn member_type_for_index_key(&self, obj: TypeId, key_ty: TypeId) -> TypeId {
+    let receiver = self.store.canon(obj);
+    self.member_type_for_index_key_with_receiver(obj, key_ty, receiver)
+  }
+
+  fn member_type_for_index_key_with_receiver(
+    &self,
+    obj: TypeId,
+    key_ty: TypeId,
+    receiver: TypeId,
+  ) -> TypeId {
     let prim = self.store.primitive_ids();
     let key_ty = self.store.canon(key_ty);
-    let obj = self.expand_ref(obj);
-
     match self.store.type_kind(key_ty) {
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_index_key(obj, member));
+          collected.push(self.member_type_for_index_key_with_receiver(obj, member, receiver));
         }
-        return self.store.union(collected);
+        return substitute_this_type(&self.store, self.store.union(collected), receiver);
       }
       TypeKind::Intersection(members) => {
         // Keep this conservative: treat intersections of key types similarly to unions.
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_index_key(obj, member));
+          collected.push(self.member_type_for_index_key_with_receiver(obj, member, receiver));
         }
-        return self.store.union(collected);
+        return substitute_this_type(&self.store, self.store.union(collected), receiver);
       }
       _ => {}
     }
 
-    match self.store.type_kind(obj) {
+    let obj = self.expand_ref(obj);
+    let ty = match self.store.type_kind(obj) {
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_index_key(member, key_ty));
+          collected.push(self.member_type_for_index_key_with_receiver(member, key_ty, receiver));
         }
         self.store.union(collected)
       }
       TypeKind::Intersection(members) => {
         let mut collected = Vec::new();
         for member in members {
-          collected.push(self.member_type_for_index_key(member, key_ty));
+          collected.push(self.member_type_for_index_key_with_receiver(member, key_ty, receiver));
         }
         self.store.intersection(collected)
       }
@@ -16430,7 +16513,9 @@ impl<'a> FlowBodyChecker<'a> {
         }
       },
       _ => prim.unknown,
-    }
+    };
+
+    substitute_this_type(&self.store, ty, receiver)
   }
 
   fn indexer_key_matches(&self, indexer_key: TypeId, key_ty: TypeId) -> bool {
@@ -16484,13 +16569,23 @@ impl<'a> FlowBodyChecker<'a> {
   }
 
   fn object_prop_type(&self, obj: TypeId, key: &str) -> Option<TypeId> {
+    let receiver = self.store.canon(obj);
+    self.object_prop_type_with_receiver(obj, key, receiver)
+  }
+
+  fn object_prop_type_with_receiver(
+    &self,
+    obj: TypeId,
+    key: &str,
+    receiver: TypeId,
+  ) -> Option<TypeId> {
     let prim = self.store.primitive_ids();
     let obj = self.expand_ref(obj);
-    match self.store.type_kind(obj) {
+    let ty = match self.store.type_kind(obj) {
       TypeKind::Union(members) => {
         let mut tys = Vec::new();
         for member in members {
-          let prop_ty = self.object_prop_type(member, key)?;
+          let prop_ty = self.object_prop_type_with_receiver(member, key, receiver)?;
           tys.push(prop_ty);
         }
         Some(self.store.union(tys))
@@ -16498,7 +16593,7 @@ impl<'a> FlowBodyChecker<'a> {
       TypeKind::Intersection(members) => {
         let mut tys = Vec::new();
         for member in members {
-          if let Some(prop_ty) = self.object_prop_type(member, key) {
+          if let Some(prop_ty) = self.object_prop_type_with_receiver(member, key, receiver) {
             tys.push(prop_ty);
           }
         }
@@ -16552,7 +16647,9 @@ impl<'a> FlowBodyChecker<'a> {
       TypeKind::Array { .. } if key == "length" => Some(prim.number),
       TypeKind::Array { ty, .. } => Some(ty),
       _ => None,
-    }
+    };
+
+    ty.map(|ty| substitute_this_type(&self.store, ty, receiver))
   }
 
   fn callable_prop_type(&self, obj: TypeId, key: &str) -> Option<TypeId> {

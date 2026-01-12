@@ -43,7 +43,7 @@ impl ProgramState {
       .collect();
     entries.sort_by(|a, b| (a.0 .0, &a.0 .1).cmp(&(b.0 .0, &b.0 .1)));
     for ((file, name), ns_ty) in entries.into_iter() {
-      let Some(lowered) = self.hir_lowered.get(&file) else {
+      let Some(lowered) = self.hir_lowered.get(&file).cloned() else {
         continue;
       };
 
@@ -123,7 +123,58 @@ impl ProgramState {
 
         let mut has_error = false;
         if ns_export != val_export {
-          // Match tsc: TS2395 is reported by the binder.
+          // `semantic-js` usually reports TS2395, but we also validate during the
+          // type interning/merge pass so `.d.ts` export-mismatch scenarios still
+          // surface the expected diagnostics even when the semantic layer does
+          // not.
+          //
+          // Avoid duplicates by only emitting when the semantic phase did not
+          // already report a TS2395 for this merged symbol in the same file.
+          let needle = format!("'{name}'");
+          // TS2652 (default export in a merged declaration) supersedes the
+          // TS2395 export mismatch diagnostic in `tsc`; avoid emitting our
+          // fallback TS2395 in that case.
+          let default_export_reported = self.diagnostics.iter().any(|diag| {
+            diag.code.as_str() == "TS2652"
+              && diag.primary.file == file
+              && diag.message.contains(needle.as_str())
+          });
+          let already_reported = self.diagnostics.iter().any(|diag| {
+            diag.code.as_str() == codes::MERGED_DECLARATIONS_EXPORT_MISMATCH.as_str()
+              && diag.primary.file == file
+              && diag.message.contains(needle.as_str())
+          });
+          if !default_export_reported && !already_reported {
+            fn refine_name_span(source: &str, decl_span: TextRange, name: &str) -> TextRange {
+              if (decl_span.end as usize) <= source.len() {
+                if let Some(segment) =
+                  source.get(decl_span.start as usize..decl_span.end as usize)
+                {
+                  if let Some(idx) = segment.find(name) {
+                    let start = decl_span.start + idx as u32;
+                    let end = start + name.len() as u32;
+                    return TextRange::new(start, end);
+                  }
+                }
+              }
+              decl_span
+            }
+
+            let source = db::file_text(&*self.typecheck_db.lock(), file);
+            let ns_name_span = refine_name_span(source.as_ref(), ns_span, &name);
+            let val_name_span = refine_name_span(source.as_ref(), val_span, &name);
+            let message = format!(
+              "Individual declarations in merged declaration '{name}' must be all exported or all local."
+            );
+            self.push_program_diagnostic(codes::MERGED_DECLARATIONS_EXPORT_MISMATCH.error(
+              message.clone(),
+              Span::new(file, ns_name_span),
+            ));
+            self.push_program_diagnostic(codes::MERGED_DECLARATIONS_EXPORT_MISMATCH.error(
+              message,
+              Span::new(file, val_name_span),
+            ));
+          }
           has_error = true;
         }
 

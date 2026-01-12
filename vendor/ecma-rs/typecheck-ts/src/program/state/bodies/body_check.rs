@@ -66,7 +66,6 @@ impl ProgramState {
     if self.snapshot_loaded {
       return Ok(BodyCheckResult::empty(body_id));
     }
-
     let context = Arc::new(self.build_body_check_context_snapshot());
     let db = BodyCheckDb::from_shared_context(context);
     let res = db::queries::body_check::check_body(&db, body_id);

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use smallvec::SmallVec;
@@ -8,6 +8,8 @@ use types_ts_interned::{
   TypeId, TypeKind, TypeParamDecl, TypeParamId, TypeStore,
 };
 
+const MAX_SUBSTITUTION_DEPTH: usize = 128;
+
 /// Performs type parameter substitution over [`TypeKind`] trees.
 ///
 /// The substituter owns its own memoization tables so it can be reused to
@@ -16,20 +18,34 @@ use types_ts_interned::{
 pub struct Substituter {
   store: Arc<TypeStore>,
   subst: HashMap<TypeParamId, TypeId>,
+  this_subst: Option<TypeId>,
   type_cache: HashMap<TypeId, TypeId>,
   signature_cache: HashMap<SignatureId, SignatureId>,
   shape_cache: HashMap<ShapeId, ShapeId>,
+  in_progress: HashSet<TypeId>,
 }
 
 impl Substituter {
   /// Create a new substituter over a shared [`TypeStore`].
   pub fn new(store: Arc<TypeStore>, subst: HashMap<TypeParamId, TypeId>) -> Self {
+    Self::new_with_this(store, subst, None)
+  }
+
+  /// Create a substituter that also replaces `TypeKind::This` with the provided
+  /// `this_subst` target.
+  pub fn new_with_this(
+    store: Arc<TypeStore>,
+    subst: HashMap<TypeParamId, TypeId>,
+    this_subst: Option<TypeId>,
+  ) -> Self {
     Self {
       store,
       subst,
+      this_subst,
       type_cache: HashMap::new(),
       signature_cache: HashMap::new(),
       shape_cache: HashMap::new(),
+      in_progress: HashSet::new(),
     }
   }
 
@@ -77,27 +93,58 @@ impl Substituter {
   /// Substitute type parameters inside a [`TypeId`], returning the instantiated
   /// interned type.
   pub fn substitute_type(&mut self, ty: TypeId) -> TypeId {
+    self.substitute_type_inner(ty, 0)
+  }
+
+  fn substitute_type_inner(&mut self, ty: TypeId, depth: usize) -> TypeId {
+    let ty = self.store.canon(ty);
     if let Some(hit) = self.type_cache.get(&ty) {
       return *hit;
     }
+    if depth > MAX_SUBSTITUTION_DEPTH {
+      return ty;
+    }
+    if !self.in_progress.insert(ty) {
+      return ty;
+    }
+
     let instantiated = match self.store.type_kind(ty) {
       TypeKind::TypeParam(id) => self.subst.get(&id).copied().unwrap_or(ty),
+      TypeKind::This => self.this_subst.map(|t| self.store.canon(t)).unwrap_or(ty),
+      TypeKind::Infer { param, constraint } => {
+        let constraint = constraint.map(|c| self.substitute_type_inner(c, depth + 1));
+        self
+          .store
+          .intern_type(TypeKind::Infer { param, constraint })
+      }
+      TypeKind::Predicate {
+        parameter,
+        asserted,
+        asserts,
+      } => {
+        let asserted = asserted.map(|a| self.substitute_type_inner(a, depth + 1));
+        self.store.intern_type(TypeKind::Predicate {
+          parameter,
+          asserted,
+          asserts,
+        })
+      }
       TypeKind::Union(members) => {
         let mapped = members
           .into_iter()
-          .map(|m| self.substitute_type(m))
+          .map(|m| self.substitute_type_inner(m, depth + 1))
           .collect();
         self.store.union(mapped)
       }
       TypeKind::Intersection(members) => {
         let mapped = members
           .into_iter()
-          .map(|m| self.substitute_type(m))
+          .map(|m| self.substitute_type_inner(m, depth + 1))
           .collect();
         self.store.intersection(mapped)
       }
       TypeKind::Array { ty, readonly } => {
-        let inner = self.substitute_type(ty);
+        let inner = self.substitute_type_inner(ty, depth + 1);
         self.store.intern_type(TypeKind::Array {
           ty: inner,
           readonly,
@@ -107,7 +154,7 @@ impl Substituter {
         let mapped: Vec<TupleElem> = elems
           .into_iter()
           .map(|elem| TupleElem {
-            ty: self.substitute_type(elem.ty),
+            ty: self.substitute_type_inner(elem.ty, depth + 1),
             optional: elem.optional,
             rest: elem.rest,
             readonly: elem.readonly,
@@ -127,7 +174,7 @@ impl Substituter {
       TypeKind::Ref { def, args } => {
         let mapped_args = args
           .into_iter()
-          .map(|arg| self.substitute_type(arg))
+          .map(|arg| self.substitute_type_inner(arg, depth + 1))
           .collect();
         self.store.intern_type(TypeKind::Ref {
           def,
@@ -145,10 +192,10 @@ impl Substituter {
         false_ty,
         distributive,
       } => {
-        let check = self.substitute_type(check);
-        let extends = self.substitute_type(extends);
-        let true_ty = self.substitute_type(true_ty);
-        let false_ty = self.substitute_type(false_ty);
+        let check = self.substitute_type_inner(check, depth + 1);
+        let extends = self.substitute_type_inner(extends, depth + 1);
+        let true_ty = self.substitute_type_inner(true_ty, depth + 1);
+        let false_ty = self.substitute_type_inner(false_ty, depth + 1);
         self.store.intern_type(TypeKind::Conditional {
           check,
           extends,
@@ -159,42 +206,43 @@ impl Substituter {
       }
       TypeKind::Mapped(mapped) => {
         let mut mapped = mapped.clone();
-        mapped.source = self.substitute_type(mapped.source);
-        mapped.value = self.substitute_type(mapped.value);
+        mapped.source = self.substitute_type_inner(mapped.source, depth + 1);
+        mapped.value = self.substitute_type_inner(mapped.value, depth + 1);
         if let Some(name_type) = mapped.name_type.as_mut() {
-          *name_type = self.substitute_type(*name_type);
+          *name_type = self.substitute_type_inner(*name_type, depth + 1);
         }
         if let Some(as_type) = mapped.as_type.as_mut() {
-          *as_type = self.substitute_type(*as_type);
+          *as_type = self.substitute_type_inner(*as_type, depth + 1);
         }
         self.store.intern_type(TypeKind::Mapped(mapped))
       }
       TypeKind::TemplateLiteral(mut tpl) => {
         for chunk in tpl.spans.iter_mut() {
-          chunk.ty = self.substitute_type(chunk.ty);
+          chunk.ty = self.substitute_type_inner(chunk.ty, depth + 1);
         }
         self.store.intern_type(TypeKind::TemplateLiteral(tpl))
       }
       TypeKind::Intrinsic { kind, ty } => {
-        let ty = self.substitute_type(ty);
+        let ty = self.substitute_type_inner(ty, depth + 1);
         self.store.intern_type(TypeKind::Intrinsic { kind, ty })
       }
       TypeKind::IndexedAccess { obj, index } => {
-        let obj = self.substitute_type(obj);
-        let index = self.substitute_type(index);
+        let obj = self.substitute_type_inner(obj, depth + 1);
+        let index = self.substitute_type_inner(index, depth + 1);
         self
           .store
           .intern_type(TypeKind::IndexedAccess { obj, index })
       }
       TypeKind::KeyOf(inner) => {
-        let inner = self.substitute_type(inner);
+        let inner = self.substitute_type_inner(inner, depth + 1);
         self.store.intern_type(TypeKind::KeyOf(inner))
       }
       _other => {
         // Primitive, literal, `this`, `infer`, etc. remain unchanged.
-        self.store.canon(ty)
+        ty
       }
     };
+    self.in_progress.remove(&ty);
     self.type_cache.insert(ty, instantiated);
     instantiated
   }
