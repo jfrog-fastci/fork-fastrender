@@ -1517,7 +1517,6 @@ pub fn proxy_revocable(
 
   Ok(Value::Object(out))
 }
-
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
 
