@@ -383,6 +383,19 @@ impl<'a> Scope<'a> {
       // without consulting the prototype chain.
       //
       // https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-hasproperty-p
+      //
+      // Module Namespace Exotic Objects: string keys are present iff they are in `[[Exports]]`
+      // (and `[[HasProperty]]` must not touch binding values).
+      if scope.heap().object_is_module_namespace(current)? {
+        match key {
+          PropertyKey::Symbol(_) => {
+            // Symbols use ordinary behavior.
+          }
+          PropertyKey::String(s) => {
+            return Ok(scope.heap().module_namespace_export(current, s)?.is_some());
+          }
+        }
+      }
       if scope.heap().is_typed_array_object(current) {
         if let PropertyKey::String(s) = key {
           if let Some(numeric_index) = scope.heap().canonical_numeric_index_string(s)? {
