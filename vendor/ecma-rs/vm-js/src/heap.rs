@@ -7447,9 +7447,9 @@ mod detached_array_buffer_tests {
     }
 
     match scope.heap_mut().uint8_array_write(view, 0, &[1]) {
-      Err(VmError::TypeError(_)) => {}
-      Err(other) => panic!("expected TypeError, got {other:?}"),
-      Ok(_) => panic!("expected error for write to out-of-bounds Uint8Array view"),
+      Ok(0) => {}
+      Ok(n) => panic!("expected out-of-bounds Uint8Array write to be a no-op, got Ok({n})"),
+      Err(other) => panic!("expected Ok(0), got {other:?}"),
     }
 
     Ok(())
