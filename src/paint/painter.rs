@@ -10599,7 +10599,7 @@ impl Painter {
             line_rect,
             start_x,
             total_advance,
-            fallback_advance,
+            _fallback_advance,
             top,
             bottom,
           )) = last_visible_line
@@ -19830,7 +19830,7 @@ pub(crate) fn paint_tree_with_resources_scaled_offset_with_trace(
   image_cache: ImageCache,
   scale: f32,
   offset: Point,
-  paint_parallelism: PaintParallelism,
+  _paint_parallelism: PaintParallelism,
   scroll_state: &ScrollState,
   max_iframe_depth: usize,
   trace: TraceHandle,
