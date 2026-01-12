@@ -125,8 +125,8 @@ fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
 fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> &'static str {
   match suggestion.source {
     OmniboxSuggestionSource::Primary => match &suggestion.action {
-      OmniboxAction::Search(_) => "S",
       OmniboxAction::NavigateToUrl(_) => "↵",
+      OmniboxAction::Search(_) => "S",
       OmniboxAction::ActivateTab(_) => "T",
     },
     OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "T",
@@ -779,11 +779,16 @@ pub fn chrome_ui_with_bookmarks(
               .rect_filled(rect, egui::Rounding::same(1.0), color);
           }
           Some(LoadProgressIndicator::Indeterminate) => {
-            // Keep repainting so the indeterminate segment animates smoothly even when the worker
-            // isn't emitting progress heartbeats.
-            ctx.request_repaint();
-            let time = ctx.input(|i| i.time) as f32;
-            let phase = (time * 1.2).fract();
+            let phase = if motion.enabled {
+              // Keep repainting so the indeterminate segment animates smoothly even when the worker
+              // isn't emitting progress heartbeats.
+              ctx.request_repaint();
+              let time = ctx.input(|i| i.time) as f32;
+              (time * 1.2).fract()
+            } else {
+              // Reduced-motion: keep the segment static (no continuous repaints).
+              0.0
+            };
             let seg_w = (track_rect.width() * 0.25)
               .clamp(16.0, 120.0)
               .min(track_rect.width());

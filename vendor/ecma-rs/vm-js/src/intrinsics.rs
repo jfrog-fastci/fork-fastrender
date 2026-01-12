@@ -5869,6 +5869,10 @@ impl Intrinsics {
     self.reflect
   }
 
+  pub(crate) fn proxy_revoker_call(&self) -> NativeFunctionId {
+    self.proxy_revoker_call
+  }
+
   pub fn error(&self) -> GcObject {
     self.error
   }
@@ -5971,10 +5975,6 @@ impl Intrinsics {
 
   pub(crate) fn promise_any_reject_element_call(&self) -> NativeFunctionId {
     self.promise_any_reject_element_call
-  }
-
-  pub(crate) fn proxy_revoker_call(&self) -> NativeFunctionId {
-    self.proxy_revoker_call
   }
 
   pub(crate) fn class_constructor_call(&self) -> NativeFunctionId {

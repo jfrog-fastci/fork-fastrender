@@ -448,7 +448,14 @@ pub fn icon_button(
 /// Today this uses `egui::Spinner` directly (vector drawing, theme-aware). The SVG icon is still
 /// included in `assets/browser_icons/` for completeness and potential future use.
 pub fn spinner(ui: &mut egui::Ui, side_points: f32) -> egui::Response {
-  let response = ui.add(egui::Spinner::new().size(side_points));
+  let motion = UiMotion::from_env();
+  let response = if motion.enabled {
+    ui.add(egui::Spinner::new().size(side_points))
+  } else {
+    // Reduced motion: render a static loading glyph so we don't trigger continuous repaints.
+    icon_tinted(ui, BrowserIcon::Spinner, side_points, ui.visuals().text_color())
+  };
+
   // `egui::Spinner` is often used without accompanying text (e.g. in compact toolbars). Give it a
   // stable label so assistive tech can announce what it represents.
   let label = BrowserIcon::Spinner.a11y_label();
