@@ -846,7 +846,7 @@ fn annotate_ssa_cfg_escape_and_ownership(
   }
 }
 
-fn annotate_program_ssa_metadata(program: &mut Program) {
+fn annotate_program_ssa_metadata(program: &mut Program, cfg_options: CompileCfgOptions) {
   fn mark_stack_alloc_candidates(cfg: &mut Cfg) {
     use crate::analysis::escape::EscapeState;
     use crate::il::inst::{Arg, InstTyp};
@@ -898,6 +898,34 @@ fn annotate_program_ssa_metadata(program: &mut Program) {
   // mode.
   let annotate_top_level = matches!(program.top_level_mode, TopLevelMode::Module);
   if !annotate_top_level && program.functions.is_empty() {
+    return;
+  }
+
+  // `ssa_body` metadata annotation should never materially change the generated IL when callers
+  // ask for a "no optimization" compilation (i.e. `run_opt_passes = false`). In particular,
+  // scalar replacement can erase `PropAssign`/`GetProp` operations that downstream analysis tests
+  // expect to observe.
+  if !cfg_options.run_opt_passes {
+    let call_summaries = analysis::call_summary::summarize_program(program);
+    let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
+
+    if annotate_top_level {
+      if let Some(cfg) = program.top_level.ssa_body.as_mut() {
+        annotate_ssa_cfg_escape_and_ownership(
+          cfg,
+          &program.top_level.params,
+          &summaries,
+          &call_summaries,
+        );
+        mark_stack_alloc_candidates(cfg);
+      }
+    }
+    for func in program.functions.iter_mut() {
+      if let Some(cfg) = func.ssa_body.as_mut() {
+        annotate_ssa_cfg_escape_and_ownership(cfg, &func.params, &summaries, &call_summaries);
+        mark_stack_alloc_candidates(cfg);
+      }
+    }
     return;
   }
 
@@ -1511,7 +1539,7 @@ impl Program {
     // Annotate `ssa_body` CFGs with interprocedural escape/ownership metadata. This lets downstream
     // consumers (e.g. native backends) rely on `ProgramFunction::analyzed_cfg()` without separately
     // running the program-wide analysis driver.
-    annotate_program_ssa_metadata(&mut program);
+    annotate_program_ssa_metadata(&mut program, cfg_options);
 
     Ok(program)
   }
