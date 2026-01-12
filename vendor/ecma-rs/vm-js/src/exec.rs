@@ -1,5 +1,6 @@
 use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
 use crate::error_object::new_error;
+use crate::for_in::ForInEnumerator;
 use crate::iterator;
 use crate::{
   EnvRootId, ExecutionContext, GcEnv, GcObject, GcString, Heap, JsBigInt, ModuleGraph, ModuleId,
@@ -3638,10 +3639,37 @@ impl<'a> Evaluator<'a> {
     stmt: &ForTripleStmt,
     label_set: &[String],
   ) -> Result<Completion, VmError> {
-    // Note: this is intentionally minimal and does not implement per-iteration lexical
-    // environments for `let`/`const`.
     let result = self.for_triple_loop_evaluation(scope, stmt, label_set)?;
     Ok(Self::normalise_iteration_break(result))
+  }
+
+  fn create_for_triple_per_iteration_env(
+    &mut self,
+    scope: &mut Scope<'_>,
+    outer: GcEnv,
+    last_env: GcEnv,
+  ) -> Result<GcEnv, VmError> {
+    let crate::env::EnvRecord::Declarative(last) = scope.heap().get_env_record(last_env)? else {
+      return Err(VmError::InvariantViolation(
+        "for-loop per-iteration environment must be declarative",
+      ));
+    };
+
+    let bindings = &last.bindings;
+    let mut new_bindings: Vec<crate::EnvBinding> = Vec::new();
+    new_bindings
+      .try_reserve_exact(bindings.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    const TICK_EVERY: usize = 32;
+    for (i, binding) in bindings.iter().enumerate() {
+      if i % TICK_EVERY == 0 {
+        self.tick()?;
+      }
+      new_bindings.push(*binding);
+    }
+
+    scope.alloc_env_record(Some(outer), &new_bindings)
   }
 
   /// ECMA-262 `ForLoopEvaluation` for `for (init; cond; post) { ... }`.
@@ -3656,6 +3684,92 @@ impl<'a> Evaluator<'a> {
     let v_root_idx = scope.heap().root_stack.len();
     scope.push_root(Value::Undefined)?;
     let mut v = Value::Undefined;
+
+    // Lexically-declared `for` loops require per-iteration environments so closures capture the
+    // correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
+    let lexical_init = match &stmt.init {
+      parse_js::ast::stmt::ForTripleStmtInit::Decl(decl)
+        if decl.stx.mode == VarDeclMode::Let || decl.stx.mode == VarDeclMode::Const =>
+      {
+        Some(decl)
+      }
+      _ => None,
+    };
+
+    if let Some(init_decl) = lexical_init {
+      let outer_lex = self.env.lexical_env;
+
+      let result = (|| -> Result<Completion, VmError> {
+        // Create a loop-scoped declarative environment for the lexical declaration and evaluate the
+        // initializer with TDZ semantics.
+        let loop_env = scope.env_create(Some(outer_lex))?;
+        self.env.set_lexical_env(scope.heap_mut(), loop_env);
+
+        let mutable = init_decl.stx.mode == VarDeclMode::Let;
+        for declarator in &init_decl.stx.declarators {
+          self.tick()?;
+          self.instantiate_lexical_names_from_pat(
+            &mut scope,
+            loop_env,
+            &declarator.pattern.stx.pat.stx,
+            init_decl.loc,
+            mutable,
+          )?;
+        }
+
+        let _ = self.eval_var_decl(&mut scope, &init_decl.stx)?;
+
+        // Enter the first per-iteration environment.
+        let mut iter_env = self.create_for_triple_per_iteration_env(&mut scope, outer_lex, loop_env)?;
+        self.env.set_lexical_env(scope.heap_mut(), iter_env);
+
+        // Most `for` loop iterations are naturally budgeted by ticks in:
+        // - condition/update expression evaluation (if present), and/or
+        // - evaluating at least one statement in the loop body.
+        //
+        // However, `for (let x = 0;;) {}` can execute no statements/expressions per iteration, so
+        // tick explicitly to ensure budgets/interrupts are still observed.
+        let needs_explicit_iter_tick =
+          stmt.cond.is_none() && stmt.post.is_none() && stmt.body.stx.body.is_empty();
+
+        loop {
+          if needs_explicit_iter_tick {
+            self.tick()?;
+          }
+
+          if let Some(cond) = &stmt.cond {
+            let test = self.eval_expr(&mut scope, cond)?;
+            if !to_boolean(scope.heap(), test)? {
+              return Ok(Completion::normal(v));
+            }
+          }
+
+          let body_result = self.eval_for_body(&mut scope, &stmt.body.stx)?;
+          if !Self::loop_continues(&body_result, label_set) {
+            return Ok(body_result.update_empty(Some(v)));
+          }
+
+          if let Some(value) = body_result.value() {
+            v = value;
+            scope.heap_mut().root_stack[v_root_idx] = value;
+          }
+
+          // Create the next iteration's environment *before* evaluating the update expression so
+          // closures created in the body do not observe the post-update value.
+          iter_env =
+            self.create_for_triple_per_iteration_env(&mut scope, outer_lex, iter_env)?;
+          self.env.set_lexical_env(scope.heap_mut(), iter_env);
+
+          if let Some(post) = &stmt.post {
+            let _ = self.eval_expr(&mut scope, post)?;
+          }
+        }
+      })();
+
+      // Always restore the outer lexical environment so later statements run in the correct scope.
+      self.env.set_lexical_env(scope.heap_mut(), outer_lex);
+      return result;
+    }
 
     match &stmt.init {
       parse_js::ast::stmt::ForTripleStmtInit::None => {}
@@ -3721,103 +3835,13 @@ impl<'a> Evaluator<'a> {
     label_set: &[String],
   ) -> Result<Completion, VmError> {
     let rhs_value = self.eval_expr(scope, &stmt.rhs)?;
-    if is_nullish(rhs_value) {
-      // Minimal semantics: legacy-ish behaviour, treat `null`/`undefined` as an empty iteration.
-      return Ok(Completion::normal(Value::Undefined));
-    }
+    let object = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, rhs_value)?;
 
-    // `for..in` uses `ToObject` on the RHS. Until we have full wrapper objects, treat the `Object`
-    // constructor as a converter for primitives.
-    let object = match rhs_value {
-      Value::Object(obj) => obj,
-      other => {
-        let intr = self
-          .vm
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        let object_ctor = Value::Object(intr.object_constructor());
-
-        let mut to_obj_scope = scope.reborrow();
-        to_obj_scope.push_root(other)?;
-        to_obj_scope.push_root(object_ctor)?;
-        let args = [other];
-        let value = self.call(&mut to_obj_scope, object_ctor, Value::Undefined, &args)?;
-        match value {
-          Value::Object(obj) => obj,
-          _ => {
-            return Err(VmError::InvariantViolation(
-              "Object(..) conversion returned non-object",
-            ));
-          }
-        }
-      }
-    };
-
-    // Root the base object across key collection + loop body evaluation, which may allocate and
-    // trigger GC.
+    // Root the base object while enumerating keys and executing the loop body.
     let mut iter_scope = scope.reborrow();
     iter_scope.push_root(Value::Object(object))?;
 
-    // Snapshot enumerable string keys across the prototype chain, skipping duplicates.
-    //
-    // Note: this is intentionally minimal and does not track mutations during iteration.
-    const KEY_COLLECTION_TICK_EVERY: usize = 256;
-    let mut keys: Vec<GcString> = Vec::new();
-    let mut visited: Vec<PropertyKey> = Vec::new();
-
-    let mut key_count: usize = 0;
-    // De-duplication uses a linear scan over the keys collected so far, which can be `O(N^2)` in
-    // the worst case. Tick periodically while scanning to ensure this work stays interruptible even
-    // for very large objects/prototype chains.
-    const VISITED_SCAN_TICK_EVERY: usize = 4096;
-    let mut visited_scan_count: usize = 0;
-    let mut current: Option<GcObject> = Some(object);
-    while let Some(obj) = current {
-      // Budget/interrupt check while walking the prototype chain and collecting enumerable keys.
-      self.tick()?;
-
-      let own_keys = iter_scope.ordinary_own_property_keys_with_tick(obj, || self.tick())?;
-      for key in own_keys {
-        key_count = key_count.wrapping_add(1);
-        if (key_count & (KEY_COLLECTION_TICK_EVERY - 1)) == 0 {
-          self.tick()?;
-        }
-
-        let PropertyKey::String(s) = key else {
-          continue;
-        };
-
-        let Some(desc) = iter_scope.ordinary_get_own_property(obj, key)? else {
-          continue;
-        };
-        if !desc.enumerable {
-          continue;
-        }
-
-        let mut already_visited = false;
-        for seen in &visited {
-          visited_scan_count = visited_scan_count.wrapping_add(1);
-          if (visited_scan_count & (VISITED_SCAN_TICK_EVERY - 1)) == 0 {
-            self.tick()?;
-          }
-          if iter_scope.heap().property_key_eq(seen, &key) {
-            already_visited = true;
-            break;
-          }
-        }
-        if already_visited {
-          continue;
-        }
-
-        visited.push(key);
-        keys.push(s);
-        // Root the key for the duration of the loop in case the property is deleted during
-        // iteration.
-        iter_scope.push_root(Value::String(s))?;
-      }
-
-      current = iter_scope.object_get_prototype(obj)?;
-    }
+    let mut enumerator = ForInEnumerator::new(object);
 
     // Root `V` across the loop so the value can't be collected between iterations.
     let v_root_idx = iter_scope.heap().root_stack.len();
@@ -3828,7 +3852,18 @@ impl<'a> Evaluator<'a> {
     // environments by creating a fresh env record per iteration.
     let outer_lex = self.env.lexical_env;
 
-    for key_s in keys {
+    loop {
+      let next_key = {
+        // `tick` is passed into the enumerator so prototype/key scanning work is budgeted even when
+        // the loop body is empty.
+        let mut tick = || self.tick();
+        enumerator.next_key(&mut iter_scope, &mut tick)?
+      };
+
+      let Some(key_s) = next_key else {
+        break;
+      };
+
       // Tick once per iteration so `for (k in o) {}` is budgeted even when the body is empty.
       self.tick()?;
 

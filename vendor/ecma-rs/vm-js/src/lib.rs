@@ -132,6 +132,7 @@ mod env;
 mod error;
 mod error_object;
 mod exec;
+mod for_in;
 mod execution_context;
 mod function;
 mod function_properties;

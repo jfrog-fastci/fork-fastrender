@@ -35,6 +35,61 @@ fn for_in_includes_prototype_enumerable_props() {
 }
 
 #[test]
+fn for_in_null_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { for (var k in null) {} "no"; } catch(e) { e.name }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn for_in_undefined_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { for (var k in undefined) {} "no"; } catch(e) { e.name }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn for_in_skips_deleted_keys() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var o = {a:1,b:2,c:3};
+      var s = "";
+      for (var k in o) {
+        s += k;
+        if (k === "a") { delete o.b; }
+      }
+      s
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ac");
+}
+
+#[test]
+fn for_in_non_enumerable_own_property_shadows_prototype() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var p = {x:1};
+      var o = Object.create(p);
+      Object.defineProperty(o, "x", { value: 2, enumerable: false });
+      var s = "";
+      for (var k in o) { s += k; }
+      s
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "");
+}
+
+#[test]
 fn in_operator_walks_prototype_chain() {
   let mut rt = new_runtime();
   let value = rt
