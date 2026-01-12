@@ -158,6 +158,9 @@ Notes on structured `effects:` mappings:
 
 - `template: depends_on_callback` is treated as “depends on argument 0” for now, and the loader
   accepts common historical/ergonomic spellings like `DependsOnCallback` / `dependsOnCallback`.
+- Some modules use an explicit `depends_on_args` list (alias `dependsOnArgs`) to indicate which
+  arguments should be included in the effect template. When present, this normalizes to an
+  `EffectTemplate::DependsOnArgs { base, args }` template.
 - The loader is intentionally lenient about minor spelling differences in the boolean fields and
   `effects.base` tokens (e.g. `alloc` vs `allocates`, `readGlobal` vs `reads_global`,
   `mayThrow` vs `may_throw`).
