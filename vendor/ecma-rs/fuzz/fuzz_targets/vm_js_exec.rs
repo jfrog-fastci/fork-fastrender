@@ -112,6 +112,10 @@ fuzz_target!(|data: &[u8]| {
   let source = String::from_utf8_lossy(data);
 
   let interrupt_flag = Arc::new(AtomicBool::new(false));
+  let mut seed_bytes = [0u8; 8];
+  let seed_len = data.len().min(seed_bytes.len());
+  seed_bytes[..seed_len].copy_from_slice(&data[..seed_len]);
+  let math_random_seed = u64::from_le_bytes(seed_bytes);
   let vm_options = VmOptions {
     max_stack_depth: 256,
     // These defaults are mostly irrelevant because we install a per-run budget in `Agent::run_script`,
@@ -119,6 +123,7 @@ fuzz_target!(|data: &[u8]| {
     default_fuel: Some(VM_FUEL),
     default_deadline: Some(VM_DEADLINE),
     check_time_every: 50,
+    math_random_seed,
     interrupt_flag: Some(interrupt_flag.clone()),
     external_interrupt_flag: None,
   };

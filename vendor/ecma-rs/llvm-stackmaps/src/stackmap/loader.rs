@@ -1,3 +1,11 @@
+// `cargo-fuzz` builds dependencies with `--cfg fuzzing`. Rust's `unexpected_cfgs` lint warns about
+// unknown cfg names in normal builds, so allow it in this module.
+#![allow(unexpected_cfgs)]
+
+#[cfg(any(
+    all(not(fuzzing), target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(not(fuzzing), target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
+))]
 use core::{ptr, slice};
 
 /// Return the in-memory `.llvm_stackmaps` section as a byte slice.
@@ -27,7 +35,25 @@ use core::{ptr, slice};
 /// This function assumes the section is present and mapped into memory. If the
 /// final binary was linked without applying a linker script that defines these
 /// symbols, linking will fail due to missing `__start_llvm_stackmaps`/`__stop_llvm_stackmaps`.
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+//
+// When fuzzing, we do not link an executable with a real `.llvm_stackmaps` section or linker script
+// range symbols; provide a stub to keep the parser fuzz targets buildable.
+#[cfg(all(
+    fuzzing,
+    any(
+        all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+        all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
+    )
+))]
+pub fn stackmaps_bytes() -> &'static [u8] {
+    &[]
+}
+
+#[cfg(all(
+    not(fuzzing),
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub fn stackmaps_bytes() -> &'static [u8] {
     // SAFETY:
     // - The linker script defines `__start_llvm_stackmaps`/`__stop_llvm_stackmaps` as byte pointers.
@@ -70,7 +96,11 @@ pub fn stackmaps_bytes() -> &'static [u8] {
     }
 }
 
-#[cfg(all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    not(fuzzing),
+    target_os = "macos",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub fn stackmaps_bytes() -> &'static [u8] {
     unsafe {
         #[repr(C)]
