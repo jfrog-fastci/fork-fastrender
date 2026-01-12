@@ -34,6 +34,20 @@ fn object_prototype_to_string_tags_promises() {
 }
 
 #[test]
+fn object_prototype_to_string_tags_regexp() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"Object.prototype.toString.call(/./) === "[object RegExp]" &&
+         Object.prototype.toString.call(Object(/./)) === "[object RegExp]" &&
+         Object.prototype.toString.call(new RegExp()) === "[object RegExp]" &&
+         Object.prototype.toString.call(Object(new RegExp())) === "[object RegExp]""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_prototype_to_string_promise_falls_back_to_object_when_to_string_tag_is_deleted() {
   let mut rt = new_runtime();
   let value = rt
