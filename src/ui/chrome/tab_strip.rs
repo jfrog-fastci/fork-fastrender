@@ -1,7 +1,9 @@
 use crate::ui::a11y;
 use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
+use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
+use crate::ui::{icon_button, BrowserIcon};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2};
 
 use super::ChromeAction;
@@ -242,11 +244,11 @@ fn tab_ui(
       );
     }
 
-    ui.painter().text(
-      close_rect.center(),
-      Align2::CENTER_CENTER,
-      "×",
-      FontId::proportional(16.0),
+    paint_icon_in_rect(
+      ui,
+      close_rect,
+      BrowserIcon::CloseTab,
+      ICON_SIZE,
       visuals.text_color(),
     );
 
@@ -707,8 +709,12 @@ pub(super) fn tab_strip_ui(
 
   // New tab button stays visible even when the tab list overflows.
   let new_tab_resp = ui
-    .put(button_rect, egui::Button::new("+"))
-    .on_hover_text("New tab (Ctrl/Cmd+T)");
+    .allocate_ui_at_rect(button_rect, |ui| {
+      ui.spacing_mut().interact_size = Vec2::splat(button_rect.height());
+      ui.spacing_mut().icon_width = ICON_SIZE;
+      icon_button(ui, BrowserIcon::NewTab, "New tab (Ctrl/Cmd+T)", true)
+    })
+    .inner;
   new_tab_resp.widget_info(|| {
     egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::ChromeIconButton::NewTab.label())
   });

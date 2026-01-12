@@ -305,6 +305,16 @@ fn paint_icon(
   ui.painter().image(tex_id, icon_rect, uv, tint);
 }
 
+pub(crate) fn paint_icon_in_rect(
+  ui: &egui::Ui,
+  rect: egui::Rect,
+  icon: BrowserIcon,
+  side_points: f32,
+  tint: egui::Color32,
+) {
+  paint_icon(ui, rect, icon, side_points, tint);
+}
+
 /// Draw a non-interactive icon at the given point size, tinted with the current theme's
 /// foreground/text color.
 pub fn icon(ui: &mut egui::Ui, icon: BrowserIcon, side_points: f32) -> egui::Response {
