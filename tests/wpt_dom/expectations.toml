@@ -167,12 +167,6 @@ status = "skip"
 reason = "QuickJS backend uses a minimal DOM shim and does not yet implement HTMLElement reflected attributes or CSSStyleDeclaration."
 
 [[expectations]]
-id = "html/form_controls.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend uses a minimal DOM shim and does not yet implement HTML form control element interfaces/properties (input/textarea/select/form)."
-
-[[expectations]]
 id = "events/document_eventtarget_path.window.js"
 backend = "quickjs"
 status = "skip"

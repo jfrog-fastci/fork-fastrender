@@ -235,6 +235,8 @@ const DOM_SHIM: &str = r##"
   function Text() { illegal(); }
   function HTMLCollection() { illegal(); }
   function CSSStyleDeclaration() { illegal(); }
+  function HTMLOptionsCollection() { illegal(); }
+  function HTMLFormControlsCollection() { illegal(); }
 
   Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
   Object.setPrototypeOf(Document.prototype, Node.prototype);
@@ -247,6 +249,8 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(HTMLFormElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(HTMLOptionElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(Text.prototype, Node.prototype);
+  Object.setPrototypeOf(HTMLOptionsCollection.prototype, HTMLCollection.prototype);
+  Object.setPrototypeOf(HTMLFormControlsCollection.prototype, HTMLCollection.prototype);
 
   // Node type constants.
   Node.ELEMENT_NODE = 1;
@@ -619,8 +623,8 @@ const DOM_SHIM: &str = r##"
     return n < 4294967295;
   }
 
-  function makeLiveElementCollection(getIds) {
-    var target = Object.create(HTMLCollection.prototype);
+  function makeLiveElementCollection(getIds, proto) {
+    var target = Object.create(proto || HTMLCollection.prototype);
 
     Object.defineProperty(target, "length", {
       get: function () { return getIds().length; },
@@ -946,6 +950,225 @@ const DOM_SHIM: &str = r##"
     },
     configurable: true,
   });
+
+  // --- Minimal HTML form control APIs (attribute/textContent based) ---
+  Object.defineProperty(HTMLInputElement.prototype, "value", {
+    get: function () {
+      nodeIdFromThis(this);
+      var v = this.getAttribute("value");
+      return v === null ? "" : v;
+    },
+    set: function (v) {
+      nodeIdFromThis(this);
+      this.setAttribute("value", String(v));
+    },
+    configurable: true,
+  });
+  Object.defineProperty(HTMLInputElement.prototype, "checked", {
+    get: function () {
+      nodeIdFromThis(this);
+      return this.getAttribute("checked") !== null;
+    },
+    set: function (v) {
+      nodeIdFromThis(this);
+      if (v) {
+        this.setAttribute("checked", "");
+      } else {
+        this.removeAttribute("checked");
+      }
+    },
+    configurable: true,
+  });
+  Object.defineProperty(HTMLInputElement.prototype, "disabled", {
+    get: function () {
+      nodeIdFromThis(this);
+      return this.getAttribute("disabled") !== null;
+    },
+    set: function (v) {
+      nodeIdFromThis(this);
+      if (v) {
+        this.setAttribute("disabled", "");
+      } else {
+        this.removeAttribute("disabled");
+      }
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(HTMLTextAreaElement.prototype, "value", {
+    get: function () {
+      nodeIdFromThis(this);
+      var v = this.textContent;
+      return v === null || v === undefined ? "" : String(v);
+    },
+    set: function (v) {
+      nodeIdFromThis(this);
+      this.textContent = String(v);
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(HTMLOptionElement.prototype, "value", {
+    get: function () {
+      nodeIdFromThis(this);
+      var v = this.getAttribute("value");
+      if (v !== null) return v;
+      var t = this.textContent;
+      return t === null || t === undefined ? "" : String(t);
+    },
+    set: function (v) {
+      nodeIdFromThis(this);
+      this.setAttribute("value", String(v));
+    },
+    configurable: true,
+  });
+  Object.defineProperty(HTMLOptionElement.prototype, "selected", {
+    get: function () {
+      nodeIdFromThis(this);
+      return this.getAttribute("selected") !== null;
+    },
+    set: function (v) {
+      nodeIdFromThis(this);
+      if (v) {
+        this.setAttribute("selected", "");
+      } else {
+        this.removeAttribute("selected");
+      }
+    },
+    configurable: true,
+  });
+
+  var SELECT_OPTIONS_CACHE = new WeakMap();
+  function optionIdsForSelect(select) {
+    var ids = [];
+    traverseElementSubtree(select, function (el) {
+      if (String(el.tagName).toUpperCase() === "OPTION") {
+        ids.push(nodeIdFromThis(el));
+      }
+    });
+    return ids;
+  }
+
+  Object.defineProperty(HTMLSelectElement.prototype, "options", {
+    get: function () {
+      nodeIdFromThis(this);
+      var cached = SELECT_OPTIONS_CACHE.get(this);
+      if (cached) return cached;
+      var self = this;
+      var collection = makeLiveElementCollection(function () {
+        return optionIdsForSelect(self);
+      }, HTMLOptionsCollection.prototype);
+      SELECT_OPTIONS_CACHE.set(this, collection);
+      return collection;
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(HTMLSelectElement.prototype, "selectedIndex", {
+    get: function () {
+      nodeIdFromThis(this);
+      var opts = this.options;
+      var len = opts.length;
+      for (var i = 0; i < len; i++) {
+        var opt = opts[i];
+        if (opt && opt.getAttribute("selected") !== null) return i;
+      }
+      return len ? 0 : -1;
+    },
+    set: function (value) {
+      nodeIdFromThis(this);
+      var n = Number(value);
+      if (!isFinite(n) || isNaN(n)) n = 0;
+      n = Math.trunc(n);
+
+      var opts = this.options;
+      var len = opts.length;
+      if (n < 0 || n >= len) {
+        for (var i = 0; i < len; i++) {
+          var opt = opts[i];
+          if (opt) opt.removeAttribute("selected");
+        }
+        return;
+      }
+      for (var i = 0; i < len; i++) {
+        var opt = opts[i];
+        if (!opt) continue;
+        if (i === n) {
+          opt.setAttribute("selected", "");
+        } else {
+          opt.removeAttribute("selected");
+        }
+      }
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(HTMLSelectElement.prototype, "value", {
+    get: function () {
+      nodeIdFromThis(this);
+      var idx = this.selectedIndex;
+      if (idx < 0) return "";
+      var opt = this.options[idx];
+      if (!opt) return "";
+      return String(opt.value);
+    },
+    set: function (v) {
+      nodeIdFromThis(this);
+      var needle = String(v);
+      var opts = this.options;
+      var len = opts.length;
+      var found = -1;
+      for (var i = 0; i < len; i++) {
+        var opt = opts[i];
+        if (opt && String(opt.value) === needle) {
+          found = i;
+          break;
+        }
+      }
+      if (found < 0) {
+        this.selectedIndex = -1;
+        return;
+      }
+      this.selectedIndex = found;
+    },
+    configurable: true,
+  });
+
+  var FORM_ELEMENTS_CACHE = new WeakMap();
+  function formControlIdsForForm(form) {
+    var ids = [];
+    traverseElementSubtree(form, function (el) {
+      var tag = String(el.tagName).toUpperCase();
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") {
+        ids.push(nodeIdFromThis(el));
+      }
+    });
+    return ids;
+  }
+
+  Object.defineProperty(HTMLFormElement.prototype, "elements", {
+    get: function () {
+      nodeIdFromThis(this);
+      var cached = FORM_ELEMENTS_CACHE.get(this);
+      if (cached) return cached;
+      var self = this;
+      var collection = makeLiveElementCollection(function () {
+        return formControlIdsForForm(self);
+      }, HTMLFormControlsCollection.prototype);
+      FORM_ELEMENTS_CACHE.set(this, collection);
+      return collection;
+    },
+    configurable: true,
+  });
+
+  HTMLFormElement.prototype.submit = function () {
+    nodeIdFromThis(this);
+    // No-op: the WPT DOM runner does not currently model navigation/form submission.
+  };
+  HTMLFormElement.prototype.reset = function () {
+    nodeIdFromThis(this);
+    // No-op: in this shim form control state is reflected to attributes/textContent directly.
+  };
 
   Object.defineProperty(Element.prototype, "outerHTML", {
     get: function () {
@@ -1435,6 +1658,8 @@ const DOM_SHIM: &str = r##"
   Object.defineProperty(g, "Text", { value: Text, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLCollection", { value: HTMLCollection, configurable: true, writable: true });
   Object.defineProperty(g, "CSSStyleDeclaration", { value: CSSStyleDeclaration, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLOptionsCollection", { value: HTMLOptionsCollection, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLFormControlsCollection", { value: HTMLFormControlsCollection, configurable: true, writable: true });
   Object.defineProperty(g, "EventTarget", { value: EventTarget, configurable: true, writable: true });
   Object.defineProperty(g, "Event", { value: Event, configurable: true, writable: true });
 
