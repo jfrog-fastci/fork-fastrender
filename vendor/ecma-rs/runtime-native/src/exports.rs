@@ -41,6 +41,13 @@ use std::os::raw::c_char;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+/// Serialize `rt_gc_collect` calls so concurrent initiators coalesce into a single stop-the-world
+/// cycle.
+///
+/// This must be a GC-aware lock: a mutator thread blocked attempting to trigger a collection should
+/// not prevent another thread from reaching a stop-the-world safepoint.
+static GC_COLLECT_MUTEX: Lazy<GcAwareMutex<()>> = Lazy::new(|| GcAwareMutex::new(()));
+
 #[inline]
 fn promise_is_pending(p: PromiseRef) -> bool {
   if p.is_null() {
@@ -911,11 +918,33 @@ pub extern "C" fn rt_gc_collect() {
     // This must remain allocation-free after `rt_thread_init` (see `tests/no_alloc_rt_gc_collect.rs`).
     crate::rt_alloc::ensure_global_heap_init();
 
-    // If a stop-the-world is already active, join it as a mutator safepoint at
-    // this callsite (so we still publish a safepoint context for stack walking).
-    let epoch = crate::threading::safepoint::current_epoch();
-    if epoch & 1 == 1 {
-      join_stop_the_world(entry_fp, fallback_ctx, epoch);
+    // Coalesce concurrent `rt_gc_collect` calls: if another thread completes a GC while we are
+    // contending on `GC_COLLECT_MUTEX`, treat our request as satisfied and return instead of
+    // starting a second stop-the-world cycle.
+    let epoch_before = crate::threading::safepoint::current_epoch();
+    if epoch_before & 1 == 1 {
+      // A stop-the-world is already active: join it as a mutator safepoint at this callsite (so we
+      // still publish a safepoint context for stack walking).
+      join_stop_the_world(entry_fp, fallback_ctx, epoch_before);
+      return;
+    }
+
+    let _gc_collect_guard = GC_COLLECT_MUTEX.lock();
+    let epoch_after = crate::threading::safepoint::current_epoch();
+    if epoch_after != epoch_before {
+      // Another stop-the-world cycle ran while we were waiting on the collector lock. Do not start
+      // a second collection; simply ensure we publish that we've observed the current (even) epoch.
+      if epoch_after & 1 == 1 {
+        // Stop-the-world is currently active (e.g. initiated via another API); join it.
+        drop(_gc_collect_guard);
+        join_stop_the_world(entry_fp, fallback_ctx, epoch_after);
+        return;
+      }
+
+      if registry::current_thread_id().is_some() {
+        registry::set_current_thread_safepoint_epoch_observed(epoch_after);
+        crate::threading::safepoint::notify_state_change();
+      }
       return;
     }
 
