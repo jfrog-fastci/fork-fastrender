@@ -4423,6 +4423,10 @@ impl<'a> Checker<'a> {
     let mut props = HashSet::new();
     let mut shape = Shape::new();
     let mut spreads = Vec::new();
+    let children_key = self.jsx_children_prop_key(loc);
+    let children_prop_name = children_key.map(|key| self.store.name(key));
+    let mut explicit_children_attr = false;
+    let mut explicit_children_attr_loc: Option<Loc> = None;
     for attr in attrs {
       match attr {
         JsxAttr::Named { name, value } => {
@@ -4431,6 +4435,10 @@ impl<'a> Checker<'a> {
           } else {
             name.stx.name.clone()
           };
+          if children_prop_name.as_deref() == Some(key_string.as_str()) {
+            explicit_children_attr = true;
+            explicit_children_attr_loc = Some(name.loc);
+          }
           // JSX attributes with hyphens (e.g. `data-test`) are permitted even when the props type
           // doesn't include a corresponding string-literal key. `tsc` excludes these keys from
           // excess property checking, so only track non-hyphenated attribute names here.
@@ -4504,17 +4512,16 @@ impl<'a> Checker<'a> {
       }
     }
 
-    let children_key = self.jsx_children_prop_key(loc);
     if let Some(children_key_id) = children_key {
+      let children_prop_name = children_prop_name.expect("children prop name");
       let expected_children_prop_ty = expected
         .filter(|ty| !matches!(self.store.type_kind(*ty), TypeKind::Any | TypeKind::Unknown))
-        .map(|props_ty| {
-          let children_prop = self.store.name(children_key_id);
-          self.member_type(props_ty, &children_prop)
-        });
+        .map(|props_ty| self.member_type(props_ty, &children_prop_name));
 
-      if let Some(children_ty) = self.jsx_children_prop_type(children, expected_children_prop_ty) {
-        props.insert(self.store.name(children_key_id));
+      let semantic_children_ty = self.jsx_children_prop_type(children, expected_children_prop_ty);
+      let has_semantic_children = semantic_children_ty.is_some();
+      if let Some(children_ty) = semantic_children_ty {
+        props.insert(children_prop_name.clone());
         let key = PropKey::String(children_key_id);
         shape.properties.push(types_ts_interned::Property {
           key,
@@ -4528,6 +4535,18 @@ impl<'a> Checker<'a> {
             declared_on: None,
           },
         });
+      }
+
+      if explicit_children_attr && has_semantic_children {
+        let span_loc = explicit_children_attr_loc.unwrap_or(loc);
+        self
+          .diagnostics
+          .push(codes::JSX_CHILDREN_SPECIFIED_TWICE.error(
+            format!(
+              "'{children_prop_name}' are specified twice. The attribute named '{children_prop_name}' will be overwritten."
+            ),
+            Span::new(self.file, loc_to_range(self.file, span_loc)),
+          ));
       }
     } else {
       let _ = self.jsx_children_prop_type(children, None);

@@ -1791,6 +1791,82 @@ const bad = <Wrong>Byebye</Wrong>;
 }
 
 #[test]
+fn jsx_children_specified_twice_emits_diagnostic() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    div: { children?: string };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"const el = <div children="x">y</div>;"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::JSX_CHILDREN_SPECIFIED_TWICE.as_str()),
+    "expected TS2710 diagnostic, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn jsx_children_specified_twice_ignores_spread_children_attribute() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    div: { children?: string };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"const el = <div {...{ children: "x" }}>y</div>;"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics for spread-only children attribute, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn qualified_jsx_element_return_type_is_resolved() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;

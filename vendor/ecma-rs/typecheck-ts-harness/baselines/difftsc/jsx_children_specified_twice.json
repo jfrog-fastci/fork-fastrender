@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "jsx": "react",
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2710,
+      "file": "main.tsx",
+      "start": 237,
+      "end": 245,
+      "category": "error",
+      "message": "'children' are specified twice. The attribute named 'children' will be overwritten."
+    }
+  ]
+}

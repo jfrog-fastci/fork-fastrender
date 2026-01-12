@@ -432,6 +432,26 @@ pub const PROPERTY_WILL_OVERWRITE_BASE_PROPERTY: Code = Code::new(
   &[],
 );
 
+/// TS2710: JSX `children` prop is specified both as an explicit attribute and
+/// via JSX children.
+///
+/// TypeScript emits this diagnostic when the `children` prop is provided in the
+/// opening element attributes (e.g. `children={...}`) and the element also has
+/// JSX children in its body (e.g. `<Foo>...</Foo>`). The body children overwrite
+/// the attribute.
+///
+/// - Primary span: the `children` attribute name (or attributes list) in the JSX
+///   opening element.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_CHILDREN_SPECIFIED_TWICE: Code = Code::new(
+  "TS2710",
+  "jsx children specified twice",
+  "`children` attribute name in JSX opening element",
+  &["primary: `children` attribute name"],
+  &[],
+);
+
 /// TC1001: Module specifier could not be resolved.
 ///
 /// - Primary span: the module specifier in an import/export statement or a
