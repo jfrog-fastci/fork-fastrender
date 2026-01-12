@@ -82,10 +82,10 @@ instead of inline `<svg>` so we exercise the `load_svg_filter()` /
 
 There is an integration golden test:
 
-- `tests/paint/svg_filter_filterres_offset_clip_golden.rs`
+- `svg_filter_filterres_offset_clip_matches_golden`
 - Golden image: `tests/fixtures/golden/svg_filter_filterres_offset_clip.png`
 - Update with:
-  `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender -q --test integration svg_filter_filterres_offset_clip_matches_golden`
+  `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration svg_filter_filterres_offset_clip_matches_golden`
 
 ## Chromium note (baseline)
 

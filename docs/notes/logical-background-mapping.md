@@ -9,11 +9,12 @@ Logical `background-position-*` and `background-size-*` longhands map to physica
 
 ## Regression coverage
 
-- Unit tests live under `src/style/` (search for `background_position_logical_`)
+- Unit tests live under `src/style/` (search for `background_position_logical_`); these were
+  migrated from the pre-cleanup style test harness.
   - Covers inline/block position/size for `horizontal-tb`, `vertical-rl`, `sideways-lr`, `sideways-rl`
   - Also covers `background-position-x/y` longhands
   - `background-size-y` is deprecated in specs, but is still parsed/mapped and tested here
 
 ## Verification
 
-- `bash scripts/cargo_agent.sh test --quiet -p fastrender --lib background_position_logical`
+- `bash scripts/cargo_agent.sh test -p fastrender --lib background_position_logical`
