@@ -73,11 +73,7 @@ pub fn collect_running_element_events(
   );
   let mut indexed: Vec<(usize, RunningElementEvent)> = events.into_iter().enumerate().collect();
   indexed.sort_by(|(idx_a, a), (idx_b, b)| {
-    match a
-      .abs_block
-      .partial_cmp(&b.abs_block)
-      .unwrap_or(Ordering::Equal)
-    {
+    match a.abs_block.total_cmp(&b.abs_block) {
       Ordering::Equal => idx_a.cmp(idx_b),
       other => other,
     }
@@ -103,11 +99,7 @@ pub fn collect_running_element_events_for_page(
   collect_running_element_occurrences(root, -root_start, block_size, axes, false, &mut events);
   let mut indexed: Vec<(usize, RunningElementEvent)> = events.into_iter().enumerate().collect();
   indexed.sort_by(|(idx_a, a), (idx_b, b)| {
-    match a
-      .abs_block
-      .partial_cmp(&b.abs_block)
-      .unwrap_or(Ordering::Equal)
-    {
+    match a.abs_block.total_cmp(&b.abs_block) {
       Ordering::Equal => idx_a.cmp(idx_b),
       other => other,
     }
