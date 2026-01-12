@@ -2263,6 +2263,33 @@ mod tests {
        })()",
     )?;
     assert_eq!(get_string(&realm, signal), "DataCloneError");
+
+    let broadcast_channel = realm.exec_script(
+      "(() => {\
+         try { structuredClone(new BroadcastChannel('x')); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, broadcast_channel), "DataCloneError");
+
+    let intersection_observer = realm.exec_script(
+      "(() => {\
+         try { structuredClone(new IntersectionObserver(() => {})); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, intersection_observer), "DataCloneError");
+
+    let intersection_observer_entry = realm.exec_script(
+      "(() => {\
+         const obs = new IntersectionObserver(() => {});\
+         obs.observe({});\
+         const entry = obs.takeRecords()[0];\
+         try { structuredClone(entry); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, intersection_observer_entry), "DataCloneError");
     Ok(())
   }
 

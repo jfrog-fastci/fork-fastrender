@@ -13,11 +13,13 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use url::Url;
 use vm_js::{
-  GcObject, GcString, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, GcString, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, Scope,
+  Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
-const BRAND_KEY: &str = "__fastrender_broadcast_channel";
+// Brand wrapper instances as platform objects via `HostSlots` so `structuredClone` rejects them.
+const BROADCAST_CHANNEL_HOST_TAG: u64 = 0x4252_4F41_4443_484E; // "BROADCHN"
+
 const INTERNAL_NAME_KEY: &str = "__fastrender_broadcast_channel_name";
 const INTERNAL_ORIGIN_KEY: &str = "__fastrender_broadcast_channel_origin";
 const INTERNAL_CLOSED_KEY: &str = "__fastrender_broadcast_channel_closed";
@@ -108,16 +110,14 @@ fn serialized_origin_for_current_realm(vm: &Vm) -> Result<String, VmError> {
   }
 }
 
-fn require_channel(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+fn require_channel(scope: &Scope<'_>, this: Value) -> Result<GcObject, VmError> {
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
-  scope.push_root(Value::Object(obj))?;
-  let brand_key = alloc_key(scope, BRAND_KEY)?;
-  if matches!(
-    scope.heap().object_get_own_data_property_value(obj, &brand_key)?,
-    Some(Value::Bool(true))
-  ) {
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  if slots.a == BROADCAST_CHANNEL_HOST_TAG {
     Ok(obj)
   } else {
     Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))
@@ -607,8 +607,13 @@ fn broadcast_channel_ctor_construct(
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
   // Brand + internal state.
-  let brand_key = alloc_key(scope, BRAND_KEY)?;
-  scope.define_property(obj, brand_key, internal_data_desc(Value::Bool(true)))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: BROADCAST_CHANNEL_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   let name_key = alloc_key(scope, INTERNAL_NAME_KEY)?;
   scope.push_root(Value::String(name_s))?;

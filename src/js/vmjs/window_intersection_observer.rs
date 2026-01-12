@@ -19,11 +19,14 @@
 //! progress through lazy-load/observer gating logic during server-side execution.
 
 use vm_js::{
-  GcObject, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks,
+  GcObject, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope,
+  Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
-const OBSERVER_BRAND_KEY: &str = "__fastrender_intersection_observer";
+// Brand wrapper instances as platform objects via `HostSlots` so `structuredClone` rejects them.
+const INTERSECTION_OBSERVER_HOST_TAG: u64 = 0x494E_5445_524F_4253; // "INTEROBS"
+const INTERSECTION_OBSERVER_ENTRY_HOST_TAG: u64 = 0x494F_4245_4E54_5259; // "IOBENTRY"
+
 const OBSERVER_CALLBACK_KEY: &str = "__fastrender_intersection_observer_callback";
 const OBSERVER_PENDING_TARGETS_KEY: &str = "__fastrender_intersection_observer_pending_targets";
 const OBSERVER_SCHEDULED_KEY: &str = "__fastrender_intersection_observer_scheduled";
@@ -99,10 +102,12 @@ fn require_object(this: Value, err: &'static str) -> Result<GcObject, VmError> {
   }
 }
 
-fn require_intersection_observer(scope: &mut Scope<'_>, this: Value, err: &'static str) -> Result<GcObject, VmError> {
+fn require_intersection_observer(scope: &Scope<'_>, this: Value, err: &'static str) -> Result<GcObject, VmError> {
   let obj = require_object(this, err)?;
-  let brand = get_own_data_prop(scope, obj, OBSERVER_BRAND_KEY)?;
-  if matches!(brand, Value::Bool(true)) {
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError(err));
+  };
+  if slots.a == INTERSECTION_OBSERVER_HOST_TAG {
     Ok(obj)
   } else {
     Err(VmError::TypeError(err))
@@ -220,6 +225,13 @@ fn build_entries_from_pending_targets(
 
     let entry = iter_scope.alloc_object()?;
     iter_scope.push_root(Value::Object(entry))?;
+    iter_scope.heap_mut().object_set_host_slots(
+      entry,
+      HostSlots {
+        a: INTERSECTION_OBSERVER_ENTRY_HOST_TAG,
+        b: 0,
+      },
+    )?;
     iter_scope.push_root(target)?;
 
     set_own_data_prop(
@@ -247,7 +259,18 @@ fn build_entries_from_pending_targets(
     // entries[idx] = entry
     iter_scope.push_root(Value::Object(entries))?;
     let idx_key = alloc_key(&mut iter_scope, &idx.to_string())?;
-    iter_scope.define_property(entries, idx_key, data_desc(Value::Object(entry), true))?;
+    iter_scope.define_property(
+      entries,
+      idx_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(entry),
+          writable: true,
+        },
+      },
+    )?;
   }
 
   Ok(entries)
@@ -430,7 +453,13 @@ fn intersection_observer_ctor_construct(
   }
 
   // Internal state.
-  set_own_data_prop(scope, observer, OBSERVER_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
+  scope.heap_mut().object_set_host_slots(
+    observer,
+    HostSlots {
+      a: INTERSECTION_OBSERVER_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_own_data_prop(
     scope,
     observer,
@@ -471,7 +500,14 @@ fn intersection_observer_ctor_construct(
   scope.define_property(
     thresholds,
     idx_key,
-    data_desc(Value::Number(0.0), /* writable */ true),
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Number(0.0),
+        writable: true,
+      },
+    },
   )?;
   set_own_data_prop(
     scope,
@@ -512,7 +548,18 @@ fn intersection_observer_observe_native(
 
     let idx = array_length(&mut append_scope, pending_targets)?;
     let idx_key = alloc_key(&mut append_scope, &idx.to_string())?;
-    append_scope.define_property(pending_targets, idx_key, data_desc(target, true))?;
+    append_scope.define_property(
+      pending_targets,
+      idx_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: target,
+          writable: true,
+        },
+      },
+    )?;
   }
 
   let already_scheduled = matches!(
@@ -809,4 +856,3 @@ pub fn install_window_intersection_observer_bindings(
 
   Ok(())
 }
-
