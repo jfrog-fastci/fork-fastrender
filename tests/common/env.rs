@@ -5,5 +5,6 @@
 //! Keep both module paths available by re-exporting the canonical definitions.
 
 pub(crate) use super::global_state::{
-  global_test_lock, CurrentDirGuard, EnvVarGuard, ScopedEnv, StageListenerGuard,
+  global_test_lock, with_env_vars, with_global_lock, CurrentDirGuard, EnvVarGuard, EnvVarsGuard,
+  GlobalTestLockGuard, ScopedEnv, StageListenerGuard,
 };
