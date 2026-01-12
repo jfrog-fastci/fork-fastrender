@@ -1072,11 +1072,19 @@ impl WindowRealm {
         .set_ready_state(crate::web::dom::DocumentReadyState::Complete);
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(&mut host_ctx);
+      let mut webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
+      any
+        .webidl_bindings_host_slot_mut()
+        .set(&mut webidl_bindings_host);
       let mut hooks = WindowRealmDomShimHooks {
         microtasks: &mut guard.queue,
         any,
       };
-      rt.exec_script_source_with_host_and_hooks(&mut host_ctx, &mut hooks, source)
+      let result = rt.exec_script_source_with_host_and_hooks(&mut host_ctx, &mut hooks, source);
+      // Ensure the bindings host outlives the JS execution boundary: the hooks payload stores a raw
+      // pointer to it.
+      let _ = &mut webidl_bindings_host;
+      result
     })
   }
 
@@ -1309,6 +1317,11 @@ impl WindowRealm {
       // fallback path can still observe/override `currentScript` when needed.
       let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
       let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx);
+      let mut webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
+      hooks
+        .any
+        .webidl_bindings_host_slot_mut()
+        .set(&mut webidl_bindings_host);
 
       let mut first_err: Option<VmError> = None;
       let mut termination_err: Option<VmError> = None;
@@ -1357,6 +1370,9 @@ impl WindowRealm {
       }
 
       rt.vm.microtask_queue_mut().end_checkpoint();
+      // Ensure the bindings host outlives the microtask checkpoint: the hooks payload stores a raw
+      // pointer to it.
+      let _ = &mut webidl_bindings_host;
       match first_err {
         Some(err) => Err(err),
         None => Ok(()),
@@ -12309,6 +12325,410 @@ fn remove_listener_root_if_unused(
   let listener_key = listener_id_property_key(scope, listener_id)?;
   let _ = scope.ordinary_delete(roots, listener_key)?;
   Ok(())
+}
+
+/// Retrieves the currently active `(VmHost, VmHostHooks)` pair from `vm` if the embedder installed
+/// a [`VmJsHostHooksPayload`] via `VmHostHooks::as_any_mut`.
+///
+/// This mirrors the helper in `js/webidl/vmjs_host_dispatch.rs`, but lives in `window_realm.rs` so
+/// standalone `WindowRealm` execution can support WebIDL-generated bindings without depending on
+/// the full `VmJsWebIdlBindingsHostDispatch` implementation.
+fn with_active_vm_host_and_hooks<R>(
+  vm: &mut Vm,
+  f: impl FnOnce(&mut Vm, &mut dyn VmHost, &mut dyn VmHostHooks) -> Result<R, VmError>,
+) -> Result<Option<R>, VmError> {
+  let Some(hooks_ptr) = vm.active_host_hooks_ptr() else {
+    return Ok(None);
+  };
+  // SAFETY: `vm-js` only exposes this pointer while the active hooks value is mutably borrowed for
+  // the duration of a single JS execution boundary.
+  let hooks = unsafe { &mut *hooks_ptr };
+
+  let host_ptr = {
+    let Some(any) = hooks.as_any_mut() else {
+      return Ok(None);
+    };
+    // `Any::downcast_mut` returns a mutable borrow that can escape through the host pointer. Use a
+    // raw pointer to avoid borrow checker issues.
+    let any_ptr: *mut dyn std::any::Any = any;
+    // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and only used within this block.
+    unsafe {
+      (&mut *any_ptr)
+        .downcast_mut::<VmJsHostHooksPayload>()
+        .and_then(|payload| payload.vm_host_ptr())
+    }
+  };
+
+  let Some(mut host_ptr) = host_ptr else {
+    return Ok(None);
+  };
+  // SAFETY: the embedding is responsible for ensuring the host pointer remains valid for the
+  // duration of the JS execution boundary where it was installed.
+  let host = unsafe { host_ptr.as_mut() };
+  Ok(Some(f(vm, host, hooks)?))
+}
+
+/// Lightweight [`WebIdlBindingsHost`] implementation used when executing scripts directly through
+/// [`WindowRealm`] (without a higher-level [`WindowHost`] / event loop).
+///
+/// This supports the minimal set of operations needed by early vm-js WebIDL-generated bindings,
+/// notably `EventTarget` (constructor + `addEventListener`/`removeEventListener`/`dispatchEvent`).
+///
+/// Unlike [`crate::js::webidl::VmJsWebIdlBindingsHostDispatch`], this host does *not* own long-lived
+/// per-wrapper state. It delegates event semantics to the existing `dom2` + `web::events` listener
+/// registry (`WindowRealmUserData::events_dom_fallback`) and roots listener callbacks on ordinary JS
+/// objects (document or the EventTarget wrapper itself).
+#[derive(Debug, Default)]
+struct WindowRealmWebIdlBindingsHost;
+
+impl WindowRealmWebIdlBindingsHost {
+  fn require_receiver_object(receiver: Option<Value>) -> Result<GcObject, VmError> {
+    let Some(Value::Object(obj)) = receiver else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    Ok(obj)
+  }
+
+  fn fallback_events_dom_ptr(vm: &mut Vm) -> Result<NonNull<dom2::Document>, VmError> {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation(
+        "WindowRealm is missing required VM user data",
+      ));
+    };
+    Ok(NonNull::from(&mut data.events_dom_fallback))
+  }
+
+  fn window_and_document_objects(vm: &mut Vm) -> Result<(GcObject, GcObject), VmError> {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation(
+        "WindowRealm is missing required VM user data",
+      ));
+    };
+    let window_obj = data.window_obj.ok_or(VmError::InvariantViolation(
+      "window object missing from WindowRealmUserData",
+    ))?;
+    let document_obj = data.document_obj.ok_or(VmError::InvariantViolation(
+      "document object missing from WindowRealmUserData",
+    ))?;
+    Ok((window_obj, document_obj))
+  }
+
+  fn resolve_event_target_for_receiver(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver_obj: GcObject,
+  ) -> Result<(ResolvedDomEventTarget, NonNull<dom2::Document>, Option<GcObject>), VmError> {
+    // Standalone `WindowRealm` runs do not have a host DOM; use the realm-owned fallback document
+    // for the event listener registry.
+    let dom_ptr = Self::fallback_events_dom_ptr(vm)?;
+    let (window_obj, document_obj) = Self::window_and_document_objects(vm)?;
+
+    if receiver_obj == window_obj {
+      return Ok((
+        ResolvedDomEventTarget {
+          window_obj,
+          document_obj,
+          target_id: web_events::EventTargetId::Window,
+        },
+        dom_ptr,
+        None,
+      ));
+    }
+
+    if receiver_obj == document_obj {
+      return Ok((
+        ResolvedDomEventTarget {
+          window_obj,
+          document_obj,
+          target_id: web_events::EventTargetId::Document,
+        },
+        dom_ptr,
+        None,
+      ));
+    }
+
+    // Non-DOM `EventTarget` objects created in JS via `new EventTarget()`.
+    if !is_branded_event_target(scope, receiver_obj)? {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    Ok((
+      ResolvedDomEventTarget {
+        window_obj,
+        document_obj,
+        target_id: web_events::EventTargetId::Opaque(gc_object_id(receiver_obj)),
+      },
+      dom_ptr,
+      Some(receiver_obj),
+    ))
+  }
+}
+
+impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
+  fn call_operation(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    operation: &'static str,
+    overload: usize,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    match (interface, operation, overload) {
+      ("EventTarget", "constructor", 0) => {
+        let obj = Self::require_receiver_object(receiver)?;
+
+        // Brand-check for EventTarget.prototype methods.
+        let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
+        scope.define_property(
+          obj,
+          brand_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Bool(true),
+              writable: false,
+            },
+          },
+        )?;
+
+        // Register the opaque target so event dispatch can map `EventTargetId::Opaque` back into a
+        // JS object wrapper.
+        let mut dom_ptr = Self::fallback_events_dom_ptr(vm)?;
+        // SAFETY: `dom_ptr` points at the realm-owned fallback document and remains valid for the
+        // lifetime of the realm.
+        let dom = unsafe { dom_ptr.as_mut() };
+        dom
+          .events_mut()
+          .register_opaque_target(gc_object_id(obj), vm_js::WeakGcObject::new(obj));
+
+        Ok(Value::Undefined)
+      }
+
+      ("EventTarget", "addEventListener", 0) => {
+        let target_obj = Self::require_receiver_object(receiver)?;
+        let (resolved, mut dom_ptr, opaque_target_obj) =
+          Self::resolve_event_target_for_receiver(vm, scope, target_obj)?;
+
+        let Some(Value::String(type_s)) = args.get(0).copied() else {
+          return Err(VmError::TypeError(
+            "EventTarget.addEventListener: missing type",
+          ));
+        };
+        let type_name = scope.heap().get_string(type_s)?.to_utf8_lossy().to_string();
+
+        let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+        if matches!(callback, Value::Null | Value::Undefined) {
+          return Ok(Value::Undefined);
+        }
+        let Value::Object(callback_obj) = callback else {
+          return Err(VmError::TypeError("EventTarget listener is not callable"));
+        };
+
+        let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
+        let options = parse_add_event_listener_options(scope, options_value)?;
+        let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
+
+        // SAFETY: `dom_ptr` points at the realm-owned fallback document and remains valid for the
+        // lifetime of the realm.
+        let dom = unsafe { dom_ptr.as_mut() };
+        dom
+          .events_mut()
+          .add_event_listener(resolved.target_id, &type_name, listener_id, options);
+
+        // Ensure the registry can map opaque targets back into JS while dispatching.
+        if let Some(obj) = opaque_target_obj {
+          dom
+            .events_mut()
+            .register_opaque_target(gc_object_id(obj), vm_js::WeakGcObject::new(obj));
+        }
+
+        let listener_roots_owner = match resolved.target_id {
+          web_events::EventTargetId::Opaque(_) => target_obj,
+          _ => resolved.document_obj,
+        };
+
+        // Root the callback while it's registered so it survives GC.
+        let roots = get_or_create_event_listener_roots(scope, listener_roots_owner)?;
+        let listener_key = listener_id_property_key(scope, listener_id)?;
+        scope.push_root(callback)?;
+        scope.define_property(roots, listener_key, data_desc(callback))?;
+
+        Ok(Value::Undefined)
+      }
+
+      ("EventTarget", "removeEventListener", 0) => {
+        let target_obj = Self::require_receiver_object(receiver)?;
+        let (resolved, mut dom_ptr, _opaque_target_obj) =
+          Self::resolve_event_target_for_receiver(vm, scope, target_obj)?;
+
+        let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let type_string = scope.heap_mut().to_string(type_value)?;
+        let type_name = scope
+          .heap()
+          .get_string(type_string)
+          .map(|s| s.to_utf8_lossy())
+          .unwrap_or_default();
+
+        let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+        let Value::Object(callback_obj) = callback else {
+          return Ok(Value::Undefined);
+        };
+
+        let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
+        let capture = parse_event_listener_capture(scope, options_value)?;
+        let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
+
+        let listener_roots_owner = match resolved.target_id {
+          web_events::EventTargetId::Opaque(_) => target_obj,
+          _ => resolved.document_obj,
+        };
+
+        // SAFETY: `dom_ptr` points at the realm-owned fallback document and remains valid for the
+        // lifetime of the realm.
+        let dom = unsafe { dom_ptr.as_mut() };
+        let removed = dom
+          .events_mut()
+          .remove_event_listener(resolved.target_id, &type_name, listener_id, capture);
+        if removed {
+          // Callback roots for DOM-backed targets are stored on the document, so they need the
+          // global "is this listener ID used anywhere?" check.
+          //
+          // Opaque EventTargets root callbacks on the wrapper itself; we can delete the root as soon
+          // as the callback is no longer registered on this target.
+          let target_for_owner = match resolved.target_id {
+            web_events::EventTargetId::Opaque(_) => Some(resolved.target_id),
+            _ => None,
+          };
+          remove_listener_root_if_unused(
+            scope,
+            listener_roots_owner,
+            dom.events(),
+            listener_id,
+            target_for_owner,
+          )?;
+        }
+
+        Ok(Value::Undefined)
+      }
+
+      ("EventTarget", "dispatchEvent", 0) => {
+        let target_obj = Self::require_receiver_object(receiver)?;
+        let (resolved, dom_ptr, opaque_target_obj) =
+          Self::resolve_event_target_for_receiver(vm, scope, target_obj)?;
+
+        let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let Value::Object(event_obj) = event_value else {
+          return Err(VmError::TypeError(
+            "EventTarget.dispatchEvent: event is not an object",
+          ));
+        };
+        scope.push_root(Value::Object(event_obj))?;
+
+        let document_obj = resolved.document_obj;
+        let window_obj = resolved.window_obj;
+        let target_id = resolved.target_id;
+
+        // Ensure base Event fields are observable even if there are no listeners.
+        {
+          let target_key = alloc_key(scope, "target")?;
+          let target_v = match target_id {
+            web_events::EventTargetId::Window => Value::Object(window_obj),
+            web_events::EventTargetId::Document => Value::Object(document_obj),
+            web_events::EventTargetId::Node(_) => Value::Null,
+            web_events::EventTargetId::Opaque(_) => Value::Object(
+              opaque_target_obj.ok_or_else(|| {
+                VmError::InvariantViolation(
+                  "opaque EventTarget is missing required JS object handle",
+                )
+              })?,
+            ),
+          };
+          scope.define_property(event_obj, target_key, data_desc(target_v))?;
+
+          let current_target_key = alloc_key(scope, "currentTarget")?;
+          scope.define_property(event_obj, current_target_key, data_desc(Value::Null))?;
+
+          let event_phase_key = alloc_key(scope, "eventPhase")?;
+          scope.define_property(event_obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+        }
+
+        // Reset per-dispatch propagation flags on the JS-visible object.
+        let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+        scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+        let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+        scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
+        let document_roots = get_or_create_event_listener_roots(scope, document_obj)?;
+
+        // Invoke listeners through the active `(VmHost, VmHostHooks)` pair so callbacks see the
+        // same environment (DOM shims, WebIDL host, etc.) as normal script execution.
+        let result = with_active_vm_host_and_hooks(vm, |vm, vm_host, hooks| {
+          let mut rust_event = rust_event_from_js_event(vm, scope, vm_host, hooks, event_obj)?;
+
+          let mut invoker = VmJsDomEventInvoker {
+            vm,
+            scope,
+            vm_host,
+            hooks,
+            window_obj,
+            document_obj,
+            event_obj,
+            dom_ptr,
+            document_listener_roots: document_roots,
+            opaque_target_obj,
+            registry: unsafe { dom_ptr.as_ref() }.events(),
+          };
+
+          // SAFETY: `dom_ptr` points at the realm-owned fallback document and remains valid for the
+          // lifetime of the realm.
+          let dom = unsafe { dom_ptr.as_ref() };
+          let dispatch_res = web_events::dispatch_event(
+            target_id,
+            &mut rust_event,
+            dom,
+            dom.events(),
+            &mut invoker,
+          )
+          .map_err(|_err| VmError::TypeError("EventTarget.dispatchEvent failed"))?;
+
+          // Persist final per-dispatch state.
+          {
+            let current_target_key = alloc_key(scope, "currentTarget")?;
+            scope.define_property(event_obj, current_target_key, data_desc(Value::Null))?;
+            let event_phase_key = alloc_key(scope, "eventPhase")?;
+            scope.define_property(event_obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+            let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+            scope.define_property(
+              event_obj,
+              default_prevented_key,
+              data_desc(Value::Bool(rust_event.default_prevented)),
+            )?;
+          }
+
+          Ok(dispatch_res)
+        })?
+        .ok_or_else(|| VmError::TypeError("EventTarget.dispatchEvent: missing active host hooks"))?;
+
+        Ok(Value::Bool(result))
+      }
+
+      _ => Err(VmError::Unimplemented("WebIDL host operation not implemented")),
+    }
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented("WebIDL host constructor dispatch not implemented"))
+  }
 }
 
 /// [`web_events::EventListenerInvoker`] that calls `addEventListener` callbacks registered inside a
@@ -27352,6 +27772,64 @@ mod tests {
     }
 
     window.exec_script("__check_hooks_payload()")?;
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_standalone_exec_script_supports_webidl_event_target() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Remove the handcrafted EventTarget binding so the WebIDL-generated installer defines it.
+    realm.exec_script("delete globalThis.EventTarget;")?;
+    {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm_ref)?;
+    }
+
+    let ran = realm.exec_script(
+      r#"
+        globalThis.__ran = 0;
+        const t = new EventTarget();
+        t.addEventListener('x', () => { globalThis.__ran += 1; });
+        t.dispatchEvent({ type: 'x' });
+        globalThis.__ran;
+      "#,
+    )?;
+    assert_eq!(ran, Value::Number(1.0));
+
+    // Brand-check: borrowing the prototype method onto a non-EventTarget should throw.
+    assert!(realm
+      .exec_script("EventTarget.prototype.addEventListener.call({}, 'x', () => {});")
+      .is_err());
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_microtask_checkpoint_supports_webidl_event_target() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    realm.exec_script("delete globalThis.EventTarget;")?;
+    {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm_ref)?;
+    }
+
+    realm.exec_script(
+      r#"
+        globalThis.__ran = 0;
+        Promise.resolve().then(() => {
+          const t = new EventTarget();
+          t.addEventListener('x', () => { globalThis.__ran = 1; });
+          t.dispatchEvent({ type: 'x' });
+        });
+      "#,
+    )?;
+    assert_eq!(realm.exec_script("globalThis.__ran")?, Value::Number(0.0));
+
+    realm.perform_microtask_checkpoint()?;
+    assert_eq!(realm.exec_script("globalThis.__ran")?, Value::Number(1.0));
+
     Ok(())
   }
 
