@@ -346,14 +346,17 @@ fn tab_ui(
         with_alpha(visuals.widgets.hovered.bg_fill.gamma_multiply(0.85), close_hover_t),
       );
     }
-
-    paint_icon_in_rect(
-      ui,
-      close_rect,
-      BrowserIcon::CloseTab,
-      ICON_SIZE,
-      visuals.text_color(),
-    );
+ 
+    let close_t = if is_active { 1.0 } else { hover_t };
+    if close_t > 0.0 {
+      paint_icon_in_rect(
+        ui,
+        close_rect,
+        BrowserIcon::CloseTab,
+        ICON_SIZE,
+        with_alpha(visuals.text_color(), close_t),
+      );
+    }
 
     if close_resp.has_focus() {
       let focus_stroke = visuals.selection.stroke;
