@@ -7,7 +7,7 @@ use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use fastrender::{BrowserDocument, RenderOptions, Result};
 
-use super::support::ensure_test_env;
+use super::support::create_test_renderer;
 
 fn styled_node_id_by_id(styled: &StyledNode, target_id: &str) -> Option<usize> {
   if styled
@@ -85,7 +85,8 @@ fn build_document_with_transition(transition: &str) -> Result<BrowserDocument> {
       </html>
     "#
   );
-  BrowserDocument::from_html(
+  BrowserDocument::new(
+    create_test_renderer(),
     &html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -125,7 +126,6 @@ fn render_after_class_change(transition: &str) -> Result<(FragmentTree, usize)> 
 
 #[test]
 fn dynamic_value_pair_discrete_box_shadow_does_not_start_without_allow_discrete() -> Result<()> {
-  ensure_test_env();
   let (tree, box_id) = render_after_class_change("box-shadow 1000ms linear")?;
 
   let mut sampled = tree.clone();
@@ -142,7 +142,6 @@ fn dynamic_value_pair_discrete_box_shadow_does_not_start_without_allow_discrete(
 
 #[test]
 fn dynamic_value_pair_discrete_box_shadow_flips_at_midpoint_with_allow_discrete() -> Result<()> {
-  ensure_test_env();
   let (tree, box_id) = render_after_class_change("box-shadow 1000ms linear allow-discrete")?;
 
   let mut early = tree.clone();

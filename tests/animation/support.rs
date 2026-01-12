@@ -1,6 +1,5 @@
+use fastrender::{FastRender, FontConfig};
 use std::sync::Once;
-
-use fastrender::{FastRender, FastRenderConfig, FontConfig};
 
 static INIT: Once = Once::new();
 
@@ -18,10 +17,16 @@ pub fn ensure_test_env() {
   });
 }
 
-pub fn test_renderer() -> FastRender {
+pub fn create_test_renderer() -> FastRender {
   ensure_test_env();
-  let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
-  FastRender::with_config(config).expect("renderer")
+  FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer")
+}
+
+pub fn test_renderer() -> FastRender {
+  create_test_renderer()
 }
 
 pub fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {

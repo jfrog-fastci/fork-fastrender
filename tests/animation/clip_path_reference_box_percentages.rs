@@ -5,10 +5,10 @@ use fastrender::style::types::{BasicShape, ClipPath, ShapeRadius};
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 
-use super::support::{ensure_test_env, test_renderer};
+use super::support::create_test_renderer;
 
 fn prepare(html: &str, width: u32, height: u32) -> (BoxTree, FragmentTree, StyledNode) {
-  let mut renderer = test_renderer();
+  let mut renderer = create_test_renderer();
   let options = RenderOptions::new().with_viewport(width, height);
   let prepared = renderer.prepare_html(html, options).expect("prepare");
   (
@@ -65,7 +65,6 @@ fn find_fragment<'a>(node: &'a FragmentNode, box_id: usize) -> Option<&'a Fragme
 
 #[test]
 fn clip_path_reference_boxes_affect_percentage_sampling() {
-  ensure_test_env();
   let html = r#"
     <style>
       html, body { margin: 0; }

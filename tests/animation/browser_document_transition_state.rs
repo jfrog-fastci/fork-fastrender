@@ -6,7 +6,7 @@ use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::{BrowserDocument, RenderOptions, Result};
 
-use super::support::ensure_test_env;
+use super::support::create_test_renderer;
 
 fn styled_node_id_by_id(styled: &StyledNode, target_id: &str) -> Option<usize> {
   if styled
@@ -86,7 +86,6 @@ fn box_id_for_prepared(prepared: &fastrender::api::PreparedDocument, element_id:
 
 #[test]
 fn browser_document_transition_state_tracks_style_changes_across_frames() -> Result<()> {
-  ensure_test_env();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -101,7 +100,8 @@ fn browser_document_transition_state_tracks_style_changes_across_frames() -> Res
       </body>
     </html>"#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(
+    create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(16, 16)

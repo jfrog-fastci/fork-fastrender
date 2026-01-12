@@ -13,7 +13,7 @@ use fastrender::tree::box_tree::{BoxNode, GeneratedPseudoElement};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::{BrowserDocument, PreparedDocument, RenderOptions, Result};
 
-use super::support::{ensure_test_env, pixel};
+use super::support::{create_test_renderer, pixel};
 
 fn styled_node_id_by_id(styled: &StyledNode, target_id: &str) -> Option<usize> {
   if styled
@@ -159,7 +159,6 @@ fn remove_attr(doc: &mut BrowserDocument, element_id: &str, name: &str) -> bool 
 
 #[test]
 fn starting_style_seeds_persistent_transition_state_on_initial_render() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -169,7 +168,7 @@ fn starting_style_seeds_persistent_transition_state_on_initial_render() -> Resul
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -205,7 +204,6 @@ fn starting_style_seeds_persistent_transition_state_on_initial_render() -> Resul
 
 #[test]
 fn starting_style_seeds_persistent_transition_state_for_newly_inserted_elements() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -215,7 +213,7 @@ fn starting_style_seeds_persistent_transition_state_for_newly_inserted_elements(
     <div id="container"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -271,7 +269,6 @@ fn starting_style_seeds_persistent_transition_state_for_newly_inserted_elements(
 
 #[test]
 fn class_flip_triggers_transition_opacity() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -282,7 +279,7 @@ fn class_flip_triggers_transition_opacity() -> Result<()> {
     <div id="box" class="a"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -317,7 +314,6 @@ fn class_flip_triggers_transition_opacity() -> Result<()> {
 
 #[test]
 fn transition_delay_positive_holds_start_value_until_delay_elapses() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -327,7 +323,7 @@ fn transition_delay_positive_holds_start_value_until_delay_elapses() -> Result<(
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -361,7 +357,6 @@ fn transition_delay_positive_holds_start_value_until_delay_elapses() -> Result<(
 
 #[test]
 fn transition_duration_zero_with_positive_delay_holds_start_value_then_snaps() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -377,7 +372,7 @@ fn transition_duration_zero_with_positive_delay_holds_start_value_then_snaps() -
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -411,7 +406,6 @@ fn transition_duration_zero_with_positive_delay_holds_start_value_then_snaps() -
 
 #[test]
 fn transition_delay_negative_starts_partway_through() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -421,7 +415,7 @@ fn transition_delay_negative_starts_partway_through() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -455,7 +449,6 @@ fn transition_delay_negative_starts_partway_through() -> Result<()> {
 
 #[test]
 fn transition_delay_negative_finishes_immediately_when_delay_exceeds_duration() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -465,7 +458,7 @@ fn transition_delay_negative_finishes_immediately_when_delay_exceeds_duration() 
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -501,7 +494,6 @@ fn transition_delay_negative_finishes_immediately_when_delay_exceeds_duration() 
 
 #[test]
 fn transition_reverses_with_shortened_duration() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -512,7 +504,7 @@ fn transition_reverses_with_shortened_duration() -> Result<()> {
     <div id="box" class="a"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -553,7 +545,6 @@ fn transition_reverses_with_shortened_duration() -> Result<()> {
 
 #[test]
 fn starting_style_transition_can_be_interrupted() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -564,7 +555,7 @@ fn starting_style_transition_can_be_interrupted() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -601,7 +592,6 @@ fn starting_style_transition_can_be_interrupted() -> Result<()> {
 
 #[test]
 fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -617,7 +607,7 @@ fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()>
     <div id="box" class="a"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -653,7 +643,7 @@ fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()>
     <div id="box" class="a"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html_allow,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -688,7 +678,6 @@ fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()>
 
 #[test]
 fn transitions_are_keyed_by_pseudo_element() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -707,7 +696,7 @@ fn transitions_are_keyed_by_pseudo_element() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(32, 32)
@@ -773,7 +762,6 @@ fn assert_grey_range(px: (u8, u8, u8, u8), range: std::ops::RangeInclusive<u8>) 
 
 #[test]
 fn removing_transition_property_cancels_running_transition() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -786,7 +774,7 @@ fn removing_transition_property_cancels_running_transition() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(100, 100)
@@ -826,7 +814,6 @@ fn removing_transition_property_cancels_running_transition() -> Result<()> {
 
 #[test]
 fn setting_duration_to_zero_does_not_cancel_running_transition() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -847,7 +834,7 @@ fn setting_duration_to_zero_does_not_cancel_running_transition() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(100, 100)
@@ -884,7 +871,6 @@ fn setting_duration_to_zero_does_not_cancel_running_transition() -> Result<()> {
 
 #[test]
 fn transition_parameters_from_after_change_style_control_started_transition() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -894,7 +880,7 @@ fn transition_parameters_from_after_change_style_control_started_transition() ->
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -974,7 +960,6 @@ fn transition_parameters_from_after_change_style_control_started_transition() ->
 
 #[test]
 fn transition_parameters_are_frozen_while_running() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -993,7 +978,7 @@ fn transition_parameters_are_frozen_while_running() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -1027,7 +1012,6 @@ fn transition_parameters_are_frozen_while_running() -> Result<()> {
 
 #[test]
 fn class_flip_triggers_transition_registered_custom_property_opacity_var() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -1039,7 +1023,7 @@ fn class_flip_triggers_transition_registered_custom_property_opacity_var() -> Re
     <div id="box" class="a"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -1072,7 +1056,6 @@ fn class_flip_triggers_transition_registered_custom_property_opacity_var() -> Re
 
 #[test]
 fn transition_all_includes_registered_custom_properties_on_class_change() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -1084,7 +1067,7 @@ fn transition_all_includes_registered_custom_properties_on_class_change() -> Res
     <div id="box" class="a"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
@@ -1124,7 +1107,6 @@ fn transition_all_includes_registered_custom_properties_on_class_change() -> Res
 
 #[test]
 fn inherited_color_tracks_parent_transition_even_through_line_fragments() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -1136,7 +1118,7 @@ fn inherited_color_tracks_parent_transition_even_through_line_fragments() -> Res
     <div id="parent"><span id="child">X</span></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 50)
@@ -1173,7 +1155,6 @@ fn inherited_color_tracks_parent_transition_even_through_line_fragments() -> Res
 
 #[test]
 fn currentcolor_dependent_border_color_tracks_color_transition() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -1191,7 +1172,7 @@ fn currentcolor_dependent_border_color_tracks_color_transition() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 50)
@@ -1226,7 +1207,6 @@ fn currentcolor_dependent_border_color_tracks_color_transition() -> Result<()> {
 
 #[test]
 fn currentcolor_border_tracks_color_transition_when_color_is_var() -> Result<()> {
-  ensure_test_env();
   let html = r#"
     <style>
       #box {
@@ -1244,7 +1224,7 @@ fn currentcolor_border_tracks_color_transition_when_color_is_var() -> Result<()>
     <div id="box" class="a"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 50)
@@ -1280,7 +1260,6 @@ fn currentcolor_border_tracks_color_transition_when_color_is_var() -> Result<()>
 
 #[test]
 fn currentcolor_dependent_border_color_tracks_color_transition_through_color_mix() -> Result<()> {
-  ensure_test_env();
 
   // Regression test for `currentColor` nested inside color functions. This is not covered by the
   // var-dependent recomputation path (which only tracks literal `currentColor` keywords), so the
@@ -1302,7 +1281,7 @@ fn currentcolor_dependent_border_color_tracks_color_transition_through_color_mix
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 50)
@@ -1338,7 +1317,6 @@ fn currentcolor_dependent_border_color_tracks_color_transition_through_color_mix
 
 #[test]
 fn currentcolor_color_mix_background_tracks_color_transition() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -1354,7 +1332,7 @@ fn currentcolor_color_mix_background_tracks_color_transition() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 50)
@@ -1392,7 +1370,6 @@ fn currentcolor_color_mix_background_tracks_color_transition() -> Result<()> {
 
 #[test]
 fn current_color_dependent_properties_track_color_transition() -> Result<()> {
-  ensure_test_env();
 
   let html = r#"
     <style>
@@ -1408,7 +1385,7 @@ fn current_color_dependent_properties_track_color_transition() -> Result<()> {
     <div id="box"></div>
   "#;
 
-  let mut doc = BrowserDocument::from_html(
+  let mut doc = BrowserDocument::new(create_test_renderer(),
     html,
     RenderOptions::new()
       .with_viewport(200, 200)
