@@ -8,17 +8,18 @@ is:
 - `docs/gc_statepoints.md`
 
 In particular, this document predates changes where:
-
-- `runtime-native` enforces SP/FP-based **Indirect** stackmap slots for statepoint roots and supports derived pointers via `(base, derived)` relocation pairs,
+ 
+- `runtime-native` supports SP/FP-based **Indirect** stackmap slots and (when scanning from a safepoint) **Register** roots for statepoint roots, and supports derived pointers via `(base, derived)` relocation pairs,
 - `.llvm_stackmaps` discovery uses the `runtime-native/link/stackmaps*.ld` linker fragments (with `runtime-native/stackmaps.ld` as a compat alias) and stable boundary symbols:
   - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
   - `__fastr_stackmaps_{start,end}` / `__llvm_stackmaps_{start,end}` / `__stackmaps_{start,end}` (aliases)
 - linking with dead-section GC (`-Wl,--gc-sections`) requires a linker script with `KEEP(*(.llvm_stackmaps ...))` or the section can be discarded entirely
-- `native-js` forces statepoint GC roots into stack slots (no stackmap `Register` roots) by setting LLVM codegen options
+- `native-js` still prefers forcing statepoint GC roots into stack slots (avoiding stackmap `Register` roots) by setting LLVM codegen options
   such as `--fixup-allow-gcptr-in-csr=false` / `--fixup-max-csr-statepoints=0`.
 
-Later we may relax to allow GC roots in registers for performance, but then the runtime must support register-root relocation
-for *all* scanned frames.
+The runtime now supports register-root relocation for all scanned frames by capturing a full register file at safepoints.
+Spilling roots to stack slots is still recommended for simplicity/debuggability and as defense-in-depth across LLVM
+versions/optimizations.
 
 ---
 
