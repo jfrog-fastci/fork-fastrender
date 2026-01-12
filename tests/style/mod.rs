@@ -64,6 +64,7 @@ mod forgiving_selector_list_test;
 mod form_control_constraint_pseudo_test;
 mod form_validity_pseudo_test;
 mod grid_property_test;
+mod grid_invalid_values_no_panic_test;
 mod grid_template_areas_single_row_test;
 mod grid_track_list_single_token_test;
 mod has_selector_quirks_bloom_test;

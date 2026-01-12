@@ -677,6 +677,14 @@ pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
   let (left, right_opt) = split_once_unquoted(value, '/');
   let left = trim_ascii_whitespace(left);
   let right = right_opt.map(trim_ascii_whitespace);
+  // If the author included a `/`, both sides must be present. This rejects values like
+  // `grid: auto-flow /` and `grid: / auto-flow` (which would otherwise be mis-parsed as the
+  // auto-flow shorthand form with an empty track list).
+  if let Some(right) = right {
+    if left.is_empty() || right.is_empty() {
+      return None;
+    }
+  }
 
   let left_has_flow = contains_grid_auto_flow_keyword(left);
   let right_has_flow = right
@@ -754,7 +762,10 @@ pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
       }
     }
   } else if right_has_flow {
-    let (flow_parsed, remainder) = parse_auto_flow_tokens(right.unwrap());
+    let Some(right) = right else {
+      return None;
+    };
+    let (flow_parsed, remainder) = parse_auto_flow_tokens(right);
     if let Some(flow) = flow_parsed {
       auto_flow = Some(flow);
     }
@@ -926,7 +937,8 @@ fn split_once_unquoted(input: &str, delim: char) -> (&str, Option<&str>) {
       ']' if paren_depth == 0 => bracket_depth = bracket_depth.saturating_sub(1),
       d if d == delim && paren_depth == 0 && bracket_depth == 0 => {
         let (left, right) = input.split_at(idx);
-        return (left, Some(&right[delim.len_utf8()..]));
+        let right = right.get(delim.len_utf8()..).unwrap_or("");
+        return (left, Some(right));
       }
       _ => {}
     }
@@ -1016,11 +1028,11 @@ impl<'a> TrackListParser<'a> {
   }
 
   fn remaining(&self) -> &'a str {
-    &self.input[self.pos..]
+    self.input.get(self.pos..).unwrap_or("")
   }
 
   fn is_eof(&self) -> bool {
-    self.pos >= self.input.len()
+    self.remaining().is_empty()
   }
 
   fn skip_whitespace(&mut self) {
@@ -1059,24 +1071,25 @@ impl<'a> TrackListParser<'a> {
     if self.peek_char()? != '[' {
       return None;
     }
-    // Skip '['
-    self.advance_char();
-    let start = self.pos;
-    let mut i = self.pos;
-    while i < self.input.len() {
-      let ch = self.input[i..].chars().next().unwrap();
-      let ch_len = ch.len_utf8();
-      if ch == ']' {
-        let names_raw = &self.input[start..i];
-        self.pos = i + ch_len;
-        let names = split_ascii_whitespace(names_raw)
-          .map(|n| n.to_string())
-          .collect::<Vec<_>>();
-        return Some(names);
-      }
-      i += ch_len;
+
+    let rem = self.remaining();
+    if !rem.starts_with('[') {
+      return None;
     }
-    None
+    let after_open = rem.get('['.len_utf8()..)?;
+    let close_idx = after_open.find(']')?;
+    let names_raw = after_open.get(..close_idx)?;
+
+    let names = split_ascii_whitespace(names_raw)
+      .map(|n| n.to_string())
+      .collect::<Vec<_>>();
+
+    // Advance past `[ ... ]`.
+    self.pos = self
+      .pos
+      .saturating_add('['.len_utf8() + close_idx + ']'.len_utf8());
+
+    Some(names)
   }
 
   fn consume_function_arguments(&mut self, name: &str) -> Option<String> {
@@ -1084,69 +1097,74 @@ impl<'a> TrackListParser<'a> {
       return None;
     }
     let after_name = self.pos + name.len();
-    let mut chars = self.input[after_name..].chars();
+    let rem_after_name = self.input.get(after_name..)?;
+    let mut chars = rem_after_name.chars();
     if chars.next()? != '(' {
       return None;
     }
-    let mut i = after_name + 1; // position after '('
-    let start = i;
-    let mut depth = 1;
-    while i < self.input.len() {
-      let ch = self.input[i..].chars().next().unwrap();
-      let ch_len = ch.len_utf8();
+
+    let rem = self.input.get(after_name..)?;
+    let mut depth: i32 = 0;
+    let mut end_paren: Option<usize> = None;
+    for (idx, ch) in rem.char_indices() {
       match ch {
         '(' => depth += 1,
         ')' => {
           depth -= 1;
           if depth == 0 {
-            let inner = self.input[start..i].to_string();
-            self.pos = i + ch_len;
-            return Some(inner);
+            end_paren = Some(idx);
+            break;
+          }
+          if depth < 0 {
+            return None;
           }
         }
         _ => {}
       }
-      i += ch_len;
     }
-    None
+    let end_paren = end_paren?;
+    let inner = rem.get('('.len_utf8()..end_paren)?.to_string();
+    self.pos = after_name.saturating_add(end_paren + ')'.len_utf8());
+    Some(inner)
   }
 
   /// Consumes a single track token, stopping at top-level whitespace or '['
   fn consume_track_token(&mut self) -> Option<String> {
-    let start = self.pos;
+    let rem = self.remaining();
+    if rem.is_empty() {
+      return None;
+    }
+
     let mut depth: usize = 0;
-    let mut i = self.pos;
-    while i < self.input.len() {
-      let ch = self.input[i..].chars().next().unwrap();
-      let ch_len = ch.len_utf8();
+    let mut end: Option<(usize, bool, usize)> = None;
+    // bool: true if we should consume the delimiter, false if we should leave it (e.g. '[')
+    // usize: delimiter length in bytes
+    for (idx, ch) in rem.char_indices() {
       match ch {
         '(' => depth += 1,
         ')' => depth = depth.saturating_sub(1),
         '[' if depth == 0 => {
-          let token = trim_ascii_whitespace(&self.input[start..i]);
-          self.pos = i;
-          return if token.is_empty() {
-            None
-          } else {
-            Some(token.to_string())
-          };
+          end = Some((idx, false, '['.len_utf8()));
+          break;
         }
         _ if is_css_ascii_whitespace(ch) && depth == 0 => {
-          let token = trim_ascii_whitespace(&self.input[start..i]);
-          self.pos = i + ch_len;
-          return if token.is_empty() {
-            None
-          } else {
-            Some(token.to_string())
-          };
+          end = Some((idx, true, ch.len_utf8()));
+          break;
         }
         _ => {}
       }
-      i += ch_len;
     }
 
-    self.pos = self.input.len();
-    let token = trim_ascii_whitespace(&self.input[start..]);
+    let (end_idx, consume_delim, delim_len) = end.unwrap_or((rem.len(), true, 0));
+    let token = trim_ascii_whitespace(rem.get(..end_idx).unwrap_or(""));
+
+    let advance_by = if consume_delim {
+      end_idx.saturating_add(delim_len)
+    } else {
+      end_idx
+    };
+    self.pos = self.pos.saturating_add(advance_by);
+
     if token.is_empty() {
       None
     } else {
@@ -1197,7 +1215,11 @@ impl<'a> TrackListParser<'a> {
       }
       // repeat line names: merge first entry with current line, then append rest
       if let Some(first) = pattern.line_names.first() {
-        line_names.last_mut().unwrap().extend(first.iter().cloned());
+        if let Some(last) = line_names.last_mut() {
+          last.extend(first.iter().cloned());
+        } else {
+          line_names.push(first.clone());
+        }
       }
       for names in pattern.line_names.iter().skip(1) {
         line_names.push(names.clone());
@@ -1266,21 +1288,17 @@ pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
 
 fn split_once_comma(input: &str) -> Option<(&str, &str)> {
   let mut depth: usize = 0;
-  let mut i = 0;
-  while i < input.len() {
-    let ch = input[i..].chars().next().unwrap();
-    let ch_len = ch.len_utf8();
+  for (idx, ch) in input.char_indices() {
     match ch {
       '(' => depth += 1,
       ')' => depth = depth.saturating_sub(1),
       ',' if depth == 0 => {
-        let first = trim_ascii_whitespace(&input[..i]);
-        let second = trim_ascii_whitespace(&input[i + ch_len..]);
+        let first = trim_ascii_whitespace(input.get(..idx).unwrap_or(""));
+        let second = trim_ascii_whitespace(input.get(idx + ch.len_utf8()..).unwrap_or(""));
         return Some((first, second));
       }
       _ => {}
     }
-    i += ch_len;
   }
   None
 }
@@ -1319,7 +1337,11 @@ pub(crate) fn parse_track_list(input: &str) -> ParsedTracks {
     if !parsed.line_names.is_empty() {
       // Merge first line names into current line (before the first track of the parsed chunk)
       if let Some(first) = parsed.line_names.first() {
-        line_names.last_mut().unwrap().extend(first.iter().cloned());
+        if let Some(last) = line_names.last_mut() {
+          last.extend(first.iter().cloned());
+        } else {
+          line_names.push(first.clone());
+        }
       }
       // Append remaining line names
       for names in parsed.line_names.iter().skip(1) {
