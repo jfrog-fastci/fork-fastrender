@@ -283,7 +283,7 @@ pub(crate) struct WindowRealmUserData {
   /// Cached JS `location` object so embedders can repair `location.href` when a navigation is
   /// canceled (for example by a `beforeunload` handler).
   location_obj: Option<GcObject>,
-  console_counts: HashMap<String, u32>,
+  console_counts: HashMap<String, u64>,
   console_timers: HashMap<String, Duration>,
 }
 
@@ -1842,6 +1842,10 @@ const CONSOLE_SINK_KEY_SLOT: usize = 2;
 const CONSOLE_SINK_ID_KEY: &str = "__fastrender_console_sink_id";
 const MAX_CONSOLE_TIME_LOG_ARGS: usize = 32;
 
+const MAX_CONSOLE_LABEL_BYTES: usize = 256;
+const MAX_CONSOLE_DISTINCT_LABELS: usize = 1024;
+const CONSOLE_LABEL_LIMIT_EXCEEDED: &str = "[console label limit exceeded]";
+
 const LOCATION_URL_KEY: &str = "__fastrender_location_url";
 const LOCATION_ACCESSOR_LOCATION_OBJ_SLOT: usize = 0;
 const HISTORY_OBJ_SLOT: usize = 0;
@@ -2313,6 +2317,106 @@ fn console_sink_from_callee_and_this(
   Ok(console_sinks().lock().get(&id).cloned())
 }
 
+fn console_truncate_label(mut label: String) -> String {
+  if label.len() <= MAX_CONSOLE_LABEL_BYTES {
+    return label;
+  }
+  let mut end = MAX_CONSOLE_LABEL_BYTES;
+  while end > 0 && !label.is_char_boundary(end) {
+    end -= 1;
+  }
+  label.truncate(end);
+  label
+}
+
+fn console_label_from_args(scope: &mut Scope<'_>, args: &[Value], default: &str) -> String {
+  if args.is_empty() {
+    return default.to_string();
+  }
+  console_truncate_label(crate::js::vm_error_format::format_console_arguments_limited(
+    scope.heap_mut(),
+    &args[..1],
+  ))
+}
+
+fn console_label_for_map_insert<T>(map: &HashMap<String, T>, label: String) -> String {
+  if label == CONSOLE_LABEL_LIMIT_EXCEEDED || map.contains_key(&label) {
+    return label;
+  }
+  if map.len() >= MAX_CONSOLE_DISTINCT_LABELS.saturating_sub(1) {
+    return CONSOLE_LABEL_LIMIT_EXCEEDED.to_string();
+  }
+  label
+}
+
+fn console_label_for_map_lookup<T>(map: &HashMap<String, T>, label: String) -> String {
+  if map.contains_key(&label) {
+    return label;
+  }
+  if map.contains_key(CONSOLE_LABEL_LIMIT_EXCEEDED) {
+    return CONSOLE_LABEL_LIMIT_EXCEEDED.to_string();
+  }
+  label
+}
+
+fn console_format_value(scope: &mut Scope<'_>, value: Value) -> String {
+  crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &[value])
+}
+
+fn console_format_assert_data(scope: &mut Scope<'_>, data: &[Value]) -> String {
+  if data.is_empty() {
+    return String::new();
+  }
+
+  let Value::String(fmt_s) = data[0] else {
+    return crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), data);
+  };
+
+  // `format_console_arguments_limited` does not apply substitution (`%d`, `%s`, ...), but real-world
+  // usage of `console.assert` often relies on it. Implement a small, deterministic subset here.
+  let fmt = match scope.heap().get_string(fmt_s) {
+    Ok(js) => js.to_utf8_lossy(),
+    Err(_) => String::new(),
+  };
+
+  let mut out = String::new();
+  let mut arg_idx = 1usize;
+  let mut chars = fmt.chars();
+  while let Some(ch) = chars.next() {
+    if ch != '%' {
+      out.push(ch);
+      continue;
+    }
+
+    match chars.next() {
+      Some('%') => out.push('%'),
+      Some(spec @ ('s' | 'd' | 'i' | 'f' | 'o' | 'O' | 'c')) => {
+        if let Some(value) = data.get(arg_idx).copied() {
+          out.push_str(&console_format_value(scope, value));
+          arg_idx += 1;
+        } else {
+          out.push('%');
+          out.push(spec);
+        }
+      }
+      Some(other) => {
+        out.push('%');
+        out.push(other);
+      }
+      None => out.push('%'),
+    }
+  }
+
+  for value in data.iter().copied().skip(arg_idx) {
+    if !out.is_empty() {
+      out.push(' ');
+    }
+    out.push_str(&console_format_value(scope, value));
+  }
+
+  out
+}
+
 fn console_assert_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2331,45 +2435,17 @@ fn console_assert_native(
     return Ok(Value::Undefined);
   };
 
-  let data = args.get(1..).unwrap_or_default();
-  if data.is_empty() {
-    let msg_s = scope.alloc_string("Assertion failed")?;
-    scope.push_root(Value::String(msg_s))?;
-    let msg = [Value::String(msg_s)];
-    sink(ConsoleMessageLevel::Error, scope.heap_mut(), &msg);
-    return Ok(Value::Undefined);
-  }
+  let formatted = console_format_assert_data(scope, args.get(1..).unwrap_or(&[]));
+  let message = if formatted.is_empty() {
+    "Assertion failed".to_string()
+  } else {
+    format!("Assertion failed: {formatted}")
+  };
 
-  match data[0] {
-    Value::String(fmt_s) => {
-      let fmt = scope.heap().get_string(fmt_s)?.to_utf8_lossy();
-      let mut prefixed = String::from("Assertion failed: ");
-      prefixed.push_str(&fmt);
-      let prefixed_s = scope.alloc_string(&prefixed)?;
-      // GC safety: the newly allocated string must be rooted before calling the sink.
-      scope.push_root(Value::String(prefixed_s))?;
-
-      let mut out: Vec<Value> = Vec::new();
-      out
-        .try_reserve_exact(data.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-      out.push(Value::String(prefixed_s));
-      out.extend_from_slice(&data[1..]);
-      sink(ConsoleMessageLevel::Error, scope.heap_mut(), &out);
-    }
-    _ => {
-      let prefix_s = scope.alloc_string("Assertion failed:")?;
-      scope.push_root(Value::String(prefix_s))?;
-
-      let mut out: Vec<Value> = Vec::new();
-      out
-        .try_reserve_exact(1 + data.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-      out.push(Value::String(prefix_s));
-      out.extend_from_slice(data);
-      sink(ConsoleMessageLevel::Error, scope.heap_mut(), &out);
-    }
-  }
+  let msg_s = scope.alloc_string(&message)?;
+  scope.push_root(Value::String(msg_s))?;
+  let msg = [Value::String(msg_s)];
+  sink(ConsoleMessageLevel::Error, scope.heap_mut(), &msg);
 
   Ok(Value::Undefined)
 }
@@ -2384,18 +2460,21 @@ fn console_count_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let sink = console_sink_from_callee_and_this(scope, callee, this)?;
-  let label = if args.is_empty() {
-    "default".to_string()
-  } else {
-    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
-  };
+  let label = console_label_from_args(scope, args, "default");
 
-  let count = if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
-    let entry = user_data.console_counts.entry(label.clone()).or_insert(0);
-    *entry = entry.saturating_add(1);
-    *entry
+  let (label, count) = if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    let label = console_label_for_map_insert(&user_data.console_counts, label);
+    if user_data.console_counts.len() >= MAX_CONSOLE_DISTINCT_LABELS
+      && !user_data.console_counts.contains_key(&label)
+    {
+      (label, 0)
+    } else {
+      let entry = user_data.console_counts.entry(label.clone()).or_insert(0);
+      *entry = entry.saturating_add(1);
+      (label, *entry)
+    }
   } else {
-    0
+    (label, 0)
   };
 
   if let Some(sink) = sink {
@@ -2453,16 +2532,14 @@ fn console_time_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let sink = console_sink_from_callee_and_this(scope, callee, this)?;
-  let label = if args.is_empty() {
-    "default".to_string()
-  } else {
-    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
-  };
+  let label = console_label_from_args(scope, args, "default");
+  let start = crate::js::time::clock_now(scope).unwrap_or(Duration::ZERO);
 
   let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Ok(Value::Undefined);
   };
 
+  let label = console_label_for_map_insert(&user_data.console_timers, label);
   if user_data.console_timers.contains_key(&label) {
     if let Some(sink) = sink {
       let msg = format!("Timer '{label}' already exists");
@@ -2474,7 +2551,13 @@ fn console_time_native(
     return Ok(Value::Undefined);
   }
 
-  let start = crate::js::time::clock_now(scope)?;
+  // Safety cap: refuse to track new timer labels once the realm has too many distinct entries.
+  if user_data.console_timers.len() >= MAX_CONSOLE_DISTINCT_LABELS
+    && !user_data.console_timers.contains_key(&label)
+  {
+    return Ok(Value::Undefined);
+  }
+
   user_data.console_timers.insert(label, start);
   Ok(Value::Undefined)
 }
@@ -2549,16 +2632,13 @@ fn console_time_end_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let sink = console_sink_from_callee_and_this(scope, callee, this)?;
-  let label = if args.is_empty() {
-    "default".to_string()
-  } else {
-    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
-  };
+  let label = console_label_from_args(scope, args, "default");
 
   let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Ok(Value::Undefined);
   };
 
+  let label = console_label_for_map_lookup(&user_data.console_timers, label);
   let Some(start) = user_data.console_timers.remove(&label) else {
     if let Some(sink) = sink {
       let msg = format!("Timer '{label}' does not exist");
@@ -2570,7 +2650,7 @@ fn console_time_end_native(
     return Ok(Value::Undefined);
   };
 
-  let end = crate::js::time::clock_now(scope)?;
+  let end = crate::js::time::clock_now(scope).unwrap_or(Duration::ZERO);
   let delta = end.checked_sub(start).unwrap_or(Duration::from_secs(0));
   let ms = crate::js::time::duration_to_ms_f64(delta);
   if let Some(sink) = sink {
@@ -2597,8 +2677,6 @@ fn console_dir_native(
     return Ok(Value::Undefined);
   };
 
-  let fallback = [Value::Undefined];
-  let args = if args.is_empty() { &fallback } else { &args[..1] };
   sink(ConsoleMessageLevel::Log, scope.heap_mut(), args);
   Ok(Value::Undefined)
 }
@@ -2635,8 +2713,6 @@ fn console_table_native(
     return Ok(Value::Undefined);
   };
 
-  let fallback = [Value::Undefined];
-  let args = if args.is_empty() { &fallback } else { &args[..1] };
   sink(ConsoleMessageLevel::Log, scope.heap_mut(), args);
   Ok(Value::Undefined)
 }
@@ -25830,14 +25906,14 @@ mod tests {
     realm.exec_script("console.assert(true, 'x')")?;
     assert!(captured.lock().is_empty());
 
-    realm.exec_script("console.assert(false, 'x')")?;
+    realm.exec_script("console.assert(false, 'x=%d', 1)")?;
     assert_eq!(
       &*captured.lock(),
-      &[(ConsoleMessageLevel::Error, "Assertion failed: x".to_string())]
+      &[(ConsoleMessageLevel::Error, "Assertion failed: x=1".to_string())]
     );
 
     captured.lock().clear();
-    realm.exec_script("console.assert(false, 'x=%d', 1)")?;
+    realm.exec_script("const a = console.assert; a(false, 'x=%d', 1)")?;
     assert_eq!(
       &*captured.lock(),
       &[(ConsoleMessageLevel::Error, "Assertion failed: x=1".to_string())]

@@ -1492,7 +1492,6 @@ pub fn reflect_set_prototype_of(
     Err(e) => Err(e),
   }
 }
-
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
 
@@ -1750,7 +1749,12 @@ fn proxy_constructor_impl(
   // Spec: https://tc39.es/ecma262/#sec-proxycreate
   let target = require_object(target)?;
   let handler = require_object(handler)?;
-  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+
+  // Root inputs across allocation/GC while creating the proxy object.
+  let mut proxy_scope = scope.reborrow();
+  proxy_scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+  let proxy = proxy_scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
 
