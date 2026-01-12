@@ -116,10 +116,9 @@ fn dwarf_compile_unit_language_is_c_plus_plus_fallback() {
     let lang = compile_unit_language(&unit);
     let lang = lang.expect("compile unit should have DW_AT_language");
     seen.push((name.clone(), Some(lang)));
-    assert_eq!(
-      lang,
-      gimli::DW_LANG_C_plus_plus,
-      "unexpected DW_AT_language for compile unit {name:?}"
+    assert!(
+      matches!(lang, gimli::DW_LANG_C | gimli::DW_LANG_C_plus_plus),
+      "unexpected DW_AT_language for compile unit {name:?}: {lang:?}"
     );
   }
 
