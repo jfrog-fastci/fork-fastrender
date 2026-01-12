@@ -26,6 +26,14 @@ pub(crate) fn create_test_renderer() -> fastrender::FastRender {
   fastrender::FastRender::with_config(config).expect("build renderer")
 }
 
+pub(crate) fn init_rayon_for_wpt_tests() {
+  // Keep WPT test execution stable under CI/agent resource limits.
+  //
+  // The WPT harness can optionally run tests in parallel via Rayon, but blindly spawning one thread
+  // per CPU can fail under RLIMIT/thread-count limits. Mirror the repo-wide test initialization.
+  crate::common::init_rayon_for_tests(1);
+}
+
 // Re-export main types for convenience
 pub use harness::compare_images;
 pub use harness::generate_diff_image;
