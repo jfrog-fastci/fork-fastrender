@@ -6049,6 +6049,90 @@ fn footnote_float_generates_call_and_page_footnote_area() {
 }
 
 #[test]
+fn footnote_float_as_flex_item_generates_page_footnote_area() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          .flex { display: flex; }
+          .note { float: footnote; }
+        </style>
+      </head>
+      <body>
+        <div class="flex">X<span class="note">Footnote body</span>Y</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+
+  let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(
+    wrapper.children.len(),
+    2,
+    "page with footnote should have content + footnote area"
+  );
+  let content = page_content(page1);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
+
+  assert!(find_text(content, "X").is_some());
+  assert!(find_text(content, "Y").is_some());
+  assert!(find_text(content, "Footnote body").is_none());
+  assert!(find_text(footnote_area, "Footnote body").is_some());
+}
+
+#[test]
+fn footnote_float_as_grid_item_generates_page_footnote_area() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          .grid { display: grid; grid-template-columns: 1fr; }
+          .note { float: footnote; }
+        </style>
+      </head>
+      <body>
+        <div class="grid">X<span class="note">Footnote body</span>Y</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+
+  let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(
+    wrapper.children.len(),
+    2,
+    "page with footnote should have content + footnote area"
+  );
+  let content = page_content(page1);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
+
+  assert!(find_text(content, "X").is_some());
+  assert!(find_text(content, "Y").is_some());
+  assert!(find_text(content, "Footnote body").is_none());
+  assert!(find_text(footnote_area, "Footnote body").is_some());
+}
+
+#[test]
 fn footnote_area_in_vertical_writing_mode_is_positioned_at_block_end() {
   let html = r#"
     <html>

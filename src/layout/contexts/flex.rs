@@ -5566,6 +5566,57 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
 
+      let mut footnote_anchors: Vec<FragmentNode> = Vec::new();
+      for (idx, child) in in_flow_children.iter().enumerate() {
+        let Some(body) = child.footnote_body.as_deref() else {
+          continue;
+        };
+
+        let snapshot_node = body.clone();
+        let hinted_inline_size = crate::layout::formatting_context::footnote_area_inline_size_hint()
+          .filter(|size| size.is_finite())
+          .map(|size| size.max(0.0));
+        let viewport_inline_size =
+          if crate::style::inline_axis_is_horizontal(body.style.writing_mode) {
+            self.viewport_size.width
+          } else {
+            self.viewport_size.height
+          };
+        let inline_size = if let Some(size) = hinted_inline_size {
+          size
+        } else if viewport_inline_size.is_finite() {
+          viewport_inline_size.max(0.0)
+        } else {
+          0.0
+        };
+
+        let fc_type = snapshot_node.formatting_context().unwrap_or_else(|| {
+          if snapshot_node.is_block_level() {
+            FormattingContextType::Block
+          } else {
+            FormattingContextType::Inline
+          }
+        });
+        let fc = base_factory.get(fc_type);
+        let snapshot_constraints = LayoutConstraints::new(
+          CrateAvailableSpace::Definite(inline_size),
+          CrateAvailableSpace::Indefinite,
+        );
+        let snapshot_fragment = fc.layout(&snapshot_node, &snapshot_constraints)?;
+
+        let Some(item_fragment) = fragment.children.get(idx) else {
+          continue;
+        };
+        let origin = item_fragment.bounds.origin;
+        let anchor_bounds = Rect::from_xywh(origin.x, origin.y, 0.0, 0.01);
+        let mut anchor = FragmentNode::new_footnote_anchor(anchor_bounds, snapshot_fragment);
+        anchor.style = Some(child.style.clone());
+        footnote_anchors.push(anchor);
+      }
+      if !footnote_anchors.is_empty() {
+        fragment.children_mut().extend(footnote_anchors);
+      }
+
       if !running_children.is_empty() {
         // Running elements are removed from the flex layout tree, but still need anchors positioned
         // as-if they were in-flow. Unlike block layout, flexbox can reorder items (`order`) and even
