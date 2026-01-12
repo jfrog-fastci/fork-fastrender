@@ -80,7 +80,6 @@ mod root_background_extends_to_viewport;
 mod session_paint;
 mod source_track_hidden;
 mod stage_listener_guard_tests;
-mod style_regressions_presence;
 mod stylesheet_referrer_policy_header_import_test;
 mod taffy_perf_counters_diagnostics_reset_test;
 mod template_inert_styles;

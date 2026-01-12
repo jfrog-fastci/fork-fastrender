@@ -5,3 +5,4 @@
 
 mod js_runtime_consolidation_guard;
 mod webidl_consolidation_guard;
+mod style_regressions_presence;
