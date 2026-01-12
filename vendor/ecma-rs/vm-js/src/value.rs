@@ -20,6 +20,17 @@ impl U256 {
     self.limbs.iter().all(|&x| x == 0)
   }
 
+  fn pow2(bit: u32) -> Self {
+    if bit >= 256 {
+      return Self::ZERO;
+    }
+    let limb = (bit / 64) as usize;
+    let offset = bit % 64;
+    let mut limbs = [0u64; 4];
+    limbs[limb] = 1u64 << offset;
+    Self { limbs }
+  }
+
   fn bit_len(self) -> u32 {
     for i in (0..4).rev() {
       let limb = self.limbs[i];
@@ -318,7 +329,12 @@ impl U256 {
       parts.push(r);
       n = q;
     }
-    let mut s = parts.pop().unwrap().to_string();
+    let Some(first) = parts.pop() else {
+      // Should be impossible: the loop above must push at least one part for non-zero values, but
+      // avoid panicking in this formatting helper.
+      return "0".to_string();
+    };
+    let mut s = first.to_string();
     for part in parts.iter().rev() {
       s.push_str(&format!("{:019}", part));
     }
@@ -572,8 +588,8 @@ impl JsBigInt {
       if width == 256 {
         self.magnitude.wrapping_neg()
       } else {
-        let pow = U256::from_u128(1).checked_shl(width).unwrap();
-        pow.checked_sub(self.magnitude).unwrap()
+        let pow = U256::pow2(width);
+        pow.wrapping_sub(self.magnitude)
       }
     } else {
       self.magnitude
@@ -595,8 +611,8 @@ impl JsBigInt {
       let magnitude = if width == 256 {
         value.wrapping_neg()
       } else {
-        let pow = U256::from_u128(1).checked_shl(width).unwrap();
-        pow.checked_sub(value).unwrap()
+        let pow = U256::pow2(width);
+        pow.wrapping_sub(value)
       };
       debug_assert!(!magnitude.is_zero());
       Self {
@@ -682,7 +698,7 @@ impl JsBigInt {
       return Some(0);
     }
     if self.is_negative() {
-      let min_mag = U256::from_u128(1).checked_shl(127).unwrap();
+      let min_mag = U256::pow2(127);
       if self.magnitude > min_mag {
         return None;
       }
@@ -748,7 +764,7 @@ impl JsBigInt {
     let remainder_mask = Self::twos_complement_mask(shift);
     let has_remainder = !(self.magnitude & remainder_mask).is_zero();
     let q = if has_remainder {
-      q.checked_add(U256::from_u128(1)).unwrap()
+      q.checked_add_u32(1).unwrap_or(q)
     } else {
       q
     };

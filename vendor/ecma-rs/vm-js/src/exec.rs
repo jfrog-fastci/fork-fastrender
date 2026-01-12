@@ -6382,7 +6382,11 @@ impl<'a> Evaluator<'a> {
               OperatorName::BitwiseAnd => a & b,
               OperatorName::BitwiseOr => a | b,
               OperatorName::BitwiseXor => a ^ b,
-              _ => unreachable!(),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "unexpected operator in bitwise int32 binary op",
+                ));
+              }
             };
             Ok(Value::Number(out as f64))
           }
@@ -6391,7 +6395,11 @@ impl<'a> Evaluator<'a> {
               OperatorName::BitwiseAnd => a.checked_bitwise_and(b),
               OperatorName::BitwiseOr => a.checked_bitwise_or(b),
               OperatorName::BitwiseXor => a.checked_bitwise_xor(b),
-              _ => unreachable!(),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "unexpected operator in bitwise BigInt binary op",
+                ));
+              }
             };
             let Some(out) = out else {
               return Err(VmError::Unimplemented("BigInt bitwise out of range"));
@@ -6433,7 +6441,11 @@ impl<'a> Evaluator<'a> {
                 let a = to_uint32(a);
                 Ok(Value::Number((a >> shift) as f64))
               }
-              _ => unreachable!(),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "unexpected operator in bitwise shift binary op",
+                ));
+              }
             }
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
@@ -6481,8 +6493,16 @@ impl<'a> Evaluator<'a> {
                   Ok(Value::BigInt(a.shr(shift)))
                 }
               }
-              OperatorName::BitwiseUnsignedRightShift => unreachable!(),
-              _ => unreachable!(),
+              OperatorName::BitwiseUnsignedRightShift => {
+                return Err(VmError::InvariantViolation(
+                  "BigInt unsigned right shift should be rejected above",
+                ));
+              }
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "unexpected operator in BigInt shift binary op",
+                ));
+              }
             }
           }
           _ => Err(throw_type_error(
@@ -6503,16 +6523,20 @@ impl<'a> Evaluator<'a> {
         let left_num = self.to_numeric(&mut rhs_scope, left)?;
         let right_num = self.to_numeric(&mut rhs_scope, right)?;
 
-        match (left_num, right_num) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
-            OperatorName::Subtraction => Value::Number(a - b),
-            OperatorName::Division => Value::Number(a / b),
-            OperatorName::Remainder => Value::Number(a % b),
-            _ => unreachable!(),
-          }),
-          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            if b.is_zero()
-              && matches!(
+          match (left_num, right_num) {
+            (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
+              OperatorName::Subtraction => Value::Number(a - b),
+              OperatorName::Division => Value::Number(a / b),
+              OperatorName::Remainder => Value::Number(a % b),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "unexpected operator in numeric binary op fast path",
+                ));
+              }
+            }),
+            (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+              if b.is_zero()
+                && matches!(
                 expr.operator,
                 OperatorName::Division | OperatorName::Remainder
               )
@@ -6534,7 +6558,11 @@ impl<'a> Evaluator<'a> {
               OperatorName::Remainder => a.checked_rem(b).ok_or(VmError::InvariantViolation(
                 "BigInt remainder returned None",
               ))?,
-              _ => unreachable!(),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "unexpected operator in BigInt arithmetic binary op",
+                ));
+              }
             };
             Ok(Value::BigInt(out))
           }
@@ -8085,7 +8113,11 @@ fn async_try_after_wrapped(
     if let Some(catch) = &stmt.catch {
       let thrown = match result {
         Completion::Throw(thrown) => thrown.value,
-        _ => unreachable!(),
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "async try expected throw completion when entering catch",
+          ));
+        }
       };
       match async_eval_catch(evaluator, scope, &catch.stx, thrown)? {
         AsyncEval::Complete(c) => result = c,
@@ -12738,22 +12770,24 @@ pub(crate) fn run_module_until_await(
               scope.heap_mut().set_root(last_root, v);
             }
           }
-          abrupt => {
+          Completion::Throw(thrown) => {
             scope.heap_mut().remove_root(last_root);
-            match abrupt {
-              Completion::Normal(_) => unreachable!("covered above"),
-              Completion::Throw(thrown) => {
-                return Err(VmError::ThrowWithStack {
-                  value: thrown.value,
-                  stack: thrown.stack,
-                });
-              }
-              Completion::Return(_) => return Err(VmError::Unimplemented("return from module")),
-              Completion::Break(..) => return Err(VmError::Unimplemented("break outside of loop")),
-              Completion::Continue(..) => {
-                return Err(VmError::Unimplemented("continue outside of loop"))
-              }
-            }
+            return Err(VmError::ThrowWithStack {
+              value: thrown.value,
+              stack: thrown.stack,
+            });
+          }
+          Completion::Return(_) => {
+            scope.heap_mut().remove_root(last_root);
+            return Err(VmError::Unimplemented("return from module"));
+          }
+          Completion::Break(..) => {
+            scope.heap_mut().remove_root(last_root);
+            return Err(VmError::Unimplemented("break outside of loop"));
+          }
+          Completion::Continue(..) => {
+            scope.heap_mut().remove_root(last_root);
+            return Err(VmError::Unimplemented("continue outside of loop"));
           }
         }
       }

@@ -5098,15 +5098,15 @@ pub fn array_prototype_reverse(
       None
     };
 
-    match (lower_exists, upper_exists) {
-      (true, true) => {
+    match (lower_value, upper_value) {
+      (Some(lower_value), Some(upper_value)) => {
         let ok = iter_scope.ordinary_set_with_host_and_hooks(
           vm,
           host,
           hooks,
           obj,
           lower_key,
-          upper_value.unwrap(),
+          upper_value,
           Value::Object(obj),
         )?;
         if !ok {
@@ -5118,21 +5118,21 @@ pub fn array_prototype_reverse(
           hooks,
           obj,
           upper_key,
-          lower_value.unwrap(),
+          lower_value,
           Value::Object(obj),
         )?;
         if !ok {
           return Err(VmError::TypeError("Array.prototype.reverse failed"));
         }
       }
-      (false, true) => {
+      (None, Some(upper_value)) => {
         let ok = iter_scope.ordinary_set_with_host_and_hooks(
           vm,
           host,
           hooks,
           obj,
           lower_key,
-          upper_value.unwrap(),
+          upper_value,
           Value::Object(obj),
         )?;
         if !ok {
@@ -5143,7 +5143,7 @@ pub fn array_prototype_reverse(
           return Err(VmError::TypeError("Array.prototype.reverse failed"));
         }
       }
-      (true, false) => {
+      (Some(lower_value), None) => {
         let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, lower_key)?;
         if !ok {
           return Err(VmError::TypeError("Array.prototype.reverse failed"));
@@ -5154,14 +5154,14 @@ pub fn array_prototype_reverse(
           hooks,
           obj,
           upper_key,
-          lower_value.unwrap(),
+          lower_value,
           Value::Object(obj),
         )?;
         if !ok {
           return Err(VmError::TypeError("Array.prototype.reverse failed"));
         }
       }
-      (false, false) => {}
+      (None, None) => {}
     }
   }
 

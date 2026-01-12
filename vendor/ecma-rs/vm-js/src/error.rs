@@ -4,6 +4,22 @@ use diagnostics::Diagnostic;
 use std::fmt::Display;
 
 /// Errors produced by the VM and runtime.
+///
+/// ## Error taxonomy
+///
+/// `vm-js` must be robust against hostile JavaScript input. This enum is structured so that all
+/// failures are representable as a `VmError` value (i.e. **no JS-triggerable panics**):
+///
+/// - **JavaScript exceptions (catchable):** [`VmError::Throw`] and [`VmError::ThrowWithStack`].
+/// - **Early errors (user error, not catchable by JS):** [`VmError::Syntax`].
+/// - **Hard termination (not catchable by JS):** [`VmError::Termination`] for budgets/interrupts/
+///   stack overflow (and similar "stop now" conditions).
+/// - **Engine/embedding bugs:** [`VmError::InvariantViolation`] (and related variants like
+///   [`VmError::InvalidHandle`]). These indicate internal corruption or a broken host contract.
+///
+/// Variants such as [`VmError::TypeError`] and [`VmError::NotCallable`] are *internal helper
+/// errors*: evaluator entry points typically coerce them into JS exceptions when intrinsics are
+/// available (see `vm.rs:coerce_error_to_throw`).
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum VmError {
   /// The heap has exceeded its configured memory limit.

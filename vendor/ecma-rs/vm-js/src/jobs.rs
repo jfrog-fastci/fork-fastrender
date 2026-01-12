@@ -240,7 +240,7 @@ impl Job {
 
     match result {
       Ok(result) => result,
-      Err(panic) => std::panic::resume_unwind(panic),
+      Err(_) => Err(VmError::InvariantViolation("job closure panicked")),
     }
   }
 
@@ -413,7 +413,12 @@ impl JobCallback {
   ///
   /// Call [`JobCallback::teardown`] to unregister the root when the callback is no longer needed.
   pub fn ensure_rooted(&self, ctx: &mut dyn VmJobContext) -> Result<RootId, VmError> {
-    let mut guard = self.0.rooted.lock().unwrap();
+    let mut guard = match self.0.rooted.lock() {
+      Ok(guard) => guard,
+      // If a panic occurred while holding the lock, treat it as poisoned but still recover the
+      // internal state. This avoids cascading panics from JS/host-triggered failures.
+      Err(poisoned) => poisoned.into_inner(),
+    };
     if let Some(id) = *guard {
       return Ok(id);
     }
@@ -425,14 +430,20 @@ impl JobCallback {
   /// Returns the persistent-root id for this callback, if it has been rooted via
   /// [`JobCallback::ensure_rooted`].
   pub fn root_id(&self) -> Option<RootId> {
-    *self.0.rooted.lock().unwrap()
+    match self.0.rooted.lock() {
+      Ok(guard) => *guard,
+      Err(poisoned) => *poisoned.into_inner(),
+    }
   }
 
   /// Unregisters the persistent root created by [`JobCallback::ensure_rooted`], if any.
   ///
   /// This method is **idempotent**.
   pub fn teardown(&self, ctx: &mut dyn VmJobContext) {
-    let id = self.0.rooted.lock().unwrap().take();
+    let id = match self.0.rooted.lock() {
+      Ok(mut guard) => guard.take(),
+      Err(mut poisoned) => poisoned.get_mut().take(),
+    };
     if let Some(id) = id {
       ctx.remove_root(id);
     }
