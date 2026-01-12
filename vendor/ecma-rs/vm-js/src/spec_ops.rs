@@ -4,7 +4,7 @@
 //! intended to be used by built-ins so their algorithms remain spec-shaped.
 
 use crate::{
-  GcObject, GcString, JsBigInt, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError,
+  GcBigInt, GcObject, GcString, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError,
   VmHost, VmHostHooks,
 };
 use std::mem;
@@ -884,7 +884,7 @@ pub fn this_boolean_value(scope: &mut Scope<'_>, value: Value) -> Result<bool, V
 /// `thisBigIntValue(value)` (ECMA-262) for `BigInt` builtins.
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-thisbigintvalue>
-pub fn this_bigint_value(scope: &mut Scope<'_>, value: Value) -> Result<JsBigInt, VmError> {
+pub fn this_bigint_value(scope: &mut Scope<'_>, value: Value) -> Result<GcBigInt, VmError> {
   match value {
     Value::BigInt(b) => Ok(b),
     Value::Object(obj) => match get_internal_data_property(scope, obj, "vm-js.internal.BigIntData")?

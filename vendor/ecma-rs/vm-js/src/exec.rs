@@ -26482,20 +26482,32 @@ fn gen_apply_unary_operator(
     OperatorName::LogicalNot => Ok(Value::Bool(!to_boolean(scope.heap(), argument)?)),
     OperatorName::UnaryPlus => Ok(Value::Number(evaluator.to_number_operator(scope, argument)?)),
     OperatorName::UnaryNegation => {
-      let num = evaluator.to_numeric(scope, argument)?;
+      let mut neg_scope = scope.reborrow();
+      neg_scope.push_root(argument)?;
+      let num = evaluator.to_numeric(&mut neg_scope, argument)?;
       Ok(match num {
         NumericValue::Number(n) => Value::Number(-n),
-        NumericValue::BigInt(b) => Value::BigInt(b.negate()),
+        NumericValue::BigInt(b) => {
+          // `GcBigInt` is a heap-managed primitive; root it across BigInt allocations.
+          neg_scope.push_root(Value::BigInt(b))?;
+          let bi = neg_scope.heap().get_bigint(b)?;
+          let out = bi.neg()?;
+          let out = neg_scope.alloc_bigint(out)?;
+          Value::BigInt(out)
+        }
       })
     }
     OperatorName::BitwiseNot => {
-      let num = evaluator.to_numeric(scope, argument)?;
+      let mut not_scope = scope.reborrow();
+      not_scope.push_root(argument)?;
+      let num = evaluator.to_numeric(&mut not_scope, argument)?;
       Ok(match num {
         NumericValue::Number(n) => Value::Number((!to_int32(n)) as f64),
         NumericValue::BigInt(b) => {
-          let Some(out) = b.checked_bitwise_not() else {
-            return Err(VmError::Unimplemented("BigInt bitwise not out of range"));
-          };
+          not_scope.push_root(Value::BigInt(b))?;
+          let bi = not_scope.heap().get_bigint(b)?;
+          let out = bi.bitwise_not()?;
+          let out = not_scope.alloc_bigint(out)?;
           Value::BigInt(out)
         }
       })
