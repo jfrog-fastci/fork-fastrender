@@ -24938,6 +24938,57 @@ fn input_checked_set_native(
   Ok(Value::Undefined)
 }
 
+fn html_text_area_element_value_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_text_area_element_handle(scope.heap(), this)?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let value = dom
+    .textarea_value(handle.node_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  Ok(Value::String(scope.alloc_string(&value)?))
+}
+
+fn html_text_area_element_value_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_text_area_element_handle(scope.heap(), this)?;
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+  unsafe { dom_ptr.as_mut() }
+    .set_textarea_value(handle.node_id, &new_value)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  // `.value` does not mutate the DOM tree, so it does not trigger MutationObserver microtasks.
+  Ok(Value::Undefined)
+}
+
 fn textarea_value_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -32225,6 +32276,49 @@ fn init_window_globals(
         .heap_mut()
         .object_set_prototype(ctor, Some(html_element_ctor))?;
     }
+
+    // HTMLTextAreaElement.prototype.value
+    let text_area_value_get_call_id =
+      vm.register_native_call(html_text_area_element_value_get_native)?;
+    let text_area_value_get_name = scope.alloc_string("get value")?;
+    scope.push_root(Value::String(text_area_value_get_name))?;
+    let text_area_value_get_func = scope.alloc_native_function(
+      text_area_value_get_call_id,
+      None,
+      text_area_value_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      text_area_value_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(text_area_value_get_func))?;
+
+    let text_area_value_set_call_id =
+      vm.register_native_call(html_text_area_element_value_set_native)?;
+    let text_area_value_set_name = scope.alloc_string("set value")?;
+    scope.push_root(Value::String(text_area_value_set_name))?;
+    let text_area_value_set_func = scope.alloc_native_function(
+      text_area_value_set_call_id,
+      None,
+      text_area_value_set_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      text_area_value_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(text_area_value_set_func))?;
+
+    let value_key = alloc_key(&mut scope, "value")?;
+    scope.define_property(
+      html_text_area_element_proto,
+      value_key,
+      idl_attribute_desc(
+        Value::Object(text_area_value_get_func),
+        Value::Object(text_area_value_set_func),
+      ),
+    )?;
 
     // HTMLCollection constructor + prototype.
     //
@@ -42560,6 +42654,46 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_text_area_element_value_tracks_dirty_value_flag() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const t = document.createElement('textarea');\n\
+        if (!(t instanceof HTMLTextAreaElement)) return 'instanceof';\n\
+        if (Object.getPrototypeOf(t) !== HTMLTextAreaElement.prototype) return 'prototype';\n\
+        if (Object.prototype.hasOwnProperty.call(t, 'value')) return 'own';\n\
+\n\
+        // When not dirty, `.value` reflects the element's text content.\n\
+        t.textContent = 'hi';\n\
+        if (t.value !== 'hi') return 'default:' + t.value;\n\
+\n\
+        // Writing `.value` sets the dirty value flag.\n\
+        t.value = 'x';\n\
+        if (t.value !== 'x') return 'set:' + t.value;\n\
+        t.textContent = 'y';\n\
+        if (t.value !== 'x') return 'dirty:' + t.value;\n\
+\n\
+        const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');\n\
+        if (!desc || typeof desc.get !== 'function' || typeof desc.set !== 'function') return 'desc';\n\
+        const bogus = document.createElement('div');\n\
+        try { desc.get.call(bogus); return 'illegal_get:no'; }\n\
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return 'illegal_get:' + e.name + ':' + e.message; }\n\
+        try { desc.set.call(bogus, 'z'); return 'illegal_set:no'; }\n\
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return 'illegal_set:' + e.name + ':' + e.message; }\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 

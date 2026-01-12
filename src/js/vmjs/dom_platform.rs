@@ -1132,6 +1132,21 @@ impl DomPlatform {
     self.require_interface_node_handle(heap, value, DomInterface::Element)
   }
 
+  pub fn require_html_text_area_element_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<DomNodeKey, VmError> {
+    let meta = self.require_wrapper_meta(heap, value)?;
+    if !meta
+      .primary_interface
+      .implements(DomInterface::HTMLTextAreaElement)
+    {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+  }
+
   pub fn require_text_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
     self.require_interface_node_handle(heap, value, DomInterface::Text)
   }
@@ -1182,6 +1197,16 @@ impl DomPlatform {
 
   pub fn require_element_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
     self.require_interface_node_id(heap, value, DomInterface::Element)
+  }
+
+  pub fn require_html_text_area_element_id(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<NodeId, VmError> {
+    Ok(self
+      .require_html_text_area_element_handle(heap, value)?
+      .node_id)
   }
 
   pub fn require_text_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
