@@ -5237,28 +5237,6 @@ fn collect_expr<'a>(
         }
       }
     }
-    AstExpr::Unary(unary) => {
-      collect_expr(
-        &unary.stx.argument,
-        descriptors,
-        module_items,
-        names,
-        ambient,
-        in_global,
-        ctx,
-      );
-    }
-    AstExpr::UnaryPostfix(unary) => {
-      collect_expr(
-        &unary.stx.argument,
-        descriptors,
-        module_items,
-        names,
-        ambient,
-        in_global,
-        ctx,
-      );
-    }
     AstExpr::LitArr(arr) => {
       for el in arr.stx.elements.iter() {
         match el {
@@ -5542,17 +5520,6 @@ fn collect_expr<'a>(
           ctx,
         );
       }
-    }
-    AstExpr::Instantiation(inst) => {
-      collect_expr(
-        inst.stx.expression.as_ref(),
-        descriptors,
-        module_items,
-        names,
-        ambient,
-        in_global,
-        ctx,
-      );
     }
     AstExpr::TypeAssertion(assert) => {
       collect_expr(
