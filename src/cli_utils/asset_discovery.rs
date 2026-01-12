@@ -166,6 +166,78 @@ pub fn discover_css_urls(css: &str, base_url: &str) -> Vec<String> {
     }
   }
 
+  fn scan_image_set<'i, 't>(parser: &mut Parser<'i, 't>, base_url: &str, out: &mut Vec<String>) {
+    // `image-set()` / `-webkit-image-set()` supports either `url(...)` or a string literal as the
+    // candidate image.
+    //
+    // Only the *first* component of each comma-separated candidate is treated as a URL; other
+    // string literals (e.g. `type("image/avif")`) must be ignored.
+    let mut at_candidate_start = true;
+
+    while !parser.is_exhausted() {
+      let token = match parser.next_including_whitespace_and_comments() {
+        Ok(t) => t,
+        Err(_) => break,
+      };
+
+      match token {
+        Token::WhiteSpace(_) | Token::Comment(_) => {}
+        Token::Comma => at_candidate_start = true,
+        Token::QuotedString(s) if at_candidate_start => {
+          record(out, base_url, s.as_ref());
+          at_candidate_start = false;
+        }
+        Token::UnquotedUrl(url) => {
+          record(out, base_url, url.as_ref());
+          at_candidate_start = false;
+        }
+        Token::Function(name) if name.eq_ignore_ascii_case("url") => {
+          let parse_result = parser.parse_nested_block(|nested| {
+            let mut arg: Option<String> = None;
+            while !nested.is_exhausted() {
+              match nested.next_including_whitespace_and_comments() {
+                Ok(Token::WhiteSpace(_)) | Ok(Token::Comment(_)) => {}
+                Ok(Token::QuotedString(s)) | Ok(Token::UnquotedUrl(s)) => {
+                  arg = Some(s.as_ref().to_string());
+                  break;
+                }
+                Ok(Token::Ident(s)) => {
+                  arg = Some(s.as_ref().to_string());
+                  break;
+                }
+                Ok(Token::BadUrl(_)) | Err(_) => break,
+                Ok(_) => {}
+              }
+            }
+            Ok::<_, cssparser::ParseError<'i, ()>>(arg)
+          });
+
+          if let Ok(Some(arg)) = parse_result {
+            record(out, base_url, &arg);
+          }
+          at_candidate_start = false;
+        }
+        Token::Function(name)
+          if name.eq_ignore_ascii_case("image-set") || name.eq_ignore_ascii_case("-webkit-image-set") =>
+        {
+          let _ = parser.parse_nested_block(|nested| {
+            scan_image_set(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          at_candidate_start = false;
+        }
+        Token::Function(_) | Token::ParenthesisBlock | Token::SquareBracketBlock | Token::CurlyBracketBlock => {
+          let _ = parser.parse_nested_block(|nested| {
+            scan(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          at_candidate_start = false;
+        }
+        _ => at_candidate_start = false,
+      }
+    }
+  }
+
   fn scan<'i, 't>(parser: &mut Parser<'i, 't>, base_url: &str, out: &mut Vec<String>) {
     // `prefetch_assets` uses this helper to discover non-font subresources referenced from CSS
     // (background images, etc). Font loading is handled separately by parsing `@font-face` rules,
@@ -208,6 +280,14 @@ pub fn discover_css_urls(css: &str, base_url: &str) -> Vec<String> {
           if let Ok(Some(arg)) = parse_result {
             record(out, base_url, &arg);
           }
+        }
+        Token::Function(name)
+          if name.eq_ignore_ascii_case("image-set") || name.eq_ignore_ascii_case("-webkit-image-set") =>
+        {
+          let _ = parser.parse_nested_block(|nested| {
+            scan_image_set(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
         }
         Token::AtKeyword(name) if name.eq_ignore_ascii_case("font-face") => {
           skip_next_font_face_block = true;
@@ -378,5 +458,47 @@ mod tests {
     let mut urls = discover_css_urls(css, base);
     urls.sort();
     assert_eq!(urls, vec!["https://example.com/styles/bg.png"]);
+  }
+
+  #[test]
+  fn discovers_css_urls_in_image_set_string_candidates() {
+    let base = "https://example.com/styles/main.css";
+    let css = r#"div{background-image:image-set("foo.png" 1x, url(bar.png) 2x)}"#;
+
+    let mut urls = discover_css_urls(css, base);
+    urls.sort();
+    assert_eq!(
+      urls,
+      vec![
+        "https://example.com/styles/bar.png",
+        "https://example.com/styles/foo.png",
+      ]
+    );
+  }
+
+  #[test]
+  fn discovers_css_urls_in_webkit_image_set_string_candidates() {
+    let base = "https://example.com/styles/main.css";
+    let css = r#"div{background-image:-webkit-image-set("foo.png" 1x, url(bar.png) 2x)}"#;
+
+    let mut urls = discover_css_urls(css, base);
+    urls.sort();
+    assert_eq!(
+      urls,
+      vec![
+        "https://example.com/styles/bar.png",
+        "https://example.com/styles/foo.png",
+      ]
+    );
+  }
+
+  #[test]
+  fn ignores_type_string_literals_inside_image_set_candidates() {
+    let base = "https://example.com/styles/main.css";
+    let css = r#"div{background-image:image-set("foo.png" type("image/png") 1x)}"#;
+
+    let mut urls = discover_css_urls(css, base);
+    urls.sort();
+    assert_eq!(urls, vec!["https://example.com/styles/foo.png"]);
   }
 }
