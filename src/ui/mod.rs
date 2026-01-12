@@ -24,6 +24,7 @@ pub mod messages;
 pub mod render_worker;
 pub mod scrollbars;
 pub mod shortcuts;
+pub mod find_in_page;
 pub mod url;
 pub mod worker;
 pub mod zoom;
