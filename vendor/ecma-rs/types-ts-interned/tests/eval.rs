@@ -4244,6 +4244,20 @@ fn intersection_with_empty_object_removes_nullish() {
 }
 
 #[test]
+fn intersection_of_empty_object_union_with_empty_object_is_empty_object() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  // `{}` is a supertype of all non-nullish values, so `{}` in a union should
+  // absorb other non-nullish members once intersected with `{}`.
+  let union = store.union(vec![empty_object, primitives.string]);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![union, empty_object]));
+
+  assert_eq!(store.evaluate(intersection), empty_object);
+}
+
+#[test]
 fn intersection_distribution_with_empty_object_filters_nullish_branches() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();

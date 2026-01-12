@@ -1057,7 +1057,16 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
           .into_iter()
           .map(|member| self.intersect_with_empty_object(member, depth + 1))
           .collect();
-        self.store.union(mapped)
+        let result = self.store.union(mapped);
+        // If any branch is `{}`, it absorbs all other (already non-nullish)
+        // branches: `{}` is a supertype of every value except `null`/`undefined`
+        // (and `void`, which we treat as `undefined` above).
+        if let TypeKind::Union(members) = self.store.type_kind(result) {
+          if members.contains(&empty_object) {
+            return empty_object;
+          }
+        }
+        result
       }
       TypeKind::Unknown => empty_object,
       // These types may still contain `null`/`undefined` values, so we must keep
