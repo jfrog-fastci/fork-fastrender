@@ -76,6 +76,8 @@ pub enum PassError {
   IncompatibleSafepointEpochType { name: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void (i64)`)")]
   IncompatibleSafepointSlowSignature { name: String },
+  #[error("LLVM module defines `{name}` as a `gc-leaf-function`, but it must be a may-GC callsite")]
+  SafepointSlowIsLeafFunction { name: String },
   #[error(
     "GC-managed function `{function}` contains a non-intrinsic, non-leaf call (expected statepoint or `gc-leaf-function`): {call}\n  extracted_called_operand={called_operand}"
   )]
@@ -368,6 +370,11 @@ fn ensure_rt_gc_safepoint_slow_decl(module: &Module<'_>) -> Result<LLVMValueRef,
         || LLVMGetIntTypeWidth(param_ty) != 64
       {
         return Err(PassError::IncompatibleSafepointSlowSignature {
+          name: "rt_gc_safepoint_slow".to_string(),
+        });
+      }
+      if is_gc_leaf_function(existing) {
+        return Err(PassError::SafepointSlowIsLeafFunction {
           name: "rt_gc_safepoint_slow".to_string(),
         });
       }

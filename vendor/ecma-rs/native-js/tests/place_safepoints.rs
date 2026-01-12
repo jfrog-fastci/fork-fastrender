@@ -1,3 +1,4 @@
+use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::{IntPredicate, OptimizationLevel};
@@ -95,6 +96,45 @@ fn place_safepoints_rejects_incompatible_rt_gc_safepoint_slow_signature() {
   assert!(
     matches!(err, passes::PassError::IncompatibleSafepointSlowSignature { .. }),
     "expected IncompatibleSafepointSlowSignature, got: {err}"
+  );
+}
+
+#[test]
+fn place_safepoints_rejects_rt_gc_safepoint_slow_marked_gc_leaf_function() {
+  let context = Context::create();
+  let module = context.create_module("place_safepoints_slow_leaf");
+  let builder = context.create_builder();
+
+  let void_ty = context.void_type();
+  let i64_ty = context.i64_type();
+  let slow_ty = void_ty.fn_type(&[i64_ty.into()], false);
+  let slow = module.add_function("rt_gc_safepoint_slow", slow_ty, None);
+  let leaf_attr = context.create_string_attribute("gc-leaf-function", "");
+  slow.add_attribute(AttributeLoc::Function, leaf_attr);
+
+  let test_ty = void_ty.fn_type(&[], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(test_fn, "entry");
+  builder.position_at_end(entry);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(err, passes::PassError::SafepointSlowIsLeafFunction { .. }),
+    "expected SafepointSlowIsLeafFunction, got: {err}"
   );
 }
 
