@@ -68,6 +68,7 @@ pub enum DomInterface {
   HTMLAnchorElement,
   HTMLImageElement,
   HTMLLinkElement,
+  HTMLScriptElement,
   Document,
   DocumentFragment,
 }
@@ -120,6 +121,9 @@ impl DomInterface {
         if tag_name.eq_ignore_ascii_case("link") {
           return Self::HTMLLinkElement;
         }
+        if tag_name.eq_ignore_ascii_case("script") {
+          return Self::HTMLScriptElement;
+        }
 
         Self::HTMLElement
       }
@@ -147,7 +151,8 @@ impl DomInterface {
       | Self::HTMLParagraphElement
       | Self::HTMLAnchorElement
       | Self::HTMLImageElement
-      | Self::HTMLLinkElement => Some(Self::HTMLElement),
+      | Self::HTMLLinkElement
+      | Self::HTMLScriptElement => Some(Self::HTMLElement),
     }
   }
 
@@ -190,6 +195,7 @@ struct DomPrototypes {
   html_anchor_element: GcObject,
   html_image_element: GcObject,
   html_link_element: GcObject,
+  html_script_element: GcObject,
   document: GcObject,
   document_fragment: GcObject,
 }
@@ -221,7 +227,7 @@ impl DomPlatform {
     // Root each object immediately after allocation. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(18);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(19);
 
     // Prototype objects.
     let proto_event_target = scope.alloc_object()?;
@@ -262,6 +268,8 @@ impl DomPlatform {
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_image_element))?);
     let proto_html_link_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_link_element))?);
+    let proto_html_script_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_script_element))?);
     let proto_document = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document))?);
     let proto_document_fragment = scope.alloc_object()?;
@@ -312,6 +320,7 @@ impl DomPlatform {
       proto_html_anchor_element,
       proto_html_image_element,
       proto_html_link_element,
+      proto_html_script_element,
     ] {
       scope
         .heap_mut()
@@ -344,6 +353,7 @@ impl DomPlatform {
         html_anchor_element: proto_html_anchor_element,
         html_image_element: proto_html_image_element,
         html_link_element: proto_html_link_element,
+        html_script_element: proto_html_script_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
       },
@@ -383,6 +393,7 @@ impl DomPlatform {
       DomInterface::HTMLAnchorElement => self.prototypes.html_anchor_element,
       DomInterface::HTMLImageElement => self.prototypes.html_image_element,
       DomInterface::HTMLLinkElement => self.prototypes.html_link_element,
+      DomInterface::HTMLScriptElement => self.prototypes.html_script_element,
       DomInterface::Document => self.prototypes.document,
       DomInterface::DocumentFragment => self.prototypes.document_fragment,
     }
@@ -932,6 +943,7 @@ mod tests {
     let element_proto = platform.prototype_for(DomInterface::Element);
     let html_element_proto = platform.prototype_for(DomInterface::HTMLElement);
     let html_input_proto = platform.prototype_for(DomInterface::HTMLInputElement);
+    let html_script_proto = platform.prototype_for(DomInterface::HTMLScriptElement);
 
     assert_eq!(
       scope.heap().object_prototype(html_element_proto)?,
@@ -939,6 +951,10 @@ mod tests {
     );
     assert_eq!(
       scope.heap().object_prototype(html_input_proto)?,
+      Some(html_element_proto)
+    );
+    assert_eq!(
+      scope.heap().object_prototype(html_script_proto)?,
       Some(html_element_proto)
     );
     Ok(())

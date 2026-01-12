@@ -26981,6 +26981,7 @@ fn init_window_globals(
     let html_anchor_element_proto = platform.prototype_for(DomInterface::HTMLAnchorElement);
     let html_image_element_proto = platform.prototype_for(DomInterface::HTMLImageElement);
     let html_link_element_proto = platform.prototype_for(DomInterface::HTMLLinkElement);
+    let html_script_element_proto = platform.prototype_for(DomInterface::HTMLScriptElement);
     let document_proto = platform.prototype_for(DomInterface::Document);
     let document_fragment_proto = platform.prototype_for(DomInterface::DocumentFragment);
     let text_proto = platform.prototype_for(DomInterface::Text);
@@ -27094,6 +27095,7 @@ fn init_window_globals(
     install_illegal_dom_ctor(&mut scope, "HTMLImageElement", html_image_element_proto)?;
     install_illegal_dom_ctor(&mut scope, "HTMLAnchorElement", html_anchor_element_proto)?;
     install_illegal_dom_ctor(&mut scope, "HTMLLinkElement", html_link_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLScriptElement", html_script_element_proto)?;
 
     let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
     scope.push_root(Value::Object(document_ctor))?;
@@ -32344,6 +32346,7 @@ mod tests {
         const div = document.createElement('div');\n\
         const span = document.createElement('span');\n\
         const p = document.createElement('p');\n\
+        const script = document.createElement('script');\n\
         const input = document.createElement('input');\n\
         const form = document.createElement('form');\n\
         const ok1 = div instanceof HTMLElement;\n\
@@ -32351,16 +32354,18 @@ mod tests {
         const ok3 = div instanceof HTMLDivElement;\n\
         const ok4 = span instanceof HTMLSpanElement;\n\
         const ok5 = p instanceof HTMLParagraphElement;\n\
-        const ok6 = input instanceof HTMLInputElement;\n\
-        const ok7 = form instanceof HTMLFormElement;\n\
-        const ok8 = Object.getPrototypeOf(HTMLElement.prototype) === Element.prototype;\n\
-        const ok9 = Object.getPrototypeOf(HTMLInputElement.prototype) === HTMLElement.prototype;\n\
-        const ok10 = Object.getPrototypeOf(HTMLDivElement.prototype) === HTMLElement.prototype;\n\
+        const ok6 = script instanceof HTMLScriptElement;\n\
+        const ok7 = input instanceof HTMLInputElement;\n\
+        const ok8 = form instanceof HTMLFormElement;\n\
+        const ok9 = Object.getPrototypeOf(HTMLElement.prototype) === Element.prototype;\n\
+        const ok10 = Object.getPrototypeOf(HTMLInputElement.prototype) === HTMLElement.prototype;\n\
+        const ok11 = Object.getPrototypeOf(HTMLDivElement.prototype) === HTMLElement.prototype;\n\
+        const ok12 = Object.getPrototypeOf(HTMLScriptElement.prototype) === HTMLElement.prototype;\n\
         let illegalOk = false;\n\
         try { new HTMLInputElement(); } catch (e) {\n\
           illegalOk = e && e.name === 'TypeError' && String(e.message).includes('Illegal constructor');\n\
         }\n\
-        return ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && illegalOk;\n\
+        return ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && illegalOk;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
