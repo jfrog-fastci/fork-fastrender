@@ -322,6 +322,107 @@ fn math_hyperbolic_and_exp_builtins_coerce_to_number_and_reject_bigint() {
 }
 
 #[test]
+fn math_atan2_and_hypot_follow_ecmascript_and_reject_bigint() {
+  let eval_atan2 = |args: &[optimize_js::il::inst::Const]| match maybe_eval_const_builtin_call("Math.atan2", args) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result for Math.atan2: {other:?}"),
+  };
+  let eval_hypot = |args: &[optimize_js::il::inst::Const]| match maybe_eval_const_builtin_call("Math.hypot", args) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result for Math.hypot: {other:?}"),
+  };
+
+  // Missing arguments become `undefined`, which coerces to `NaN`.
+  assert!(eval_atan2(&[]).is_nan());
+  assert!(eval_atan2(&[ConstNum(JN(1.0))]).is_nan());
+
+  let atan2_pos_zero = eval_atan2(&[ConstNum(JN(0.0)), ConstNum(JN(1.0))]);
+  assert_eq!(atan2_pos_zero, 0.0);
+  assert!(
+    atan2_pos_zero.is_sign_positive(),
+    "Math.atan2(+0, +1) should preserve +0"
+  );
+  let atan2_neg_zero = eval_atan2(&[ConstNum(JN(-0.0)), ConstNum(JN(1.0))]);
+  assert_eq!(atan2_neg_zero, 0.0);
+  assert!(
+    atan2_neg_zero.is_sign_negative(),
+    "Math.atan2(-0, +1) should preserve -0"
+  );
+
+  let atan2_pi = eval_atan2(&[ConstNum(JN(0.0)), ConstNum(JN(-1.0))]);
+  assert!((atan2_pi - std::f64::consts::PI).abs() < 1e-12);
+  let atan2_neg_pi = eval_atan2(&[ConstNum(JN(-0.0)), ConstNum(JN(-1.0))]);
+  assert!((atan2_neg_pi + std::f64::consts::PI).abs() < 1e-12);
+
+  // `Math.hypot()` returns +0.
+  let hypot0 = eval_hypot(&[]);
+  assert_eq!(hypot0, 0.0);
+  assert!(hypot0.is_sign_positive());
+
+  assert_eq!(eval_hypot(&[ConstNum(JN(3.0)), ConstNum(JN(4.0))]), 5.0);
+  assert_eq!(
+    eval_hypot(&[ConstNum(JN(3.0)), ConstNum(JN(4.0)), ConstNum(JN(12.0))]),
+    13.0
+  );
+  assert_eq!(eval_hypot(&[ConstStr("3".into()), ConstStr("4".into())]), 5.0);
+
+  // Infinity wins over NaN.
+  let hypot_inf = eval_hypot(&[ConstNum(JN(f64::NAN)), ConstNum(JN(f64::INFINITY))]);
+  assert!(hypot_inf.is_infinite() && hypot_inf.is_sign_positive());
+  assert!(eval_hypot(&[ConstNum(JN(f64::NAN)), ConstNum(JN(1.0))]).is_nan());
+
+  // BigInt cannot be coerced to Number for Math.* builtins.
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.atan2", &[ConstBigInt(BigInt::from(1))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call(
+      "Math.atan2",
+      &[ConstBigInt(BigInt::from(1)), ConstNum(JN(0.0))]
+    ),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call(
+      "Math.atan2",
+      &[ConstNum(JN(1.0)), ConstBigInt(BigInt::from(0))]
+    ),
+    None
+  );
+
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.hypot", &[ConstBigInt(BigInt::from(1))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call(
+      "Math.hypot",
+      &[ConstNum(JN(1.0)), ConstBigInt(BigInt::from(2))]
+    ),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call(
+      "Math.hypot",
+      &[ConstBigInt(BigInt::from(1)), ConstNum(JN(2.0))]
+    ),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call(
+      "Math.hypot",
+      &[
+        ConstNum(JN(3.0)),
+        ConstNum(JN(4.0)),
+        ConstBigInt(BigInt::from(1))
+      ]
+    ),
+    None
+  );
+}
+
+#[test]
 fn bigint_and_string_loose_equality_follows_string_to_bigint() {
   assert!(js_loose_eq(
     &ConstBigInt(BigInt::from(1)),

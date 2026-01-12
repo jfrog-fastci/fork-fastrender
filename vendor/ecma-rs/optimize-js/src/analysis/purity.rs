@@ -129,14 +129,14 @@ fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummarie
         Purity::Impure
       }
     }
-    "Math.imul" | "Math.pow" => {
+    "Math.atan2" | "Math.imul" | "Math.pow" => {
       if safe_to_number_arg(arg_type(0)) && safe_to_number_arg(arg_type(1)) {
         Purity::Pure
       } else {
         Purity::Impure
       }
     }
-    "Math.max" | "Math.min" => {
+    "Math.hypot" | "Math.max" | "Math.min" => {
       if all_args_safe_to_number() {
         Purity::Pure
       } else {

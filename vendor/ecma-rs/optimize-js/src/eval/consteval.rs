@@ -837,6 +837,8 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
   #[rustfmt::skip]
   let v = match args.len() {
     0 => match func {
+      "Math.atan2" => Num(JN(f64::NAN)),
+      "Math.hypot" => Num(JN(0.0)),
       "Math.max" => Num(JN(f64::NEG_INFINITY)),
       "Math.min" => Num(JN(f64::INFINITY)),
       _ => return None,
@@ -858,6 +860,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       | ("Math.asin", BigInt(_))
       | ("Math.asinh", BigInt(_))
       | ("Math.atan", BigInt(_))
+      | ("Math.atan2", BigInt(_))
       | ("Math.atanh", BigInt(_))
       | ("Math.cbrt", BigInt(_))
       | ("Math.ceil", BigInt(_))
@@ -865,6 +868,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       | ("Math.cosh", BigInt(_))
       | ("Math.exp", BigInt(_))
       | ("Math.expm1", BigInt(_))
+      | ("Math.hypot", BigInt(_))
       | ("Math.max", BigInt(_))
       | ("Math.min", BigInt(_))
       | ("Math.floor", BigInt(_))
@@ -887,6 +891,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.asin", a) => Num(JN(coerce_to_num(a).asin())),
       ("Math.asinh", a) => Num(JN(coerce_to_num(a).asinh())),
       ("Math.atan", a) => Num(JN(coerce_to_num(a).atan())),
+      ("Math.atan2", _) => Num(JN(f64::NAN)),
       ("Math.atanh", a) => Num(JN(coerce_to_num(a).atanh())),
       ("Math.cbrt", a) => Num(JN(coerce_to_num(a).cbrt())),
       ("Math.ceil", a) => Num(JN(coerce_to_num(a).ceil())),
@@ -897,6 +902,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.expm1", a) => Num(JN(coerce_to_num(a).exp_m1())),
       ("Math.floor", a) => Num(JN(coerce_to_num(a).floor())),
       ("Math.fround", a) => Num(JN(js_fround(coerce_to_num(a)))),
+      ("Math.hypot", a) => Num(JN(coerce_to_num(a).abs())),
       ("Math.log", a) => Num(JN(coerce_to_num(a).ln())),
       ("Math.log10", a) => Num(JN(coerce_to_num(a).log10())),
       ("Math.log1p", a) => Num(JN(coerce_to_num(a).ln_1p())),
@@ -916,6 +922,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       _ => return None,
     }
     2 => match (func, &args[0], &args[1]) {
+      ("Math.atan2", BigInt(_), _) | ("Math.atan2", _, BigInt(_)) => return None,
       ("Math.max", BigInt(_), _) | ("Math.max", _, BigInt(_)) => return None,
       ("Math.min", BigInt(_), _) | ("Math.min", _, BigInt(_)) => return None,
       ("Math.max", a, b) => {
@@ -950,6 +957,19 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
           Num(JN(if any_neg { -0.0 } else { 0.0 }))
         } else {
           Num(JN(a))
+        }
+      }
+      ("Math.atan2", y, x) => Num(JN(coerce_to_num(y).atan2(coerce_to_num(x)))),
+      ("Math.hypot", BigInt(_), _) | ("Math.hypot", _, BigInt(_)) => return None,
+      ("Math.hypot", a, b) => {
+        let a = coerce_to_num(a);
+        let b = coerce_to_num(b);
+        if a.is_infinite() || b.is_infinite() {
+          Num(JN(f64::INFINITY))
+        } else if a.is_nan() || b.is_nan() {
+          Num(JN(f64::NAN))
+        } else {
+          Num(JN(a.hypot(b)))
         }
       }
       ("Math.pow", BigInt(_), _) | ("Math.pow", _, BigInt(_)) => return None,
@@ -995,6 +1015,31 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
           }
         }
         Num(JN(out))
+      }
+      "Math.hypot" => {
+        let mut out = 0.0_f64;
+        let mut saw_nan = false;
+        let mut saw_inf = false;
+        for arg in args {
+          if matches!(arg, BigInt(_)) {
+            return None;
+          }
+          let v = coerce_to_num(arg);
+          if v.is_infinite() {
+            saw_inf = true;
+          } else if v.is_nan() {
+            saw_nan = true;
+          } else {
+            out = out.hypot(v);
+          }
+        }
+        if saw_inf {
+          Num(JN(f64::INFINITY))
+        } else if saw_nan {
+          Num(JN(f64::NAN))
+        } else {
+          Num(JN(out))
+        }
       }
       _ => return None,
     },
