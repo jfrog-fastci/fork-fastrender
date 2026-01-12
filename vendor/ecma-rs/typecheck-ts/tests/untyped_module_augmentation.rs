@@ -77,7 +77,7 @@ impl Host for ModuleHost {
 }
 
 #[test]
-fn untypedModuleImport_withAugmentation_emits_ts2665() {
+fn untyped_module_import_with_augmentation_emits_ts2665() {
   let options = CompilerOptions {
     no_default_lib: true,
     skip_lib_check: false,
@@ -117,7 +117,7 @@ x;
 }
 
 #[test]
-fn untypedModuleImport_withAugmentation2_emits_ts2665_in_dts_external_module() {
+fn untyped_module_import_with_augmentation2_emits_ts2665_in_dts_external_module() {
   let options = CompilerOptions {
     no_default_lib: true,
     skip_lib_check: false,
