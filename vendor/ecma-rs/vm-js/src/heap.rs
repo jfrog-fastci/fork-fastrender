@@ -993,7 +993,21 @@ impl Heap {
   }
 
   pub(crate) fn is_generator_object(&self, obj: GcObject) -> bool {
-    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Generator(_)))
+    if matches!(self.get_heap_object(obj.0), Ok(HeapObject::Generator(_))) {
+      return true;
+    }
+
+    let Some(marker_sym) = self.internal_generator_state_symbol() else {
+      return false;
+    };
+    let key = PropertyKey::from_symbol(marker_sym);
+    match self.object_get_own_property(obj, &key) {
+      Ok(Some(d)) => match d.kind {
+        PropertyKind::Data { value, .. } => !matches!(value, Value::Undefined),
+        PropertyKind::Accessor { .. } => false,
+      },
+      Ok(None) | Err(_) => false,
+    }
   }
 
   /// Returns `true` if `obj` currently points to a live ArrayBuffer object allocation.
@@ -3597,6 +3611,17 @@ impl Heap {
       110, 116, 68, 97, 116, 97,
     ];
     match self.symbol_registry_binary_search_code_units(&BIGINT_DATA_KEY) {
+      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
+      _ => None,
+    }
+  }
+
+  pub(crate) fn internal_generator_state_symbol(&self) -> Option<GcSymbol> {
+    const GENERATOR_STATE_KEY: [u16; 29] = [
+      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 71, 101, 110, 101,
+      114, 97, 116, 111, 114, 83, 116, 97, 116, 101,
+    ];
+    match self.symbol_registry_binary_search_code_units(&GENERATOR_STATE_KEY) {
       Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
       _ => None,
     }
