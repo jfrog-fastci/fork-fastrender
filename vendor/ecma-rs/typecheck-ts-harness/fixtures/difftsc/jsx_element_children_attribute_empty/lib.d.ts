@@ -5,3 +5,5 @@ declare namespace JSX {
     div: { children?: string };
   }
 }
+
+declare const React: any;

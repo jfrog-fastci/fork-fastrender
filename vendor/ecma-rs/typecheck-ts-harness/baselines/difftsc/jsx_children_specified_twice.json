@@ -2,10 +2,10 @@
   "schema_version": 2,
   "metadata": {
     "typescript_version": "5.9.3",
+    "bundled_typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
-      "jsx": "react",
-      "moduleResolution": 2,
+      "jsx": 2,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -22,7 +22,7 @@
       "code": 2710,
       "file": "main.tsx",
       "start": 237,
-      "end": 245,
+      "end": 249,
       "category": "error",
       "message": "'children' are specified twice. The attribute named 'children' will be overwritten."
     }

@@ -5,3 +5,5 @@ declare namespace JSX {
     b: {};
   }
 }
+
+declare const React: any;

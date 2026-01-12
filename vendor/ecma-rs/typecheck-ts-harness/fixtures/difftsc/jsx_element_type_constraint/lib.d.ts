@@ -7,3 +7,4 @@ declare namespace JSX {
   }
 }
 
+declare const React: any;

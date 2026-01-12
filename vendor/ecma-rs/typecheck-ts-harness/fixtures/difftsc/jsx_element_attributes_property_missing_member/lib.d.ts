@@ -4,3 +4,5 @@ declare namespace JSX {
     props: {};
   }
 }
+
+declare const React: any;
