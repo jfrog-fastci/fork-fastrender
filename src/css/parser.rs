@@ -3362,9 +3362,9 @@ fn parse_page_block<'i, 't>(
           let decls = parser
             .parse_nested_block(|nested| {
               parse_declaration_list(nested, DeclarationContext::Style).map_err(|_| {
-                nested.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
-                  "declaration".into(),
-                ))
+                nested.new_custom_error::<_, SelectorParseErrorKind<'i>>(
+                  SelectorParseErrorKind::UnexpectedIdent("declaration".into()),
+                )
               })
             })
             .unwrap_or_default();

@@ -361,7 +361,7 @@ impl WindowHostState {
       {
         return Err(Error::Other(err.to_string()));
       }
-      if let Err(err) = install_window_file_reader_bindings::<WindowHostState>(vm, realm, heap) {
+      if let Err(err) = install_window_file_reader_bindings(vm, realm, heap) {
         return Err(Error::Other(err.to_string()));
       }
       let fetch_bindings = match install_window_fetch_bindings_with_guard::<WindowHostState>(

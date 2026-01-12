@@ -98,10 +98,12 @@ fn clone_node_shallow_from_other_document(
       NodeKind::Element {
         tag_name,
         namespace,
+        prefix,
         attributes,
       } => NodeKind::Element {
         tag_name: tag_name.clone(),
         namespace: namespace.clone(),
+        prefix: prefix.clone(),
         attributes: attributes.clone(),
       },
       NodeKind::Text { content } => NodeKind::Text {
@@ -237,4 +239,3 @@ impl Document {
     )
   }
 }
-
