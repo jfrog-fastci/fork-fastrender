@@ -5,6 +5,7 @@ use crate::function::{
 };
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::promise::{PromiseReaction, PromiseReactionType, PromiseState};
+use crate::regexp::{RegExpFlags, RegExpProgram};
 use crate::string::JsString;
 use crate::symbol::JsSymbol;
 use crate::CompiledFunctionRef;
@@ -946,6 +947,7 @@ impl Heap {
           | HeapObject::DataView(_)
           | HeapObject::Function(_)
           | HeapObject::Proxy(_)
+          | HeapObject::RegExp(_)
           | HeapObject::Promise(_)
           | HeapObject::WeakMap(_)
           | HeapObject::WeakSet(_)
@@ -1058,6 +1060,11 @@ impl Heap {
       self.get_heap_object(obj.0),
       Ok(HeapObject::TypedArray(_) | HeapObject::DataView(_))
     )
+  }
+
+  /// Returns `true` if `obj` currently points to a live RegExp object allocation.
+  pub fn is_regexp_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::RegExp(_)))
   }
 
   /// Returns `true` if `obj` currently points to a live Date object allocation.
@@ -1562,6 +1569,7 @@ impl Heap {
       HeapObject::TypedArray(a) => Ok(&a.base),
       HeapObject::DataView(v) => Ok(&v.base),
       HeapObject::Function(f) => Ok(&f.base),
+      HeapObject::RegExp(r) => Ok(&r.base),
       HeapObject::Promise(p) => Ok(&p.object.base),
       HeapObject::WeakMap(wm) => Ok(&wm.base),
       HeapObject::WeakSet(ws) => Ok(&ws.base),
@@ -1577,6 +1585,7 @@ impl Heap {
       HeapObject::TypedArray(a) => Ok(&mut a.base),
       HeapObject::DataView(v) => Ok(&mut v.base),
       HeapObject::Function(f) => Ok(&mut f.base),
+      HeapObject::RegExp(r) => Ok(&mut r.base),
       HeapObject::Promise(p) => Ok(&mut p.object.base),
       HeapObject::WeakMap(wm) => Ok(&mut wm.base),
       HeapObject::WeakSet(ws) => Ok(&mut ws.base),
@@ -1904,6 +1913,29 @@ impl Heap {
       _ => Err(VmError::invalid_handle()),
     }
   }
+
+  fn get_regexp(&self, obj: GcObject) -> Result<&JsRegExp, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::RegExp(r) => Ok(r),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub(crate) fn regexp_original_source(&self, obj: GcObject) -> Result<GcString, VmError> {
+    Ok(self.get_regexp(obj)?.original_source)
+  }
+
+  pub(crate) fn regexp_original_flags(&self, obj: GcObject) -> Result<GcString, VmError> {
+    Ok(self.get_regexp(obj)?.original_flags)
+  }
+
+  pub(crate) fn regexp_flags(&self, obj: GcObject) -> Result<RegExpFlags, VmError> {
+    Ok(self.get_regexp(obj)?.flags)
+  }
+
+  pub(crate) fn regexp_program(&self, obj: GcObject) -> Result<&RegExpProgram, VmError> {
+    Ok(&self.get_regexp(obj)?.program)
+  }
   fn get_env(&self, env: GcEnv) -> Result<&EnvRecord, VmError> {
     match self.get_heap_object(env.0)? {
       HeapObject::Env(e) => Ok(e),
@@ -2122,6 +2154,7 @@ impl Heap {
     #[derive(Clone, Copy)]
     enum TargetKind {
       OrdinaryObject,
+      RegExp { program_bytes: usize },
       ArrayBuffer,
       TypedArray,
       DataView,
@@ -2158,6 +2191,17 @@ impl Heap {
             .iter()
             .position(|prop| self.property_key_eq(&prop.key, key)),
           TargetKind::OrdinaryObject,
+          obj.base.properties.len(),
+        ),
+        HeapObject::RegExp(obj) => (
+          obj
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::RegExp {
+            program_bytes: obj.program.heap_size_bytes(),
+          },
           obj.base.properties.len(),
         ),
         HeapObject::ArrayBuffer(buf) => (
@@ -2256,6 +2300,8 @@ impl Heap {
     let new_property_count = property_count.saturating_sub(1);
     let new_bytes = match target_kind {
       TargetKind::OrdinaryObject => JsObject::heap_size_bytes_for_property_count(new_property_count),
+      TargetKind::RegExp { program_bytes } => ObjectBase::properties_heap_size_bytes_for_count(new_property_count)
+        .saturating_add(program_bytes),
       TargetKind::ArrayBuffer => JsArrayBuffer::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::TypedArray => JsTypedArray::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::DataView => JsDataView::heap_size_bytes_for_property_count(new_property_count),
@@ -2294,6 +2340,10 @@ impl Heap {
       let slot = &self.slots[slot_idx];
       match slot.value.as_ref() {
         Some(HeapObject::Object(obj)) => {
+          buf.extend_from_slice(&obj.base.properties[..idx]);
+          buf.extend_from_slice(&obj.base.properties[idx + 1..]);
+        }
+        Some(HeapObject::RegExp(obj)) => {
           buf.extend_from_slice(&obj.base.properties[..idx]);
           buf.extend_from_slice(&obj.base.properties[idx + 1..]);
         }
@@ -2339,6 +2389,7 @@ impl Heap {
     };
     match obj {
       HeapObject::Object(obj) => obj.base.properties = properties,
+      HeapObject::RegExp(obj) => obj.base.properties = properties,
       HeapObject::ArrayBuffer(obj) => obj.base.properties = properties,
       HeapObject::TypedArray(obj) => obj.base.properties = properties,
       HeapObject::DataView(obj) => obj.base.properties = properties,
@@ -4358,6 +4409,7 @@ impl Heap {
     #[derive(Clone, Copy)]
     enum TargetKind {
       OrdinaryObject,
+      RegExp { program_bytes: usize },
       ArrayBuffer,
       TypedArray,
       DataView,
@@ -4399,6 +4451,22 @@ impl Heap {
             slot.bytes,
             existing_idx,
             obj.array_length(),
+          )
+        }
+        HeapObject::RegExp(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::RegExp {
+              program_bytes: obj.program.heap_size_bytes(),
+            },
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
           )
         }
         HeapObject::ArrayBuffer(obj) => {
@@ -4564,6 +4632,7 @@ impl Heap {
         // Replace in-place (no change to heap size).
         match self.slots[idx].value.as_mut() {
           Some(HeapObject::Object(obj)) => obj.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::RegExp(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::ArrayBuffer(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::TypedArray(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::DataView(obj)) => obj.base.properties[existing_idx].desc = desc,
@@ -4581,6 +4650,8 @@ impl Heap {
           .ok_or(VmError::OutOfMemory)?;
         let new_bytes = match target_kind {
           TargetKind::OrdinaryObject => JsObject::heap_size_bytes_for_property_count(new_property_count),
+          TargetKind::RegExp { program_bytes } => ObjectBase::properties_heap_size_bytes_for_count(new_property_count)
+            .saturating_add(program_bytes),
           TargetKind::ArrayBuffer => JsArrayBuffer::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::TypedArray => JsTypedArray::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::DataView => JsDataView::heap_size_bytes_for_property_count(new_property_count),
@@ -4623,6 +4694,7 @@ impl Heap {
           let slot = &self.slots[idx];
           match slot.value.as_ref() {
             Some(HeapObject::Object(obj)) => buf.extend_from_slice(&obj.base.properties),
+            Some(HeapObject::RegExp(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::ArrayBuffer(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::TypedArray(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::DataView(obj)) => buf.extend_from_slice(&obj.base.properties),
@@ -4640,6 +4712,7 @@ impl Heap {
 
         match self.slots[idx].value.as_mut() {
           Some(HeapObject::Object(obj)) => obj.base.properties = properties,
+          Some(HeapObject::RegExp(obj)) => obj.base.properties = properties,
           Some(HeapObject::ArrayBuffer(obj)) => obj.base.properties = properties,
           Some(HeapObject::TypedArray(obj)) => obj.base.properties = properties,
           Some(HeapObject::DataView(obj)) => obj.base.properties = properties,
@@ -5653,6 +5726,59 @@ impl<'a> Scope<'a> {
     self.heap.proxy_revoke(proxy)
   }
 
+  /// Allocates a new `RegExp` object.
+  ///
+  /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller (typically via
+  /// `OrdinaryCreateFromConstructor`).
+  pub(crate) fn alloc_regexp(
+    &mut self,
+    original_source: GcString,
+    original_flags: GcString,
+    flags: RegExpFlags,
+    program: RegExpProgram,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    scope.push_root(Value::String(original_source))?;
+    scope.push_root(Value::String(original_flags))?;
+
+    let last_index_key_s = scope.alloc_string("lastIndex")?;
+    scope.push_root(Value::String(last_index_key_s))?;
+    let last_index_key = PropertyKey::from_string(last_index_key_s);
+
+    let mut props: Vec<PropertyEntry> = Vec::new();
+    props.try_reserve_exact(1).map_err(|_| VmError::OutOfMemory)?;
+    props.push(PropertyEntry {
+      key: last_index_key,
+      desc: PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Number(0.0),
+          writable: true,
+        },
+      },
+    });
+    let properties = props.into_boxed_slice();
+
+    let new_bytes = JsRegExp::heap_size_bytes_for_program(properties.len(), &program);
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::RegExp(JsRegExp {
+      base: ObjectBase {
+        prototype: None,
+        extensible: true,
+        properties,
+        kind: ObjectKind::Ordinary,
+      },
+      original_source,
+      original_flags,
+      flags,
+      program,
+    });
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
   /// Allocates a new `ArrayBuffer` object with `byte_length` zero-initialized bytes.
   ///
   /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller.
@@ -6602,6 +6728,7 @@ enum HeapObject {
   DataView(JsDataView),
   Function(JsFunction),
   Proxy(JsProxy),
+  RegExp(JsRegExp),
   Env(EnvRecord),
   Promise(JsPromise),
   WeakMap(JsWeakMap),
@@ -6620,6 +6747,7 @@ impl Trace for HeapObject {
       HeapObject::DataView(v) => v.trace(tracer),
       HeapObject::Function(f) => f.trace(tracer),
       HeapObject::Proxy(p) => p.trace(tracer),
+      HeapObject::RegExp(r) => r.trace(tracer),
       HeapObject::Env(e) => e.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
       HeapObject::WeakMap(wm) => wm.trace(tracer),
@@ -7118,6 +7246,30 @@ impl Trace for JsWeakSet {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     // WeakSet keys are weak: do not trace `entries`.
     self.base.trace(tracer);
+  }
+}
+
+#[derive(Debug)]
+struct JsRegExp {
+  base: ObjectBase,
+  original_source: GcString,
+  original_flags: GcString,
+  flags: RegExpFlags,
+  program: RegExpProgram,
+}
+
+impl JsRegExp {
+  fn heap_size_bytes_for_program(property_count: usize, program: &RegExpProgram) -> usize {
+    ObjectBase::properties_heap_size_bytes_for_count(property_count)
+      .saturating_add(program.heap_size_bytes())
+  }
+}
+
+impl Trace for JsRegExp {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.base.trace(tracer);
+    tracer.trace_value(Value::String(self.original_source));
+    tracer.trace_value(Value::String(self.original_flags));
   }
 }
 

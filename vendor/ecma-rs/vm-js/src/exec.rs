@@ -13,7 +13,8 @@ use crate::{
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMemberType};
 use parse_js::ast::expr::lit::{
-  LitArrElem, LitArrExpr, LitBigIntExpr, LitBoolExpr, LitNumExpr, LitObjExpr, LitStrExpr,
+  LitArrElem, LitArrExpr, LitBigIntExpr, LitBoolExpr, LitNumExpr, LitObjExpr, LitRegexExpr,
+  LitStrExpr,
   LitTemplateExpr, LitTemplatePart,
 };
 use parse_js::ast::expr::pat::{ArrPat, IdPat, ObjPat, Pat};
@@ -5262,6 +5263,7 @@ impl<'a> Evaluator<'a> {
       Expr::LitBigInt(node) => self.eval_lit_bigint(&node.stx),
       Expr::LitBool(node) => self.eval_lit_bool(&node.stx),
       Expr::LitNull(_) => Ok(Value::Null),
+      Expr::LitRegex(node) => self.eval_lit_regex(scope, node),
       Expr::LitArr(node) => self.eval_lit_arr(scope, &node.stx),
       Expr::LitObj(node) => self.eval_lit_obj(scope, &node.stx),
       Expr::LitTemplate(node) => self.eval_lit_template(scope, &node.stx),
@@ -5775,6 +5777,63 @@ impl<'a> Evaluator<'a> {
   ) -> Result<Value, VmError> {
     let s = alloc_string_from_lit_str(scope, node)?;
     Ok(Value::String(s))
+  }
+
+  fn eval_lit_regex(
+    &mut self,
+    scope: &mut Scope<'_>,
+    node: &Node<LitRegexExpr>,
+  ) -> Result<Value, VmError> {
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    let literal = node.stx.value.as_str();
+    // `parse-js` stores the literal including leading `/` and any flags.
+    if !literal.starts_with('/') {
+      return Err(VmError::Unimplemented("invalid RegExp literal"));
+    }
+
+    let mut in_class = false;
+    let mut escaped = false;
+    let mut end_pat: Option<usize> = None;
+    for (i, ch) in literal.char_indices().skip(1) {
+      if escaped {
+        escaped = false;
+        continue;
+      }
+      match ch {
+        '\\' => escaped = true,
+        '[' => in_class = true,
+        ']' => in_class = false,
+        '/' if !in_class => {
+          end_pat = Some(i);
+          break;
+        }
+        _ => {}
+      }
+    }
+    let Some(end_pat) = end_pat else {
+      return Err(VmError::Unimplemented("unterminated RegExp literal"));
+    };
+    let pattern = &literal[1..end_pat];
+    let flags = &literal[end_pat + 1..];
+
+    let pattern_s = scope.alloc_string(pattern)?;
+    scope.push_root(Value::String(pattern_s))?;
+    let flags_s = scope.alloc_string(flags)?;
+    scope.push_root(Value::String(flags_s))?;
+
+    let ctor = Value::Object(intr.regexp_constructor());
+    self.vm.construct_with_host_and_hooks(
+      &mut *self.host,
+      scope,
+      &mut *self.hooks,
+      ctor,
+      &[Value::String(pattern_s), Value::String(flags_s)],
+      ctor,
+    )
   }
 
   fn eval_lit_num(&self, expr: &LitNumExpr) -> Result<Value, VmError> {

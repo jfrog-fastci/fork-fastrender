@@ -163,6 +163,7 @@ mod promise_rejection_tracker;
 mod property;
 mod property_descriptor_ops;
 mod realm;
+mod regexp;
 mod source;
 mod spec_ops;
 mod string;

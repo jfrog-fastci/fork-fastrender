@@ -40,6 +40,7 @@ pub struct Intrinsics {
   array_prototype: GcObject,
   string_iterator_prototype: GcObject,
   string_prototype: GcObject,
+  regexp_prototype: GcObject,
   number_prototype: GcObject,
   boolean_prototype: GcObject,
   bigint_prototype: GcObject,
@@ -64,6 +65,7 @@ pub struct Intrinsics {
   array_constructor: GcObject,
   proxy_constructor: GcObject,
   string_constructor: GcObject,
+  regexp_constructor: GcObject,
   number_constructor: GcObject,
   boolean_constructor: GcObject,
   date_constructor: GcObject,
@@ -122,6 +124,7 @@ pub struct Intrinsics {
   promise_all_settled_element_call: NativeFunctionId,
   promise_any_reject_element_call: NativeFunctionId,
 
+  // Revocation function created by `Proxy.revocable`.
   proxy_revoker_call: NativeFunctionId,
 
   class_constructor_call: NativeFunctionId,
@@ -491,6 +494,11 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(string_prototype, Some(object_prototype))?;
 
+    let regexp_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(regexp_prototype, Some(object_prototype))?;
+
     let number_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
@@ -731,6 +739,12 @@ impl Intrinsics {
     let string_prototype_trim_end = vm.register_native_call(builtins::string_prototype_trim_end)?;
     let string_prototype_substring = vm.register_native_call(builtins::string_prototype_substring)?;
     let string_prototype_substr = vm.register_native_call(builtins::string_prototype_substr)?;
+    let string_prototype_match = vm.register_native_call(builtins::string_prototype_match)?;
+    let string_prototype_match_all = vm.register_native_call(builtins::string_prototype_match_all)?;
+    let string_prototype_search = vm.register_native_call(builtins::string_prototype_search)?;
+    let string_prototype_replace = vm.register_native_call(builtins::string_prototype_replace)?;
+    let string_prototype_replace_all =
+      vm.register_native_call(builtins::string_prototype_replace_all)?;
     let string_prototype_split = vm.register_native_call(builtins::string_prototype_split)?;
     let string_prototype_repeat = vm.register_native_call(builtins::string_prototype_repeat)?;
     let string_prototype_code_point_at =
@@ -738,7 +752,6 @@ impl Intrinsics {
     let string_prototype_at = vm.register_native_call(builtins::string_prototype_at)?;
     let string_prototype_pad_start = vm.register_native_call(builtins::string_prototype_pad_start)?;
     let string_prototype_pad_end = vm.register_native_call(builtins::string_prototype_pad_end)?;
-    let string_prototype_replace_all = vm.register_native_call(builtins::string_prototype_replace_all)?;
     let string_prototype_to_lower_case =
       vm.register_native_call(builtins::string_prototype_to_lower_case)?;
     let string_prototype_to_upper_case =
@@ -750,6 +763,24 @@ impl Intrinsics {
     let string_prototype_ends_with = vm.register_native_call(builtins::string_prototype_ends_with)?;
     let string_prototype_iterator = vm.register_native_call(builtins::string_prototype_iterator)?;
     let string_iterator_next = vm.register_native_call(builtins::string_iterator_next)?;
+    let regexp_prototype_exec = vm.register_native_call(builtins::regexp_prototype_exec)?;
+    let regexp_prototype_test = vm.register_native_call(builtins::regexp_prototype_test)?;
+    let regexp_prototype_source_get =
+      vm.register_native_call(builtins::regexp_prototype_source_get)?;
+    let regexp_prototype_flags_get = vm.register_native_call(builtins::regexp_prototype_flags_get)?;
+    let regexp_prototype_symbol_match =
+      vm.register_native_call(builtins::regexp_prototype_symbol_match)?;
+    let regexp_prototype_symbol_search =
+      vm.register_native_call(builtins::regexp_prototype_symbol_search)?;
+    let regexp_prototype_symbol_replace =
+      vm.register_native_call(builtins::regexp_prototype_symbol_replace)?;
+    let regexp_prototype_symbol_split =
+      vm.register_native_call(builtins::regexp_prototype_symbol_split)?;
+    let regexp_prototype_symbol_match_all =
+      vm.register_native_call(builtins::regexp_prototype_symbol_match_all)?;
+    let regexp_string_iterator_next = vm.register_native_call(builtins::regexp_string_iterator_next)?;
+    let iterator_prototype_symbol_iterator =
+      vm.register_native_call(builtins::iterator_prototype_symbol_iterator)?;
     let number_prototype_value_of = vm.register_native_call(builtins::number_prototype_value_of)?;
     let number_prototype_to_string = vm.register_native_call(builtins::number_prototype_to_string)?;
     let number_prototype_to_fixed = vm.register_native_call(builtins::number_prototype_to_fixed)?;
@@ -2070,6 +2101,74 @@ impl Intrinsics {
         )?;
       }
 
+      // String.prototype.match
+      {
+        let match_s = scope.alloc_string("match")?;
+        scope.push_root(Value::String(match_s))?;
+        let key = PropertyKey::from_string(match_s);
+        let func = scope.alloc_native_function(string_prototype_match, None, match_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.matchAll
+      {
+        let match_all_s = scope.alloc_string("matchAll")?;
+        scope.push_root(Value::String(match_all_s))?;
+        let key = PropertyKey::from_string(match_all_s);
+        let func = scope.alloc_native_function(string_prototype_match_all, None, match_all_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.search
+      {
+        let search_s = scope.alloc_string("search")?;
+        scope.push_root(Value::String(search_s))?;
+        let key = PropertyKey::from_string(search_s);
+        let func = scope.alloc_native_function(string_prototype_search, None, search_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.replace
+      {
+        let replace_s = scope.alloc_string("replace")?;
+        scope.push_root(Value::String(replace_s))?;
+        let key = PropertyKey::from_string(replace_s);
+        let func = scope.alloc_native_function(string_prototype_replace, None, replace_s, 2)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
       // String.prototype.split
       {
         let split_s = scope.alloc_string("split")?;
@@ -2337,6 +2436,283 @@ impl Intrinsics {
         string_prototype,
         PropertyKey::Symbol(well_known_symbols.to_string_tag),
         data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
+
+    // `%RegExp%`
+    let regexp_call = vm.register_native_call(builtins::regexp_constructor_call)?;
+    let regexp_construct = vm.register_native_construct(builtins::regexp_constructor_construct)?;
+    let regexp_name = scope.alloc_string("RegExp")?;
+    let regexp_constructor = alloc_rooted_native_function(
+      scope,
+      roots,
+      regexp_call,
+      Some(regexp_construct),
+      regexp_name,
+      2,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(regexp_constructor, Some(function_prototype))?;
+    scope.define_property(
+      regexp_constructor,
+      common.prototype,
+      data_desc(Value::Object(regexp_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      regexp_constructor,
+      common.name,
+      data_desc(Value::String(regexp_name), false, false, true),
+    )?;
+    scope.define_property(
+      regexp_constructor,
+      common.length,
+      data_desc(Value::Number(2.0), false, false, true),
+    )?;
+    scope.define_property(
+      regexp_prototype,
+      common.constructor,
+      data_desc(Value::Object(regexp_constructor), true, false, true),
+    )?;
+
+    // RegExp.prototype.exec
+    {
+      let exec_s = scope.alloc_string("exec")?;
+      scope.push_root(Value::String(exec_s))?;
+      let key = PropertyKey::from_string(exec_s);
+      let func = scope.alloc_native_function(regexp_prototype_exec, None, exec_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        regexp_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // RegExp.prototype.test
+    {
+      let test_s = scope.alloc_string("test")?;
+      scope.push_root(Value::String(test_s))?;
+      let key = PropertyKey::from_string(test_s);
+      let func = scope.alloc_native_function(regexp_prototype_test, None, test_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        regexp_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // RegExp.prototype.source
+    {
+      let key_s = scope.alloc_string("source")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get source")?;
+      let get = scope.alloc_native_function(regexp_prototype_source_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.flags
+    {
+      let key_s = scope.alloc_string("flags")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get flags")?;
+      let get = scope.alloc_native_function(regexp_prototype_flags_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype[@@match]
+    {
+      let name_s = scope.alloc_string("[Symbol.match]")?;
+      scope.push_root(Value::String(name_s))?;
+      let func = scope.alloc_native_function(regexp_prototype_symbol_match, None, name_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        regexp_prototype,
+        PropertyKey::Symbol(well_known_symbols.match_),
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // RegExp.prototype[@@search]
+    {
+      let name_s = scope.alloc_string("[Symbol.search]")?;
+      scope.push_root(Value::String(name_s))?;
+      let func = scope.alloc_native_function(regexp_prototype_symbol_search, None, name_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        regexp_prototype,
+        PropertyKey::Symbol(well_known_symbols.search),
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // RegExp.prototype[@@replace]
+    {
+      let name_s = scope.alloc_string("[Symbol.replace]")?;
+      scope.push_root(Value::String(name_s))?;
+      let func = scope.alloc_native_function(regexp_prototype_symbol_replace, None, name_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        regexp_prototype,
+        PropertyKey::Symbol(well_known_symbols.replace),
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // RegExp.prototype[@@split]
+    {
+      let name_s = scope.alloc_string("[Symbol.split]")?;
+      scope.push_root(Value::String(name_s))?;
+      let func = scope.alloc_native_function(regexp_prototype_symbol_split, None, name_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        regexp_prototype,
+        PropertyKey::Symbol(well_known_symbols.split),
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // RegExp.prototype[@@matchAll]
+    {
+      // Internal slot keys for RegExpStringIterator objects.
+      let iterating_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorIteratingRegExp")?;
+      scope.push_root(Value::String(iterating_key_s))?;
+      let iterating_sym = scope.heap_mut().symbol_for(iterating_key_s)?;
+      scope.push_root(Value::Symbol(iterating_sym))?;
+
+      let iterated_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorIteratedString")?;
+      scope.push_root(Value::String(iterated_key_s))?;
+      let iterated_sym = scope.heap_mut().symbol_for(iterated_key_s)?;
+      scope.push_root(Value::Symbol(iterated_sym))?;
+
+      let global_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorGlobal")?;
+      scope.push_root(Value::String(global_key_s))?;
+      let global_sym = scope.heap_mut().symbol_for(global_key_s)?;
+      scope.push_root(Value::Symbol(global_sym))?;
+
+      let unicode_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorUnicode")?;
+      scope.push_root(Value::String(unicode_key_s))?;
+      let unicode_sym = scope.heap_mut().symbol_for(unicode_key_s)?;
+      scope.push_root(Value::Symbol(unicode_sym))?;
+
+      let done_key_s = scope.alloc_string("vm-js.internal.RegExpStringIteratorDone")?;
+      scope.push_root(Value::String(done_key_s))?;
+      let done_sym = scope.heap_mut().symbol_for(done_key_s)?;
+      scope.push_root(Value::Symbol(done_sym))?;
+
+      // Shared iterator `next` method (captures internal symbols in native slots).
+      let next_name = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_name))?;
+      let next_slots = [
+        Value::Symbol(iterating_sym),
+        Value::Symbol(iterated_sym),
+        Value::Symbol(global_sym),
+        Value::Symbol(unicode_sym),
+        Value::Symbol(done_sym),
+      ];
+      let next_fn = scope.alloc_native_function_with_slots(
+        regexp_string_iterator_next,
+        None,
+        next_name,
+        0,
+        &next_slots,
+      )?;
+      scope.push_root(Value::Object(next_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(next_fn, Some(function_prototype))?;
+
+      // Shared `@@iterator` method that returns `this`.
+      let iter_name = scope.alloc_string("[Symbol.iterator]")?;
+      scope.push_root(Value::String(iter_name))?;
+      let iterator_fn =
+        scope.alloc_native_function(iterator_prototype_symbol_iterator, None, iter_name, 0)?;
+      scope.push_root(Value::Object(iterator_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iterator_fn, Some(function_prototype))?;
+
+      let match_all_name = scope.alloc_string("[Symbol.matchAll]")?;
+      scope.push_root(Value::String(match_all_name))?;
+      let match_all_slots = [
+        Value::Object(next_fn),
+        Value::Symbol(iterating_sym),
+        Value::Symbol(iterated_sym),
+        Value::Symbol(global_sym),
+        Value::Symbol(unicode_sym),
+        Value::Symbol(done_sym),
+        Value::Object(iterator_fn),
+      ];
+      let match_all_fn = scope.alloc_native_function_with_slots(
+        regexp_prototype_symbol_match_all,
+        None,
+        match_all_name,
+        1,
+        &match_all_slots,
+      )?;
+      scope.push_root(Value::Object(match_all_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(match_all_fn, Some(function_prototype))?;
+      scope.define_property(
+        regexp_prototype,
+        PropertyKey::Symbol(well_known_symbols.match_all),
+        data_desc(Value::Object(match_all_fn), true, false, true),
       )?;
     }
 
@@ -4848,6 +5224,7 @@ impl Intrinsics {
       array_prototype,
       string_iterator_prototype,
       string_prototype,
+      regexp_prototype,
       number_prototype,
       boolean_prototype,
       bigint_prototype,
@@ -4872,6 +5249,7 @@ impl Intrinsics {
       array_constructor,
       proxy_constructor,
       string_constructor,
+      regexp_constructor,
       number_constructor,
       boolean_constructor,
       date_constructor,
@@ -4979,6 +5357,10 @@ impl Intrinsics {
     self.string_prototype
   }
 
+  pub fn regexp_prototype(&self) -> GcObject {
+    self.regexp_prototype
+  }
+
   pub fn number_prototype(&self) -> GcObject {
     self.number_prototype
   }
@@ -5073,6 +5455,10 @@ impl Intrinsics {
 
   pub fn string_constructor(&self) -> GcObject {
     self.string_constructor
+  }
+
+  pub fn regexp_constructor(&self) -> GcObject {
+    self.regexp_constructor
   }
 
   pub fn number_constructor(&self) -> GcObject {

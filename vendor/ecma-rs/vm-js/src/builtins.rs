@@ -1,9 +1,10 @@
 use crate::function::{CallHandler, FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
+use crate::regexp::{advance_string_index, compile_regexp, RegExpCompileError, RegExpFlags};
 use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
 use crate::{
   heap::TypedArrayKind,
-  GcObject, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction, PromiseReactionType,
+  GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction, PromiseReactionType,
   PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
   VmHostHooks, SourceText,
 };
@@ -1754,7 +1755,6 @@ fn proxy_constructor_impl(
   let proxy = proxy_scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
-
 pub fn proxy_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -1883,7 +1883,6 @@ pub fn proxy_revoke(
 ) -> Result<Value, VmError> {
   proxy_revoker(vm, scope, host, hooks, callee, this, args)
 }
-
 pub fn array_buffer_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -3828,6 +3827,15 @@ fn create_type_error(
   )
 }
 
+fn create_syntax_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  message: &str,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  crate::error_object::new_syntax_error_object(scope, &intr, message)
+}
+
 fn throw_type_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3858,6 +3866,11 @@ pub fn throw_type_error_intrinsic(
   let intr = require_intrinsics(vm)?;
   let err_obj = crate::error_object::new_type_error_object(scope, &intr, "Restricted function property")?;
   Err(VmError::Throw(err_obj))
+}
+
+fn throw_syntax_error(vm: &mut Vm, scope: &mut Scope<'_>, message: &str) -> Result<Value, VmError> {
+  let err = create_syntax_error(vm, scope, message)?;
+  Err(VmError::Throw(err))
 }
 
 #[allow(dead_code)]
@@ -6693,6 +6706,29 @@ fn alloc_string_from_usize(scope: &mut Scope<'_>, n: usize) -> Result<crate::GcS
   scope.alloc_string(s)
 }
 
+fn iterator_result_object(
+  scope: &mut Scope<'_>,
+  object_prototype: GcObject,
+  value: Value,
+  done: bool,
+) -> Result<GcObject, VmError> {
+  // Root the produced value across allocations for the result object and its property keys.
+  let mut scope = scope.reborrow();
+  scope.push_root(value)?;
+
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(object_prototype))?;
+
+  let value_key = string_key(&mut scope, "value")?;
+  let done_key = string_key(&mut scope, "done")?;
+  scope.define_property(out, value_key, data_desc(value, true, true, true))?;
+  scope.define_property(out, done_key, data_desc(Value::Bool(done), true, true, true))?;
+  Ok(out)
+}
+
 fn get_data_property_value(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -6719,6 +6755,258 @@ fn to_length(value: Value) -> usize {
     return usize::MAX;
   }
   n.floor() as usize
+}
+
+fn to_length_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<usize, VmError> {
+  let n = scope.to_number(vm, host, hooks, value)?;
+  if n.is_nan() || n <= 0.0 {
+    return Ok(0);
+  }
+  if !n.is_finite() {
+    return Ok(if n.is_sign_negative() { 0 } else { usize::MAX });
+  }
+  let n = n.trunc();
+  if n <= 0.0 {
+    return Ok(0);
+  }
+  Ok((n.min(usize::MAX as f64)) as usize)
+}
+
+fn require_regexp_object(scope: &mut Scope<'_>, value: Value) -> Result<GcObject, VmError> {
+  let obj = require_object(value)?;
+  if !scope.heap().is_regexp_object(obj) {
+    return Err(VmError::TypeError("RegExp method called on incompatible receiver"));
+  }
+  Ok(obj)
+}
+
+fn regexp_get_last_index_value(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  rx: GcObject,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(rx))?;
+  let key = string_key(&mut scope, "lastIndex")?;
+  let v = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, rx, key, Value::Object(rx))?;
+  Ok(v)
+}
+
+fn regexp_get_last_index(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  rx: GcObject,
+) -> Result<usize, VmError> {
+  let v = regexp_get_last_index_value(vm, scope, host, hooks, rx)?;
+  to_length_with_host_and_hooks(vm, scope, host, hooks, v)
+}
+
+fn regexp_set_last_index(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  rx: GcObject,
+  index: Value,
+) -> Result<(), VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(rx))?;
+  scope.push_root(index)?;
+  let key = string_key(&mut scope, "lastIndex")?;
+  let ok = scope.ordinary_set_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    rx,
+    key,
+    index,
+    Value::Object(rx),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("RegExp lastIndex is not writable"));
+  }
+  Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct RegExpExecRaw {
+  m: crate::regexp::RegExpMatch,
+  index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RegExpExecArray {
+  array: GcObject,
+  match_len: usize,
+}
+
+fn regexp_exec_raw(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  rx: GcObject,
+  input: GcString,
+) -> Result<Option<RegExpExecRaw>, VmError> {
+  let flags = scope.heap().regexp_flags(rx)?;
+  let global_or_sticky = flags.global || flags.sticky;
+
+  // Root `rx`/`input` while reading/writing lastIndex.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(rx))?;
+  scope.push_root(Value::String(input))?;
+
+  let s_len = {
+    let s = scope.heap().get_string(input)?;
+    s.len_code_units()
+  };
+
+  let mut start = 0usize;
+  if global_or_sticky {
+    start = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
+  }
+
+  if start > s_len {
+    if global_or_sticky {
+      regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
+    }
+    return Ok(None);
+  }
+
+  let program = scope.heap().regexp_program(rx)?;
+
+  let mut k = start;
+  loop {
+    if k > s_len {
+      break;
+    }
+    // Run the VM at this candidate index (anchored).
+    let m = {
+      let s = scope.heap().get_string(input)?;
+      let mut tick = || vm.tick();
+      program.exec_at(s.as_code_units(), k, flags, &mut tick, None)?
+    };
+    if let Some(m) = m {
+      let end = m.end;
+      if global_or_sticky {
+        regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(end as f64))?;
+      }
+      return Ok(Some(RegExpExecRaw { m, index: k }));
+    }
+    if flags.sticky {
+      break;
+    }
+    k = {
+      let js = scope.heap().get_string(input)?;
+      advance_string_index(js.as_code_units(), k, flags.unicode)
+    };
+    if k > s_len {
+      break;
+    }
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+  }
+
+  if global_or_sticky {
+    regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
+  }
+  Ok(None)
+}
+
+fn regexp_exec_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  rx: GcObject,
+  input: GcString,
+) -> Result<Option<RegExpExecArray>, VmError> {
+  let Some(raw) = regexp_exec_raw(vm, scope, host, hooks, rx, input)? else {
+    return Ok(None);
+  };
+  let flags = scope.heap().regexp_flags(rx)?;
+  let program = scope.heap().regexp_program(rx)?;
+  let capture_count = program.capture_count;
+
+  let match_len = raw.m.end.saturating_sub(raw.index);
+  let array_len_u32 = u32::try_from(capture_count).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, scope, array_len_u32)?;
+
+  // Root `array` + `input` across element allocations.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(array))?;
+  scope.push_root(Value::Object(rx))?;
+  scope.push_root(Value::String(input))?;
+
+  // Fill captures.
+  for i in 0..capture_count {
+    if i % 64 == 0 {
+      vm.tick()?;
+    }
+    let start_slot = i.saturating_mul(2);
+    let end_slot = start_slot.saturating_add(1);
+    let (start, end) = (
+      raw.m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
+      raw.m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
+    );
+    let value = if start == usize::MAX || end == usize::MAX || end < start {
+      Value::Undefined
+    } else {
+      let units: Vec<u16> = {
+        let s = scope.heap().get_string(input)?;
+        let slice = &s.as_code_units()[start..end];
+        let mut buf: Vec<u16> = Vec::new();
+        buf
+          .try_reserve_exact(slice.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        buf.extend_from_slice(slice);
+        buf
+      };
+      let s = scope.alloc_string_from_u16_vec(units)?;
+      scope.push_root(Value::String(s))?;
+      Value::String(s)
+    };
+    let key_s = scope.alloc_string(&i.to_string())?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(array, key, data_desc(value, true, true, true))?;
+  }
+
+  // index / input
+  {
+    let index_key = string_key(&mut scope, "index")?;
+    scope.define_property(
+      array,
+      index_key,
+      data_desc(Value::Number(raw.index as f64), true, false, true),
+    )?;
+    let input_key = string_key(&mut scope, "input")?;
+    scope.define_property(
+      array,
+      input_key,
+      data_desc(Value::String(input), true, false, true),
+    )?;
+  }
+
+  // If this is a sticky regexp, ECMAScript sets `lastIndex` based on match end; our exec already did.
+  // Preserve the `u` flag for callers implementing `AdvanceStringIndex`.
+  let _ = flags;
+
+  Ok(Some(RegExpExecArray {
+    array,
+    match_len,
+  }))
 }
 
 fn vec_try_push<T>(buf: &mut Vec<T>, value: T) -> Result<(), VmError> {
@@ -9900,6 +10188,21 @@ pub fn generator_prototype_throw(
   Err(VmError::Unimplemented("GeneratorResumeAbrupt"))
 }
 
+/// `%IteratorPrototype%[@@iterator]` (ECMA-262) (minimal).
+///
+/// Iterator objects are iterable: calling `iter[Symbol.iterator]()` returns `iter` itself.
+pub fn iterator_prototype_symbol_iterator(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(this)
+}
+
 /// `String` constructor called as a function.
 pub fn string_constructor_call(
   vm: &mut Vm,
@@ -9967,6 +10270,1051 @@ pub fn string_constructor_construct(
   )?;
 
   Ok(Value::Object(obj))
+}
+
+fn regexp_constructor_impl(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  pattern: Value,
+  flags: Value,
+  new_target: Value,
+  allow_return_existing: bool,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  // `RegExp(pattern, flags)` returns `pattern` when `pattern` is a RegExp object and `flags` is
+  // `undefined`.
+  if allow_return_existing && matches!(flags, Value::Undefined) {
+    if let Value::Object(obj) = pattern {
+      if scope.heap().is_regexp_object(obj) {
+        // Per spec, only return the input regexp if `pattern.constructor === newTarget`.
+        //
+        // Note: use full `Get` semantics (may invoke user code), so root the inputs.
+        let mut check_scope = scope.reborrow();
+        check_scope.push_root(Value::Object(obj))?;
+        check_scope.push_root(new_target)?;
+        let ctor_key = string_key(&mut check_scope, "constructor")?;
+        let ctor_value = check_scope.ordinary_get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          ctor_key,
+          Value::Object(obj),
+        )?;
+        if ctor_value.same_value(new_target, check_scope.heap()) {
+          return Ok(Value::Object(obj));
+        }
+      }
+    }
+  }
+
+  // Derive the pattern source and flags string.
+  let mut scope = scope.reborrow();
+  scope.push_root(pattern)?;
+  scope.push_root(flags)?;
+
+  let (source_s, flags_s) = if let Value::Object(obj) = pattern {
+    if scope.heap().is_regexp_object(obj) {
+      let source = scope.heap().regexp_original_source(obj)?;
+      let orig_flags = scope.heap().regexp_original_flags(obj)?;
+      let flags_s = if matches!(flags, Value::Undefined) {
+        orig_flags
+      } else {
+        scope.to_string(vm, host, hooks, flags)?
+      };
+      (source, flags_s)
+    } else {
+      let src = if matches!(pattern, Value::Undefined) {
+        scope.alloc_string("")?
+      } else {
+        scope.to_string(vm, host, hooks, pattern)?
+      };
+      let fl = if matches!(flags, Value::Undefined) {
+        scope.alloc_string("")?
+      } else {
+        scope.to_string(vm, host, hooks, flags)?
+      };
+      (src, fl)
+    }
+  } else {
+    let src = if matches!(pattern, Value::Undefined) {
+      scope.alloc_string("")?
+    } else {
+      scope.to_string(vm, host, hooks, pattern)?
+    };
+    let fl = if matches!(flags, Value::Undefined) {
+      scope.alloc_string("")?
+    } else {
+      scope.to_string(vm, host, hooks, flags)?
+    };
+    (src, fl)
+  };
+
+  scope.push_root(Value::String(source_s))?;
+  scope.push_root(Value::String(flags_s))?;
+
+  // Parse flags.
+  let parsed_flags = {
+    let js = scope.heap().get_string(flags_s)?;
+    match RegExpFlags::parse(js.as_code_units()) {
+      Ok(f) => f,
+      Err(e) => return throw_syntax_error(vm, &mut scope, e.message),
+    }
+  };
+
+  // Compile pattern.
+  let program = {
+    let js = scope.heap().get_string(source_s)?;
+    match compile_regexp(js.as_code_units(), parsed_flags) {
+      Ok(p) => p,
+      Err(RegExpCompileError::Syntax(e)) => return throw_syntax_error(vm, &mut scope, e.message),
+      Err(RegExpCompileError::OutOfMemory) => return Err(VmError::OutOfMemory),
+    }
+  };
+
+  // Allocate RegExp instance and set prototype from the constructor.
+  let rx = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    new_target,
+    intr.regexp_prototype(),
+    &[],
+    |scope| scope.alloc_regexp(source_s, flags_s, parsed_flags, program),
+  )?;
+  Ok(Value::Object(rx))
+}
+
+pub fn regexp_constructor_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let pattern = args.get(0).copied().unwrap_or(Value::Undefined);
+  let flags = args.get(1).copied().unwrap_or(Value::Undefined);
+  regexp_constructor_impl(
+    vm,
+    scope,
+    host,
+    hooks,
+    pattern,
+    flags,
+    Value::Object(intr.regexp_constructor()),
+    true,
+  )
+}
+
+pub fn regexp_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let pattern = args.get(0).copied().unwrap_or(Value::Undefined);
+  let flags = args.get(1).copied().unwrap_or(Value::Undefined);
+  regexp_constructor_impl(vm, scope, host, hooks, pattern, flags, new_target, false)
+}
+
+/// `RegExp.prototype.exec(string)` (ECMA-262) (partial).
+pub fn regexp_prototype_exec(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let rx = require_regexp_object(&mut scope, this)?;
+  scope.push_root(Value::Object(rx))?;
+
+  let input_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let input = scope.to_string(vm, host, hooks, input_val)?;
+  scope.push_root(Value::String(input))?;
+
+  let res = regexp_exec_array(vm, &mut scope, host, hooks, rx, input)?;
+  Ok(match res {
+    None => Value::Null,
+    Some(r) => Value::Object(r.array),
+  })
+}
+
+/// `RegExp.prototype.test(string)` (ECMA-262) (partial).
+pub fn regexp_prototype_test(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let rx = require_regexp_object(&mut scope, this)?;
+  scope.push_root(Value::Object(rx))?;
+
+  let input_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let input = scope.to_string(vm, host, hooks, input_val)?;
+  scope.push_root(Value::String(input))?;
+
+  let ok = regexp_exec_raw(vm, &mut scope, host, hooks, rx, input)?.is_some();
+  Ok(Value::Bool(ok))
+}
+
+/// `get RegExp.prototype.source` (ECMA-262) (minimal).
+pub fn regexp_prototype_source_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let rx = require_regexp_object(scope, this)?;
+  let source = scope.heap().regexp_original_source(rx)?;
+  if scope.heap().get_string(source)?.is_empty() {
+    let s = scope.alloc_string("(?:)")?;
+    return Ok(Value::String(s));
+  }
+  Ok(Value::String(source))
+}
+
+/// `get RegExp.prototype.flags` (ECMA-262) (minimal).
+pub fn regexp_prototype_flags_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let rx = require_regexp_object(scope, this)?;
+  let flags = scope.heap().regexp_flags(rx)?;
+  let s = scope.alloc_string(&flags.to_canonical_string())?;
+  Ok(Value::String(s))
+}
+
+/// `%RegExp.prototype%[@@match]` (ECMA-262) (partial).
+pub fn regexp_prototype_symbol_match(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let rx = require_regexp_object(&mut scope, this)?;
+  scope.push_root(Value::Object(rx))?;
+  let s_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = scope.to_string(vm, host, hooks, s_val)?;
+  scope.push_root(Value::String(s))?;
+
+  let flags = scope.heap().regexp_flags(rx)?;
+  if !flags.global {
+    let res = regexp_exec_array(vm, &mut scope, host, hooks, rx, s)?;
+    return Ok(match res {
+      None => Value::Null,
+      Some(r) => Value::Object(r.array),
+    });
+  }
+
+  regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
+
+  // Collect match ranges (avoid holding GC handles in a Rust Vec across allocations/GC).
+  let mut ranges: Vec<(usize, usize)> = Vec::new();
+  loop {
+    let Some(raw) = regexp_exec_raw(vm, &mut scope, host, hooks, rx, s)? else {
+      break;
+    };
+    ranges
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let start = raw.index;
+    let end = raw.m.end;
+    ranges.push((start, end));
+    if end == start {
+      let li = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
+      let new_li = {
+        let js = scope.heap().get_string(s)?;
+        advance_string_index(js.as_code_units(), li, flags.unicode)
+      };
+      regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(new_li as f64))?;
+    }
+  }
+
+  if ranges.is_empty() {
+    return Ok(Value::Null);
+  }
+
+  let s_len = scope.heap().get_string(s)?.len_code_units();
+  let array_len = u32::try_from(ranges.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, &mut scope, array_len)?;
+  for (i, (from, to)) in ranges.into_iter().enumerate() {
+    if i % 64 == 0 {
+      vm.tick()?;
+    }
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(Value::Object(array))?;
+    iter_scope.push_root(Value::String(s))?;
+    let part = if from == 0 && to == s_len {
+      s
+    } else if from == to {
+      iter_scope.alloc_string("")?
+    } else {
+      let units: Vec<u16> = {
+        let js = iter_scope.heap().get_string(s)?;
+        let slice = &js.as_code_units()[from..to];
+        let mut buf: Vec<u16> = Vec::new();
+        buf
+          .try_reserve_exact(slice.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        buf.extend_from_slice(slice);
+        buf
+      };
+      iter_scope.alloc_string_from_u16_vec(units)?
+    };
+    iter_scope.push_root(Value::String(part))?;
+    let key_s = iter_scope.alloc_string(&i.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
+    iter_scope.define_property(
+      array,
+      PropertyKey::from_string(key_s),
+      data_desc(Value::String(part), true, true, true),
+    )?;
+  }
+  Ok(Value::Object(array))
+}
+
+/// `%RegExp.prototype%[@@search]` (ECMA-262) (partial).
+pub fn regexp_prototype_symbol_search(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let rx = require_regexp_object(&mut scope, this)?;
+  scope.push_root(Value::Object(rx))?;
+  let s_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = scope.to_string(vm, host, hooks, s_val)?;
+  scope.push_root(Value::String(s))?;
+
+  let old_last_index = regexp_get_last_index_value(vm, &mut scope, host, hooks, rx)?;
+  scope.push_root(old_last_index)?;
+
+  regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
+  let res = regexp_exec_raw(vm, &mut scope, host, hooks, rx, s)?;
+  regexp_set_last_index(vm, &mut scope, host, hooks, rx, old_last_index)?;
+
+  Ok(match res {
+    None => Value::Number(-1.0),
+    Some(r) => Value::Number(r.index as f64),
+  })
+}
+
+fn get_substitution(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  input: GcString,
+  replace: GcString,
+  match_range: (usize, usize),
+  captures: &[usize],
+  capture_count: usize,
+) -> Result<Vec<u16>, VmError> {
+  let replace_units = scope.heap().get_string(replace)?.as_code_units();
+  let input_units = scope.heap().get_string(input)?.as_code_units();
+  let (match_start, match_end) = match_range;
+
+  let mut out: Vec<u16> = Vec::new();
+  // Best-effort pre-reserve: replacement length + match length.
+  out
+    .try_reserve(replace_units.len().saturating_add(match_end.saturating_sub(match_start)))
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut i = 0usize;
+  while i < replace_units.len() {
+    if i % 128 == 0 {
+      vm.tick()?;
+    }
+    let u = replace_units[i];
+    if u != (b'$' as u16) || i + 1 >= replace_units.len() {
+      vec_try_push(&mut out, u)?;
+      i += 1;
+      continue;
+    }
+    let next = replace_units[i + 1];
+    match next {
+      x if x == (b'$' as u16) => {
+        vec_try_push(&mut out, b'$' as u16)?;
+        i += 2;
+      }
+      x if x == (b'&' as u16) => {
+        vec_try_extend_from_slice(&mut out, &input_units[match_start..match_end], || vm.tick())?;
+        i += 2;
+      }
+      x if x == (b'`' as u16) => {
+        vec_try_extend_from_slice(&mut out, &input_units[..match_start], || vm.tick())?;
+        i += 2;
+      }
+      x if x == (b'\'' as u16) => {
+        vec_try_extend_from_slice(&mut out, &input_units[match_end..], || vm.tick())?;
+        i += 2;
+      }
+      x if (b'0' as u16..=b'9' as u16).contains(&x) => {
+        let d1 = (x - (b'0' as u16)) as usize;
+        let mut n = d1;
+        let mut consumed = 2usize;
+        if i + 2 < replace_units.len() {
+          let x2 = replace_units[i + 2];
+          if (b'0' as u16..=b'9' as u16).contains(&x2) {
+            let d2 = (x2 - (b'0' as u16)) as usize;
+            let two = d1.saturating_mul(10).saturating_add(d2);
+            if two > 0 {
+              n = two;
+              consumed = 3;
+            }
+          }
+        }
+        if n == 0 || n >= capture_count {
+          // Not a valid capture reference: emit `$` literally.
+          vec_try_push(&mut out, b'$' as u16)?;
+          i += 1;
+          continue;
+        }
+        let start_slot = n.saturating_mul(2);
+        let end_slot = start_slot.saturating_add(1);
+        let (cap_start, cap_end) = (
+          captures.get(start_slot).copied().unwrap_or(usize::MAX),
+          captures.get(end_slot).copied().unwrap_or(usize::MAX),
+        );
+        if cap_start != usize::MAX && cap_end != usize::MAX && cap_end >= cap_start {
+          vec_try_extend_from_slice(&mut out, &input_units[cap_start..cap_end], || vm.tick())?;
+        }
+        i += consumed;
+      }
+      _ => {
+        // Treat `$` as a literal.
+        vec_try_push(&mut out, b'$' as u16)?;
+        i += 1;
+      }
+    }
+  }
+
+  Ok(out)
+}
+
+/// `%RegExp.prototype%[@@replace]` (ECMA-262) (partial).
+pub fn regexp_prototype_symbol_replace(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let rx = require_regexp_object(&mut scope, this)?;
+  scope.push_root(Value::Object(rx))?;
+
+  let s_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let input = scope.to_string(vm, host, hooks, s_val)?;
+  scope.push_root(Value::String(input))?;
+
+  let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(replace_value)?;
+
+  let flags = scope.heap().regexp_flags(rx)?;
+  let global = flags.global;
+
+  if global {
+    regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
+  }
+
+  let program = scope.heap().regexp_program(rx)?;
+  let capture_count = program.capture_count;
+
+  let mut out_units: Vec<u16> = Vec::new();
+  let mut last_pos = 0usize;
+
+  loop {
+    let raw = regexp_exec_raw(vm, &mut scope, host, hooks, rx, input)?;
+    let Some(raw) = raw else {
+      break;
+    };
+    let start = raw.index;
+    let end = raw.m.end;
+    if start < last_pos {
+      break;
+    }
+
+    // Append the prefix since the last match.
+    {
+      let js = scope.heap().get_string(input)?;
+      vec_try_extend_from_slice(&mut out_units, &js.as_code_units()[last_pos..start], || vm.tick())?;
+    }
+
+    let replacement_units: Vec<u16> = if scope.heap().is_callable(replace_value)? {
+      // Call replacer function.
+      let mut args_vec: Vec<Value> = Vec::new();
+      args_vec
+        .try_reserve_exact(capture_count.saturating_add(2))
+        .map_err(|_| VmError::OutOfMemory)?;
+
+      // match + captures as strings/undefined.
+      for i in 0..capture_count {
+        let start_slot = i.saturating_mul(2);
+        let end_slot = start_slot.saturating_add(1);
+        let (cap_start, cap_end) = (
+          raw.m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
+          raw.m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
+        );
+        if cap_start == usize::MAX || cap_end == usize::MAX || cap_end < cap_start {
+          args_vec.push(Value::Undefined);
+        } else {
+          let units: Vec<u16> = {
+            let js = scope.heap().get_string(input)?;
+            let slice = &js.as_code_units()[cap_start..cap_end];
+            let mut buf: Vec<u16> = Vec::new();
+            buf
+              .try_reserve_exact(slice.len())
+              .map_err(|_| VmError::OutOfMemory)?;
+            buf.extend_from_slice(slice);
+            buf
+          };
+          let s = scope.alloc_string_from_u16_vec(units)?;
+          scope.push_root(Value::String(s))?;
+          args_vec.push(Value::String(s));
+        }
+      }
+      args_vec.push(Value::Number(start as f64));
+      args_vec.push(Value::String(input));
+
+      let called = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        replace_value,
+        Value::Undefined,
+        &args_vec,
+      )?;
+      scope.push_root(called)?;
+      let rep_s = scope.to_string(vm, host, hooks, called)?;
+      let units = scope.heap().get_string(rep_s)?.as_code_units();
+      let mut buf: Vec<u16> = Vec::new();
+      buf
+        .try_reserve_exact(units.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      buf.extend_from_slice(units);
+      buf
+    } else {
+      let replace_s = scope.to_string(vm, host, hooks, replace_value)?;
+      scope.push_root(Value::String(replace_s))?;
+      get_substitution(
+        vm,
+        &mut scope,
+        input,
+        replace_s,
+        (start, end),
+        &raw.m.captures,
+        capture_count,
+      )?
+    };
+
+    vec_try_extend_from_slice(&mut out_units, &replacement_units, || vm.tick())?;
+
+    last_pos = end;
+
+    if global && end == start {
+      let li = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
+      let new_li = {
+        let js = scope.heap().get_string(input)?;
+        advance_string_index(js.as_code_units(), li, flags.unicode)
+      };
+      regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(new_li as f64))?;
+    }
+
+    if !global {
+      break;
+    }
+  }
+
+  // Append remainder.
+  {
+    let js = scope.heap().get_string(input)?;
+    let len = js.len_code_units();
+    if last_pos < len {
+      vec_try_extend_from_slice(&mut out_units, &js.as_code_units()[last_pos..], || vm.tick())?;
+    }
+  }
+
+  let out_s = scope.alloc_string_from_u16_vec(out_units)?;
+  Ok(Value::String(out_s))
+}
+
+/// `%RegExp.prototype%[@@split]` (ECMA-262) (partial).
+pub fn regexp_prototype_symbol_split(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let rx = require_regexp_object(&mut scope, this)?;
+  scope.push_root(Value::Object(rx))?;
+
+  let s_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let input = scope.to_string(vm, host, hooks, s_val)?;
+  scope.push_root(Value::String(input))?;
+
+  let limit_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let limit: u32 = if matches!(limit_val, Value::Undefined) {
+    u32::MAX
+  } else {
+    let n = scope.to_number(vm, host, hooks, limit_val)?;
+    if !n.is_finite() || n == 0.0 {
+      0
+    } else {
+      let int = n.trunc();
+      let modulo = int.rem_euclid(4294967296.0);
+      modulo as u32
+    }
+  };
+  if limit == 0 {
+    return Ok(Value::Object(create_array_object(vm, &mut scope, 0)?));
+  }
+
+  let flags = scope.heap().regexp_flags(rx)?;
+  let program = scope.heap().regexp_program(rx)?;
+  let capture_count = program.capture_count;
+  let group_count = capture_count.saturating_sub(1);
+
+  #[derive(Clone, Copy)]
+  enum Part {
+    Range(usize, usize),
+    Undefined,
+  }
+
+  let input_units: Vec<u16> = {
+    let js = scope.heap().get_string(input)?;
+    let units = js.as_code_units();
+    let mut buf: Vec<u16> = Vec::new();
+    buf
+      .try_reserve_exact(units.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    buf.extend_from_slice(units);
+    buf
+  };
+  let len = input_units.len();
+  let limit_usize = limit as usize;
+
+  let mut parts: Vec<Part> = Vec::new();
+  let mut p = 0usize;
+  let mut q = 0usize;
+
+  while q <= len && parts.len() < limit_usize {
+    // Find next match at/after q.
+    let mut found: Option<(usize, crate::regexp::RegExpMatch)> = None;
+    let mut k = q;
+    while k <= len {
+      if k % 1024 == 0 {
+        vm.tick()?;
+      }
+      let matched = {
+        let mut tick = || vm.tick();
+        program.exec_at(&input_units, k, flags, &mut tick, None)?
+      };
+      if let Some(m) = matched {
+        found = Some((k, m));
+        break;
+      }
+      let next = advance_string_index(&input_units, k, flags.unicode);
+      if next == k {
+        break;
+      }
+      k = next;
+    }
+
+    let Some((match_start, m)) = found else { break };
+    let match_end = m.end;
+
+    // Avoid infinite loops on empty matches at the same position.
+    if match_start == match_end && match_start == p {
+      q = advance_string_index(&input_units, q, flags.unicode);
+      continue;
+    }
+
+    vec_try_push(&mut parts, Part::Range(p, match_start))?;
+    if parts.len() >= limit_usize {
+      break;
+    }
+
+    for gi in 1..=group_count {
+      if parts.len() >= limit_usize {
+        break;
+      }
+      let start_slot = gi.saturating_mul(2);
+      let end_slot = start_slot.saturating_add(1);
+      let (cs, ce) = (
+        m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
+        m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
+      );
+      if cs == usize::MAX || ce == usize::MAX || ce < cs {
+        vec_try_push(&mut parts, Part::Undefined)?;
+      } else {
+        vec_try_push(&mut parts, Part::Range(cs, ce))?;
+      }
+    }
+
+    p = match_end;
+    q = match_end;
+  }
+
+  if parts.len() < limit_usize {
+    vec_try_push(&mut parts, Part::Range(p, len))?;
+  }
+
+  let out_len_u32 = u32::try_from(parts.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, &mut scope, out_len_u32)?;
+
+  for (i, part) in parts.into_iter().enumerate() {
+    if i % 128 == 0 {
+      vm.tick()?;
+    }
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(Value::Object(array))?;
+    iter_scope.push_root(Value::String(input))?;
+    let value = match part {
+      Part::Undefined => Value::Undefined,
+      Part::Range(from, to) => {
+        if from == 0 && to == len {
+          Value::String(input)
+        } else if from == to {
+          Value::String(iter_scope.alloc_string("")?)
+        } else {
+          let units = &input_units[from..to];
+          let mut buf: Vec<u16> = Vec::new();
+          buf
+            .try_reserve_exact(units.len())
+            .map_err(|_| VmError::OutOfMemory)?;
+          buf.extend_from_slice(units);
+          let s = iter_scope.alloc_string_from_u16_vec(buf)?;
+          iter_scope.push_root(Value::String(s))?;
+          Value::String(s)
+        }
+      }
+    };
+    let key_s = iter_scope.alloc_string(&i.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
+    iter_scope.define_property(array, PropertyKey::from_string(key_s), data_desc(value, true, true, true))?;
+  }
+
+  Ok(Value::Object(array))
+}
+
+/// `%RegExp.prototype%[@@matchAll]` (ECMA-262) (partial).
+pub fn regexp_prototype_symbol_match_all(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  if slots.len() != 7 {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype[@@matchAll] has wrong native slot count",
+    ));
+  }
+  let Value::Object(next_fn) = slots[0] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype[@@matchAll] next slot is not an object",
+    ));
+  };
+  let Value::Symbol(iterating_sym) = slots[1] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype[@@matchAll] iteratingRegExp slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(iterated_sym) = slots[2] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype[@@matchAll] iteratedString slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(global_sym) = slots[3] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype[@@matchAll] global slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(unicode_sym) = slots[4] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype[@@matchAll] unicode slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(done_sym) = slots[5] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype[@@matchAll] done slot is not a symbol",
+    ));
+  };
+  let Value::Object(iterator_fn) = slots[6] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype[@@matchAll] iterator slot is not an object",
+    ));
+  };
+
+  let string_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = scope.to_string(vm, host, hooks, string_val)?;
+  scope.push_root(Value::String(s))?;
+
+  // Create matcher:
+  // - If `this` is a RegExp object, clone it via `RegExp(this, this.flags)`.
+  // - Otherwise, use `RegExp(this, "g")`.
+  let matcher: GcObject;
+  let (global, unicode) = if let Ok(rx) = require_regexp_object(scope, this) {
+    let flags = scope.heap().regexp_flags(rx)?;
+    if !flags.global {
+      return Err(VmError::TypeError(
+        "String.prototype.matchAll called with a non-global RegExp argument",
+      ));
+    }
+    // Clone.
+    let flags_s = scope.alloc_string(&flags.to_canonical_string())?;
+    scope.push_root(Value::String(flags_s))?;
+    let ctor = Value::Object(intr.regexp_constructor());
+    let mut ctor_scope = scope.reborrow();
+    ctor_scope.push_root(Value::Object(rx))?;
+    ctor_scope.push_root(ctor)?;
+    ctor_scope.push_root(Value::String(flags_s))?;
+    let created = vm.construct_with_host_and_hooks(
+      host,
+      &mut ctor_scope,
+      hooks,
+      ctor,
+      &[Value::Object(rx), Value::String(flags_s)],
+      ctor,
+    )?;
+    let Value::Object(obj) = created else {
+      return Err(VmError::InvariantViolation("RegExp constructor returned non-object"));
+    };
+    matcher = obj;
+
+    // Preserve lastIndex.
+    let last_index = regexp_get_last_index(vm, &mut ctor_scope, host, hooks, rx)?;
+    regexp_set_last_index(
+      vm,
+      &mut ctor_scope,
+      host,
+      hooks,
+      matcher,
+      Value::Number(last_index as f64),
+    )?;
+
+    (flags.global, flags.unicode)
+  } else {
+    let ctor = Value::Object(intr.regexp_constructor());
+    let g = scope.alloc_string("g")?;
+    scope.push_root(Value::String(g))?;
+    let mut ctor_scope = scope.reborrow();
+    ctor_scope.push_root(this)?;
+    ctor_scope.push_root(ctor)?;
+    ctor_scope.push_root(Value::String(g))?;
+    let created = vm.construct_with_host_and_hooks(host, &mut ctor_scope, hooks, ctor, &[this, Value::String(g)], ctor)?;
+    let Value::Object(obj) = created else {
+      return Err(VmError::InvariantViolation("RegExp constructor returned non-object"));
+    };
+    matcher = obj;
+    (true, false)
+  };
+
+  // Create iterator object with internal slots stored as symbol-keyed properties.
+  let iter = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(iter, Some(intr.object_prototype()))?;
+
+  scope.define_property(
+    iter,
+    PropertyKey::from_symbol(iterating_sym),
+    data_desc(Value::Object(matcher), true, false, false),
+  )?;
+  scope.define_property(
+    iter,
+    PropertyKey::from_symbol(iterated_sym),
+    data_desc(Value::String(s), true, false, false),
+  )?;
+  scope.define_property(
+    iter,
+    PropertyKey::from_symbol(global_sym),
+    data_desc(Value::Bool(global), true, false, false),
+  )?;
+  scope.define_property(
+    iter,
+    PropertyKey::from_symbol(unicode_sym),
+    data_desc(Value::Bool(unicode), true, false, false),
+  )?;
+  scope.define_property(
+    iter,
+    PropertyKey::from_symbol(done_sym),
+    data_desc(Value::Bool(false), true, false, false),
+  )?;
+
+  let next_key = string_key(scope, "next")?;
+  scope.define_property(iter, next_key, data_desc(Value::Object(next_fn), true, false, true))?;
+
+  // Ensure the iterator object is iterable: `%RegExpStringIteratorPrototype%[@@iterator]` returns
+  // `this`, but `vm-js` does not yet model `%IteratorPrototype%` so we define an own property.
+  scope.define_property(
+    iter,
+    PropertyKey::from_symbol(intr.well_known_symbols().iterator),
+    data_desc(Value::Object(iterator_fn), true, false, true),
+  )?;
+
+  Ok(Value::Object(iter))
+}
+
+/// `%RegExpStringIteratorPrototype%.next` (ECMA-262) (partial).
+pub fn regexp_string_iterator_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(iter) = this else {
+    return Err(VmError::TypeError("RegExp string iterator next called on non-object"));
+  };
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  if slots.len() != 5 {
+    return Err(VmError::InvariantViolation(
+      "RegExp string iterator next has wrong native slot count",
+    ));
+  }
+  let Value::Symbol(iterating_sym) = slots[0] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp string iterator next iteratingRegExp slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(iterated_sym) = slots[1] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp string iterator next iteratedString slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(global_sym) = slots[2] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp string iterator next global slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(unicode_sym) = slots[3] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp string iterator next unicode slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(done_sym) = slots[4] else {
+    return Err(VmError::InvariantViolation(
+      "RegExp string iterator next done slot is not a symbol",
+    ));
+  };
+
+  let done_key = PropertyKey::from_symbol(done_sym);
+  let done_val = scope
+    .heap()
+    .object_get_own_data_property_value(iter, &done_key)?
+    .unwrap_or(Value::Bool(false));
+  let done = matches!(done_val, Value::Bool(true));
+
+  let iterated_key = PropertyKey::from_symbol(iterated_sym);
+  let iterated_val = scope.heap().object_get_own_data_property_value(iter, &iterated_key)?;
+  let Some(Value::String(iterated)) = iterated_val else {
+    // No iterated string => done.
+    return Ok(Value::Object(iterator_result_object(scope, intr.object_prototype(), Value::Undefined, true)?));
+  };
+
+  if done {
+    return Ok(Value::Object(iterator_result_object(scope, intr.object_prototype(), Value::Undefined, true)?));
+  }
+
+  let iterating_key = PropertyKey::from_symbol(iterating_sym);
+  let Some(Value::Object(matcher)) = scope
+    .heap()
+    .object_get_own_data_property_value(iter, &iterating_key)?
+  else {
+    return Err(VmError::InvariantViolation(
+      "RegExp string iterator missing iteratingRegExp",
+    ));
+  };
+
+  let global_key = PropertyKey::from_symbol(global_sym);
+  let global = scope
+    .heap()
+    .object_get_own_data_property_value(iter, &global_key)?
+    .unwrap_or(Value::Bool(false))
+    .same_value(Value::Bool(true), scope.heap());
+
+  let unicode_key = PropertyKey::from_symbol(unicode_sym);
+  let unicode = scope
+    .heap()
+    .object_get_own_data_property_value(iter, &unicode_key)?
+    .unwrap_or(Value::Bool(false))
+    .same_value(Value::Bool(true), scope.heap());
+
+  let res = regexp_exec_array(vm, scope, host, hooks, matcher, iterated)?;
+  let Some(res) = res else {
+    // Mark done and clear the iterated string to allow GC.
+    scope.define_property(iter, done_key, data_desc(Value::Bool(true), true, false, false))?;
+    scope.define_property(iter, iterated_key, data_desc(Value::Undefined, true, false, false))?;
+    return Ok(Value::Object(iterator_result_object(scope, intr.object_prototype(), Value::Undefined, true)?));
+  };
+
+  if !global {
+    scope.define_property(iter, done_key, data_desc(Value::Bool(true), true, false, false))?;
+    scope.define_property(iter, iterated_key, data_desc(Value::Undefined, true, false, false))?;
+  } else if res.match_len == 0 {
+    let li = regexp_get_last_index(vm, scope, host, hooks, matcher)?;
+    let new_li = {
+      let js = scope.heap().get_string(iterated)?;
+      advance_string_index(js.as_code_units(), li, unicode)
+    };
+    regexp_set_last_index(vm, scope, host, hooks, matcher, Value::Number(new_li as f64))?;
+  }
+
+  Ok(Value::Object(iterator_result_object(
+    scope,
+    intr.object_prototype(),
+    Value::Object(res.array),
+    false,
+  )?))
 }
 
 /// `String.fromCharCode(...codeUnits)` (ECMA-262) (minimal).
@@ -11069,6 +12417,471 @@ pub fn string_prototype_substr(
   Ok(Value::String(out))
 }
 
+/// `String.prototype.match(regexp)` (ECMA-262) (partial).
+pub fn string_prototype_match(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(regexp, Value::Undefined | Value::Null) {
+    let method = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      regexp,
+      PropertyKey::from_symbol(intr.well_known_symbols().match_),
+    )?;
+    if let Some(method) = method {
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[Value::String(s)]);
+    }
+  }
+
+  // Fallback: `RegExpCreate(regexp, undefined)` then call `@@match`.
+  let ctor = Value::Object(intr.regexp_constructor());
+  let created = vm.construct_with_host_and_hooks(host, &mut scope, hooks, ctor, &[regexp], ctor)?;
+  let Value::Object(rx) = created else {
+    return Err(VmError::InvariantViolation("RegExp constructor returned non-object"));
+  };
+  scope.push_root(Value::Object(rx))?;
+
+  let method = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(rx),
+    PropertyKey::from_symbol(intr.well_known_symbols().match_),
+  )?
+  .ok_or(VmError::InvariantViolation("RegExp @@match missing"))?;
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, method, Value::Object(rx), &[Value::String(s)])
+}
+
+/// `String.prototype.matchAll(regexp)` (ECMA-262) (partial).
+pub fn string_prototype_match_all(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(regexp, Value::Undefined | Value::Null) {
+    let method = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      regexp,
+      PropertyKey::from_symbol(intr.well_known_symbols().match_all),
+    )?;
+    if let Some(method) = method {
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[Value::String(s)]);
+    }
+  }
+
+  // Fallback: `RegExpCreate(regexp, "g")` then call `@@matchAll`.
+  let ctor = Value::Object(intr.regexp_constructor());
+  let g = scope.alloc_string("g")?;
+  scope.push_root(Value::String(g))?;
+  let created = vm.construct_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    ctor,
+    &[regexp, Value::String(g)],
+    ctor,
+  )?;
+  let Value::Object(rx) = created else {
+    return Err(VmError::InvariantViolation("RegExp constructor returned non-object"));
+  };
+  scope.push_root(Value::Object(rx))?;
+
+  let method = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(rx),
+    PropertyKey::from_symbol(intr.well_known_symbols().match_all),
+  )?
+  .ok_or(VmError::InvariantViolation("RegExp @@matchAll missing"))?;
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, method, Value::Object(rx), &[Value::String(s)])
+}
+
+/// `String.prototype.search(regexp)` (ECMA-262) (partial).
+pub fn string_prototype_search(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(regexp, Value::Undefined | Value::Null) {
+    let method = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      regexp,
+      PropertyKey::from_symbol(intr.well_known_symbols().search),
+    )?;
+    if let Some(method) = method {
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[Value::String(s)]);
+    }
+  }
+
+  // Fallback: `RegExpCreate(regexp, undefined)` then call `@@search`.
+  let ctor = Value::Object(intr.regexp_constructor());
+  let created = vm.construct_with_host_and_hooks(host, &mut scope, hooks, ctor, &[regexp], ctor)?;
+  let Value::Object(rx) = created else {
+    return Err(VmError::InvariantViolation("RegExp constructor returned non-object"));
+  };
+  scope.push_root(Value::Object(rx))?;
+
+  let method = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(rx),
+    PropertyKey::from_symbol(intr.well_known_symbols().search),
+  )?
+  .ok_or(VmError::InvariantViolation("RegExp @@search missing"))?;
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, method, Value::Object(rx), &[Value::String(s)])
+}
+
+/// `String.prototype.replace(searchValue, replaceValue)` (ECMA-262) (partial).
+pub fn string_prototype_replace(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  if !matches!(search_value, Value::Undefined | Value::Null) {
+    let method = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      search_value,
+      PropertyKey::from_symbol(intr.well_known_symbols().replace),
+    )?;
+    if let Some(method) = method {
+      return vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        method,
+        search_value,
+        &[Value::String(s), replace_value],
+      );
+    }
+  }
+
+  // String searchValue fallback.
+  let search_s = scope.to_string(vm, host, hooks, search_value)?;
+  scope.push_root(Value::String(search_s))?;
+
+  let (pos, search_len) = {
+    let hay = scope.heap().get_string(s)?.as_code_units();
+    let needle = scope.heap().get_string(search_s)?.as_code_units();
+    if needle.is_empty() {
+      (0usize, 0usize)
+    } else if needle.len() > hay.len() {
+      return Ok(Value::String(s));
+    } else {
+      let last = hay.len() - needle.len();
+      let mut found: Option<usize> = None;
+      for i in 0..=last {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        if &hay[i..i + needle.len()] == needle {
+          found = Some(i);
+          break;
+        }
+      }
+      let Some(pos) = found else {
+        return Ok(Value::String(s));
+      };
+      (pos, needle.len())
+    }
+  };
+
+  let replacement_units: Vec<u16> = if scope.heap().is_callable(replace_value)? {
+    // Call replacer function with (matched, position, string).
+    let matched = if search_len == 0 { scope.alloc_string("")? } else { search_s };
+    scope.push_root(Value::String(matched))?;
+    let called = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      replace_value,
+      Value::Undefined,
+      &[Value::String(matched), Value::Number(pos as f64), Value::String(s)],
+    )?;
+    scope.push_root(called)?;
+    let rep_s = scope.to_string(vm, host, hooks, called)?;
+    let units = scope.heap().get_string(rep_s)?.as_code_units();
+    let mut buf: Vec<u16> = Vec::new();
+    buf
+      .try_reserve_exact(units.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    buf.extend_from_slice(units);
+    buf
+  } else {
+    let replace_s = scope.to_string(vm, host, hooks, replace_value)?;
+    scope.push_root(Value::String(replace_s))?;
+    let captures = [pos, pos.saturating_add(search_len)];
+    get_substitution(
+      vm,
+      &mut scope,
+      s,
+      replace_s,
+      (pos, pos.saturating_add(search_len)),
+      &captures,
+      1,
+    )?
+  };
+
+  let out_units: Vec<u16> = {
+    let hay = scope.heap().get_string(s)?.as_code_units();
+    let mut out: Vec<u16> = Vec::new();
+    out
+      .try_reserve(hay.len().saturating_add(replacement_units.len()).saturating_add(8))
+      .map_err(|_| VmError::OutOfMemory)?;
+    out.extend_from_slice(&hay[..pos]);
+    out.extend_from_slice(&replacement_units);
+    out.extend_from_slice(&hay[pos + search_len..]);
+    out
+  };
+  let out_s = scope.alloc_string_from_u16_vec(out_units)?;
+  Ok(Value::String(out_s))
+}
+
+/// `String.prototype.replaceAll(searchValue, replaceValue)` (ECMA-262) (partial).
+pub fn string_prototype_replace_all(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  if let Value::Object(obj) = search_value {
+    if scope.heap().is_regexp_object(obj) {
+      let flags = scope.heap().regexp_flags(obj)?;
+      if !flags.global {
+        return Err(VmError::TypeError(
+          "String.prototype.replaceAll called with a non-global RegExp argument",
+        ));
+      }
+    }
+  }
+
+  if !matches!(search_value, Value::Undefined | Value::Null) {
+    let method = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      search_value,
+      PropertyKey::from_symbol(intr.well_known_symbols().replace),
+    )?;
+    if let Some(method) = method {
+      return vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        method,
+        search_value,
+        &[Value::String(s), replace_value],
+      );
+    }
+  }
+
+  let search_s = scope.to_string(vm, host, hooks, search_value)?;
+  scope.push_root(Value::String(search_s))?;
+
+  let replace_is_callable = scope.heap().is_callable(replace_value)?;
+  let replace_s = if replace_is_callable {
+    None
+  } else {
+    let s = scope.to_string(vm, host, hooks, replace_value)?;
+    scope.push_root(Value::String(s))?;
+    Some(s)
+  };
+
+  // Collect match positions first, then build the output.
+  let positions: Vec<usize> = {
+    let hay = scope.heap().get_string(s)?.as_code_units();
+    let needle = scope.heap().get_string(search_s)?.as_code_units();
+    if needle.is_empty() {
+      let mut positions: Vec<usize> = Vec::new();
+      positions
+        .try_reserve_exact(hay.len().saturating_add(1))
+        .map_err(|_| VmError::OutOfMemory)?;
+      for i in 0..=hay.len() {
+        positions.push(i);
+      }
+      positions
+    } else if needle.len() > hay.len() {
+      Vec::new()
+    } else {
+      let mut positions: Vec<usize> = Vec::new();
+      let mut start = 0usize;
+      let last = hay.len() - needle.len();
+      while start <= last {
+        if start % 1024 == 0 {
+          vm.tick()?;
+        }
+        let mut found: Option<usize> = None;
+        for i in start..=last {
+          if i % 1024 == 0 {
+            vm.tick()?;
+          }
+          if &hay[i..i + needle.len()] == needle {
+            found = Some(i);
+            break;
+          }
+        }
+        let Some(pos) = found else {
+          break;
+        };
+        if positions.len() == positions.capacity() {
+          positions
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+        }
+        positions.push(pos);
+        start = pos + needle.len();
+      }
+      positions
+    }
+  };
+
+  if positions.is_empty() {
+    return Ok(Value::String(s));
+  }
+
+  // Build output.
+  let mut out: Vec<u16> = Vec::new();
+  let mut last_end = 0usize;
+
+  let hay_units: Vec<u16> = {
+    let units = scope.heap().get_string(s)?.as_code_units();
+    let mut buf: Vec<u16> = Vec::new();
+    buf
+      .try_reserve_exact(units.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    buf.extend_from_slice(units);
+    buf
+  };
+  let needle_len = scope.heap().get_string(search_s)?.len_code_units();
+
+  for (mi, &pos) in positions.iter().enumerate() {
+    if mi % 256 == 0 {
+      vm.tick()?;
+    }
+    // Prefix.
+    vec_try_extend_from_slice(&mut out, &hay_units[last_end..pos], || vm.tick())?;
+
+    let match_end = pos.saturating_add(needle_len);
+
+    // Replacement.
+    if replace_is_callable {
+      let matched = if needle_len == 0 { scope.alloc_string("")? } else { search_s };
+      scope.push_root(Value::String(matched))?;
+      let called = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        replace_value,
+        Value::Undefined,
+        &[Value::String(matched), Value::Number(pos as f64), Value::String(s)],
+      )?;
+      scope.push_root(called)?;
+      let rep_s = scope.to_string(vm, host, hooks, called)?;
+      let rep_units: Vec<u16> = {
+        let units = scope.heap().get_string(rep_s)?.as_code_units();
+        let mut buf: Vec<u16> = Vec::new();
+        buf
+          .try_reserve_exact(units.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        buf.extend_from_slice(units);
+        buf
+      };
+      vec_try_extend_from_slice(&mut out, &rep_units, || vm.tick())?;
+    } else {
+      let replace_s = replace_s.expect("replace string should be computed");
+      let captures = [pos, match_end];
+      let rep_units = get_substitution(vm, &mut scope, s, replace_s, (pos, match_end), &captures, 1)?;
+      vec_try_extend_from_slice(&mut out, &rep_units, || vm.tick())?;
+    }
+
+    last_end = match_end;
+
+    // Empty needle: advance by one code unit to avoid infinite loops (replacement happens between
+    // code units).
+    if needle_len == 0 && last_end < hay_units.len() {
+      vec_try_push(&mut out, hay_units[last_end])?;
+      last_end += 1;
+    }
+  }
+
+  // Remainder.
+  vec_try_extend_from_slice(&mut out, &hay_units[last_end..], || vm.tick())?;
+
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
+}
+
 /// `String.prototype.split(separator, limit)` (ECMA-262) (minimal, string separator only).
 pub fn string_prototype_split(
   vm: &mut Vm,
@@ -11113,6 +12926,28 @@ pub fn string_prototype_split(
     let key = string_key(&mut idx_scope, "0")?;
     idx_scope.define_property(array, key, data_desc(Value::String(s), true, true, true))?;
     return Ok(Value::Object(array));
+  }
+
+  // `separator` has `@@split` => delegate.
+  if !matches!(separator, Value::Null | Value::Undefined) {
+    let intr = require_intrinsics(vm)?;
+    if let Some(method) = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      separator,
+      PropertyKey::from_symbol(intr.well_known_symbols().split),
+    )? {
+      return vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        method,
+        separator,
+        &[Value::String(s), Value::Number(limit as f64)],
+      );
+    }
   }
 
   let sep = scope.to_string(vm, host, hooks, separator)?;
@@ -11330,152 +13165,6 @@ pub fn string_prototype_repeat(
     }
     vec_try_extend_from_slice(&mut out, &units, || vm.tick())?;
   }
-
-  let out = scope.alloc_string_from_u16_vec(out)?;
-  Ok(Value::String(out))
-}
-
-/// `String.prototype.replaceAll(searchValue, replaceValue)` (ECMA-262) (minimal, string search only).
-pub fn string_prototype_replace_all(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  // Spec reference: ECMA-262 `String.prototype.replaceAll`.
-  //
-  // This is a minimal implementation that only supports string `searchValue` and string
-  // `replaceValue` (i.e. it does not support the `@@replace` protocol or replacement functions).
-  // This matches the existing style of vm-js string builtins (`split` is also string-only).
-  let mut scope = scope.reborrow();
-
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
-
-  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
-
-  let search_s = scope.to_string(vm, host, hooks, search_value)?;
-  scope.push_root(Value::String(search_s))?;
-  let replace_s = scope.to_string(vm, host, hooks, replace_value)?;
-  scope.push_root(Value::String(replace_s))?;
-
-  let haystack: Vec<u16> = {
-    let js = scope.heap().get_string(s)?;
-    js.as_code_units().to_vec()
-  };
-  let needle: Vec<u16> = {
-    let js = scope.heap().get_string(search_s)?;
-    js.as_code_units().to_vec()
-  };
-  let replacement: Vec<u16> = {
-    let js = scope.heap().get_string(replace_s)?;
-    js.as_code_units().to_vec()
-  };
-
-  // Special-case: empty search string inserts replacement between each UTF-16 code unit and at both ends.
-  if needle.is_empty() {
-    if replacement.is_empty() {
-      // Inserting an empty string changes nothing.
-      return Ok(Value::String(s));
-    }
-
-    let out_len = haystack
-      .len()
-      .checked_add(
-        haystack
-          .len()
-          .saturating_add(1)
-          .checked_mul(replacement.len())
-          .ok_or(VmError::OutOfMemory)?,
-      )
-      .ok_or(VmError::OutOfMemory)?;
-
-    let mut out: Vec<u16> = Vec::new();
-    out
-      .try_reserve_exact(out_len)
-      .map_err(|_| VmError::OutOfMemory)?;
-
-    out.extend_from_slice(&replacement);
-    for (i, &unit) in haystack.iter().enumerate() {
-      if i % 1024 == 0 {
-        vm.tick()?;
-      }
-      out.push(unit);
-      out.extend_from_slice(&replacement);
-    }
-
-    let out = scope.alloc_string_from_u16_vec(out)?;
-    return Ok(Value::String(out));
-  }
-
-  if needle.len() > haystack.len() {
-    return Ok(Value::String(s));
-  }
-
-  // First pass: count matches so we can allocate the output once.
-  let mut match_count: usize = 0;
-  let mut i: usize = 0;
-  let last_start = haystack.len() - needle.len();
-  while i <= last_start {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    if &haystack[i..i + needle.len()] == needle.as_slice() {
-      match_count = match_count.saturating_add(1);
-      i = i.saturating_add(needle.len());
-    } else {
-      i = i.saturating_add(1);
-    }
-  }
-
-  if match_count == 0 {
-    return Ok(Value::String(s));
-  }
-
-  let removed = match_count
-    .checked_mul(needle.len())
-    .ok_or(VmError::OutOfMemory)?;
-  let added = match_count
-    .checked_mul(replacement.len())
-    .ok_or(VmError::OutOfMemory)?;
-  let out_len = haystack
-    .len()
-    .checked_sub(removed)
-    .and_then(|n| n.checked_add(added))
-    .ok_or(VmError::OutOfMemory)?;
-
-  let mut out: Vec<u16> = Vec::new();
-  out
-    .try_reserve_exact(out_len)
-    .map_err(|_| VmError::OutOfMemory)?;
-
-  // Second pass: emit the result.
-  let mut start: usize = 0;
-  let mut i: usize = 0;
-  while i <= last_start {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    if &haystack[i..i + needle.len()] == needle.as_slice() {
-      out.extend_from_slice(&haystack[start..i]);
-      out.extend_from_slice(&replacement);
-      i = i.saturating_add(needle.len());
-      start = i;
-    } else {
-      i = i.saturating_add(1);
-    }
-  }
-  out.extend_from_slice(&haystack[start..]);
-
-  debug_assert_eq!(
-    out.len(),
-    out_len,
-    "string_prototype_replace_all output length mismatch"
-  );
 
   let out = scope.alloc_string_from_u16_vec(out)?;
   Ok(Value::String(out))

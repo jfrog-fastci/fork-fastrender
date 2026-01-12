@@ -274,6 +274,13 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.string_constructor())),
       )?;
 
+      let regexp_key = PropertyKey::from_string(scope.alloc_string("RegExp")?);
+      scope.define_property(
+        global_object,
+        regexp_key,
+        global_data_desc(Value::Object(intrinsics.regexp_constructor())),
+      )?;
+
       let number_key = PropertyKey::from_string(scope.alloc_string("Number")?);
       scope.define_property(
         global_object,
