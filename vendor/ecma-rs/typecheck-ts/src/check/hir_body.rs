@@ -2535,6 +2535,17 @@ impl<'a> Checker<'a> {
         let name = self.store.intern_name(str_lit.stx.value.clone());
         self.store.intern_type(TypeKind::StringLiteral(name))
       }
+      AstExpr::LitTemplate(tpl) => {
+        for part in tpl.stx.parts.iter() {
+          match part {
+            parse_js::ast::expr::lit::LitTemplatePart::Substitution(expr) => {
+              self.check_expr(expr);
+            }
+            parse_js::ast::expr::lit::LitTemplatePart::String(_) => {}
+          }
+        }
+        self.store.primitive_ids().string
+      }
       AstExpr::LitBool(b) => self
         .store
         .intern_type(TypeKind::BooleanLiteral(b.stx.value)),
@@ -2545,6 +2556,12 @@ impl<'a> Checker<'a> {
         self
           .store
           .intern_type(TypeKind::BigIntLiteral(parsed.into()))
+      }
+      AstExpr::LitRegex(_) => {
+        // Prefer `RegExp` when available in the type environment; otherwise fall back
+        // to `unknown` (regex literals evaluate to objects, not strings).
+        let prim = self.store.primitive_ids();
+        self.resolve_type_ref(&["RegExp"]).unwrap_or(prim.unknown)
       }
       AstExpr::This(_) => self.store.primitive_ids().unknown,
       AstExpr::Super(_) => self.store.primitive_ids().unknown,
@@ -2568,6 +2585,18 @@ impl<'a> Checker<'a> {
         self.store.union(vec![cons, alt])
       }
       AstExpr::Call(call) => self.check_call_expr(call, None),
+      AstExpr::TaggedTemplate(tagged) => {
+        self.check_expr(&tagged.stx.function);
+        for part in tagged.stx.parts.iter() {
+          match part {
+            parse_js::ast::expr::lit::LitTemplatePart::Substitution(expr) => {
+              self.check_expr(expr);
+            }
+            parse_js::ast::expr::lit::LitTemplatePart::String(_) => {}
+          }
+        }
+        self.store.primitive_ids().unknown
+      }
       AstExpr::Member(mem) => {
         let full_range = loc_to_range(self.file, mem.loc);
         self.check_property_not_used_before_initialization(
