@@ -19,6 +19,8 @@ use vm_js::{
 use crate::js::window_blob::{self, BlobData, MAX_BLOB_BYTES};
 
 const FILE_CTOR_REALM_ID_SLOT: usize = 0;
+const MAX_FILE_NAME_BYTES: usize = 4 * 1024;
+const FILE_NAME_TOO_LONG_ERROR: &str = "File name exceeds maximum length";
 
 #[derive(Clone, Debug)]
 pub(crate) struct FileMeta {
@@ -134,6 +136,42 @@ fn js_string_to_utf8_bytes_limited(heap: &Heap, s: GcString, out: &mut Vec<u8>) 
   Ok(())
 }
 
+fn js_string_to_rust_string_limited(
+  heap: &Heap,
+  handle: GcString,
+  max_bytes: usize,
+  error: &'static str,
+) -> Result<String, VmError> {
+  let js = heap.get_string(handle)?;
+
+  let code_units_len = js.len_code_units();
+  // UTF-8 output bytes are always >= UTF-16 code unit length (and can grow by up to 3 bytes per
+  // code unit when decoding lone surrogates as U+FFFD). Reject overly large strings up-front to
+  // prevent unbounded host allocations.
+  if code_units_len > max_bytes {
+    return Err(VmError::TypeError(error));
+  }
+
+  // Decode manually so we can enforce the byte limit without relying on the potentially-large
+  // allocation performed by `String::from_utf16_lossy`.
+  let capacity = code_units_len.saturating_mul(3).min(max_bytes);
+  let mut out = String::with_capacity(capacity);
+  let mut out_len = 0usize;
+
+  for decoded in decode_utf16(js.as_code_units().iter().copied()) {
+    let ch = decoded.unwrap_or('\u{FFFD}');
+    let ch_len = ch.len_utf8();
+    let next_len = out_len.checked_add(ch_len).unwrap_or(usize::MAX);
+    if next_len > max_bytes {
+      return Err(VmError::TypeError(error));
+    }
+    out.push(ch);
+    out_len = next_len;
+  }
+
+  Ok(out)
+}
+
 fn append_bytes_limited(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), VmError> {
   let next_len = out.len().checked_add(bytes.len()).ok_or(VmError::OutOfMemory)?;
   if next_len > MAX_BLOB_BYTES {
@@ -226,7 +264,12 @@ fn file_ctor_construct(
     .copied()
     .ok_or(VmError::TypeError("File constructor requires a name"))?;
   let name_js = scope.to_string(vm, host, hooks, name_val)?;
-  let name = scope.heap().get_string(name_js)?.to_utf8_lossy();
+  let name = js_string_to_rust_string_limited(
+    scope.heap(),
+    name_js,
+    MAX_FILE_NAME_BYTES,
+    FILE_NAME_TOO_LONG_ERROR,
+  )?;
 
   // Parse options: { type, lastModified }.
   let mut type_string = String::new();
@@ -376,6 +419,15 @@ pub(crate) fn create_file_with_proto(
     data_desc(Value::Number(meta.last_modified as f64), false),
   )?;
 
+  let webkit_relative_path_key = alloc_key(&mut scope, "webkitRelativePath")?;
+  let empty = scope.alloc_string("")?;
+  scope.push_root(Value::String(empty))?;
+  scope.define_property(
+    obj,
+    webkit_relative_path_key,
+    data_desc(Value::String(empty), false),
+  )?;
+
   with_realm_state_mut(vm, &mut scope, callee, |state| {
     state.files.insert(WeakGcObject::from(obj), meta);
     Ok(())
@@ -409,9 +461,20 @@ pub fn install_window_file_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap)
     &[Value::Number(realm_id.to_raw() as f64)],
   )?;
   scope.push_root(Value::Object(ctor))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(ctor, Some(intr.function_prototype()))?;
+  let file_ctor_proto = {
+    let blob_ctor_key = alloc_key(&mut scope, "Blob")?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(global, &blob_ctor_key)?
+      .unwrap_or(Value::Undefined)
+  };
+  scope.heap_mut().object_set_prototype(
+    ctor,
+    match file_ctor_proto {
+      Value::Object(obj) => Some(obj),
+      _ => Some(intr.function_prototype()),
+    },
+  )?;
 
   let proto = {
     let key = alloc_key(&mut scope, "prototype")?;
@@ -504,6 +567,24 @@ mod tests {
 
     let v = realm.exec_script("new File(['hi'], 'a.txt').slice(0, 1) instanceof File")?;
     assert_eq!(v, Value::Bool(false));
+
+    let v = realm.exec_script("new File(['x'], 'x.txt').webkitRelativePath")?;
+    assert_eq!(get_string(realm.heap(), v), "");
+
+    let v = realm.exec_script("Object.getPrototypeOf(File) === Blob")?;
+    assert_eq!(v, Value::Bool(true));
+
+    let v = realm.exec_script(
+      "(() => {\
+        try {\
+          new File(['x'], 'a'.repeat(10_000));\
+          return false;\
+        } catch (e) {\
+          return (e instanceof TypeError) && String(e).includes('maximum length');\
+        }\
+      })()",
+    )?;
+    assert_eq!(v, Value::Bool(true));
 
     realm.teardown();
     Ok(())
