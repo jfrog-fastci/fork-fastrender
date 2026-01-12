@@ -9,6 +9,8 @@ use crate::ui::zoom;
 use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
 use url::Url;
 
+mod tab_strip;
+
 #[derive(Debug, Clone)]
 pub enum ChromeAction {
   /// Focus the address bar and select all contents.
@@ -311,132 +313,7 @@ pub fn chrome_ui(
     actions.push(ChromeAction::Forward);
   }
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
-    // Tabs row.
-    ui.horizontal_wrapped(|ui| {
-      let can_close_tabs = app.tabs.len() > 1;
-      let underline_id = ui.make_persistent_id("tabs_active_underline");
-      let mut active_tab_rect: Option<egui::Rect> = None;
-      for tab in &app.tabs {
-        let is_active = app.active_tab_id() == Some(tab.id);
-        let title = tab.display_title();
-
-        let tab_anim_id = ui.make_persistent_id(("tab_anim", tab.id));
-        let inner = ui.horizontal(|ui| {
-          if let Some(tex_id) = favicon_for_tab(tab.id) {
-            if let Some(meta) = tab.favicon_meta {
-              let (w, h) = meta.size_px;
-              if w > 0 && h > 0 {
-                let height_points = 16.0;
-                let aspect = (w as f32) / (h as f32);
-                let width_points = (height_points * aspect).clamp(8.0, 32.0);
-                let response = ui.add(
-                  egui::Image::new((tex_id, egui::vec2(width_points, height_points)))
-                    .sense(egui::Sense::click()),
-                );
-                if response.clicked_by(egui::PointerButton::Middle) {
-                  if can_close_tabs {
-                    actions.push(ChromeAction::CloseTab(tab.id));
-                  }
-                } else if response.clicked() {
-                  actions.push(ChromeAction::ActivateTab(tab.id));
-                }
-              }
-            }
-          }
-
-          let response = ui.selectable_label(is_active, title);
-          if response.clicked_by(egui::PointerButton::Middle) {
-            if can_close_tabs {
-              actions.push(ChromeAction::CloseTab(tab.id));
-            }
-          } else if response.clicked() {
-            actions.push(ChromeAction::ActivateTab(tab.id));
-          }
-
-          if icon_button(
-            ui,
-            BrowserIcon::CloseTab,
-            "Close tab (Ctrl/Cmd+W)",
-            can_close_tabs,
-          )
-          .clicked()
-          {
-            actions.push(ChromeAction::CloseTab(tab.id));
-          }
-        });
-
-        if is_active {
-          active_tab_rect = Some(inner.response.rect);
-        }
-
-        // Micro-interactions: tab hover highlight.
-        let hovered = inner.response.hovered();
-        let hover_t = motion.animate_bool(
-          ctx,
-          tab_anim_id.with("hover"),
-          hovered,
-          motion.durations.hover_fade,
-        );
-        if hover_t > 0.0 {
-          // We draw the hover highlight on the same layer as the tab contents, so keep the alpha
-          // intentionally low to avoid obscuring text/icons.
-          let max_alpha = if ui.visuals().dark_mode { 0.25 } else { 0.15 };
-          let hover_fill = with_alpha(ui.visuals().widgets.hovered.bg_fill, hover_t * max_alpha);
-          ui.painter().rect_filled(
-            inner.response.rect.expand(2.0),
-            egui::Rounding::same(4.0),
-            hover_fill,
-          );
-        }
-
-        ui.separator();
-      }
-
-      if icon_button(ui, BrowserIcon::NewTab, "New tab (Ctrl/Cmd+T)", true).clicked() {
-        actions.push(ChromeAction::NewTab);
-      }
-
-      // Micro-interaction: active tab underline transitions smoothly between tabs.
-      if let Some(rect) = active_tab_rect {
-        let cx_target = rect.center().x;
-        let width_target = rect.width();
-        let y_target = rect.bottom();
-
-        let cx = motion.animate_f32(
-          ctx,
-          underline_id.with("cx"),
-          cx_target,
-          motion.durations.tab_underline,
-        );
-        let width = motion.animate_f32(
-          ctx,
-          underline_id.with("w"),
-          width_target,
-          motion.durations.tab_underline,
-        );
-        let y = motion.animate_f32(
-          ctx,
-          underline_id.with("y"),
-          y_target,
-          motion.durations.tab_underline,
-        );
-
-        if width > 0.0 {
-          let underline_height = 2.0;
-          let x0 = cx - width * 0.5;
-          let x1 = cx + width * 0.5;
-          let rect = egui::Rect::from_min_max(
-            egui::pos2(x0, y - underline_height),
-            egui::pos2(x1, y),
-          );
-          ui.painter().rect_filled(
-            rect,
-            egui::Rounding::same(1.0),
-            ui.visuals().selection.stroke.color,
-          );
-        }
-      }
-    });
+    actions.extend(tab_strip::tab_strip_ui(ui, app, &mut favicon_for_tab));
 
     ui.separator();
 
@@ -771,6 +648,20 @@ mod tests {
     ));
     // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
     raw.time = Some(0.0);
+    raw.events = events;
+    ctx.begin_frame(raw);
+  }
+
+  fn begin_frame_with_screen_size(
+    ctx: &egui::Context,
+    screen_size: egui::Vec2,
+    events: Vec<egui::Event>,
+  ) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      screen_size,
+    ));
     raw.events = events;
     ctx.begin_frame(raw);
   }
@@ -1554,6 +1445,66 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::CloseTab(_))),
       "expected middle-click not to close the last remaining tab, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn tab_strip_is_single_row_and_constant_height_at_narrow_widths() {
+    let mut app = BrowserAppState::new();
+    // Enough tabs that the previous `horizontal_wrapped` implementation would create multiple rows
+    // at narrow widths.
+    for i in 0..12 {
+      let tab_id = TabId((i + 1) as u64);
+      app.push_tab(
+        BrowserTabState::new(tab_id, format!("https://example.com/{i}")),
+        i == 0,
+      );
+    }
+
+    // Wide frame.
+    let ctx_wide = egui::Context::default();
+    begin_frame_with_screen_size(&ctx_wide, egui::vec2(800.0, 600.0), Vec::new());
+    let _ = chrome_ui(&ctx_wide, &mut app, |_| None);
+    let (wide_strip, wide_tabs) =
+      super::tab_strip::load_test_layout(&ctx_wide).expect("missing tab strip layout metrics");
+    let _ = ctx_wide.end_frame();
+
+    // Narrow frame.
+    let ctx_narrow = egui::Context::default();
+    begin_frame_with_screen_size(&ctx_narrow, egui::vec2(240.0, 600.0), Vec::new());
+    let _ = chrome_ui(&ctx_narrow, &mut app, |_| None);
+    let (narrow_strip, narrow_tabs) =
+      super::tab_strip::load_test_layout(&ctx_narrow).expect("missing tab strip layout metrics");
+    let _ = ctx_narrow.end_frame();
+
+    assert!(
+      (wide_strip.height() - narrow_strip.height()).abs() < f32::EPSILON,
+      "expected tab strip height to be constant, got wide={} narrow={}",
+      wide_strip.height(),
+      narrow_strip.height()
+    );
+
+    // Ensure tabs are laid out on a single row (no wrapping).
+    fn distinct_rows(tab_rects: &[egui::Rect]) -> usize {
+      let mut rows: Vec<f32> = Vec::new();
+      for rect in tab_rects {
+        let y = rect.min.y;
+        if !rows.iter().any(|existing| (*existing - y).abs() < 0.5) {
+          rows.push(y);
+        }
+      }
+      rows.len()
+    }
+
+    assert_eq!(
+      distinct_rows(&wide_tabs),
+      1,
+      "expected wide layout to have a single tab row"
+    );
+    assert_eq!(
+      distinct_rows(&narrow_tabs),
+      1,
+      "expected narrow layout to have a single tab row"
     );
   }
 
