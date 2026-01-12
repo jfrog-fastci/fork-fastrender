@@ -121,10 +121,9 @@ impl Document {
     // and MutationObserver childList records observe the removals.
     let old_children = self.nodes[element.index()].children.clone();
     for child in old_children {
-      let should_remove = self
-        .nodes
-        .get(child.index())
-        .is_some_and(|node| node.parent == Some(element) && !matches!(node.kind, NodeKind::ShadowRoot { .. }));
+      let should_remove = self.nodes.get(child.index()).is_some_and(|node| {
+        node.parent == Some(element) && !matches!(node.kind, NodeKind::ShadowRoot { .. })
+      });
       if should_remove {
         self.remove_child(element, child)?;
       }

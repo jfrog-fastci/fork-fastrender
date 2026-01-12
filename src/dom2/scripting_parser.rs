@@ -70,6 +70,7 @@ pub fn parse_html_with_scripting_dom2(
 mod tests {
   use super::parse_html_with_scripting_dom2;
   use crate::dom::DomParseOptions;
+  use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
   use crate::dom2::{Document, NodeId, NodeKind};
 
   fn find_first_tag(doc: &Document, root: NodeId, tag: &str) -> Option<NodeId> {
@@ -109,6 +110,45 @@ mod tests {
       doc.get_element_by_id("after").is_some(),
       "expected parser to resume and parse markup after </script>"
     );
+  }
+
+  #[test]
+  fn mutations_after_script_boundary_emit_live_mutation_hooks() {
+    // This replicates the key "live ranges created during parsing must remain live" failure mode:
+    // script runs while parsing is paused, registers itself for live mutation updates, and the HTML
+    // parser continues mutating the *same* Document afterwards.
+    //
+    // `x` is foster-parented out of the table and inserted into <body> before the <table> element.
+    // That insertion must go through the structured mutation APIs so the live mutation hooks fire.
+    let html = "<!doctype html><table><script>1</script>x</table>";
+    let recorder = LiveMutationTestRecorder::default();
+    let doc = parse_html_with_scripting_dom2(html, None, |partial_doc, _script_id, _spec| {
+      partial_doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+      Ok(())
+    })
+    .unwrap();
+
+    let body = find_first_tag(&doc, doc.root(), "body").expect("<body> missing");
+    assert_eq!(
+      recorder.take(),
+      vec![LiveMutationEvent::PreInsert {
+        parent: body,
+        index: 0,
+        count: 1
+      }]
+    );
+
+    // Sanity check the foster-parenting result to ensure the insertion we observed is the expected
+    // one (text node before the table).
+    let body_children = doc.node(body).children.clone();
+    assert!(
+      body_children.len() >= 2,
+      "expected <body> to contain foster-parented text + table"
+    );
+    match &doc.node(body_children[0]).kind {
+      NodeKind::Text { content } => assert_eq!(content, "x"),
+      other => panic!("expected foster-parented text node, got {other:?}"),
+    }
   }
 
   #[test]

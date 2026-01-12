@@ -844,7 +844,9 @@ impl Document {
 
     // NOTE: DOM `CharacterData.replaceData` offsets/counts are defined in UTF-16 code units.
     let mut units: Vec<u16> = old_value.encode_utf16().collect();
-    let offset = offset.min(units.len());
+    if offset > units.len() {
+      return Err(DomError::IndexSizeError);
+    }
     let end = offset.saturating_add(count).min(units.len());
     let removed_len = end.saturating_sub(offset);
     let inserted_len = has_live_subscribers.then(|| utf16_len(data)).unwrap_or(0);
