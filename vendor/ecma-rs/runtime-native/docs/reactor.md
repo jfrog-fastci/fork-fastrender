@@ -100,6 +100,9 @@ The reactor is **edge-triggered** on all platforms:
 
 All file descriptors registered with the reactor **must be nonblocking** (`O_NONBLOCK`).
 
+Callers must not clear `O_NONBLOCK` while an fd is registered. Doing so violates the edge-triggered
+contract and can cause the event loop to stall or block unexpectedly.
+
 ## Nonblocking contract at API boundaries
 
 `runtime-native` does **not** implicitly set `O_NONBLOCK` on caller-owned file descriptors. This
