@@ -2434,13 +2434,27 @@ pub fn chrome_ui_with_bookmarks(
     };
 
     let anchor = button_rect.left_bottom() + egui::vec2(0.0, 4.0);
-    let area = egui::Area::new(egui::Id::new("fastr_appearance_popup"))
+    let popup_id = egui::Id::new("fastr_appearance_popup");
+    let open_t = motion.animate_bool(
+      ctx,
+      popup_id.with("popup_open"),
+      true,
+      motion.durations.popup_open,
+    );
+    let open_opacity = open_t.clamp(0.0, 1.0);
+
+    let area = egui::Area::new(popup_id)
       .order(egui::Order::Foreground)
       .fixed_pos(anchor);
 
     let mut popup_rect: Option<egui::Rect> = None;
     let inner = area.show(ctx, |ui| {
-      let frame = egui::Frame::popup(ui.style());
+      ui.visuals_mut().override_text_color =
+        Some(with_alpha(ui.visuals().text_color(), open_opacity));
+      let mut frame = egui::Frame::popup(ui.style());
+      frame.fill = with_alpha(frame.fill, open_opacity);
+      frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
+      frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
       frame.show(ui, |ui| {
         ui.set_min_width(260.0);
         ui.heading("Appearance");
