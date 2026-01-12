@@ -3,6 +3,7 @@ use fastrender::{DiagnosticsLevel, FastRender, RenderOptions};
 
 #[test]
 fn layout_profile_timings_are_exposed_in_render_stats() {
+  let _lock = super::layout_profile_lock();
   let mut toggles = std::collections::HashMap::new();
   toggles.insert("FASTR_LAYOUT_PROFILE".to_string(), "1".to_string());
 

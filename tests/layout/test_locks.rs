@@ -9,3 +9,14 @@ pub(super) fn layout_parallel_debug_lock() -> MutexGuard<'static, ()> {
   static LOCK: Mutex<()> = Mutex::new(());
   LOCK.lock()
 }
+
+/// Serialize tests that rely on layout profiling counters.
+///
+/// The layout/float profile counters are global atomics. Even though profiling can be enabled
+/// per-thread via runtime toggles, calls to `reset_layout_profile()` reset the shared counters.
+/// Serializing profiling-enabled tests keeps counter-based assertions deterministic under high
+/// `--test-threads`.
+pub(super) fn layout_profile_lock() -> MutexGuard<'static, ()> {
+  static LOCK: Mutex<()> = Mutex::new(());
+  LOCK.lock()
+}

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 #[test]
 fn float_range_queries_do_not_clone_sweep_state() {
+  let _lock = super::layout_profile_lock();
   let mut raw = HashMap::new();
   raw.insert("FASTR_LAYOUT_PROFILE".to_string(), "1".to_string());
   let toggles = Arc::new(RuntimeToggles::from_map(raw));

@@ -444,3 +444,7 @@ mod profile_diagnostics;
 fn layout_parallel_debug_lock() -> parking_lot::MutexGuard<'static, ()> {
   test_locks::layout_parallel_debug_lock()
 }
+
+fn layout_profile_lock() -> parking_lot::MutexGuard<'static, ()> {
+  test_locks::layout_profile_lock()
+}
