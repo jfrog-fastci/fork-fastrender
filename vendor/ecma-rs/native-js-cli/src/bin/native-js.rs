@@ -1,7 +1,6 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use diagnostics::{host_error, Diagnostic, FileId, Severity, Span, TextRange};
 use std::ffi::OsString;
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -875,10 +874,6 @@ fn run_bench_once(exe: &Path, args: &[OsString], timeout: Duration) -> Result<Be
 }
 
 fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
-  use object::{Object, ObjectSection};
-  use std::borrow::Cow;
-  use std::sync::Arc;
-
   if cli.json {
     eprintln!("--json is not supported with `addr2line`");
     return ExitCode::from(2);
@@ -895,52 +890,10 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
     None => None,
   };
 
-  let data = match fs::read(&args.exe) {
-    Ok(data) => data,
+  let loader = match addr2line::Loader::new(&args.exe) {
+    Ok(loader) => loader,
     Err(err) => {
-      eprintln!("failed to read {}: {err}", args.exe.display());
-      return ExitCode::from(2);
-    }
-  };
-
-  let object = match object::File::parse(&*data) {
-    Ok(obj) => obj,
-    Err(err) => {
-      eprintln!("failed to parse {}: {err}", args.exe.display());
-      return ExitCode::from(2);
-    }
-  };
-
-  let endian = if object.is_little_endian() {
-    gimli::RunTimeEndian::Little
-  } else {
-    gimli::RunTimeEndian::Big
-  };
-
-  let mut load_section = |id: gimli::SectionId| -> Result<gimli::EndianArcSlice<gimli::RunTimeEndian>, gimli::Error> {
-    let data = match object.section_by_name(id.name()) {
-      Some(section) => section.uncompressed_data().unwrap_or(Cow::Borrowed(&[])),
-      None => Cow::Borrowed(&[] as &[u8]),
-    };
-    let data = match data {
-      Cow::Borrowed(b) => Arc::from(b),
-      Cow::Owned(o) => Arc::from(o),
-    };
-    Ok(gimli::EndianArcSlice::new(data, endian))
-  };
-
-  let dwarf = match gimli::Dwarf::load(&mut load_section) {
-    Ok(dwarf) => dwarf,
-    Err(err) => {
-      eprintln!("failed to load DWARF sections from {}: {err}", args.exe.display());
-      return ExitCode::from(2);
-    }
-  };
-
-  let ctx = match addr2line::Context::from_dwarf(dwarf) {
-    Ok(ctx) => ctx,
-    Err(err) => {
-      eprintln!("failed to load addr2line context from {}: {err}", args.exe.display());
+      eprintln!("failed to load DWARF debug info from {}: {err}", args.exe.display());
       return ExitCode::from(2);
     }
   };
@@ -972,7 +925,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
     let mut function: Option<String> = None;
     let mut have_line = false;
 
-    let mut frames = match ctx.find_frames(addr).skip_all_loads() {
+    let mut frames = match loader.find_frames(addr) {
       Ok(frames) => frames,
       Err(err) => {
         eprintln!("failed to resolve 0x{addr:x}: {err}");
@@ -1032,6 +985,13 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
     if let Some(function) = function {
       out.push(' ');
       out.push_str(&function);
+    } else if let Some(symbol) = loader.find_symbol(addr) {
+      out.push(' ');
+      if args.demangle {
+        out.push_str(&addr2line::demangle_auto(std::borrow::Cow::Borrowed(symbol), None));
+      } else {
+        out.push_str(symbol);
+      }
     }
     println!("{out}");
   }
