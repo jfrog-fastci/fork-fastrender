@@ -8013,17 +8013,21 @@ impl<'a> Element for ElementRef<'a> {
       }
       PseudoClass::Fullscreen => false,
       PseudoClass::Open => {
-        if self
-          .node
-          .tag_name()
-          .is_some_and(|t| t.eq_ignore_ascii_case("dialog"))
-        {
-          dialog_state(self.node).is_some()
-        } else if self.node.get_attribute_ref("popover").is_some() {
-          popover_open_assuming_popover(self.node)
-        } else {
-          self.node.get_attribute_ref("open").is_some()
+        // https://html.spec.whatwg.org/multipage/semantics-other.html#selector-open
+        //
+        // `:open` is not a generic "has an open attribute" pseudo-class; it only applies to a
+        // defined set of HTML elements.
+        if let Some(tag) = self.node.tag_name() {
+          if tag.eq_ignore_ascii_case("details") {
+            return self.node.get_attribute_ref("open").is_some();
+          }
+          if tag.eq_ignore_ascii_case("dialog") {
+            return dialog_state(self.node).is_some();
+          }
+          // `<select>` and picker-enabled `<input>` elements have dynamic "open" state which we do
+          // not currently model for static rendering.
         }
+        false
       }
       PseudoClass::Modal => dialog_state(self.node).is_some_and(|(_, modal)| modal),
       PseudoClass::PopoverOpen => popover_open(self.node),
@@ -12246,6 +12250,46 @@ mod tests {
     let closed_ref = ElementRef::with_ancestors(&closed, &[]);
     assert!(selector_matches(&popover_ref, &selector));
     assert!(!selector_matches(&closed_ref, &selector));
+  }
+
+  #[test]
+  fn open_pseudo_class_only_matches_html_open_elements() {
+    let details_open = element_with_attrs("details", vec![("open", "")], vec![]);
+    let details_closed = element("details", vec![]);
+    let dialog_open = element_with_attrs("dialog", vec![("open", "")], vec![]);
+    let dialog_open_state = element_with_attrs("dialog", vec![("data-fastr-open", "open")], vec![]);
+    let div_open = element_with_attrs("div", vec![("open", "")], vec![]);
+    let popover_open = element_with_attrs(
+      "div",
+      vec![("popover", ""), ("data-fastr-open", "open")],
+      vec![],
+    );
+    let selector = parse_selector(":open");
+
+    assert!(selector_matches(
+      &ElementRef::with_ancestors(&details_open, &[]),
+      &selector
+    ));
+    assert!(!selector_matches(
+      &ElementRef::with_ancestors(&details_closed, &[]),
+      &selector
+    ));
+    assert!(selector_matches(
+      &ElementRef::with_ancestors(&dialog_open, &[]),
+      &selector
+    ));
+    assert!(selector_matches(
+      &ElementRef::with_ancestors(&dialog_open_state, &[]),
+      &selector
+    ));
+    assert!(!selector_matches(
+      &ElementRef::with_ancestors(&div_open, &[]),
+      &selector
+    ));
+    assert!(
+      !selector_matches(&ElementRef::with_ancestors(&popover_open, &[]), &selector),
+      "popover open state should match :popover-open, not :open"
+    );
   }
 
   #[test]
