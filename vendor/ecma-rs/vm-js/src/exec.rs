@@ -2734,10 +2734,20 @@ impl<'a> Evaluator<'a> {
   ) -> Result<GcObject, VmError> {
     use crate::function::ThisMode;
     use crate::vm::EcmaFunctionKind;
-
+ 
     let func = &decl.stx.function.stx;
     if func.generator && func.async_ {
-      return Err(VmError::Unimplemented("async generator functions"));
+      // `async function*` is valid ECMAScript syntax, but vm-js does not implement async generator
+      // semantics yet. Surface this as a *throwable* `SyntaxError` so user code (and test262
+      // harness helpers like `wellKnownIntrinsicObjects.js`) can feature-detect it via try/catch
+      // instead of treating it as a host-level fatal error.
+      let intr = self
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let err_obj =
+        crate::error_object::new_syntax_error_object(scope, &intr, "async generator functions")?;
+      return Err(VmError::Throw(err_obj));
     }
     let is_generator = func.generator;
     let is_strict = self.strict
@@ -5499,7 +5509,15 @@ impl<'a> Evaluator<'a> {
     use crate::vm::EcmaFunctionKind;
 
     if func.generator && func.async_ {
-      return Err(VmError::Unimplemented("async generator functions"));
+      // See `create_function_object_for_decl`: throw a catchable SyntaxError instead of surfacing
+      // as a host-level `Unimplemented` error.
+      let intr = self
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let err_obj =
+        crate::error_object::new_syntax_error_object(scope, &intr, "async generator functions")?;
+      return Err(VmError::Throw(err_obj));
     }
     let is_generator = func.generator;
     let is_strict = self.strict
