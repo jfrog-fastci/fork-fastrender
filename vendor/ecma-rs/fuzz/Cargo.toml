@@ -8,8 +8,8 @@ edition = "2021"
 cargo-fuzz = true
 
 [features]
-# Enable the typed optimizer pipeline by default so typed targets work without extra flags.
-default = ["typed"]
+# Keep `ecma-rs-fuzz` lean by default; the TypeScript typechecker and typed optimizer pipeline are
+# expensive to build. Enable them explicitly via `--features typed` when fuzzing typed targets.
 typed = ["dep:typecheck-ts", "optimize-js/typed"]
 
 [dependencies]

@@ -1,7 +1,7 @@
 //! Fuzz the typed `optimize-js` pipeline + analysis driver.
 //!
-//! This target is only active when `ecma-rs-fuzz` is built with the `typed` feature
-//! (enabled by default), which enables `optimize-js/typed`.
+//! This target is only active when `ecma-rs-fuzz` is built with the `typed` feature, which enables
+//! `optimize-js/typed` (and pulls in the TypeScript typechecker).
 //!
 //! Run (from the repo root) with a hard timeout (via `timeout -k`) and the repo's fuzz wrapper:
 //! ```bash
@@ -9,6 +9,7 @@
 //! mkdir -p vendor/ecma-rs/fuzz/corpus/optimize_js_compile_typed
 //!
 //! timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run optimize_js_compile_typed \
+//!   --features typed \
 //!   fuzz/corpus/optimize_js_compile_typed -- -max_total_time=10
 //! ```
 #![no_main]
@@ -16,6 +17,7 @@
 use libfuzzer_sys::fuzz_target;
 
 /// Keep per-input work bounded (typechecking can be expensive).
+#[cfg(feature = "typed")]
 const MAX_SOURCE_BYTES: usize = 8 * 1024;
 
 #[cfg(feature = "typed")]
