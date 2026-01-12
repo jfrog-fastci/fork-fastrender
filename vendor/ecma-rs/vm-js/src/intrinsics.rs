@@ -312,6 +312,16 @@ fn install_object_static_methods(
     roots,
     function_prototype,
     object_constructor,
+    "defineProperty",
+    3,
+    builtins::object_define_property,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
     "getOwnPropertyDescriptor",
     2,
     builtins::object_get_own_property_descriptor,
@@ -332,9 +342,9 @@ fn install_object_static_methods(
     roots,
     function_prototype,
     object_constructor,
-    "defineProperty",
-    3,
-    builtins::object_define_property,
+    "getOwnPropertySymbols",
+    1,
+    builtins::object_get_own_property_symbols,
   )?;
   install_object_static_method(
     vm,
@@ -345,6 +355,16 @@ fn install_object_static_methods(
     "create",
     2,
     builtins::object_create,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "isExtensible",
+    1,
+    builtins::object_is_extensible,
   )?;
   install_object_static_method(
     vm,
@@ -415,16 +435,6 @@ fn install_object_static_methods(
     "setPrototypeOf",
     2,
     builtins::object_set_prototype_of,
-  )?;
-  install_object_static_method(
-    vm,
-    scope,
-    roots,
-    function_prototype,
-    object_constructor,
-    "isExtensible",
-    1,
-    builtins::object_is_extensible,
   )?;
   Ok(())
 }

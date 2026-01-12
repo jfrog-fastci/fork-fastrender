@@ -1061,6 +1061,56 @@ pub fn object_set_prototype_of(
   }
 }
 
+pub fn object_get_own_property_symbols(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.getownpropertysymbols
+  let mut scope = scope.reborrow();
+
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut symbols: Vec<crate::GcSymbol> = Vec::new();
+  symbols
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, key) in own_keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let PropertyKey::Symbol(sym) = key else {
+      continue;
+    };
+    symbols.push(sym);
+  }
+
+  let len = u32::try_from(symbols.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, &mut scope, len)?;
+  scope.push_root(Value::Object(array))?;
+
+  for (i, sym) in symbols.iter().copied().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let mut idx_scope = scope.reborrow();
+    idx_scope.push_roots(&[Value::Object(array), Value::Symbol(sym)])?;
+
+    let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
+    idx_scope.define_property(array, key, data_desc(Value::Symbol(sym), true, true, true))?;
+  }
+
+  Ok(Value::Object(array))
+}
+
 pub fn object_is_extensible(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1431,12 +1481,12 @@ pub fn reflect_set_prototype_of(
     return Ok(Value::Bool(false));
   }
 
-  match scope.object_set_prototype(target, proto) {
-    Ok(()) => Ok(Value::Bool(true)),
-    // A cycle (or hostile prototype chain) rejects the mutation.
-    Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Bool(false)),
-    Err(e) => Err(e),
-  }
+    match scope.object_set_prototype(target, proto) {
+      Ok(()) => Ok(Value::Bool(true)),
+      // A cycle (or hostile prototype chain) rejects the mutation.
+      Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Bool(false)),
+      Err(e) => Err(e),
+    }
 }
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
@@ -1539,7 +1589,7 @@ pub fn proxy_constructor_call(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // https://tc39.es/ecma262/#sec-proxy-target-handler
+  // Spec: https://tc39.es/ecma262/#sec-proxy-constructor
   //
   // Proxy is not callable without `new`.
   Err(VmError::TypeError("Proxy constructor requires 'new'"))
@@ -1554,7 +1604,7 @@ pub fn proxy_constructor_construct(
   args: &[Value],
   _new_target: Value,
 ) -> Result<Value, VmError> {
-  // https://tc39.es/ecma262/#sec-proxy-target-handler
+  // Spec: https://tc39.es/ecma262/#sec-proxy-constructor
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
 
