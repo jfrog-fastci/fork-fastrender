@@ -7,6 +7,7 @@ mod common;
 mod api;
 mod accessibility;
 mod fixtures;
+mod browser_integration;
 mod guards;
 
 // Keep the reference image comparison helpers available for fixture-style tests.
