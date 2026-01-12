@@ -140,6 +140,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: "CI guardrails: test architecture"
+        shell: bash
+        run: bash scripts/ci_check_test_architecture.sh
+
       - name: Install Linux GUI dependencies (winit/wgpu)
         if: runner.os == 'Linux'
         run: bash scripts/ci_install_gui_deps_ubuntu.sh
