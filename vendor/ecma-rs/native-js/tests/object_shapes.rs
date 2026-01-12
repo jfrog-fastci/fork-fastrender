@@ -1,4 +1,5 @@
 use native_js::{compile_program, CompilerOptions, EmitKind};
+use runtime_native_abi::RtGcPrefix;
 use std::io::Read;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -91,10 +92,12 @@ fn native_objects_emit_and_register_shape_table_and_use_write_barrier() {
 type Obj = {
   n: number;
   arr: number[];
+  s: string;
 };
 
 export function main(): number {
-  const o: Obj = { n: 1, arr: [1] };
+  const o: Obj = { n: 1, arr: [1], s: "hello" };
+  o.s = "world";
   o.arr = [2, 3];
   return o.n + o.arr.length;
 }
@@ -151,6 +154,17 @@ export function main(): number {
     "expected shape table global in IR:\n{ir}"
   );
 
+  // Ensure the GC pointer map includes only the array pointer field (`arr`) and not the string field
+  // (`s`), which is represented as a runtime-native interned id (`u32`).
+  let header_size: u32 = std::mem::size_of::<RtGcPrefix>()
+    .try_into()
+    .expect("RtGcPrefix size fits in u32");
+  let expected_ptr_offsets = format!("[1 x i32] [i32 {header_size}]");
+  assert!(
+    ir.contains(&expected_ptr_offsets),
+    "expected a single pointer offset for the object shape (header size={header_size}):\n{ir}"
+  );
+
   let main_ir = function_block(&ir, "define i32 @main(");
   assert!(
     main_ir.contains("@rt_register_shape_table"),
@@ -164,4 +178,3 @@ export function main(): number {
 
   let _ = std::fs::remove_file(&artifact.path);
 }
-
