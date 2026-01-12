@@ -18345,11 +18345,14 @@ fn resolve_dom_event_target(
     host_dom_ptr.ok_or_else(|| VmError::TypeError("Illegal invocation"))?
   } else {
     // Realm-owned document node.
-    let dom = data
-      .owned_dom2_documents
-      .get_mut(&node_key.document_id)
-      .ok_or_else(|| VmError::TypeError("Illegal invocation"))?;
-    NonNull::from(dom.as_mut())
+    let dom_ptr = {
+      let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+      let dom = owned_dom2_documents
+        .get_mut(&node_key.document_id)
+        .ok_or_else(|| VmError::TypeError("Illegal invocation"))?;
+      NonNull::from(dom.as_mut())
+    };
+    dom_ptr
   };
 
   Ok((
