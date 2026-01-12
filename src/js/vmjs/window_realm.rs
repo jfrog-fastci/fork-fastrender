@@ -24342,11 +24342,18 @@ fn comment_data_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let needs_microtask = mutate_dom_for_vm_host(host, |dom| match dom.set_comment_data(comment_id, &new_value) {
-    Ok(changed) => {
-      let needs = dom.take_mutation_observer_microtask_needed();
-      (Ok(needs), changed)
-    }
+  // Comments are ignored by renderer DOM snapshots. Also, `dom2::Document::set_comment_data` does
+  // not currently emit structured mutation logs (it only queues MutationObserver records).
+  //
+  // Reporting `changed=true` to `BrowserDocumentDom2` would therefore trigger the conservative
+  // fallback path ("changed but no mutation log" => full invalidation). Avoid that by reporting
+  // `changed=false` to the host invalidation layer.
+  let needs_microtask =
+    mutate_dom_for_vm_host(host, |dom| match dom.set_comment_data(comment_id, &new_value) {
+      Ok(_changed) => {
+        let needs = dom.take_mutation_observer_microtask_needed();
+        (Ok(needs), false)
+      }
     Err(err) => {
       let exc = match make_dom_exception(scope, err.code(), "") {
         Ok(v) => VmError::Throw(v),
@@ -24354,8 +24361,8 @@ fn comment_data_set_native(
       };
       (Err(exc), false)
     }
-  })
-  .ok_or(VmError::TypeError("Illegal invocation"))??;
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??;
 
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
   Ok(Value::Undefined)
@@ -24417,11 +24424,13 @@ fn processing_instruction_data_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
+  // Processing instructions are ignored by renderer DOM snapshots; see comment above for why we
+  // avoid reporting these mutations as render-affecting changes to `BrowserDocumentDom2`.
   let needs_microtask =
     mutate_dom_for_vm_host(host, |dom| match dom.set_processing_instruction_data(node_id, &new_value) {
-      Ok(changed) => {
+      Ok(_changed) => {
         let needs = dom.take_mutation_observer_microtask_needed();
-        (Ok(needs), changed)
+        (Ok(needs), false)
       }
       Err(err) => {
         let exc = match make_dom_exception(scope, err.code(), "") {
