@@ -586,30 +586,27 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     if applied_any {
       self.pending_augmentations = remaining;
     } else {
-      let mut seen: BTreeSet<(FileId, TextRange)> = BTreeSet::new();
-      for aug in &remaining {
-        if seen.insert((aug.origin, aug.module.name_span)) {
-          self.invalid_module_name_in_augmentation(
-            aug.origin,
-            &aug.module.name,
-            aug.module.name_span,
-          );
-        }
-      }
       // No progress was made; any remaining augmentations target modules that are
       // not present in this program. Report them deterministically, then drop
       // them to prevent an infinite loop.
-      let mut seen = BTreeSet::new();
+      let mut seen: BTreeSet<(FileId, TextRange)> = BTreeSet::new();
       for aug in &remaining {
         let key = (aug.origin, aug.module.name_span);
         if !seen.insert(key) {
           continue;
         }
-        self.diagnostics.push(Diagnostic::error(
-          "BIND1005",
-          format!("unresolved module augmentation target: {}", &aug.module.name),
-          Span::new(aug.origin, aug.module.name_span),
-        ));
+        match aug.origin_file_kind {
+          FileKind::Ts => self.invalid_module_name_in_augmentation(
+            aug.origin,
+            &aug.module.name,
+            aug.module.name_span,
+          ),
+          FileKind::Dts => self.diagnostics.push(Diagnostic::error(
+            "BIND1005",
+            format!("unresolved module augmentation target: {}", &aug.module.name),
+            Span::new(aug.origin, aug.module.name_span),
+          )),
+        }
       }
       self.pending_augmentations.clear();
     }
@@ -719,10 +716,11 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     ambient_modules: &[AmbientModule],
     deps: &mut Vec<FileId>,
   ) {
-    let implicit_export = implicit_export
-      && !exports
-        .iter()
-        .any(|export| matches!(export, Export::ExportAssignment { .. }));
+    let has_explicit_exports = decls.iter().any(|decl| !matches!(decl.exported, Exported::No))
+      || import_equals.iter().any(|ie| ie.is_exported)
+      || !exports.is_empty()
+      || !export_as_namespace.is_empty();
+    let implicit_export = implicit_export && !has_explicit_exports;
     let mut has_exports = false;
     let mut first_export_span: Option<Span> = None;
     let mut has_export_assignment = false;
