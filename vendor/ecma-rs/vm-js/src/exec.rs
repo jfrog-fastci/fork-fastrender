@@ -5327,8 +5327,15 @@ impl<'a> Evaluator<'a> {
         set_scope.push_root(value)?;
         let object = self.to_object_operator(&mut set_scope, base)?;
         set_scope.push_root(Value::Object(object))?;
-        let ok = set_scope.ordinary_set_with_host_and_hooks(
-          self.vm, self.host, self.hooks, object, key, value, base,
+        let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+          self.vm,
+          &mut set_scope,
+          self.host,
+          self.hooks,
+          object,
+          key,
+          value,
+          base,
         )?;
         if ok {
           Ok(())
@@ -6448,8 +6455,9 @@ impl<'a> Evaluator<'a> {
 
           let object = self.to_object_operator(&mut del_scope, base)?;
           del_scope.push_root(Value::Object(object))?;
-          Ok(Value::Bool(del_scope.ordinary_delete_with_host_and_hooks(
+          Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
             self.vm,
+            &mut del_scope,
             &mut *self.host,
             &mut *self.hooks,
             object,
@@ -6477,8 +6485,9 @@ impl<'a> Evaluator<'a> {
 
           let object = self.to_object_operator(&mut del_scope, base)?;
           del_scope.push_root(Value::Object(object))?;
-          Ok(Value::Bool(del_scope.ordinary_delete_with_host_and_hooks(
+          Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
             self.vm,
+            &mut del_scope,
             &mut *self.host,
             &mut *self.hooks,
             object,
@@ -6493,8 +6502,9 @@ impl<'a> Evaluator<'a> {
               self.root_reference(&mut del_scope, &reference)?;
               let object = self.to_object_operator(&mut del_scope, base)?;
               del_scope.push_root(Value::Object(object))?;
-              Ok(Value::Bool(del_scope.ordinary_delete_with_host_and_hooks(
+              Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
                 self.vm,
+                &mut del_scope,
                 &mut *self.host,
                 &mut *self.hooks,
                 object,
@@ -7175,11 +7185,16 @@ impl<'a> Evaluator<'a> {
         // Root the RHS object across `ToPropertyKey`, which may allocate and trigger GC.
         rhs_scope.push_root(Value::Object(obj))?;
         let key = self.to_property_key_operator(&mut rhs_scope, left)?;
-        Ok(Value::Bool(rhs_scope.ordinary_has_property_with_tick(
-          obj,
-          key,
-          || self.tick(),
-        )?))
+        Ok(Value::Bool(
+          crate::spec_ops::internal_has_property_with_host_and_hooks(
+            self.vm,
+            &mut rhs_scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            obj,
+            key,
+          )?,
+        ))
       }
       OperatorName::Instanceof => {
         let left = self.eval_expr(scope, &expr.left)?;

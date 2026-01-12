@@ -67,6 +67,12 @@ pub fn internal_get_with_host_and_hooks(
       "Cannot perform 'get' on a proxy that has been revoked",
     ));
   };
+  // Root `target`/`handler` across trap lookup + invocation.
+  //
+  // Important: `GetMethod(handler, "get")` can invoke user code via accessors. That user code can
+  // revoke this Proxy, making `target`/`handler` unreachable from `obj`. Root them explicitly so a
+  // GC during trap lookup cannot collect them while we still need the handles.
+  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
   // trap = ? GetMethod(handler, "get")
   let get_key_s = scope.alloc_string("get")?;
@@ -118,6 +124,8 @@ pub fn internal_has_property_with_host_and_hooks(
       "Cannot perform 'has' on a proxy that has been revoked",
     ));
   };
+  // Root `target`/`handler` across trap lookup + invocation; see comment in `internal_get_*`.
+  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
   // trap = ? GetMethod(handler, "has")
   let has_key_s = scope.alloc_string("has")?;
@@ -129,6 +137,150 @@ pub fn internal_has_property_with_host_and_hooks(
     return internal_has_property_with_host_and_hooks(vm, &mut scope, host, hooks, target, key);
   };
   // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
+  scope.push_root(trap)?;
+
+  // trapResult = ToBoolean(? Call(trap, handler, « target, P »))
+  let trap_args = [Value::Object(target), key_root];
+  let trap_result =
+    vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &trap_args)?;
+  scope.heap().to_boolean(trap_result)
+}
+
+/// ECMAScript `[[Set]](P, V, Receiver)` internal method dispatch for ordinary and Proxy exotic
+/// objects.
+///
+/// This is a minimal implementation today:
+/// - Ordinary objects delegate to `Scope::ordinary_set_with_host_and_hooks`
+/// - Proxy objects implement `Proxy.[[Set]]` with support for the `"set"` trap (when present)
+/// - Revoked proxies throw a TypeError
+///
+/// Note: full Proxy invariants are not enforced yet.
+pub fn internal_set_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+  value: Value,
+  receiver: Value,
+) -> Result<bool, VmError> {
+  // Root inputs across any allocations from trap lookup / invocation.
+  let mut scope = scope.reborrow();
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  scope.push_roots(&[Value::Object(obj), key_root, value, receiver])?;
+
+  // Fast path: ordinary object.
+  if !scope.heap().is_proxy_object(obj) {
+    return scope.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, value, receiver);
+  }
+
+  // Proxy.[[Set]]
+  let proxy = scope
+    .heap()
+    .get_proxy_data(obj)?
+    .ok_or(VmError::invalid_handle())?;
+  let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+    return Err(VmError::TypeError(
+      "Cannot perform 'set' on a proxy that has been revoked",
+    ));
+  };
+  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+  // trap = ? GetMethod(handler, "set")
+  let set_key_s = scope.alloc_string("set")?;
+  scope.push_root(Value::String(set_key_s))?;
+  let set_key = PropertyKey::from_string(set_key_s);
+  let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), set_key)?;
+  let Some(trap) = trap else {
+    // No trap: forward to target.
+    //
+    // NOTE: `Proxy.[[Set]]` forwards the original Receiver. However, `vm-js` currently implements
+    // `OrdinarySet` only for receivers that have ordinary object internal slots. When the receiver
+    // is the Proxy itself, forwarding can fail with `InvalidHandle` when `OrdinarySet` tries to
+    // define an own property on the receiver.
+    //
+    // To avoid crashing on `proxy.prop = ...` when no `set` trap is installed, we retry the
+    // forwarding operation using `receiver = target` if the receiver was the current Proxy and the
+    // forwarded `[[Set]]` failed due to `InvalidHandle`.
+    let forwarded = internal_set_with_host_and_hooks(vm, &mut scope, host, hooks, target, key, value, receiver);
+    if let Err(VmError::InvalidHandle { .. }) = forwarded {
+      if receiver == Value::Object(obj) {
+        return internal_set_with_host_and_hooks(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          target,
+          key,
+          value,
+          Value::Object(target),
+        );
+      }
+    }
+    return forwarded;
+  };
+  scope.push_root(trap)?;
+
+  // trapResult = ToBoolean(? Call(trap, handler, « target, P, V, Receiver »))
+  let trap_args = [Value::Object(target), key_root, value, receiver];
+  let trap_result =
+    vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &trap_args)?;
+  scope.heap().to_boolean(trap_result)
+}
+
+/// ECMAScript `[[Delete]](P)` internal method dispatch for ordinary and Proxy exotic objects.
+///
+/// This is a minimal implementation today:
+/// - Ordinary objects delegate to `Scope::ordinary_delete_with_host_and_hooks`
+/// - Proxy objects implement `Proxy.[[Delete]]` with support for the `"deleteProperty"` trap (when present)
+/// - Revoked proxies throw a TypeError
+///
+/// Note: full Proxy invariants are not enforced yet.
+pub fn internal_delete_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<bool, VmError> {
+  // Root inputs across any allocations from trap lookup / invocation.
+  let mut scope = scope.reborrow();
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  scope.push_roots(&[Value::Object(obj), key_root])?;
+
+  if !scope.heap().is_proxy_object(obj) {
+    return scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, key);
+  }
+
+  // Proxy.[[Delete]]
+  let proxy = scope
+    .heap()
+    .get_proxy_data(obj)?
+    .ok_or(VmError::invalid_handle())?;
+  let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+    return Err(VmError::TypeError(
+      "Cannot perform 'deleteProperty' on a proxy that has been revoked",
+    ));
+  };
+  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+  // trap = ? GetMethod(handler, "deleteProperty")
+  let trap_key_s = scope.alloc_string("deleteProperty")?;
+  scope.push_root(Value::String(trap_key_s))?;
+  let trap_key = PropertyKey::from_string(trap_key_s);
+  let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), trap_key)?;
+  let Some(trap) = trap else {
+    // No trap: forward to target.
+    return internal_delete_with_host_and_hooks(vm, &mut scope, host, hooks, target, key);
+  };
   scope.push_root(trap)?;
 
   // trapResult = ToBoolean(? Call(trap, handler, « target, P »))

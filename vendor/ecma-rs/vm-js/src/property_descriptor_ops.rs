@@ -1,60 +1,6 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::{GcObject, Heap, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
-fn has_property_proxy_aware(
-  vm: &mut Vm,
-  scope: &Scope<'_>,
-  obj: GcObject,
-  key: PropertyKey,
-) -> Result<bool, VmError> {
-  let mut current = obj;
-  let mut steps = 0usize;
-  loop {
-    if steps != 0 && steps % 1024 == 0 {
-      vm.tick()?;
-    }
-    steps = steps.saturating_add(1);
-    if !scope.heap().is_proxy_object(current) {
-      return scope.ordinary_has_property_with_tick(current, key, || vm.tick());
-    }
-    let Some(target) = scope.heap().proxy_target(current)? else {
-      return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
-    };
-    current = target;
-  }
-}
-
-fn get_proxy_aware(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  obj: GcObject,
-  key: PropertyKey,
-  receiver: Value,
-) -> Result<Value, VmError> {
-  // Proxy-aware `[[Get]]` internal method dispatch.
-  //
-  // This intentionally mirrors `spec_ops::get_with_host_and_hooks_internal`, but `ToPropertyDescriptor`
-  // is used by operations like Proxy trap validation and Reflect/Object builtins and should not
-  // depend on a private helper.
-  let mut current = obj;
-  let mut steps = 0usize;
-  loop {
-    if steps != 0 && steps % 1024 == 0 {
-      vm.tick()?;
-    }
-    steps = steps.saturating_add(1);
-    if !scope.heap().is_proxy_object(current) {
-      return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
-    }
-    let Some(target) = scope.heap().proxy_target(current)? else {
-      return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
-    };
-    current = target;
-  }
-}
-
 pub fn to_property_descriptor_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -91,8 +37,15 @@ pub fn to_property_descriptor_with_host_and_hooks(
 
   let mut desc = PropertyDescriptorPatch::default();
 
-  if has_property_proxy_aware(vm, &scope, desc_obj, enumerable_key)? {
-    let value = get_proxy_aware(
+  if crate::spec_ops::internal_has_property_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    desc_obj,
+    enumerable_key,
+  )? {
+    let value = crate::spec_ops::internal_get_with_host_and_hooks(
       vm,
       &mut scope,
       host,
@@ -104,8 +57,15 @@ pub fn to_property_descriptor_with_host_and_hooks(
     desc.enumerable = Some(scope.heap().to_boolean(value)?);
   }
 
-  if has_property_proxy_aware(vm, &scope, desc_obj, configurable_key)? {
-    let value = get_proxy_aware(
+  if crate::spec_ops::internal_has_property_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    desc_obj,
+    configurable_key,
+  )? {
+    let value = crate::spec_ops::internal_get_with_host_and_hooks(
       vm,
       &mut scope,
       host,
@@ -117,8 +77,15 @@ pub fn to_property_descriptor_with_host_and_hooks(
     desc.configurable = Some(scope.heap().to_boolean(value)?);
   }
 
-  if has_property_proxy_aware(vm, &scope, desc_obj, value_key)? {
-    let value = get_proxy_aware(
+  if crate::spec_ops::internal_has_property_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    desc_obj,
+    value_key,
+  )? {
+    let value = crate::spec_ops::internal_get_with_host_and_hooks(
       vm,
       &mut scope,
       host,
@@ -131,8 +98,15 @@ pub fn to_property_descriptor_with_host_and_hooks(
     desc.value = Some(value);
   }
 
-  if has_property_proxy_aware(vm, &scope, desc_obj, writable_key)? {
-    let value = get_proxy_aware(
+  if crate::spec_ops::internal_has_property_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    desc_obj,
+    writable_key,
+  )? {
+    let value = crate::spec_ops::internal_get_with_host_and_hooks(
       vm,
       &mut scope,
       host,
@@ -144,8 +118,15 @@ pub fn to_property_descriptor_with_host_and_hooks(
     desc.writable = Some(scope.heap().to_boolean(value)?);
   }
 
-  if has_property_proxy_aware(vm, &scope, desc_obj, get_key)? {
-    let value = get_proxy_aware(
+  if crate::spec_ops::internal_has_property_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    desc_obj,
+    get_key,
+  )? {
+    let value = crate::spec_ops::internal_get_with_host_and_hooks(
       vm,
       &mut scope,
       host,
@@ -161,8 +142,15 @@ pub fn to_property_descriptor_with_host_and_hooks(
     desc.get = Some(value);
   }
 
-  if has_property_proxy_aware(vm, &scope, desc_obj, set_key)? {
-    let value = get_proxy_aware(
+  if crate::spec_ops::internal_has_property_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    desc_obj,
+    set_key,
+  )? {
+    let value = crate::spec_ops::internal_get_with_host_and_hooks(
       vm,
       &mut scope,
       host,
