@@ -61,6 +61,26 @@ fn host_state_with_fetcher(
   WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher, js_opts_for_test())
 }
 
+fn exec_script_in_window_host(
+  host: &mut WindowHostState,
+  source: &str,
+) -> std::result::Result<Value, VmError> {
+  // Use `exec_script_with_host_and_hooks` so native call handlers receive a real `VmHost` context
+  // (required for fetch/XHR bindings).
+  //
+  // Provide a temporary `EventLoop` so Promise jobs can be queued/discarded safely even though this
+  // helper doesn't drive the event loop.
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host);
+  hooks.set_event_loop(&mut event_loop);
+  let (vm_host, window) = host.vm_host_and_window_realm();
+  let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
+  if let Some(err) = hooks.finish(window.heap_mut()) {
+    panic!("exec_script_in_window_host: VmHostHooks finish returned error: {err}");
+  }
+  result
+}
+
 fn get_string(heap: &Heap, value: Value) -> String {
   let Value::String(s) = value else {
     panic!("expected string value");

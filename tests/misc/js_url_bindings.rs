@@ -415,3 +415,24 @@ fn window_realm_exec_script_url_searchparams_is_live_and_cached() {
   let params = exec_script(&mut realm, r#"globalThis.u.searchParams.toString()"#).unwrap();
   assert_eq!(as_vm_js_heap_string(realm.heap(), params), "a=b+%7E&c=d");
 }
+
+#[test]
+fn window_realm_exec_script_url_origin_for_opaque_and_blob_schemes() {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
+
+  let origin = exec_script(&mut realm, r#"new URL("file:///tmp/x").origin"#).unwrap();
+  assert_eq!(as_vm_js_heap_string(realm.heap(), origin), "null");
+
+  let origin = exec_script(&mut realm, r#"new URL("data:text/plain,hello").origin"#).unwrap();
+  assert_eq!(as_vm_js_heap_string(realm.heap(), origin), "null");
+
+  let origin = exec_script(
+    &mut realm,
+    r#"new URL("blob:https://example.com/uuid").origin"#,
+  )
+  .unwrap();
+  assert_eq!(as_vm_js_heap_string(realm.heap(), origin), "https://example.com");
+
+  let origin = exec_script(&mut realm, r#"new URL("blob:file:///tmp/x").origin"#).unwrap();
+  assert_eq!(as_vm_js_heap_string(realm.heap(), origin), "null");
+}
