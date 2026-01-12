@@ -301,14 +301,13 @@ pub fn install_fetch_bindings<'js>(
 mod tests {
   use super::{install_fetch_bindings, FetchHarnessConfig};
 
-  use std::sync::{Arc, Mutex};
-
   use crate::error::Result;
   use crate::resource::web_fetch::RequestRedirect;
   use crate::resource::{
     origin_from_url, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
   };
   use rquickjs::{Context, Runtime};
+  use std::sync::{Arc, Mutex};
 
   #[derive(Debug, Clone)]
   struct CapturedRequest {
@@ -425,10 +424,7 @@ mod tests {
 
   #[test]
   fn quickjs_fetch_drops_forbidden_request_headers() {
-    let fetcher = Arc::new(RecordingFetcher::new(FetchedResource::new(
-      b"ok".to_vec(),
-      None,
-    )));
+    let fetcher = Arc::new(RecordingFetcher::new(FetchedResource::new(b"ok".to_vec(), None)));
 
     let rt = Runtime::new().unwrap();
     let ctx = Context::full(&rt).unwrap();
@@ -472,10 +468,7 @@ mod tests {
 
   #[test]
   fn quickjs_fetch_rejects_on_cors_failure() {
-    let fetcher = Arc::new(RecordingFetcher::new(FetchedResource::new(
-      b"ok".to_vec(),
-      None,
-    )));
+    let fetcher = Arc::new(RecordingFetcher::new(FetchedResource::new(b"ok".to_vec(), None)));
     let origin = origin_from_url("https://client.example/").expect("origin");
 
     let rt = Runtime::new().unwrap();

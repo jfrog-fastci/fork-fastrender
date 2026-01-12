@@ -15,7 +15,7 @@
 //!   rejected Promise.
 //! - `Body` is in-memory only (no streaming).
 //! - `Headers` iteration is deterministic and uses `Headers::sort_and_combine()`.
-#![cfg(feature = "quickjs")]
+#![cfg(all(test, feature = "quickjs"))]
 
 use std::sync::Arc;
 
@@ -680,17 +680,15 @@ pub fn install_fetch_bindings<'js>(
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-  use std::sync::{Arc, Mutex};
-
-  use rquickjs::{Context, Runtime};
+  use super::{install_fetch_bindings, QuickjsFetchEnv};
 
   use crate::resource::{
     origin_from_url, FetchCredentialsMode, FetchDestination, FetchedResource, HttpRequest,
     ReferrerPolicy, ResourceFetcher,
   };
-
-  use super::{install_fetch_bindings, QuickjsFetchEnv};
+  use rquickjs::{Context, Runtime};
+  use std::collections::HashMap;
+  use std::sync::{Arc, Mutex};
 
   #[derive(Debug, Clone, PartialEq, Eq)]
   struct CapturedHttpRequest {

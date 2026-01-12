@@ -178,12 +178,6 @@ pub(crate) mod quickjs_fetch;
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;
-#[cfg(all(test, feature = "quickjs"))]
-#[path = "legacy/quickjs_fetch.rs"]
-mod quickjs_fetch;
-#[cfg(all(test, feature = "quickjs"))]
-#[path = "legacy/quickjs_url.rs"]
-mod quickjs_url;
 
 // Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
 #[path = "legacy/dom_bindings_context.rs"]
