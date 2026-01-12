@@ -12,6 +12,9 @@ test(() => {
   const el = document.createElement("div");
   el.innerHTML = "a<!--c-->b";
 
+  assert_equals(typeof Comment, "function", "Comment should be exposed as a constructor");
+  assert_equals(typeof CharacterData, "function", "CharacterData should be exposed as a constructor");
+
   assert_equals(Node.COMMENT_NODE, 8, "Node.COMMENT_NODE should be 8");
 
   assert_equals(el.childNodes.length, 3, "expected 3 children: Text, Comment, Text");
@@ -24,6 +27,10 @@ test(() => {
   assert_equals(text_a.nodeType, Node.TEXT_NODE, "first child should be a Text node");
   assert_equals(comment.nodeType, Node.COMMENT_NODE, "second child should be a Comment node");
   assert_equals(text_b.nodeType, Node.TEXT_NODE, "third child should be a Text node");
+
+  assert_true(comment instanceof Comment, "parsed comment node should be instanceof Comment");
+  assert_true(comment instanceof CharacterData, "Comment should inherit from CharacterData");
+  assert_true(comment instanceof Node, "Comment should inherit from Node");
 
   assert_equals(text_a.data, "a");
   assert_equals(comment.nodeName, "#comment");

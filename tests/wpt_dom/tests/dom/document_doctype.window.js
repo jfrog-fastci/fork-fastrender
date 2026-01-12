@@ -10,6 +10,10 @@ test(() => {
   );
   if (doctype === null || doctype === undefined) return;
 
+  assert_equals(typeof DocumentType, "function", "DocumentType should be exposed as a constructor");
+  assert_true(doctype instanceof DocumentType, "document.doctype should be instanceof DocumentType");
+  assert_true(doctype instanceof Node, "DocumentType should inherit from Node");
+
   assert_equals(Node.DOCUMENT_TYPE_NODE, 10, "Node.DOCUMENT_TYPE_NODE should be 10");
   assert_equals(doctype.nodeType, Node.DOCUMENT_TYPE_NODE);
 
