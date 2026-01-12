@@ -141,7 +141,7 @@ fn call_spread_over_string() {
 }
 
 #[test]
-fn array_spread_closes_iterator_on_throw() {
+fn array_spread_does_not_close_iterator_on_throw() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -168,11 +168,11 @@ fn array_spread_closes_iterator_on_throw() {
       "#,
     )
     .unwrap();
-  assert_eq!(value, Value::Bool(true));
+  assert_eq!(value, Value::Bool(false));
 }
 
 #[test]
-fn call_spread_closes_iterator_on_throw() {
+fn call_spread_does_not_close_iterator_on_throw() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -200,7 +200,7 @@ fn call_spread_closes_iterator_on_throw() {
       "#,
     )
     .unwrap();
-  assert_eq!(value, Value::Bool(true));
+  assert_eq!(value, Value::Bool(false));
 }
 
 #[test]

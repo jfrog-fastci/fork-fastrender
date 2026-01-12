@@ -164,6 +164,49 @@ fn iterator_close_return_non_object_throws_type_error_in_array_destructuring() {
 }
 
 #[test]
+fn spread_step_error_does_not_invoke_iterator_close() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { throw "next"; }
+        };
+      };
+      var xs = [...iterable];
+    "#,
+    )
+    .unwrap_err();
+
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  assert_value_is_utf8(&rt, thrown, "next");
+
+  let value = rt
+    .exec_script(
+      r#"
+      var closed = false;
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { throw "next"; },
+          "return": function () { closed = true; return {}; }
+        };
+      };
+      try {
+        var xs = [...iterable];
+      } catch (e) {}
+      closed
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(false));
+}
+
+#[test]
 fn iterator_close_get_method_throw_overrides_break() {
   let mut rt = new_runtime();
   let err = rt

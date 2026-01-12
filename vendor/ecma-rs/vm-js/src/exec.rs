@@ -5789,21 +5789,16 @@ impl<'a> Evaluator<'a> {
             spread_value,
           )?;
           spread_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-          if let Err(err) = spread_scope.push_root(iter.next_method) {
-            return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
-          }
+          spread_scope.push_root(iter.next_method)?;
 
           loop {
-            let next_value = match iterator::iterator_step_value(
+            let next_value = iterator::iterator_step_value(
               self.vm,
               &mut *self.host,
               &mut *self.hooks,
               &mut spread_scope,
               &mut iter,
-              ) {
-                Ok(v) => v,
-                Err(err) => return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err)),
-              };
+            )?;
 
             let Some(value) = next_value else {
               break;
@@ -5827,7 +5822,7 @@ impl<'a> Evaluator<'a> {
               Ok(())
             })();
             if let Err(err) = step_res {
-              return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
+              return Err(err);
             }
           }
         }
@@ -6630,23 +6625,16 @@ impl<'a> Evaluator<'a> {
                 spread_value,
               )?;
               new_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-              if let Err(err) = new_scope.push_root(iter.next_method) {
-                return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
-              }
+              new_scope.push_root(iter.next_method)?;
 
               loop {
-                let next_value = match iterator::iterator_step_value(
+                let next_value = iterator::iterator_step_value(
                   self.vm,
                   &mut *self.host,
                   &mut *self.hooks,
                   &mut new_scope,
                   &mut iter,
-                ) {
-                  Ok(v) => v,
-                  Err(err) => {
-                    return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
-                  }
-                };
+                )?;
 
                 let Some(value) = next_value else {
                   break;
@@ -6660,7 +6648,7 @@ impl<'a> Evaluator<'a> {
                   Ok(())
                 })();
                 if let Err(err) = step_res {
-                  return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
+                  return Err(err);
                 }
               }
             } else {
@@ -6863,23 +6851,16 @@ impl<'a> Evaluator<'a> {
           spread_value,
         )?;
         call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-        if let Err(err) = call_scope.push_root(iter.next_method) {
-          return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
-        }
+        call_scope.push_root(iter.next_method)?;
 
         loop {
-          let next_value = match iterator::iterator_step_value(
+          let next_value = iterator::iterator_step_value(
             self.vm,
             &mut *self.host,
             &mut *self.hooks,
             &mut call_scope,
             &mut iter,
-          ) {
-            Ok(v) => v,
-            Err(err) => {
-              return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
-            }
-          };
+          )?;
 
           let Some(value) = next_value else {
             break;
@@ -6893,7 +6874,7 @@ impl<'a> Evaluator<'a> {
             Ok(())
           })();
           if let Err(err) = step_res {
-            return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
+            return Err(err);
           }
         }
       } else {
@@ -15543,16 +15524,13 @@ fn async_call_store_arg_value(
     )
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err))?;
 
-    // Root the iterator and next method for the duration of spread expansion.
+    // Root the iterator and `next` method for the duration of spread expansion.
     //
-    // Use separate pushes so if rooting `next_method` fails we still have a rooted `iterator` for
-    // `IteratorClose`.
-    iter_scope
-      .push_root(iter.iterator)
-      .map_err(|err| async_iterator_close_on_error(evaluator, &mut iter_scope, &iter, err))?;
-    iter_scope
-      .push_root(iter.next_method)
-      .map_err(|err| async_iterator_close_on_error(evaluator, &mut iter_scope, &iter, err))?;
+    // `GetIterator` can extract `next` via an accessor, so the method value is not necessarily
+    // reachable from the iterator object itself. Treat it as an extra root while pushing the
+    // iterator root in case root stack growth triggers GC.
+    iter_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
+    iter_scope.push_root(iter.next_method)?;
 
     loop {
       let step = iterator::iterator_step_value(
@@ -15562,43 +15540,24 @@ fn async_call_store_arg_value(
         &mut iter_scope,
         &mut iter,
       )
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err));
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err))?;
 
-      let Some(v) = (match step {
-        Ok(v) => v,
-        Err(err) => {
-          return Err(async_iterator_close_on_error(
-            evaluator,
-            &mut iter_scope,
-            &iter,
-            err,
-          ))
-        }
-      }) else {
+      let Some(v) = step else {
         break;
       };
 
       // Per-spread-element tick: spreading large iterators should be budgeted even when no `await`
       // occurs inside the spread.
-      if let Err(err) = evaluator.tick() {
-        return Err(async_iterator_close_on_error(evaluator, &mut iter_scope, &iter, err));
-      }
+      evaluator.tick()?;
 
       let mut root_scope = iter_scope.reborrow();
-      if let Err(err) = root_scope.push_root(v) {
-        return Err(async_iterator_close_on_error(evaluator, &mut root_scope, &iter, err));
-      }
+      root_scope.push_root(v)?;
 
       // Ensure we can record the persistent root before allocating it so we don't leak roots on
       // `Vec` allocation failure.
-      if let Err(err) = arg_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory) {
-        return Err(async_iterator_close_on_error(evaluator, &mut root_scope, &iter, err));
-      }
+      arg_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
 
-      let id = match root_scope.heap_mut().add_root(v) {
-        Ok(id) => id,
-        Err(err) => return Err(async_iterator_close_on_error(evaluator, &mut root_scope, &iter, err)),
-      };
+      let id = root_scope.heap_mut().add_root(v)?;
       arg_roots.push(id);
     }
   } else {

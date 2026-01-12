@@ -7,11 +7,11 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn async_spread_closes_iterator_when_next_throws() -> Result<(), VmError> {
+fn async_spread_does_not_close_iterator_when_next_throws() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   // This must exercise the async evaluator's call/argument evaluation, so the call expression
-  // contains an `await` even though the spread throws before it's evaluated.
+  // contains an `await` even though the spread throws before the awaited argument is evaluated.
   let value = rt.exec_script(
     r#"
       var returnCalled = false;
@@ -45,6 +45,6 @@ fn async_spread_closes_iterator_when_next_throws() -> Result<(), VmError> {
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value, Value::Bool(true));
+  assert_eq!(value, Value::Bool(false));
   Ok(())
 }
