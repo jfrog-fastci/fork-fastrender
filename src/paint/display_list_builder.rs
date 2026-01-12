@@ -7303,7 +7303,12 @@ impl DisplayListBuilder {
           let sources = replaced_type.image_sources_with_fallback(
             crate::tree::box_tree::ImageSelectionContext {
               device_pixel_ratio: self.device_pixel_ratio,
-              slot_width: Some(slot_rect.width()),
+              // Match Chrome's responsive image selection: width-descriptor srcset candidates use
+              // the evaluated `sizes` attribute (or 100vw) rather than the post-layout slot width.
+              //
+              // Passing the layout width here can cause us to select "missing" placeholder
+              // candidates in pageset fixtures where only the Chrome-chosen asset was captured.
+              slot_width: None,
               viewport: self.viewport.map(|(w, h)| crate::geometry::Size::new(w, h)),
               media_context: media_ctx.as_ref(),
               font_size: fragment.style.as_deref().map(|s| s.font_size),
@@ -16505,6 +16510,21 @@ mod tests {
     )
   }
 
+  fn data_url_for_solid_rgba(width: u32, height: u32, color: [u8; 4]) -> String {
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for _ in 0..(width * height) {
+      pixels.extend_from_slice(&color);
+    }
+    let mut buf = Vec::new();
+    PngEncoder::new(&mut buf)
+      .write_image(&pixels, width, height, ColorType::Rgba8.into())
+      .expect("encode png");
+    format!(
+      "data:image/png;base64,{}",
+      general_purpose::STANDARD.encode(buf)
+    )
+  }
+
   fn test_font() -> Arc<crate::text::font_db::LoadedFont> {
     let font_path =
       PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
@@ -16582,6 +16602,68 @@ mod tests {
       variations: Vec::new(),
       scale: 1.0,
     }
+  }
+
+  #[test]
+  fn width_descriptor_srcset_selection_uses_sizes_not_layout_slot_width() {
+    // Regression test: the display-list backend should pick width-descriptor srcset candidates based
+    // on the evaluated `sizes` attribute (or 100vw), not the final layout width of the `<img>`
+    // fragment.
+    //
+    // This matches Chrome and avoids selecting placeholder/missing candidates in pageset fixtures
+    // (e.g. bbc.com) where only the Chrome-chosen resource was captured.
+    let small = data_url_for_solid_rgba(1, 1, [255, 0, 0, 255]);
+    let large = data_url_for_solid_rgba(2, 2, [0, 0, 255, 255]);
+
+    let fragment = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 0.0, 300.0, 150.0),
+      ReplacedType::Image {
+        // Base `src` shouldn't be consulted for width-descriptor srcset selection when `srcset`
+        // provides usable candidates.
+        src: small.clone(),
+        alt: None,
+        loading: Default::default(),
+        decoding: ImageDecodingAttribute::Auto,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+        sizes: Some(crate::tree::box_tree::SizesList {
+          entries: vec![crate::tree::box_tree::SizesEntry {
+            media: None,
+            length: Length::px(600.0).into(),
+          }],
+        }),
+        srcset: vec![
+          crate::tree::box_tree::SrcsetCandidate {
+            url: small,
+            descriptor: crate::tree::box_tree::SrcsetDescriptor::Width(300),
+          },
+          crate::tree::box_tree::SrcsetCandidate {
+            url: large,
+            descriptor: crate::tree::box_tree::SrcsetDescriptor::Width(600),
+          },
+        ],
+        picture_sources: Vec::new(),
+      },
+    );
+
+    let list = DisplayListBuilder::with_image_cache(ImageCache::new())
+      .with_viewport_size(800.0, 600.0)
+      .build(&fragment);
+
+    let img = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("expected image display item");
+
+    assert_eq!(
+      img.image.width, 2,
+      "expected the 600w srcset candidate to be selected"
+    );
+    assert_eq!(img.image.height, 2);
   }
 
   fn shaped_run_for_char_with_direction(

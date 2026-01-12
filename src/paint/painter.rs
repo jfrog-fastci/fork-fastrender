@@ -8893,7 +8893,12 @@ impl Painter {
         let sources =
           replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
             device_pixel_ratio: self.scale,
-            slot_width: Some(content_rect.width()),
+            // HTML `srcset` width descriptor selection uses the `sizes` attribute (or 100vw) to
+            // compute the "source size", rather than the element's eventual layout width.
+            //
+            // Using the post-layout slot width can diverge from Chrome and, for pageset fixtures,
+            // can cause us to select placeholder/missing srcset candidates.
+            slot_width: None,
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),
@@ -8981,7 +8986,7 @@ impl Painter {
         let sources =
           replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
             device_pixel_ratio: self.scale,
-            slot_width: Some(content_rect.width()),
+            slot_width: None,
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),
@@ -9093,7 +9098,7 @@ impl Painter {
         let sources =
           replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
             device_pixel_ratio: self.scale,
-            slot_width: Some(content_rect.width()),
+            slot_width: None,
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),
@@ -9124,7 +9129,7 @@ impl Painter {
         let sources =
           replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
             device_pixel_ratio: self.scale,
-            slot_width: Some(content_rect.width()),
+            slot_width: None,
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),
@@ -9187,7 +9192,7 @@ impl Painter {
         let sources =
           replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
             device_pixel_ratio: self.scale,
-            slot_width: Some(content_rect.width()),
+            slot_width: None,
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),

@@ -14,31 +14,31 @@
     "layout": 235.16813213235295,
     "paint": 159.11375748529412
   },
-  "notes": "",
+  "notes": "Fixed width-descriptor `srcset` selection to use evaluated `sizes`/100vw (Chrome-aligned) instead of post-layout width, restoring most imagery on bbc.com. Remaining diffs are mostly minor text AA/subpixel and small spacing/rounding differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 348022,
-    "diff_percent": 36.2523,
-    "perceptual": 0.6144,
+    "diff_pixels": 223137,
+    "diff_percent": 23.2434,
+    "perceptual": 0.0875,
     "first_mismatch": {
-      "x": 629,
-      "y": 298,
+      "x": 22,
+      "y": 23,
       "baseline_rgba": [
-        254,
-        254,
-        254,
+        176,
+        176,
+        176,
         255
       ],
       "rendered_rgba": [
-        255,
-        255,
-        255,
+        200,
+        200,
+        200,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "b7efc5bf2098edaa669885291d76019f3749209b"
   },
   "hotspot": "layout",
   "failure_stage": null,
