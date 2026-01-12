@@ -4318,10 +4318,11 @@ fn window_scroll_to_native(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let (x, y) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
+
   let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
     return Ok(Value::Undefined);
   };
-  let (x, y) = parse_scroll_offsets_from_args(vm, scope, document, hooks, args)?;
 
   let desired = crate::geometry::Point::new(x, y);
   let Ok(clamped) = document.clamp_viewport_scroll_offset(desired) else {
@@ -4340,10 +4341,11 @@ fn window_scroll_by_native(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let (dx, dy) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
+
   let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
     return Ok(Value::Undefined);
   };
-  let (dx, dy) = parse_scroll_offsets_from_args(vm, scope, document, hooks, args)?;
   let current = document.viewport_scroll_offset();
   let desired = crate::geometry::Point::new(
     sanitize_scroll_coord(current.x as f64 + dx as f64),
@@ -36724,6 +36726,7 @@ fn init_window_globals(
   drop(scope);
   crate::js::window_abort::install_window_abort_bindings(vm, realm, heap)?;
   crate::js::window_intersection_observer::install_window_intersection_observer_bindings(vm, realm, heap)?;
+  crate::js::window_resize_observer::install_window_resize_observer_bindings(vm, realm, heap)?;
   crate::js::window_crypto::install_window_crypto_bindings(vm, realm, heap)?;
   crate::js::window_css::install_window_css_bindings(vm, realm, heap)?;
   // Streams APIs (`ReadableStream`/`WritableStream`/`TransformStream`) are used by many real-world

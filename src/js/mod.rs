@@ -114,6 +114,8 @@ pub mod window_fetch;
 pub mod window_form_data;
 #[path = "vmjs/window_intersection_observer.rs"]
 pub mod window_intersection_observer;
+#[path = "vmjs/window_resize_observer.rs"]
+pub mod window_resize_observer;
 #[path = "vmjs/window_realm.rs"]
 pub mod window_realm;
 #[path = "vmjs/window_timers.rs"]
