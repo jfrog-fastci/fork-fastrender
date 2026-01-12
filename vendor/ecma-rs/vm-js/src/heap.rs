@@ -7158,8 +7158,11 @@ mod detached_array_buffer_tests {
       Ok(_) => panic!("expected error for out-of-bounds Uint8Array view"),
     }
 
-    let wrote = scope.heap_mut().uint8_array_write(view, 0, &[1])?;
-    assert_eq!(wrote, 0);
+    match scope.heap_mut().uint8_array_write(view, 0, &[1]) {
+      Err(VmError::TypeError(_)) => {}
+      Err(other) => panic!("expected TypeError, got {other:?}"),
+      Ok(_) => panic!("expected error for write to out-of-bounds Uint8Array view"),
+    }
 
     Ok(())
   }

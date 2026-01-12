@@ -5,7 +5,7 @@ use std::process;
 
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
-  eprintln!("  scenario: eval | function | number | parseFloat");
+  eprintln!("  scenario: eval | function | generator | number | parseFloat");
   process::exit(2);
 }
 
@@ -115,6 +115,7 @@ fn main() {
   let script = match scenario.as_str() {
     "eval" => "eval(S)",
     "function" => "Function(S, 'return 1;')",
+    "generator" => "Object.getPrototypeOf(function*(){}).constructor(S)",
     "number" => "Number(S)",
     "parseFloat" => "parseFloat(S)",
     other => {

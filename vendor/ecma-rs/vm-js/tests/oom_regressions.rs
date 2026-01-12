@@ -59,6 +59,13 @@ fn function_constructor_large_string_does_not_abort_on_oom() {
 }
 
 #[test]
+fn generator_function_constructor_large_string_does_not_abort_on_oom() {
+  // `%GeneratorFunction%` (reachable via `Object.getPrototypeOf(function*(){}).constructor`) should
+  // not abort when asked to build enormous source strings.
+  run_oom_harness("generator", 15_000_000);
+}
+
+#[test]
 fn number_conversion_large_string_does_not_abort_on_oom() {
   // Large `Number(string)` conversion should not abort even when the UTF-16→UTF-8 conversion
   // cannot allocate.
