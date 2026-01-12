@@ -24,9 +24,12 @@
 
 use vm_js::iterator;
 use vm_js::{
-  GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
-  VmHost, VmHostHooks,
+  GcObject, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+  VmError, VmHost, VmHostHooks,
 };
+
+const ABORT_CONTROLLER_HOST_TAG: u64 = 0x4142_4F52_5443_5452; // "ABORTCTR"
+const ABORT_SIGNAL_HOST_TAG: u64 = 0x4142_4F52_5453_4947; // "ABORTSIG"
 
 const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_signal";
 const SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
@@ -103,32 +106,32 @@ fn require_object(this: Value, err: &'static str) -> Result<GcObject, VmError> {
   }
 }
 
-fn require_abort_signal(
-  scope: &mut Scope<'_>,
+fn require_abort_controller(
+  scope: &Scope<'_>,
   this: Value,
   err: &'static str,
 ) -> Result<GcObject, VmError> {
   let obj = require_object(this, err)?;
-  let brand = get_own_data_prop(scope, obj, SIGNAL_BRAND_KEY)?;
-  if matches!(brand, Value::Bool(true)) {
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError(err));
+  };
+  if slots.a == ABORT_CONTROLLER_HOST_TAG {
     Ok(obj)
   } else {
     Err(VmError::TypeError(err))
   }
 }
 
-fn require_abort_signal_with_brand_key(
-  scope: &mut Scope<'_>,
+fn require_abort_signal(
+  scope: &Scope<'_>,
   this: Value,
-  brand_key: &PropertyKey,
   err: &'static str,
 ) -> Result<GcObject, VmError> {
   let obj = require_object(this, err)?;
-  let brand = scope
-    .heap()
-    .object_get_own_data_property_value(obj, brand_key)?
-    .unwrap_or(Value::Undefined);
-  if matches!(brand, Value::Bool(true)) {
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError(err));
+  };
+  if slots.a == ABORT_SIGNAL_HOST_TAG {
     Ok(obj)
   } else {
     Err(VmError::TypeError(err))
@@ -320,6 +323,13 @@ fn abort_controller_ctor_construct(
       .heap_mut()
       .object_set_prototype(controller, Some(proto))?;
   }
+  scope.heap_mut().object_set_host_slots(
+    controller,
+    HostSlots {
+      a: ABORT_CONTROLLER_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Create the associated signal.
   let signal_proto = match get_own_data_prop(scope, ctor, "__fastrender_abort_signal_proto")? {
@@ -333,6 +343,13 @@ fn abort_controller_ctor_construct(
 
   let signal = scope.alloc_object_with_prototype(Some(signal_proto))?;
   scope.push_root(Value::Object(signal))?;
+  scope.heap_mut().object_set_host_slots(
+    signal,
+    HostSlots {
+      a: ABORT_SIGNAL_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_own_data_prop(
     scope,
     signal,
@@ -412,7 +429,7 @@ fn abort_controller_abort_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let controller = require_object(this, "AbortController.abort: illegal invocation")?;
+  let controller = require_abort_controller(scope, this, "AbortController.abort: illegal invocation")?;
   let signal_val = get_own_data_prop(scope, controller, CONTROLLER_SIGNAL_INTERNAL_KEY)?;
   let Value::Object(signal_obj) = signal_val else {
     return Err(VmError::TypeError(
@@ -521,6 +538,13 @@ fn abort_signal_static_abort_native(
 
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
+  scope.heap_mut().object_set_host_slots(
+    signal,
+    HostSlots {
+      a: ABORT_SIGNAL_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_own_data_prop(
     scope,
     signal,
@@ -603,6 +627,13 @@ fn abort_signal_static_timeout_native(
   // Create the signal and schedule a `setTimeout` to abort it.
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
+  scope.heap_mut().object_set_host_slots(
+    signal,
+    HostSlots {
+      a: ABORT_SIGNAL_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_own_data_prop(
     scope,
     signal,
@@ -736,6 +767,13 @@ fn abort_signal_static_any_native(
 
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
+  scope.heap_mut().object_set_host_slots(
+    signal,
+    HostSlots {
+      a: ABORT_SIGNAL_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_own_data_prop(
     scope,
     signal,
@@ -789,7 +827,6 @@ fn abort_signal_static_any_native(
 
   // Pre-allocate frequently accessed property keys so we do not repeatedly allocate strings while
   // consuming large iterables.
-  let signal_brand_key = alloc_key(scope, SIGNAL_BRAND_KEY)?;
   let aborted_key = alloc_key(scope, "aborted")?;
   let reason_key = alloc_key(scope, "reason")?;
 
@@ -823,12 +860,8 @@ fn abort_signal_static_any_native(
         // Root the yielded value while we validate it and read its state.
         let mut iter_scope = scope.reborrow();
         iter_scope.push_root(item)?;
-        let source_signal = require_abort_signal_with_brand_key(
-          &mut iter_scope,
-          item,
-          &signal_brand_key,
-          "AbortSignal.any input is not an AbortSignal",
-        )?;
+        let source_signal =
+          require_abort_signal(&iter_scope, item, "AbortSignal.any input is not an AbortSignal")?;
 
         let aborted_val = iter_scope
           .heap()

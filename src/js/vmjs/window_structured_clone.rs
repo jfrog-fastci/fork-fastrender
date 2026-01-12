@@ -2154,6 +2154,22 @@ mod tests {
        })()",
     )?;
     assert_eq!(get_string(&realm, name), "DataCloneError");
+
+    let controller = realm.exec_script(
+      "(() => {\
+         try { structuredClone(new AbortController()); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, controller), "DataCloneError");
+
+    let signal = realm.exec_script(
+      "(() => {\
+         try { structuredClone(new AbortController().signal); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, signal), "DataCloneError");
     Ok(())
   }
 

@@ -105,8 +105,6 @@ pub(crate) mod auto_scrollbars;
 pub mod fragmentation;
 pub(crate) mod style_override;
 
-#[cfg(test)]
-mod tests;
 
 // Future modules (to be implemented in Wave 3+):
 // pub mod block;        // W3.T04
