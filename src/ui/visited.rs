@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 use std::time::SystemTime;
 
+use super::about_pages;
+use super::GlobalHistoryStore;
+
 /// Default maximum number of unique visited URLs stored in-memory.
 ///
 /// This is intentionally bounded so the UI thread can offer omnibox suggestions without
@@ -81,6 +84,49 @@ impl VisitedUrlStore {
 
     while self.records.len() > self.capacity {
       self.records.pop_front();
+    }
+  }
+
+  /// Populate the visited URL store from a persisted [`GlobalHistoryStore`].
+  ///
+  /// This is intended for startup seeding so omnibox history suggestions survive browser restarts.
+  ///
+  /// Behaviour:
+  /// - Orders history entries by `visited_at_ms` (oldest → newest), falling back to file order for
+  ///   missing timestamps.
+  /// - Deduplicates by URL using the same logic as [`VisitedUrlStore::record_visit`].
+  /// - Filters `about:` URLs so internal pages like `about:newtab` do not pollute omnibox history.
+  /// - Enforces the store's configured capacity.
+  pub fn extend_from_global_history(&mut self, history: &GlobalHistoryStore) {
+    if self.capacity == 0 || history.entries.is_empty() {
+      return;
+    }
+
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let mut ordered: Vec<(u64, usize)> = history
+      .entries
+      .iter()
+      .enumerate()
+      .map(|(idx, entry)| (entry.visited_at_ms.unwrap_or(0), idx))
+      .collect();
+
+    // Sort by timestamp (ascending); include the original index to make ordering deterministic and
+    // preserve file order for equal/missing timestamps.
+    ordered.sort();
+
+    for (_ts, idx) in ordered {
+      let entry = &history.entries[idx];
+      if about_pages::is_about_url(&entry.url) {
+        continue;
+      }
+
+      let visited_at_ms = entry.visited_at_ms.unwrap_or(idx as u64);
+      let visited_at = UNIX_EPOCH
+        .checked_add(Duration::from_millis(visited_at_ms))
+        .unwrap_or(UNIX_EPOCH);
+
+      self.record_visit_at(entry.url.clone(), entry.title.clone(), visited_at);
     }
   }
 
@@ -213,5 +259,78 @@ mod tests {
 
     let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
     assert_eq!(urls, vec!["c", "b"]);
+  }
+
+  #[test]
+  fn seed_from_global_history_dedups_orders_by_timestamp_and_preserves_titles() {
+    let history = GlobalHistoryStore {
+      entries: vec![
+        super::super::GlobalHistoryEntry {
+          url: "https://a.example/".to_string(),
+          title: Some("A".to_string()),
+          visited_at_ms: Some(2_000),
+        },
+        // More recent, but missing title; should not clobber previous title for the same URL.
+        super::super::GlobalHistoryEntry {
+          url: "https://a.example/".to_string(),
+          title: None,
+          visited_at_ms: Some(6_000),
+        },
+        // Out-of-order timestamp compared to file order: this should still be newer than `c`.
+        super::super::GlobalHistoryEntry {
+          url: "https://b.example/".to_string(),
+          title: Some("B".to_string()),
+          visited_at_ms: Some(5_000),
+        },
+        super::super::GlobalHistoryEntry {
+          url: "https://c.example/".to_string(),
+          title: Some("C".to_string()),
+          visited_at_ms: Some(3_000),
+        },
+      ],
+    };
+
+    let mut store = VisitedUrlStore::new();
+    store.extend_from_global_history(&history);
+
+    assert_eq!(store.len(), 3);
+
+    let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
+    assert_eq!(
+      urls,
+      vec!["https://a.example/", "https://b.example/", "https://c.example/"]
+    );
+
+    let a = store.iter_recent().next().unwrap();
+    assert_eq!(a.title.as_deref(), Some("A"));
+    assert_eq!(
+      a.last_visited,
+      std::time::UNIX_EPOCH + Duration::from_millis(6_000)
+    );
+  }
+
+  #[test]
+  fn seed_from_global_history_filters_about_urls() {
+    let history = GlobalHistoryStore {
+      entries: vec![
+        super::super::GlobalHistoryEntry {
+          url: "about:newtab".to_string(),
+          title: Some("New Tab".to_string()),
+          visited_at_ms: Some(10_000),
+        },
+        super::super::GlobalHistoryEntry {
+          url: "https://example.com/".to_string(),
+          title: Some("Example".to_string()),
+          visited_at_ms: Some(11_000),
+        },
+      ],
+    };
+
+    let mut store = VisitedUrlStore::new();
+    store.extend_from_global_history(&history);
+
+    assert_eq!(store.len(), 1);
+    let record = store.iter_recent().next().unwrap();
+    assert_eq!(record.url, "https://example.com/");
   }
 }

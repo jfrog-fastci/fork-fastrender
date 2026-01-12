@@ -58,7 +58,6 @@ pub mod icons;
 pub mod theme;
 
 // Profile persistence helpers + debounced autosave worker.
-#[cfg(feature = "browser_ui")]
 pub mod profile_autosave;
 
 #[cfg(feature = "browser_ui")]
@@ -144,7 +143,6 @@ pub use session::{BrowserSession, BrowserSessionTab, BrowserSessionWindow, Brows
 pub use session_autosave::SessionAutosave;
 #[cfg(feature = "browser_ui")]
 pub use icons::{icon, icon_button, icon_tinted, spinner, BrowserIcon};
-#[cfg(feature = "browser_ui")]
 pub use profile_autosave::{
   bookmarks_path, history_path, load_bookmarks, load_history, save_bookmarks_atomic,
   save_history_atomic, AutosaveMsg, BookmarkStore, ProfileAutosaveHandle,

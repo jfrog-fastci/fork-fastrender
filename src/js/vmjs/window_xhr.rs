@@ -2965,13 +2965,14 @@ mod tests {
     let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
     let global = realm.global_object();
-    assert_eq!(get_string(scope.heap(), get_prop(&mut scope, global, "__hdr")), "value");
-    assert_eq!(
-      get_string(scope.heap(), get_prop(&mut scope, global, "__multi")),
-      "a, b"
-    );
+    let hdr = get_prop(&mut scope, global, "__hdr");
+    assert_eq!(get_string(scope.heap(), hdr), "value");
+
+    let multi = get_prop(&mut scope, global, "__multi");
+    assert_eq!(get_string(scope.heap(), multi), "a, b");
     assert_eq!(get_prop(&mut scope, global, "__cookie"), Value::Null);
-    let all = get_string(scope.heap(), get_prop(&mut scope, global, "__all"));
+    let all_value = get_prop(&mut scope, global, "__all");
+    let all = get_string(scope.heap(), all_value);
     assert!(all.contains("X-Test: value\r\n"), "all={all:?}");
     assert!(all.contains("X-Multi: a, b\r\n"), "all={all:?}");
     assert!(!all.to_ascii_lowercase().contains("set-cookie"), "all={all:?}");

@@ -1985,6 +1985,7 @@ impl App {
     let debug_log_ui_enabled = debug_log_ui_enabled();
 
     let mut browser_state = fastrender::ui::BrowserAppState::new();
+    browser_state.visited.extend_from_global_history(&history);
     browser_state.history = history;
 
     Ok(Self {

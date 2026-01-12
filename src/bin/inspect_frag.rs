@@ -1812,7 +1812,10 @@ mod tests {
       input.html.contains("scrollbar-width: none"),
       "expected patched HTML to hide scrollbars"
     );
-    let expected_base = format!("<base href=\"{}\">", file_url_for_path(&html_path));
+    let expected_base = format!(
+      "<base href=\"{}\">",
+      common::file_url::file_url_for_path(&html_path)
+    );
     assert!(
       input.html.contains(&expected_base),
       "expected patched HTML to include base href injection; expected fragment {expected_base:?}"

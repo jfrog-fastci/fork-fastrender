@@ -1,5 +1,3 @@
-#![cfg(feature = "browser_ui")]
-
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -51,11 +49,14 @@ pub fn bookmarks_path() -> PathBuf {
     }
   }
 
-  if let Some(base_dirs) = directories::BaseDirs::new() {
-    return base_dirs
-      .config_dir()
-      .join("fastrender")
-      .join(BOOKMARKS_FILE_NAME);
+  #[cfg(feature = "browser_ui")]
+  {
+    if let Some(base_dirs) = directories::BaseDirs::new() {
+      return base_dirs
+        .config_dir()
+        .join("fastrender")
+        .join(BOOKMARKS_FILE_NAME);
+    }
   }
 
   PathBuf::from(format!("./{BOOKMARKS_FILE_NAME}"))
@@ -74,11 +75,14 @@ pub fn history_path() -> PathBuf {
     }
   }
 
-  if let Some(base_dirs) = directories::BaseDirs::new() {
-    return base_dirs
-      .config_dir()
-      .join("fastrender")
-      .join(HISTORY_FILE_NAME);
+  #[cfg(feature = "browser_ui")]
+  {
+    if let Some(base_dirs) = directories::BaseDirs::new() {
+      return base_dirs
+        .config_dir()
+        .join("fastrender")
+        .join(HISTORY_FILE_NAME);
+    }
   }
 
   PathBuf::from(format!("./{HISTORY_FILE_NAME}"))
