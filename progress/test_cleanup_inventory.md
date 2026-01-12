@@ -110,7 +110,7 @@ migrations.
 | `tests/api/` | public API integration tests | `tests/integration.rs::api` | Must only use public API. |
 | `tests/accessibility/` | accessibility/accname fixtures + assertions | `tests/integration.rs::accessibility` | Public API + fixture-driven; stays in integration. |
 | `tests/allocation_failure/` | OOM + custom allocator harness | `tests/allocation_failure.rs` | Must stay separate due to `#[global_allocator]`. |
-| `tests/animation/` | animation engine tests | `src/animation/` | Runs in the shared integration binary via `tests/integration.rs` today; long-term goal is to migrate unit-level animation tests into `src/animation/**`. |
+| `tests/animation/` | animation engine tests | `src/animation/` | Runs in the shared integration binary via `tests/integration.rs` today; long-term goal is to migrate unit-level animation tests into `src/animation/**`. Former top-level `tests/animation_tests.rs` is now `tests/animation/animation_tests.rs`. |
 | `tests/bin/` | CLI/binary tests | `tests/integration.rs::bin` | Keep as integration tests; share net/fs helpers via `tests/common/`. |
 | `tests/browser_integration/` | browser/UI worker integration suite | `tests/integration.rs::browser_integration` | Runs in the shared integration binary; avoid process-init env mutation. Tests that touch global state should serialize via `stage_listener_test_lock()` / `common::global_test_lock()`. |
 | `tests/bundled/` | bundled font fixture tests | `tests/integration.rs::bundled` | Integration-style fixture assertions. |
