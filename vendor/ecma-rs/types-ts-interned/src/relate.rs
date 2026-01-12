@@ -3185,8 +3185,21 @@ impl<'a> RelateCtx<'a> {
 
     match (&src.this_param, &dst.this_param) {
       (Some(s), Some(d)) => {
-        let related =
-          self.relate_internal(*d, *s, RelationKind::Assignable, mode, record, depth + 1);
+        // Method signatures in TypeScript are bivariant under
+        // `strictFunctionTypes` (mirrored here via `BIVARIANT_PARAMS`). Apply the
+        // same behavior to the implicit/explicit `this` parameter so that class
+        // methods can satisfy interface methods (their receiver types differ).
+        let related = if allow_bivariance {
+          let forward =
+            self.relate_internal(*d, *s, RelationKind::Assignable, mode, record, depth + 1);
+          if forward.result {
+            forward
+          } else {
+            self.relate_internal(*s, *d, RelationKind::Assignable, mode, record, depth + 1)
+          }
+        } else {
+          self.relate_internal(*d, *s, RelationKind::Assignable, mode, record, depth + 1)
+        };
         if record {
           children.push(related.reason);
         }

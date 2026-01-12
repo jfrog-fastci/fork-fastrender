@@ -117,9 +117,13 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       } => {
         let params = self.lower_type_param_decls(type_params, names);
         let mut shape = Shape::new();
+        let this_ty = self.store.intern_type(TypeKind::Ref {
+          def: owner,
+          args: Vec::new(),
+        });
 
         for member in members.iter() {
-          self.lower_member(&mut shape, *member, names);
+          self.lower_member(&mut shape, *member, names, Some(this_ty));
         }
 
         let mut types: Vec<TypeId> = Vec::new();
@@ -722,7 +726,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
         } else {
           let mut shape = Shape::new();
           for member in obj.members.iter() {
-            self.lower_member(&mut shape, *member, names);
+            self.lower_member(&mut shape, *member, names, None);
           }
           let shape_id = self.store.intern_shape(shape);
           let obj = self.store.intern_object(ObjectType { shape: shape_id });
@@ -1321,6 +1325,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
     shape: &mut Shape,
     member: TypeMemberId,
     names: &hir_js::NameInterner,
+    this_ty: Option<TypeId>,
   ) {
     let Some(member) = self.arenas().type_members.get(member.0 as usize).cloned() else {
       return;
@@ -1332,7 +1337,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
         }
       }
       TypeMemberKind::Method(method) => {
-        if let Some((key, ty)) = self.lower_method(&method, names) {
+        if let Some((key, ty)) = self.lower_method(&method, names, this_ty) {
           shape.properties.push(Property {
             key,
             data: PropData {
@@ -1451,12 +1456,16 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
     &mut self,
     method: &hir_js::TypeMethodSignature,
     names: &hir_js::NameInterner,
+    this_ty: Option<TypeId>,
   ) -> Option<(PropKey, TypeId)> {
     let key = self.prop_key_from_name(&method.name, names)?;
     let prev_params = self.type_params.clone();
     let prev_names = self.type_param_names.clone();
     let type_params = self.lower_type_param_decls(&method.type_params, names);
-    let (this_param, params) = self.lower_fn_params(&method.params, names);
+    let (mut this_param, params) = self.lower_fn_params(&method.params, names);
+    if this_param.is_none() {
+      this_param = this_ty;
+    }
     let sig = Signature {
       params,
       ret: method
