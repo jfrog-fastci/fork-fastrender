@@ -6227,8 +6227,8 @@ fn get_promise_resolve(
   let mut key_scope = scope.reborrow();
   key_scope.push_root(constructor)?;
   let resolve_key = string_key(&mut key_scope, "resolve")?;
-  let resolve =
-    key_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, c, resolve_key, constructor)?;
+  // Spec: `GetPromiseResolve(C)` uses `Get(C, "resolve")`, which must be Proxy-aware.
+  let resolve = key_scope.get_with_host_and_hooks(vm, host, hooks, c, resolve_key, constructor)?;
   if !key_scope.heap().is_callable(resolve)? {
     return throw_type_error(vm, &mut key_scope, hooks, "Promise resolve is not callable");
   }
@@ -6310,8 +6310,8 @@ fn invoke_thenable_then(
   };
 
   let then_key = string_key(&mut invoke_scope, "then")?;
-  let then =
-    invoke_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, then_key, next_promise)?;
+  // Spec: `Invoke(V, P)` uses `GetV(V, P)` / `[[Get]]`, which must be Proxy-aware.
+  let then = invoke_scope.get_with_host_and_hooks(vm, host, hooks, obj, then_key, next_promise)?;
   if !invoke_scope.heap().is_callable(then)? {
     let err = create_type_error(vm, &mut invoke_scope, hooks, "Promise then is not callable")?;
     return Err(VmError::Throw(err));
