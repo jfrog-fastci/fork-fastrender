@@ -475,3 +475,178 @@ fn await_in_while_loop_preserves_microtask_order() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, value), "startb0m0a0b1m1a1end");
   Ok(())
 }
+
+#[test]
+fn await_in_for_loop_body() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var s = "";
+        for (var i = 0; i < 2; i++) {
+          s = s + await Promise.resolve("a");
+        }
+        return s;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "aa");
+  Ok(())
+}
+
+#[test]
+fn await_in_for_of_loop_body() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var s = "";
+        for (var x of ["a", "b"]) {
+          s = s + await Promise.resolve(x);
+        }
+        return s;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ab");
+  Ok(())
+}
+
+#[test]
+fn await_in_switch_case_body() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var x = 1;
+        var s = "";
+        switch (x) {
+          case 1:
+            s = await Promise.resolve("ok");
+            break;
+          default:
+            s = "bad";
+        }
+        return s;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_do_while_loop_body() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var s = "";
+        var i = 0;
+        do {
+          s = s + await Promise.resolve("a");
+          i++;
+        } while (i < 2);
+        return s;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "aa");
+  Ok(())
+}
+
+#[test]
+fn break_and_continue_across_await_in_loop_body() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var s = "";
+        for (var i = 0; i < 3; i++) {
+          await 0;
+          if (i == 1) {
+            continue;
+          }
+          s = s + i;
+          if (i == 2) {
+            break;
+          }
+        }
+        return s;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "02");
+  Ok(())
+}
+
+#[test]
+fn logical_short_circuit_skips_await_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var side = "";
+        false && (side = await Promise.resolve("bad"));
+        true || (side = await Promise.resolve("bad2"));
+        return side === "" ? "ok" : "bad:" + side;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}

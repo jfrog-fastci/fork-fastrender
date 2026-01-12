@@ -7024,6 +7024,100 @@ enum AsyncFrame {
     v_root: RootId,
   },
 
+  /// Continue a `do..while` loop after evaluating the body statement.
+  DoWhileAfterBody {
+    stmt: *const DoWhileStmt,
+    label_set: Vec<String>,
+    v_root: RootId,
+  },
+  /// Continue a `do..while` loop after evaluating the test expression.
+  DoWhileAfterTest {
+    stmt: *const DoWhileStmt,
+    label_set: Vec<String>,
+    v_root: RootId,
+  },
+
+  /// Continue a `for (init; cond; post) { ... }` loop after evaluating the initializer.
+  ForTripleAfterInit {
+    stmt: *const ForTripleStmt,
+    label_set: Vec<String>,
+    v_root: RootId,
+    needs_explicit_iter_tick: bool,
+  },
+  /// Continue a `for (init; cond; post) { ... }` loop after evaluating the test expression.
+  ForTripleAfterTest {
+    stmt: *const ForTripleStmt,
+    label_set: Vec<String>,
+    v_root: RootId,
+    needs_explicit_iter_tick: bool,
+  },
+  /// Continue a `for (init; cond; post) { ... }` loop after evaluating the body.
+  ForTripleAfterBody {
+    stmt: *const ForTripleStmt,
+    label_set: Vec<String>,
+    v_root: RootId,
+    needs_explicit_iter_tick: bool,
+  },
+  /// Continue a `for (init; cond; post) { ... }` loop after evaluating the post expression.
+  ForTripleAfterPost {
+    stmt: *const ForTripleStmt,
+    label_set: Vec<String>,
+    v_root: RootId,
+    needs_explicit_iter_tick: bool,
+  },
+
+  /// Continue a `for..in` loop after evaluating the RHS expression.
+  ForInAfterRhs {
+    stmt: *const ForInStmt,
+    label_set: Vec<String>,
+  },
+  /// Continue a `for..in` loop after evaluating the body statement list for one iteration.
+  ForInAfterBody {
+    stmt: *const ForInStmt,
+    label_set: Vec<String>,
+    object_root: RootId,
+    key_roots: Vec<RootId>,
+    next_key_index: usize,
+    v_root: RootId,
+    outer_lex: GcEnv,
+  },
+
+  /// Continue a `for..of` loop after evaluating the RHS iterable expression.
+  ForOfAfterRhs {
+    stmt: *const ForOfStmt,
+    label_set: Vec<String>,
+  },
+  /// Continue a `for..of` loop after evaluating the body statement list for one iteration.
+  ForOfAfterBody {
+    stmt: *const ForOfStmt,
+    label_set: Vec<String>,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
+    v_root: RootId,
+    outer_lex: GcEnv,
+  },
+
+  /// Continue a `switch` statement after evaluating the discriminant expression.
+  SwitchAfterDiscriminant {
+    stmt: *const SwitchStmt,
+  },
+  /// Continue a `switch` statement after evaluating a case selector expression.
+  SwitchAfterCaseExpr {
+    stmt: *const SwitchStmt,
+    discriminant_root: RootId,
+    v_root: RootId,
+    default_index: Option<usize>,
+    branch_index: usize,
+  },
+  /// Continue a `switch` statement after evaluating a case body statement list.
+  SwitchAfterBody {
+    stmt: *const SwitchStmt,
+    discriminant_root: RootId,
+    v_root: RootId,
+    next_branch_index: usize,
+  },
+
   /// Continue a `try` statement after evaluating the wrapped block.
   TryAfterWrapped {
     stmt: *const TryStmt,
@@ -7071,6 +7165,20 @@ enum AsyncFrame {
   BinaryAfterRight {
     expr: *const BinaryExpr,
     left_root: RootId,
+  },
+
+  /// Continue an assignment expression after evaluating the RHS (binding target).
+  AssignAfterRhsBinding {
+    name: *const String,
+  },
+  /// Continue an assignment expression after evaluating the RHS (property target).
+  AssignAfterRhsProperty {
+    base_root: RootId,
+    key_root: RootId,
+  },
+  /// Continue a destructuring assignment after evaluating the RHS.
+  AssignAfterRhsPattern {
+    expr: *const BinaryExpr,
   },
 
   /// Continue a call expression while evaluating arguments.
@@ -7197,13 +7305,57 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     AsyncFrame::StmtList {
       last_value_root, ..
     } => heap.remove_root(*last_value_root),
-    AsyncFrame::WhileAfterTest { v_root, .. } | AsyncFrame::WhileAfterBody { v_root, .. } => {
-      heap.remove_root(*v_root)
+    AsyncFrame::WhileAfterTest { v_root, .. }
+    | AsyncFrame::WhileAfterBody { v_root, .. }
+    | AsyncFrame::DoWhileAfterBody { v_root, .. }
+    | AsyncFrame::DoWhileAfterTest { v_root, .. }
+    | AsyncFrame::ForTripleAfterInit { v_root, .. }
+    | AsyncFrame::ForTripleAfterTest { v_root, .. }
+    | AsyncFrame::ForTripleAfterBody { v_root, .. }
+    | AsyncFrame::ForTripleAfterPost { v_root, .. } => heap.remove_root(*v_root),
+    AsyncFrame::ForInAfterBody {
+      object_root,
+      key_roots,
+      v_root,
+      ..
+    } => {
+      heap.remove_root(*object_root);
+      heap.remove_root(*v_root);
+      for id in key_roots.drain(..) {
+        heap.remove_root(id);
+      }
+    }
+    AsyncFrame::ForOfAfterBody {
+      iterator_root,
+      next_method_root,
+      v_root,
+      ..
+    } => {
+      heap.remove_root(*iterator_root);
+      heap.remove_root(*next_method_root);
+      heap.remove_root(*v_root);
+    }
+    AsyncFrame::SwitchAfterCaseExpr {
+      discriminant_root,
+      v_root,
+      ..
+    }
+    | AsyncFrame::SwitchAfterBody {
+      discriminant_root,
+      v_root,
+      ..
+    } => {
+      heap.remove_root(*discriminant_root);
+      heap.remove_root(*v_root);
     }
     AsyncFrame::TryAfterFinally { pending } => pending.teardown(heap),
     AsyncFrame::ComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::CallComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::BinaryAfterRight { left_root, .. } => heap.remove_root(*left_root),
+    AsyncFrame::AssignAfterRhsProperty { base_root, key_root } => {
+      heap.remove_root(*base_root);
+      heap.remove_root(*key_root);
+    }
     AsyncFrame::CallArgs {
       callee_root,
       this_root,
@@ -7637,6 +7789,50 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     Stmt::While(while_stmt) => {
       expr_contains_await(&while_stmt.stx.condition) || stmt_contains_await(&while_stmt.stx.body)
     }
+    Stmt::DoWhile(do_while) => {
+      expr_contains_await(&do_while.stx.condition) || stmt_contains_await(&do_while.stx.body)
+    }
+    Stmt::ForTriple(for_stmt) => {
+      let init_has_await = match &for_stmt.stx.init {
+        parse_js::ast::stmt::ForTripleStmtInit::None => false,
+        parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => expr_contains_await(expr),
+        parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) => decl
+          .stx
+          .declarators
+          .iter()
+          .any(|d| d.initializer.as_ref().is_some_and(expr_contains_await)),
+      };
+ 
+      init_has_await
+        || for_stmt.stx.cond.as_ref().is_some_and(expr_contains_await)
+        || for_stmt.stx.post.as_ref().is_some_and(expr_contains_await)
+        || for_stmt
+          .stx
+          .body
+          .stx
+          .body
+          .iter()
+          .any(stmt_contains_await)
+    }
+    Stmt::ForIn(for_in) => {
+      expr_contains_await(&for_in.stx.rhs)
+        || for_in.stx.body.stx.body.iter().any(stmt_contains_await)
+    }
+    Stmt::ForOf(for_of) => {
+      expr_contains_await(&for_of.stx.rhs)
+        || for_of.stx.body.stx.body.iter().any(stmt_contains_await)
+    }
+    Stmt::Switch(switch_stmt) => {
+      expr_contains_await(&switch_stmt.stx.test)
+        || switch_stmt.stx.branches.iter().any(|branch| {
+          branch
+            .stx
+            .case
+            .as_ref()
+            .is_some_and(expr_contains_await)
+            || branch.stx.body.iter().any(stmt_contains_await)
+        })
+    }
     // Conservatively assume unsupported statement kinds do not contain await so we preserve the
     // existing synchronous evaluator behaviour for them.
     _ => false,
@@ -7910,6 +8106,7 @@ fn async_eval_stmt_labelled(
   }
 
   let res = match &*stmt.stx {
+    Stmt::Empty(_) => Ok(AsyncEval::Complete(Completion::empty())),
     Stmt::Expr(expr_stmt) => match async_eval_expr(evaluator, scope, &expr_stmt.stx.expr) {
       Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(Completion::normal(v))),
       Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -7930,6 +8127,7 @@ fn async_eval_stmt_labelled(
       None => Ok(AsyncEval::Complete(Completion::Return(Value::Undefined))),
     },
     Stmt::VarDecl(decl) => async_eval_var_decl(evaluator, scope, &decl.stx, 0),
+    Stmt::Debugger(_) => Ok(AsyncEval::Complete(Completion::empty())),
     Stmt::Block(block) => async_eval_block_stmt(evaluator, scope, &block.stx),
     Stmt::If(if_stmt) => {
       match async_eval_expr(evaluator, scope, &if_stmt.stx.test) {
@@ -7961,6 +8159,13 @@ fn async_eval_stmt_labelled(
     }
     Stmt::Try(try_stmt) => async_eval_try(evaluator, scope, &try_stmt.stx),
     Stmt::While(while_stmt) => async_eval_while(evaluator, scope, &while_stmt.stx, label_set),
+    Stmt::DoWhile(do_while) => async_eval_do_while(evaluator, scope, &do_while.stx, label_set),
+    Stmt::ForTriple(for_stmt) => async_eval_for_triple(evaluator, scope, &for_stmt.stx, label_set),
+    Stmt::ForIn(for_stmt) => async_eval_for_in(evaluator, scope, &for_stmt.stx, label_set),
+    Stmt::ForOf(for_stmt) => async_eval_for_of(evaluator, scope, &for_stmt.stx, label_set),
+    Stmt::Switch(switch_stmt) => async_eval_switch(evaluator, scope, &switch_stmt.stx),
+    Stmt::Break(break_stmt) => Ok(AsyncEval::Complete(Completion::Break(break_stmt.stx.label.clone(), None))),
+    Stmt::Continue(cont_stmt) => Ok(AsyncEval::Complete(Completion::Continue(cont_stmt.stx.label.clone(), None))),
     _ => Err(VmError::Unimplemented("await in statement type")),
   };
 
@@ -8149,11 +8354,9 @@ fn async_eval_while(
     .map_err(|_| VmError::OutOfMemory)?;
   label_vec.extend_from_slice(label_set);
 
-  match async_eval_expr(evaluator, scope, &stmt.condition)? {
-    AsyncEval::Complete(test) => {
-      async_while_after_test(evaluator, scope, stmt, label_vec, v_root, test)
-    }
-    AsyncEval::Suspend(mut suspend) => {
+  match async_eval_expr(evaluator, scope, &stmt.condition) {
+    Ok(AsyncEval::Complete(test)) => async_while_after_test(evaluator, scope, stmt, label_vec, v_root, test),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::WhileAfterTest {
@@ -8163,6 +8366,10 @@ fn async_eval_while(
         },
       )?;
       Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      scope.heap_mut().remove_root(v_root);
+      Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
     }
   }
 }
@@ -8186,7 +8393,7 @@ fn async_while_after_test(
     return Ok(AsyncEval::Complete(result));
   }
 
-  match async_eval_stmt_labelled(evaluator, scope, &stmt.body, &label_set)? {
+  match async_eval_stmt_labelled(evaluator, scope, &stmt.body, &[])? {
     AsyncEval::Complete(c) => async_while_after_body(evaluator, scope, stmt, label_set, v_root, c),
     AsyncEval::Suspend(mut suspend) => {
       async_frames_push(
@@ -8226,11 +8433,9 @@ fn async_while_after_body(
     scope.heap_mut().set_root(v_root, v);
   }
 
-  match async_eval_expr(evaluator, scope, &stmt.condition)? {
-    AsyncEval::Complete(test) => {
-      async_while_after_test(evaluator, scope, stmt, label_set, v_root, test)
-    }
-    AsyncEval::Suspend(mut suspend) => {
+  match async_eval_expr(evaluator, scope, &stmt.condition) {
+    Ok(AsyncEval::Complete(test)) => async_while_after_test(evaluator, scope, stmt, label_set, v_root, test),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::WhileAfterTest {
@@ -8241,7 +8446,1345 @@ fn async_while_after_body(
       )?;
       Ok(AsyncEval::Suspend(suspend))
     }
+    Err(err) => {
+      scope.heap_mut().remove_root(v_root);
+      Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+    }
   }
+}
+
+fn async_eval_do_while(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &DoWhileStmt,
+  label_set: &[String],
+) -> Result<AsyncEval<Completion>, VmError> {
+  let v_root = scope.heap_mut().add_root(Value::Undefined)?;
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  match async_eval_stmt_labelled(evaluator, scope, &stmt.body, &[]) {
+    Ok(AsyncEval::Complete(c)) => async_do_while_after_body(evaluator, scope, stmt, label_vec, v_root, c),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::DoWhileAfterBody {
+          stmt: stmt as *const DoWhileStmt,
+          label_set: label_vec,
+          v_root,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      scope.heap_mut().remove_root(v_root);
+      Err(err)
+    }
+  }
+}
+
+fn async_do_while_after_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &DoWhileStmt,
+  label_set: Vec<String>,
+  v_root: RootId,
+  stmt_result: Completion,
+) -> Result<AsyncEval<Completion>, VmError> {
+  let mut v = scope
+    .heap()
+    .get_root(v_root)
+    .ok_or(VmError::InvariantViolation("missing do-while loop value root"))?;
+
+  if !Evaluator::loop_continues(&stmt_result, &label_set) {
+    scope.heap_mut().remove_root(v_root);
+    let result = Evaluator::normalise_iteration_break(stmt_result.update_empty(Some(v)));
+    return Ok(AsyncEval::Complete(result));
+  }
+
+  if let Some(value) = stmt_result.value() {
+    v = value;
+    scope.heap_mut().set_root(v_root, v);
+  }
+
+  match async_eval_expr(evaluator, scope, &stmt.condition) {
+    Ok(AsyncEval::Complete(test)) => async_do_while_after_test(evaluator, scope, stmt, label_set, v_root, test),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::DoWhileAfterTest {
+          stmt: stmt as *const DoWhileStmt,
+          label_set,
+          v_root,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      scope.heap_mut().remove_root(v_root);
+      Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+    }
+  }
+}
+
+fn async_do_while_after_test(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &DoWhileStmt,
+  label_set: Vec<String>,
+  v_root: RootId,
+  test_value: Value,
+) -> Result<AsyncEval<Completion>, VmError> {
+  let v = scope
+    .heap()
+    .get_root(v_root)
+    .ok_or(VmError::InvariantViolation("missing do-while loop value root"))?;
+
+  if !to_boolean(scope.heap(), test_value)? {
+    scope.heap_mut().remove_root(v_root);
+    let result = Evaluator::normalise_iteration_break(Completion::normal(v));
+    return Ok(AsyncEval::Complete(result));
+  }
+
+  match async_eval_stmt_labelled(evaluator, scope, &stmt.body, &[]) {
+    Ok(AsyncEval::Complete(c)) => async_do_while_after_body(evaluator, scope, stmt, label_set, v_root, c),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::DoWhileAfterBody {
+          stmt: stmt as *const DoWhileStmt,
+          label_set,
+          v_root,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      scope.heap_mut().remove_root(v_root);
+      Err(err)
+    }
+  }
+}
+
+fn async_eval_for_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  body: &ForBody,
+) -> Result<AsyncEval<Completion>, VmError> {
+  async_eval_stmt_list(evaluator, scope, &body.body)
+}
+
+fn async_eval_for_triple(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: &[String],
+) -> Result<AsyncEval<Completion>, VmError> {
+  let v_root = scope.heap_mut().add_root(Value::Undefined)?;
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  let needs_explicit_iter_tick =
+    stmt.cond.is_none() && stmt.post.is_none() && stmt.body.stx.body.is_empty();
+
+  match &stmt.init {
+    parse_js::ast::stmt::ForTripleStmtInit::None => {
+      async_for_triple_begin_iteration(evaluator, scope, stmt, label_vec, v_root, needs_explicit_iter_tick)
+    }
+    parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => match async_eval_expr(evaluator, scope, expr) {
+      Ok(AsyncEval::Complete(_)) => {
+        async_for_triple_begin_iteration(evaluator, scope, stmt, label_vec, v_root, needs_explicit_iter_tick)
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForTripleAfterInit {
+            stmt: stmt as *const ForTripleStmt,
+            label_set: label_vec,
+            v_root,
+            needs_explicit_iter_tick,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+      Err(err) => {
+        scope.heap_mut().remove_root(v_root);
+        Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+      }
+    },
+    parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) => match async_eval_var_decl(evaluator, scope, &decl.stx, 0) {
+      Ok(AsyncEval::Complete(c)) => {
+        if c.is_abrupt() {
+          scope.heap_mut().remove_root(v_root);
+          return Ok(AsyncEval::Complete(c));
+        }
+        async_for_triple_begin_iteration(evaluator, scope, stmt, label_vec, v_root, needs_explicit_iter_tick)
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForTripleAfterInit {
+            stmt: stmt as *const ForTripleStmt,
+            label_set: label_vec,
+            v_root,
+            needs_explicit_iter_tick,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+      Err(err) => {
+        scope.heap_mut().remove_root(v_root);
+        Err(err)
+      }
+    },
+  }
+}
+
+fn async_for_triple_begin_iteration(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root: RootId,
+  needs_explicit_iter_tick: bool,
+) -> Result<AsyncEval<Completion>, VmError> {
+  if needs_explicit_iter_tick {
+    if let Err(err) = evaluator.tick() {
+      scope.heap_mut().remove_root(v_root);
+      return Err(err);
+    }
+  }
+
+  match &stmt.cond {
+    Some(cond) => match async_eval_expr(evaluator, scope, cond) {
+      Ok(AsyncEval::Complete(test)) => async_for_triple_after_test(
+        evaluator,
+        scope,
+        stmt,
+        label_set,
+        v_root,
+        needs_explicit_iter_tick,
+        test,
+      ),
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForTripleAfterTest {
+            stmt: stmt as *const ForTripleStmt,
+            label_set,
+            v_root,
+            needs_explicit_iter_tick,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+      Err(err) => {
+        scope.heap_mut().remove_root(v_root);
+        Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+      }
+    },
+    None => {
+      async_for_triple_after_test(
+        evaluator,
+        scope,
+        stmt,
+        label_set,
+        v_root,
+        needs_explicit_iter_tick,
+        Value::Bool(true),
+      )
+    }
+  }
+}
+
+fn async_for_triple_after_test(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root: RootId,
+  needs_explicit_iter_tick: bool,
+  test_value: Value,
+) -> Result<AsyncEval<Completion>, VmError> {
+  let v = scope
+    .heap()
+    .get_root(v_root)
+    .ok_or(VmError::InvariantViolation("missing for loop value root"))?;
+
+  if !to_boolean(scope.heap(), test_value)? {
+    scope.heap_mut().remove_root(v_root);
+    return Ok(AsyncEval::Complete(Completion::normal(v)));
+  }
+
+  match async_eval_for_body(evaluator, scope, &stmt.body.stx) {
+    Ok(AsyncEval::Complete(c)) => async_for_triple_after_body(
+      evaluator,
+      scope,
+      stmt,
+      label_set,
+      v_root,
+      needs_explicit_iter_tick,
+      c,
+    ),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::ForTripleAfterBody {
+          stmt: stmt as *const ForTripleStmt,
+          label_set,
+          v_root,
+          needs_explicit_iter_tick,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      scope.heap_mut().remove_root(v_root);
+      Err(err)
+    }
+  }
+}
+
+fn async_for_triple_after_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root: RootId,
+  needs_explicit_iter_tick: bool,
+  body_completion: Completion,
+) -> Result<AsyncEval<Completion>, VmError> {
+  let mut v = scope
+    .heap()
+    .get_root(v_root)
+    .ok_or(VmError::InvariantViolation("missing for loop value root"))?;
+
+  if !Evaluator::loop_continues(&body_completion, &label_set) {
+    scope.heap_mut().remove_root(v_root);
+    let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+    return Ok(AsyncEval::Complete(result));
+  }
+
+  if let Some(value) = body_completion.value() {
+    v = value;
+    scope.heap_mut().set_root(v_root, v);
+  }
+
+  match &stmt.post {
+    Some(post) => match async_eval_expr(evaluator, scope, post) {
+      Ok(AsyncEval::Complete(_)) => {
+        async_for_triple_begin_iteration(evaluator, scope, stmt, label_set, v_root, needs_explicit_iter_tick)
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForTripleAfterPost {
+            stmt: stmt as *const ForTripleStmt,
+            label_set,
+            v_root,
+            needs_explicit_iter_tick,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+      Err(err) => {
+        scope.heap_mut().remove_root(v_root);
+        Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+      }
+    },
+    None => {
+      async_for_triple_begin_iteration(evaluator, scope, stmt, label_set, v_root, needs_explicit_iter_tick)
+    }
+  }
+}
+
+fn async_eval_for_in(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: &[String],
+) -> Result<AsyncEval<Completion>, VmError> {
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  match async_eval_expr(evaluator, scope, &stmt.rhs) {
+    Ok(AsyncEval::Complete(rhs_value)) => async_for_in_after_rhs(evaluator, scope, stmt, label_vec, rhs_value),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::ForInAfterRhs {
+          stmt: stmt as *const ForInStmt,
+          label_set: label_vec,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
+  }
+}
+
+fn async_for_in_cleanup(scope: &mut Scope<'_>, object_root: RootId, key_roots: &mut Vec<RootId>, v_root: RootId) {
+  if scope.heap().get_root(object_root).is_some() {
+    scope.heap_mut().remove_root(object_root);
+  }
+  for id in key_roots.drain(..) {
+    if scope.heap().get_root(id).is_some() {
+      scope.heap_mut().remove_root(id);
+    }
+  }
+  if scope.heap().get_root(v_root).is_some() {
+    scope.heap_mut().remove_root(v_root);
+  }
+}
+
+fn async_for_in_after_rhs(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  rhs_value: Value,
+) -> Result<AsyncEval<Completion>, VmError> {
+  if is_nullish(rhs_value) {
+    return Ok(AsyncEval::Complete(Completion::normal(Value::Undefined)));
+  }
+
+  // `for..in` uses `ToObject` on the RHS. Until we have full wrapper objects, treat the `Object`
+  // constructor as a converter for primitives.
+  let object = match rhs_value {
+    Value::Object(obj) => obj,
+    other => {
+      let intr = evaluator
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let object_ctor = Value::Object(intr.object_constructor());
+
+      let mut to_obj_scope = scope.reborrow();
+      to_obj_scope.push_roots(&[other, object_ctor])?;
+      let args = [other];
+      let value = evaluator
+        .call(&mut to_obj_scope, object_ctor, Value::Undefined, &args)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut to_obj_scope, err))?;
+      match value {
+        Value::Object(obj) => obj,
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "Object(..) conversion returned non-object",
+          ));
+        }
+      }
+    }
+  };
+
+  // Root the base object across key collection + loop body evaluation, which may allocate and
+  // trigger GC.
+  let object_root = {
+    let mut root_scope = scope.reborrow();
+    root_scope.push_root(Value::Object(object))?;
+    root_scope.heap_mut().add_root(Value::Object(object))?
+  };
+
+  // Snapshot enumerable string keys across the prototype chain, skipping duplicates.
+  //
+  // Note: this is intentionally minimal and does not track mutations during iteration.
+  const KEY_COLLECTION_TICK_EVERY: usize = 256;
+  let mut keys: Vec<RootId> = Vec::new();
+  let mut visited: Vec<PropertyKey> = Vec::new();
+
+  let mut key_count: usize = 0;
+  // De-duplication uses a linear scan over the keys collected so far, which can be `O(N^2)` in
+  // the worst case. Tick periodically while scanning to ensure this work stays interruptible even
+  // for very large objects/prototype chains.
+  const VISITED_SCAN_TICK_EVERY: usize = 4096;
+  let mut visited_scan_count: usize = 0;
+
+  let collect_res: Result<(), VmError> = (|| {
+    let mut current: Option<GcObject> = Some(object);
+    while let Some(obj) = current {
+      evaluator.tick()?;
+
+      let own_keys = scope
+        .ordinary_own_property_keys_with_tick(obj, || evaluator.tick())
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+      for key in own_keys {
+        key_count = key_count.wrapping_add(1);
+        if (key_count & (KEY_COLLECTION_TICK_EVERY - 1)) == 0 {
+          evaluator.tick()?;
+        }
+
+        let PropertyKey::String(s) = key else {
+          continue;
+        };
+
+        let Some(desc) = scope
+          .ordinary_get_own_property(obj, key)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?
+        else {
+          continue;
+        };
+        if !desc.enumerable {
+          continue;
+        }
+
+        let mut already_visited = false;
+        for seen in &visited {
+          visited_scan_count = visited_scan_count.wrapping_add(1);
+          if (visited_scan_count & (VISITED_SCAN_TICK_EVERY - 1)) == 0 {
+            evaluator.tick()?;
+          }
+          if scope.heap().property_key_eq(seen, &key) {
+            already_visited = true;
+            break;
+          }
+        }
+        if already_visited {
+          continue;
+        }
+
+        visited.push(key);
+
+        // Ensure we have space in `keys` before allocating a persistent root so we don't leak the
+        // root on an OOM during `Vec` growth.
+        keys.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+
+        let id = {
+          let mut root_scope = scope.reborrow();
+          root_scope.push_root(Value::String(s))?;
+          root_scope.heap_mut().add_root(Value::String(s))?
+        };
+        keys.push(id);
+      }
+
+      current = scope
+        .object_get_prototype(obj)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+    }
+    Ok(())
+  })();
+
+  if let Err(err) = collect_res {
+    scope.heap_mut().remove_root(object_root);
+    for id in keys.drain(..) {
+      scope.heap_mut().remove_root(id);
+    }
+    return Err(err);
+  }
+
+  let v_root = match scope.heap_mut().add_root(Value::Undefined) {
+    Ok(id) => id,
+    Err(err) => {
+      scope.heap_mut().remove_root(object_root);
+      for id in keys.drain(..) {
+        scope.heap_mut().remove_root(id);
+      }
+      return Err(err);
+    }
+  };
+
+  let outer_lex = evaluator.env.lexical_env;
+  async_for_in_loop_from(
+    evaluator,
+    scope,
+    stmt,
+    label_set,
+    object_root,
+    keys,
+    0,
+    v_root,
+    outer_lex,
+  )
+}
+
+fn async_for_in_loop_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  object_root: RootId,
+  mut key_roots: Vec<RootId>,
+  start_index: usize,
+  v_root: RootId,
+  outer_lex: GcEnv,
+) -> Result<AsyncEval<Completion>, VmError> {
+  for (i, key_root) in key_roots.iter().copied().enumerate().skip(start_index) {
+    // Tick once per iteration so `for (k in o) {}` is budgeted even when the body is empty.
+    if let Err(err) = evaluator.tick() {
+      async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+      return Err(err);
+    }
+
+    let mut iter_env_created = false;
+    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+      if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
+        let env = match scope.env_create(Some(outer_lex)) {
+          Ok(env) => env,
+          Err(err) => {
+            async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+            return Err(err);
+          }
+        };
+        evaluator.env.set_lexical_env(scope.heap_mut(), env);
+        iter_env_created = true;
+      }
+    }
+
+    let value = match scope.heap().get_root(key_root) {
+      Some(v) => v,
+      None => {
+        scope.heap_mut().remove_root(object_root);
+        for id in key_roots.drain(..) {
+          if scope.heap().get_root(id).is_some() {
+            scope.heap_mut().remove_root(id);
+          }
+        }
+        if scope.heap().get_root(v_root).is_some() {
+          scope.heap_mut().remove_root(v_root);
+        }
+        return Err(VmError::InvariantViolation("missing for-in key root"));
+      }
+    };
+
+    let bind_res: Result<(), VmError> = match &stmt.lhs {
+      ForInOfLhs::Decl((mode, pat_decl)) => {
+        let kind = match *mode {
+          VarDeclMode::Var => BindingKind::Var,
+          VarDeclMode::Let => BindingKind::Let,
+          VarDeclMode::Const => BindingKind::Const,
+          _ => return Err(VmError::Unimplemented("for-in loop variable declaration kind")),
+        };
+        bind_pattern(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          evaluator.env,
+          &pat_decl.stx.pat.stx,
+          value,
+          kind,
+          evaluator.strict,
+          evaluator.this,
+        )
+      }
+      ForInOfLhs::Assign(pat) => bind_pattern(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        scope,
+        evaluator.env,
+        &pat.stx,
+        value,
+        BindingKind::Assignment,
+        evaluator.strict,
+        evaluator.this,
+      ),
+    };
+
+    if let Err(err) = bind_res {
+      if iter_env_created {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+      }
+      async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+      return Err(err);
+    }
+
+    let body_eval = match async_eval_for_body(evaluator, scope, &stmt.body.stx) {
+      Ok(v) => v,
+      Err(err) => {
+        if iter_env_created {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        }
+        async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+        return Err(err);
+      }
+    };
+
+    match body_eval {
+      AsyncEval::Complete(body_completion) => {
+        if iter_env_created {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        }
+
+        let mut v = match scope.heap().get_root(v_root) {
+          Some(v) => v,
+          None => {
+            scope.heap_mut().remove_root(object_root);
+            for id in key_roots.drain(..) {
+              scope.heap_mut().remove_root(id);
+            }
+            return Err(VmError::InvariantViolation("missing for-in loop value root"));
+          }
+        };
+
+        if !Evaluator::loop_continues(&body_completion, &label_set) {
+          async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+          let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+          return Ok(AsyncEval::Complete(result));
+        }
+
+        if let Some(value) = body_completion.value() {
+          v = value;
+          scope.heap_mut().set_root(v_root, v);
+        }
+      }
+      AsyncEval::Suspend(mut suspend) => {
+        if iter_env_created {
+          async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: outer_lex })?;
+        }
+
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForInAfterBody {
+            stmt: stmt as *const ForInStmt,
+            label_set,
+            object_root,
+            key_roots,
+            next_key_index: i.saturating_add(1),
+            v_root,
+            outer_lex,
+          },
+        )?;
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+    }
+  }
+
+  let v = match scope.heap().get_root(v_root) {
+    Some(v) => v,
+    None => {
+      scope.heap_mut().remove_root(object_root);
+      for id in key_roots.drain(..) {
+        scope.heap_mut().remove_root(id);
+      }
+      return Err(VmError::InvariantViolation("missing for-in loop value root"));
+    }
+  };
+  async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+  Ok(AsyncEval::Complete(Completion::normal(v)))
+}
+
+fn async_eval_for_of(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForOfStmt,
+  label_set: &[String],
+) -> Result<AsyncEval<Completion>, VmError> {
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  if stmt.await_ {
+    return Err(VmError::Unimplemented("for await..of"));
+  }
+
+  match async_eval_expr(evaluator, scope, &stmt.rhs) {
+    Ok(AsyncEval::Complete(iterable)) => async_for_of_after_rhs(evaluator, scope, stmt, label_vec, iterable),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::ForOfAfterRhs {
+          stmt: stmt as *const ForOfStmt,
+          label_set: label_vec,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
+  }
+}
+
+fn async_for_of_cleanup(
+  scope: &mut Scope<'_>,
+  iterator_root: RootId,
+  next_method_root: RootId,
+  v_root: RootId,
+) {
+  if scope.heap().get_root(iterator_root).is_some() {
+    scope.heap_mut().remove_root(iterator_root);
+  }
+  if scope.heap().get_root(next_method_root).is_some() {
+    scope.heap_mut().remove_root(next_method_root);
+  }
+  if scope.heap().get_root(v_root).is_some() {
+    scope.heap_mut().remove_root(v_root);
+  }
+}
+
+fn async_for_of_after_rhs(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForOfStmt,
+  label_set: Vec<String>,
+  iterable: Value,
+) -> Result<AsyncEval<Completion>, VmError> {
+  let mut iter_scope = scope.reborrow();
+  iter_scope.push_root(iterable)?;
+
+  let iterator_record = iterator::get_iterator(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut iter_scope,
+    iterable,
+  )
+  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err))?;
+
+  let (iterator_root, next_method_root) = {
+    let mut root_scope = iter_scope.reborrow();
+    root_scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+    let iterator_root = root_scope.heap_mut().add_root(iterator_record.iterator)?;
+    let next_method_root = root_scope.heap_mut().add_root(iterator_record.next_method)?;
+    (iterator_root, next_method_root)
+  };
+
+  let v_root = match iter_scope.heap_mut().add_root(Value::Undefined) {
+    Ok(id) => id,
+    Err(err) => {
+      iter_scope.heap_mut().remove_root(iterator_root);
+      iter_scope.heap_mut().remove_root(next_method_root);
+      return Err(err);
+    }
+  };
+
+  let outer_lex = evaluator.env.lexical_env;
+  async_for_of_loop(
+    evaluator,
+    &mut iter_scope,
+    stmt,
+    label_set,
+    iterator_record,
+    iterator_root,
+    next_method_root,
+    v_root,
+    outer_lex,
+  )
+}
+
+fn async_for_of_loop(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForOfStmt,
+  label_set: Vec<String>,
+  mut iterator_record: iterator::IteratorRecord,
+  iterator_root: RootId,
+  next_method_root: RootId,
+  v_root: RootId,
+  outer_lex: GcEnv,
+) -> Result<AsyncEval<Completion>, VmError> {
+  loop {
+    // Tick once per iteration so `for (x of xs) {}` is budgeted even when the body is empty.
+    if let Err(err) = evaluator.tick() {
+      let _ = iterator::iterator_close(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        scope,
+        &iterator_record,
+      );
+      async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+      return Err(err);
+    }
+
+    let next_value = match iterator::iterator_step_value(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      scope,
+      &mut iterator_record,
+    ) {
+      Ok(v) => v,
+      Err(err) => {
+        let _ = iterator::iterator_close(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          &iterator_record,
+        );
+        async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+        return Err(coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+      }
+    };
+
+    let Some(value) = next_value else {
+      let v = match scope.heap().get_root(v_root) {
+        Some(v) => v,
+        None => {
+          scope.heap_mut().remove_root(iterator_root);
+          scope.heap_mut().remove_root(next_method_root);
+          return Err(VmError::InvariantViolation("missing for-of loop value root"));
+        }
+      };
+      async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+      return Ok(AsyncEval::Complete(Completion::normal(v)));
+    };
+
+    let mut iter_env_created = false;
+    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+      if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
+        let env = match scope.env_create(Some(outer_lex)) {
+          Ok(env) => env,
+          Err(err) => {
+            let _ = iterator::iterator_close(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              &iterator_record,
+            );
+            async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+            return Err(err);
+          }
+        };
+        evaluator.env.set_lexical_env(scope.heap_mut(), env);
+        iter_env_created = true;
+      }
+    }
+
+    let bind_res: Result<(), VmError> = match &stmt.lhs {
+      ForInOfLhs::Decl((mode, pat_decl)) => {
+        let kind = match *mode {
+          VarDeclMode::Var => BindingKind::Var,
+          VarDeclMode::Let => BindingKind::Let,
+          VarDeclMode::Const => BindingKind::Const,
+          _ => return Err(VmError::Unimplemented("for-of loop variable declaration kind")),
+        };
+        bind_pattern(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          evaluator.env,
+          &pat_decl.stx.pat.stx,
+          value,
+          kind,
+          evaluator.strict,
+          evaluator.this,
+        )
+      }
+      ForInOfLhs::Assign(pat) => bind_pattern(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        scope,
+        evaluator.env,
+        &pat.stx,
+        value,
+        BindingKind::Assignment,
+        evaluator.strict,
+        evaluator.this,
+      ),
+    };
+
+    if let Err(err) = bind_res {
+      if iter_env_created {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+      }
+      let _ = iterator::iterator_close(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        scope,
+        &iterator_record,
+      );
+      async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+      return Err(err);
+    }
+
+    let body_eval = match async_eval_for_body(evaluator, scope, &stmt.body.stx) {
+      Ok(v) => v,
+      Err(err) => {
+        if iter_env_created {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        }
+        let _ = iterator::iterator_close(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          &iterator_record,
+        );
+        async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+        return Err(err);
+      }
+    };
+
+    match body_eval {
+      AsyncEval::Complete(body_completion) => {
+        if iter_env_created {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        }
+
+        let mut v = match scope.heap().get_root(v_root) {
+          Some(v) => v,
+          None => {
+            let _ = iterator::iterator_close(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              &iterator_record,
+            );
+            scope.heap_mut().remove_root(iterator_root);
+            scope.heap_mut().remove_root(next_method_root);
+            return Err(VmError::InvariantViolation("missing for-of loop value root"));
+          }
+        };
+
+        if !Evaluator::loop_continues(&body_completion, &label_set) {
+          let _ = iterator::iterator_close(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            &iterator_record,
+          );
+          async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+          let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+          return Ok(AsyncEval::Complete(result));
+        }
+
+        if let Some(value) = body_completion.value() {
+          v = value;
+          scope.heap_mut().set_root(v_root, v);
+        }
+      }
+      AsyncEval::Suspend(mut suspend) => {
+        if iter_env_created {
+          async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: outer_lex })?;
+        }
+
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForOfAfterBody {
+            stmt: stmt as *const ForOfStmt,
+            label_set,
+            iterator_record,
+            iterator_root,
+            next_method_root,
+            v_root,
+            outer_lex,
+          },
+        )?;
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+    }
+  }
+}
+
+fn async_eval_switch(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+) -> Result<AsyncEval<Completion>, VmError> {
+  match async_eval_expr(evaluator, scope, &stmt.test) {
+    Ok(AsyncEval::Complete(discriminant)) => async_switch_after_discriminant(evaluator, scope, stmt, discriminant),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::SwitchAfterDiscriminant {
+          stmt: stmt as *const SwitchStmt,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
+  }
+}
+
+fn async_switch_cleanup(scope: &mut Scope<'_>, discriminant_root: RootId, v_root: RootId) {
+  if scope.heap().get_root(discriminant_root).is_some() {
+    scope.heap_mut().remove_root(discriminant_root);
+  }
+  if scope.heap().get_root(v_root).is_some() {
+    scope.heap_mut().remove_root(v_root);
+  }
+}
+
+fn async_switch_finish(
+  scope: &mut Scope<'_>,
+  discriminant_root: RootId,
+  v_root: RootId,
+  completion: Completion,
+) -> Result<Completion, VmError> {
+  async_switch_cleanup(scope, discriminant_root, v_root);
+  Ok(Evaluator::normalise_iteration_break(completion))
+}
+
+fn async_switch_after_discriminant(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+  discriminant: Value,
+) -> Result<AsyncEval<Completion>, VmError> {
+  // Root the discriminant across selector evaluation and case-body execution, which may allocate
+  // and trigger GC.
+  let discriminant_root = {
+    let mut root_scope = scope.reborrow();
+    root_scope.push_root(discriminant)?;
+    root_scope.heap_mut().add_root(discriminant)?
+  };
+
+  // `switch` creates a new lexical environment for the entire case block.
+  let outer = evaluator.env.lexical_env;
+  let switch_env = match scope.env_create(Some(outer)) {
+    Ok(env) => env,
+    Err(err) => {
+      scope.heap_mut().remove_root(discriminant_root);
+      return Err(err);
+    }
+  };
+  evaluator
+    .env
+    .set_lexical_env(scope.heap_mut(), switch_env);
+
+  // Instantiate lexical declarations for the shared switch scope.
+  const BRANCH_TICK_EVERY: usize = 32;
+  for (i, branch) in stmt.branches.iter().enumerate() {
+    if i % BRANCH_TICK_EVERY == 0 {
+      if let Err(err) = evaluator.tick() {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        scope.heap_mut().remove_root(discriminant_root);
+        return Err(err);
+      }
+    }
+    if let Err(err) =
+      evaluator.instantiate_block_decls_in_stmt_list(scope, switch_env, &branch.stx.body)
+    {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      scope.heap_mut().remove_root(discriminant_root);
+      return Err(err);
+    }
+  }
+
+  // ECMA-262 `CaseBlockEvaluation`: `V` starts as `undefined` and is never ~empty~ for normal
+  // completion.
+  let v_root = match scope.heap_mut().add_root(Value::Undefined) {
+    Ok(id) => id,
+    Err(err) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      scope.heap_mut().remove_root(discriminant_root);
+      return Err(err);
+    }
+  };
+
+  match async_switch_scan_and_exec_from(evaluator, scope, stmt, discriminant_root, v_root, 0, None) {
+    Ok(AsyncEval::Complete(c)) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(AsyncEval::Complete(c))
+    }
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Err(err)
+    }
+  }
+}
+
+fn async_switch_scan_and_exec_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+  discriminant_root: RootId,
+  v_root: RootId,
+  start_index: usize,
+  mut default_index: Option<usize>,
+) -> Result<AsyncEval<Completion>, VmError> {
+  let discriminant = match scope.heap().get_root(discriminant_root) {
+    Some(v) => v,
+    None => {
+      async_switch_cleanup(scope, discriminant_root, v_root);
+      return Err(VmError::InvariantViolation("missing switch discriminant root"));
+    }
+  };
+
+  const BRANCH_TICK_EVERY: usize = 32;
+  for (i, branch) in stmt.branches.iter().enumerate().skip(start_index) {
+    if i % BRANCH_TICK_EVERY == 0 {
+      if let Err(err) = evaluator.tick() {
+        async_switch_cleanup(scope, discriminant_root, v_root);
+        return Err(err);
+      }
+    }
+
+    let Some(case_expr) = &branch.stx.case else {
+      if default_index.is_none() {
+        default_index = Some(i);
+      }
+      continue;
+    };
+
+    match async_eval_expr(evaluator, scope, case_expr) {
+      Ok(AsyncEval::Complete(case_value)) => {
+        let matches = match strict_equal(scope.heap(), discriminant, case_value) {
+          Ok(m) => m,
+          Err(err) => {
+            async_switch_cleanup(scope, discriminant_root, v_root);
+            return Err(err);
+          }
+        };
+        if matches {
+          return async_switch_exec_from(evaluator, scope, stmt, discriminant_root, v_root, i);
+        }
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::SwitchAfterCaseExpr {
+            stmt: stmt as *const SwitchStmt,
+            discriminant_root,
+            v_root,
+            default_index,
+            branch_index: i,
+          },
+        )?;
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+      Err(err) => {
+        let completion = completion_from_expr_result(Err(err))?;
+        let completion = async_switch_finish(scope, discriminant_root, v_root, completion)?;
+        return Ok(AsyncEval::Complete(completion));
+      }
+    }
+  }
+
+  let Some(default_idx) = default_index else {
+    let v = match scope.heap().get_root(v_root) {
+      Some(v) => v,
+      None => {
+        async_switch_cleanup(scope, discriminant_root, v_root);
+        return Err(VmError::InvariantViolation("missing switch V root"));
+      }
+    };
+    let completion = async_switch_finish(scope, discriminant_root, v_root, Completion::normal(v))?;
+    return Ok(AsyncEval::Complete(completion));
+  };
+
+  async_switch_exec_from(
+    evaluator,
+    scope,
+    stmt,
+    discriminant_root,
+    v_root,
+    default_idx,
+  )
+}
+
+fn async_switch_exec_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+  discriminant_root: RootId,
+  v_root: RootId,
+  start_index: usize,
+) -> Result<AsyncEval<Completion>, VmError> {
+  const BRANCH_TICK_EVERY: usize = 32;
+  for (i, branch) in stmt.branches.iter().enumerate().skip(start_index) {
+    if i % BRANCH_TICK_EVERY == 0 {
+      if let Err(err) = evaluator.tick() {
+        async_switch_cleanup(scope, discriminant_root, v_root);
+        return Err(err);
+      }
+    }
+
+    match async_eval_stmt_list(evaluator, scope, &branch.stx.body) {
+      Ok(AsyncEval::Complete(body_completion)) => {
+        match async_switch_after_body_completion(
+          evaluator,
+          scope,
+          stmt,
+          discriminant_root,
+          v_root,
+          i.saturating_add(1),
+          body_completion,
+        ) {
+          Ok(AsyncEval::Complete(done)) => return Ok(AsyncEval::Complete(done)),
+          Ok(AsyncEval::Suspend(suspend)) => return Ok(AsyncEval::Suspend(suspend)),
+          Err(err) => {
+            async_switch_cleanup(scope, discriminant_root, v_root);
+            return Err(err);
+          }
+        }
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::SwitchAfterBody {
+            stmt: stmt as *const SwitchStmt,
+            discriminant_root,
+            v_root,
+            next_branch_index: i.saturating_add(1),
+          },
+        )?;
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+      Err(err) => {
+        async_switch_cleanup(scope, discriminant_root, v_root);
+        return Err(err);
+      }
+    }
+  }
+
+  let v = match scope.heap().get_root(v_root) {
+    Some(v) => v,
+    None => {
+      async_switch_cleanup(scope, discriminant_root, v_root);
+      return Err(VmError::InvariantViolation("missing switch V root"));
+    }
+  };
+  let completion = async_switch_finish(scope, discriminant_root, v_root, Completion::normal(v))?;
+  Ok(AsyncEval::Complete(completion))
+}
+
+fn async_switch_after_body_completion(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+  discriminant_root: RootId,
+  v_root: RootId,
+  next_branch_index: usize,
+  body_completion: Completion,
+) -> Result<AsyncEval<Completion>, VmError> {
+  let mut v = match scope.heap().get_root(v_root) {
+    Some(v) => v,
+    None => {
+      async_switch_cleanup(scope, discriminant_root, v_root);
+      return Err(VmError::InvariantViolation("missing switch V root"));
+    }
+  };
+
+  if let Some(value) = body_completion.value() {
+    v = value;
+    scope.heap_mut().set_root(v_root, v);
+  }
+
+  if body_completion.is_abrupt() {
+    let completion = body_completion.update_empty(Some(v));
+    let completion = async_switch_finish(scope, discriminant_root, v_root, completion)?;
+    return Ok(AsyncEval::Complete(completion));
+  }
+
+  async_switch_exec_from(
+    evaluator,
+    scope,
+    stmt,
+    discriminant_root,
+    v_root,
+    next_branch_index,
+  )
 }
 
 fn async_eval_expr(
@@ -8338,6 +9881,9 @@ fn async_eval_expr(
         Ok(AsyncEval::Suspend(suspend))
       }
     },
+    Expr::Binary(binary) if binary.stx.operator == OperatorName::Assignment => {
+      async_eval_assignment_expr(evaluator, scope, &binary.stx)
+    }
     Expr::Binary(binary) => match async_eval_expr(evaluator, scope, &binary.stx.left)? {
       AsyncEval::Complete(left) => async_binary_after_left(evaluator, scope, &binary.stx, left),
       AsyncEval::Suspend(mut suspend) => {
@@ -8352,6 +9898,169 @@ fn async_eval_expr(
     },
     _ => Err(VmError::Unimplemented("await in expression type")),
   }
+}
+
+fn async_eval_assignment_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+) -> Result<AsyncEval<Value>, VmError> {
+  debug_assert_eq!(expr.operator, OperatorName::Assignment);
+
+  // Destructuring assignment patterns appear in expression position as `Expr::ObjPat` /
+  // `Expr::ArrPat` nodes. These are not valid "references" and must be handled by pattern binding.
+  if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
+    return match async_eval_expr(evaluator, scope, &expr.right) {
+      Ok(AsyncEval::Complete(v)) => {
+        let mut bind_scope = scope.reborrow();
+        bind_scope.push_root(v)?;
+        bind_assignment_target(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          &mut bind_scope,
+          evaluator.env,
+          &expr.left,
+          v,
+          evaluator.strict,
+          evaluator.this,
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut bind_scope, err))?;
+        Ok(AsyncEval::Complete(v))
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::AssignAfterRhsPattern {
+            expr: expr as *const BinaryExpr,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+      Err(err) => Err(err),
+    };
+  }
+
+  // Evaluate the assignment target reference before the RHS (ECMA-262 `AssignmentExpression`).
+  let reference =
+    evaluator
+      .eval_reference(scope, &expr.left)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+
+  match reference {
+    Reference::Binding(_) => {
+      let name_ptr = match &*expr.left.stx {
+        Expr::Id(id) => &id.stx.name as *const String,
+        Expr::IdPat(id) => &id.stx.name as *const String,
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "binding reference without identifier assignment target",
+          ))
+        }
+      };
+
+      match async_eval_expr(evaluator, scope, &expr.right) {
+        Ok(AsyncEval::Complete(v)) => {
+          evaluator
+            .env
+            .set(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              unsafe { &*name_ptr },
+              v,
+              evaluator.strict,
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+          Ok(AsyncEval::Complete(v))
+        }
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          async_frames_push(&mut suspend.frames, AsyncFrame::AssignAfterRhsBinding { name: name_ptr })?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
+        Err(err) => Err(err),
+      }
+    }
+    Reference::Property { base, key } => {
+      let key_value = match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(sym) => Value::Symbol(sym),
+      };
+
+      let (base_root, key_root) = {
+        let mut root_scope = scope.reborrow();
+        root_scope.push_roots(&[base, key_value])?;
+        let base_root = root_scope.heap_mut().add_root(base)?;
+        let key_root = root_scope.heap_mut().add_root(key_value)?;
+        (base_root, key_root)
+      };
+
+      match async_eval_expr(evaluator, scope, &expr.right) {
+        Ok(AsyncEval::Complete(v)) => {
+          let res = async_assign_to_rooted_property_reference(evaluator, scope, base_root, key_root, v);
+          // `async_assign_to_rooted_property_reference` always removes `base_root/key_root`.
+          res.map(AsyncEval::Complete)
+        }
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::AssignAfterRhsProperty { base_root, key_root },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
+        Err(err) => {
+          scope.heap_mut().remove_root(base_root);
+          scope.heap_mut().remove_root(key_root);
+          Err(err)
+        }
+      }
+    }
+  }
+}
+
+fn async_assign_to_rooted_property_reference(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  base_root: RootId,
+  key_root: RootId,
+  value: Value,
+) -> Result<Value, VmError> {
+  let base = scope
+    .heap()
+    .get_root(base_root)
+    .ok_or(VmError::InvariantViolation(
+      "missing assignment target base root",
+    ))?;
+  let key_value = scope
+    .heap()
+    .get_root(key_root)
+    .ok_or(VmError::InvariantViolation("missing assignment target key root"))?;
+  let key = match key_value {
+    Value::String(s) => PropertyKey::from_string(s),
+    Value::Symbol(sym) => PropertyKey::from_symbol(sym),
+    _ => {
+      scope.heap_mut().remove_root(base_root);
+      scope.heap_mut().remove_root(key_root);
+      return Err(VmError::InvariantViolation(
+        "assignment target key root is not a string or symbol",
+      ));
+    }
+  };
+
+  let mut assign_scope = scope.reborrow();
+  assign_scope.push_roots(&[base, key_value, value])?;
+  let reference = Reference::Property { base, key };
+  let res = evaluator
+    .put_value_to_reference(&mut assign_scope, &reference, value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err));
+
+  // Always remove roots; they are no longer needed after assignment completes.
+  assign_scope.heap_mut().remove_root(base_root);
+  assign_scope.heap_mut().remove_root(key_root);
+
+  res?;
+  Ok(value)
 }
 
 fn async_apply_unary_operator(
@@ -8489,30 +10198,94 @@ fn async_binary_after_left(
       }
       async_eval_expr(evaluator, scope, &expr.right)
     }
-    OperatorName::Addition => match async_eval_expr(evaluator, scope, &expr.right)? {
-      AsyncEval::Complete(right) => {
-        let mut op_scope = scope.reborrow();
-        op_scope.push_roots(&[left, right])?;
-        let out = evaluator
-          .addition_operator(&mut op_scope, left, right)
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
-        Ok(AsyncEval::Complete(out))
+    OperatorName::Addition
+    | OperatorName::StrictEquality
+    | OperatorName::StrictInequality
+    | OperatorName::Equality
+    | OperatorName::Inequality
+    | OperatorName::LessThan
+    | OperatorName::LessThanOrEqual
+    | OperatorName::GreaterThan
+    | OperatorName::GreaterThanOrEqual => {
+      // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
+      let mut rhs_scope = scope.reborrow();
+      rhs_scope.push_root(left)?;
+
+      match async_eval_expr(evaluator, &mut rhs_scope, &expr.right)? {
+        AsyncEval::Complete(right) => {
+          let out = async_apply_binary_operator(evaluator, &mut rhs_scope, expr.operator, left, right)?;
+          Ok(AsyncEval::Complete(out))
+        }
+        AsyncEval::Suspend(mut suspend) => {
+          let left_root = rhs_scope.heap_mut().add_root(left)?;
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::BinaryAfterRight {
+              expr: expr as *const BinaryExpr,
+              left_root,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
       }
-      AsyncEval::Suspend(mut suspend) => {
-        let mut root_scope = scope.reborrow();
-        root_scope.push_root(left)?;
-        let left_root = root_scope.heap_mut().add_root(left)?;
-        async_frames_push(
-          &mut suspend.frames,
-          AsyncFrame::BinaryAfterRight {
-            expr: expr as *const BinaryExpr,
-            left_root,
-          },
-        )?;
-        Ok(AsyncEval::Suspend(suspend))
-      }
-    },
+    }
     _ => Err(VmError::Unimplemented("await in binary operator")),
+  }
+}
+
+fn async_apply_binary_operator(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  operator: OperatorName,
+  left: Value,
+  right: Value,
+) -> Result<Value, VmError> {
+  match operator {
+    OperatorName::Addition => {
+      let mut op_scope = scope.reborrow();
+      op_scope.push_roots(&[left, right])?;
+      evaluator
+        .addition_operator(&mut op_scope, left, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))
+    }
+    OperatorName::StrictEquality => Ok(Value::Bool(strict_equal(scope.heap(), left, right)?)),
+    OperatorName::StrictInequality => Ok(Value::Bool(!strict_equal(scope.heap(), left, right)?)),
+    OperatorName::Equality => {
+      let mut op_scope = scope.reborrow();
+      op_scope.push_roots(&[left, right])?;
+      let ok = abstract_equality(op_scope.heap_mut(), left, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      Ok(Value::Bool(ok))
+    }
+    OperatorName::Inequality => {
+      let mut op_scope = scope.reborrow();
+      op_scope.push_roots(&[left, right])?;
+      let ok = abstract_equality(op_scope.heap_mut(), left, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      Ok(Value::Bool(!ok))
+    }
+    OperatorName::LessThan
+    | OperatorName::LessThanOrEqual
+    | OperatorName::GreaterThan
+    | OperatorName::GreaterThanOrEqual => {
+      let mut op_scope = scope.reborrow();
+      op_scope.push_roots(&[left, right])?;
+      let left_n = evaluator
+        .to_number_operator(&mut op_scope, left)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      let right_n = evaluator
+        .to_number_operator(&mut op_scope, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+
+      Ok(match operator {
+        OperatorName::LessThan => Value::Bool(left_n < right_n),
+        OperatorName::LessThanOrEqual => Value::Bool(left_n <= right_n),
+        OperatorName::GreaterThan => Value::Bool(left_n > right_n),
+        OperatorName::GreaterThanOrEqual => Value::Bool(left_n >= right_n),
+        _ => unreachable!(),
+      })
+    }
+    _ => Err(VmError::Unimplemented("binary operator")),
   }
 }
 
@@ -9115,13 +10888,6 @@ fn async_resume_from_frames(
       AsyncFrame::BinaryAfterRight { expr, left_root } => match state {
         AsyncState::Expr(right_res) => {
           let expr = unsafe { &*expr };
-          if expr.operator != OperatorName::Addition {
-            // Only `+` currently uses `BinaryAfterRight` (it needs both operands).
-            scope.heap_mut().remove_root(left_root);
-            return Err(VmError::InvariantViolation(
-              "BinaryAfterRight used for unsupported operator",
-            ));
-          }
 
           let left = scope
             .heap()
@@ -9131,16 +10897,9 @@ fn async_resume_from_frames(
 
           match right_res {
             Ok(right) => {
-              let mut op_scope = scope.reborrow();
-              op_scope.push_roots(&[left, right])?;
-              let out = evaluator
-                .addition_operator(&mut op_scope, left, right)
-                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err));
-              match out {
+              match async_apply_binary_operator(evaluator, scope, expr.operator, left, right) {
                 Ok(v) => state = AsyncState::Expr(Ok(v)),
-                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                  state = AsyncState::Expr(Err(err))
-                }
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
                 Err(err) => return Err(err),
               }
             }
@@ -9150,6 +10909,86 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "binary right frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::AssignAfterRhsBinding { name } => match state {
+        AsyncState::Expr(Ok(v)) => {
+          let name = unsafe { &*name };
+          match evaluator
+            .env
+            .set(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              name,
+              v,
+              evaluator.strict,
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+          {
+            Ok(()) => state = AsyncState::Expr(Ok(v)),
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+            Err(err) => return Err(err),
+          }
+        }
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "assign-after-rhs frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::AssignAfterRhsProperty { base_root, key_root } => match state {
+        AsyncState::Expr(rhs_res) => match rhs_res {
+          Ok(v) => match async_assign_to_rooted_property_reference(evaluator, scope, base_root, key_root, v) {
+            Ok(v) => state = AsyncState::Expr(Ok(v)),
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+            Err(err) => return Err(err),
+          },
+          Err(err) => {
+            scope.heap_mut().remove_root(base_root);
+            scope.heap_mut().remove_root(key_root);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "assign-after-rhs-property frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::AssignAfterRhsPattern { expr } => match state {
+        AsyncState::Expr(Ok(v)) => {
+          let expr = unsafe { &*expr };
+          let mut bind_scope = scope.reborrow();
+          bind_scope.push_root(v)?;
+          match bind_assignment_target(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut bind_scope,
+            evaluator.env,
+            &expr.left,
+            v,
+            evaluator.strict,
+            evaluator.this,
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut bind_scope, err))
+          {
+            Ok(()) => state = AsyncState::Expr(Ok(v)),
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+            Err(err) => return Err(err),
+          }
+        }
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "assign-after-rhs-pattern frame received completion state",
           ))
         }
       },
@@ -9542,17 +11381,23 @@ fn async_resume_from_frames(
                 });
               }
               Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                scope.heap_mut().remove_root(v_root);
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
                 state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
               }
               Err(err) => {
-                scope.heap_mut().remove_root(v_root);
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
                 return Err(err);
               }
             }
           }
           Err(err) => {
-            scope.heap_mut().remove_root(v_root);
+            if scope.heap().get_root(v_root).is_some() {
+              scope.heap_mut().remove_root(v_root);
+            }
             state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
           }
         },
@@ -9580,11 +11425,15 @@ fn async_resume_from_frames(
               });
             }
             Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-              scope.heap_mut().remove_root(v_root);
+              if scope.heap().get_root(v_root).is_some() {
+                scope.heap_mut().remove_root(v_root);
+              }
               state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
             }
             Err(err) => {
-              scope.heap_mut().remove_root(v_root);
+              if scope.heap().get_root(v_root).is_some() {
+                scope.heap_mut().remove_root(v_root);
+              }
               return Err(err);
             }
           }
@@ -9592,6 +11441,674 @@ fn async_resume_from_frames(
         AsyncState::Expr(_) => {
           return Err(VmError::InvariantViolation(
             "while body frame received expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::DoWhileAfterBody {
+        stmt,
+        label_set,
+        v_root,
+      } => match state {
+        AsyncState::Completion(body_completion) => {
+          let stmt = unsafe { &*stmt };
+          match async_do_while_after_body(evaluator, scope, stmt, label_set, v_root, body_completion) {
+            Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              if scope.heap().get_root(v_root).is_some() {
+                scope.heap_mut().remove_root(v_root);
+              }
+              state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+            }
+            Err(err) => {
+              if scope.heap().get_root(v_root).is_some() {
+                scope.heap_mut().remove_root(v_root);
+              }
+              return Err(err);
+            }
+          }
+        }
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "do-while body frame received expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::DoWhileAfterTest {
+        stmt,
+        label_set,
+        v_root,
+      } => match state {
+        AsyncState::Expr(test_res) => match test_res {
+          Ok(test_value) => {
+            let stmt = unsafe { &*stmt };
+            match async_do_while_after_test(evaluator, scope, stmt, label_set, v_root, test_value) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => {
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
+                return Err(err);
+              }
+            }
+          }
+          Err(err) => {
+            if scope.heap().get_root(v_root).is_some() {
+              scope.heap_mut().remove_root(v_root);
+            }
+            state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "do-while test frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::ForTripleAfterInit {
+        stmt,
+        label_set,
+        v_root,
+        needs_explicit_iter_tick,
+      } => match state {
+        AsyncState::Expr(init_res) => match init_res {
+          Ok(_) => {
+            let stmt = unsafe { &*stmt };
+            match async_for_triple_begin_iteration(
+              evaluator,
+              scope,
+              stmt,
+              label_set,
+              v_root,
+              needs_explicit_iter_tick,
+            ) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => {
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
+                return Err(err);
+              }
+            }
+          }
+          Err(err) => {
+            if scope.heap().get_root(v_root).is_some() {
+              scope.heap_mut().remove_root(v_root);
+            }
+            state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+          }
+        },
+        AsyncState::Completion(init_completion) => {
+          if init_completion.is_abrupt() {
+            if scope.heap().get_root(v_root).is_some() {
+              scope.heap_mut().remove_root(v_root);
+            }
+            state = AsyncState::Completion(init_completion);
+            continue;
+          }
+
+          let stmt = unsafe { &*stmt };
+          match async_for_triple_begin_iteration(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            v_root,
+            needs_explicit_iter_tick,
+          ) {
+            Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              if scope.heap().get_root(v_root).is_some() {
+                scope.heap_mut().remove_root(v_root);
+              }
+              state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+            }
+            Err(err) => {
+              if scope.heap().get_root(v_root).is_some() {
+                scope.heap_mut().remove_root(v_root);
+              }
+              return Err(err);
+            }
+          }
+        }
+      },
+
+      AsyncFrame::ForTripleAfterTest {
+        stmt,
+        label_set,
+        v_root,
+        needs_explicit_iter_tick,
+      } => match state {
+        AsyncState::Expr(test_res) => match test_res {
+          Ok(test_value) => {
+            let stmt = unsafe { &*stmt };
+            match async_for_triple_after_test(
+              evaluator,
+              scope,
+              stmt,
+              label_set,
+              v_root,
+              needs_explicit_iter_tick,
+              test_value,
+            ) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => {
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
+                return Err(err);
+              }
+            }
+          }
+          Err(err) => {
+            if scope.heap().get_root(v_root).is_some() {
+              scope.heap_mut().remove_root(v_root);
+            }
+            state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "for test frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::ForTripleAfterBody {
+        stmt,
+        label_set,
+        v_root,
+        needs_explicit_iter_tick,
+      } => match state {
+        AsyncState::Completion(body_completion) => {
+          let stmt = unsafe { &*stmt };
+          match async_for_triple_after_body(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            v_root,
+            needs_explicit_iter_tick,
+            body_completion,
+          ) {
+            Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              if scope.heap().get_root(v_root).is_some() {
+                scope.heap_mut().remove_root(v_root);
+              }
+              state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+            }
+            Err(err) => {
+              if scope.heap().get_root(v_root).is_some() {
+                scope.heap_mut().remove_root(v_root);
+              }
+              return Err(err);
+            }
+          }
+        }
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "for body frame received expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::ForTripleAfterPost {
+        stmt,
+        label_set,
+        v_root,
+        needs_explicit_iter_tick,
+      } => match state {
+        AsyncState::Expr(post_res) => match post_res {
+          Ok(_) => {
+            let stmt = unsafe { &*stmt };
+            match async_for_triple_begin_iteration(
+              evaluator,
+              scope,
+              stmt,
+              label_set,
+              v_root,
+              needs_explicit_iter_tick,
+            ) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => {
+                if scope.heap().get_root(v_root).is_some() {
+                  scope.heap_mut().remove_root(v_root);
+                }
+                return Err(err);
+              }
+            }
+          }
+          Err(err) => {
+            if scope.heap().get_root(v_root).is_some() {
+              scope.heap_mut().remove_root(v_root);
+            }
+            state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "for post frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::ForInAfterRhs { stmt, label_set } => match state {
+        AsyncState::Expr(rhs_res) => match rhs_res {
+          Ok(rhs_value) => {
+            let stmt = unsafe { &*stmt };
+            match async_for_in_after_rhs(evaluator, scope, stmt, label_set, rhs_value) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "for-in rhs frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::ForInAfterBody {
+        stmt,
+        label_set,
+        object_root,
+        mut key_roots,
+        next_key_index,
+        v_root,
+        outer_lex,
+      } => match state {
+        AsyncState::Completion(body_completion) => {
+          let mut v = match scope.heap().get_root(v_root) {
+            Some(v) => v,
+            None => {
+              async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+              return Err(VmError::InvariantViolation("missing for-in loop value root"));
+            }
+          };
+
+          if !Evaluator::loop_continues(&body_completion, &label_set) {
+            let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+            async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+            state = AsyncState::Completion(result);
+            continue;
+          }
+
+          if let Some(value) = body_completion.value() {
+            v = value;
+            scope.heap_mut().set_root(v_root, v);
+          }
+
+          let stmt = unsafe { &*stmt };
+          match async_for_in_loop_from(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            object_root,
+            key_roots,
+            next_key_index,
+            v_root,
+            outer_lex,
+          ) {
+            Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+            }
+            Err(err) => return Err(err),
+          }
+        }
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "for-in body frame received expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::ForOfAfterRhs { stmt, label_set } => match state {
+        AsyncState::Expr(rhs_res) => match rhs_res {
+          Ok(iterable) => {
+            let stmt = unsafe { &*stmt };
+            match async_for_of_after_rhs(evaluator, scope, stmt, label_set, iterable) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "for-of rhs frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::ForOfAfterBody {
+        stmt,
+        label_set,
+        iterator_record,
+        iterator_root,
+        next_method_root,
+        v_root,
+        outer_lex,
+      } => match state {
+        AsyncState::Completion(body_completion) => {
+          let mut v = match scope.heap().get_root(v_root) {
+            Some(v) => v,
+            None => {
+              let _ = iterator::iterator_close(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                scope,
+                &iterator_record,
+              );
+              async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+              return Err(VmError::InvariantViolation("missing for-of loop value root"));
+            }
+          };
+
+          if !Evaluator::loop_continues(&body_completion, &label_set) {
+            let _ = iterator::iterator_close(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              &iterator_record,
+            );
+            let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+            async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+            state = AsyncState::Completion(result);
+            continue;
+          }
+
+          if let Some(value) = body_completion.value() {
+            v = value;
+            scope.heap_mut().set_root(v_root, v);
+          }
+
+          let stmt = unsafe { &*stmt };
+          match async_for_of_loop(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            iterator_record,
+            iterator_root,
+            next_method_root,
+            v_root,
+            outer_lex,
+          ) {
+            Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+            }
+            Err(err) => return Err(err),
+          }
+        }
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "for-of body frame received expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::SwitchAfterDiscriminant { stmt } => match state {
+        AsyncState::Expr(discriminant_res) => match discriminant_res {
+          Ok(discriminant) => {
+            let stmt = unsafe { &*stmt };
+            match async_switch_after_discriminant(evaluator, scope, stmt, discriminant) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "switch discriminant frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::SwitchAfterCaseExpr {
+        stmt,
+        discriminant_root,
+        v_root,
+        default_index,
+        branch_index,
+      } => match state {
+        AsyncState::Expr(case_res) => match case_res {
+          Ok(case_value) => {
+            let discriminant = match scope.heap().get_root(discriminant_root) {
+              Some(v) => v,
+              None => {
+                async_switch_cleanup(scope, discriminant_root, v_root);
+                return Err(VmError::InvariantViolation("missing switch discriminant root"));
+              }
+            };
+
+            let matches = match strict_equal(scope.heap(), discriminant, case_value) {
+              Ok(m) => m,
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                let completion = completion_from_expr_result(Err(err))?;
+                let completion = async_switch_finish(scope, discriminant_root, v_root, completion)?;
+                state = AsyncState::Completion(completion);
+                continue;
+              }
+              Err(err) => {
+                async_switch_cleanup(scope, discriminant_root, v_root);
+                return Err(err);
+              }
+            };
+
+            let stmt = unsafe { &*stmt };
+            let res = if matches {
+              async_switch_exec_from(evaluator, scope, stmt, discriminant_root, v_root, branch_index)
+            } else {
+              async_switch_scan_and_exec_from(
+                evaluator,
+                scope,
+                stmt,
+                discriminant_root,
+                v_root,
+                branch_index.saturating_add(1),
+                default_index,
+              )
+            };
+            match res {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                let completion = completion_from_expr_result(Err(err))?;
+                let completion = async_switch_finish(scope, discriminant_root, v_root, completion)?;
+                state = AsyncState::Completion(completion);
+              }
+              Err(err) => {
+                async_switch_cleanup(scope, discriminant_root, v_root);
+                return Err(err);
+              }
+            }
+          }
+          Err(err) => {
+            let completion = completion_from_expr_result(Err(err))?;
+            let completion = async_switch_finish(scope, discriminant_root, v_root, completion)?;
+            state = AsyncState::Completion(completion);
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "switch case frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::SwitchAfterBody {
+        stmt,
+        discriminant_root,
+        v_root,
+        next_branch_index,
+      } => match state {
+        AsyncState::Completion(body_completion) => {
+          let stmt = unsafe { &*stmt };
+          match async_switch_after_body_completion(
+            evaluator,
+            scope,
+            stmt,
+            discriminant_root,
+            v_root,
+            next_branch_index,
+            body_completion,
+          ) {
+            Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              let completion = completion_from_expr_result(Err(err))?;
+              let completion = async_switch_finish(scope, discriminant_root, v_root, completion)?;
+              state = AsyncState::Completion(completion);
+            }
+            Err(err) => {
+              async_switch_cleanup(scope, discriminant_root, v_root);
+              return Err(err);
+            }
+          }
+        }
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "switch body frame received expression state",
           ))
         }
       },

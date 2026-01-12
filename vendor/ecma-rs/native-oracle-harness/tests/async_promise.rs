@@ -37,6 +37,13 @@ fn await_promise_resolve_async_await_returns_ok() {
 }
 
 #[test]
+fn await_in_for_of_loop_returns_concatenated_string() {
+  let out = run_fixture_with_options(fixture_path("await_in_for_of_loop.js"), &OracleHarnessOptions::default())
+    .expect("fixture should run");
+  assert_eq!(out, "ab");
+}
+
+#[test]
 fn promise_all_preserves_input_order() {
   let out = run_fixture_with_options(fixture_path("promise_all_order.js"), &OracleHarnessOptions::default())
     .expect("fixture should run");
