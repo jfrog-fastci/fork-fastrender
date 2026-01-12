@@ -530,6 +530,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   let (startup_session, _source) = determine_startup_session(cli_url, restore, &session_path);
+  let startup_session = startup_session.sanitized();
   let bookmarks_path = fastrender::ui::bookmarks_path();
   let history_path = fastrender::ui::history_path();
   let bookmarks = match fastrender::ui::load_bookmarks(&bookmarks_path) {
@@ -555,7 +556,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   };
 
-  use winit::dpi::LogicalSize;
+  use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
   use winit::event::Event;
   use winit::event::StartCause;
   use winit::event::WindowEvent;
@@ -571,11 +572,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Some(fastrender::ui::theme::ThemeMode::Dark) => Some(Theme::Dark),
     _ => None,
   };
+  let window_state = startup_session
+    .windows
+    .get(startup_session.active_window_index)
+    .and_then(|w| w.window_state.as_ref())
+    .cloned();
 
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
   let window_icon = load_window_icon();
-  let window_builder = WindowBuilder::new()
+  let mut window_builder = WindowBuilder::new()
     .with_title("FastRender")
     .with_inner_size(LogicalSize::new(1200.0, 800.0))
     .with_min_inner_size(LogicalSize::new(480.0, 320.0))
@@ -583,6 +589,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Match native window chrome to the browser theme override when one is set; otherwise follow
     // the system theme.
     .with_theme(window_theme_override);
+
+  if let Some(state) = window_state.as_ref() {
+    if let (Some(width), Some(height)) = (state.width, state.height) {
+      window_builder = window_builder.with_inner_size(PhysicalSize::new(
+        width.clamp(1, i64::from(u32::MAX)) as u32,
+        height.clamp(1, i64::from(u32::MAX)) as u32,
+      ));
+    }
+    if let (Some(x), Some(y)) = (state.x, state.y) {
+      window_builder = window_builder.with_position(PhysicalPosition::new(
+        x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+      ));
+    }
+    if state.maximized {
+      window_builder = window_builder.with_maximized(true);
+    }
+  }
 
   // Platform-native titlebar integration.
   //
@@ -699,7 +723,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       // threads) explicitly when the loop is torn down.
       if matches!(event, Event::LoopDestroyed) {
         if let Some(mut app) = app.take() {
-          let session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
+          let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
+          session.windows[session.active_window_index].window_state =
+            capture_window_state(&app.window);
           if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
             eprintln!(
               "failed to save session to {}: {err}",
@@ -6007,6 +6033,21 @@ impl App {
       }
     }
   }
+}
+
+#[cfg(feature = "browser_ui")]
+fn capture_window_state(window: &winit::window::Window) -> Option<fastrender::ui::BrowserWindowState> {
+  let maximized = window.is_maximized();
+  let size = window.inner_size();
+  let pos = window.outer_position().ok();
+
+  Some(fastrender::ui::BrowserWindowState {
+    x: pos.map(|p| p.x as i64),
+    y: pos.map(|p| p.y as i64),
+    width: Some(size.width as i64),
+    height: Some(size.height as i64),
+    maximized,
+  })
 }
 
 #[cfg(feature = "browser_ui")]
