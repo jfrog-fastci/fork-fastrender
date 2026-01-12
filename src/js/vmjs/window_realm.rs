@@ -5,7 +5,7 @@ use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::document_write::{current_document_write_state_mut, DocumentWriteLimitError};
-use crate::js::dom_platform::{DomInterface, DomPlatform};
+use crate::js::dom_platform::{DomInterface, DomNodeKey, DomPlatform};
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
 use crate::js::time::{TimeBindings, WebTime};
@@ -4814,8 +4814,10 @@ fn get_or_create_node_wrapper(
     return Ok(Value::Object(document_obj));
   }
 
+  let document_id = gc_object_id(document_obj);
+  let node_key = DomNodeKey::new(document_id, node_id);
   let wrapper = if let Some(platform) = dom_platform_mut(vm) {
-    if let Some(existing) = platform.get_existing_wrapper(scope.heap(), node_id) {
+    if let Some(existing) = platform.get_existing_wrapper(scope.heap(), node_key) {
       return Ok(Value::Object(existing));
     }
 
@@ -4824,7 +4826,7 @@ fn get_or_create_node_wrapper(
       primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
     }
 
-    platform.get_or_create_wrapper(scope, node_id, primary)?
+    platform.get_or_create_wrapper(scope, node_key, primary)?
   } else {
     scope.alloc_object()?
   };
@@ -6398,7 +6400,9 @@ fn sync_cached_child_nodes_for_node_id(
   let wrapper_obj = if node_id.index() == 0 {
     Some(document_obj)
   } else {
-    dom_platform_mut(vm).and_then(|platform| platform.get_existing_wrapper(scope.heap(), node_id))
+    let document_id = gc_object_id(document_obj);
+    dom_platform_mut(vm)
+      .and_then(|platform| platform.get_existing_wrapper(scope.heap(), DomNodeKey::new(document_id, node_id)))
   };
   let Some(wrapper_obj) = wrapper_obj else {
     return Ok(());
@@ -6434,7 +6438,9 @@ fn sync_cached_children_for_node_id(
   let wrapper_obj = if node_id.index() == 0 {
     Some(document_obj)
   } else {
-    dom_platform_mut(vm).and_then(|platform| platform.get_existing_wrapper(scope.heap(), node_id))
+    let document_id = gc_object_id(document_obj);
+    dom_platform_mut(vm)
+      .and_then(|platform| platform.get_existing_wrapper(scope.heap(), DomNodeKey::new(document_id, node_id)))
   };
   let Some(wrapper_obj) = wrapper_obj else {
     return Ok(());
@@ -19812,6 +19818,7 @@ fn init_window_globals(
   let document_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(document_obj))?;
   if let Some(platform) = dom_platform.as_mut() {
+    let document_id = gc_object_id(document_obj);
     scope.heap_mut().object_set_prototype(
       document_obj,
       Some(platform.prototype_for(DomInterface::Document)),
@@ -19820,7 +19827,7 @@ fn init_window_globals(
     platform.register_wrapper(
       scope.heap(),
       document_obj,
-      NodeId::from_index(0),
+      DomNodeKey::new(document_id, NodeId::from_index(0)),
       DomInterface::Document,
     );
   }
