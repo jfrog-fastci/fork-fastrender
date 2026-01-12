@@ -272,6 +272,7 @@ fn is_banned_constructor(path: &str) -> bool {
 enum BannedUse {
   Call { path: String },
   Construct { ctor: String },
+  Bind { target: String },
 }
 
 #[cfg(feature = "semantic-ops")]
@@ -315,6 +316,57 @@ fn banned_call_from_call_inst(inst: &Inst, vars: &HashMap<u32, ValueState>) -> O
           return Some(BannedUse::Construct { ctor });
         }
       }
+      return None;
+    }
+
+    // Binding call-forwarders can create callable values that ultimately invoke banned builtins,
+    // even if the immediate `.bind(...)` call does not. Recognize a small set of common patterns
+    // (mirroring `typecheck-ts` native-strict checks) so strict-native cannot be bypassed via:
+    //   Function.prototype.call.bind(eval)(...)
+    //   Reflect.apply.bind(Reflect, eval, ...)(...)
+    if callee_path.ends_with(".bind") {
+      let Some(bound_fn) = resolve_builtin_path(&this, vars) else {
+        return None;
+      };
+
+      // Binding a banned builtin (e.g. `Function.prototype.bind.call(eval, ...)`) creates a
+      // callable alias that can be invoked later, so reject it.
+      if is_banned_builtin_call(&bound_fn) {
+        return Some(BannedUse::Bind { target: bound_fn });
+      }
+
+      match bound_fn.as_str() {
+        // `Function.prototype.call` / `Function.prototype.apply` invoke their receiver (the
+        // bound `thisArg`) as a function.
+        "Function.prototype.call" | "Function.prototype.apply" => {
+          if let Some(target) = args.get(0).and_then(|arg| resolve_builtin_path(arg, vars)) {
+            if is_banned_builtin_call(&target) {
+              return Some(BannedUse::Bind { target });
+            }
+          }
+        }
+        // `Reflect.apply(target, thisArg, argsArray)`.
+        //
+        // Binding `Reflect.apply` with a banned `target` produces a callable wrapper around
+        // `eval`/`Function`/`Proxy`/etc.
+        "Reflect.apply" => {
+          if let Some(target) = args.get(1).and_then(|arg| resolve_builtin_path(arg, vars)) {
+            if is_banned_builtin_call(&target) {
+              return Some(BannedUse::Bind { target });
+            }
+          }
+        }
+        // `Reflect.construct(target, argsArray)`.
+        "Reflect.construct" => {
+          if let Some(ctor) = args.get(1).and_then(|arg| resolve_builtin_path(arg, vars)) {
+            if is_banned_constructor(&ctor) {
+              return Some(BannedUse::Construct { ctor });
+            }
+          }
+        }
+        _ => {}
+      }
+
       return None;
     }
 
@@ -541,6 +593,12 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
                 inst,
                 CODE_BANNED_BUILTIN,
                 format!("strict-native forbids constructing `{ctor}`"),
+              )),
+              BannedUse::Bind { target } => diagnostics.push(diag(
+                program,
+                inst,
+                CODE_BANNED_BUILTIN,
+                format!("strict-native forbids binding `{target}`"),
               )),
             }
           }

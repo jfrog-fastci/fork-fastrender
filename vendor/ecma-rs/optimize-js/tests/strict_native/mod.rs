@@ -172,6 +172,72 @@ fn rejects_eval_via_reflect_apply_call() {
 }
 
 #[test]
+fn rejects_eval_via_function_prototype_call_bind() {
+  let src = r#"
+    Function.prototype.call.bind(eval)(null, "1 + 1");
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("Function.prototype.call.bind(eval)(...) should be rejected");
+
+  assert!(
+    err
+      .iter()
+      .any(|d| d.code == "OPTN0005" && d.message.contains("binding `eval`")),
+    "expected OPTN0005 diagnostic mentioning binding eval, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_eval_via_reflect_apply_bind() {
+  let src = r#"
+    Reflect.apply.bind(Reflect, eval, null, ["1 + 1"])();
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("Reflect.apply.bind(Reflect, eval, ...)(...) should be rejected");
+
+  assert!(
+    err
+      .iter()
+      .any(|d| d.code == "OPTN0005" && d.message.contains("binding `eval`")),
+    "expected OPTN0005 diagnostic mentioning binding eval, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_eval_via_reflect_apply_function_prototype_bind() {
+  let src = r#"
+    Reflect.apply(Function.prototype.bind, eval, [null, "1 + 1"]);
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("Reflect.apply(Function.prototype.bind, eval, ...) should be rejected");
+
+  assert!(
+    err
+      .iter()
+      .any(|d| d.code == "OPTN0005" && d.message.contains("binding `eval`")),
+    "expected OPTN0005 diagnostic mentioning binding eval, got {err:?}"
+  );
+}
+
+#[test]
 fn rejects_function_call_indirection() {
   let src = r#"
     Function.call(null, "return 1");
@@ -188,6 +254,28 @@ fn rejects_function_call_indirection() {
   assert!(
     err.iter().any(|d| d.code == "OPTN0005" && d.message.contains("Function.call")),
     "expected OPTN0005 diagnostic mentioning Function.call, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_function_via_reflect_construct_bind() {
+  let src = r#"
+    Reflect.construct.bind(Reflect, Function, ["return 1"])();
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("Reflect.construct.bind(Reflect, Function, ...)(...) should be rejected");
+
+  assert!(
+    err
+      .iter()
+      .any(|d| d.code == "OPTN0005" && d.message.contains("constructing `Function`")),
+    "expected OPTN0005 diagnostic mentioning constructing Function, got {err:?}"
   );
 }
 
