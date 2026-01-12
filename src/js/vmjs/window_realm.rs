@@ -2819,7 +2819,11 @@ fn window_atob_native(
   Ok(Value::String(out))
 }
 
-fn make_dom_exception(scope: &mut Scope<'_>, name: &str, message: &str) -> Result<Value, VmError> {
+pub(crate) fn make_dom_exception(
+  scope: &mut Scope<'_>,
+  name: &str,
+  message: &str,
+) -> Result<Value, VmError> {
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
 

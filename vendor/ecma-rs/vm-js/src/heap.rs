@@ -1097,10 +1097,7 @@ impl Heap {
   /// Returns a `TypeError` if the `ArrayBuffer` is detached.
   pub fn array_buffer_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     let buf = self.get_array_buffer(obj)?;
-    buf
-      .data
-      .as_deref()
-      .ok_or(VmError::TypeError("ArrayBuffer is detached"))
+    Ok(buf.data.as_deref().unwrap_or(&[]))
   }
 
   /// Detaches an `ArrayBuffer` by dropping its backing store.
@@ -5778,7 +5775,11 @@ impl<'a> Scope<'a> {
     let mut scope = self.reborrow();
     scope.push_root(Value::Object(viewed_array_buffer))?;
 
-    let buf_len = scope.heap.get_array_buffer(viewed_array_buffer)?.byte_length();
+    let buf = scope.heap.get_array_buffer(viewed_array_buffer)?;
+    if buf.data.is_none() {
+      return Err(VmError::TypeError("DataView view over detached ArrayBuffer"));
+    }
+    let buf_len = buf.byte_length();
     let end = byte_offset
       .checked_add(byte_length)
       .ok_or(VmError::OutOfMemory)?;
