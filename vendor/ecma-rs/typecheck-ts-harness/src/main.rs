@@ -494,6 +494,9 @@ fn main() -> ExitCode {
               report.summary.tsc_crashed,
               report.summary.timeout
             );
+            if let Some(line) = report.directives.human_summary() {
+              println!("{line}");
+            }
             for case in report.cases.iter().filter(|c| {
               c.status != typecheck_ts_harness::snapshot_verify::VerifySnapshotsStatus::Ok
             }) {

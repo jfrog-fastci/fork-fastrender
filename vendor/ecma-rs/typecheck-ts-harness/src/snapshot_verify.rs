@@ -1,4 +1,4 @@
-use crate::directives::HarnessOptions;
+use crate::directives::{DirectiveParseOptions, HarnessOptions, IgnoredDirectiveSummary};
 use crate::discover::{
   discover_conformance_test_paths, Filter, Shard, TestCasePath, DEFAULT_EXTENSIONS,
 };
@@ -29,6 +29,8 @@ pub struct VerifySnapshotsReport {
   pub suite_root: String,
   pub suite_name: String,
   pub summary: VerifySnapshotsSummary,
+  #[serde(default, skip_serializing_if = "IgnoredDirectiveSummary::is_empty")]
+  pub directives: IgnoredDirectiveSummary,
   pub cases: Vec<VerifySnapshotsCase>,
 }
 
@@ -55,6 +57,8 @@ pub struct VerifySnapshotsCase {
   pub status: VerifySnapshotsStatus,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub detail: Option<String>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,18 +130,18 @@ pub fn verify_snapshots(opts: VerifySnapshotsOptions) -> Result<VerifySnapshotsR
   let timeout = opts.timeout;
   let snapshot_store_ref = &snapshot_store;
   let tsc_pool_ref = &tsc_pool;
-  let mut results: Vec<VerifySnapshotsCase> = pool.install(|| {
+  let mut results: Vec<VerifySnapshotsCaseResult> = pool.install(|| {
     cases
       .into_par_iter()
       .map(|case| verify_case(case, snapshot_store_ref, tsc_pool_ref, timeout))
       .collect()
   });
-  results.sort_by(|a, b| a.id.cmp(&b.id));
+  results.sort_by(|a, b| a.case.id.cmp(&b.case.id));
 
   let mut summary = VerifySnapshotsSummary::default();
   summary.total = results.len();
   for case in &results {
-    match case.status {
+    match case.case.status {
       VerifySnapshotsStatus::Ok => summary.ok += 1,
       VerifySnapshotsStatus::MissingSnapshot => summary.missing_snapshot += 1,
       VerifySnapshotsStatus::Drift => summary.drift += 1,
@@ -146,12 +150,23 @@ pub fn verify_snapshots(opts: VerifySnapshotsOptions) -> Result<VerifySnapshotsR
     }
   }
 
+  let directives =
+    IgnoredDirectiveSummary::from_harness_options(results.iter().map(|r| &r.harness_options));
+  let cases = results.into_iter().map(|r| r.case).collect();
+
   Ok(VerifySnapshotsReport {
     suite_root: opts.root.display().to_string(),
     suite_name: snapshot_store.suite_name().to_string(),
     summary,
-    cases: results,
+    directives,
+    cases,
   })
+}
+
+#[derive(Debug, Clone)]
+struct VerifySnapshotsCaseResult {
+  case: VerifySnapshotsCase,
+  harness_options: HarnessOptions,
 }
 
 fn init_tracing(enabled: bool) {
@@ -171,39 +186,63 @@ fn verify_case(
   snapshot_store: &SnapshotStore,
   tsc_pool: &TscRunnerPool,
   timeout: Duration,
-) -> VerifySnapshotsCase {
+) -> VerifySnapshotsCaseResult {
   let TestCasePath { id, path } = case;
   let path_display = path.display().to_string();
 
-  let snapshot = match snapshot_store.load(&id) {
+  let snapshot = snapshot_store.load(&id);
+  let inputs = build_case_inputs(&path);
+
+  let mut harness_options = HarnessOptions::default();
+  let mut notes = Vec::new();
+  let mut input_error: Option<String> = None;
+  let (file_set, options) = match inputs {
+    Ok(inputs) => {
+      harness_options = inputs.harness_options;
+      notes = inputs.notes;
+      (Some(inputs.file_set), Some(inputs.options))
+    }
+    Err(err) => {
+      input_error = Some(err.clone());
+      notes.push(err);
+      (None, None)
+    }
+  };
+
+  let make_case = |status: VerifySnapshotsStatus, detail: Option<String>| VerifySnapshotsCase {
+    id: id.clone(),
+    path: path_display.clone(),
+    status,
+    detail,
+    notes: notes.clone(),
+  };
+
+  let snapshot = match snapshot {
     Ok(snapshot) => snapshot,
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-      return VerifySnapshotsCase {
-        id,
-        path: path_display,
-        status: VerifySnapshotsStatus::MissingSnapshot,
-        detail: Some(err.to_string()),
+      return VerifySnapshotsCaseResult {
+        case: make_case(VerifySnapshotsStatus::MissingSnapshot, Some(err.to_string())),
+        harness_options,
       };
     }
     Err(err) => {
-      return VerifySnapshotsCase {
-        id,
-        path: path_display,
-        status: VerifySnapshotsStatus::Drift,
-        detail: Some(format!("failed to load snapshot: {err}")),
+      return VerifySnapshotsCaseResult {
+        case: make_case(
+          VerifySnapshotsStatus::Drift,
+          Some(format!("failed to load snapshot: {err}")),
+        ),
+        harness_options,
       };
     }
   };
 
-  let (file_set, options) = match build_case_inputs(&path) {
-    Ok(inputs) => inputs,
-    Err(err) => {
-      return VerifySnapshotsCase {
-        id,
-        path: path_display,
-        status: VerifySnapshotsStatus::Drift,
-        detail: Some(err),
-      }
+  let (file_set, options) = match (file_set, options) {
+    (Some(file_set), Some(options)) => (file_set, options),
+    _ => {
+      return VerifySnapshotsCaseResult {
+        case: make_case(VerifySnapshotsStatus::Drift, input_error),
+        harness_options,
+      };
     }
   };
 
@@ -211,19 +250,18 @@ fn verify_case(
   let live = match tsc_pool.run(&file_set, &options, deadline) {
     Ok(diags) => diags,
     Err(TscPoolError::Timeout) => {
-      return VerifySnapshotsCase {
-        id,
-        path: path_display,
-        status: VerifySnapshotsStatus::Timeout,
-        detail: Some(format!("timed out after {}s", timeout.as_secs())),
+      return VerifySnapshotsCaseResult {
+        case: make_case(
+          VerifySnapshotsStatus::Timeout,
+          Some(format!("timed out after {}s", timeout.as_secs())),
+        ),
+        harness_options,
       };
     }
     Err(TscPoolError::Crashed(err)) => {
-      return VerifySnapshotsCase {
-        id,
-        path: path_display,
-        status: VerifySnapshotsStatus::TscCrashed,
-        detail: Some(err),
+      return VerifySnapshotsCaseResult {
+        case: make_case(VerifySnapshotsStatus::TscCrashed, Some(err)),
+        harness_options,
       };
     }
   };
@@ -236,54 +274,70 @@ fn verify_case(
   let expected_value = match serde_json::to_value(&expected) {
     Ok(value) => value,
     Err(err) => {
-      return VerifySnapshotsCase {
-        id,
-        path: path_display,
-        status: VerifySnapshotsStatus::Drift,
-        detail: Some(format!("failed to serialize snapshot payload: {err}")),
+      return VerifySnapshotsCaseResult {
+        case: make_case(
+          VerifySnapshotsStatus::Drift,
+          Some(format!("failed to serialize snapshot payload: {err}")),
+        ),
+        harness_options,
       };
     }
   };
   let actual_value = match serde_json::to_value(&actual) {
     Ok(value) => value,
     Err(err) => {
-      return VerifySnapshotsCase {
-        id,
-        path: path_display,
-        status: VerifySnapshotsStatus::TscCrashed,
-        detail: Some(format!("failed to serialize live tsc payload: {err}")),
+      return VerifySnapshotsCaseResult {
+        case: make_case(
+          VerifySnapshotsStatus::TscCrashed,
+          Some(format!("failed to serialize live tsc payload: {err}")),
+        ),
+        harness_options,
       };
     }
   };
 
   if expected_value == actual_value {
-    return VerifySnapshotsCase {
-      id,
-      path: path_display,
-      status: VerifySnapshotsStatus::Ok,
-      detail: None,
+    return VerifySnapshotsCaseResult {
+      case: make_case(VerifySnapshotsStatus::Ok, None),
+      harness_options,
     };
   }
 
   let detail = diff_payloads(&expected_value, &actual_value);
-  VerifySnapshotsCase {
-    id,
-    path: path_display,
-    status: VerifySnapshotsStatus::Drift,
-    detail: Some(detail),
+  VerifySnapshotsCaseResult {
+    case: make_case(VerifySnapshotsStatus::Drift, Some(detail)),
+    harness_options,
   }
 }
 
-fn build_case_inputs(
-  path: &Path,
-) -> std::result::Result<(HarnessFileSet, serde_json::Map<String, Value>), String> {
+struct CaseInputs {
+  file_set: HarnessFileSet,
+  options: serde_json::Map<String, Value>,
+  harness_options: HarnessOptions,
+  notes: Vec<String>,
+}
+
+fn build_case_inputs(path: &Path) -> std::result::Result<CaseInputs, String> {
   let content =
     crate::read_utf8_file(path).map_err(|err| format!("failed to read test input: {err}"))?;
   let split = crate::split_test_file(path, &content);
-  let harness_options = HarnessOptions::from_directives(&split.directives);
-  let options = harness_options.to_tsc_options_map();
+  let parsed = HarnessOptions::from_directives_with_options(
+    &split.directives,
+    DirectiveParseOptions::from_env(),
+  );
+  let mut notes = split.notes;
+  notes.extend(parsed.notes);
+  if let Some(note) = parsed.options.directives.ignored_directives_note() {
+    notes.push(note);
+  }
+  let options = parsed.options.to_tsc_options_map();
   let file_set = HarnessFileSet::new(&split.files);
-  Ok((file_set, options))
+  Ok(CaseInputs {
+    file_set,
+    options,
+    harness_options: parsed.options,
+    notes,
+  })
 }
 
 fn diff_payloads(expected: &Value, actual: &Value) -> String {
