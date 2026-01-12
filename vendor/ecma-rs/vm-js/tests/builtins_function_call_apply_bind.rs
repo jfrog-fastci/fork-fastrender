@@ -14,6 +14,12 @@ fn data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn string_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  Ok(PropertyKey::from_string(key_s))
+}
+
 fn get_builtin(scope: &mut Scope<'_>, realm: &Realm, name: &str) -> Result<Value, VmError> {
   let key_s = scope.alloc_string(name)?;
   let key = PropertyKey::from_string(key_s);
@@ -113,7 +119,10 @@ fn native_return_two(
 
 #[test]
 fn function_prototype_call_apply_bind() -> Result<(), VmError> {
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // This test allocates a realm + several helper functions/objects, which can be close to the
+  // 1MiB heaps used by many other vm-js tests. Use a small 2MiB heap budget so failures reflect
+  // semantic regressions rather than incidental GC/heap pressure.
+  let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
@@ -145,9 +154,9 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
     // add.apply(undefined, [1,2]) === 3 (array-like object)
     let arg_array = scope.alloc_object()?;
     scope.push_root(Value::Object(arg_array))?;
-    let k0 = PropertyKey::from_string(scope.alloc_string("0")?);
-    let k1 = PropertyKey::from_string(scope.alloc_string("1")?);
-    let klen = PropertyKey::from_string(scope.alloc_string("length")?);
+    let k0 = string_key(&mut scope, "0")?;
+    let k1 = string_key(&mut scope, "1")?;
+    let klen = string_key(&mut scope, "length")?;
     scope.define_property(arg_array, k0, data_desc(Value::Number(1.0)))?;
     scope.define_property(arg_array, k1, data_desc(Value::Number(2.0)))?;
     scope.define_property(arg_array, klen, data_desc(Value::Number(2.0)))?;
@@ -198,9 +207,9 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
     // apply must perform ordinary Get (accessor-supported) for length and elements.
     let args_with_accessors = scope.alloc_object()?;
     scope.push_root(Value::Object(args_with_accessors))?;
-    let k0 = PropertyKey::from_string(scope.alloc_string("0")?);
-    let k1 = PropertyKey::from_string(scope.alloc_string("1")?);
-    let klen = PropertyKey::from_string(scope.alloc_string("length")?);
+    let k0 = string_key(&mut scope, "0")?;
+    let k1 = string_key(&mut scope, "1")?;
+    let klen = string_key(&mut scope, "length")?;
 
     let ret_one_id = vm.register_native_call(native_return_one)?;
     let ret_two_id = vm.register_native_call(native_return_two)?;
@@ -260,9 +269,9 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
     // apply must use ToLength(Get(length)), so length values that coerce via ToNumber should work.
     let args_length_string = scope.alloc_object()?;
     scope.push_root(Value::Object(args_length_string))?;
-    let k0 = PropertyKey::from_string(scope.alloc_string("0")?);
-    let k1 = PropertyKey::from_string(scope.alloc_string("1")?);
-    let klen = PropertyKey::from_string(scope.alloc_string("length")?);
+    let k0 = string_key(&mut scope, "0")?;
+    let k1 = string_key(&mut scope, "1")?;
+    let klen = string_key(&mut scope, "length")?;
     scope.define_property(args_length_string, k0, data_desc(Value::Number(1.0)))?;
     scope.define_property(args_length_string, k1, data_desc(Value::Number(2.0)))?;
     let len_s = scope.alloc_string("2")?;
@@ -294,7 +303,7 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
 
     let bound_this = scope.alloc_object()?;
     scope.push_root(Value::Object(bound_this))?;
-    let kx = PropertyKey::from_string(scope.alloc_string("x")?);
+    let kx = string_key(&mut scope, "x")?;
     scope.define_property(bound_this, kx, data_desc(Value::Number(5.0)))?;
 
     let g = vm.call_without_host(

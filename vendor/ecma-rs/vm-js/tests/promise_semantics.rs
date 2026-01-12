@@ -452,7 +452,6 @@ fn basic_fulfillment_then_schedules_microtask_and_fulfills_derived() -> Result<(
 
       (promise_obj, derived_obj)
     };
-
     // Keep promises alive across the job run: jobs and microtask execution can allocate and trigger
     // GC.
     let promise_root = ctx.heap.add_root(Value::Object(promise_obj))?;
