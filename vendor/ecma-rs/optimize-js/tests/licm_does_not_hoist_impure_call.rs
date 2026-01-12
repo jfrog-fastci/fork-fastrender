@@ -1,4 +1,5 @@
 use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
+use optimize_js::dom::Dom;
 use optimize_js::il::inst::{Arg, Const, Inst, Purity};
 use optimize_js::opt::optpass_licm::optpass_licm;
 
@@ -33,7 +34,8 @@ fn licm_does_not_hoist_impure_call() {
     entry: 0,
   };
 
-  let pass = optpass_licm(&mut cfg);
+  let dom_before = Dom::calculate(&cfg);
+  let pass = optpass_licm(&mut cfg, &dom_before);
   assert!(
     !pass.changed,
     "expected LICM to make no changes (impure call should not be hoisted)"
@@ -57,4 +59,3 @@ fn licm_does_not_hoist_impure_call() {
     "expected preheader to remain empty when no hoisting occurs"
   );
 }
-

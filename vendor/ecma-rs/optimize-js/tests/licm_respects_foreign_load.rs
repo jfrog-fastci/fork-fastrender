@@ -1,4 +1,5 @@
 use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
+use optimize_js::dom::Dom;
 use optimize_js::il::inst::Inst;
 use optimize_js::opt::optpass_licm::optpass_licm;
 use optimize_js::symbol::semantics::SymbolId;
@@ -23,7 +24,8 @@ fn licm_does_not_hoist_foreign_load() {
     entry: 0,
   };
 
-  let pass = optpass_licm(&mut cfg);
+  let dom_before = Dom::calculate(&cfg);
+  let pass = optpass_licm(&mut cfg, &dom_before);
   assert!(
     !pass.changed,
     "expected LICM to make no changes (foreign load must not be hoisted)"
@@ -37,4 +39,3 @@ fn licm_does_not_hoist_foreign_load() {
     "expected foreign load to remain in loop body, got {body:?}"
   );
 }
-

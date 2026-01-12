@@ -57,7 +57,8 @@ fn licm_hoists_pure_arithmetic_to_loop_preheader() {
     entry: 0,
   };
 
-  let pass = optpass_licm(&mut cfg);
+  let dom_before = Dom::calculate(&cfg);
+  let pass = optpass_licm(&mut cfg, &dom_before);
   assert!(pass.changed, "expected LICM to hoist at least one instruction");
   assert!(pass.cfg_changed, "expected LICM to insert a loop preheader block");
 
@@ -93,4 +94,3 @@ fn licm_hoists_pure_arithmetic_to_loop_preheader() {
     "expected the loop-carried update to remain in the loop body; body={body_bb:?}"
   );
 }
-

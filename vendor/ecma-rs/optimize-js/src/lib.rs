@@ -131,6 +131,11 @@ pub struct CompileCfgOptions {
   /// This is enabled by default. Turning it off can be useful for experimenting
   /// with downstream backends/analyses on the unoptimised SSA graph.
   pub run_opt_passes: bool,
+  /// Enable loop-invariant code motion (LICM) during the optimization loop.
+  ///
+  /// This is disabled by default to avoid changing existing compilation/test
+  /// baselines unless explicitly requested by the caller.
+  pub enable_licm: bool,
   /// Options controlling interprocedural inlining on SSA CFGs.
   pub inline: InlineOptions,
   /// Enable loop-invariant code motion (LICM).
@@ -169,6 +174,7 @@ impl Default for CompileCfgOptions {
     Self {
       keep_ssa: false,
       run_opt_passes: true,
+      enable_licm: false,
       inline: InlineOptions::default(),
       enable_licm: false,
     }
@@ -681,6 +687,25 @@ pub(crate) fn build_program_function_with_options(
 
       iteration_result.merge(optpass_dvn(&mut cfg, dom));
       dbg_checkpoint(&format!("opt{}_dvn", i), &cfg);
+      if options.enable_licm {
+        let licm_before = cfg.graph.labels().max().unwrap_or(cfg.entry);
+        let licm_result = optpass_licm(&mut cfg, dom);
+        // LICM may insert loop preheaders and rewrite CFG edges.
+        dom_cache.maybe_invalidate(&licm_result);
+        if licm_result.cfg_changed {
+          let licm_after = cfg.graph.labels().max().unwrap_or(cfg.entry);
+          // LICM allocates new bblock labels internally based on the CFG's current max label.
+          // Ensure later phases that allocate labels (SSA deconstruction) do not collide with
+          // those newly created labels by advancing the shared label counter.
+          if licm_after > licm_before {
+            for _ in 0..(licm_after - licm_before) {
+              let _ = c_label.bump();
+            }
+          }
+        }
+        iteration_result.merge(licm_result);
+        dbg_checkpoint(&format!("opt{}_licm", i), &cfg);
+      }
       iteration_result.merge(optpass_trivial_dce(&mut cfg));
       dbg_checkpoint(&format!("opt{}_dce", i), &cfg);
       // TODO Isn't this really const/copy propagation to child Phi insts?

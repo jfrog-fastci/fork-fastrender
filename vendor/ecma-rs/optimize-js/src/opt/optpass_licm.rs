@@ -275,16 +275,17 @@ fn find_canonical_preheader(cfg: &Cfg, header: u32, loop_nodes: &HashSet<u32>) -
   }
 }
 
-pub fn optpass_licm(cfg: &mut Cfg) -> PassResult {
+pub fn optpass_licm(cfg: &mut Cfg, dom: &Dom) -> PassResult {
   let mut result = PassResult::default();
 
   let mut next_label = next_unused_label(cfg);
   let mut next_var = next_unused_var(cfg);
 
   // 1) Ensure canonical preheaders for all natural loops.
+  let mut computed_dom: Option<Dom> = None;
+  let mut dom_ref: &Dom = dom;
   loop {
-    let dom = Dom::calculate(cfg);
-    let loops = find_loops(cfg, &dom);
+    let loops = find_loops(cfg, dom_ref);
     if loops.is_empty() {
       return result;
     }
@@ -311,12 +312,14 @@ pub fn optpass_licm(cfg: &mut Cfg) -> PassResult {
     if !changed {
       break;
     }
+
+    computed_dom = Some(Dom::calculate(cfg));
+    dom_ref = computed_dom.as_ref().expect("assigned above");
   }
 
   // 2) Hoist invariant pure instructions into the corresponding loop preheaders.
-  let dom = Dom::calculate(cfg);
-  let dominates = dom.dominates_graph();
-  let loops = find_loops(cfg, &dom);
+  let dominates = dom_ref.dominates_graph();
+  let loops = find_loops(cfg, dom_ref);
 
   let mut def_blocks = build_def_blocks(cfg);
   let rpo = cfg.reverse_postorder();
