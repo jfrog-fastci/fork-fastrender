@@ -91,6 +91,8 @@ fn about_pages_render_and_have_titles() {
 
   for (url, title) in [
     ("about:newtab", "New Tab"),
+    ("about:history", "History"),
+    ("about:bookmarks", "Bookmarks"),
     ("about:help", "Help"),
     ("about:version", "Version"),
     ("about:gpu", "GPU"),

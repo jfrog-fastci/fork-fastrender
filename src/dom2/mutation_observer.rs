@@ -304,10 +304,6 @@ impl Document {
     if old_idx >= self.nodes.len() || new_idx >= self.nodes.len() {
       return;
     }
-    if old_idx == new_idx {
-      return;
-    }
-
     let moved = std::mem::take(&mut self.nodes[old_idx].registered_observers);
     if moved.is_empty() {
       return;

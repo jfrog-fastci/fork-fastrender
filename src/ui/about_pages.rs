@@ -1,11 +1,11 @@
 pub const ABOUT_BLANK: &str = "about:blank";
 pub const ABOUT_NEWTAB: &str = "about:newtab";
+pub const ABOUT_HISTORY: &str = "about:history";
+pub const ABOUT_BOOKMARKS: &str = "about:bookmarks";
 pub const ABOUT_HELP: &str = "about:help";
 pub const ABOUT_VERSION: &str = "about:version";
 pub const ABOUT_GPU: &str = "about:gpu";
 pub const ABOUT_ERROR: &str = "about:error";
-pub const ABOUT_HISTORY: &str = "about:history";
-pub const ABOUT_BOOKMARKS: &str = "about:bookmarks";
 pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
 pub const ABOUT_TEST_FORM: &str = "about:test-form";
@@ -178,23 +178,23 @@ pub fn is_about_url(url: &str) -> bool {
 }
 
 pub fn html_for_about_url(url: &str) -> Option<String> {
-  let normalized = url.trim();
+  let trimmed = url.trim();
   // `about:` pages may be used with query strings (e.g. form submissions) or fragments.
   // Only the base `about:*` identifier selects the template.
-  let normalized = normalized
+  let base = trimmed
     .split(|c| matches!(c, '?' | '#'))
     .next()
-    .unwrap_or(normalized);
-  let lower = normalized.to_ascii_lowercase();
+    .unwrap_or(trimmed);
+  let lower = base.to_ascii_lowercase();
   match lower.as_str() {
     ABOUT_BLANK => Some(blank_html().to_string()),
     ABOUT_NEWTAB => Some(newtab_html()),
+    ABOUT_HISTORY => Some(history_html(trimmed)),
+    ABOUT_BOOKMARKS => Some(bookmarks_html(trimmed)),
     ABOUT_HELP => Some(help_html().to_string()),
     ABOUT_VERSION => Some(version_html()),
     ABOUT_GPU => Some(gpu_html()),
     ABOUT_ERROR => Some(error_html("Navigation error", None, None)),
-    ABOUT_HISTORY => Some(history_html(url)),
-    ABOUT_BOOKMARKS => Some(bookmarks_html(url)),
     ABOUT_TEST_SCROLL => Some(test_scroll_html()),
     ABOUT_TEST_HEAVY => Some(test_heavy_html()),
     ABOUT_TEST_FORM => Some(test_form_html()),
@@ -541,6 +541,519 @@ fn newtab_html() -> String {
   out
 }
 
+fn history_html(original_url: &str) -> String {
+  let snapshot = about_page_snapshot();
+  let q = query_param_from_about_url(original_url, "q").unwrap_or_default();
+  let q = q.trim();
+  let tokens = search_tokens(q);
+  let safe_q = escape_html(q);
+
+  let mut any_entries = 0usize;
+  let mut matched_entries = 0usize;
+  let mut rows = String::new();
+
+  for entry in snapshot.history.iter() {
+    let url = entry.url.trim();
+    if url.is_empty() {
+      continue;
+    }
+    any_entries += 1;
+
+    let title = entry
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty())
+      .unwrap_or(url);
+
+    if !tokens.is_empty() && !matches_search_tokens(title, url, &tokens) {
+      continue;
+    }
+
+    matched_entries += 1;
+    let safe_url = escape_html(url);
+    let safe_title = escape_html(title);
+    let safe_display_url = escape_html(url);
+    let visit_count = entry.visit_count;
+    let last_visited = entry
+      .last_visited
+      .map(format_system_time_utc)
+      .map(|t| escape_html(&t));
+
+    use std::fmt::Write;
+    let _ = write!(
+      rows,
+      "<li><a class=\"item\" href=\"{safe_url}\"><div class=\"title\">{safe_title}</div><div class=\"url\">{safe_display_url}</div><div class=\"meta\"><span>Visit count: {visit_count}</span>{}</div></a></li>",
+      last_visited
+        .as_deref()
+        .map(|t| format!("<span>Last visited: {t}</span>"))
+        .unwrap_or_default()
+    );
+  }
+
+  let list_body = if any_entries == 0 {
+    "<p class=\"empty\">No history yet.</p>".to_string()
+  } else if matched_entries == 0 {
+    "<p class=\"empty\">No results.</p>".to_string()
+  } else {
+    format!("<ul class=\"list\" aria-label=\"History\">{rows}</ul>")
+  };
+
+  format!(
+    "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+    <title>History</title>
+    <style>
+      :root {{
+        color-scheme: light dark;
+        --bg: #f7f8fb;
+        --fg: #111827;
+        --muted: #4b5563;
+        --card-bg: rgba(255, 255, 255, 0.75);
+        --card-border: rgba(17, 24, 39, 0.10);
+        --shadow: 0 18px 60px rgba(17, 24, 39, 0.12);
+        --btn-bg: rgba(17, 24, 39, 0.04);
+        --btn-border: rgba(17, 24, 39, 0.12);
+        --btn-hover: rgba(17, 24, 39, 0.07);
+        --focus: #2563eb;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\",
+          \"Courier New\", monospace;
+      }}
+
+      @media (prefers-color-scheme: dark) {{
+        :root {{
+          --bg: #0b1020;
+          --fg: #e5e7eb;
+          --muted: #9ca3af;
+          --card-bg: rgba(255, 255, 255, 0.04);
+          --card-border: rgba(255, 255, 255, 0.10);
+          --shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+          --btn-bg: rgba(255, 255, 255, 0.06);
+          --btn-border: rgba(255, 255, 255, 0.12);
+          --btn-hover: rgba(255, 255, 255, 0.10);
+          --focus: #60a5fa;
+        }}
+      }}
+
+      html, body {{ height: 100%; }}
+      body {{
+        margin: 0;
+        font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+      }}
+
+      a {{ color: inherit; }}
+
+      header {{
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        backdrop-filter: blur(10px);
+        background: var(--bg);
+        border-bottom: 1px solid var(--card-border);
+      }}
+
+      .top {{
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 14px 18px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+      }}
+
+      .nav {{
+        display: flex;
+        gap: 10px;
+        font-weight: 600;
+      }}
+
+      .nav a {{ text-decoration: none; padding: 6px 10px; border-radius: 10px; }}
+      .nav a:hover {{ background: var(--btn-hover); }}
+      .nav a:focus-visible {{ outline: 3px solid var(--focus); outline-offset: 2px; }}
+
+      form.search {{
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex: 1 1 320px;
+        max-width: 520px;
+      }}
+
+      input[type=\"search\"] {{
+        flex: 1 1 auto;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--btn-border);
+        background: var(--btn-bg);
+        color: var(--fg);
+      }}
+
+      input[type=\"search\"]:focus-visible {{
+        outline: 3px solid var(--focus);
+        outline-offset: 2px;
+      }}
+
+      main {{
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 18px;
+      }}
+
+      h1 {{
+        margin: 0 0 12px;
+        font-size: 22px;
+        letter-spacing: -0.01em;
+      }}
+
+      .list {{
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }}
+
+      a.item {{
+        display: block;
+        text-decoration: none;
+        border: 1px solid var(--btn-border);
+        background: var(--card-bg);
+        border-radius: 14px;
+        box-shadow: var(--shadow);
+        padding: 12px 14px;
+      }}
+
+      a.item:hover {{ background: var(--btn-hover); }}
+      a.item:focus-visible {{ outline: 3px solid var(--focus); outline-offset: 2px; }}
+
+      .title {{ font-weight: 650; margin: 0 0 4px; }}
+      .url {{
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-all;
+      }}
+
+      .meta {{
+        margin-top: 8px;
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 12px;
+        color: var(--muted);
+      }}
+
+      .empty {{
+        color: var(--muted);
+        padding: 16px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--btn-border);
+        background: var(--btn-bg);
+      }}
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class=\"top\">
+        <nav class=\"nav\" aria-label=\"Internal pages\">
+          <a href=\"about:newtab\">New tab</a>
+          <a href=\"about:bookmarks\">Bookmarks</a>
+          <a href=\"about:help\">Help</a>
+        </nav>
+        <form class=\"search\" method=\"get\" action=\"about:history\" aria-label=\"Search history\">
+          <input type=\"search\" name=\"q\" value=\"{safe_q}\" placeholder=\"Search history\">
+        </form>
+      </div>
+    </header>
+    <main>
+      <h1>History</h1>
+      {list_body}
+    </main>
+  </body>
+</html>"
+  )
+}
+
+fn bookmarks_html(original_url: &str) -> String {
+  let snapshot = about_page_snapshot();
+  let q = query_param_from_about_url(original_url, "q").unwrap_or_default();
+  let q = q.trim();
+  let tokens = search_tokens(q);
+  let safe_q = escape_html(q);
+
+  let mut any_entries = 0usize;
+  let mut matched_entries = 0usize;
+  let mut rows = String::new();
+
+  for bookmark in snapshot.bookmarks.iter() {
+    let url = bookmark.url.trim();
+    if url.is_empty() {
+      continue;
+    }
+    any_entries += 1;
+
+    let title = bookmark
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty())
+      .unwrap_or(url);
+
+    if !tokens.is_empty() && !matches_search_tokens(title, url, &tokens) {
+      continue;
+    }
+
+    matched_entries += 1;
+    let safe_url = escape_html(url);
+    let safe_title = escape_html(title);
+    let safe_display_url = escape_html(url);
+
+    use std::fmt::Write;
+    let _ = write!(
+      rows,
+      "<li><a class=\"item\" href=\"{safe_url}\"><div class=\"title\">{safe_title}</div><div class=\"url\">{safe_display_url}</div></a></li>"
+    );
+  }
+
+  let list_body = if any_entries == 0 {
+    "<p class=\"empty\">No bookmarks yet.</p>".to_string()
+  } else if matched_entries == 0 {
+    "<p class=\"empty\">No results.</p>".to_string()
+  } else {
+    format!("<ul class=\"list\" aria-label=\"Bookmarks\">{rows}</ul>")
+  };
+
+  format!(
+    "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+    <title>Bookmarks</title>
+    <style>
+      :root {{
+        color-scheme: light dark;
+        --bg: #f7f8fb;
+        --fg: #111827;
+        --muted: #4b5563;
+        --card-bg: rgba(255, 255, 255, 0.75);
+        --card-border: rgba(17, 24, 39, 0.10);
+        --shadow: 0 18px 60px rgba(17, 24, 39, 0.12);
+        --btn-bg: rgba(17, 24, 39, 0.04);
+        --btn-border: rgba(17, 24, 39, 0.12);
+        --btn-hover: rgba(17, 24, 39, 0.07);
+        --focus: #2563eb;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\",
+          \"Courier New\", monospace;
+      }}
+
+      @media (prefers-color-scheme: dark) {{
+        :root {{
+          --bg: #0b1020;
+          --fg: #e5e7eb;
+          --muted: #9ca3af;
+          --card-bg: rgba(255, 255, 255, 0.04);
+          --card-border: rgba(255, 255, 255, 0.10);
+          --shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+          --btn-bg: rgba(255, 255, 255, 0.06);
+          --btn-border: rgba(255, 255, 255, 0.12);
+          --btn-hover: rgba(255, 255, 255, 0.10);
+          --focus: #60a5fa;
+        }}
+      }}
+
+      html, body {{ height: 100%; }}
+      body {{
+        margin: 0;
+        font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+      }}
+
+      a {{ color: inherit; }}
+
+      header {{
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        backdrop-filter: blur(10px);
+        background: var(--bg);
+        border-bottom: 1px solid var(--card-border);
+      }}
+
+      .top {{
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 14px 18px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+      }}
+
+      .nav {{
+        display: flex;
+        gap: 10px;
+        font-weight: 600;
+      }}
+
+      .nav a {{ text-decoration: none; padding: 6px 10px; border-radius: 10px; }}
+      .nav a:hover {{ background: var(--btn-hover); }}
+      .nav a:focus-visible {{ outline: 3px solid var(--focus); outline-offset: 2px; }}
+
+      form.search {{
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex: 1 1 320px;
+        max-width: 520px;
+      }}
+
+      input[type=\"search\"] {{
+        flex: 1 1 auto;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--btn-border);
+        background: var(--btn-bg);
+        color: var(--fg);
+      }}
+
+      input[type=\"search\"]:focus-visible {{
+        outline: 3px solid var(--focus);
+        outline-offset: 2px;
+      }}
+
+      main {{
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 18px;
+      }}
+
+      h1 {{
+        margin: 0 0 12px;
+        font-size: 22px;
+        letter-spacing: -0.01em;
+      }}
+
+      .list {{
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }}
+
+      a.item {{
+        display: block;
+        text-decoration: none;
+        border: 1px solid var(--btn-border);
+        background: var(--card-bg);
+        border-radius: 14px;
+        box-shadow: var(--shadow);
+        padding: 12px 14px;
+      }}
+
+      a.item:hover {{ background: var(--btn-hover); }}
+      a.item:focus-visible {{ outline: 3px solid var(--focus); outline-offset: 2px; }}
+
+      .title {{ font-weight: 650; margin: 0 0 4px; }}
+      .url {{
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-all;
+      }}
+
+      .empty {{
+        color: var(--muted);
+        padding: 16px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--btn-border);
+        background: var(--btn-bg);
+      }}
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class=\"top\">
+        <nav class=\"nav\" aria-label=\"Internal pages\">
+          <a href=\"about:newtab\">New tab</a>
+          <a href=\"about:history\">History</a>
+          <a href=\"about:help\">Help</a>
+        </nav>
+        <form class=\"search\" method=\"get\" action=\"about:bookmarks\" aria-label=\"Search bookmarks\">
+          <input type=\"search\" name=\"q\" value=\"{safe_q}\" placeholder=\"Search bookmarks\">
+        </form>
+      </div>
+    </header>
+    <main>
+      <h1>Bookmarks</h1>
+      {list_body}
+    </main>
+  </body>
+</html>"
+  )
+}
+
+fn query_param_from_about_url(url: &str, key: &str) -> Option<String> {
+  let url = url.trim();
+  let query_start = url.find('?')?;
+  let hash_pos = url.find('#');
+  if hash_pos.is_some_and(|h| h < query_start) {
+    // Non-standard ordering (`#` before `?`); ignore.
+    return None;
+  }
+  let query_end = hash_pos.unwrap_or(url.len());
+  let query = &url[(query_start + 1)..query_end];
+
+  for pair in query.split('&') {
+    let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+    if k == key {
+      return Some(decode_about_query_value(v));
+    }
+  }
+  None
+}
+
+fn decode_about_query_value(raw: &str) -> String {
+  let replaced = raw.replace('+', " ");
+  percent_encoding::percent_decode_str(&replaced)
+    .decode_utf8_lossy()
+    .into_owned()
+}
+
+fn search_tokens(query: &str) -> Vec<String> {
+  query
+    .split_whitespace()
+    .map(|t| t.to_lowercase())
+    .filter(|t| !t.is_empty())
+    .collect()
+}
+
+fn matches_search_tokens(title: &str, url: &str, tokens: &[String]) -> bool {
+  if tokens.is_empty() {
+    return true;
+  }
+  let haystack = format!("{title} {url}").to_lowercase();
+  tokens.iter().all(|tok| haystack.contains(tok))
+}
+
+fn format_system_time_utc(time: SystemTime) -> String {
+  use chrono::{DateTime, Utc};
+  let dt: DateTime<Utc> = time.into();
+  dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+}
+
 fn help_html() -> &'static str {
   "<!doctype html>
 <html>
@@ -706,272 +1219,6 @@ fn gpu_html() -> String {
     <div class=\"nav\">
       <a href=\"about:newtab\">Back to new tab</a>
     </div>
-  </body>
-</html>"
-  )
-}
-
-fn about_query_param(url: &str, key: &str) -> Option<String> {
-  let (_, query) = url.split_once('?')?;
-  let query = query.split('#').next().unwrap_or(query);
-  let mut out = None;
-  for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
-    if k == key {
-      out = Some(v.into_owned());
-    }
-  }
-  out
-}
-
-fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-  // Lightweight ASCII-only case-insensitive matching (non-ASCII bytes are compared exactly).
-  if needle.is_empty() {
-    return true;
-  }
-
-  let hay = haystack.as_bytes();
-  let needle = needle.as_bytes();
-  if needle.len() > hay.len() {
-    return false;
-  }
-
-  for i in 0..=(hay.len() - needle.len()) {
-    let mut ok = true;
-    for j in 0..needle.len() {
-      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
-        ok = false;
-        break;
-      }
-    }
-    if ok {
-      return true;
-    }
-  }
-
-  false
-}
-
-fn matches_search_tokens(url: &str, title: Option<&str>, tokens: &[&str]) -> bool {
-  if tokens.is_empty() {
-    return true;
-  }
-
-  for token in tokens {
-    let in_url = contains_case_insensitive(url, token);
-    let in_title = title.is_some_and(|t| contains_case_insensitive(t, token));
-    if !in_url && !in_title {
-      return false;
-    }
-  }
-
-  true
-}
-
-fn history_html(full_url: &str) -> String {
-  let query = about_query_param(full_url, "q")
-    .unwrap_or_default()
-    .trim()
-    .to_string();
-  let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
-  let safe_query = escape_html(&query);
-
-  let snapshot = about_page_snapshot();
-
-  let mut results_html = String::new();
-  let mut match_count = 0usize;
-  let mut total_count = 0usize;
-  let mut seen_urls = std::collections::HashSet::<&str>::new();
-
-  for entry in snapshot.history.iter() {
-    let url = entry.url.trim();
-    if url.is_empty() {
-      continue;
-    }
-    if !seen_urls.insert(url) {
-      continue;
-    }
-    total_count += 1;
-
-    let title = entry
-      .title
-      .as_deref()
-      .map(str::trim)
-      .filter(|t| !t.is_empty());
-    if !matches_search_tokens(url, title, &tokens) {
-      continue;
-    }
-
-    match_count += 1;
-    let display_title = title.unwrap_or(url);
-    let safe_title = escape_html(display_title);
-    let safe_url = escape_html(url);
-    use std::fmt::Write;
-    let _ = write!(
-      results_html,
-      "<li class=\"item\">\
-         <div class=\"title\"><a href=\"{safe_url}\">{safe_title}</a></div>\
-         <div class=\"url\"><code>{safe_url}</code></div>\
-       </li>"
-    );
-  }
-
-  let body = if match_count == 0 {
-    if tokens.is_empty() {
-      "<p class=\"empty\">No history entries yet.</p>".to_string()
-    } else {
-      format!("<p class=\"empty\">No history results for <code>{safe_query}</code>.</p>")
-    }
-  } else {
-    format!("<ul class=\"list\">{results_html}</ul>")
-  };
-
-  format!(
-    "<!doctype html>
-<html>
-  <head>
-    <meta charset=\"utf-8\">
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-    <title>History</title>
-    <style>
-      :root {{ color-scheme: light dark; }}
-      body {{ font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }}
-      a {{ color: inherit; }}
-      h1 {{ margin: 0 0 10px; font-size: 20px; }}
-      code {{ padding: 0.1em 0.35em; border-radius: 6px; background: rgba(127,127,127,0.22); word-break: break-all; }}
-
-      .wrap {{ max-width: 900px; }}
-      .sub {{ margin: 0 0 14px; color: rgba(127,127,127,0.95); }}
-      .search {{ display: flex; gap: 8px; margin: 0 0 18px; }}
-      .search input {{ flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: rgba(127,127,127,0.06); color: inherit; }}
-      .search button {{ padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: rgba(127,127,127,0.10); color: inherit; font-weight: 600; }}
-
-      .list {{ list-style: none; padding: 0; margin: 0; border-radius: 14px; border: 1px solid rgba(127,127,127,0.28); overflow: hidden; }}
-      .item {{ padding: 10px 12px; border-bottom: 1px solid rgba(127,127,127,0.22); }}
-      .item:last-child {{ border-bottom: none; }}
-      .title {{ font-weight: 650; }}
-      .url {{ margin-top: 4px; font-size: 12px; color: rgba(127,127,127,0.95); }}
-      .empty {{ color: rgba(127,127,127,0.95); }}
-      .nav {{ margin-top: 16px; }}
-    </style>
-  </head>
-  <body>
-    <main class=\"wrap\">
-      <h1>History</h1>
-      <p class=\"sub\">Showing {match_count} of {total_count} entries.</p>
-      <form class=\"search\" method=\"get\" action=\"{ABOUT_HISTORY}\">
-        <input type=\"search\" name=\"q\" value=\"{safe_query}\" placeholder=\"Search history\">
-        <button type=\"submit\">Search</button>
-      </form>
-      {body}
-      <div class=\"nav\">
-        <a href=\"about:newtab\">Back to new tab</a>
-      </div>
-    </main>
-  </body>
-</html>"
-  )
-}
-
-fn bookmarks_html(full_url: &str) -> String {
-  let query = about_query_param(full_url, "q")
-    .unwrap_or_default()
-    .trim()
-    .to_string();
-  let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
-  let safe_query = escape_html(&query);
-
-  let snapshot = about_page_snapshot();
-
-  let mut results_html = String::new();
-  let mut match_count = 0usize;
-  let mut total_count = 0usize;
-  let mut seen_urls = std::collections::HashSet::<&str>::new();
-
-  for bookmark in snapshot.bookmarks.iter() {
-    let url = bookmark.url.trim();
-    if url.is_empty() {
-      continue;
-    }
-    if !seen_urls.insert(url) {
-      continue;
-    }
-    total_count += 1;
-
-    let title = bookmark
-      .title
-      .as_deref()
-      .map(str::trim)
-      .filter(|t| !t.is_empty());
-    if !matches_search_tokens(url, title, &tokens) {
-      continue;
-    }
-
-    match_count += 1;
-    let display_title = title.unwrap_or(url);
-    let safe_title = escape_html(display_title);
-    let safe_url = escape_html(url);
-    use std::fmt::Write;
-    let _ = write!(
-      results_html,
-      "<li class=\"item\">\
-         <div class=\"title\"><a href=\"{safe_url}\">{safe_title}</a></div>\
-         <div class=\"url\"><code>{safe_url}</code></div>\
-       </li>"
-    );
-  }
-
-  let body = if match_count == 0 {
-    if tokens.is_empty() {
-      "<p class=\"empty\">No bookmarks yet.</p>".to_string()
-    } else {
-      format!("<p class=\"empty\">No bookmarks match <code>{safe_query}</code>.</p>")
-    }
-  } else {
-    format!("<ul class=\"list\">{results_html}</ul>")
-  };
-
-  format!(
-    "<!doctype html>
-<html>
-  <head>
-    <meta charset=\"utf-8\">
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-    <title>Bookmarks</title>
-    <style>
-      :root {{ color-scheme: light dark; }}
-      body {{ font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }}
-      a {{ color: inherit; }}
-      h1 {{ margin: 0 0 10px; font-size: 20px; }}
-      code {{ padding: 0.1em 0.35em; border-radius: 6px; background: rgba(127,127,127,0.22); word-break: break-all; }}
-
-      .wrap {{ max-width: 900px; }}
-      .sub {{ margin: 0 0 14px; color: rgba(127,127,127,0.95); }}
-      .search {{ display: flex; gap: 8px; margin: 0 0 18px; }}
-      .search input {{ flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: rgba(127,127,127,0.06); color: inherit; }}
-      .search button {{ padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: rgba(127,127,127,0.10); color: inherit; font-weight: 600; }}
-
-      .list {{ list-style: none; padding: 0; margin: 0; border-radius: 14px; border: 1px solid rgba(127,127,127,0.28); overflow: hidden; }}
-      .item {{ padding: 10px 12px; border-bottom: 1px solid rgba(127,127,127,0.22); }}
-      .item:last-child {{ border-bottom: none; }}
-      .title {{ font-weight: 650; }}
-      .url {{ margin-top: 4px; font-size: 12px; color: rgba(127,127,127,0.95); }}
-      .empty {{ color: rgba(127,127,127,0.95); }}
-      .nav {{ margin-top: 16px; }}
-    </style>
-  </head>
-  <body>
-    <main class=\"wrap\">
-      <h1>Bookmarks</h1>
-      <p class=\"sub\">Showing {match_count} of {total_count} entries.</p>
-      <form class=\"search\" method=\"get\" action=\"{ABOUT_BOOKMARKS}\">
-        <input type=\"search\" name=\"q\" value=\"{safe_query}\" placeholder=\"Search bookmarks\">
-        <button type=\"submit\">Search</button>
-      </form>
-      {body}
-      <div class=\"nav\">
-        <a href=\"about:newtab\">Back to new tab</a>
-      </div>
-    </main>
   </body>
 </html>"
   )
@@ -1344,12 +1591,12 @@ mod tests {
     let cases = [
       (ABOUT_BLANK, None),
       (ABOUT_NEWTAB, Some("New Tab")),
+      (ABOUT_HISTORY, Some("History")),
+      (ABOUT_BOOKMARKS, Some("Bookmarks")),
       (ABOUT_HELP, Some("Help")),
       (ABOUT_VERSION, Some("Version")),
       (ABOUT_GPU, Some("GPU")),
       (ABOUT_ERROR, Some("Navigation error")),
-      (ABOUT_HISTORY, Some("History")),
-      (ABOUT_BOOKMARKS, Some("Bookmarks")),
       (ABOUT_TEST_SCROLL, Some("Scroll Test")),
       (ABOUT_TEST_HEAVY, Some("Heavy Test")),
       (ABOUT_TEST_FORM, Some("Form Test")),
@@ -1365,6 +1612,109 @@ mod tests {
         );
       }
     }
+  }
+
+  #[test]
+  fn about_history_and_bookmarks_support_search_query_param() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      bookmarks: vec![
+        BookmarkSnapshot {
+          title: Some("Rust site".to_string()),
+          url: "https://rust-lang.org/".to_string(),
+        },
+        BookmarkSnapshot {
+          title: Some("Example".to_string()),
+          url: "https://example.com/".to_string(),
+        },
+      ],
+      history: vec![
+        HistorySnapshot {
+          title: Some("Rust Lang".to_string()),
+          url: "https://lang.example/".to_string(),
+          last_visited: None,
+          visit_count: 2,
+        },
+        HistorySnapshot {
+          title: Some("Other".to_string()),
+          url: "https://other.example/".to_string(),
+          last_visited: None,
+          visit_count: 1,
+        },
+      ],
+    });
+
+    let html = html_for_about_url("about:bookmarks?q=RUST").unwrap();
+    assert!(
+      html.contains("https://rust-lang.org/"),
+      "expected bookmark result to include rust URL"
+    );
+    assert!(
+      !html.contains("https://example.com/"),
+      "expected non-matching bookmark to be filtered out"
+    );
+
+    let html = html_for_about_url("about:history?q=rust+lang").unwrap();
+    assert!(
+      html.contains("https://lang.example/"),
+      "expected history result to include matching URL"
+    );
+    assert!(
+      !html.contains("https://other.example/"),
+      "expected non-matching history entry to be filtered out"
+    );
+
+    set_about_page_snapshot(before);
+  }
+
+  #[test]
+  fn about_history_and_bookmarks_escape_user_controlled_strings() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    let injected_title = "<script>alert(1)</script>";
+    let injected_url = "https://example.com/?a=1&b=<x>\"'";
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      bookmarks: vec![BookmarkSnapshot {
+        title: Some(injected_title.to_string()),
+        url: injected_url.to_string(),
+      }],
+      history: Vec::new(),
+    });
+
+    let html = html_for_about_url(ABOUT_BOOKMARKS).unwrap();
+    let escaped_title = "&lt;script&gt;alert(1)&lt;/script&gt;";
+    let escaped_url = "https://example.com/?a=1&amp;b=&lt;x&gt;&quot;&#39;";
+
+    assert!(
+      html.contains(escaped_title),
+      "expected injected title to be escaped"
+    );
+    assert!(
+      html.contains(&format!("href=\"{escaped_url}\"")),
+      "expected injected URL to be escaped in href"
+    );
+    assert!(
+      html.contains(escaped_url),
+      "expected injected URL to be escaped in visible text"
+    );
+    assert!(
+      !html.contains(injected_title),
+      "raw injected title should not appear in HTML"
+    );
+    assert!(
+      !html.contains(injected_url),
+      "raw injected URL should not appear in HTML"
+    );
+
+    set_about_page_snapshot(before);
   }
 
   #[test]
