@@ -4181,7 +4181,6 @@ impl<'a> Scope<'a> {
     let obj = HeapObject::WeakSet(JsWeakSet::new(None));
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
   }
-
   /// Allocates an ordinary object with the provided `[[Prototype]]` and own properties.
   pub fn alloc_object_with_properties(
     &mut self,
@@ -4294,8 +4293,14 @@ impl<'a> Scope<'a> {
     handler: Option<GcObject>,
   ) -> Result<GcObject, VmError> {
     let mut scope = self.reborrow();
-    let mut roots = [Value::Undefined, Value::Undefined];
-    let mut root_count = 0;
+
+    // Root inputs during allocation in case root-stack growth, `ensure_can_allocate`, or slot-table
+    // growth triggers GC.
+    //
+    // NOTE: Root both `target` and `handler` together so a GC triggered while pushing roots for
+    // `target` cannot collect `handler` before it is pushed.
+    let mut roots = [Value::Undefined; 2];
+    let mut root_count: usize = 0;
     if let Some(target) = target {
       if !scope.heap.is_valid_object(target) {
         return Err(VmError::invalid_handle());

@@ -34,6 +34,9 @@ From the repo root:
 # Install `cargo-fuzz` (one-time).
 timeout -k 10 600 bash scripts/cargo_agent.sh install cargo-fuzz
 
+# Create gitignored output corpus directories (one-time).
+mkdir -p vendor/ecma-rs/fuzz/corpus/parse_js vendor/ecma-rs/fuzz/corpus/vm_js_exec
+
 # Always wrap with `timeout -k` so a missed tick can't hang the agent indefinitely.
 #
 # Use the repo's cargo wrapper: it bumps RLIMIT_AS for fuzz runs (ASan shadow memory),

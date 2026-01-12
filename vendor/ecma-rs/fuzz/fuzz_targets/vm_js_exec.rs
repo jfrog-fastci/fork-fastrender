@@ -5,7 +5,7 @@ use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vm_js::{Agent, Budget, HeapLimits, VmOptions};
+use vm_js::{Agent, Budget, HeapLimits, HostHooks, VmError, VmOptions};
 
 const MAX_SOURCE_BYTES: usize = 8 * 1024;
 
@@ -18,6 +18,19 @@ const VM_DEADLINE: Duration = Duration::from_millis(20);
 // but large enough to finish realm initialization and exercise builtins.
 const HEAP_MAX_BYTES: usize = 16 * 1024 * 1024;
 const HEAP_GC_THRESHOLD: usize = 8 * 1024 * 1024;
+
+struct FuzzHostHooks;
+
+impl HostHooks for FuzzHostHooks {
+  fn microtask_checkpoint(&mut self, agent: &mut Agent) -> Result<(), VmError> {
+    // Drain any queued Promise jobs so fuzzing covers Promise job execution paths too.
+    //
+    // Ignore errors here: the fuzz harness is primarily interested in panics and invariant
+    // violations. VM termination/OOM are expected outcomes under tight budgets/heap limits.
+    let _ = agent.perform_microtask_checkpoint();
+    Ok(())
+  }
+}
 
 fn js_string_literal(s: &str) -> String {
   let mut out = String::with_capacity(s.len().saturating_add(2));
@@ -68,6 +81,10 @@ fn wrapper_script(input: &str) -> String {
   s.push_str("  try { src.slice(0, 64).split(\"\"); } catch (e) {}\n");
   s.push_str("  try { src.indexOf(\"a\"); } catch (e) {}\n");
 
+  // Promises: enqueue jobs so the host microtask checkpoint has work to drain.
+  s.push_str("  try { Promise.resolve(src).then(function(v){ return v; }); } catch (e) {}\n");
+  s.push_str("  try { Promise.resolve(1).then(function(x){ return x + 1; }); } catch (e) {}\n");
+
   // Dynamic parsing/execution hooks.
   s.push_str("  try { eval(src); } catch (e) {}\n");
   s.push_str("  try { (new Function(src))(); } catch (e) {}\n");
@@ -111,12 +128,13 @@ fuzz_target!(|data: &[u8]| {
   let Ok(mut agent) = Agent::with_options(vm_options, heap_limits) else {
     return;
   };
+  let mut hooks = FuzzHostHooks;
 
   // --- Run the input directly as a script (parse + execute). ---
   if data.first().is_some_and(|b| (b & 1) != 0) {
     interrupt_flag.store(true, Ordering::Relaxed);
   }
-  let _ = agent.run_script("<fuzz>", source.as_ref(), make_budget(), None);
+  let _ = agent.run_script("<fuzz>", source.as_ref(), make_budget(), Some(&mut hooks));
 
   // Clear any interrupt requested above so subsequent runs can proceed.
   agent.vm_mut().reset_interrupt();
@@ -126,6 +144,5 @@ fuzz_target!(|data: &[u8]| {
     interrupt_flag.store(true, Ordering::Relaxed);
   }
   let wrapper = wrapper_script(source.as_ref());
-  let _ = agent.run_script("<fuzz-wrapper>", wrapper, make_budget(), None);
+  let _ = agent.run_script("<fuzz-wrapper>", wrapper, make_budget(), Some(&mut hooks));
 });
-

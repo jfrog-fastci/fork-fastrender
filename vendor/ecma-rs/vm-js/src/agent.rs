@@ -73,6 +73,17 @@ impl Agent {
     self.runtime.realm()
   }
 
+  /// Perform a microtask checkpoint, draining the VM-owned microtask queue.
+  ///
+  /// This is a convenience wrapper around [`Vm::perform_microtask_checkpoint`] for lightweight
+  /// embeddings (including fuzzing harnesses) that use the VM-owned [`MicrotaskQueue`].
+  pub fn perform_microtask_checkpoint(&mut self) -> Result<(), VmError> {
+    // Borrow-split the runtime to avoid needing embedder-side raw pointers.
+    let vm = &mut self.runtime.vm;
+    let heap = &mut self.runtime.heap;
+    vm.perform_microtask_checkpoint(heap)
+  }
+
   /// Run a classic script with a per-run [`Budget`].
   ///
   /// This:
