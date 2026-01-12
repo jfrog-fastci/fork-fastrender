@@ -297,3 +297,40 @@ fn for_await_of_break_awaits_sync_iterator_return_promise() -> Result<(), VmErro
   assert_eq!(value_to_string(&rt, out), "aR:1");
   Ok(())
 }
+
+#[test]
+fn for_await_of_break_does_not_call_array_return_getter_with_default_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+
+      async function f() {
+        const arr = [1, 2, 3];
+        Object.defineProperty(arr, "return", {
+          get() { throw "wrong"; },
+        });
+
+        try {
+          for await (const x of arr) {
+            break;
+          }
+          out = "ok";
+        } catch (e) {
+          out = e;
+        }
+      }
+
+      f();
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ok");
+  Ok(())
+}

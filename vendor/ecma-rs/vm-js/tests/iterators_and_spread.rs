@@ -94,6 +94,33 @@ fn for_of_throw_calls_iterator_return_on_custom_array_iterator() {
 }
 
 #[test]
+fn for_of_break_does_not_call_array_return_getter_with_default_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      const arr = [1, 2, 3];
+      Object.defineProperty(arr, "return", {
+        get() { throw "wrong"; },
+      });
+
+      var out = "ok";
+      try {
+        for (const x of arr) {
+          break;
+        }
+      } catch (e) {
+        out = e;
+      }
+
+      out === "ok"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn for_of_over_string() {
   let mut rt = new_runtime();
   let value = rt
