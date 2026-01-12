@@ -8335,8 +8335,12 @@ const WORKER_RAYON_THREADS_ENV: &str = "RAYON_NUM_THREADS";
 const WORKER_WEB_FONT_WAIT_ENV: &str = "FASTR_WEB_FONT_WAIT_MS";
 const DEFAULT_WORKER_WEB_FONT_WAIT_MS: &str = "500";
 
+fn env_value_is_nonempty(value: Option<&std::ffi::OsStr>) -> bool {
+  value.is_some_and(|value| !value.is_empty())
+}
+
 fn env_var_is_nonempty(key: &str) -> bool {
-  std::env::var_os(key).is_some_and(|value| !value.is_empty())
+  env_value_is_nonempty(std::env::var_os(key).as_deref())
 }
 
 fn default_rayon_threads_per_worker(total_cpus: usize, jobs: usize) -> usize {
@@ -8345,11 +8349,23 @@ fn default_rayon_threads_per_worker(total_cpus: usize, jobs: usize) -> usize {
   (total_cpus / jobs).max(1)
 }
 
-fn maybe_set_worker_rayon_threads(cmd: &mut Command, threads: usize) {
-  if env_var_is_nonempty(WORKER_RAYON_THREADS_ENV) {
+fn maybe_set_worker_rayon_threads_with_parent_env(
+  cmd: &mut Command,
+  threads: usize,
+  parent_env: Option<&std::ffi::OsStr>,
+) {
+  if env_value_is_nonempty(parent_env) {
     return;
   }
   cmd.env(WORKER_RAYON_THREADS_ENV, threads.to_string());
+}
+
+fn maybe_set_worker_rayon_threads(cmd: &mut Command, threads: usize) {
+  maybe_set_worker_rayon_threads_with_parent_env(
+    cmd,
+    threads,
+    std::env::var_os(WORKER_RAYON_THREADS_ENV).as_deref(),
+  );
 }
 
 fn maybe_set_worker_web_font_wait(cmd: &mut Command, enabled: bool) {
@@ -10067,11 +10083,13 @@ mod tests {
   #[test]
   fn maybe_set_worker_rayon_threads_respects_parent_env_override() {
     let _guard = ENV_LOCK.lock().unwrap();
-    let prev = std::env::var_os(WORKER_RAYON_THREADS_ENV);
-    std::env::set_var(WORKER_RAYON_THREADS_ENV, "99");
 
     let mut cmd = Command::new("pageset_progress");
-    maybe_set_worker_rayon_threads(&mut cmd, 1);
+    maybe_set_worker_rayon_threads_with_parent_env(
+      &mut cmd,
+      1,
+      Some(OsStr::new("99")),
+    );
 
     let has_override = cmd
       .get_envs()
@@ -10080,21 +10098,14 @@ mod tests {
       !has_override,
       "should not override explicit RAYON_NUM_THREADS"
     );
-
-    match prev {
-      Some(value) => std::env::set_var(WORKER_RAYON_THREADS_ENV, value),
-      None => std::env::remove_var(WORKER_RAYON_THREADS_ENV),
-    }
   }
 
   #[test]
   fn maybe_set_worker_rayon_threads_sets_threads_when_env_missing_or_empty() {
     let _guard = ENV_LOCK.lock().unwrap();
-    let prev = std::env::var_os(WORKER_RAYON_THREADS_ENV);
-    std::env::remove_var(WORKER_RAYON_THREADS_ENV);
 
     let mut cmd = Command::new("pageset_progress");
-    maybe_set_worker_rayon_threads(&mut cmd, 3);
+    maybe_set_worker_rayon_threads_with_parent_env(&mut cmd, 3, None);
 
     let value = cmd
       .get_envs()
@@ -10104,20 +10115,18 @@ mod tests {
     assert_eq!(value.as_deref(), Some("3"));
 
     // Empty should be treated as unset (Rayon will reject it if left unmodified).
-    std::env::set_var(WORKER_RAYON_THREADS_ENV, "");
     let mut cmd = Command::new("pageset_progress");
-    maybe_set_worker_rayon_threads(&mut cmd, 2);
+    maybe_set_worker_rayon_threads_with_parent_env(
+      &mut cmd,
+      2,
+      Some(OsStr::new("")),
+    );
     let value = cmd
       .get_envs()
       .find(|(key, _)| *key == OsStr::new(WORKER_RAYON_THREADS_ENV))
       .and_then(|(_, value)| value)
       .map(|value| value.to_string_lossy().into_owned());
     assert_eq!(value.as_deref(), Some("2"));
-
-    match prev {
-      Some(value) => std::env::set_var(WORKER_RAYON_THREADS_ENV, value),
-      None => std::env::remove_var(WORKER_RAYON_THREADS_ENV),
-    }
   }
 
   #[test]
