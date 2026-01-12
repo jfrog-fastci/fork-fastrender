@@ -6135,13 +6135,14 @@ impl TableFormattingContext {
           )
         }) {
           let cap = max_len.max(min_w);
-          max_w = if max_w.is_finite() {
-            max_w.min(cap)
-          } else {
-            cap
-          };
-          max_w = max_w.max(min_w);
-          has_max_cap = true;
+          // Only treat `max-width` as an authored cap when it actually constrains the intrinsic
+          // max-content width. Otherwise it should not prevent tables with a definite used width
+          // from distributing slack beyond the intrinsic maximum.
+          if !max_w.is_finite() || cap + 0.01 < max_w {
+            max_w = cap;
+            max_w = max_w.max(min_w);
+            has_max_cap = true;
+          }
         }
       }
       let effective_max = if has_max_cap { max_w } else { f32::INFINITY };
@@ -6881,7 +6882,29 @@ impl FormattingContext for TableFormattingContext {
       let table_width = used_border_box_width
         .or(specified_width)
         .map(|w| clamp_to_min_max(w, min_width, max_width));
-      let percent_base_width = table_width;
+      let percent_base_width = table_width.or_else(|| {
+        let in_normal_flow = !table_root_style.float.is_floating()
+          && matches!(
+            table_root_style.position,
+            crate::style::position::Position::Static | crate::style::position::Position::Relative
+          );
+        let normal_flow_block_table =
+          matches!(table_root_style.display, Display::Table) && in_normal_flow;
+        if !normal_flow_block_table {
+          return None;
+        }
+        if constraints.used_border_box_width.is_some() {
+          // If an outer sizing algorithm already forced a used width, keep percentage resolution
+          // tied to that explicit width instead of the available width.
+          return None;
+        }
+        match constraints.available_width {
+          AvailableSpace::Definite(w) if w.is_finite() && w >= 0.0 => {
+            Some(clamp_to_min_max(w, min_width, max_width))
+          }
+          _ => None,
+        }
+      });
       // Table padding and borders (ignored for box sizing under collapsed model per CSS 2.1),
       // but we still track outer borders for percentage-height resolution.
       //
@@ -9811,12 +9834,26 @@ impl FormattingContext for TableFormattingContext {
     let wants_fixed_layout = matches!(table_root_style.table_layout, TableLayout::Fixed);
     let has_computed_width =
       table_root_style.width.is_some() || table_root_style.width_keyword.is_some();
-    let distribution_mode = choose_table_distribution_mode(
+    let mut distribution_mode = choose_table_distribution_mode(
       wants_fixed_layout,
       has_computed_width,
       table_root_style,
       None,
     );
+    if wants_fixed_layout && !has_computed_width && distribution_mode == DistributionMode::Auto {
+      // For intrinsic sizing, treat normal-flow block-level `table-layout: fixed` tables as fixed
+      // even when the computed width is `auto`, matching the layout-time optimisation (CSS 2.1
+      // §10.3.3 + UA behaviour). This avoids scanning all rows (which can be unbounded work) and
+      // keeps intrinsic sizing aligned with fixed-layout's "first row only" semantics.
+      let in_normal_flow = !table_root_style.float.is_floating()
+        && matches!(
+          table_root_style.position,
+          crate::style::position::Position::Static | crate::style::position::Position::Relative
+        );
+      if matches!(table_root_style.display, Display::Table) && in_normal_flow {
+        distribution_mode = DistributionMode::Fixed;
+      }
+    }
     let style_override_cache = StyleOverrideCache::for_intrinsic_measurement(
       "intrinsic",
       table_box.id,
@@ -11142,7 +11179,10 @@ mod tests {
 
     let structure = TableStructure::from_box_tree(&table);
     assert_eq!(structure.row_count, 2);
-    assert_eq!(structure.column_count, 4);
+    assert_eq!(
+      structure.column_count, 5,
+      "cell placement is source-order driven, so later cells should not backfill gaps"
+    );
 
     let span_down = structure
       .cells
@@ -11170,15 +11210,20 @@ mod tests {
       .cells
       .iter()
       .find(|c| c.source_row == 1 && c.box_index == 1)
-      .expect("later cell should fill earliest hole");
+      .expect("later cell should follow earlier placements");
     assert_eq!(
-      trailing_cell.col, 0,
-      "later cells should reuse early free columns left by larger spans"
+      trailing_cell.col, 4,
+      "later cells should not backfill earlier holes left by larger spans"
     );
     assert_eq!(
       structure.get_cell_at(1, 0).map(|c| c.index),
+      None,
+      "grid should have no cell in the freed column"
+    );
+    assert_eq!(
+      structure.get_cell_at(1, 4).map(|c| c.index),
       Some(trailing_cell.index),
-      "grid should point to the trailing cell in freed column"
+      "grid should point to the trailing cell at its assigned column"
     );
   }
 
@@ -14257,13 +14302,19 @@ mod tests {
       !fragment.children.is_empty(),
       "table fragment should contain row background and cell fragments"
     );
-    let row_frag = &fragment.children[0];
-    let row_color = row_frag
-      .style
-      .as_ref()
-      .map(|s| s.background_color)
-      .expect("row fragment has style");
-    assert_eq!(row_color, Rgba::from_rgba8(200, 0, 0, 255));
+    let expected = Rgba::from_rgba8(200, 0, 0, 255);
+    let row_frag = fragment
+      .children
+      .iter()
+      .find(|child| {
+        matches!(child.content, FragmentContent::Block { box_id: Some(_) })
+          && child
+            .style
+            .as_ref()
+            .map(|s| s.display == Display::TableRow && s.background_color == expected)
+            .unwrap_or(false)
+      })
+      .expect("row background fragment");
     let cell_frag = find_cell_fragment(&fragment).expect("cell fragment");
     assert!(row_frag.bounds.y() <= cell_frag.bounds.y());
   }
@@ -14456,6 +14507,7 @@ mod tests {
       .children
       .iter()
       .filter_map(|f| f.style.as_ref().map(|s| s.background_color))
+      .filter(|c| !c.is_transparent())
       .collect();
     assert!(
       colors.len() >= 2,
@@ -14542,6 +14594,7 @@ mod tests {
       .children
       .iter()
       .filter_map(|f| f.style.as_ref().map(|s| s.background_color))
+      .filter(|c| !c.is_transparent())
       .collect();
     assert!(
       colors.len() >= 2,
