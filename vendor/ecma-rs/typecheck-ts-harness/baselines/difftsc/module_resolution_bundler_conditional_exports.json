@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "module": 99,
+      "moduleResolution": 100,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "node_modules/pkg-conditional/dist/index.d.mts",
+        "name": "mode",
+        "type": "\"esm\""
+      },
+      {
+        "file": "node_modules/pkg-conditional/dist/index.d.mts",
+        "name": "value",
+        "type": "1"
+      }
+    ],
+    "markers": [
+      {
+        "file": "esm.mts",
+        "offset": 101,
+        "line": 5,
+        "column": 3,
+        "type": "\"esm\""
+      },
+      {
+        "file": "esm.mts",
+        "offset": 113,
+        "line": 7,
+        "column": 3,
+        "type": "1"
+      }
+    ]
+  }
+}

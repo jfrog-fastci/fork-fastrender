@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "module": 100,
+      "moduleResolution": 3,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "node_modules/pkg-types-field/dist/index.d.ts",
+        "name": "typed",
+        "type": "number"
+      },
+      {
+        "file": "node_modules/pkg-typesversions/ts5/index.d.ts",
+        "name": "tv",
+        "type": "\"ts5\""
+      }
+    ],
+    "markers": [
+      {
+        "file": "main.ts",
+        "offset": 140,
+        "line": 6,
+        "column": 9,
+        "type": "\"ts5\""
+      },
+      {
+        "file": "main.ts",
+        "offset": 176,
+        "line": 9,
+        "column": 12,
+        "type": "number"
+      }
+    ]
+  }
+}

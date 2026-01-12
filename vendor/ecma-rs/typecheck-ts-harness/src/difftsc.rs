@@ -2349,7 +2349,11 @@ fn is_source_file(path: &Path) -> bool {
   let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
     return false;
   };
-  is_source_root(file_name)
+  // difftsc fixtures frequently need to model real-world `node_modules` layouts
+  // where `package.json` participates in module resolution (exports, types,
+  // typesVersions, etc). Include it in the virtual filesystem, but it will not
+  // be treated as a compilation root (see `HarnessFileSet::root_keys`).
+  file_name == "package.json" || is_source_root(file_name)
 }
 
 fn is_package_json(path: &Path) -> bool {

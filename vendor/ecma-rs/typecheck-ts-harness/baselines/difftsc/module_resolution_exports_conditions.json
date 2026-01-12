@@ -1,0 +1,108 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "module": 199,
+      "moduleResolution": 99,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "node_modules/pkg-conditional/dist/index.d.cts",
+        "name": "mode",
+        "type": "\"cjs\""
+      },
+      {
+        "file": "node_modules/pkg-conditional/dist/index.d.cts",
+        "name": "value",
+        "type": "2"
+      },
+      {
+        "file": "node_modules/pkg-conditional/dist/index.d.mts",
+        "name": "mode",
+        "type": "\"esm\""
+      },
+      {
+        "file": "node_modules/pkg-conditional/dist/index.d.mts",
+        "name": "value",
+        "type": "1"
+      },
+      {
+        "file": "node_modules/pkg-typings/types/index.d.ts",
+        "name": "branding",
+        "type": "string"
+      }
+    ],
+    "markers": [
+      {
+        "file": "cjs.cts",
+        "offset": 144,
+        "line": 6,
+        "column": 3,
+        "type": "\"cjs\""
+      },
+      {
+        "file": "cjs.cts",
+        "offset": 156,
+        "line": 8,
+        "column": 3,
+        "type": "2"
+      },
+      {
+        "file": "cjs.cts",
+        "offset": 170,
+        "line": 11,
+        "column": 3,
+        "type": "string"
+      },
+      {
+        "file": "cjs.cts",
+        "offset": 211,
+        "line": 15,
+        "column": 3,
+        "type": "string"
+      },
+      {
+        "file": "esm.mts",
+        "offset": 144,
+        "line": 6,
+        "column": 3,
+        "type": "\"esm\""
+      },
+      {
+        "file": "esm.mts",
+        "offset": 156,
+        "line": 8,
+        "column": 3,
+        "type": "1"
+      },
+      {
+        "file": "esm.mts",
+        "offset": 170,
+        "line": 11,
+        "column": 3,
+        "type": "string"
+      },
+      {
+        "file": "esm.mts",
+        "offset": 211,
+        "line": 15,
+        "column": 3,
+        "type": "string"
+      }
+    ]
+  }
+}
