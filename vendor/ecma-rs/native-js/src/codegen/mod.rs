@@ -50,6 +50,7 @@ use crate::array_abi;
 use crate::llvm::gc;
 use crate::resolve::BindingId;
 use crate::runtime_abi::{RuntimeAbi, RuntimeFn};
+use crate::shapes;
 use crate::strict::Entrypoint;
 use crate::codes;
 use crate::Resolver;
@@ -128,10 +129,10 @@ impl TsAbiKind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
       TypeKindSummary::String | TypeKindSummary::StringLiteral(_) => Some(Self::String),
-      TypeKindSummary::Object
-      | TypeKindSummary::EmptyObject
-      | TypeKindSummary::Array { .. }
-      | TypeKindSummary::Tuple { .. } => Some(Self::GcPtr),
+      TypeKindSummary::Array { .. }
+      | TypeKindSummary::Tuple { .. }
+      | TypeKindSummary::Object
+      | TypeKindSummary::EmptyObject => Some(Self::GcPtr),
       TypeKindSummary::Void | TypeKindSummary::Undefined | TypeKindSummary::Never => Some(Self::Void),
       _ => None,
     }
@@ -325,6 +326,8 @@ struct ProgramCodegen<'ctx, 'p> {
   /// Globals that store GC-managed pointers (`ptr addrspace(1)`) and must be registered as global
   /// roots with the runtime.
   gc_root_globals: Vec<GlobalValue<'ctx>>,
+  shapes: shapes::ShapeTableBuilder<'ctx>,
+  shape_table: Option<shapes::EmittedShapeTable<'ctx>>,
   functions: HashMap<DefId, FunctionValue<'ctx>>,
   function_sigs: HashMap<DefId, TsFunctionSigKind>,
   file_inits: HashMap<FileId, FunctionValue<'ctx>>,
@@ -352,6 +355,8 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       exported_defs: HashSet::new(),
       globals: HashMap::new(),
       gc_root_globals: Vec::new(),
+      shapes: shapes::ShapeTableBuilder::new(),
+      shape_table: None,
       functions: HashMap::new(),
       function_sigs: HashMap::new(),
       file_inits: HashMap::new(),
@@ -448,6 +453,11 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     for (def, file, body_id) in function_bodies {
       self.build_ts_function(def, file, body_id)?;
     }
+
+    // Emit the runtime shape table (if any) after codegen has discovered all used object shapes.
+    self.shape_table = self
+      .shapes
+      .emit_shape_table(self.context, &self.module)?;
 
     // Build C entrypoint wrapper that runs module initializers and then calls TS main.
     self.build_c_main(entry_file, main_fn, main_sig.ret, &init_order)?;
@@ -1038,7 +1048,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let abi = RuntimeAbi::new(self.context, &self.module);
     let rt_thread_init = abi.get_or_declare_raw(RuntimeFn::ThreadInit);
     let rt_thread_deinit = abi.get_or_declare_raw(RuntimeFn::ThreadDeinit);
-    let _rt_register_shape_table = abi.get_or_declare_raw(RuntimeFn::RegisterShapeTable);
+    let rt_register_shape_table = abi.get_or_declare_raw(RuntimeFn::RegisterShapeTable);
     let rt_global_root_register = abi.get_or_declare_raw(RuntimeFn::GlobalRootRegister);
 
     let call = builder
@@ -1046,14 +1056,26 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       .map_err(|e| vec![diagnostics::ice(ice_span, format!("failed to build call to rt_thread_init: {e}"))])?;
     crate::stack_walking::mark_call_notail(call);
 
-    // Shape table registration hook.
+    // Register the module-local runtime shape table (if any) before module initializers run.
     //
-    // Future work: once the native-js backend emits object shapes, it should also emit a
-    // `@__nativejs_shape_table` global containing `RtShapeDescriptor` entries, then call
-    // `rt_register_shape_table(ptr, len)` here so the runtime can resolve `RtShapeId` layouts.
-    //
-    // For now, native-js does not emit any shapes (so registration would be a no-op) and the
-    // runtime rejects `len == 0`, so we intentionally skip calling `rt_register_shape_table`.
+    // The runtime rejects `len == 0`, so codegen must skip the call when no shapes were emitted.
+    if let Some(shape_table) = self.shape_table {
+      if shape_table.len > 0 {
+        let table_ptr = shape_table.table_global.as_pointer_value();
+        let len_i64 = self.i64_ty.const_int(shape_table.len as u64, false);
+        let call = builder.build_call(
+          rt_register_shape_table,
+          &[table_ptr.into(), len_i64.into()],
+          "rt.register_shape_table",
+        ).map_err(|e| {
+          vec![diagnostics::ice(
+            ice_span,
+            format!("failed to build call to rt_register_shape_table: {e}"),
+          )]
+        })?;
+        crate::stack_walking::mark_call_notail(call);
+      }
+    }
 
     // Register global root slots for any module globals that store GC pointers. This must happen
     // after thread init and before module initializers run so that any GC that occurs after global
@@ -2089,6 +2111,84 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .build_gep(i8_ty, data_ptr, &[idx_bytes], "arr.elem")
         .expect("gep arr.elem")
     })
+  }
+
+  fn object_field_ptr(&self, obj: PointerValue<'ctx>, offset_bytes: u32) -> PointerValue<'ctx> {
+    let i8_ty = self.cg.context.i8_type();
+    let off = self.cg.i64_ty.const_int(offset_bytes as u64, false);
+    // SAFETY: `obj` is expected to be a runtime-native object base pointer allocated by `rt_alloc`,
+    // and `offset_bytes` is derived from a checked `types-ts-interned` layout for the object's shape.
+    unsafe {
+      self
+        .builder
+        .build_gep(i8_ty, obj, &[off], "obj.field")
+        .expect("gep obj.field")
+    }
+  }
+
+  fn object_field_layout(
+    &mut self,
+    obj_ty: tti::TypeId,
+    key: &hir_js::ObjectKey,
+    span: Span,
+  ) -> Result<(shapes::ShapeUse<'ctx>, u32, TsAbiKind), Vec<Diagnostic>> {
+    let shape = self
+      .cg
+      .shapes
+      .ensure_shape_for_type(self.cg.context, &self.cg.module, self.cg.program, obj_ty, span)?;
+
+    let store = self.cg.program.interned_type_store();
+    let name = self.member_property_static_name(key, span)?;
+    let name_id = store.intern_name_ref(&name);
+    let wanted = tti::FieldKey::Prop(tti::PropKey::String(name_id));
+
+    let tti::Layout::Struct { fields, .. } = store.layout(shape.payload_layout) else {
+      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+        "unsupported object payload layout for field access (expected struct layout)",
+        span,
+      )]);
+    };
+
+    let field = fields.into_iter().find(|f| f.key == wanted).ok_or_else(|| {
+      vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+        format!("unknown object property `{name}` in native-js codegen"),
+        span,
+      )]
+    })?;
+
+    let offset = shape.payload_base_offset.saturating_add(field.offset);
+
+    let kind = match store.layout(field.layout) {
+      tti::Layout::Scalar { abi } => match abi {
+        tti::AbiScalar::Bool => TsAbiKind::Boolean,
+        tti::AbiScalar::F64 => TsAbiKind::Number,
+        tti::AbiScalar::I32 | tti::AbiScalar::U32 => TsAbiKind::String,
+        _ => {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "unsupported scalar field type in native-js codegen (expected boolean|number|string)",
+            span,
+          )]);
+        }
+      },
+      tti::Layout::Ptr { to } => {
+        if to.is_gc_tracable() {
+          TsAbiKind::GcPtr
+        } else {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "unsupported pointer field type in native-js codegen (expected GC-managed pointer)",
+            span,
+          )]);
+        }
+      }
+      _ => {
+        return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+          "unsupported field layout in native-js codegen (expected scalar or GC pointer)",
+          span,
+        )]);
+      }
+    };
+
+    Ok((shape, offset, kind))
   }
 
   fn emit_write_barrier(
@@ -3383,6 +3483,100 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
         Ok(NativeValue::GcPtr(arr_ptr))
       }
+
+      ExprKind::Object(obj) => {
+        let expr_ty = self.types.expr_type(expr).ok_or_else(|| {
+          vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+            "missing type information for object literal expression",
+            span,
+          )]
+        })?;
+
+        let shape = self
+          .cg
+          .shapes
+          .ensure_shape_for_type(self.cg.context, &self.cg.module, self.cg.program, expr_ty, span)?;
+
+        let size_i64 = self.cg.i64_ty.const_int(shape.size as u64, false);
+        let shape_id_i32 = self
+          .builder
+          .build_load(self.cg.i32_ty, shape.rt_shape_id_global.as_pointer_value(), "shape.id")
+          .expect("load rt shape id")
+          .into_int_value();
+
+        let rt = RuntimeAbi::new(self.cg.context, &self.cg.module);
+        let call = rt
+          .emit_runtime_call(
+            &self.builder,
+            RuntimeFn::Alloc,
+            &[size_i64.into(), shape_id_i32.into()],
+            "obj.alloc",
+          )
+          .map_err(|e| vec![diagnostics::ice(span, format!("failed to emit rt_alloc call: {e}"))])?;
+        let obj_ptr = call
+          .try_as_basic_value()
+          .left()
+          .expect("rt_alloc should return a value")
+          .into_pointer_value();
+
+        // Initialize properties in source order.
+        for prop in &obj.properties {
+          let hir_js::ObjectProperty::KeyValue {
+            key,
+            value,
+            method,
+            ..
+          } = prop
+          else {
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+              "unsupported object literal property in native-js codegen",
+              span,
+            )]);
+          };
+          if *method {
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+              "object literal methods are not supported in native-js codegen yet",
+              span,
+            )]);
+          }
+
+          let (_shape, field_off, field_kind) = self.object_field_layout(expr_ty, key, span)?;
+
+          // Evaluate the RHS before forming a derived pointer to the field slot.
+          let rhs = self.codegen_expr(*value)?;
+          if rhs.kind() != field_kind {
+            return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+              "object field initializer type mismatch",
+              span,
+            )]);
+          }
+
+          let slot = self.object_field_ptr(obj_ptr, field_off);
+          match field_kind {
+            TsAbiKind::Number => {
+              let NativeValue::Number(v) = rhs else { unreachable!() };
+              self.builder.build_store(slot, v).expect("store obj field");
+            }
+            TsAbiKind::Boolean => {
+              let NativeValue::Boolean(v) = rhs else { unreachable!() };
+              self.builder.build_store(slot, v).expect("store obj field");
+            }
+            TsAbiKind::String => {
+              let NativeValue::String(v) = rhs else { unreachable!() };
+              self.builder.build_store(slot, v).expect("store obj field");
+            }
+            TsAbiKind::GcPtr => {
+              let NativeValue::GcPtr(v) = rhs else { unreachable!() };
+              self.builder.build_store(slot, v).expect("store obj field");
+              self.emit_write_barrier(obj_ptr, slot, span)?;
+            }
+            TsAbiKind::Void => unreachable!(),
+          }
+        }
+
+        Ok(NativeValue::GcPtr(obj_ptr))
+      }
+
       ExprKind::Unary { op, expr } => {
         let inner = self.codegen_expr(expr)?;
         match op {
@@ -3695,53 +3889,123 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         }
 
         // Namespace import member access (`import * as ns from "./dep"; ns.x`).
-        let export_def = self.resolve_namespace_member_export_def(&member, span)?;
-        let resolved = self.cg.resolve_import_def(export_def, span)?;
-        if matches!(
-          self.cg.program.def_kind(resolved),
-          Some(typecheck_ts::DefKind::Function(_))
-        ) {
-          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
-            "function-valued namespace member access is only supported in call position in this codegen subset",
-            span,
-          )]);
+        let object_expr = self.expr_data(member.object)?;
+        let is_namespace_import = if let ExprKind::Ident(object_name) = object_expr.kind {
+          let object_binding = self
+            .env
+            .resolve(object_name)
+            .or_else(|| self.cg.resolver.for_file(self.file).resolve_expr_ident(self.body, member.object));
+          match object_binding {
+            Some(BindingId::Def(def)) => self.cg.namespace_import_target(def).is_some(),
+            _ => false,
+          }
+        } else {
+          false
+        };
+
+        if is_namespace_import {
+          let export_def = self.resolve_namespace_member_export_def(&member, span)?;
+          let resolved = self.cg.resolve_import_def(export_def, span)?;
+          if matches!(
+            self.cg.program.def_kind(resolved),
+            Some(typecheck_ts::DefKind::Function(_))
+          ) {
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+              "function-valued namespace member access is only supported in call position in this codegen subset",
+              span,
+            )]);
+          }
+
+          let global = self.cg.ensure_global_var(export_def, span)?;
+          return match global.kind {
+            TsAbiKind::Number => Ok(NativeValue::Number(
+              self
+                .builder
+                .build_load(self.cg.f64_ty, global.global.as_pointer_value(), "ns.load")
+                .expect("failed to build load")
+                .into_float_value(),
+            )),
+            TsAbiKind::Boolean => Ok(NativeValue::Boolean(
+              self
+                .builder
+                .build_load(self.cg.i1_ty, global.global.as_pointer_value(), "ns.load")
+                .expect("failed to build load")
+                .into_int_value(),
+            )),
+            TsAbiKind::String => Ok(NativeValue::String(
+              self
+                .builder
+                .build_load(self.cg.i32_ty, global.global.as_pointer_value(), "ns.load")
+                .expect("failed to build load")
+                .into_int_value(),
+            )),
+            TsAbiKind::GcPtr => Ok(NativeValue::GcPtr(
+              self
+                .builder
+                .build_load(self.cg.gc_ptr_ty, global.global.as_pointer_value(), "ns.load")
+                .expect("failed to build load")
+                .into_pointer_value(),
+            )),
+            TsAbiKind::Void => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+              "`void` values are not supported in this context",
+              span,
+            )]),
+          };
         }
 
-        let global = self.cg.ensure_global_var(export_def, span)?;
-        match global.kind {
-          TsAbiKind::Number => Ok(NativeValue::Number(
-            self
-              .builder
-              .build_load(self.cg.f64_ty, global.global.as_pointer_value(), "ns.load")
-              .expect("failed to build load")
-              .into_float_value(),
-          )),
-          TsAbiKind::Boolean => Ok(NativeValue::Boolean(
-            self
-              .builder
-              .build_load(self.cg.i1_ty, global.global.as_pointer_value(), "ns.load")
-              .expect("failed to build load")
-              .into_int_value(),
-          )),
-          TsAbiKind::String => Ok(NativeValue::String(
-            self
-              .builder
-              .build_load(self.cg.i32_ty, global.global.as_pointer_value(), "ns.load")
-              .expect("failed to build load")
-              .into_int_value(),
-          )),
-          TsAbiKind::GcPtr => Ok(NativeValue::GcPtr(
-            self
-              .builder
-              .build_load(self.cg.gc_ptr_ty, global.global.as_pointer_value(), "ns.load")
-              .expect("failed to build load")
-              .into_pointer_value(),
-          )),
-          TsAbiKind::Void => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`void` values are not supported in this context",
-            span,
-          )]),
+        // Typed object field load (`obj.foo` with a constant key).
+        if let Some(obj_ty) = self.types.expr_type(member.object) {
+          if matches!(
+            self.cg.program.type_kind(obj_ty),
+            TypeKindSummary::Object | TypeKindSummary::EmptyObject
+          ) {
+            let NativeValue::GcPtr(obj_ptr) = self.codegen_expr(member.object)? else {
+              return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                "unsupported object field receiver in native-js codegen",
+                span,
+              )]);
+            };
+
+            let (_shape, field_off, field_kind) = self.object_field_layout(obj_ty, &member.property, span)?;
+            let slot = self.object_field_ptr(obj_ptr, field_off);
+            return Ok(match field_kind {
+              TsAbiKind::Number => NativeValue::Number(
+                self
+                  .builder
+                  .build_load(self.cg.f64_ty, slot, "obj.field")
+                  .expect("load obj.field")
+                  .into_float_value(),
+              ),
+              TsAbiKind::Boolean => NativeValue::Boolean(
+                self
+                  .builder
+                  .build_load(self.cg.i1_ty, slot, "obj.field")
+                  .expect("load obj.field")
+                  .into_int_value(),
+              ),
+              TsAbiKind::String => NativeValue::String(
+                self
+                  .builder
+                  .build_load(self.cg.i32_ty, slot, "obj.field")
+                  .expect("load obj.field")
+                  .into_int_value(),
+              ),
+              TsAbiKind::GcPtr => NativeValue::GcPtr(
+                self
+                  .builder
+                  .build_load(self.cg.gc_ptr_ty, slot, "obj.field")
+                  .expect("load obj.field")
+                  .into_pointer_value(),
+              ),
+              TsAbiKind::Void => unreachable!(),
+            });
+          }
         }
+
+        Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+          "unsupported member expression in native-js codegen",
+          span,
+        )])
       }
       ExprKind::Ident(name) => {
         let binding = if let Some(binding) = self.env.resolve(name) {
@@ -3827,14 +4091,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       }
 
       ExprKind::Assignment { op, target, value } => {
-        // Assignment to array element: `arr[i] = value`.
+        // Assignment to a member expression:
+        // - array/tuple element assignment: `arr[i] = value`
+        // - typed object field assignment: `obj.foo = value` (constant key)
         //
-        // Important: do not keep derived pointers (element-slot pointers) live across may-GC calls
-        // (e.g. while evaluating `value`). We therefore:
-        // - evaluate `arr` and `i` first (to preserve side-effect order),
-        // - do a bounds check (and trap on OOB),
-        // - then evaluate `value`,
-        // - then compute the element slot pointer and store.
+        // Important: do not keep derived pointers (element/field slot pointers) live across may-GC
+        // calls (e.g. while evaluating the RHS). We therefore evaluate the receiver first, then the
+        // RHS, then compute the slot pointer and store.
         if let Some(pat) = self.body.pats.get(target.0 as usize) {
           if let PatKind::AssignTarget(target_expr) = pat.kind {
             if let Some(target_expr_data) = self.body.exprs.get(target_expr.0 as usize) {
@@ -3846,14 +4109,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                   )]);
                 }
 
-                let ObjectKey::Computed(key_expr) = &member.property else {
-                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
-                    "unsupported assignment target (expected `arr[i]`)",
-                    span,
-                  )]);
-                };
-                let key_expr = *key_expr;
-
                 if !matches!(op, AssignOp::Assign) {
                   return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_OP.error(
                     format!("unsupported assignment operator `{op:?}`"),
@@ -3861,90 +4116,136 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                   )]);
                 }
 
-                // Ensure the receiver is array-like.
                 let Some(obj_ty) = self.types.expr_type(member.object) else {
                   return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
                     "missing type information for assignment target receiver",
                     span,
                   )]);
                 };
-                if !matches!(
-                  self.cg.program.type_kind(obj_ty),
-                  TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }
-                ) {
-                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
-                    "unsupported assignment target (expected array/tuple index)",
-                    span,
-                  )]);
+                match self.cg.program.type_kind(obj_ty) {
+                  TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. } => {
+                    let ObjectKey::Computed(key_expr) = &member.property else {
+                      return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                        "unsupported assignment target (expected `arr[i]`)",
+                        span,
+                      )]);
+                    };
+                    let key_expr = *key_expr;
+
+                    let NativeValue::GcPtr(arr) = self.codegen_expr(member.object)? else {
+                      return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                        "unsupported assignment target receiver in native-js codegen",
+                        span,
+                      )]);
+                    };
+                    let NativeValue::Number(idx_f) = self.codegen_expr(key_expr)? else {
+                      return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                        "array index expression must have type `number` in native-js codegen",
+                        span,
+                      )]);
+                    };
+                    let idx_i64 = self.number_to_i64_index(idx_f)?;
+
+                    // Bounds check before evaluating the RHS (so OOB traps deterministically).
+                    let idx_i64 = self.array_bounds_check(arr, idx_i64)?;
+
+                    // Evaluate RHS after bounds check (may allocate / GC).
+                    let rhs = self.codegen_expr(value)?;
+
+                    // Determine element layout from the member-expression type.
+                    let elem_kind = self.expr_abi_kind(target_expr, span)?;
+                    if rhs.kind() != elem_kind {
+                      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                        "array element assignment type mismatch",
+                        span,
+                      )]);
+                    }
+                    let elem_size_bytes = match elem_kind {
+                      TsAbiKind::Number => 8,
+                      TsAbiKind::Boolean => 1,
+                      TsAbiKind::String => 4,
+                      TsAbiKind::GcPtr => 8,
+                      TsAbiKind::Void => {
+                        return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                          "`void` array elements are not supported in native-js codegen",
+                          span,
+                        )]);
+                      }
+                    };
+
+                    match elem_kind {
+                      TsAbiKind::Number => {
+                        let NativeValue::Number(rhs_f) = rhs else { unreachable!() };
+                        let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                        self.builder.build_store(slot, rhs_f).expect("store array elem");
+                      }
+                      TsAbiKind::Boolean => {
+                        let NativeValue::Boolean(rhs_b) = rhs else { unreachable!() };
+                        let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                        self.builder.build_store(slot, rhs_b).expect("store array elem");
+                      }
+                      TsAbiKind::String => {
+                        let NativeValue::String(rhs_s) = rhs else { unreachable!() };
+                        let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                        self.builder.build_store(slot, rhs_s).expect("store array elem");
+                      }
+                      TsAbiKind::GcPtr => {
+                        let NativeValue::GcPtr(rhs_p) = rhs else { unreachable!() };
+                        let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                        self.builder.build_store(slot, rhs_p).expect("store array elem");
+                        self.emit_write_barrier(arr, slot, span)?;
+                      }
+                      TsAbiKind::Void => unreachable!(),
+                    }
+
+                    return Ok(rhs);
+                  }
+                  TypeKindSummary::Object | TypeKindSummary::EmptyObject => {
+                    let NativeValue::GcPtr(obj_ptr) = self.codegen_expr(member.object)? else {
+                      return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                        "unsupported assignment target receiver in native-js codegen",
+                        span,
+                      )]);
+                    };
+
+                    let (_shape, field_off, field_kind) = self.object_field_layout(obj_ty, &member.property, span)?;
+
+                    let rhs = self.codegen_expr(value)?;
+                    if rhs.kind() != field_kind {
+                      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                        "object field assignment type mismatch",
+                        span,
+                      )]);
+                    }
+
+                    let slot = self.object_field_ptr(obj_ptr, field_off);
+                    match field_kind {
+                      TsAbiKind::Number => {
+                        let NativeValue::Number(rhs_f) = rhs else { unreachable!() };
+                        self.builder.build_store(slot, rhs_f).expect("store obj field");
+                      }
+                      TsAbiKind::Boolean => {
+                        let NativeValue::Boolean(rhs_b) = rhs else { unreachable!() };
+                        self.builder.build_store(slot, rhs_b).expect("store obj field");
+                      }
+                      TsAbiKind::String => {
+                        let NativeValue::String(rhs_s) = rhs else { unreachable!() };
+                        self.builder.build_store(slot, rhs_s).expect("store obj field");
+                      }
+                      TsAbiKind::GcPtr => {
+                        let NativeValue::GcPtr(rhs_p) = rhs else { unreachable!() };
+                        self.builder.build_store(slot, rhs_p).expect("store obj field");
+                        self.emit_write_barrier(obj_ptr, slot, span)?;
+                      }
+                      TsAbiKind::Void => unreachable!(),
+                    }
+
+                    return Ok(rhs);
+                  }
+                  _ => {
+                    // Fall through to the non-member assignment code path.
+                  }
                 }
-
-                let NativeValue::GcPtr(arr) = self.codegen_expr(member.object)? else {
-                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
-                    "unsupported assignment target receiver in native-js codegen",
-                    span,
-                  )]);
-                };
-                let NativeValue::Number(idx_f) = self.codegen_expr(key_expr)? else {
-                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
-                    "array index expression must have type `number` in native-js codegen",
-                    span,
-                  )]);
-                };
-                let idx_i64 = self.number_to_i64_index(idx_f)?;
-
-                // Bounds check before evaluating the RHS (so OOB traps deterministically).
-                let idx_i64 = self.array_bounds_check(arr, idx_i64)?;
-
-                // Evaluate RHS after bounds check (may allocate / GC).
-                let rhs = self.codegen_expr(value)?;
-
-                // Determine element layout from the member-expression type.
-                let elem_kind = self.expr_abi_kind(target_expr, span)?;
-                if rhs.kind() != elem_kind {
-                  return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-                    "array element assignment type mismatch",
-                    span,
-                  )]);
-                }
-                let elem_size_bytes = match elem_kind {
-                  TsAbiKind::Number => 8,
-                  TsAbiKind::Boolean => 1,
-                  TsAbiKind::String => 4,
-                  TsAbiKind::GcPtr => 8,
-                  TsAbiKind::Void => {
-                    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-                      "`void` array elements are not supported in native-js codegen",
-                      span,
-                    )]);
-                  }
-                };
-
-                match elem_kind {
-                  TsAbiKind::Number => {
-                    let NativeValue::Number(rhs_f) = rhs else { unreachable!() };
-                    let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
-                    self.builder.build_store(slot, rhs_f).expect("store array elem");
-                  }
-                  TsAbiKind::Boolean => {
-                    let NativeValue::Boolean(rhs_b) = rhs else { unreachable!() };
-                    let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
-                    self.builder.build_store(slot, rhs_b).expect("store array elem");
-                  }
-                  TsAbiKind::String => {
-                    let NativeValue::String(rhs_s) = rhs else { unreachable!() };
-                    let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
-                    self.builder.build_store(slot, rhs_s).expect("store array elem");
-                  }
-                  TsAbiKind::GcPtr => {
-                    let NativeValue::GcPtr(rhs_p) = rhs else { unreachable!() };
-                    let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
-                    self.builder.build_store(slot, rhs_p).expect("store array elem");
-                    self.emit_write_barrier(arr, slot, span)?;
-                  }
-                  TsAbiKind::Void => unreachable!(),
-                }
-
-                return Ok(rhs);
               }
             }
           }

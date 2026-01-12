@@ -198,6 +198,10 @@ pub const LEGACY_UNSUPPORTED_OPERATOR: Code =
 /// NJS0204: Type error produced by the legacy parse-js-driven emitter.
 pub const LEGACY_TYPE_ERROR: Code = Code::new("NJS0204", "type error in native-js legacy emitter");
 
+/// NJS0205: Object shape requires tag-dispatch GC tracing, which is not supported by the runtime ABI yet.
+pub const HIR_CODEGEN_UNSUPPORTED_SHAPE_GC_TRACE: Code =
+  Code::new("NJS0205", "HIR codegen: unsupported GC trace layout for object shape");
+
 impl Code {
   pub const fn new(id: &'static str, description: &'static str) -> Self {
     Self { id, description }

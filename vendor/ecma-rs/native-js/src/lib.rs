@@ -66,6 +66,7 @@ mod project;
 pub mod resolve;
 pub mod runtime_abi;
 pub mod runtime_fn;
+mod shapes;
 pub mod strict;
 pub mod tail_calls;
 pub mod toolchain;

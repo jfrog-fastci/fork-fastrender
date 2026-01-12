@@ -346,8 +346,8 @@ impl LayoutStore {
       TypeKind::Number | TypeKind::NumberLiteral(_) => Layout::Scalar {
         abi: AbiScalar::F64,
       },
-      TypeKind::String | TypeKind::StringLiteral(_) | TypeKind::TemplateLiteral(_) => Layout::Ptr {
-        to: PtrKind::GcString,
+      TypeKind::String | TypeKind::StringLiteral(_) | TypeKind::TemplateLiteral(_) => Layout::Scalar {
+        abi: AbiScalar::U32,
       },
       TypeKind::Null | TypeKind::Undefined | TypeKind::Void => {
         Layout::Scalar { abi: AbiScalar::U8 }
