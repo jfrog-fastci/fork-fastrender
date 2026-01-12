@@ -65,9 +65,14 @@ pub(crate) struct LiveMutation {
   hook: Option<Box<dyn LiveMutationHook>>,
   next_live_range_id: u64,
   live_ranges: HashMap<LiveRangeId, WeakGcObject>,
-  next_node_iterator_id: u64,
   node_iterators: HashMap<NodeIteratorId, WeakGcObject>,
   last_gc_runs: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct LiveMutationSweepResult {
+  pub(crate) dead_live_ranges: Vec<LiveRangeId>,
+  pub(crate) dead_node_iterators: Vec<NodeIteratorId>,
 }
 
 impl Default for LiveMutation {
@@ -76,7 +81,6 @@ impl Default for LiveMutation {
       hook: None,
       next_live_range_id: 1,
       live_ranges: HashMap::new(),
-      next_node_iterator_id: 1,
       node_iterators: HashMap::new(),
       last_gc_runs: 0,
     }
@@ -98,34 +102,59 @@ impl LiveMutation {
   }
 
   pub(crate) fn register_live_range(&mut self, heap: &Heap, wrapper: GcObject) -> LiveRangeId {
-    self.sweep_dead_if_needed(heap);
+    let _ = self.sweep_dead_if_needed(heap);
     let id = LiveRangeId(self.next_live_range_id);
     self.next_live_range_id = self.next_live_range_id.wrapping_add(1);
     self.live_ranges.insert(id, WeakGcObject::from(wrapper));
     id
   }
 
-  pub(crate) fn register_node_iterator(&mut self, heap: &Heap, wrapper: GcObject) -> NodeIteratorId {
-    self.sweep_dead_if_needed(heap);
-    let id = NodeIteratorId(self.next_node_iterator_id);
-    self.next_node_iterator_id = self.next_node_iterator_id.wrapping_add(1);
+  /// Register a JS `NodeIterator` wrapper object for an existing `NodeIteratorId`.
+  ///
+  /// The id itself is allocated by `Document::create_node_iterator`, which also creates the
+  /// iterator's Rust-side traversal state. This registry only tracks the JS wrapper weakly so we
+  /// can later sweep entries for collected JS objects without keeping them alive.
+  pub(crate) fn register_node_iterator(
+    &mut self,
+    heap: &Heap,
+    id: NodeIteratorId,
+    wrapper: GcObject,
+  ) {
+    let _ = self.sweep_dead_if_needed(heap);
     self.node_iterators.insert(id, WeakGcObject::from(wrapper));
-    id
   }
 
-  pub(crate) fn sweep_dead_if_needed(&mut self, heap: &Heap) {
+  pub(crate) fn sweep_dead_if_needed(&mut self, heap: &Heap) -> LiveMutationSweepResult {
     let gc_runs = heap.gc_runs();
     if gc_runs == self.last_gc_runs {
-      return;
+      return LiveMutationSweepResult::default();
     }
     self.last_gc_runs = gc_runs;
 
+    let mut dead_live_ranges: Vec<LiveRangeId> = Vec::new();
     self
       .live_ranges
-      .retain(|_, weak| weak.upgrade(heap).is_some());
+      .retain(|id, weak| {
+        let alive = weak.upgrade(heap).is_some();
+        if !alive {
+          dead_live_ranges.push(*id);
+        }
+        alive
+      });
+    let mut dead_node_iterators: Vec<NodeIteratorId> = Vec::new();
     self
       .node_iterators
-      .retain(|_, weak| weak.upgrade(heap).is_some());
+      .retain(|id, weak| {
+        let alive = weak.upgrade(heap).is_some();
+        if !alive {
+          dead_node_iterators.push(*id);
+        }
+        alive
+      });
+    LiveMutationSweepResult {
+      dead_live_ranges,
+      dead_node_iterators,
+    }
   }
 
   #[inline]
@@ -168,6 +197,11 @@ impl LiveMutation {
   pub(crate) fn live_range_len(&self) -> usize {
     self.live_ranges.len()
   }
+
+  #[cfg(test)]
+  pub(crate) fn node_iterator_wrapper_len(&self) -> usize {
+    self.node_iterators.len()
+  }
 }
 
 impl Document {
@@ -195,12 +229,22 @@ impl Document {
     self.live_mutation.register_live_range(heap, wrapper)
   }
 
-  pub(crate) fn register_node_iterator(&mut self, heap: &Heap, wrapper: GcObject) -> NodeIteratorId {
-    self.live_mutation.register_node_iterator(heap, wrapper)
+  pub(crate) fn register_node_iterator_wrapper(
+    &mut self,
+    heap: &Heap,
+    id: NodeIteratorId,
+    wrapper: GcObject,
+  ) {
+    self.live_mutation.register_node_iterator(heap, id, wrapper);
   }
 
   pub(crate) fn sweep_dead_live_traversals_if_needed(&mut self, heap: &Heap) {
-    self.live_mutation.sweep_dead_if_needed(heap);
+    let sweep = self.live_mutation.sweep_dead_if_needed(heap);
+    // Prune Rust-side NodeIterator traversal state for JS-collected iterators. This prevents stale
+    // iterator state from accumulating across GC cycles.
+    for id in sweep.dead_node_iterators {
+      self.remove_node_iterator(id);
+    }
   }
 }
 

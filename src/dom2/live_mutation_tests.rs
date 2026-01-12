@@ -311,3 +311,36 @@ fn live_traversal_registry_is_gc_safe_and_sweeps_dead_entries() -> Result<(), vm
   assert_eq!(doc.live_mutation.live_range_len(), 0);
   Ok(())
 }
+
+#[test]
+fn node_iterator_registry_is_gc_safe_and_prunes_rust_state() -> Result<(), vm_js::VmError> {
+  use vm_js::{Heap, HeapLimits, Value, WeakGcObject};
+
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut scope = heap.scope();
+
+  let obj = scope.alloc_object()?;
+  let weak = WeakGcObject::from(obj);
+  let root = scope.heap_mut().add_root(Value::Object(obj))?;
+
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let id = doc.create_node_iterator(doc.root());
+  doc.register_node_iterator_wrapper(scope.heap(), id, obj);
+  assert_eq!(doc.live_mutation.node_iterator_wrapper_len(), 1);
+  assert_eq!(doc.node_iterator_root(id), Some(doc.root()));
+
+  // Drop the last root and force a GC; the registry must not keep the JS object alive.
+  scope.heap_mut().remove_root(root);
+  scope.heap_mut().collect_garbage();
+  assert!(
+    weak.upgrade(scope.heap()).is_none(),
+    "registered WeakGcObject must not prevent collection"
+  );
+
+  // After a GC run, sweeping should prune both the weak registry entry and the Document's
+  // NodeIterator traversal state.
+  doc.sweep_dead_live_traversals_if_needed(scope.heap());
+  assert_eq!(doc.live_mutation.node_iterator_wrapper_len(), 0);
+  assert_eq!(doc.node_iterator_root(id), None);
+  Ok(())
+}
