@@ -2861,6 +2861,7 @@ impl<'a> Checker<'a> {
       }
       AstExpr::Binary(bin) => self.check_binary(bin.stx.operator, &bin.stx.left, &bin.stx.right),
       AstExpr::Cond(cond) => {
+        let _ = self.check_expr(&cond.stx.test);
         let cons = self.check_expr(&cond.stx.consequent);
         let alt = self.check_expr(&cond.stx.alternate);
         self.store.union(vec![cons, alt])
@@ -7121,6 +7122,12 @@ impl<'a> Checker<'a> {
       | OperatorName::Division
       | OperatorName::Exponentiation
       | OperatorName::Remainder => self.store.primitive_ids().number,
+      OperatorName::BitwiseAnd
+      | OperatorName::BitwiseLeftShift
+      | OperatorName::BitwiseOr
+      | OperatorName::BitwiseRightShift
+      | OperatorName::BitwiseUnsignedRightShift
+      | OperatorName::BitwiseXor => self.store.primitive_ids().number,
       OperatorName::LogicalAnd | OperatorName::LogicalOr | OperatorName::NullishCoalescing => {
         self.store.union(vec![lty, rty])
       }
@@ -7132,6 +7139,8 @@ impl<'a> Checker<'a> {
       | OperatorName::LessThanOrEqual
       | OperatorName::GreaterThan
       | OperatorName::GreaterThanOrEqual => self.store.primitive_ids().boolean,
+      OperatorName::In | OperatorName::Instanceof => self.store.primitive_ids().boolean,
+      OperatorName::Comma => rty,
       _ => self.store.union(vec![lty, rty]),
     }
   }
