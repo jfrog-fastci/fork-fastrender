@@ -1722,12 +1722,26 @@ pub fn paginate_fragment_tree(
               total_extent,
             };
 
-            let next = pending.analyzer.next_boundary_with_cursor(
+            let next_candidate = pending.analyzer.next_boundary_with_cursor(
               pending.offset,
               available_for_oversize,
               pending.total_extent,
               &mut pending.opportunity_cursor,
             )?;
+            let next = match resolve_pending_footnote_slice_boundary(
+              pending.offset,
+              available_for_oversize,
+              pending.total_extent,
+              next_candidate,
+            ) {
+              PendingFootnoteSliceBoundary::Advance(next) => next,
+              PendingFootnoteSliceBoundary::Complete => {
+                // If we can't advance (e.g. the footnote area is too small to hold even a single
+                // slice), do not enqueue a pending footnote with an unchanged offset (which can
+                // stall pagination).
+                continue;
+              }
+            };
 
             let root_block_size = axis.block_size(&pending.root.bounds);
             if let Some(mut slice) = clip_node(
