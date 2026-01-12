@@ -114,10 +114,14 @@ fn parse_objdump_instructions(disasm: &str) -> Vec<(u64, String)> {
 
 #[test]
 fn parse_statepoint_stackmap_v3_and_index_by_return_address() -> Result<()> {
-  if !have_tool("opt-18") || !have_tool("llc-18") || !have_tool("llvm-objdump-18") {
-    eprintln!("skipping: LLVM 18 tools (opt-18/llc-18/llvm-objdump-18) not available");
+  if !have_tool("opt-18") || !have_tool("llc-18") {
+    eprintln!("skipping: LLVM 18 tools (opt-18/llc-18) not available");
     return Ok(());
   }
+  let Some(objdump) = find_tool(&["llvm-objdump-18", "llvm-objdump"]) else {
+    eprintln!("skipping: llvm-objdump not available in PATH (need llvm-objdump-18 or llvm-objdump)");
+    return Ok(());
+  };
 
   let td = tempfile::tempdir().context("tempdir")?;
   let input_ll = td.path().join("input.ll");
@@ -191,15 +195,15 @@ fn parse_statepoint_stackmap_v3_and_index_by_return_address() -> Result<()> {
 
   // Verify that the stackmap's instruction_offset points at the return address after the callq.
   // We do this by matching it against the next instruction address following a call.
-  let disasm = Command::new("llvm-objdump-18")
+  let disasm = Command::new(objdump)
     .arg("-d")
     .arg("--no-show-raw-insn")
     .arg(&obj)
     .output()
-    .context("run llvm-objdump-18")?;
+    .with_context(|| format!("run {objdump}"))?;
   if !disasm.status.success() {
     bail!(
-      "llvm-objdump-18 failed:\nstdout:\n{}\nstderr:\n{}",
+      "{objdump} failed:\nstdout:\n{}\nstderr:\n{}",
       String::from_utf8_lossy(&disasm.stdout),
       String::from_utf8_lossy(&disasm.stderr)
     );
