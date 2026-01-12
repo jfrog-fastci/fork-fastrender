@@ -4,29 +4,29 @@
 //! integration test module trees under `tests/` into a single binary so the suite links once.
 
 mod common;
-mod api;
 mod accessibility;
 mod animation;
-mod interaction;
-mod fixtures;
-mod browser_integration;
-mod layout;
-mod paint;
+mod api;
 mod backdrop;
+mod browser_integration;
 mod determinism;
 mod dom_integration;
+mod fixtures;
+mod grid;
+mod guards;
 mod iframe;
 mod image_integration;
-mod grid;
+mod interaction;
+mod js;
+mod layout;
 mod misc;
+mod paint;
+mod progress;
 mod render;
+mod resource;
 mod scroll;
 mod tree;
 mod ui;
-mod guards;
-mod js;
-mod progress;
-mod resource;
 mod wpt;
 
 // Keep the reference image comparison helpers available for fixture-style tests.
