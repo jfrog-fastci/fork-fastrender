@@ -1914,13 +1914,12 @@ pub mod body_check {
         let Some(base_binding) = base_binding else {
           return ctx_super;
         };
-        let base_value_ty = if let Some(def) = base_binding.def {
-          map_def_ty(def)
-        } else if let Some(ty) = base_binding.type_id {
-          ty
-        } else {
-          prim.unknown
-        };
+        let base_value_ty = base_binding
+          .def
+          .map(map_def_ty)
+          .filter(|ty| *ty != prim.unknown)
+          .or(base_binding.type_id)
+          .unwrap_or(prim.unknown);
 
         if base_value_ty != prim.unknown {
           ctx_super.super_value_ty = Some(base_value_ty);

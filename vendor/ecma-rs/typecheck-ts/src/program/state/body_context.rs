@@ -55,8 +55,27 @@ impl ProgramState {
 
   fn ensure_def_types_for_body_check_context(&mut self) {
     let store = Arc::clone(&self.store);
-    let mut def_ids: Vec<_> = self.def_data.keys().copied().collect();
+    // `type_of_def` can recursively check bodies (e.g. initializer inference).
+    // Running it for every local definition while the `ProgramState` write lock
+    // is held blocks concurrent read-only queries like `symbol_at`.
+    //
+    // The body checker context only needs stable types for externally visible
+    // (root-scope) bindings; locals are checked as part of their enclosing body.
+    let mut def_ids: Vec<DefId> = Vec::new();
+    for state in self.files.values() {
+      for binding in state.bindings.values() {
+        if let Some(def) = binding.def {
+          def_ids.push(def);
+        }
+      }
+    }
+    for binding in self.global_bindings.values() {
+      if let Some(def) = binding.def {
+        def_ids.push(def);
+      }
+    }
     def_ids.sort_by_key(|def| def.0);
+    def_ids.dedup();
 
     let max_passes = def_ids.len().max(1).min(64);
     for _ in 0..max_passes {

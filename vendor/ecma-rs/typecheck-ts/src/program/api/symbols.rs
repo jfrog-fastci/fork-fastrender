@@ -18,10 +18,8 @@ impl Program {
     offset: u32,
   ) -> Result<Option<semantic_js::SymbolId>, FatalError> {
     self.with_analyzed_state(|state| {
-      if state.snapshot_loaded {
-        if let Some(occurrences) = state.symbol_occurrences.get(&file) {
-          return Ok(Self::symbol_from_occurrences(occurrences, offset));
-        }
+      if let Some(occurrences) = state.symbol_occurrences.get(&file) {
+        return Ok(Self::symbol_from_occurrences(occurrences, offset));
       }
       let db = state.typecheck_db.lock().clone();
       let occurrences = crate::db::symbol_occurrences(&db, file);
@@ -74,10 +72,8 @@ impl Program {
   /// Raw symbol occurrences for debugging.
   pub fn debug_symbol_occurrences(&self, file: FileId) -> Vec<(TextRange, semantic_js::SymbolId)> {
     match self.with_analyzed_state(|state| {
-      if state.snapshot_loaded {
-        if let Some(occurrences) = state.symbol_occurrences.get(&file) {
-          return Ok(occurrences.clone());
-        }
+      if let Some(occurrences) = state.symbol_occurrences.get(&file) {
+        return Ok(occurrences.clone());
       }
       let db = state.typecheck_db.lock().clone();
       Ok(crate::db::symbol_occurrences(&db, file).to_vec())

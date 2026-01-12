@@ -4358,13 +4358,17 @@ impl<'a> Checker<'a> {
     // `super()` uses the base constructor value, which can differ from the
     // instance type used for `super.prop`. Record the callee type explicitly
     // because `check_call_expr` skips `check_expr` for the `super` callee.
-    let callee_ty = if self.store.canon(self.current_super_ctor_ty) != prim.unknown {
+    //
+    // Prefer the span-derived constructor type, but fall back to the per-body
+    // context when the AST index cannot determine it (e.g. missing enclosing
+    // class/extends info).
+    let super_ctor_ty = if self.store.canon(self.current_super_ctor_ty) != prim.unknown {
       self.current_super_ctor_ty
     } else {
       self.this_super_context.super_value_ty.unwrap_or(prim.unknown)
     };
-    self.record_expr_type(call.stx.callee.loc, callee_ty);
-    let callee_ty = self.expand_callable_type(callee_ty);
+    self.record_expr_type(call.stx.callee.loc, super_ctor_ty);
+    let callee_ty = self.expand_callable_type(super_ctor_ty);
     let arg_exprs = call.stx.arguments.as_slice();
     let all_candidate_sigs =
       construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);
