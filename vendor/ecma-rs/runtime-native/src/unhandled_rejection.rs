@@ -69,7 +69,7 @@ fn alloc_promise_root(promise: PromiseRef) -> Option<HandleId> {
   }
   // Root the promise pointer in the persistent handle table so it can be updated across GC moves
   // while it is stored inside this Rust-owned tracker.
-  Some(crate::roots::global_persistent_handle_table().alloc(promise.0.cast()))
+  Some(crate::roots::global_persistent_handle_table().alloc_movable(promise.0.cast()))
 }
 
 #[inline]

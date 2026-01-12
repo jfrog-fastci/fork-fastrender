@@ -75,6 +75,18 @@ impl ShadowStack {
     self.slots()[idx]
   }
 
+  #[inline]
+  pub(crate) fn slot_ptr(&self, idx: usize) -> *mut *mut u8 {
+    let slots = self.slots();
+    debug_assert!(idx < slots.len());
+    // SAFETY:
+    // - `idx < slots.len()` so the element is in-bounds.
+    // - `Vec<*mut u8>` elements are naturally aligned for `*mut u8`.
+    // - The returned pointer remains valid as long as the underlying `Vec` is not reallocated.
+    //   The caller must ensure no further pushes/reserves occur while the pointer is in use.
+    unsafe { (slots.as_ptr() as *mut *mut u8).add(idx) }
+  }
+
   pub(crate) fn set(&self, idx: usize, ptr: *mut u8) {
     debug_assert!(
       !super::gc_in_progress(),
@@ -167,6 +179,15 @@ impl RootHandle<'_> {
   #[inline]
   pub fn get(&self) -> *mut u8 {
     self.ts.shadow_stack().get(self.idx)
+  }
+
+  /// Returns a pointer to the addressable slot containing this rooted pointer.
+  ///
+  /// This is intended for runtime internals that need to pass an updatable slot to APIs like
+  /// `PersistentHandleTable::alloc_from_slot`.
+  #[inline]
+  pub(crate) fn slot_ptr(&self) -> *mut *mut u8 {
+    self.ts.shadow_stack().slot_ptr(self.idx)
   }
 
   #[inline]

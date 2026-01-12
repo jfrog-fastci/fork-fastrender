@@ -228,7 +228,7 @@ pub(crate) fn parallel_for_rooted(
     return;
   }
 
-  let handle = crate::roots::global_persistent_handle_table().alloc(data);
+  let handle = crate::roots::global_persistent_handle_table().alloc_movable(data);
   parallel_for_rooted_handle(rt, start, end, body, handle, chunking);
 }
 

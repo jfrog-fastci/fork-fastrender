@@ -119,7 +119,7 @@ impl ParallelRuntime {
     threading::register_current_thread(ThreadKind::External);
     threading::safepoint_poll();
 
-    let handle = crate::roots::global_persistent_handle_table().alloc(data);
+    let handle = crate::roots::global_persistent_handle_table().alloc_movable(data);
     self.spawn_rooted_handle(task, handle)
   }
 

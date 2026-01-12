@@ -47,13 +47,35 @@ enum PendingPromiseKeepAlive {
   Weak(Weak<dyn Any + Send + Sync>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PendingPromiseKey {
+  /// Promise memory is not GC-managed (and therefore not relocatable).
+  ///
+  /// We track these by raw pointer so legacy boxed promises don't allocate extra persistent handles
+  /// just for cancellation bookkeeping.
+  Raw(usize),
+  /// Promise is GC-managed and may be relocated; track via a stable persistent handle id.
+  Rooted(HandleId),
+}
+
+#[inline]
+fn promise_is_gc_managed(promise: *mut PromiseHeader) -> bool {
+  if promise.is_null() {
+    return false;
+  }
+  // Safety: `PromiseHeader` begins with a GC `ObjHeader` prefix at offset 0.
+  // Non-GC-managed promises (legacy `RtPromise`, etc.) keep the header inert by setting
+  // `ObjHeader::type_desc` to null.
+  unsafe { !(*promise).obj.type_desc.is_null() }
+}
+
 /// Promises that currently have pending reactions stored in their header.
 ///
 /// This enables `rt_async_cancel_all` to abandon pending async work safely by dropping reaction
 /// nodes that would otherwise never be enqueued (because the promise never settles after the host
 /// shuts down timers/I/O).
 static PROMISES_WITH_PENDING_REACTIONS: Lazy<
-  GcAwareMutex<HashMap<HandleId, PendingPromiseKeepAlive>>,
+  GcAwareMutex<HashMap<PendingPromiseKey, PendingPromiseKeepAlive>>,
 > = Lazy::new(|| GcAwareMutex::new(HashMap::new()));
 
 pub(crate) fn track_pending_reactions(promise: *mut PromiseHeader) {
@@ -76,6 +98,25 @@ fn track_pending_reactions_keepalive(
   }
   if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
     std::process::abort();
+  }
+
+  // Non-GC-managed promises are not relocatable: track by raw pointer to avoid allocating an extra
+  // persistent handle-table entry (some rooted scheduling API tests assert the handle count stays
+  // constant while promises are pending).
+  if !promise_is_gc_managed(promise) {
+    let key = PendingPromiseKey::Raw(promise as usize);
+    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+    if let Some(existing) = map.get_mut(&key) {
+      // Preserve any existing keepalive (it may have been upgraded to `Weak` by another caller).
+      if matches!(existing, PendingPromiseKeepAlive::None)
+        && matches!(keepalive, PendingPromiseKeepAlive::Weak(_))
+      {
+        *existing = keepalive;
+      }
+    } else {
+      map.insert(key, keepalive);
+    }
+    return;
   }
 
   // Promises can be GC-movable; track them via stable persistent handle IDs (and keep them alive)
@@ -108,7 +149,10 @@ fn track_pending_reactions_keepalive(
     let mut ids_to_free: Vec<HandleId> = Vec::new();
 
     let mut found: Option<HandleId> = None;
-    for id in map.keys().copied() {
+    for key in map.keys().copied() {
+      let PendingPromiseKey::Rooted(id) = key else {
+        continue;
+      };
       match table.get(id) {
         Some(p) if p == promise_ptr => {
           if found.is_none() {
@@ -127,13 +171,13 @@ fn track_pending_reactions_keepalive(
     }
 
     for id in &ids_to_free {
-      map.remove(id);
+      map.remove(&PendingPromiseKey::Rooted(*id));
     }
 
     match found {
       Some(id) => {
         // Preserve any existing keepalive (it may have been upgraded to `Weak` by another caller).
-        if let Some(existing) = map.get_mut(&id) {
+        if let Some(existing) = map.get_mut(&PendingPromiseKey::Rooted(id)) {
           if matches!(existing, PendingPromiseKeepAlive::None)
             && matches!(keepalive, PendingPromiseKeepAlive::Weak(_))
           {
@@ -144,7 +188,7 @@ fn track_pending_reactions_keepalive(
       None => {
         // Safety: `promise_ptr` is a valid pointer slot rooted via `RootScope`.
         let id = unsafe { table.alloc_from_slot(&mut promise_ptr as *mut *mut u8) };
-        map.insert(id, keepalive);
+        map.insert(PendingPromiseKey::Rooted(id), keepalive);
       }
     }
 
@@ -175,7 +219,10 @@ fn track_pending_reactions_keepalive(
     scope.push(&mut want_ptr as *mut *mut u8);
 
     let mut found: Option<HandleId> = None;
-    for id in map.keys().copied() {
+    for key in map.keys().copied() {
+      let PendingPromiseKey::Rooted(id) = key else {
+        continue;
+      };
       match table.get(id) {
         Some(p) if p == want_ptr => {
           if found.is_none() {
@@ -194,14 +241,15 @@ fn track_pending_reactions_keepalive(
     }
 
     for id in &ids_to_free {
-      map.remove(id);
+      map.remove(&PendingPromiseKey::Rooted(*id));
     }
 
     match found {
       Some(id) => {
         // Preserve any existing keepalive (it may have been upgraded to `Weak` by another caller).
-        if let Some(existing) = map.get_mut(&id) {
-          if matches!(existing, PendingPromiseKeepAlive::None) && matches!(keepalive, PendingPromiseKeepAlive::Weak(_))
+        if let Some(existing) = map.get_mut(&PendingPromiseKey::Rooted(id)) {
+          if matches!(existing, PendingPromiseKeepAlive::None)
+            && matches!(keepalive, PendingPromiseKeepAlive::Weak(_))
           {
             *existing = keepalive;
           }
@@ -210,7 +258,7 @@ fn track_pending_reactions_keepalive(
         ids_to_free.push(id_new);
       }
       None => {
-        map.insert(id_new, keepalive);
+        map.insert(PendingPromiseKey::Rooted(id_new), keepalive);
       }
     }
   }
@@ -228,6 +276,12 @@ pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
     std::process::abort();
   }
 
+  if !promise_is_gc_managed(promise) {
+    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+    map.remove(&PendingPromiseKey::Raw(promise as usize));
+    return;
+  }
+
   let root = threading::registry::current_thread_state()
     .is_some()
     .then(|| crate::roots::Root::new(promise));
@@ -243,7 +297,10 @@ pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
         .unwrap_or(promise.cast::<u8>())
     };
 
-    for id in map.keys().copied() {
+    for key in map.keys().copied() {
+      let PendingPromiseKey::Rooted(id) = key else {
+        continue;
+      };
       match table.get(id) {
         Some(p) if p == current_ptr() => {
           // Defensive: remove all matches to avoid leaking duplicate roots if tracking was raced.
@@ -258,7 +315,7 @@ pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
     }
 
     for id in &to_remove {
-      map.remove(id);
+      map.remove(&PendingPromiseKey::Rooted(*id));
     }
 
     to_remove
@@ -918,8 +975,8 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
     let _ = crate::roots::global_persistent_handle_table().free(h);
   }
 
-  let root =
-    (!value.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc(value.cast()));
+  let root = (!value.is_null())
+    .then(|| crate::roots::global_persistent_handle_table().alloc_movable(value.cast()));
 
   // Publish the result before flipping to the externally-visible fulfilled state.
   unsafe { &(*ptr).value }.store(value as usize, Ordering::Relaxed);
@@ -974,7 +1031,7 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
   }
 
   let root =
-    (!err.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc(err.cast()));
+    (!err.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc_movable(err.cast()));
 
   unsafe { &(*ptr).error }.store(err as usize, Ordering::Relaxed);
   unsafe { &(*ptr).value }.store(0, Ordering::Relaxed);
@@ -1000,14 +1057,14 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
 /// This is used by `rt_async_cancel_all` to ensure awaiting coroutines (and other `then` callbacks)
 /// are properly torn down if the host stops driving the event loop before those promises settle.
 pub(crate) fn cancel_all_pending_reactions() {
-  let promises: Vec<(HandleId, PendingPromiseKeepAlive)> = {
+  let promises: Vec<(PendingPromiseKey, PendingPromiseKeepAlive)> = {
     let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
     map.drain().collect()
   };
 
   let table = crate::roots::global_persistent_handle_table();
 
-  for (id, keepalive) in promises {
+  for (key, keepalive) in promises {
     let (needs_keepalive, _keepalive) = match keepalive {
       PendingPromiseKeepAlive::None => (false, None),
       PendingPromiseKeepAlive::Weak(w) => (true, w.upgrade()),
@@ -1015,14 +1072,22 @@ pub(crate) fn cancel_all_pending_reactions() {
     if needs_keepalive && _keepalive.is_none() {
       // Promise was dropped concurrently with cancellation; its `Drop` implementation is
       // responsible for discarding any waiter list. Avoid dereferencing the pointer.
-      let _ = table.free(id);
+      if let PendingPromiseKey::Rooted(id) = key {
+        let _ = table.free(id);
+      }
       continue;
     }
 
-    let promise = table
-      .get(id)
-      .unwrap_or(core::ptr::null_mut())
-      .cast::<PromiseHeader>();
+    let (promise, id_to_free) = match key {
+      PendingPromiseKey::Raw(ptr) => (ptr as *mut PromiseHeader, None),
+      PendingPromiseKey::Rooted(id) => (
+        table
+          .get(id)
+          .unwrap_or(core::ptr::null_mut())
+          .cast::<PromiseHeader>(),
+        Some(id),
+      ),
+    };
     if !promise.is_null() {
       if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
         std::process::abort();
@@ -1059,7 +1124,9 @@ pub(crate) fn cancel_all_pending_reactions() {
     }
 
     // Free the persistent root so we no longer keep this promise alive (if it is GC-managed).
-    let _ = table.free(id);
+    if let Some(id) = id_to_free {
+      let _ = table.free(id);
+    }
   }
 }
 
@@ -1365,7 +1432,7 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
       return;
     }
 
-    let dst_handle = crate::roots::global_persistent_handle_table().alloc(dst.0.cast());
+    let dst_handle = crate::roots::global_persistent_handle_table().alloc_movable(dst.0.cast());
     let resolver = Box::new(ThenableResolver {
       dst_handle: AtomicU64::new(encode_root_handle(Some(dst_handle))),
       called: AtomicBool::new(false),
