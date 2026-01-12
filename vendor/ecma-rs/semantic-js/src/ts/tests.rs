@@ -1020,6 +1020,45 @@ fn mixed_type_only_local_export_respects_per_specifier_flags() {
 }
 
 #[test]
+fn mixed_type_only_local_export_from_ast_does_not_leak_value_exports() {
+  let source = r#"
+    class Foo {}
+    const Bar = 1;
+    export { type Foo, Bar };
+  "#;
+
+  let file = FileId(230);
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered);
+
+  let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
+  let resolver = StaticResolver::new(HashMap::new());
+  let (semantics, diags) =
+    bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let exports = semantics.exports_of(file);
+  let symbols = semantics.symbols();
+
+  let foo = exports.get("Foo").expect("Foo exported");
+  assert!(
+    foo.symbol_for(Namespace::VALUE, symbols).is_none(),
+    "type-only export list should not export Foo in value namespace"
+  );
+  assert!(
+    foo.symbol_for(Namespace::TYPE, symbols).is_some(),
+    "type-only export list should export Foo in type namespace"
+  );
+
+  let bar = exports.get("Bar").expect("Bar exported");
+  assert!(
+    bar.symbol_for(Namespace::VALUE, symbols).is_some(),
+    "non-type-only export list should export Bar in value namespace"
+  );
+}
+
+#[test]
 fn type_imports_are_traversed() {
   let file_a = FileId(2000);
   let file_b = FileId(2001);

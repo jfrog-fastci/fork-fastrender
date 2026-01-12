@@ -273,6 +273,7 @@ fn lower_block(
             } else {
               Some(to_range(name.stx.alias.loc))
             };
+            let is_type_only = list.stx.type_only || name.stx.type_only;
             items.push(ExportSpecifier {
               local: local.clone(),
               exported: if exported_span.is_some() {
@@ -280,16 +281,17 @@ fn lower_block(
               } else {
                 None
               },
-              is_type_only: list.stx.type_only || name.stx.type_only,
+              is_type_only,
               local_span: to_range(name.loc),
               exported_span,
             });
-            if list.stx.from.is_none() {
-              let export_kind = if exported_span.is_some() && name.stx.alias.stx.name == "default" {
-                Exported::Default
-              } else {
-                Exported::Named
-              };
+            if list.stx.from.is_none() && !is_type_only {
+              let export_kind =
+                if exported_span.is_some() && name.stx.alias.stx.name == "default" {
+                  Exported::Default
+                } else {
+                  Exported::Named
+                };
               mark_defs_with_name(
                 &defs_by_name,
                 &local,
@@ -593,46 +595,9 @@ fn lower_block(
 fn finalize_block(
   block: BlockResult,
   lower: &LowerResult,
-  module_kind: ModuleKind,
+  _module_kind: ModuleKind,
 ) -> LoweredBlock {
-  let mut exported = block.exported;
-  let has_export_assignment = block
-    .exports
-    .iter()
-    .any(|export| matches!(export, Export::ExportAssignment { .. }));
-  if matches!(module_kind, ModuleKind::Module) && !has_export_assignment {
-    for def_id in &block.local_defs {
-      if exported.contains_key(def_id) {
-        continue;
-      }
-      let def = def_by_id(*def_id, &lower.defs, &lower.def_index);
-      // Ambient namespaces/modules implicitly export their members. However,
-      // `.d.ts` files that become modules via top-level module syntax (e.g.
-      // `export = Foo`) do *not* implicitly export top-level declarations. The
-      // same restriction applies to ambient module declarations containing an
-      // export assignment.
-      //
-      // `hir-js` nests some declarations under intermediate defs (e.g. var
-      // bindings are children of `VarDeclarator` defs), so checking
-      // `def.parent.is_some()` alone would still incorrectly treat top-level
-      // ambient `const Foo: ...` declarations as additional exports. Instead,
-      // require that the declaration has a namespace/module ancestor.
-      let mut nested_in_namespace_or_module = false;
-      let mut parent = def.parent;
-      while let Some(parent_id) = parent {
-        let parent_def = def_by_id(parent_id, &lower.defs, &lower.def_index);
-        if matches!(parent_def.path.kind, DefKind::Namespace | DefKind::Module) {
-          nested_in_namespace_or_module = true;
-          break;
-        }
-        parent = parent_def.parent;
-      }
-
-      if def.is_ambient && !def.in_global && nested_in_namespace_or_module {
-        exported.insert(*def_id, Exported::Named);
-      }
-    }
-  }
+  let exported = block.exported;
 
   let mut decls = Vec::new();
   for def_id in block.local_defs.iter().copied() {
