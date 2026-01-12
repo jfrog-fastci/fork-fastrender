@@ -91,7 +91,11 @@ pub fn load_bookmarks(path: &Path) -> Result<Option<BookmarkStore>, String> {
 
 /// Attempt to read + parse a history file. Missing file is not an error.
 pub fn load_history(path: &Path) -> Result<Option<GlobalHistoryStore>, String> {
-  load_json(path)
+  let Some(mut history) = load_json(path)? else {
+    return Ok(None);
+  };
+  history.normalize_in_place();
+  Ok(Some(history))
 }
 
 /// Write the bookmarks file atomically (write temp file + rename).
@@ -412,6 +416,7 @@ mod tests {
           url: "https://1.example/".to_string(),
           title: None,
           visited_at_ms: None,
+          visit_count: 1,
         }],
       }))
       .unwrap();
@@ -421,6 +426,7 @@ mod tests {
           url: "https://2.example/".to_string(),
           title: Some("two".to_string()),
           visited_at_ms: Some(2),
+          visit_count: 1,
         }],
       }))
       .unwrap();
@@ -445,6 +451,7 @@ mod tests {
           url: "https://2.example/".to_string(),
           title: Some("two".to_string()),
           visited_at_ms: Some(2),
+          visit_count: 1,
         }],
       }
     );

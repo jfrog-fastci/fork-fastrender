@@ -823,10 +823,8 @@ impl BrowserAppState {
         // internal pages like `about:newtab`.
         if !about_pages::is_about_url(&url) {
           self.visited.record_visit(url.clone(), title.clone());
-          self.history.record(url.clone(), title.clone());
-          update.history_changed = true;
+          update.history_changed = self.history.record(url.clone(), title.clone());
         }
-
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.current_url = Some(url.clone());
           tab.committed_url = Some(url.clone());
@@ -1144,6 +1142,7 @@ mod browser_app_tests {
     let entry = app.history.entries.last().expect("expected history entry");
     assert_eq!(entry.url, "https://example.com/");
     assert_eq!(entry.title.as_deref(), Some("Example Domain"));
+    assert_eq!(entry.visit_count, 1);
     assert!(
       entry.visited_at_ms.is_some(),
       "expected committed navigations to have a visit timestamp"
@@ -1186,6 +1185,45 @@ mod browser_app_tests {
     app.clear_history();
     assert!(app.visited.is_empty());
     assert!(app.history.entries.is_empty());
+  }
+
+  #[test]
+  fn history_records_only_committed_navigations_with_normalization() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    // Started navigations should not be recorded.
+    app.apply_worker_msg(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: "https://example.com/redirect".to_string(),
+    });
+    assert!(app.history.entries.is_empty());
+
+    // Committed navigations record a visit. For redirects, the worker reports the final committed
+    // URL in `NavigationCommitted`, and the history store strips fragments.
+    let update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://example.com/final#frag".to_string(),
+      title: Some("Example".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+    assert!(update.history_changed);
+    assert_eq!(app.history.entries.len(), 1);
+    let entry = app.history.entries.last().expect("expected history entry");
+    assert_eq!(entry.url, "https://example.com/final");
+    assert_eq!(entry.visit_count, 1);
+
+    // `about:` pages are ignored by global history.
+    let update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "about:help".to_string(),
+      title: Some("Help".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+    assert!(!update.history_changed);
+    assert_eq!(app.history.entries.len(), 1);
   }
 
   #[test]

@@ -501,6 +501,29 @@ Implementation notes (canonical worker loop in [`src/ui/render_worker.rs`](../sr
 - Redirects are committed by updating the current entry’s URL in-place
   (`TabHistory::commit_navigation`) rather than creating a new entry.
 
+### UI-owned global history semantics
+ 
+In addition to per-tab worker-owned history, the UI maintains:
+
+- `VisitedUrlStore` (in-memory, bounded) used for omnibox suggestions.
+- `GlobalHistoryStore` (persisted) used for the History panel (and future internal pages like
+  `about:history`).
+
+`GlobalHistoryStore` lives in [`src/ui/global_history.rs`](../src/ui/global_history.rs).
+
+Recording rules (kept explicit + regression-tested):
+
+- Visits are recorded **only** on `WorkerToUi::NavigationCommitted` (not on started/failed).
+- Redirects: record the final committed URL (the worker already reports this in
+  `NavigationCommitted`).
+- Fragments are stripped for history purposes:
+  `https://example.com/page#section` → `https://example.com/page`.
+- `about:` pages are not recorded (including `about:history` / `about:bookmarks`).
+- `file:` URLs are recorded.
+- The store is deduped by normalized URL; every committed navigation increments `visit_count` and
+  updates `visited_at_ms` (the *last* visit timestamp, Unix epoch milliseconds; including
+  back/forward/reload).
+
 ### Cancellation model (generations + cooperative cancel callbacks)
 
 FastRender cancellation is *cooperative*: `RenderDeadline` can carry a `cancel_callback` that is
