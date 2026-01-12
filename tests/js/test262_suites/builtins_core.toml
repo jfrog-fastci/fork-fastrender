@@ -1,0 +1,78 @@
+# Curated suite: core built-ins (Object/Array/String/Number/Boolean/Symbol).
+#
+# This suite avoids extremely large method directories (e.g. `Object/defineProperty`,
+# `Array/prototype/**`) until budgets are proven. It still provides meaningful signal for
+# built-in progress.
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  # Object
+  "built-ins/Object/assign/**/*.js",
+  "built-ins/Object/is/**/*.js",
+  "built-ins/Object/keys/**/*.js",
+  "built-ins/Object/values/**/*.js",
+  "built-ins/Object/entries/**/*.js",
+  "built-ins/Object/fromEntries/**/*.js",
+  "built-ins/Object/getPrototypeOf/**/*.js",
+  "built-ins/Object/setPrototypeOf/**/*.js",
+  "built-ins/Object/hasOwn/**/*.js",
+  "built-ins/Object/prototype/toString/**/*.js",
+  "built-ins/Object/prototype/valueOf/**/*.js",
+  "built-ins/Object/prototype/hasOwnProperty/**/*.js",
+  "built-ins/Object/prototype/isPrototypeOf/**/*.js",
+  "built-ins/Object/prototype/propertyIsEnumerable/**/*.js",
+
+  # Array (selected constructor + prototype methods)
+  "built-ins/Array/from/**/*.js",
+  "built-ins/Array/of/**/*.js",
+  "built-ins/Array/isArray/**/*.js",
+  "built-ins/Array/length/**/*.js",
+  "built-ins/Array/prototype/push/**/*.js",
+  "built-ins/Array/prototype/pop/**/*.js",
+  "built-ins/Array/prototype/slice/**/*.js",
+  "built-ins/Array/prototype/concat/**/*.js",
+  "built-ins/Array/prototype/join/**/*.js",
+  "built-ins/Array/prototype/indexOf/**/*.js",
+  "built-ins/Array/prototype/includes/**/*.js",
+
+  # String (selected constructor + prototype methods)
+  "built-ins/String/fromCharCode/**/*.js",
+  "built-ins/String/fromCodePoint/**/*.js",
+  "built-ins/String/raw/**/*.js",
+  "built-ins/String/prototype/charAt/**/*.js",
+  "built-ins/String/prototype/charCodeAt/**/*.js",
+  "built-ins/String/prototype/concat/**/*.js",
+  "built-ins/String/prototype/includes/**/*.js",
+  "built-ins/String/prototype/indexOf/**/*.js",
+  "built-ins/String/prototype/slice/**/*.js",
+  "built-ins/String/prototype/substring/**/*.js",
+
+  # Number
+  "built-ins/Number/isFinite/**/*.js",
+  "built-ins/Number/isInteger/**/*.js",
+  "built-ins/Number/isNaN/**/*.js",
+  "built-ins/Number/isSafeInteger/**/*.js",
+  "built-ins/Number/parseFloat/**/*.js",
+  "built-ins/Number/parseInt/**/*.js",
+  "built-ins/Number/prototype/toString/**/*.js",
+  "built-ins/Number/prototype/valueOf/**/*.js",
+  "built-ins/Number/MAX_VALUE/**/*.js",
+  "built-ins/Number/MIN_VALUE/**/*.js",
+  "built-ins/Number/POSITIVE_INFINITY/**/*.js",
+  "built-ins/Number/NEGATIVE_INFINITY/**/*.js",
+
+  # Boolean
+  "built-ins/Boolean/**/*.js",
+
+  # Symbol
+  "built-ins/Symbol/**/*.js",
+]
+
+exclude = [
+  # No module support yet (some built-in tests live under module-only language directories, but
+  # keep this here for consistency with other curated suites).
+  "language/import/**",
+  "language/export/**",
+  "language/module-code/**",
+]
+

@@ -1,0 +1,20 @@
+# Curated suite: function semantics (declarations + generators + async).
+#
+# This suite is intentionally scoped to statement-level function forms so it can be run
+# independently from the broader statement/control-flow suite.
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  "language/statements/function/**/*.js",
+  "language/statements/generators/**/*.js",
+  "language/statements/async-function/**/*.js",
+  "language/statements/async-generator/**/*.js",
+]
+
+exclude = [
+  # No module support yet.
+  "language/import/**",
+  "language/export/**",
+  "language/module-code/**",
+]
+

@@ -1,0 +1,28 @@
+# Curated suite: class semantics (basic declarations + inheritance).
+#
+# The full `language/statements/class` directory is very large and includes many advanced
+# features (private fields/methods, decorators, etc). Start with the fundamentals, then expand
+# once budgets and engine support are proven.
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  "language/statements/class/definition/**/*.js",
+  "language/statements/class/method/**/*.js",
+  "language/statements/class/method-static/**/*.js",
+  "language/statements/class/subclass/**/*.js",
+  "language/statements/class/super/**/*.js",
+  "language/statements/class/syntax/**/*.js",
+  "language/statements/class/strict-mode/**/*.js",
+  "language/statements/class/name-binding/**/*.js",
+  "language/statements/class/arguments/**/*.js",
+  "language/statements/class/accessor-name-inst/**/*.js",
+  "language/statements/class/accessor-name-static/**/*.js",
+]
+
+exclude = [
+  # No module support yet.
+  "language/import/**",
+  "language/export/**",
+  "language/module-code/**",
+]
+

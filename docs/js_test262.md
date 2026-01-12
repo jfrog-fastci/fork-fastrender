@@ -55,6 +55,14 @@ flags we use the most).
 
 - `--suite <SUITE>`
   - Select which preset suite to run (the default is the curated suite).
+  - Presets live under `tests/js/test262_suites/`:
+    - `curated` (default): union of the curated thematic suites below.
+    - `smoke`: minimal always-green suite for quick local wiring checks.
+    - `language_statements`: control-flow + declaration statements.
+    - `language_functions`: function declarations + generators + async.
+    - `language_classes`: basic class declarations + inheritance.
+    - `builtins_core`: core built-ins (Object/Array/String/Number/Boolean/Symbol).
+    - `builtins_json_math`: JSON + Math built-ins.
 - `--harness <test262|includes|none>`
   - Control how test sources are assembled:
     - `test262` (default): prepend `assert.js`, `sta.js`, then frontmatter `includes`.
@@ -73,6 +81,24 @@ flags we use the most).
     - `new` (default): fail only on **unexpected** mismatches (not covered by the manifest).
     - `all`: fail on any mismatch (including expected/xfail/flaky).
     - `none`: always exit 0 (useful for generating reports while iterating).
+
+## Running subsets
+
+Run a thematic suite directly:
+
+```bash
+bash scripts/cargo_agent.sh xtask js test262 --suite language_statements
+```
+
+Further narrow any suite using `--filter` (glob or regex on test ids):
+
+```bash
+# Only JSON tests (within the broader curated suite)
+bash scripts/cargo_agent.sh xtask js test262 --suite curated --filter 'built-ins/JSON/**'
+
+# Only `for-of` statement tests
+bash scripts/cargo_agent.sh xtask js test262 --suite language_statements --filter 'language/statements/for-of/**'
+```
 
 ## Interpreting the output (expected vs unexpected)
 

@@ -67,6 +67,52 @@ glob = "language/expressions/**"
 status = "xfail"
 reason = "vm-js: ECMAScript semantics are still incomplete; tracked via curated test262 progress."
 
+# --- Additional curated suites (statements + built-ins) ---
+[[expectations]]
+glob = "language/statements/**"
+status = "xfail"
+reason = "vm-js: statement/function/class semantics are still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "built-ins/Object/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "built-ins/Array/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "built-ins/String/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "built-ins/Number/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "built-ins/Boolean/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "built-ins/Symbol/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "built-ins/JSON/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "built-ins/Math/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
 # --- Known-passing tests (keep regressions unexpected) ---
 [[expectations]]
 id = "language/expressions/addition/S11.6.1_A1.js"

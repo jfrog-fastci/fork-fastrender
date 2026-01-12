@@ -1,0 +1,42 @@
+# Curated suite: core statement semantics (control flow + declarations).
+#
+# Intent:
+# - Expand coverage beyond expression operators while staying deterministic/CI-friendly.
+# - Focus on "script" semantics; module tests remain excluded until module support lands.
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  # Blocks / basic control flow
+  "language/statements/block/**/*.js",
+  "language/statements/break/**/*.js",
+  "language/statements/continue/**/*.js",
+  "language/statements/debugger/**/*.js",
+  "language/statements/do-while/**/*.js",
+  "language/statements/empty/**/*.js",
+  "language/statements/expression/**/*.js",
+  "language/statements/for/**/*.js",
+  "language/statements/for-in/**/*.js",
+  # Keep `for-of` limited for now; the full directory is large and tends to pull in many
+  # iteration/destructuring edge cases.
+  "language/statements/for-of/*.js",
+  "language/statements/if/**/*.js",
+  "language/statements/labeled/**/*.js",
+  "language/statements/return/**/*.js",
+  "language/statements/switch/**/*.js",
+  "language/statements/throw/**/*.js",
+  "language/statements/try/**/*.js",
+  "language/statements/while/**/*.js",
+  "language/statements/with/**/*.js",
+  # Declarations / bindings
+  "language/statements/const/**/*.js",
+  "language/statements/let/**/*.js",
+  "language/statements/variable/**/*.js",
+]
+
+exclude = [
+  # No module support yet.
+  "language/import/**",
+  "language/export/**",
+  "language/module-code/**",
+]
+

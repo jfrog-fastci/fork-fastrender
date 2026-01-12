@@ -1,0 +1,18 @@
+# Curated suite: JSON + Math built-ins.
+#
+# These are deterministic, core built-ins and are useful for tracking baseline host-independent
+# progress.
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  "built-ins/JSON/**/*.js",
+  "built-ins/Math/**/*.js",
+]
+
+exclude = [
+  # No module support yet (kept for consistency with other curated suites).
+  "language/import/**",
+  "language/export/**",
+  "language/module-code/**",
+]
+
