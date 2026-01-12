@@ -3,7 +3,7 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom::MATHML_NAMESPACE;
 use selectors::context::QuirksMode;
 
-use super::{Document, DomError, NodeId, NodeKind};
+use super::{Document, DomError, MutationObserverInit, MutationRecordType, NodeId, NodeKind};
 
 fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
   doc
@@ -936,6 +936,97 @@ fn set_inner_html_preserves_shadow_root() {
   assert_eq!(
     doc.outer_html(shadow_span).unwrap(),
     r#"<span id="shadow">shadow</span>"#
+  );
+}
+
+#[test]
+fn set_inner_html_removals_and_insertions_use_structured_mutation_apis() {
+  // This test ensures `innerHTML = ...` uses `remove_child` / `append_child` internally so:
+  // - light-DOM removals trigger MutationObserver childList records, and
+  // - ShadowRoot children under the host are preserved (not removed).
+
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let host = doc.create_element("div", HTML_NAMESPACE);
+  doc.append_child(root, host).unwrap();
+
+  // Create a shadow root child under the host. There is no public `attachShadow()` API yet in
+  // `dom2`, but tests can build the tree directly.
+  use crate::dom::ShadowRootMode;
+  let shadow_root = doc.push_node(
+    NodeKind::ShadowRoot {
+      mode: ShadowRootMode::Open,
+      delegates_focus: false,
+    },
+    Some(host),
+    /* inert_subtree */ false,
+  );
+
+  let a = doc.create_element("p", HTML_NAMESPACE);
+  doc.append_child(host, a).unwrap();
+  let b = doc.create_element("p", HTML_NAMESPACE);
+  doc.append_child(host, b).unwrap();
+
+  doc
+    .mutation_observer_observe(
+      /* observer */ 1,
+      host,
+      MutationObserverInit {
+        child_list: true,
+        ..Default::default()
+      },
+    )
+    .unwrap();
+
+  doc
+    .set_inner_html(host, r#"<span id="n1"></span><span id="n2"></span>"#)
+    .unwrap();
+
+  // Collect childList mutation records recorded on the host element.
+  let records = doc.mutation_observer_take_records(1);
+  assert!(
+    !records.is_empty(),
+    "expected MutationObserver records for innerHTML removals/insertions"
+  );
+  assert!(
+    records
+      .iter()
+      .all(|r| r.type_ == MutationRecordType::ChildList && r.target == host),
+    "expected only host childList records, got: {records:#?}"
+  );
+
+  let removed: Vec<NodeId> = records.iter().flat_map(|r| r.removed_nodes.iter().copied()).collect();
+  assert_eq!(
+    removed,
+    vec![a, b],
+    "expected each removed light child to be reported"
+  );
+  assert!(
+    !removed.contains(&shadow_root),
+    "shadow root child must not be removed by innerHTML"
+  );
+
+  let added: Vec<NodeId> = records.iter().flat_map(|r| r.added_nodes.iter().copied()).collect();
+  let new_light_children: Vec<NodeId> = doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .filter(|&child| {
+      doc.node(child).parent == Some(host) && !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })
+    })
+    .collect();
+  assert_eq!(
+    added,
+    new_light_children,
+    "expected inserted fragment children to be reported"
+  );
+
+  assert_eq!(
+    doc.node(host).children.first().copied(),
+    Some(shadow_root),
+    "shadow root should remain the first child of the host element"
   );
 }
 

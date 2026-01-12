@@ -116,33 +116,23 @@ impl Document {
 
     let fragment = super::dom_parsing::parse_html_fragment_as_fragment(self, element, html)?;
 
-    // Detach existing children (but preserve attached shadow roots, which are not part of the light
-    // DOM and should not be affected by `innerHTML`).
-    let old_children = std::mem::take(&mut self.nodes[element.index()].children);
-    let mut preserved_shadow_roots: Vec<NodeId> = Vec::new();
-    let mut detached_any = false;
+    // Detach existing light DOM children, preserving attached shadow roots. This must go through
+    // the structured `remove_child` mutation API so live traversal hooks (e.g. Range/NodeIterator)
+    // and MutationObserver childList records observe the removals.
+    let old_children = self.nodes[element.index()].children.clone();
     for child in old_children {
-      if child.index() >= self.nodes.len() {
-        detached_any = true;
-        continue;
-      }
-      if matches!(self.nodes[child.index()].kind, NodeKind::ShadowRoot { .. }) {
-        preserved_shadow_roots.push(child);
-      } else if let Some(node) = self.nodes.get_mut(child.index()) {
-        detached_any = true;
-        node.parent = None;
+      let should_remove = self
+        .nodes
+        .get(child.index())
+        .is_some_and(|node| node.parent == Some(element) && !matches!(node.kind, NodeKind::ShadowRoot { .. }));
+      if should_remove {
+        self.remove_child(element, child)?;
       }
     }
-    self.nodes[element.index()].children = preserved_shadow_roots;
 
     // Append the fragment; `DocumentFragment` insertion semantics splice its children into the
     // element (in order) and empty the fragment.
-    let inserted = self.append_child(element, fragment)?;
-    // If the fragment insertion was a no-op (empty fragment), we still need to track the mutation
-    // generation when `innerHTML` removed existing light DOM children.
-    if !inserted && detached_any {
-      self.bump_mutation_generation();
-    }
+    let _ = self.append_child(element, fragment)?;
     Ok(())
   }
 
