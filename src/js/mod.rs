@@ -37,6 +37,7 @@ pub mod web_storage;
 pub mod dom2_bindings;
 pub mod dom_host;
 pub mod dom_scripts;
+pub mod console_sink;
 // Dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
 //
 // This is not part of the canonical `vm-js` WindowRealm pipeline, but remains useful while bindings

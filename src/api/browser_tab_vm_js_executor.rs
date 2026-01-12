@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::js::console_sink::{fanout_console_sink, stderr_console_sink};
 use crate::js::time::update_time_bindings_clock;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
@@ -16,7 +17,6 @@ use crate::js::{
 use crate::resource::{origin_from_url, CorsMode, ReferrerPolicy, ResourceFetcher};
 use crate::style::media::{MediaContext, MediaType};
 use crate::web::events::{Event, EventTargetId};
-use std::ffi::OsStr;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
@@ -36,7 +36,20 @@ struct PendingModuleEvaluation {
 }
 
 fn console_stderr_enabled() -> bool {
-  std::env::var_os("FASTR_CONSOLE_STDERR").as_deref() == Some(OsStr::new("1"))
+  // Local debugging hook: allow printing JS `console.*` output to stderr even when render
+  // diagnostics collection is disabled (kept opt-in to avoid noisy tests/CI logs).
+  let raw = std::env::var("FASTR_JS_CONSOLE_STDERR")
+    .ok()
+    // Backwards-compatible alias used by some tooling/scripts.
+    .or_else(|| std::env::var("FASTR_CONSOLE_STDERR").ok());
+  let Some(raw) = raw else {
+    return false;
+  };
+  let raw = raw.trim();
+  !raw.eq_ignore_ascii_case("0")
+    && !raw.eq_ignore_ascii_case("false")
+    && !raw.eq_ignore_ascii_case("no")
+    && !raw.eq_ignore_ascii_case("off")
 }
 
 /// `vm-js`-backed [`BrowserTabJsExecutor`] that provides a minimal `window`/`document` environment.
@@ -215,27 +228,23 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .with_session_storage_namespace(self.session_storage_namespace);
 
     let stderr_console = console_stderr_enabled();
-    match (self.diagnostics.clone(), stderr_console) {
-      (Some(diag), true) => {
-        let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
-          let message = vm_error_format::format_console_arguments_limited(heap, args);
-          vm_error_format::emit_console_message_to_stderr(level, &message);
-          diag.record_console_message(level, message);
-        });
-        config.console_sink = Some(sink);
-      }
-      (Some(diag), false) => {
-        let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
-          let message = vm_error_format::format_console_arguments_limited(heap, args);
-          diag.record_console_message(level, message);
-        });
-        config.console_sink = Some(sink);
-      }
-      (None, true) => {
-        config.console_sink = Some(vm_error_format::stderr_console_sink());
-      }
-      (None, false) => {}
+    let mut console_sink: Option<crate::js::ConsoleSink> = self.diagnostics.clone().map(|diag| {
+      let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
+        let message = vm_error_format::format_console_arguments_limited(heap, args);
+        diag.record_console_message(level, message);
+      });
+      sink
+    });
+
+    if stderr_console {
+      let stderr_sink = stderr_console_sink();
+      console_sink = Some(match console_sink {
+        Some(existing) => fanout_console_sink(existing, stderr_sink),
+        None => stderr_sink,
+      });
     }
+
+    config.console_sink = console_sink;
 
     let fetcher = document.fetcher();
     let mut realm = WindowRealm::new_with_js_execution_options(config, js_execution_options)
