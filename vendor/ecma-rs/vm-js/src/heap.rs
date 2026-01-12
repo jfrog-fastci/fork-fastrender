@@ -934,6 +934,10 @@ impl Heap {
     Ok(self.get_array_buffer(obj)?.byte_length())
   }
 
+  pub(crate) fn array_buffer_is_detached(&self, obj: GcObject) -> Result<bool, VmError> {
+    Ok(self.get_array_buffer(obj)?.data.is_none())
+  }
+
   /// Returns a borrowed view of the bytes backing an `ArrayBuffer` object.
   ///
   /// This is intended for host bindings that need to read `ArrayBuffer` contents (e.g. `TextDecoder`).

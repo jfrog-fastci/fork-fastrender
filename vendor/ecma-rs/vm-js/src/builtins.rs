@@ -1615,6 +1615,25 @@ pub fn array_buffer_prototype_byte_length_get(
   Ok(Value::Number(len as f64))
 }
 
+pub fn array_buffer_prototype_detached_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("ArrayBuffer.detached called on non-object"));
+  };
+  let detached = scope
+    .heap()
+    .array_buffer_is_detached(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.detached called on incompatible receiver"))?;
+  Ok(Value::Bool(detached))
+}
+
 pub fn array_buffer_prototype_slice(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

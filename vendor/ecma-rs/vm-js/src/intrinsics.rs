@@ -2667,6 +2667,34 @@ impl Intrinsics {
       )?;
     }
 
+    // ArrayBuffer.prototype.detached
+    {
+      let key_s = scope.alloc_string("detached")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_call = vm.register_native_call(builtins::array_buffer_prototype_detached_get)?;
+      let get_name = scope.alloc_string("get detached")?;
+      let get = scope.alloc_native_function(get_call, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        array_buffer_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
     // ArrayBuffer.prototype.slice
     {
       let slice_call = vm.register_native_call(builtins::array_buffer_prototype_slice)?;
