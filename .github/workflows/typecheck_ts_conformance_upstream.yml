@@ -19,6 +19,15 @@ on:
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch:
+    inputs:
+      shard_total:
+        description: "Total number of shards (default: 16)"
+        required: false
+        default: "16"
+      shards:
+        description: "Comma-separated shard indices to run (blank = all shards)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -35,7 +44,11 @@ env:
   #
   # Adjust `UPSTREAM_CONFORMANCE_SHARD_TOTAL` to change the full run size.
   UPSTREAM_CONFORMANCE_SHARD_TOTAL: "16"
+  # For workflow_dispatch only: override the shard count without editing the workflow.
+  UPSTREAM_CONFORMANCE_SHARD_TOTAL_INPUT: ${{ github.event.inputs.shard_total }}
   UPSTREAM_CONFORMANCE_PR_SHARDS: "0"
+  # For workflow_dispatch only: override which shards run (comma-separated indices).
+  UPSTREAM_CONFORMANCE_SHARDS_INPUT: ${{ github.event.inputs.shards }}
 
 jobs:
   upstream-conformance-matrix:
@@ -77,8 +90,22 @@ jobs:
           set -euo pipefail
 
           shard_total="${UPSTREAM_CONFORMANCE_SHARD_TOTAL}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${UPSTREAM_CONFORMANCE_SHARD_TOTAL_INPUT:-}" ]]; then
+            shard_total="${UPSTREAM_CONFORMANCE_SHARD_TOTAL_INPUT}"
+          fi
 
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" || "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ -n "${UPSTREAM_CONFORMANCE_SHARDS_INPUT:-}" ]]; then
+              shard_indices="${UPSTREAM_CONFORMANCE_SHARDS_INPUT}"
+            else
+              shard_indices="$(python3 - <<PY
+          import os
+          n = int(os.environ["shard_total"])
+          print(",".join(str(i) for i in range(n)))
+          PY
+              )"
+            fi
+          elif [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
             shard_indices="$(python3 - <<PY
           import json, os
           n = int(os.environ["UPSTREAM_CONFORMANCE_SHARD_TOTAL"])
