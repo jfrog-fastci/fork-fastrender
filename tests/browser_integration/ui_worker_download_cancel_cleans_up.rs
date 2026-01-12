@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+  DownloadOutcome, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
@@ -99,7 +99,9 @@ fn ui_worker_download_cancel_cleans_up() {
     other => panic!("unexpected worker message: {other:?}"),
   };
 
-  ui_tx.send(UiToWorker::CancelDownload { download_id }).unwrap();
+  ui_tx
+    .send(UiToWorker::CancelDownload { tab_id, download_id })
+    .unwrap();
 
   let finished = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(
@@ -113,15 +115,8 @@ fn ui_worker_download_cancel_cleans_up() {
   .unwrap_or_else(|| panic!("timed out waiting for DownloadFinished for download {download_id:?}"));
 
   match finished {
-    WorkerToUi::DownloadFinished {
-      cancelled,
-      success,
-      error,
-      ..
-    } => {
-      assert!(cancelled, "expected cancelled=true, got cancelled={cancelled}");
-      assert!(!success, "expected success=false, got success={success}");
-      assert_eq!(error, None);
+    WorkerToUi::DownloadFinished { outcome, .. } => {
+      assert_eq!(outcome, DownloadOutcome::Cancelled);
     }
     other => panic!("unexpected worker message: {other:?}"),
   }

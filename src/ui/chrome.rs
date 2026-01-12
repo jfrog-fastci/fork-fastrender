@@ -83,6 +83,25 @@ pub enum ChromeAction {
   ToggleBookmarksManager,
   /// Open the clear browsing data dialog.
   OpenClearBrowsingDataDialog,
+  /// Toggle visibility of the downloads panel.
+  ToggleDownloadsPanel,
+}
+
+fn format_bytes(bytes: u64) -> String {
+  const KB: f64 = 1024.0;
+  const MB: f64 = KB * 1024.0;
+  const GB: f64 = MB * 1024.0;
+
+  let b = bytes as f64;
+  if b >= GB {
+    format!("{:.1} GiB", b / GB)
+  } else if b >= MB {
+    format!("{:.1} MiB", b / MB)
+  } else if b >= KB {
+    format!("{:.1} KiB", b / KB)
+  } else {
+    format!("{bytes} B")
+  }
 }
 
 fn egui_modifiers_to_shortcuts_modifiers(modifiers: egui::Modifiers) -> Modifiers {
@@ -948,6 +967,19 @@ pub fn chrome_ui_with_bookmarks(
         })
         .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM, None, None));
 
+      let downloads = app.downloads.aggregate_progress();
+      let downloads_hover = if downloads.active_count == 0 {
+        "Show downloads".to_string()
+      } else if let Some(total) = downloads.total_bytes {
+        format!(
+          "Downloading… {} / {}",
+          format_bytes(downloads.received_bytes),
+          format_bytes(total)
+        )
+      } else {
+        format!("Downloading… {}", format_bytes(downloads.received_bytes))
+      };
+
       let back_tooltip = if cfg!(target_os = "macos") {
         "Back (Cmd+[)"
       } else {
@@ -1389,6 +1421,37 @@ pub fn chrome_ui_with_bookmarks(
                     .truncate(true),
                 )
                 .on_hover_text(loading_text.clone());
+            }
+          }
+
+          // Downloads button + progress indicator.
+          let downloads_button_text = if downloads.active_count > 0 {
+            format!("↓{}", downloads.active_count)
+          } else {
+            "↓".to_string()
+          };
+          if ui
+            .add(egui::Button::new(downloads_button_text).frame(false))
+            .on_hover_text(downloads_hover.clone())
+            .clicked()
+          {
+            actions.push(ChromeAction::ToggleDownloadsPanel);
+          }
+          if downloads.active_count > 0 {
+            if let Some(total) = downloads.total_bytes.filter(|t| *t > 0) {
+              let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
+              ui.add(
+                egui::ProgressBar::new(frac)
+                  .desired_width(50.0)
+                  .text(""),
+              );
+            } else {
+              ui.add(
+                egui::ProgressBar::new(0.0)
+                  .desired_width(50.0)
+                  .animate(true)
+                  .text(""),
+              );
             }
           }
 

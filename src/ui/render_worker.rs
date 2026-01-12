@@ -30,8 +30,8 @@ use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
 use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
-  CursorKind, DownloadId, NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker,
-  WorkerToUi,
+  CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton, RenderedFrame,
+  ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
@@ -43,7 +43,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 // -----------------------------------------------------------------------------
 // Test hooks
@@ -799,6 +800,7 @@ struct BrowserRuntime {
   deferred_msgs: VecDeque<UiToWorker>,
 }
 
+
 impl BrowserRuntime {
   fn new(
     ui_rx: Receiver<UiToWorker>,
@@ -1109,9 +1111,6 @@ impl BrowserRuntime {
         // Switching tabs should clear any stale hover state (cursor + hovered URL) until the UI
         // sends the next pointer position for this tab.
         Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default);
-      }
-      UiToWorker::SetDownloadDirectory { path } => {
-        self.download_dir = path;
       }
       UiToWorker::Navigate {
         tab_id,
@@ -1562,21 +1561,37 @@ impl BrowserRuntime {
       UiToWorker::KeyAction { tab_id, key } => {
         self.handle_key_action(tab_id, key);
       }
-      UiToWorker::FindQuery { .. }
-      | UiToWorker::FindNext { .. }
-      | UiToWorker::FindPrev { .. }
-      | UiToWorker::FindStop { .. } => {
-        match msg {
-          UiToWorker::FindQuery {
-            tab_id,
-            query,
-            case_sensitive,
-          } => self.handle_find_query(tab_id, &query, case_sensitive),
-          UiToWorker::FindNext { tab_id } => self.handle_find_next(tab_id),
-          UiToWorker::FindPrev { tab_id } => self.handle_find_prev(tab_id),
-          UiToWorker::FindStop { tab_id } => self.handle_find_stop(tab_id),
-          _ => {}
-        }
+      UiToWorker::SetDownloadDirectory { path } => {
+        self.set_download_directory(path);
+      }
+      UiToWorker::StartDownload {
+        tab_id,
+        url,
+        filename_hint,
+      } => {
+        self.start_download(tab_id, url, filename_hint);
+      }
+      UiToWorker::CancelDownload {
+        tab_id: _,
+        download_id,
+      } => {
+        self.cancel_download(download_id);
+      }
+      UiToWorker::FindQuery {
+        tab_id,
+        query,
+        case_sensitive,
+      } => {
+        self.handle_find_query(tab_id, &query, case_sensitive);
+      }
+      UiToWorker::FindNext { tab_id } => {
+        self.handle_find_next(tab_id);
+      }
+      UiToWorker::FindPrev { tab_id } => {
+        self.handle_find_prev(tab_id);
+      }
+      UiToWorker::FindStop { tab_id } => {
+        self.handle_find_stop(tab_id);
       }
       UiToWorker::RequestRepaint { tab_id, reason: _ } => {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -1586,44 +1601,65 @@ impl BrowserRuntime {
         tab.needs_repaint = true;
         tab.force_repaint = true;
       }
-      UiToWorker::CancelDownload { download_id } => {
-        self.cancel_download(download_id);
-      }
     }
   }
 
-  fn cancel_download(&mut self, download_id: DownloadId) {
-    let downloads = self.downloads.lock().unwrap_or_else(|err| err.into_inner());
-    if let Some(download) = downloads.get(&download_id) {
-      download.cancel.store(true, Ordering::Release);
-    }
-  }
-
-  fn start_download(&mut self, tab_id: TabId, url: String, file_name: Option<String>) {
-    let download_id = DownloadId::new();
-
-    let download_dir = self.download_dir.clone();
-    if let Err(err) = std::fs::create_dir_all(&download_dir) {
-      let _ = self.ui_tx.send(WorkerToUi::DownloadFinished {
-        tab_id,
-        download_id,
-        path: None,
-        success: false,
-        cancelled: false,
-        error: Some(format!("failed to create download dir {}: {err}", download_dir.display())),
-      });
+  fn set_download_directory(&mut self, path: PathBuf) {
+    if path.as_os_str().is_empty() {
       return;
     }
 
-    let requested_name = file_name
+    if let Err(err) = std::fs::create_dir_all(&path) {
+      // Best-effort: keep the worker running even if the directory is invalid. Attach the message
+      // to an existing tab if possible so front-ends can surface it.
+      if let Some(tab_id) = self.active_tab.or_else(|| self.tabs.keys().next().copied()) {
+        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("failed to create download dir {}: {err}", path.display()),
+        });
+      }
+      return;
+    }
+
+    self.download_dir = path;
+  }
+
+  fn start_download(&mut self, tab_id: TabId, url: String, filename_hint: Option<String>) {
+    let download_id = DownloadId::new();
+
+    let requested_name = filename_hint
       .as_deref()
       .map(str::trim)
       .filter(|v| !v.is_empty())
       .map(|v| v.to_string())
       .unwrap_or_else(|| crate::ui::downloads::filename_from_url(&url));
 
+    let download_dir = self.download_dir.clone();
     let final_path = crate::ui::downloads::choose_unique_download_path(&download_dir, &requested_name);
     let part_path = crate::ui::downloads::part_path_for_final(&final_path);
+    let file_name = final_path
+      .file_name()
+      .map(|name| name.to_string_lossy().to_string())
+      .unwrap_or_else(|| requested_name.clone());
+
+    if let Err(err) = std::fs::create_dir_all(&download_dir) {
+      let _ = self.ui_tx.send(WorkerToUi::DownloadStarted {
+        tab_id,
+        download_id,
+        url: url.clone(),
+        file_name,
+        path: final_path,
+        total_bytes: None,
+      });
+      let _ = self.ui_tx.send(WorkerToUi::DownloadFinished {
+        tab_id,
+        download_id,
+        outcome: DownloadOutcome::Failed {
+          error: format!("failed to create download dir {}: {err}", download_dir.display()),
+        },
+      });
+      return;
+    }
 
     let cancel = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));
@@ -1642,12 +1678,14 @@ impl BrowserRuntime {
       tab_id,
       download_id,
       url: url.clone(),
+      file_name,
       path: final_path.clone(),
+      total_bytes: None,
     });
 
     let ui_tx = self.ui_tx.clone();
     let thread_name = format!("fastr-download-{}", download_id.0);
-    let _ = std::thread::Builder::new()
+    let spawn_result = std::thread::Builder::new()
       .name(thread_name)
       .spawn(move || {
         struct DoneGuard(Arc<AtomicBool>);
@@ -1658,17 +1696,11 @@ impl BrowserRuntime {
         }
         let _done_guard = DoneGuard(done);
 
-        let finish = |success: bool,
-                      cancelled: bool,
-                      error: Option<String>,
-                      path: Option<PathBuf>| {
+        let finish = |outcome: DownloadOutcome| {
           let _ = ui_tx.send(WorkerToUi::DownloadFinished {
             tab_id,
             download_id,
-            path,
-            success,
-            cancelled,
-            error,
+            outcome,
           });
         };
 
@@ -1679,90 +1711,99 @@ impl BrowserRuntime {
 
         if cancel.load(Ordering::Acquire) {
           cleanup_part();
-          finish(false, true, None, None);
+          finish(DownloadOutcome::Cancelled);
           return;
         }
 
         let parsed = match url::Url::parse(&url) {
           Ok(parsed) => parsed,
           Err(err) => {
-            finish(false, false, Some(format!("invalid download URL {url:?}: {err}")), None);
+            cleanup_part();
+            finish(DownloadOutcome::Failed {
+              error: format!("invalid download URL {url:?}: {err}"),
+            });
             return;
           }
         };
 
-        let (mut reader, total_bytes): (Box<dyn std::io::Read>, Option<u64>) = match parsed.scheme() {
-          "file" => {
-            let path = match parsed.to_file_path() {
-              Ok(path) => path,
-              Err(()) => {
-                finish(
-                  false,
-                  false,
-                  Some(format!("failed to convert file:// URL to path: {url:?}")),
-                  None,
-                );
-                return;
-              }
-            };
-            let total = std::fs::metadata(&path).ok().map(|m| m.len());
-            let file = match std::fs::File::open(&path) {
-              Ok(file) => file,
-              Err(err) => {
-                finish(
-                  false,
-                  false,
-                  Some(format!("failed to open download source {}: {err}", path.display())),
-                  None,
-                );
-                return;
-              }
-            };
-            (Box::new(file), total)
-          }
-          "http" | "https" => {
-            let client = match reqwest::blocking::Client::builder()
-              .redirect(reqwest::redirect::Policy::limited(10))
-              .build()
-            {
-              Ok(client) => client,
-              Err(err) => {
-                finish(false, false, Some(format!("failed to build HTTP client: {err}")), None);
-                return;
-              }
-            };
+        let (mut reader, total_bytes): (Box<dyn std::io::Read>, Option<u64>) =
+          match parsed.scheme() {
+            "file" => {
+              let path = match parsed.to_file_path() {
+                Ok(path) => path,
+                Err(()) => {
+                  cleanup_part();
+                  finish(DownloadOutcome::Failed {
+                    error: format!("failed to convert file:// URL to path: {url:?}"),
+                  });
+                  return;
+                }
+              };
+              let total = std::fs::metadata(&path).ok().map(|m| m.len());
+              let file = match std::fs::File::open(&path) {
+                Ok(file) => file,
+                Err(err) => {
+                  cleanup_part();
+                  finish(DownloadOutcome::Failed {
+                    error: format!("failed to open download source {}: {err}", path.display()),
+                  });
+                  return;
+                }
+              };
+              (Box::new(file), total)
+            }
+            "http" | "https" => {
+              let client = match reqwest::blocking::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()
+              {
+                Ok(client) => client,
+                Err(err) => {
+                  cleanup_part();
+                  finish(DownloadOutcome::Failed {
+                    error: format!("failed to build HTTP client: {err}"),
+                  });
+                  return;
+                }
+              };
 
-            let resp = match client.get(&url).send() {
-              Ok(resp) => resp,
-              Err(err) => {
-                finish(false, false, Some(format!("HTTP request failed for {url}: {err}")), None);
+              let resp = match client.get(&url).send() {
+                Ok(resp) => resp,
+                Err(err) => {
+                  cleanup_part();
+                  finish(DownloadOutcome::Failed {
+                    error: format!("HTTP request failed for {url}: {err}"),
+                  });
+                  return;
+                }
+              };
+
+              if !resp.status().is_success() {
+                cleanup_part();
+                finish(DownloadOutcome::Failed {
+                  error: format!("HTTP status {} for {url}", resp.status()),
+                });
                 return;
               }
-            };
 
-            if !resp.status().is_success() {
-              finish(
-                false,
-                false,
-                Some(format!("HTTP status {} for {url}", resp.status())),
-                None,
-              );
+              let total = resp.content_length();
+              (Box::new(resp), total)
+            }
+            other => {
+              cleanup_part();
+              finish(DownloadOutcome::Failed {
+                error: format!("unsupported download URL scheme: {other}"),
+              });
               return;
             }
+          };
 
-            let total = resp.content_length();
-            (Box::new(resp), total)
-          }
-          other => {
-            finish(
-              false,
-              false,
-              Some(format!("unsupported download URL scheme: {other}")),
-              None,
-            );
-            return;
-          }
-        };
+        let _ = ui_tx.send(WorkerToUi::DownloadProgress {
+          tab_id,
+          download_id,
+          received_bytes: 0,
+          total_bytes,
+        });
 
         let mut writer = match std::fs::OpenOptions::new()
           .write(true)
@@ -1771,15 +1812,13 @@ impl BrowserRuntime {
         {
           Ok(file) => file,
           Err(err) => {
-            finish(
-              false,
-              false,
-              Some(format!(
+            cleanup_part();
+            finish(DownloadOutcome::Failed {
+              error: format!(
                 "failed to create temp download file {}: {err}",
                 part_path.display()
-              )),
-              None,
-            );
+              ),
+            });
             return;
           }
         };
@@ -1795,7 +1834,7 @@ impl BrowserRuntime {
           if cancel.load(Ordering::Acquire) {
             drop(writer);
             cleanup_part();
-            finish(false, true, None, None);
+            finish(DownloadOutcome::Cancelled);
             return;
           }
 
@@ -1805,7 +1844,9 @@ impl BrowserRuntime {
             Err(err) => {
               drop(writer);
               cleanup_part();
-              finish(false, false, Some(format!("download read failed: {err}")), None);
+              finish(DownloadOutcome::Failed {
+                error: format!("download read failed: {err}"),
+              });
               return;
             }
           };
@@ -1813,7 +1854,9 @@ impl BrowserRuntime {
           if let Err(err) = writer.write_all(&buf[..n]) {
             drop(writer);
             cleanup_part();
-            finish(false, false, Some(format!("download write failed: {err}")), None);
+            finish(DownloadOutcome::Failed {
+              error: format!("download write failed: {err}"),
+            });
             return;
           }
 
@@ -1839,34 +1882,54 @@ impl BrowserRuntime {
         if let Err(err) = writer.flush() {
           drop(writer);
           cleanup_part();
-          finish(false, false, Some(format!("download flush failed: {err}")), None);
+          finish(DownloadOutcome::Failed {
+            error: format!("download flush failed: {err}"),
+          });
           return;
         }
         drop(writer);
 
         if cancel.load(Ordering::Acquire) {
           cleanup_part();
-          finish(false, true, None, None);
+          finish(DownloadOutcome::Cancelled);
           return;
         }
 
         if let Err(err) = std::fs::rename(&part_path, &final_path) {
           cleanup_part();
-          finish(
-            false,
-            false,
-            Some(format!(
+          finish(DownloadOutcome::Failed {
+            error: format!(
               "failed to finalize download (rename {} -> {}): {err}",
               part_path.display(),
               final_path.display()
-            )),
-            None,
-          );
+            ),
+          });
           return;
         }
 
-        finish(true, false, None, Some(final_path));
+        finish(DownloadOutcome::Completed);
       });
+
+    if let Err(err) = spawn_result {
+      let _ = self
+        .downloads
+        .lock()
+        .map(|mut downloads| downloads.remove(&download_id));
+      let _ = self.ui_tx.send(WorkerToUi::DownloadFinished {
+        tab_id,
+        download_id,
+        outcome: DownloadOutcome::Failed {
+          error: format!("failed to spawn download thread: {err}"),
+        },
+      });
+    }
+  }
+
+  fn cancel_download(&mut self, download_id: DownloadId) {
+    let downloads = self.downloads.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(download) = downloads.get(&download_id) {
+      download.cancel.store(true, Ordering::Release);
+    }
   }
 
   fn schedule_navigation(&mut self, tab_id: TabId, url: String, reason: NavigationReason) {

@@ -4,7 +4,8 @@ use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::tree::box_tree::SelectControl;
 use fastrender::ui::messages::{
-  CursorKind, DateTimeInputKind, DownloadId, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  CursorKind, DateTimeInputKind, DownloadId, DownloadOutcome, RenderedFrame, TabId, UiToWorker,
+  WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::path::PathBuf;
@@ -111,7 +112,9 @@ pub enum WorkerToUiEvent {
     tab_id: TabId,
     download_id: DownloadId,
     url: String,
+    file_name: String,
     path: PathBuf,
+    total_bytes: Option<u64>,
   },
   DownloadProgress {
     tab_id: TabId,
@@ -122,10 +125,7 @@ pub enum WorkerToUiEvent {
   DownloadFinished {
     tab_id: TabId,
     download_id: DownloadId,
-    path: Option<PathBuf>,
-    success: bool,
-    cancelled: bool,
-    error: Option<String>,
+    outcome: DownloadOutcome,
   },
 }
 
@@ -335,13 +335,17 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       tab_id,
       download_id,
       url,
+      file_name,
       path,
+      total_bytes,
     } => (
       WorkerToUiEvent::DownloadStarted {
         tab_id,
         download_id,
         url,
+        file_name,
         path,
+        total_bytes,
       },
       None,
     ),
@@ -362,18 +366,12 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::DownloadFinished {
       tab_id,
       download_id,
-      path,
-      success,
-      cancelled,
-      error,
+      outcome,
     } => (
       WorkerToUiEvent::DownloadFinished {
         tab_id,
         download_id,
-        path,
-        success,
-        cancelled,
-        error,
+        outcome,
       },
       None,
     ),

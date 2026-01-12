@@ -107,6 +107,7 @@ use crate::ui::BookmarkStore;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageContextMenuAction {
   OpenLinkInNewTab(String),
+  DownloadLink(String),
   CopyLinkAddress(String),
   BookmarkLink(String),
   BookmarkPage(String),
@@ -150,6 +151,11 @@ pub fn build_page_context_menu_entries(
     out.push(PageContextMenuEntry::Action(PageContextMenuItem {
       label: "Open Link in New Tab",
       action: PageContextMenuAction::OpenLinkInNewTab(url.to_string()),
+      checked: false,
+    }));
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Download Link",
+      action: PageContextMenuAction::DownloadLink(url.to_string()),
       checked: false,
     }));
     out.push(PageContextMenuEntry::Action(PageContextMenuItem {
@@ -245,6 +251,7 @@ pub fn apply_page_context_menu_action(
       }
     }
     PageContextMenuAction::OpenLinkInNewTab(_)
+    | PageContextMenuAction::DownloadLink(_)
     | PageContextMenuAction::CopyLinkAddress(_)
     | PageContextMenuAction::Reload => ApplyPageContextMenuActionResult::default(),
   }

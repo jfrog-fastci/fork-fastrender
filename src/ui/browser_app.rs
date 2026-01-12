@@ -3,7 +3,8 @@ use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
-  CursorKind, NavigationReason, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
+  CursorKind, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame, ScrollMetrics, TabId,
+  UiToWorker, WorkerToUi,
 };
 use crate::ui::appearance::AppearanceSettings;
 use crate::ui::{
@@ -11,6 +12,7 @@ use crate::ui::{
   VisitedUrlStore,
 };
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::time::SystemTime;
 use url::Url;
 
@@ -23,6 +25,98 @@ pub struct LatestFrameMeta {
   pub viewport_css: (u32, u32),
   pub dpr: f32,
   pub wants_ticks: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DownloadStatus {
+  InProgress {
+    received_bytes: u64,
+    total_bytes: Option<u64>,
+  },
+  Completed,
+  Failed {
+    error: String,
+  },
+  Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadEntry {
+  pub download_id: DownloadId,
+  pub tab_id: TabId,
+  pub url: String,
+  pub file_name: String,
+  pub path: PathBuf,
+  pub status: DownloadStatus,
+}
+
+#[derive(Debug, Default)]
+pub struct DownloadsState {
+  pub downloads: Vec<DownloadEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadProgressSummary {
+  pub active_count: usize,
+  pub received_bytes: u64,
+  pub total_bytes: Option<u64>,
+}
+
+impl DownloadsState {
+  pub fn active_count(&self) -> usize {
+    self
+      .downloads
+      .iter()
+      .filter(|d| matches!(d.status, DownloadStatus::InProgress { .. }))
+      .count()
+  }
+
+  pub fn aggregate_progress(&self) -> DownloadProgressSummary {
+    let mut active_count = 0usize;
+    let mut received_bytes: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut total_known_for_all = true;
+
+    for d in &self.downloads {
+      let DownloadStatus::InProgress {
+        received_bytes: received,
+        total_bytes: total,
+      } = d.status
+      else {
+        continue;
+      };
+
+      active_count += 1;
+      received_bytes = received_bytes.saturating_add(received);
+
+      match total {
+        Some(total) => total_bytes = total_bytes.saturating_add(total),
+        None => total_known_for_all = false,
+      }
+    }
+
+    DownloadProgressSummary {
+      active_count,
+      received_bytes,
+      total_bytes: if total_known_for_all && active_count > 0 {
+        Some(total_bytes)
+      } else {
+        None
+      },
+    }
+  }
+
+  fn get_mut(&mut self, download_id: DownloadId) -> Option<&mut DownloadEntry> {
+    self.downloads.iter_mut().find(|d| d.download_id == download_id)
+  }
+
+  fn insert_or_update(&mut self, entry: DownloadEntry) {
+    if let Some(existing) = self.get_mut(entry.download_id) {
+      *existing = entry;
+    } else {
+      self.downloads.push(entry);
+    }
+  }
 }
 
 #[derive(Debug, Default)]
@@ -557,6 +651,7 @@ pub struct BrowserAppState {
   pub history: GlobalHistoryStore,
   pub visited: VisitedUrlStore,
   pub chrome: ChromeState,
+  pub downloads: DownloadsState,
   pub appearance: AppearanceSettings,
 }
 
@@ -577,6 +672,7 @@ impl BrowserAppState {
       history: GlobalHistoryStore::default(),
       visited: VisitedUrlStore::new(),
       chrome: ChromeState::default(),
+      downloads: DownloadsState::default(),
       appearance: AppearanceSettings::default(),
     }
   }
@@ -1251,13 +1347,56 @@ impl BrowserAppState {
         // model does not store clipboard contents.
         update.request_redraw = true;
       }
-      WorkerToUi::DownloadStarted { .. }
-      | WorkerToUi::DownloadProgress { .. }
-      | WorkerToUi::DownloadFinished { .. } => {
-        // Downloads are currently managed by the front-end; the shared state model does not yet
-        // surface download UI, but we still request a redraw so UIs can react (e.g. show a
-        // downloads panel/toolbar indicator in the future).
+      WorkerToUi::DownloadStarted {
+        tab_id,
+        download_id,
+        url,
+        file_name,
+        path,
+        total_bytes,
+      } => {
+        self.downloads.insert_or_update(DownloadEntry {
+          download_id,
+          tab_id,
+          url,
+          file_name,
+          path,
+          status: DownloadStatus::InProgress {
+            received_bytes: 0,
+            total_bytes,
+          },
+        });
         update.request_redraw = true;
+      }
+      WorkerToUi::DownloadProgress {
+        tab_id: _,
+        download_id,
+        received_bytes,
+        total_bytes,
+      } => {
+        if let Some(entry) = self.downloads.get_mut(download_id) {
+          if let DownloadStatus::InProgress { .. } = &mut entry.status {
+            entry.status = DownloadStatus::InProgress {
+              received_bytes,
+              total_bytes,
+            };
+            update.request_redraw = true;
+          }
+        }
+      }
+      WorkerToUi::DownloadFinished {
+        tab_id: _,
+        download_id,
+        outcome,
+      } => {
+        if let Some(entry) = self.downloads.get_mut(download_id) {
+          entry.status = match outcome {
+            DownloadOutcome::Completed => DownloadStatus::Completed,
+            DownloadOutcome::Cancelled => DownloadStatus::Cancelled,
+            DownloadOutcome::Failed { error } => DownloadStatus::Failed { error },
+          };
+          update.request_redraw = true;
+        }
       }
     }
 

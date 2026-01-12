@@ -46,15 +46,19 @@ impl TabId {
 
 /// Identifier for a download managed by the browser UI worker.
 ///
-/// Download ids are process-unique and are used by UIs/tests to refer to a specific in-flight
-/// download (e.g. for cancellation).
+/// Download ids are process-unique. They are allocated by the worker when handling
+/// [`UiToWorker::StartDownload`], and are echoed back by the UI when requesting cancellation via
+/// [`UiToWorker::CancelDownload`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DownloadId(pub u64);
 
 impl DownloadId {
   /// Generate a new process-unique download id.
+  ///
+  /// Intended for worker-thread use when starting new downloads.
+  ///
+  /// `0` is reserved as an "invalid" `DownloadId` value, mirroring `TabId`.
   pub fn new() -> Self {
-    // `0` is reserved as an "invalid" `DownloadId` value, mirroring `TabId`.
     loop {
       let id = NEXT_DOWNLOAD_ID.fetch_add(1, Ordering::Relaxed);
       if id != 0 {
@@ -251,13 +255,6 @@ pub enum UiToWorker {
   },
   SetActiveTab {
     tab_id: TabId,
-  },
-  /// Set the directory used for downloaded files.
-  ///
-  /// Front-ends should send this once during startup (before the first navigation) so downloads use
-  /// the expected directory.
-  SetDownloadDirectory {
-    path: PathBuf,
   },
   /// Navigate to a new URL (typed in the address bar or clicked on the page).
   Navigate {
@@ -503,8 +500,22 @@ pub enum UiToWorker {
     select_node_id: usize,
     item_index: usize,
   },
-  /// Cancel an in-progress download.
+  /// Configure the download directory used by the worker for subsequent downloads.
+  ///
+  /// This is intended to be sent once on browser startup, but can be updated at runtime.
+  SetDownloadDirectory {
+    path: PathBuf,
+  },
+  /// Start a download for a URL, saving into the configured download directory.
+  StartDownload {
+    tab_id: TabId,
+    url: String,
+    /// Optional filename hint (e.g. from `download=` attribute or UI override).
+    filename_hint: Option<String>,
+  },
+  /// Cancel an in-flight download.
   CancelDownload {
+    tab_id: TabId,
     download_id: DownloadId,
   },
 }
@@ -680,33 +691,35 @@ pub enum WorkerToUi {
     tab_id: TabId,
     text: String,
   },
-  /// A download was initiated for a tab (typically by clicking a `<a download>` link).
+  /// A new download was created.
   DownloadStarted {
     tab_id: TabId,
     download_id: DownloadId,
     url: String,
-    /// Final path the download will be written to on success.
-    path: std::path::PathBuf,
+    file_name: String,
+    path: PathBuf,
+    total_bytes: Option<u64>,
   },
-  /// Incremental progress for an in-flight download.
+  /// Progress update for an in-flight download.
   DownloadProgress {
     tab_id: TabId,
     download_id: DownloadId,
     received_bytes: u64,
     total_bytes: Option<u64>,
   },
-  /// Terminal status for a download.
-  ///
-  /// Exactly one `DownloadFinished` message must be emitted per download id.
+  /// A download finished, either successfully or with an error/cancellation.
   DownloadFinished {
     tab_id: TabId,
     download_id: DownloadId,
-    /// Final path on success; `None` when cancelled or when no final file was produced.
-    path: Option<std::path::PathBuf>,
-    success: bool,
-    cancelled: bool,
-    error: Option<String>,
+    outcome: DownloadOutcome,
   },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DownloadOutcome {
+  Completed,
+  Cancelled,
+  Failed { error: String },
 }
 
 #[cfg(test)]

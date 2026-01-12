@@ -138,12 +138,6 @@ struct BrowserCliArgs {
   #[arg(value_name = "URL")]
   url: Option<String>,
 
-  /// Directory to save downloaded files
-  ///
-  /// When unset, defaults to the `FASTR_BROWSER_DOWNLOAD_DIR` environment variable.
-  #[arg(long = "download-dir", value_name = "PATH")]
-  download_dir: Option<std::path::PathBuf>,
-
   /// Try to restore the previous session (even when a URL is provided)
   #[arg(long, action = clap::ArgAction::SetTrue, overrides_with = "no_restore")]
   restore: bool,
@@ -157,6 +151,13 @@ struct BrowserCliArgs {
   /// When unset, defaults to the `FASTR_BROWSER_MEM_LIMIT_MB` environment variable.
   #[arg(long = "mem-limit-mb", value_name = "MB", value_parser = parse_u64_mb)]
   mem_limit_mb: Option<u64>,
+
+  /// Directory to save downloaded files
+  ///
+  /// When unset, defaults to `FASTR_BROWSER_DOWNLOAD_DIR`, then to the OS downloads directory, then
+  /// to the current working directory.
+  #[arg(long = "download-dir", value_name = "PATH")]
+  download_dir: Option<std::path::PathBuf>,
 
   /// wgpu adapter power preference when selecting a GPU
   ///
@@ -274,6 +275,27 @@ fn parse_u64_mb(raw: &str) -> Result<u64, String> {
     .replace('_', "")
     .parse::<u64>()
     .map_err(|_| format!("invalid integer: {raw:?}"))
+}
+
+#[cfg(feature = "browser_ui")]
+fn resolve_download_directory(cli_path: Option<&std::path::PathBuf>) -> std::path::PathBuf {
+  if let Some(path) = cli_path.filter(|p| !p.as_os_str().is_empty()) {
+    return path.clone();
+  }
+
+  if let Some(raw) = std::env::var_os(fastrender::ui::browser_cli::ENV_DOWNLOAD_DIR) {
+    if !raw.is_empty() {
+      return std::path::PathBuf::from(raw);
+    }
+  }
+
+  if let Some(user_dirs) = directories::UserDirs::new() {
+    if let Some(downloads) = user_dirs.download_dir() {
+      return downloads.to_path_buf();
+    }
+  }
+
+  std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
 #[cfg(feature = "browser_ui")]
@@ -605,6 +627,7 @@ fn determine_startup_session(
 #[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
   let cli = BrowserCliArgs::parse();
+  let download_dir = resolve_download_directory(cli.download_dir.as_ref());
 
   // When the user provides `<url>`, normalize + apply an allowlist (same as the address bar).
   // This is *not* applied to session restore entries: those are expected to already be normalized.
@@ -632,8 +655,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   } else {
     RestoreMode::Auto
   };
-
-  let download_dir = resolve_download_dir(cli.download_dir.clone());
 
   apply_address_space_limit_from_cli_or_env(cli.mem_limit_mb);
 
@@ -1448,27 +1469,6 @@ fn apply_address_space_limit_from_cli_or_env(mem_limit_mb: Option<u64>) {
 }
 
 #[cfg(feature = "browser_ui")]
-fn resolve_download_dir(cli_download_dir: Option<std::path::PathBuf>) -> std::path::PathBuf {
-  const ENV: &str = "FASTR_BROWSER_DOWNLOAD_DIR";
-
-  if let Some(path) = cli_download_dir {
-    return path;
-  }
-
-  if let Some(path) = std::env::var_os(ENV).filter(|value| !value.is_empty()) {
-    return std::path::PathBuf::from(path);
-  }
-
-  if let Some(user_dirs) = directories::UserDirs::new() {
-    if let Some(download_dir) = user_dirs.download_dir() {
-      return download_dir.to_path_buf();
-    }
-  }
-
-  std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-}
-
-#[cfg(feature = "browser_ui")]
 fn apply_address_space_limit_mb(label: &str, limit_mb: u64) {
   if limit_mb == 0 {
     eprintln!("{label}: Disabled");
@@ -1875,6 +1875,7 @@ struct App {
   profile_autosave: Option<fastrender::ui::ProfileAutosaveHandle>,
   history_panel_open: bool,
   bookmarks_panel_open: bool,
+  downloads_panel_open: bool,
   clear_browsing_data_dialog_open: bool,
   bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState,
   clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange,
@@ -2339,6 +2340,7 @@ impl App {
       profile_autosave: None,
       history_panel_open: false,
       bookmarks_panel_open: false,
+      downloads_panel_open: false,
       clear_browsing_data_dialog_open: false,
       clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange::default(),
       tab_textures: std::collections::HashMap::new(),
@@ -2724,7 +2726,9 @@ impl App {
       | UiToWorker::FindNext { tab_id }
       | UiToWorker::FindPrev { tab_id }
       | UiToWorker::FindStop { tab_id }
-      | UiToWorker::RequestRepaint { tab_id, .. } => Some(*tab_id),
+      | UiToWorker::RequestRepaint { tab_id, .. }
+      | UiToWorker::StartDownload { tab_id, .. }
+      | UiToWorker::CancelDownload { tab_id, .. } => Some(*tab_id),
     };
 
     if let Some(tab_id) = tab_id {
@@ -2769,9 +2773,9 @@ impl App {
           | UiToWorker::CloseTab { .. }
           | UiToWorker::SetActiveTab { .. }
           | UiToWorker::SetDownloadDirectory { .. }
-          | UiToWorker::CancelDownload { .. }
           | UiToWorker::Copy { .. }
           | UiToWorker::SelectAll { .. }
+          | UiToWorker::StartDownload { .. }
           | UiToWorker::CancelDownload { .. } => {}
         }
       }
@@ -4186,6 +4190,7 @@ impl App {
         PageContextMenuEntry::Action(item) => {
           let icon = match (&item.action, item.checked) {
             (PageContextMenuAction::OpenLinkInNewTab(_), _) => BrowserIcon::OpenInNewTab,
+            (PageContextMenuAction::DownloadLink(_), _) => BrowserIcon::ArrowDown,
             (PageContextMenuAction::CopyLinkAddress(_), _) => BrowserIcon::Copy,
             (PageContextMenuAction::BookmarkLink(_), true)
             | (PageContextMenuAction::BookmarkPage(_), true) => BrowserIcon::BookmarkFilled,
@@ -4503,6 +4508,18 @@ impl App {
       PageContextMenuAction::Reload => {
         self.handle_chrome_actions(vec![ChromeAction::Reload]);
       }
+      PageContextMenuAction::DownloadLink(url) => {
+        use fastrender::ui::UiToWorker;
+        self.send_worker_msg(UiToWorker::StartDownload {
+          tab_id,
+          url,
+          filename_hint: None,
+        });
+        // Downloads are shown in the right-side panel, so close other panels that share that space.
+        self.history_panel_open = false;
+        self.bookmarks_panel_open = false;
+        self.downloads_panel_open = true;
+      }
       PageContextMenuAction::OpenLinkInNewTab(url) => {
         session_dirty |= self.open_url_in_new_tab(url);
       }
@@ -4510,6 +4527,12 @@ impl App {
       | PageContextMenuAction::BookmarkPage(_)
       | PageContextMenuAction::ToggleHistoryPanel
       | PageContextMenuAction::ToggleBookmarksPanel) => {
+        if matches!(
+          action,
+          PageContextMenuAction::ToggleHistoryPanel | PageContextMenuAction::ToggleBookmarksPanel
+        ) {
+          self.downloads_panel_open = false;
+        }
         let result = apply_page_context_menu_action(
           &mut self.bookmarks,
           &mut self.history_panel_open,
@@ -4527,6 +4550,157 @@ impl App {
     self.window.request_redraw();
 
     session_dirty
+  }
+
+  fn render_downloads_panel(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::browser_app::DownloadStatus;
+    use fastrender::ui::UiToWorker;
+
+    fn format_bytes(bytes: u64) -> String {
+      const KB: f64 = 1024.0;
+      const MB: f64 = KB * 1024.0;
+      const GB: f64 = MB * 1024.0;
+
+      let b = bytes as f64;
+      if b >= GB {
+        format!("{:.1} GiB", b / GB)
+      } else if b >= MB {
+        format!("{:.1} MiB", b / MB)
+      } else if b >= KB {
+        format!("{:.1} KiB", b / KB)
+      } else {
+        format!("{bytes} B")
+      }
+    }
+
+    let mut close_panel = false;
+    let mut cancel_requests: Vec<(fastrender::ui::TabId, fastrender::ui::messages::DownloadId)> = Vec::new();
+    let mut retry_requests: Vec<(fastrender::ui::TabId, String)> = Vec::new();
+    let mut open_requests: Vec<std::path::PathBuf> = Vec::new();
+    let mut reveal_requests: Vec<std::path::PathBuf> = Vec::new();
+
+    egui::SidePanel::right("downloads_panel")
+      .resizable(true)
+      .default_width(360.0)
+      .show(ctx, |ui| {
+        ui.horizontal(|ui| {
+          ui.heading("Downloads");
+          ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("✕").on_hover_text("Close (Esc)").clicked() {
+              close_panel = true;
+            }
+          });
+        });
+        ui.separator();
+
+        if self.browser_state.downloads.downloads.is_empty() {
+          ui.label("No downloads yet.");
+          return;
+        }
+
+        egui::ScrollArea::vertical()
+          .auto_shrink([false, false])
+          .show(ui, |ui| {
+            for entry in self.browser_state.downloads.downloads.iter().rev() {
+              ui.group(|ui| {
+                ui.horizontal(|ui| {
+                  ui.label(egui::RichText::new(&entry.file_name).strong());
+                });
+
+                ui.small(entry.path.display().to_string());
+
+                match &entry.status {
+                  DownloadStatus::InProgress {
+                    received_bytes,
+                    total_bytes,
+                  } => {
+                    let status = if let Some(total) = total_bytes.filter(|t| *t > 0) {
+                      format!(
+                        "Downloading… {} / {}",
+                        format_bytes(*received_bytes),
+                        format_bytes(total)
+                      )
+                    } else {
+                      format!("Downloading… {}", format_bytes(*received_bytes))
+                    };
+                    ui.label(egui::RichText::new(status).small());
+
+                    if let Some(total) = total_bytes.filter(|t| *t > 0) {
+                      let frac = (*received_bytes as f32 / total as f32).clamp(0.0, 1.0);
+                      ui.add(
+                        egui::ProgressBar::new(frac)
+                          .desired_width(f32::INFINITY),
+                      );
+                    } else {
+                      ui.add(
+                        egui::ProgressBar::new(0.0)
+                          .desired_width(f32::INFINITY)
+                          .animate(true),
+                      );
+                    }
+
+                    if ui.button("Cancel").clicked() {
+                      cancel_requests.push((entry.tab_id, entry.download_id));
+                    }
+                  }
+                  DownloadStatus::Completed => {
+                    ui.label(egui::RichText::new("Completed").small());
+                    ui.horizontal(|ui| {
+                      if ui.button("Open").clicked() {
+                        open_requests.push(entry.path.clone());
+                      }
+                      if ui.button("Show in Folder").clicked() {
+                        reveal_requests.push(entry.path.clone());
+                      }
+                    });
+                  }
+                  DownloadStatus::Cancelled => {
+                    ui.label(egui::RichText::new("Cancelled").small());
+                    if ui.button("Retry").clicked() {
+                      retry_requests.push((entry.tab_id, entry.url.clone()));
+                    }
+                  }
+                  DownloadStatus::Failed { error } => {
+                    ui.label(
+                      egui::RichText::new("Failed")
+                        .small()
+                        .color(egui::Color32::from_rgb(180, 0, 0)),
+                    );
+                    if !error.trim().is_empty() {
+                      ui.label(egui::RichText::new(error).small());
+                    }
+                    if ui.button("Retry").clicked() {
+                      retry_requests.push((entry.tab_id, entry.url.clone()));
+                    }
+                  }
+                }
+              });
+              ui.add_space(4.0);
+            }
+          });
+      });
+
+    if close_panel {
+      self.downloads_panel_open = false;
+    }
+
+    for (tab_id, download_id) in cancel_requests {
+      self.send_worker_msg(UiToWorker::CancelDownload { tab_id, download_id });
+    }
+    for (tab_id, url) in retry_requests {
+      self.send_worker_msg(UiToWorker::StartDownload {
+        tab_id,
+        url,
+        filename_hint: None,
+      });
+    }
+
+    for path in open_requests {
+      open_file_with_os_default(&path);
+    }
+    for path in reveal_requests {
+      reveal_file_in_os_file_manager(&path);
+    }
   }
 
   fn render_select_dropdown(&mut self, ctx: &egui::Context) {
@@ -6573,6 +6747,17 @@ impl App {
             && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
           self.window.request_redraw();
         }
+        ChromeAction::ToggleDownloadsPanel => {
+          let next = !self.downloads_panel_open;
+          self.downloads_panel_open = next;
+          if next {
+            // Keep the right-side panel area exclusive: downloads share the same side panel space as
+            // history/bookmarks.
+            self.history_panel_open = false;
+            self.bookmarks_panel_open = false;
+          }
+          self.window.request_redraw();
+        }
         ChromeAction::AddressBarFocusChanged(has_focus) => {
           // Treat address bar focus as the only "chrome text input" focus surface for now.
           //
@@ -6598,6 +6783,7 @@ impl App {
           self.history_panel_open = !self.history_panel_open;
           if self.history_panel_open {
             self.bookmarks_panel_open = false;
+            self.downloads_panel_open = false;
           }
           self.window.request_redraw();
         }
@@ -6605,6 +6791,7 @@ impl App {
           self.bookmarks_panel_open = !self.bookmarks_panel_open;
           if self.bookmarks_panel_open {
             self.history_panel_open = false;
+            self.downloads_panel_open = false;
             self.bookmarks_manager.request_focus_search();
             // While the manager is open, do not forward keyboard focus to the page. The manager
             // itself will request focus for its search box.
@@ -7546,6 +7733,16 @@ impl App {
       }
     }
 
+    if self.downloads_panel_open
+      && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+      && !ctx.wants_keyboard_input()
+    {
+      self.downloads_panel_open = false;
+    }
+    if self.downloads_panel_open {
+      self.render_downloads_panel(&ctx);
+    }
+
     let central_response = egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
 
@@ -8333,6 +8530,51 @@ fn map_modifiers(modifiers: winit::event::ModifiersState) -> fastrender::ui::Poi
     out |= PointerModifiers::META;
   }
   out
+}
+
+#[cfg(feature = "browser_ui")]
+fn open_file_with_os_default(path: &std::path::Path) {
+  use std::process::Command;
+
+  let result = if cfg!(target_os = "macos") {
+    Command::new("open").arg(path).spawn()
+  } else if cfg!(target_os = "windows") {
+    // `start` is a shell builtin. The empty string is the window title.
+    Command::new("cmd")
+      .args(["/C", "start", ""])
+      .arg(path)
+      .spawn()
+  } else {
+    Command::new("xdg-open").arg(path).spawn()
+  };
+
+  if let Err(err) = result {
+    eprintln!("failed to open file {}: {err}", path.display());
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+fn reveal_file_in_os_file_manager(path: &std::path::Path) {
+  use std::process::Command;
+
+  let result = if cfg!(target_os = "macos") {
+    Command::new("open").arg("-R").arg(path).spawn()
+  } else if cfg!(target_os = "windows") {
+    Command::new("explorer")
+      .arg(format!("/select,{}", path.display()))
+      .spawn()
+  } else {
+    // Linux doesn't have a standard "reveal" command; best effort by opening the parent directory.
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    Command::new("xdg-open").arg(parent).spawn()
+  };
+
+  if let Err(err) = result {
+    eprintln!(
+      "failed to reveal file {} in file manager: {err}",
+      path.display()
+    );
+  }
 }
 
 #[cfg(test)]

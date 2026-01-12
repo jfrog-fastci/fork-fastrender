@@ -680,12 +680,14 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       tab_id,
       download_id,
       url,
+      file_name,
       path,
+      total_bytes,
     } = msg
     {
       let _ = writeln!(
         &mut out,
-        "DownloadStarted(tab={}, id={}, url={url}, path={})",
+        "DownloadStarted(tab={}, id={}, url={url}, file_name={file_name:?}, path={}, total={total_bytes:?})",
         tab_id.0,
         download_id.0,
         path.display()
@@ -712,21 +714,14 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     if let WorkerToUi::DownloadFinished {
       tab_id,
       download_id,
-      path,
-      success,
-      cancelled,
-      error,
+      outcome,
     } = msg
     {
       let _ = writeln!(
         &mut out,
-        "DownloadFinished(tab={}, id={}, success={}, cancelled={}, path={:?}, error={:?})",
+        "DownloadFinished(tab={}, id={}, outcome={outcome:?})",
         tab_id.0,
         download_id.0,
-        success,
-        cancelled,
-        path.as_ref().map(|p| p.display().to_string()),
-        error
       );
       continue;
     }

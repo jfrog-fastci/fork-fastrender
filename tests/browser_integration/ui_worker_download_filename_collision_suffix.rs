@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+  DownloadOutcome, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::path::PathBuf;
@@ -36,22 +36,31 @@ fn wait_for_download_success(
   ui_rx: &std::sync::mpsc::Receiver<WorkerToUi>,
   tab_id: TabId,
 ) -> PathBuf {
-  let msg = support::recv_for_tab(ui_rx, tab_id, TIMEOUT, |msg| {
+  let started = support::recv_for_tab(ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::DownloadStarted { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for DownloadStarted"));
+
+  let (download_id, path) = match started {
+    WorkerToUi::DownloadStarted {
+      download_id, path, ..
+    } => (download_id, path),
+    other => panic!("unexpected worker message: {other:?}"),
+  };
+
+  support::recv_for_tab(ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
       WorkerToUi::DownloadFinished {
-        success: true,
-        cancelled: false,
+        download_id: got,
+        outcome: DownloadOutcome::Completed,
         ..
-      }
+      } if *got == download_id
     )
   })
   .unwrap_or_else(|| panic!("timed out waiting for successful DownloadFinished"));
 
-  match msg {
-    WorkerToUi::DownloadFinished { path: Some(path), .. } => path,
-    other => panic!("unexpected worker message: {other:?}"),
-  }
+  path
 }
 
 #[test]

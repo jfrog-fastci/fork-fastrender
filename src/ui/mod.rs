@@ -84,8 +84,8 @@ pub mod session_autosave;
 pub mod browser_cli;
 
 pub use messages::{
-  CursorKind, DownloadId, NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason,
-  TabId, UiToWorker, WorkerToUi,
+  CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton, PointerModifiers,
+  RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the
@@ -124,8 +124,9 @@ pub use omnibox::{
 };
 pub use search_suggest::{SearchSuggestConfig, SearchSuggestService, SearchSuggestUpdate};
 pub use browser_app::{
-  AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,
-  FindInPageState, LatestFrameMeta, OpenSelectDropdownUpdate, RemoteSearchSuggestCache,
+  AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, DownloadEntry,
+  DownloadProgressSummary, DownloadStatus, DownloadsState, FrameReadyUpdate, FindInPageState,
+  LatestFrameMeta, OpenSelectDropdownUpdate, RemoteSearchSuggestCache,
 };
 pub use global_history::{
   ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistoryStore, DEFAULT_GLOBAL_HISTORY_CAPACITY,
