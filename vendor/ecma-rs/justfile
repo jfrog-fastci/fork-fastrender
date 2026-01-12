@@ -128,6 +128,36 @@ test-minify:
 
 test-all: test test-typecheck test-minify
 
+# Upstream TypeScript conformance (heavy; requires submodules + Node deps).
+#
+# This matches the CI upstream conformance runner:
+# - expectations manifest: typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml
+# - stable hash sharding: --shard-strategy hash
+# - CI gate: --fail-on new (and XPASS is treated as failure)
+conformance-upstream shard="0/16":
+  bash "{{justfile_directory()}}/scripts/cargo_agent.sh" run -p typecheck-ts-harness --release -- \
+  conformance \
+  --root parse-js/tests/TypeScript/tests/cases/conformance \
+  --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
+  --fail-on new \
+  --shard {{shard}} \
+  --shard-strategy hash \
+  --compare tsc \
+  --timeout-secs 20 \
+  --jobs 4 \
+  --json
+
+conformance-upstream-triage input:
+  bash "{{justfile_directory()}}/scripts/cargo_agent.sh" run -p typecheck-ts-harness --release -- \
+  triage \
+  --input {{input}}
+
+conformance-upstream-suggest input:
+  bash "{{justfile_directory()}}/scripts/cargo_agent.sh" run -p typecheck-ts-harness --release -- \
+  triage \
+  --input {{input}} \
+  --emit-manifest
+
 docs:
   bash "{{justfile_directory()}}/scripts/gen_deps_graph.sh"
 
