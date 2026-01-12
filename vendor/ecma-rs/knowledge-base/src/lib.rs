@@ -1144,7 +1144,7 @@ fn parse_purity_template(raw: &str) -> PurityTemplate {
     "pure" => PurityTemplate::Pure,
     "readonly" | "read_only" => PurityTemplate::ReadOnly,
     "allocating" => PurityTemplate::Allocating,
-    "depends_on_callback" => PurityTemplate::DependsOnArgs {
+    "depends_on_callback" | "dependsoncallback" => PurityTemplate::DependsOnArgs {
       base: Purity::Pure,
       args: vec![0],
     },
@@ -1246,12 +1246,13 @@ fn normalize_effects(
         base |= EffectSet::MAY_THROW;
       }
 
+      let depends_on_callback = template == "depends_on_callback" || template == "dependsoncallback";
       let effect_template = if !details.depends_on_args.is_empty() {
         EffectTemplate::DependsOnArgs {
           base,
           args: details.depends_on_args.clone(),
         }
-      } else if template == "depends_on_callback" {
+      } else if depends_on_callback {
         EffectTemplate::DependsOnArgs {
           base,
           args: vec![0],
@@ -1857,6 +1858,35 @@ purity: Impure
     assert!(api.effect_summary.flags.contains(EffectSet::ALLOCATES));
     assert!(api.effect_summary.flags.contains(EffectSet::NONDETERMINISTIC));
     assert_eq!(api.effect_summary.throws, ThrowBehavior::Never);
+  }
+
+  #[test]
+  fn depends_on_callback_accepts_camel_case_template() {
+    let yaml = r#"
+name: x
+effects:
+  template: dependsOnCallback
+  allocates: true
+purity:
+  template: dependsOnCallback
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert_eq!(
+      api.effects,
+      EffectTemplate::DependsOnArgs {
+        base: EffectSet::ALLOCATES | EffectSet::MAY_THROW,
+        args: vec![0],
+      }
+    );
+    assert_eq!(
+      api.purity,
+      PurityTemplate::DependsOnArgs {
+        base: Purity::Pure,
+        args: vec![0],
+      }
+    );
   }
 
   #[test]
