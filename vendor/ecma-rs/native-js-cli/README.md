@@ -79,7 +79,7 @@ also a default mode (no subcommand) that compiles + runs a project.
 In all modes, the entry file is a TypeScript module path:
 
 ```text
-native-js-cli [--pipeline <project|checked>] [--entry-fn <NAME>] [--no-builtins] [--emit-llvm <PATH>] [<ENTRY.ts>]
+native-js-cli [--pipeline <project|checked>] [--project|-p <PATH|DIR>] [--entry-fn <NAME>] [--no-builtins] [--emit-llvm <PATH>] [<ENTRY.ts>]
 ```
 
 The input file is read as UTF-8 text; invalid UTF-8 will cause the CLI to exit
@@ -128,6 +128,16 @@ run. Pass `--entry-fn <NAME>` to call a different exported function (or to call 
 export name isn’t `main`).
 
 ## Options
+
+### `--project/-p <path|dir>`
+
+Load a TypeScript project (`tsconfig.json`) from disk.
+
+When set, module resolution honors `compilerOptions.baseUrl` / `paths`, and `typeRoots` / `types`
+packages are loaded (matching `native-js` behavior).
+
+`<path|dir>` can be either a directory (meaning `<dir>/tsconfig.json`) or an explicit
+`tsconfig.json` path.
 
 ### `--pipeline <project|checked>`
 
@@ -276,8 +286,6 @@ future typechecked/HIR-based backend yet). Supported today:
 Limitations:
 
 - Namespace imports (`import * as ns from "./mod"`) are not supported.
-- `tsconfig.json` is not loaded (so `baseUrl`/`paths` are ignored); module resolution
-  uses a Node-style resolver for the supported import forms.
 
 Type annotations in function declarations (current):
 
@@ -307,27 +315,28 @@ Exit codes:
 
 ## `tsconfig.json` support
 
-The `native-js-cli` binary takes a single entry file and (when using the
-multi-file ES module subset) performs Node-style module resolution to discover
-reachable imports.
+By default, `native-js-cli` builds a module graph starting from the provided entry file and uses
+Node-style module resolution for imports. In this mode, project settings like
+`compilerOptions.baseUrl` / `paths` are not applied.
 
-However, it does **not** load `tsconfig.json`, so project settings like
-`baseUrl`/`paths` are not applied.
+Pass `--project/-p` to load a `tsconfig.json` from disk and apply its settings (for both
+`--pipeline project` and `--pipeline checked`):
 
-This is true for both `--pipeline project` and `--pipeline checked`: the
-`native-js-cli` binary always uses a small filesystem host with default compiler
-options (it does not read project settings from disk).
+- `compilerOptions.baseUrl` / `paths` are honored for non-relative imports
+- `compilerOptions.typeRoots` / `types` packages are loaded (e.g. `@types/node`)
 
-For a typechecked pipeline that loads `tsconfig.json` (including
-`baseUrl`/`paths`),
-use the `native-js` binary.
-
-Example:
+Example (installed binary):
 
 ```bash
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
-  --project path/to/tsconfig.json \
-  build path/to/entry.ts -o /tmp/out
+native-js-cli --project ./tsconfig.json ./src/main.ts
+```
+
+Example (from this repo):
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
+  --project ./tsconfig.json \
+  ./src/main.ts
 ```
 
 ## `native-js` (typechecked AOT pipeline)

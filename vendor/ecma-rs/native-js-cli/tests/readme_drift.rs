@@ -54,3 +54,32 @@ fn readme_documents_type_only_reexports_and_cycles() {
     "native-js-cli README should clarify that NJS0146 is for cyclic *runtime* module dependencies"
   );
 }
+
+#[test]
+fn readme_documents_project_flag_tsconfig_support() {
+  let readme = readme_text();
+  let readme_lower = readme.to_lowercase();
+
+  // `native-js-cli` historically did not support loading a tsconfig at all; it now supports
+  // `--project/-p` for both pipelines.
+  assert!(
+    readme_lower.contains("--project"),
+    "native-js-cli README should mention the --project/-p flag"
+  );
+  assert!(
+    readme_lower.contains("native-js-cli --project ./tsconfig.json"),
+    "native-js-cli README should include a `native-js-cli --project ./tsconfig.json ...` example"
+  );
+
+  // Docs drift guard: the README used to claim unconditionally that `native-js-cli` doesn't load
+  // tsconfig.json. Now tsconfig support is gated on `--project`.
+  let normalized = readme_lower.replace('`', "");
+  assert!(
+    !normalized.contains("does not load tsconfig.json"),
+    "native-js-cli README contains stale wording claiming --project/tsconfig is unsupported"
+  );
+  assert!(
+    !normalized.contains("tsconfig.json is not loaded"),
+    "native-js-cli README contains stale wording claiming --project/tsconfig is unsupported"
+  );
+}

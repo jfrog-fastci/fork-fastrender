@@ -300,6 +300,18 @@ pub fn link_elf_executable_with_options_and_static_libs(
     out_dir
   };
 
+  // `LinkOpts` defaults to `LinkerFlavor::Lld`, but some environments (including minimal CI images)
+  // don't have `ld.lld{,-18}` installed. Treat lld as a best-effort preference: fall back to the
+  // system linker selected by clang when lld isn't available.
+  let opts = if matches!(opts.linker, LinkerFlavor::Lld) && lld_fuse_arg().is_none() {
+    LinkOpts {
+      linker: LinkerFlavor::System,
+      ..opts
+    }
+  } else {
+    opts
+  };
+
   fs::create_dir_all(out_dir)
     .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
 

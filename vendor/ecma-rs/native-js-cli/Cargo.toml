@@ -24,4 +24,6 @@ wait-timeout = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
+# Ensure `libruntime_native.a` is built so `native-js` can link and run native executables in
+# integration tests (the AOT tests invoke the `native-js` binary directly).
 runtime-native = { workspace = true }
