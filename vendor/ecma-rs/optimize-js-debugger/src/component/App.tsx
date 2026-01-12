@@ -5,6 +5,7 @@ import { Graph } from "./Graph";
 import { InstMetaPanel } from "./InstMetaPanel";
 import { SymbolsPanel } from "./SymbolsPanel";
 import "./App.css";
+import { utf8ByteOffsetToUtf16Offset } from "./textOffset";
 import {
   CompileProgramDumpV1,
   GraphInst,
@@ -42,29 +43,6 @@ const errorMessage = (raw: unknown, status: number): string => {
     return (raw as any).diagnostics.map((d: any) => `${d.code}: ${d.message}`).join("\n");
   }
   return `HTTP ${status}`;
-};
-
-const utf8ByteOffsetToUtf16Offset = (text: string, byteOffset: number): number => {
-  // `diagnostics::TextRange` is a byte range. Monaco offsets are UTF-16 code units.
-  // Convert by walking code points and counting UTF-8 bytes vs UTF-16 units.
-  let bytes = 0;
-  for (let i = 0; i < text.length; ) {
-    const cp = text.codePointAt(i);
-    if (cp == undefined) {
-      break;
-    }
-    const utf16Units = cp > 0xffff ? 2 : 1;
-    const utf8Bytes = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
-    if (bytes + utf8Bytes > byteOffset) {
-      return i;
-    }
-    bytes += utf8Bytes;
-    i += utf16Units;
-    if (bytes === byteOffset) {
-      return i;
-    }
-  }
-  return text.length;
 };
 
 export const App = () => {

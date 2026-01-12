@@ -1,28 +1,6 @@
 import { useMemo, useState } from "react";
 import type { GraphInst } from "./schema";
-
-const utf8ByteOffsetToUtf16Offset = (text: string, byteOffset: number): number => {
-  // `diagnostics::TextRange` uses UTF-8 byte offsets.
-  // Monaco/JS string indices are UTF-16 code units.
-  let bytes = 0;
-  for (let i = 0; i < text.length; ) {
-    const cp = text.codePointAt(i);
-    if (cp == undefined) {
-      break;
-    }
-    const utf16Units = cp > 0xffff ? 2 : 1;
-    const utf8Bytes = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
-    if (bytes + utf8Bytes > byteOffset) {
-      return i;
-    }
-    bytes += utf8Bytes;
-    i += utf16Units;
-    if (bytes === byteOffset) {
-      return i;
-    }
-  }
-  return text.length;
-};
+import { utf8ByteOffsetToUtf16Offset } from "./textOffset";
 
 const formatExternallyTagged = (value: unknown): string => {
   if (value == undefined) {
