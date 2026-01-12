@@ -1,6 +1,9 @@
 #![cfg(feature = "typed")]
 
 use optimize_js::{compile_file_native_ready, verify_program_strict_native, NativeReadyOptions, TopLevelMode, VerifyOptions};
+use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
+use optimize_js::il::inst::{Arg, Const, Inst};
+use optimize_js::{FileId, OptimizationStats, Program, ProgramFunction};
 use std::sync::Arc;
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 
@@ -132,4 +135,62 @@ fn known_good_typed_snippet_passes() {
     NativeReadyOptions::default(),
   )
   .expect("compile with strict-native verification enabled");
+}
+
+#[test]
+fn forbidden_template_marker_builtin_triggers_diagnostic() {
+  // Typed builds lower template literals to `InstTyp::StringConcat`. If a legacy marker builtin leaks
+  // into the IL, the strict-native verifier should reject it deterministically.
+  let mut graph = CfgGraph::default();
+  graph.ensure_label(0);
+  let mut bblocks = CfgBBlocks::default();
+  bblocks.add(
+    0,
+    vec![
+      Inst::call(
+        None,
+        Arg::Builtin("__optimize_js_template".to_string()),
+        Arg::Const(Const::Undefined),
+        vec![Arg::Const(Const::Str("hi".to_string()))],
+        Vec::new(),
+      ),
+      Inst::ret(None),
+    ],
+  );
+  let cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let top_level = ProgramFunction {
+    debug: None,
+    meta: Default::default(),
+    body: cfg.clone(),
+    params: Vec::new(),
+    ssa_body: Some(cfg),
+    stats: OptimizationStats::default(),
+  };
+  let program = Program {
+    source_file: FileId(0),
+    source_len: 0,
+    functions: Vec::new(),
+    top_level,
+    top_level_mode: TopLevelMode::Module,
+    symbols: None,
+  };
+
+  let err = verify_program_strict_native(
+    &program,
+    &VerifyOptions {
+      file: FileId(0),
+      ..Default::default()
+    },
+  )
+  .expect_err("expected verifier to reject marker builtin in typed strict-native mode");
+
+  assert!(
+    err.iter().any(|diag| diag.code == "OPTN0005" && diag.message.contains("__optimize_js_template")),
+    "expected OPTN0005 banned-builtin diagnostic, got {err:?}"
+  );
 }
