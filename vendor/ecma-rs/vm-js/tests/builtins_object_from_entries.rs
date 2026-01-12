@@ -828,3 +828,48 @@ fn object_from_entries_iterator_close_error_does_not_override_thrown_entry_error
   require_closed_flag(&mut scope, iter, true)?;
   Ok(())
 }
+
+#[test]
+fn object_from_entries_return_throw_is_suppressed_when_already_throwing() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let value = rt.exec_script(
+    r#"
+      (function () {
+        var returnCalled = false;
+        var iterable = {};
+
+        iterable[Symbol.iterator] = function() {
+          var done = false;
+          return {
+            next: function() {
+              if (!done) {
+                done = true;
+                // Non-object entry triggers the entry-processing TypeError inside Object.fromEntries.
+                return { done: false, value: 1 };
+              }
+              return { done: true };
+            },
+            return: function() {
+              returnCalled = true;
+              throw "return";
+            },
+          };
+        };
+
+        try {
+          Object.fromEntries(iterable);
+          return "no throw";
+        } catch (e) {
+          return String(returnCalled) + "|" + (e === "return" ? "return" : (e.name + ":" + e.message));
+        }
+      })()
+    "#,
+  )?;
+
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "true|TypeError:Object.fromEntries: iterator value is not an object"
+  );
+  Ok(())
+}

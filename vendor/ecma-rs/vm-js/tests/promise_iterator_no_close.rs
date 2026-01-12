@@ -35,7 +35,9 @@ fn promise_all_iter_step_err_no_close() -> Result<(), VmError> {
       var iterable = {};
       iterable[Symbol.iterator] = function() {
         return {
-          next: function() { throw "next"; },
+          next: function() {
+            return { get done() { throw "done"; }, value: 0 };
+          },
           return: function() { returnCount++; return {}; }
         };
       };
@@ -75,7 +77,9 @@ fn promise_race_iter_step_err_no_close() -> Result<(), VmError> {
       var iterable = {};
       iterable[Symbol.iterator] = function() {
         return {
-          next: function() { throw "next"; },
+          next: function() {
+            return { get done() { throw "done"; }, value: 0 };
+          },
           return: function() { returnCount++; return {}; }
         };
       };
@@ -115,7 +119,9 @@ fn promise_all_settled_iter_step_err_no_close() -> Result<(), VmError> {
       var iterable = {};
       iterable[Symbol.iterator] = function() {
         return {
-          next: function() { throw "next"; },
+          next: function() {
+            return { get done() { throw "done"; }, value: 0 };
+          },
           return: function() { returnCount++; return {}; }
         };
       };
@@ -155,7 +161,9 @@ fn promise_any_iter_step_err_no_close() -> Result<(), VmError> {
       var iterable = {};
       iterable[Symbol.iterator] = function() {
         return {
-          next: function() { throw "next"; },
+          next: function() {
+            return { get done() { throw "done"; }, value: 0 };
+          },
           return: function() { returnCount++; return {}; }
         };
       };

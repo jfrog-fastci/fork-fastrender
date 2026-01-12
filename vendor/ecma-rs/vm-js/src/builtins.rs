@@ -8,9 +8,9 @@ use crate::regexp::{
 use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
 use crate::{
   heap::TypedArrayKind,
-  Completion, ExternalMemoryToken, GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle,
+  ExternalMemoryToken, GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle,
   PromiseReaction, PromiseReactionType, PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope,
-  SourceText, Thrown, Value, Vm, VmError, VmHost, VmHostHooks,
+  SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use parse_js::ast::expr::Expr;
 use parse_js::ast::func::FuncBody;
@@ -143,25 +143,39 @@ fn iterator_close_on_error(
     return err;
   }
 
+  // `IteratorClose` suppression rules (ECMA-262):
+  // - If the original completion is a throw completion, iterator closing is best-effort and any
+  //   *catchable* closing error is suppressed.
+  // - Never allow JS-visible closing errors to replace fatal VM failures (termination, OOM, etc).
   let original_is_throw = err.is_throw_completion();
-  let completion = Completion::Throw(Thrown {
-    value: err.thrown_value().unwrap_or(Value::Undefined),
-    stack: Vec::new(),
-  });
 
-  match crate::iterator::iterator_close_with_completion(
+  // Root the pending thrown value across `IteratorClose`, which can allocate and trigger GC.
+  if original_is_throw {
+    if let Some(thrown) = err.thrown_value() {
+      if let Err(root_err) = scope.push_root(thrown) {
+        return root_err;
+      }
+    }
+  }
+
+  match crate::iterator::iterator_close(
     vm,
     host,
     hooks,
     scope,
     iterator_record,
-    completion,
+    crate::iterator::CloseCompletionKind::Throw,
   ) {
-    Ok(_) => err,
+    Ok(()) => err,
     Err(close_err) => {
-      if original_is_throw {
+      if original_is_throw && close_err.is_throw_completion() {
+        // Suppress JS-visible `IteratorClose` errors when we are already throwing.
+        err
+      } else if original_is_throw {
+        // Never suppress fatal VM errors (OOM/termination/etc).
         close_err
       } else {
+        // Preserve fatal/non-catchable original errors even if closing throws.
         err
       }
     }
