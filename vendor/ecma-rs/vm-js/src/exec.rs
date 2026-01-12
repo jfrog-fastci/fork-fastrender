@@ -16,7 +16,7 @@ use parse_js::ast::expr::lit::{
   LitArrElem, LitArrExpr, LitBigIntExpr, LitBoolExpr, LitNumExpr, LitObjExpr, LitStrExpr,
   LitTemplateExpr, LitTemplatePart,
 };
-use parse_js::ast::expr::pat::{IdPat, Pat};
+use parse_js::ast::expr::pat::{ArrPat, IdPat, ObjPat, Pat};
 use parse_js::ast::expr::{
   ArrowFuncExpr, BinaryExpr, CallExpr, ClassExpr, ComputedMemberExpr, CondExpr, Expr, FuncExpr,
   IdExpr, ImportExpr, MemberExpr, TaggedTemplateExpr, UnaryExpr, UnaryPostfixExpr,
@@ -8267,6 +8267,55 @@ enum AsyncFrame {
     decl: *const VarDecl,
     next_declarator_index: usize,
   },
+  /// Continue a `var`/`let`/`const` declaration after binding a declarator value suspends.
+  VarDeclAfterBinding {
+    decl: *const VarDecl,
+    next_declarator_index: usize,
+  },
+
+  /// Continue an object destructuring pattern after suspending while evaluating a computed key.
+  BindObjAfterKey {
+    pat: *const ObjPat,
+    prop_index: usize,
+    value_root: RootId,
+    excluded: Vec<RootedPropertyKey>,
+    kind: BindingKind,
+  },
+  /// Continue an object destructuring pattern after suspending while evaluating a default value.
+  BindObjAfterDefault {
+    pat: *const ObjPat,
+    prop_index: usize,
+    value_root: RootId,
+    excluded: Vec<RootedPropertyKey>,
+    kind: BindingKind,
+  },
+  /// Continue an object destructuring pattern after a nested binding suspends.
+  BindObjContinue {
+    pat: *const ObjPat,
+    next_prop_index: usize,
+    value_root: RootId,
+    excluded: Vec<RootedPropertyKey>,
+    kind: BindingKind,
+  },
+
+  /// Continue an array destructuring pattern after suspending while evaluating a default value.
+  BindArrAfterDefault {
+    pat: *const ArrPat,
+    elem_index: usize,
+    array_index: u32,
+    len: u32,
+    value_root: RootId,
+    kind: BindingKind,
+  },
+  /// Continue an array destructuring pattern after a nested binding suspends.
+  BindArrContinue {
+    pat: *const ArrPat,
+    elem_index: usize,
+    array_index: u32,
+    len: u32,
+    value_root: RootId,
+    kind: BindingKind,
+  },
 
   /// Continue an `if` statement after evaluating the test expression.
   IfAfterTest {
@@ -8853,6 +8902,29 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
       }
     }
     AsyncFrame::WithAfterObject { .. } => {}
+    AsyncFrame::BindObjAfterKey {
+      value_root,
+      excluded,
+      ..
+    }
+    | AsyncFrame::BindObjAfterDefault {
+      value_root,
+      excluded,
+      ..
+    }
+    | AsyncFrame::BindObjContinue {
+      value_root,
+      excluded,
+      ..
+    } => {
+      heap.remove_root(*value_root);
+      for key in excluded.drain(..) {
+        heap.remove_root(key.root);
+      }
+    }
+    AsyncFrame::BindArrAfterDefault { value_root, .. } | AsyncFrame::BindArrContinue { value_root, .. } => {
+      heap.remove_root(*value_root);
+    }
     AsyncFrame::LitArrAfterSingle { arr_root, .. }
     | AsyncFrame::LitArrAfterSpread { arr_root, .. } => heap.remove_root(*arr_root),
     AsyncFrame::LitObjAfterComputedKey { obj_root, .. }
@@ -9295,6 +9367,9 @@ fn expr_contains_await(expr: &Node<Expr>) -> bool {
       LitTemplatePart::String(_) => false,
     }),
 
+    Expr::ArrPat(arr) => arr_pat_contains_await(&arr.stx),
+    Expr::ObjPat(obj) => obj_pat_contains_await(&obj.stx),
+
     // Nested functions are not evaluated when the function value is created.
     Expr::Func(_) | Expr::ArrowFunc(_) => false,
 
@@ -9306,6 +9381,40 @@ fn expr_contains_await(expr: &Node<Expr>) -> bool {
 
     _ => false,
   }
+}
+
+fn pat_contains_await(pat: &Pat) -> bool {
+  match pat {
+    Pat::Id(_) => false,
+    Pat::Obj(obj) => obj_pat_contains_await(&obj.stx),
+    Pat::Arr(arr) => arr_pat_contains_await(&arr.stx),
+    Pat::AssignTarget(expr) => expr_contains_await(expr),
+  }
+}
+
+fn obj_pat_contains_await(pat: &ObjPat) -> bool {
+  pat.properties.iter().any(|prop| {
+    let key_has_await = match &prop.stx.key {
+      ClassOrObjKey::Direct(_) => false,
+      ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+    };
+    key_has_await
+      || pat_contains_await(&prop.stx.target.stx)
+      || prop.stx.default_value.as_ref().is_some_and(expr_contains_await)
+  }) || pat.rest.as_ref().is_some_and(|rest| pat_contains_await(&rest.stx))
+}
+
+fn arr_pat_contains_await(pat: &ArrPat) -> bool {
+  pat
+    .elements
+    .iter()
+    .any(|elem| match elem {
+      Some(elem) => {
+        pat_contains_await(&elem.target.stx) || elem.default_value.as_ref().is_some_and(expr_contains_await)
+      }
+      None => false,
+    })
+    || pat.rest.as_ref().is_some_and(|rest| pat_contains_await(&rest.stx))
 }
 
 fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
@@ -9326,7 +9435,10 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
       .stx
       .declarators
       .iter()
-      .any(|d| d.initializer.as_ref().is_some_and(expr_contains_await)),
+      .any(|d| {
+        d.initializer.as_ref().is_some_and(expr_contains_await)
+          || pat_contains_await(&d.pattern.stx.pat.stx)
+      }),
     Stmt::Block(block) => block.stx.body.iter().any(stmt_contains_await),
     Stmt::If(if_stmt) => {
       expr_contains_await(&if_stmt.stx.test)
@@ -9993,7 +10105,22 @@ fn async_eval_var_decl(
 
     match async_eval_expr(evaluator, scope, init) {
       Ok(AsyncEval::Complete(v)) => {
-        async_bind_var_declarator_value(evaluator, scope, decl, idx, v)?;
+        match async_bind_var_declarator_value(evaluator, scope, decl, idx, v)? {
+          AsyncEval::Complete(()) => {}
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(_) = suspend.frames.try_reserve(1) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              return Err(VmError::OutOfMemory);
+            }
+            suspend.frames.push_back(AsyncFrame::VarDeclAfterBinding {
+              decl: decl as *const VarDecl,
+              next_declarator_index: idx.saturating_add(1),
+            });
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+        }
       }
       Ok(AsyncEval::Suspend(mut suspend)) => {
         async_frames_push(
@@ -10020,7 +10147,7 @@ fn async_bind_var_declarator_value(
   decl: &VarDecl,
   declarator_index: usize,
   value: Value,
-) -> Result<(), VmError> {
+) -> Result<AsyncEval<()>, VmError> {
   let declarator = decl
     .declarators
     .get(declarator_index)
@@ -10029,33 +10156,22 @@ fn async_bind_var_declarator_value(
     ))?;
 
   match decl.mode {
-    VarDeclMode::Var => bind_pattern(
-      evaluator.vm,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
+    VarDeclMode::Var => async_bind_pattern(
+      evaluator,
       scope,
-      evaluator.env,
       &declarator.pattern.stx.pat.stx,
       value,
       BindingKind::Var,
-      evaluator.strict,
-      evaluator.this,
-    )?,
+    ),
     VarDeclMode::Let => {
       let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
-        bind_pattern(
-          evaluator.vm,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
+        return async_bind_pattern(
+          evaluator,
           scope,
-          evaluator.env,
           &declarator.pattern.stx.pat.stx,
           value,
           BindingKind::Let,
-          evaluator.strict,
-          evaluator.this,
-        )?;
-        return Ok(());
+        );
       };
 
       let name = id.stx.name.as_str();
@@ -10065,22 +10181,17 @@ fn async_bind_var_declarator_value(
       scope
         .heap_mut()
         .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+      Ok(AsyncEval::Complete(()))
     }
     VarDeclMode::Const => {
       if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
-        bind_pattern(
-          evaluator.vm,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
+        return async_bind_pattern(
+          evaluator,
           scope,
-          evaluator.env,
           &declarator.pattern.stx.pat.stx,
           value,
           BindingKind::Const,
-          evaluator.strict,
-          evaluator.this,
-        )?;
-        return Ok(());
+        );
       }
 
       let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
@@ -10095,11 +10206,716 @@ fn async_bind_var_declarator_value(
       scope
         .heap_mut()
         .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+      Ok(AsyncEval::Complete(()))
     }
-    _ => return Err(VmError::Unimplemented("var declaration kind")),
+    _ => Err(VmError::Unimplemented("var declaration kind")),
+  }
+}
+
+#[derive(Debug)]
+struct RootedPropertyKey {
+  key: PropertyKey,
+  root: RootId,
+}
+
+fn async_root_value(scope: &mut Scope<'_>, value: Value) -> Result<RootId, VmError> {
+  // Root `value` across root-table growth in case it triggers GC.
+  let mut root_scope = scope.reborrow();
+  root_scope.push_root(value)?;
+  root_scope.heap_mut().add_root(value)
+}
+
+fn async_root_property_key(scope: &mut Scope<'_>, key: PropertyKey) -> Result<RootedPropertyKey, VmError> {
+  let v = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  let root = async_root_value(scope, v)?;
+  Ok(RootedPropertyKey { key, root })
+}
+
+fn async_cleanup_rooted_property_keys(heap: &mut Heap, keys: &mut Vec<RootedPropertyKey>) {
+  for key in keys.drain(..) {
+    heap.remove_root(key.root);
+  }
+}
+
+fn async_bind_pattern(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &Pat,
+  value: Value,
+  kind: BindingKind,
+) -> Result<AsyncEval<()>, VmError> {
+  // Fast path: if the pattern doesn't contain `await`, reuse the synchronous binder.
+  if !pat_contains_await(pat) {
+    let res = bind_pattern(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      scope,
+      evaluator.env,
+      pat,
+      value,
+      kind,
+      evaluator.strict,
+      evaluator.this,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+    return match res {
+      Ok(()) => Ok(AsyncEval::Complete(())),
+      Err(err) => Err(err),
+    };
   }
 
-  Ok(())
+  // Root the input value so it survives across `await` suspensions inside the pattern.
+  let value_root = async_root_value(scope, value)?;
+
+  match pat {
+    Pat::Obj(obj) => async_bind_object_pattern(evaluator, scope, &obj.stx, value_root, kind),
+    Pat::Arr(arr) => async_bind_array_pattern(evaluator, scope, &arr.stx, value_root, kind),
+    Pat::AssignTarget(target) => {
+      if !matches!(kind, BindingKind::Assignment) {
+        scope.heap_mut().remove_root(value_root);
+        return Err(VmError::Unimplemented(
+          "assignment target pattern in binding context",
+        ));
+      }
+      async_bind_assignment_target(evaluator, scope, target, value_root)
+    }
+    // `Pat::Id` cannot contain an `await`, but handle it defensively.
+    Pat::Id(_) => {
+      scope.heap_mut().remove_root(value_root);
+      let res = bind_pattern(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        scope,
+        evaluator.env,
+        pat,
+        value,
+        kind,
+        evaluator.strict,
+        evaluator.this,
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+      match res {
+        Ok(()) => Ok(AsyncEval::Complete(())),
+        Err(err) => Err(err),
+      }
+    }
+  }
+}
+
+fn async_bind_assignment_target(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  target: &Node<Expr>,
+  value_root: RootId,
+) -> Result<AsyncEval<()>, VmError> {
+  match &*target.stx {
+    Expr::ObjPat(obj) => async_bind_object_pattern(evaluator, scope, &obj.stx, value_root, BindingKind::Assignment),
+    Expr::ArrPat(arr) => async_bind_array_pattern(evaluator, scope, &arr.stx, value_root, BindingKind::Assignment),
+    _ => {
+      // Today we only support suspension points inside destructuring patterns (computed keys,
+      // defaults, nested patterns). Other assignment targets that contain `await` remain
+      // unimplemented.
+      scope.heap_mut().remove_root(value_root);
+      Err(VmError::Unimplemented("await in assignment target"))
+    }
+  }
+}
+
+fn resolve_obj_pat_direct_key(
+  scope: &mut Scope<'_>,
+  direct: &Node<parse_js::ast::class_or_object::ClassOrObjMemberDirectKey>,
+) -> Result<PropertyKey, VmError> {
+  let s = if let Some(units) = literal_string_code_units(&direct.assoc) {
+    scope.alloc_string_from_code_units(units)?
+  } else if direct.stx.tt == TT::LiteralNumber {
+    let n = direct
+      .stx
+      .key
+      .parse::<f64>()
+      .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
+    scope.heap_mut().to_string(Value::Number(n))?
+  } else {
+    scope.alloc_string(&direct.stx.key)?
+  };
+  Ok(PropertyKey::from_string(s))
+}
+
+fn async_bind_object_pattern(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ObjPat,
+  value_root: RootId,
+  kind: BindingKind,
+) -> Result<AsyncEval<()>, VmError> {
+  let mut excluded: Vec<RootedPropertyKey> = Vec::new();
+  if let Err(_) = excluded.try_reserve_exact(pat.properties.len()) {
+    // Allocation failure: make sure we don't leak the persistent value root.
+    scope.heap_mut().remove_root(value_root);
+    return Err(VmError::OutOfMemory);
+  }
+  async_bind_object_pattern_from(evaluator, scope, pat, value_root, excluded, 0, kind)
+}
+
+fn async_bind_object_pattern_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ObjPat,
+  value_root: RootId,
+  mut excluded: Vec<RootedPropertyKey>,
+  start_prop_index: usize,
+  kind: BindingKind,
+) -> Result<AsyncEval<()>, VmError> {
+  let value = match scope.heap().get_root(value_root) {
+    Some(v) => v,
+    None => {
+      // The root has been removed unexpectedly; avoid leaking any excluded-key roots.
+      scope.heap_mut().remove_root(value_root);
+      async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+      return Err(VmError::InvariantViolation("missing destructuring value root"));
+    }
+  };
+  let Value::Object(obj) = value else {
+    // Clean up persistent roots *before* allocating the error object so we don't leak even if
+    // `throw_type_error` itself fails (e.g. OOM).
+    scope.heap_mut().remove_root(value_root);
+    async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+    return Err(
+      throw_type_error(evaluator.vm, scope, "object destructuring requires object")
+        .unwrap_or_else(|e| e),
+    );
+  };
+
+  let cleanup = |scope: &mut Scope<'_>, excluded: &mut Vec<RootedPropertyKey>| {
+    scope.heap_mut().remove_root(value_root);
+    async_cleanup_rooted_property_keys(scope.heap_mut(), excluded);
+  };
+
+  for (idx, prop) in pat
+    .properties
+    .iter()
+    .enumerate()
+    .skip(start_prop_index)
+  {
+    // Budget object destructuring by pattern size.
+    if let Err(err) = evaluator.tick() {
+      cleanup(scope, &mut excluded);
+      return Err(err);
+    }
+
+    let prop = &prop.stx;
+    let key = match &prop.key {
+      ClassOrObjKey::Direct(direct) => match resolve_obj_pat_direct_key(scope, direct) {
+        Ok(key) => key,
+        Err(err) => {
+          cleanup(scope, &mut excluded);
+          return Err(err);
+        }
+      },
+      ClassOrObjKey::Computed(expr) => {
+        let key_eval = match async_eval_expr(evaluator, scope, expr) {
+          Ok(v) => v,
+          Err(err) => {
+            cleanup(scope, &mut excluded);
+            return Err(err);
+          }
+        };
+        match key_eval {
+          AsyncEval::Complete(key_value) => {
+            let key = match evaluator
+              .to_property_key_operator(scope, key_value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+            {
+              Ok(key) => key,
+              Err(err) => {
+                cleanup(scope, &mut excluded);
+                return Err(err);
+              }
+            };
+            key
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(_) = suspend.frames.try_reserve(1) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              cleanup(scope, &mut excluded);
+              return Err(VmError::OutOfMemory);
+            }
+            suspend.frames.push_back(AsyncFrame::BindObjAfterKey {
+              pat: pat as *const ObjPat,
+              prop_index: idx,
+              value_root,
+              excluded,
+              kind,
+            });
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+        }
+      }
+    };
+
+    let rooted_key = match async_root_property_key(scope, key) {
+      Ok(k) => k,
+      Err(err) => {
+        scope.heap_mut().remove_root(value_root);
+        async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+        return Err(err);
+      }
+    };
+    excluded.push(rooted_key);
+
+    let mut prop_value = match scope
+      .ordinary_get_with_host_and_hooks(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        obj,
+        key,
+        Value::Object(obj),
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+    {
+      Ok(v) => v,
+      Err(err) => {
+        cleanup(scope, &mut excluded);
+        return Err(err);
+      }
+    };
+
+    if matches!(prop_value, Value::Undefined) {
+      if let Some(default_expr) = &prop.default_value {
+        let default_eval = match async_eval_expr(evaluator, scope, default_expr) {
+          Ok(v) => v,
+          Err(err) => {
+            cleanup(scope, &mut excluded);
+            return Err(err);
+          }
+        };
+        match default_eval {
+          AsyncEval::Complete(v) => prop_value = v,
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(_) = suspend.frames.try_reserve(1) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              cleanup(scope, &mut excluded);
+              return Err(VmError::OutOfMemory);
+            }
+            suspend.frames.push_back(AsyncFrame::BindObjAfterDefault {
+              pat: pat as *const ObjPat,
+              prop_index: idx,
+              value_root,
+              excluded,
+              kind,
+            });
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+        }
+      }
+    }
+
+    let target_bind = match async_bind_pattern(evaluator, scope, &prop.target.stx, prop_value, kind) {
+      Ok(v) => v,
+      Err(err) => {
+        cleanup(scope, &mut excluded);
+        return Err(err);
+      }
+    };
+    match target_bind {
+      AsyncEval::Complete(()) => {}
+      AsyncEval::Suspend(mut suspend) => {
+        if let Err(_) = suspend.frames.try_reserve(1) {
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          cleanup(scope, &mut excluded);
+          return Err(VmError::OutOfMemory);
+        }
+        suspend.frames.push_back(AsyncFrame::BindObjContinue {
+          pat: pat as *const ObjPat,
+          next_prop_index: idx.saturating_add(1),
+          value_root,
+          excluded,
+          kind,
+        });
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+    }
+  }
+
+  let Some(rest_pat) = &pat.rest else {
+    scope.heap_mut().remove_root(value_root);
+    async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+    return Ok(AsyncEval::Complete(()));
+  };
+
+  let rest_obj = match scope.alloc_object() {
+    Ok(obj) => obj,
+    Err(err) => {
+      cleanup(scope, &mut excluded);
+      return Err(err);
+    }
+  };
+  // Root the rest object only for the duration of this operation (including any nested
+  // allocations triggered by binding `rest_pat`).
+  let mut rest_scope = scope.reborrow();
+  if let Err(err) = rest_scope.push_root(Value::Object(rest_obj)) {
+    cleanup(&mut rest_scope, &mut excluded);
+    return Err(err);
+  }
+
+  let keys = match rest_scope.ordinary_own_property_keys_with_tick(obj, || evaluator.tick()) {
+    Ok(keys) => keys,
+    Err(err) => {
+      cleanup(&mut rest_scope, &mut excluded);
+      return Err(err);
+    }
+  };
+  for key in keys {
+    // Budget rest-property copying.
+    if let Err(err) = evaluator.tick() {
+      cleanup(&mut rest_scope, &mut excluded);
+      return Err(err);
+    }
+
+    if excluded
+      .iter()
+      .any(|excluded_key| rest_scope.heap().property_key_eq(&excluded_key.key, &key))
+    {
+      continue;
+    }
+
+    let desc = match rest_scope.ordinary_get_own_property(obj, key) {
+      Ok(desc) => desc,
+      Err(err) => {
+        cleanup(&mut rest_scope, &mut excluded);
+        return Err(err);
+      }
+    };
+    let Some(desc) = desc else {
+      continue;
+    };
+    if !desc.enumerable {
+      continue;
+    }
+
+    let v = match rest_scope
+      .ordinary_get_with_host_and_hooks(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        obj,
+        key,
+        Value::Object(obj),
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rest_scope, err))
+    {
+      Ok(v) => v,
+      Err(err) => {
+        cleanup(&mut rest_scope, &mut excluded);
+        return Err(err);
+      }
+    };
+    if let Err(err) = rest_scope
+      .create_data_property(rest_obj, key, v)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rest_scope, err))
+    {
+      cleanup(&mut rest_scope, &mut excluded);
+      return Err(err);
+    }
+  }
+
+  // We no longer need the base object or excluded keys once the rest object has been created.
+  rest_scope.heap_mut().remove_root(value_root);
+  async_cleanup_rooted_property_keys(rest_scope.heap_mut(), &mut excluded);
+
+  async_bind_pattern(evaluator, &mut rest_scope, &rest_pat.stx, Value::Object(rest_obj), kind)
+}
+
+fn async_array_like_length(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+) -> Result<u32, VmError> {
+  let key_s = scope.alloc_string("length")?;
+  let key = PropertyKey::from_string(key_s);
+  let v = scope
+    .ordinary_get_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      obj,
+      key,
+      Value::Object(obj),
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+  match v {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as u32),
+    Value::Undefined => Ok(0),
+    _ => Err(VmError::Unimplemented("array-like length")),
+  }
+}
+
+fn async_array_like_get(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  idx: u32,
+) -> Result<Value, VmError> {
+  let key_str = idx.to_string();
+  let key_s = scope.alloc_string(&key_str)?;
+  let key = PropertyKey::from_string(key_s);
+  scope
+    .ordinary_get_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      obj,
+      key,
+      Value::Object(obj),
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+}
+
+fn async_bind_array_pattern(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ArrPat,
+  value_root: RootId,
+  kind: BindingKind,
+) -> Result<AsyncEval<()>, VmError> {
+  let value = match scope.heap().get_root(value_root) {
+    Some(v) => v,
+    None => {
+      scope.heap_mut().remove_root(value_root);
+      return Err(VmError::InvariantViolation("missing destructuring value root"));
+    }
+  };
+  let Value::Object(obj) = value else {
+    scope.heap_mut().remove_root(value_root);
+    return Err(
+      throw_type_error(evaluator.vm, scope, "array destructuring requires object").unwrap_or_else(|e| e),
+    );
+  };
+
+  let len = match async_array_like_length(evaluator, scope, obj) {
+    Ok(len) => len,
+    Err(err) => {
+      scope.heap_mut().remove_root(value_root);
+      return Err(err);
+    }
+  };
+  async_bind_array_pattern_from(evaluator, scope, pat, value_root, kind, 0, 0, len)
+}
+
+fn async_bind_array_pattern_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ArrPat,
+  value_root: RootId,
+  kind: BindingKind,
+  start_elem_index: usize,
+  start_array_index: u32,
+  len: u32,
+) -> Result<AsyncEval<()>, VmError> {
+  let value = match scope.heap().get_root(value_root) {
+    Some(v) => v,
+    None => {
+      scope.heap_mut().remove_root(value_root);
+      return Err(VmError::InvariantViolation("missing destructuring value root"));
+    }
+  };
+  let Value::Object(obj) = value else {
+    scope.heap_mut().remove_root(value_root);
+    return Err(
+      throw_type_error(evaluator.vm, scope, "array destructuring requires object").unwrap_or_else(|e| e),
+    );
+  };
+
+  let cleanup = |scope: &mut Scope<'_>| {
+    scope.heap_mut().remove_root(value_root);
+  };
+
+  let mut array_index = start_array_index;
+  for (elem_index, elem) in pat.elements.iter().enumerate().skip(start_elem_index) {
+    // Budget array destructuring by pattern size.
+    if let Err(err) = evaluator.tick() {
+      cleanup(scope);
+      return Err(err);
+    }
+
+    let Some(elem) = elem else {
+      array_index = array_index.saturating_add(1);
+      continue;
+    };
+
+    let mut item = if array_index < len {
+      match async_array_like_get(evaluator, scope, obj, array_index) {
+        Ok(v) => v,
+        Err(err) => {
+          cleanup(scope);
+          return Err(err);
+        }
+      }
+    } else {
+      Value::Undefined
+    };
+
+    if matches!(item, Value::Undefined) {
+      if let Some(default_expr) = &elem.default_value {
+        let default_eval = match async_eval_expr(evaluator, scope, default_expr) {
+          Ok(v) => v,
+          Err(err) => {
+            cleanup(scope);
+            return Err(err);
+          }
+        };
+        match default_eval {
+          AsyncEval::Complete(v) => item = v,
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(_) = suspend.frames.try_reserve(1) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              cleanup(scope);
+              return Err(VmError::OutOfMemory);
+            }
+            suspend.frames.push_back(AsyncFrame::BindArrAfterDefault {
+              pat: pat as *const ArrPat,
+              elem_index,
+              array_index,
+              len,
+              value_root,
+              kind,
+            });
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+        }
+      }
+    }
+
+    let elem_bind = match async_bind_pattern(evaluator, scope, &elem.target.stx, item, kind) {
+      Ok(v) => v,
+      Err(err) => {
+        cleanup(scope);
+        return Err(err);
+      }
+    };
+    match elem_bind {
+      AsyncEval::Complete(()) => {}
+      AsyncEval::Suspend(mut suspend) => {
+        if let Err(_) = suspend.frames.try_reserve(1) {
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          cleanup(scope);
+          return Err(VmError::OutOfMemory);
+        }
+        suspend.frames.push_back(AsyncFrame::BindArrContinue {
+          pat: pat as *const ArrPat,
+          elem_index: elem_index.saturating_add(1),
+          array_index: array_index.saturating_add(1),
+          len,
+          value_root,
+          kind,
+        });
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+    }
+
+    array_index = array_index.saturating_add(1);
+  }
+
+  let Some(rest_pat) = &pat.rest else {
+    scope.heap_mut().remove_root(value_root);
+    return Ok(AsyncEval::Complete(()));
+  };
+
+  let rest_arr = match scope.alloc_object() {
+    Ok(obj) => obj,
+    Err(err) => {
+      cleanup(scope);
+      return Err(err);
+    }
+  };
+  let mut rest_scope = scope.reborrow();
+  if let Err(err) = rest_scope.push_root(Value::Object(rest_arr)) {
+    cleanup(&mut rest_scope);
+    return Err(err);
+  }
+
+  let mut rest_idx: u32 = 0;
+  while array_index < len {
+    // Budget rest-element copying.
+    if let Err(err) = evaluator.tick() {
+      cleanup(&mut rest_scope);
+      return Err(err);
+    }
+
+    let v = match async_array_like_get(evaluator, &mut rest_scope, obj, array_index) {
+      Ok(v) => v,
+      Err(err) => {
+        cleanup(&mut rest_scope);
+        return Err(err);
+      }
+    };
+    // Root the element value while allocating the property key and defining the property.
+    let res = {
+      let mut elem_scope = rest_scope.reborrow();
+      (|| -> Result<(), VmError> {
+        let v = elem_scope.push_root(v)?;
+        let key_str = rest_idx.to_string();
+        let key_s = elem_scope.alloc_string(&key_str)?;
+        let key = PropertyKey::from_string(key_s);
+        let _ = elem_scope
+          .create_data_property(rest_arr, key, v)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut elem_scope, err))?;
+        Ok(())
+      })()
+    };
+    if let Err(err) = res {
+      cleanup(&mut rest_scope);
+      return Err(err);
+    }
+
+    array_index = array_index.saturating_add(1);
+    rest_idx = rest_idx.saturating_add(1);
+  }
+
+  // Define `length` as non-enumerable to match real arrays closely enough for rest patterns.
+  let length_s = match rest_scope.alloc_string("length") {
+    Ok(s) => s,
+    Err(err) => {
+      cleanup(&mut rest_scope);
+      return Err(err);
+    }
+  };
+  let length_key = PropertyKey::from_string(length_s);
+  let length_desc = PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value: Value::Number(rest_idx as f64),
+      writable: true,
+    },
+  };
+  if let Err(err) = rest_scope
+    .define_property(rest_arr, length_key, length_desc)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rest_scope, err))
+  {
+    cleanup(&mut rest_scope);
+    return Err(err);
+  }
+
+  // We no longer need the base array once the rest array has been created.
+  rest_scope.heap_mut().remove_root(value_root);
+
+  async_bind_pattern(evaluator, &mut rest_scope, &rest_pat.stx, Value::Object(rest_arr), kind)
 }
 
 fn async_eval_while(
@@ -16933,20 +17749,38 @@ fn async_resume_from_frames(
       } => match state {
         AsyncState::Expr(expr_res) => match expr_res {
           Ok(v) => {
-            let decl = unsafe { &*decl };
-            if let Err(err) =
-              async_bind_var_declarator_value(evaluator, scope, decl, next_declarator_index, v)
-            {
-              state = AsyncState::Completion(completion_from_expr_result(Err(err))?);
-              continue;
+            let decl_ptr = decl;
+            let decl = unsafe { &*decl_ptr };
+            match async_bind_var_declarator_value(evaluator, scope, decl, next_declarator_index, v) {
+              Ok(AsyncEval::Complete(())) => {}
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                if let Err(_) = suspend.frames.try_reserve(1) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  for mut frame in frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  return Err(VmError::OutOfMemory);
+                }
+                suspend.frames.push_back(AsyncFrame::VarDeclAfterBinding {
+                  decl: decl_ptr,
+                  next_declarator_index: next_declarator_index.saturating_add(1),
+                });
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?);
+                continue;
+              }
+              Err(err) => return Err(err),
             }
 
-            match async_eval_var_decl(
-              evaluator,
-              scope,
-              decl,
-              next_declarator_index.saturating_add(1),
-            ) {
+            match async_eval_var_decl(evaluator, scope, decl, next_declarator_index.saturating_add(1)) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
@@ -16966,6 +17800,485 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "var decl frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::VarDeclAfterBinding {
+        decl,
+        next_declarator_index,
+      } => match state {
+        AsyncState::Expr(bind_res) => match bind_res {
+          Ok(_) => {
+            let decl = unsafe { &*decl };
+            match async_eval_var_decl(evaluator, scope, decl, next_declarator_index) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "var decl after binding frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindObjAfterKey {
+        pat,
+        prop_index,
+        value_root,
+        mut excluded,
+        kind,
+      } => match state {
+        AsyncState::Expr(key_res) => match key_res {
+          Ok(key_value) => {
+            let pat_ref = unsafe { &*pat };
+            let value = scope
+              .heap()
+              .get_root(value_root)
+              .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+            let Value::Object(obj) = value else {
+              scope.heap_mut().remove_root(value_root);
+              async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+              state = AsyncState::Expr(Err(throw_type_error(
+                evaluator.vm,
+                scope,
+                "object destructuring requires object",
+              )?));
+              continue;
+            };
+
+            let key = match evaluator
+              .to_property_key_operator(scope, key_value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+            {
+              Ok(key) => key,
+              Err(err) => {
+                scope.heap_mut().remove_root(value_root);
+                async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            let rooted_key = match async_root_property_key(scope, key) {
+              Ok(k) => k,
+              Err(err) => {
+                scope.heap_mut().remove_root(value_root);
+                async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+            excluded.push(rooted_key);
+
+            let prop = pat_ref
+              .properties
+              .get(prop_index)
+              .ok_or(VmError::InvariantViolation(
+                "async object pattern continuation out of bounds",
+              ))?;
+            let prop = &prop.stx;
+
+            let mut prop_value = match scope
+              .ordinary_get_with_host_and_hooks(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                obj,
+                key,
+                Value::Object(obj),
+              )
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+            {
+              Ok(v) => v,
+              Err(err) => {
+                scope.heap_mut().remove_root(value_root);
+                async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            if matches!(prop_value, Value::Undefined) {
+              if let Some(default_expr) = &prop.default_value {
+                match async_eval_expr(evaluator, scope, default_expr) {
+                  Ok(AsyncEval::Complete(v)) => prop_value = v,
+                  Ok(AsyncEval::Suspend(mut suspend)) => {
+                    if let Err(_) = suspend.frames.try_reserve(1) {
+                      for mut frame in suspend.frames {
+                        async_teardown_frame(scope.heap_mut(), &mut frame);
+                      }
+                      scope.heap_mut().remove_root(value_root);
+                      async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                      for mut frame in frames {
+                        async_teardown_frame(scope.heap_mut(), &mut frame);
+                      }
+                      return Err(VmError::OutOfMemory);
+                    }
+                    suspend.frames.push_back(AsyncFrame::BindObjAfterDefault {
+                      pat,
+                      prop_index,
+                      value_root,
+                      excluded,
+                      kind,
+                    });
+                    suspend.frames.append(&mut frames);
+                    return Ok(AsyncBodyResult::Await {
+                      await_value: suspend.await_value,
+                      frames: suspend.frames,
+                    });
+                  }
+                  Err(err) => {
+                    scope.heap_mut().remove_root(value_root);
+                    async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                }
+              }
+            }
+
+            match async_bind_pattern(evaluator, scope, &prop.target.stx, prop_value, kind) {
+              Ok(AsyncEval::Complete(())) => {}
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                if let Err(_) = suspend.frames.try_reserve(1) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  scope.heap_mut().remove_root(value_root);
+                  async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                  for mut frame in frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  return Err(VmError::OutOfMemory);
+                }
+                suspend.frames.push_back(AsyncFrame::BindObjContinue {
+                  pat,
+                  next_prop_index: prop_index.saturating_add(1),
+                  value_root,
+                  excluded,
+                  kind,
+                });
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err) => {
+                scope.heap_mut().remove_root(value_root);
+                async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            }
+
+            match async_bind_object_pattern_from(
+              evaluator,
+              scope,
+              pat_ref,
+              value_root,
+              excluded,
+              prop_index.saturating_add(1),
+              kind,
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(value_root);
+            async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind obj after key frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindObjAfterDefault {
+        pat,
+        prop_index,
+        value_root,
+        mut excluded,
+        kind,
+      } => match state {
+        AsyncState::Expr(default_res) => match default_res {
+          Ok(default_value) => {
+            let pat_ref = unsafe { &*pat };
+            let prop = pat_ref
+              .properties
+              .get(prop_index)
+              .ok_or(VmError::InvariantViolation(
+                "async object pattern continuation out of bounds",
+              ))?;
+            let prop = &prop.stx;
+
+            match async_bind_pattern(evaluator, scope, &prop.target.stx, default_value, kind) {
+              Ok(AsyncEval::Complete(())) => {}
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                if let Err(_) = suspend.frames.try_reserve(1) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  scope.heap_mut().remove_root(value_root);
+                  async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                  for mut frame in frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  return Err(VmError::OutOfMemory);
+                }
+                suspend.frames.push_back(AsyncFrame::BindObjContinue {
+                  pat,
+                  next_prop_index: prop_index.saturating_add(1),
+                  value_root,
+                  excluded,
+                  kind,
+                });
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err) => {
+                scope.heap_mut().remove_root(value_root);
+                async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            }
+
+            match async_bind_object_pattern_from(
+              evaluator,
+              scope,
+              pat_ref,
+              value_root,
+              excluded,
+              prop_index.saturating_add(1),
+              kind,
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(value_root);
+            async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind obj after default frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindObjContinue {
+        pat,
+        next_prop_index,
+        value_root,
+        mut excluded,
+        kind,
+      } => match state {
+        AsyncState::Expr(bind_res) => match bind_res {
+          Ok(_) => {
+            let pat_ref = unsafe { &*pat };
+            match async_bind_object_pattern_from(
+              evaluator,
+              scope,
+              pat_ref,
+              value_root,
+              excluded,
+              next_prop_index,
+              kind,
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(value_root);
+            async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind obj continue frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindArrAfterDefault {
+        pat,
+        elem_index,
+        array_index,
+        len,
+        value_root,
+        kind,
+      } => match state {
+        AsyncState::Expr(default_res) => match default_res {
+          Ok(default_value) => {
+            let pat_ref = unsafe { &*pat };
+            let elem = pat_ref
+              .elements
+              .get(elem_index)
+              .and_then(|e| e.as_ref())
+              .ok_or(VmError::InvariantViolation(
+                "async array pattern continuation out of bounds",
+              ))?;
+
+            match async_bind_pattern(evaluator, scope, &elem.target.stx, default_value, kind) {
+              Ok(AsyncEval::Complete(())) => {}
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                if let Err(_) = suspend.frames.try_reserve(1) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  scope.heap_mut().remove_root(value_root);
+                  for mut frame in frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  return Err(VmError::OutOfMemory);
+                }
+                suspend.frames.push_back(AsyncFrame::BindArrContinue {
+                  pat,
+                  elem_index: elem_index.saturating_add(1),
+                  array_index: array_index.saturating_add(1),
+                  len,
+                  value_root,
+                  kind,
+                });
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err) => {
+                scope.heap_mut().remove_root(value_root);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            }
+
+            match async_bind_array_pattern_from(
+              evaluator,
+              scope,
+              pat_ref,
+              value_root,
+              kind,
+              elem_index.saturating_add(1),
+              array_index.saturating_add(1),
+              len,
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(value_root);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr after default frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindArrContinue {
+        pat,
+        elem_index,
+        array_index,
+        len,
+        value_root,
+        kind,
+      } => match state {
+        AsyncState::Expr(bind_res) => match bind_res {
+          Ok(_) => {
+            let pat_ref = unsafe { &*pat };
+            match async_bind_array_pattern_from(
+              evaluator,
+              scope,
+              pat_ref,
+              value_root,
+              kind,
+              elem_index,
+              array_index,
+              len,
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(value_root);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr continue frame received completion state",
           ))
         }
       },
