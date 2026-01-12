@@ -1079,6 +1079,180 @@ impl BrowserDocumentDom2 {
     Ok(frame)
   }
 
+  /// Ensure this document has up-to-date style + layout artifacts for DOM geometry queries.
+  ///
+  /// This mirrors the style/layout portion of [`BrowserDocumentDom2::render_frame_with_deadlines`],
+  /// but intentionally does **not** paint.
+  ///
+  /// Callers can use this to satisfy CSSOM View properties (e.g. `Element.clientTop/clientLeft`)
+  /// that need computed border widths while avoiding the cost/side-effects of a paint.
+  pub(crate) fn ensure_layout_for_dom_query(&mut self) -> Result<()> {
+    // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
+    if self.prepared.is_none() {
+      self.invalidate_all();
+    }
+
+    let needs_layout = self.style_dirty
+      || self.layout_dirty
+      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
+    if !needs_layout {
+      return Ok(());
+    }
+
+    // Layout without style changes can often avoid a full cascade by patching the existing box tree
+    // and rerunning only layout (e.g. text content changes).
+    let can_incremental_relayout = !self.style_dirty
+      && self.layout_dirty
+      && !self.dirty_text_nodes.is_empty()
+      && self.dirty_style_nodes.is_empty()
+      && self.dirty_structure_nodes.is_empty()
+      && self.prepared.is_some()
+      && self.last_dom_mapping.is_some();
+
+    let mut did_incremental_layout = false;
+    if can_incremental_relayout {
+      let mut prepared = self
+        .prepared
+        .take()
+        .expect("prepared exists when can_incremental_relayout=true");
+      match self.incremental_relayout_for_text_changes(&mut prepared) {
+        Ok(true) => {
+          self.invalidation_counters.incremental_relayouts = self
+            .invalidation_counters
+            .incremental_relayouts
+            .saturating_add(1);
+          // Incremental relayout produces fresh cached layout artifacts without taking a full
+          // renderer-DOM snapshot, so we still need to record that we've now "seen" the live DOM
+          // mutation generation. Without this, generation-based dirty detection would force an
+          // extra full pipeline run on the next layout/paint attempt.
+          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+          self.prepared = Some(prepared);
+          did_incremental_layout = true;
+        }
+        Ok(false) => {
+          // Could not safely apply incremental relayout; fall back to a full pipeline run.
+          self.prepared = Some(prepared);
+        }
+        Err(err) => {
+          // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
+          self.prepared = Some(prepared);
+          return Err(err);
+        }
+      }
+    }
+
+    if !did_incremental_layout {
+      let prev_prepared = self.prepared.take();
+      let mut prepared = match self.prepare_dom_with_options() {
+        Ok(prepared) => prepared,
+        Err(err) => {
+          self.prepared = prev_prepared;
+          return Err(err);
+        }
+      };
+
+      self.invalidation_counters.full_restyles =
+        self.invalidation_counters.full_restyles.saturating_add(1);
+      self.invalidation_counters.full_relayouts =
+        self.invalidation_counters.full_relayouts.saturating_add(1);
+
+      let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
+      match now_ms {
+        None => {
+          prepared.fragment_tree.transition_state = None;
+        }
+        Some(now_ms) => {
+          let prev_state = prev_prepared
+            .as_ref()
+            .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
+          let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
+          let mut transition_state = TransitionState::update_for_style_change(
+            prev_state,
+            prev_box_tree,
+            prepared.box_tree(),
+            now_ms,
+          );
+          transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
+          prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
+        }
+      }
+
+      self.prepared = Some(prepared);
+    }
+
+    // We now have fresh style/layout artifacts stored in `self.prepared`. Mark paint as dirty so
+    // callers that want pixels can repaint from cache, but clear style/layout dirtiness so we don't
+    // rerun expensive pipeline stages on subsequent queries.
+    self.style_dirty = false;
+    self.layout_dirty = false;
+    self.dirty_style_nodes.clear();
+    self.dirty_text_nodes.clear();
+    self.dirty_structure_nodes.clear();
+    self.paint_dirty = true;
+    Ok(())
+  }
+
+  /// Compute CSSOM View `clientTop`/`clientLeft` values for a DOM element.
+  ///
+  /// These values are defined as the computed border widths (plus any scrollbars between padding
+  /// and border edges). Scrollbar contributions are currently approximated as 0.
+  ///
+  /// The return values follow WebIDL `long` semantics (clamped/truncated to i32).
+  pub(crate) fn element_client_border_widths(&mut self, node_id: crate::dom2::NodeId) -> (i32, i32) {
+    // Ensure style/layout is fresh before reading computed style.
+    if self.ensure_layout_for_dom_query().is_err() {
+      return (0, 0);
+    }
+
+    let Some(prepared) = self.prepared.as_ref() else {
+      return (0, 0);
+    };
+    let Some(mapping) = self.last_dom_mapping.as_ref() else {
+      return (0, 0);
+    };
+
+    let Some(styled_node_id) = mapping.preorder_for_node_id(node_id) else {
+      // Detached nodes have no associated CSS box.
+      return (0, 0);
+    };
+
+    fn find_principal_box<'a>(root: &'a BoxNode, styled_node_id: usize) -> Option<&'a BoxNode> {
+      let mut stack: Vec<&BoxNode> = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
+          return Some(node);
+        }
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    let Some(principal_box) = find_principal_box(&prepared.box_tree.root, styled_node_id) else {
+      // The element is present in the DOM snapshot but did not generate a layout box (e.g. inert
+      // template contents, `display: contents`, etc).
+      return (0, 0);
+    };
+
+    // CSSOM View: return 0 for inline boxes. Treat *non-atomic* inline boxes as inline; atomic
+    // inline-level boxes (inline-block/flex/grid/etc) should still expose border widths.
+    let is_inline = matches!(
+      &principal_box.box_type,
+      BoxType::Inline(inline) if inline.formatting_context.is_none()
+    );
+    if is_inline {
+      return (0, 0);
+    }
+
+    let top = principal_box.style.used_border_top_width().to_px();
+    let left = principal_box.style.used_border_left_width().to_px();
+    (top as i32, left as i32)
+  }
+
   /// Paints the most recently laid-out document without re-running style/layout.
   ///
   /// This mirrors [`super::BrowserDocument::paint_from_cache_frame_with_deadline`] but operates on

@@ -21646,6 +21646,56 @@ fn html_element_hidden_set_native(
   Ok(Value::Undefined)
 }
 
+fn element_client_top_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let value = host
+    .as_any_mut()
+    .downcast_mut::<BrowserDocumentDom2>()
+    .map(|doc| doc.element_client_border_widths(node_id).0)
+    .unwrap_or(0);
+  Ok(Value::Number(value as f64))
+}
+
+fn element_client_left_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let value = host
+    .as_any_mut()
+    .downcast_mut::<BrowserDocumentDom2>()
+    .map(|doc| doc.element_client_border_widths(node_id).1)
+    .unwrap_or(0);
+  Ok(Value::Number(value as f64))
+}
+
 fn element_class_name_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -29635,6 +29685,56 @@ fn init_window_globals(
         configurable: true,
         kind: PropertyKind::Accessor {
           get: Value::Object(previous_element_sibling_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // Element.clientTop
+    let client_top_get_call_id = vm.register_native_call(element_client_top_get_native)?;
+    let client_top_get_name = scope.alloc_string("get clientTop")?;
+    scope.push_root(Value::String(client_top_get_name))?;
+    let client_top_get_func =
+      scope.alloc_native_function(client_top_get_call_id, None, client_top_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      client_top_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(client_top_get_func))?;
+    let client_top_key = alloc_key(&mut scope, "clientTop")?;
+    scope.define_property(
+      element_proto,
+      client_top_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(client_top_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // Element.clientLeft
+    let client_left_get_call_id = vm.register_native_call(element_client_left_get_native)?;
+    let client_left_get_name = scope.alloc_string("get clientLeft")?;
+    scope.push_root(Value::String(client_left_get_name))?;
+    let client_left_get_func =
+      scope.alloc_native_function(client_left_get_call_id, None, client_left_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      client_left_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(client_left_get_func))?;
+    let client_left_key = alloc_key(&mut scope, "clientLeft")?;
+    scope.define_property(
+      element_proto,
+      client_left_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(client_left_get_func),
           set: Value::Undefined,
         },
       },
@@ -39758,6 +39858,112 @@ mod tests {
     );
 
     realm.teardown();
+    Ok(())
+  }
+
+  fn renderer_for_dom2_layout_tests() -> crate::api::FastRender {
+    crate::api::FastRender::builder()
+      .font_sources(crate::text::font_db::FontConfig::bundled_only())
+      .build()
+      .expect("renderer")
+  }
+
+  #[test]
+  fn element_client_top_left_exist_on_document_element_and_are_numbers() -> Result<(), VmError> {
+    let renderer = renderer_for_dom2_layout_tests();
+    let mut host = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body></body></html>",
+      crate::api::RenderOptions::new().with_viewport(64, 64),
+    )
+    .expect("document");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const html = document.documentElement;\n\
+        const top = html.clientTop;\n\
+        const left = html.clientLeft;\n\
+        // Avoid relying on optional ES builtins like `Number.isFinite`.\n\
+        return typeof top === 'number'\n\
+          && typeof left === 'number'\n\
+          && top === top\n\
+          && left === left;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_client_top_left_return_border_width_for_non_inline_boxes() -> Result<(), VmError> {
+    let renderer = renderer_for_dom2_layout_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            #box { border: 3px solid black; }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>
+    "#;
+    let mut host = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      crate::api::RenderOptions::new().with_viewport(64, 64),
+    )
+    .expect("document");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.getElementById('box');\n\
+        return el.clientTop === 3 && el.clientLeft === 3;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_client_top_left_are_zero_for_inline_boxes() -> Result<(), VmError> {
+    let renderer = renderer_for_dom2_layout_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            #inline { border: 3px solid black; }
+          </style>
+        </head>
+        <body>
+          <span id="inline">hi</span>
+        </body>
+      </html>
+    "#;
+    let mut host = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      crate::api::RenderOptions::new().with_viewport(64, 64),
+    )
+    .expect("document");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.getElementById('inline');\n\
+        return el.clientTop === 0 && el.clientLeft === 0;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 }
