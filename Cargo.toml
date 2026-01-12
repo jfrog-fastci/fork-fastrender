@@ -13,7 +13,6 @@ members = [
   "crates/webidl-ir",
   "crates/js-wpt-dom-runner",
   "crates/webidl-js-runtime",
-  "crates/webidl-vm-js",
 ]
 # NOTE: crates/webidl-* should be migrated into vendor/ecma-rs/ per instructions/ecma_rs_ownership.md
 # and instructions/webidl_consolidation.md. These are temporary until consolidation is complete.
@@ -23,7 +22,6 @@ default-members = [
   "crates/webidl-ir",
   "crates/js-wpt-dom-runner",
   "crates/webidl-js-runtime",
-  "crates/webidl-vm-js",
 ]
 # `vendor/ecma-rs` is a nested workspace (vendored). Exclude it so Cargo can build `vm-js`
 # and friends using their own workspace-inherited metadata.
@@ -143,7 +141,7 @@ read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
 webidl-js-runtime = { path = "crates/webidl-js-runtime" }
-webidl-vm-js = { path = "crates/webidl-vm-js" }
+webidl-vm-js = { path = "vendor/ecma-rs/webidl-vm-js" }
 webidl-ir = { path = "crates/webidl-ir" }
 vm-js = { path = "vendor/ecma-rs/vm-js" }
 parse-js = { path = "vendor/ecma-rs/parse-js", features = ["diagnostics"] }

@@ -5667,8 +5667,6 @@ version = "0.1.0"
 dependencies = [
  "vm-js",
  "webidl",
- "webidl-bindings-core",
- "webidl-ir",
 ]
 
 [[package]]

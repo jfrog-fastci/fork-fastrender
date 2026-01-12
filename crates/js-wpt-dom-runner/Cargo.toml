@@ -33,4 +33,6 @@ markup5ever = { version = "0.35", optional = true }
 markup5ever_rcdom = "0.35"
 rquickjs = { version = "0.9", optional = true }
 vm-js = { path = "../../vendor/ecma-rs/vm-js", optional = true }
-webidl-vm-js = { path = "../webidl-vm-js", optional = true }
+# NOTE: `webidl-vm-js` is vendored from `ecma-rs` (FastRender no longer carries a workspace-local
+# adapter crate after WebIDL consolidation).
+webidl-vm-js = { path = "../../vendor/ecma-rs/webidl-vm-js", optional = true }

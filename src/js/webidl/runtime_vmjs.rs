@@ -1749,6 +1749,13 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   }
 }
 
+#[derive(Default)]
+struct NoopVmHostHooks;
+
+impl VmHostHooks for NoopVmHostHooks {
+  fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
+}
+
 impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
   type JsValue = Value;
   type PropertyKey = PropertyKey;
@@ -1766,41 +1773,39 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
   }
 
   fn js_undefined(&self) -> Self::JsValue {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::js_undefined(&self.cx)
+    Value::Undefined
   }
 
   fn js_null(&self) -> Self::JsValue {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::js_null(&self.cx)
+    Value::Null
   }
 
   fn js_boolean(&self, value: bool) -> Self::JsValue {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::js_boolean(&self.cx, value)
+    Value::Bool(value)
   }
 
   fn js_number(&self, value: f64) -> Self::JsValue {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::js_number(&self.cx, value)
+    Value::Number(value)
   }
 
   fn alloc_string(&mut self, value: &str) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::alloc_string(
-      &mut self.cx,
-      value,
-    )
+    let s = self.cx.scope.alloc_string(value)?;
+    self.cx.scope.push_root(Value::String(s))?;
+    Ok(Value::String(s))
   }
 
   fn alloc_string_from_code_units(&mut self, units: &[u16]) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::alloc_string_from_code_units(
-      &mut self.cx,
-      units,
-    )
+    let s = self.cx.scope.alloc_string_from_code_units(units)?;
+    self.cx.scope.push_root(Value::String(s))?;
+    Ok(Value::String(s))
   }
 
   fn is_undefined(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_undefined(&self.cx, value)
+    matches!(value, Value::Undefined)
   }
 
   fn is_null(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_null(&self.cx, value)
+    matches!(value, Value::Null)
   }
 
   fn with_string_code_units<R>(
@@ -1808,55 +1813,77 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
     string: Self::JsValue,
     f: impl FnOnce(&[u16]) -> R,
   ) -> Result<R, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::with_string_code_units(
-      &mut self.cx,
-      string,
-      f,
-    )
+    let Value::String(s) = string else {
+      return Err(webidl_js_runtime::WebIdlJsRuntime::throw_type_error(
+        self,
+        "expected a string value",
+      ));
+    };
+    Ok(f(self.cx.scope.heap().get_string(s)?.as_code_units()))
   }
 
   fn property_key_from_str(&mut self, s: &str) -> Result<Self::PropertyKey, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::property_key_from_str(
-      &mut self.cx,
-      s,
-    )
+    let handle = self.cx.scope.alloc_string(s)?;
+    self.cx.scope.push_root(Value::String(handle))?;
+    Ok(PropertyKey::from_string(handle))
   }
 
   fn property_key_from_u32(&mut self, index: u32) -> Result<Self::PropertyKey, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::property_key_from_u32(
-      &mut self.cx,
-      index,
-    )
+    self.property_key_from_str(&index.to_string())
   }
 
   fn property_key_is_symbol(&self, key: Self::PropertyKey) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::property_key_is_symbol(
-      &self.cx, key,
-    )
+    matches!(key, PropertyKey::Symbol(_))
   }
 
   fn property_key_is_string(&self, key: Self::PropertyKey) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::property_key_is_string(
-      &self.cx, key,
-    )
+    matches!(key, PropertyKey::String(_))
   }
 
   fn property_key_to_js_string(
     &mut self,
     key: Self::PropertyKey,
   ) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::property_key_to_js_string(
-      &mut self.cx,
-      key,
-    )
+    match key {
+      PropertyKey::String(s) => {
+        self.cx.scope.push_root(Value::String(s))?;
+        Ok(Value::String(s))
+      }
+      PropertyKey::Symbol(sym) => {
+        let s = self.cx.scope.heap_mut().to_string(Value::Symbol(sym))?;
+        self.cx.scope.push_root(Value::String(s))?;
+        Ok(Value::String(s))
+      }
+    }
   }
 
   fn alloc_object(&mut self) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::alloc_object(&mut self.cx)
+    let obj = self.cx.scope.alloc_object()?;
+    self.cx.scope.push_root(Value::Object(obj))?;
+
+    // When a realm is initialized, prefer `%Object.prototype%` so the result behaves like a normal
+    // JavaScript object (e.g. has standard methods).
+    if let Some(intrinsics) = self.cx.vm.intrinsics() {
+      let proto = intrinsics.object_prototype();
+      self.cx.scope.push_root(Value::Object(proto))?;
+      self.cx.scope.object_set_prototype(obj, Some(proto))?;
+    }
+    Ok(Value::Object(obj))
   }
 
   fn alloc_array(&mut self) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::alloc_array(&mut self.cx)
+    let obj = self.cx.scope.alloc_array(0)?;
+    self.cx.scope.push_root(Value::Object(obj))?;
+
+    // When a realm is initialized, prefer `%Array.prototype%` so the result behaves like a normal
+    // JavaScript array (e.g. is iterable, has standard methods).
+    if let Some(intrinsics) = self.cx.vm.intrinsics() {
+      let proto = intrinsics.array_prototype();
+      self.cx.scope.push_root(Value::Object(proto))?;
+      self.cx.scope.object_set_prototype(obj, Some(proto))?;
+    }
+
+    Ok(Value::Object(obj))
   }
 
   fn define_data_property(
@@ -1866,45 +1893,72 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
     value: Self::JsValue,
     enumerable: bool,
   ) -> Result<(), Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::define_data_property(
-      &mut self.cx,
+    let Value::Object(obj) = obj else {
+      return Err(webidl_js_runtime::WebIdlJsRuntime::throw_type_error(
+        self,
+        "define_data_property: receiver is not an object",
+      ));
+    };
+
+    self.cx.scope.define_property(
       obj,
       key,
-      value,
-      enumerable,
+      vm_js::PropertyDescriptor {
+        enumerable,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value,
+          writable: true,
+        },
+      },
     )
   }
 
   fn is_object(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_object(&self.cx, value)
+    matches!(value, Value::Object(_))
   }
 
   fn is_callable(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_callable(&self.cx, value)
+    self.cx.scope.heap().is_callable(value).unwrap_or(false)
   }
 
   fn is_boolean(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_boolean(&self.cx, value)
+    matches!(value, Value::Bool(_))
   }
 
   fn is_number(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_number(&self.cx, value)
+    matches!(value, Value::Number(_))
   }
 
   fn is_bigint(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_bigint(&self.cx, value)
+    matches!(value, Value::BigInt(_))
   }
 
   fn is_string(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_string(&self.cx, value)
+    matches!(value, Value::String(_))
   }
 
   fn is_symbol(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::is_symbol(&self.cx, value)
+    matches!(value, Value::Symbol(_))
   }
 
   fn to_object(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::to_object(&mut self.cx, value)
+    let mut dummy_host = ();
+    let mut dummy_hooks = NoopVmHostHooks;
+
+    let obj = if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      self
+        .cx
+        .scope
+        .to_object(&mut *self.cx.vm, &mut dummy_host, hooks, value)?
+    } else {
+      self
+        .cx
+        .scope
+        .to_object(&mut *self.cx.vm, &mut dummy_host, &mut dummy_hooks, value)?
+    };
+    self.cx.scope.push_root(Value::Object(obj))?;
+    Ok(Value::Object(obj))
   }
 
   fn call(
@@ -1913,45 +1967,69 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
     this: Self::JsValue,
     args: &[Self::JsValue],
   ) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::call(
-      &mut self.cx,
-      callee,
-      this,
-      args,
-    )
+    if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      return self
+        .cx
+        .vm
+        .call_with_host(&mut self.cx.scope, hooks, callee, this, args);
+    }
+    self.cx.vm.call_without_host(&mut self.cx.scope, callee, this, args)
   }
 
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::to_boolean(
-      &mut self.cx,
-      value,
-    )
+    self.cx.scope.heap().to_boolean(value)
   }
 
   fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::to_number(&mut self.cx, value)
+    let mut dummy_host = ();
+    let mut dummy_hooks = NoopVmHostHooks;
+
+    if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      self
+        .cx
+        .scope
+        .to_number(&mut *self.cx.vm, &mut dummy_host, hooks, value)
+    } else {
+      self
+        .cx
+        .scope
+        .to_number(&mut *self.cx.vm, &mut dummy_host, &mut dummy_hooks, value)
+    }
   }
 
   fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::to_string(&mut self.cx, value)
+    let mut dummy_host = ();
+    let mut dummy_hooks = NoopVmHostHooks;
+
+    let s = if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      self
+        .cx
+        .scope
+        .to_string(&mut *self.cx.vm, &mut dummy_host, hooks, value)?
+    } else {
+      self
+        .cx
+        .scope
+        .to_string(&mut *self.cx.vm, &mut dummy_host, &mut dummy_hooks, value)?
+    };
+    self.cx.scope.push_root(Value::String(s))?;
+    Ok(Value::String(s))
   }
 
   fn string_to_utf8_lossy(&mut self, string: Self::JsValue) -> Result<String, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::string_to_utf8_lossy(
-      &mut self.cx,
-      string,
-    )
+    let string = webidl_js_runtime::JsRuntime::to_string(self, string)?;
+    let Value::String(s) = string else {
+      return Err(VmError::InvariantViolation("ToString returned non-string"));
+    };
+    Ok(self.cx.scope.heap().get_string(s)?.to_utf8_lossy())
   }
 
   fn to_bigint(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::to_bigint(&mut self.cx, value)
+    webidl::WebIdlJsRuntime::to_bigint(&mut self.cx, value)
   }
 
   fn to_numeric(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::to_numeric(
-      &mut self.cx,
-      value,
-    )
+    webidl::WebIdlJsRuntime::to_numeric(&mut self.cx, value)
   }
 
   fn get(
@@ -1959,17 +2037,52 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
     obj: Self::JsValue,
     key: Self::PropertyKey,
   ) -> Result<Self::JsValue, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::get(&mut self.cx, obj, key)
+    let Value::Object(object) = obj else {
+      return Err(webidl_js_runtime::WebIdlJsRuntime::throw_type_error(
+        self,
+        "Get: receiver is not an object",
+      ));
+    };
+    self.cx.scope.push_root(Value::Object(object))?;
+    match key {
+      PropertyKey::String(s) => self.cx.scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => self.cx.scope.push_root(Value::Symbol(s))?,
+    };
+
+    // Implement ECMAScript `[[Get]]` directly so accessor getters are invoked via `call` below.
+    let value = match self.cx.scope.heap().get_property(object, &key)? {
+      None => Value::Undefined,
+      Some(desc) => match desc.kind {
+        vm_js::PropertyKind::Data { value, .. } => value,
+        vm_js::PropertyKind::Accessor { get, .. } => {
+          if matches!(get, Value::Undefined) {
+            Value::Undefined
+          } else {
+            if !self.cx.scope.heap().is_callable(get)? {
+              return Err(VmError::TypeError("accessor getter is not callable"));
+            }
+            webidl_js_runtime::JsRuntime::call(self, get, Value::Object(object), &[])?
+          }
+        }
+      },
+    };
+
+    self.cx.scope.push_root(value)?;
+    Ok(value)
   }
 
   fn own_property_keys(
     &mut self,
     obj: Self::JsValue,
   ) -> Result<Vec<Self::PropertyKey>, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::own_property_keys(
-      &mut self.cx,
-      obj,
-    )
+    let Value::Object(obj) = obj else {
+      return Err(webidl_js_runtime::WebIdlJsRuntime::throw_type_error(
+        self,
+        "OwnPropertyKeys: receiver is not an object",
+      ));
+    };
+    self.cx.scope.push_root(Value::Object(obj))?;
+    self.cx.scope.heap().own_property_keys(obj)
   }
 
   fn get_own_property(
@@ -1977,11 +2090,33 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
     obj: Self::JsValue,
     key: Self::PropertyKey,
   ) -> Result<Option<webidl_js_runtime::JsOwnPropertyDescriptor<Self::JsValue>>, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::get_own_property(
-      &mut self.cx,
-      obj,
-      key,
-    )
+    let Value::Object(obj) = obj else {
+      return Err(webidl_js_runtime::WebIdlJsRuntime::throw_type_error(
+        self,
+        "GetOwnProperty: receiver is not an object",
+      ));
+    };
+    self.cx.scope.push_root(Value::Object(obj))?;
+    match key {
+      PropertyKey::String(s) => self.cx.scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => self.cx.scope.push_root(Value::Symbol(s))?,
+    };
+
+    let Some(desc) = self.cx.scope.heap().object_get_own_property(obj, &key)? else {
+      return Ok(None);
+    };
+
+    let kind = match desc.kind {
+      vm_js::PropertyKind::Data { value, .. } => webidl_js_runtime::JsPropertyKind::Data { value },
+      vm_js::PropertyKind::Accessor { get, set } => {
+        webidl_js_runtime::JsPropertyKind::Accessor { get, set }
+      }
+    };
+
+    Ok(Some(webidl_js_runtime::JsOwnPropertyDescriptor {
+      enumerable: desc.enumerable,
+      kind,
+    }))
   }
 
   fn get_method(
@@ -1989,13 +2124,12 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
     obj: Self::JsValue,
     key: Self::PropertyKey,
   ) -> Result<Option<Self::JsValue>, Self::Error> {
-    let method = <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::JsRuntime>::get_method(
-      &mut self.cx,
-      obj,
-      key,
-    )?;
-    if method.is_some() {
-      return Ok(method);
+    let value = webidl_js_runtime::JsRuntime::get(self, obj, key)?;
+    if !matches!(value, Value::Undefined | Value::Null) {
+      if !webidl_js_runtime::JsRuntime::is_callable(self, value) {
+        return Err(VmError::TypeError("GetMethod: target is not callable"));
+      }
+      return Ok(Some(value));
     }
 
     // Array iterator fast-path: use a sentinel `undefined` method value to request array iteration
@@ -2144,93 +2278,94 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
 
 impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
   fn limits(&self) -> webidl::WebIdlLimits {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::limits(&self.cx)
+    self.state.limits
   }
 
   fn hooks(&self) -> &dyn WebIdlHooks<Self::JsValue> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::hooks(&self.cx)
+    self.state.hooks.as_ref()
   }
 
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(
-      &mut self.cx,
-    )
+    let sym = webidl::JsRuntime::well_known_symbol(&mut self.cx, webidl::WellKnownSymbol::Iterator)?;
+    Ok(PropertyKey::from_symbol(sym))
   }
 
   fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::symbol_async_iterator(
-      &mut self.cx,
-    )
+    let sym =
+      webidl::JsRuntime::well_known_symbol(&mut self.cx, webidl::WellKnownSymbol::AsyncIterator)?;
+    Ok(PropertyKey::from_symbol(sym))
   }
 
   fn symbol_to_property_key(
     &mut self,
     symbol: Self::JsValue,
   ) -> Result<Self::PropertyKey, Self::Error> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::symbol_to_property_key(
-      &mut self.cx,
-      symbol,
-    )
+    let Value::Symbol(sym) = symbol else {
+      return Err(webidl_js_runtime::WebIdlJsRuntime::throw_type_error(
+        self,
+        "expected a Symbol value",
+      ));
+    };
+    Ok(PropertyKey::from_symbol(sym))
   }
 
   fn platform_object_opaque(&self, value: Self::JsValue) -> Option<u64> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::platform_object_opaque(
-      &self.cx, value,
-    )
+    if !webidl_js_runtime::WebIdlJsRuntime::is_platform_object(self, value) {
+      return None;
+    }
+    let Value::Object(obj) = value else {
+      return None;
+    };
+    Some((obj.index() as u64) | ((obj.generation() as u64) << 32))
   }
 
   fn is_string_object(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::is_string_object(
-      &self.cx, value,
-    )
+    webidl::JsRuntime::is_string_object(&self.cx, value)
   }
 
   fn is_array_buffer(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::is_array_buffer(
-      &self.cx, value,
-    )
+    self.state.hooks.is_array_buffer(value)
   }
 
   fn is_shared_array_buffer(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::is_shared_array_buffer(
-      &self.cx, value,
-    )
+    let _ = value;
+    false
   }
 
   fn is_data_view(&self, value: Self::JsValue) -> bool {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::is_data_view(
-      &self.cx, value,
-    )
+    let _ = value;
+    false
   }
 
   fn typed_array_name(&self, value: Self::JsValue) -> Option<&'static str> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::typed_array_name(
-      &self.cx, value,
-    )
+    let _ = value;
+    None
   }
 
   fn platform_object_to_js_value(
     &mut self,
     value: &webidl_ir::PlatformObject,
   ) -> Option<Self::JsValue> {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::platform_object_to_js_value(
-      &mut self.cx,
-      value,
-    )
+    value.downcast_ref::<Value>().copied()
   }
 
   fn throw_type_error(&mut self, message: &str) -> Self::Error {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::throw_type_error(
-      &mut self.cx,
-      message,
-    )
+    let intr = match self.intrinsics() {
+      Ok(intr) => intr,
+      Err(err) => return err,
+    };
+    vm_js::throw_type_error(&mut self.cx.scope, intr, message)
   }
 
   fn throw_range_error(&mut self, message: &str) -> Self::Error {
-    <webidl_vm_js::VmJsWebIdlCx<'_> as webidl_js_runtime::WebIdlJsRuntime>::throw_range_error(
-      &mut self.cx,
-      message,
-    )
+    let intr = match self.intrinsics() {
+      Ok(intr) => intr,
+      Err(err) => return err,
+    };
+    match vm_js::new_range_error(&mut self.cx.scope, intr, message) {
+      Ok(value) => VmError::Throw(value),
+      Err(err) => err,
+    }
   }
 }
 
