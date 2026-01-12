@@ -362,6 +362,14 @@ impl WindowRealmUserData {
     &self.document_url
   }
 
+  pub(crate) fn dom_platform_mut(&mut self) -> Option<&mut DomPlatform> {
+    self.dom_platform.as_mut()
+  }
+
+  pub(crate) fn window_obj(&self) -> Option<GcObject> {
+    self.window_obj
+  }
+
   pub(crate) fn document_obj(&self) -> Option<GcObject> {
     self.document_obj
   }
@@ -4241,7 +4249,7 @@ fn dom_ptr_for_event_registry(host: &mut dyn VmHost) -> Option<NonNull<dom2::Doc
 
 fn dom_platform_mut(vm: &mut Vm) -> Option<&mut DomPlatform> {
   vm.user_data_mut::<WindowRealmUserData>()
-    .and_then(|data| data.dom_platform.as_mut())
+    .and_then(|data| data.dom_platform_mut())
 }
 fn get_or_create_node_wrapper(
   vm: &mut Vm,
@@ -23937,6 +23945,30 @@ mod tests {
     let id = NodeId::from_index(42);
     found.borrow_mut().current_script = Some(id);
     assert_eq!(handle.borrow().current_script, Some(id));
+  }
+
+  #[test]
+  fn window_realm_user_data_accessors_expose_dom_platform_and_cached_objects() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let global = realm_ref.global_object();
+
+    let document_obj = {
+      let mut scope = heap.scope();
+      let document_v = get_prop(vm, &mut scope, global, "document")?;
+      let Value::Object(document_obj) = document_v else {
+        panic!("expected window.document to be an object");
+      };
+      document_obj
+    };
+
+    let data = vm
+      .user_data_mut::<WindowRealmUserData>()
+      .expect("expected WindowRealmUserData");
+    assert_eq!(data.window_obj(), Some(global));
+    assert_eq!(data.document_obj(), Some(document_obj));
+    assert!(data.dom_platform_mut().is_some());
+    Ok(())
   }
 
   /// Minimal `VmHostHooks` implementation for tests that execute scripts with a real `VmHost`
