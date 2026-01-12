@@ -785,6 +785,30 @@ mod tests {
   }
 
   #[test]
+  fn bidi_arrow_down_selection_collapse_to_end_uses_upstream_affinity() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><textarea dir=\"ltr\">ABC אבג</textarea></body></html>")
+        .expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    // Selection ends at the split-caret boundary but the caret currently sits at the start edge.
+    // Collapsing to the end should choose the upstream (LTR) side of the boundary.
+    set_text_selection_range(&mut engine, &mut dom, textarea_id, 4, 0);
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), Some((0, 4)));
+    assert_eq!(edit.caret, 0);
+
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowDown));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), None);
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+  }
+
+  #[test]
   fn home_clears_selection_in_text_controls() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
@@ -4359,10 +4383,12 @@ impl InteractionEngine {
           if let Some((start, end)) = edit.selection() {
             // Like ArrowLeft/Right, ArrowUp/Down should collapse an active selection to the
             // boundary in the direction of travel before attempting any further movement.
-            let next = if matches!(key, KeyAction::ArrowUp) {
-              start
+            let (next, next_affinity) = if matches!(key, KeyAction::ArrowUp) {
+              (start, CaretAffinity::Downstream)
             } else {
-              end
+              // Selection end should attach to the preceding text, which maps to the upstream side
+              // at split-caret boundaries.
+              (end, CaretAffinity::Upstream)
             };
             if next == edit.caret {
               // Preserve the current caret affinity when collapsing to the caret edge (important at
@@ -4373,7 +4399,7 @@ impl InteractionEngine {
                 false,
               );
             } else {
-              edit.set_caret_and_maybe_extend_selection(next, false);
+              edit.set_caret_with_affinity_and_maybe_extend_selection(next, next_affinity, false);
             }
           } else if focused_is_textarea {
             // Vertical caret movement between newline-separated lines (no soft-wrap support yet).
