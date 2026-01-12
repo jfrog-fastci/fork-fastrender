@@ -11,6 +11,12 @@ use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 use webidl_vm_js::CallbackHandle;
 use webidl_vm_js::VmJsHostHooksPayload;
 
+struct NoopVmHostHooks;
+
+impl VmHostHooks for NoopVmHostHooks {
+  fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct JsOwnPropertyDescriptor {
   pub enumerable: bool,
@@ -2108,9 +2114,7 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
 
     let kind = match desc.kind {
       vm_js::PropertyKind::Data { value, .. } => webidl_js_runtime::JsPropertyKind::Data { value },
-      vm_js::PropertyKind::Accessor { get, set } => {
-        webidl_js_runtime::JsPropertyKind::Accessor { get, set }
-      }
+      vm_js::PropertyKind::Accessor { get, set } => webidl_js_runtime::JsPropertyKind::Accessor { get, set },
     };
 
     Ok(Some(webidl_js_runtime::JsOwnPropertyDescriptor {
@@ -2306,6 +2310,7 @@ impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host>
         "expected a Symbol value",
       ));
     };
+    self.cx.scope.push_root(Value::Symbol(sym))?;
     Ok(PropertyKey::from_symbol(sym))
   }
 
