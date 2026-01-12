@@ -623,6 +623,10 @@ impl Executor for VmJsExecutor {
     };
 
     if case.variant != Variant::Module {
+      let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
+      let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
+      let expects_done = is_async && !is_raw;
+
       let mut hooks = Test262ModuleHooks::new(&case.path);
       let source_text = Arc::new(SourceText::new(file_name, source));
       let result = runtime.exec_script_source_with_hooks(&mut hooks, source_text);
@@ -634,22 +638,40 @@ impl Executor for VmJsExecutor {
         return Err(ExecError::Cancelled);
       }
 
-      return match result {
+      match result {
         Ok(_) => {
           drain_microtasks_into_hooks(&mut runtime, &mut hooks);
           if let Some(err) = handle_microtask_errors(case, source, cancel, &mut runtime, &mut hooks) {
-            Err(err)
-          } else {
-            Ok(())
+            return Err(err);
           }
         }
         Err(err) => {
           // Discard queued jobs so persistent roots are cleaned up before dropping the runtime.
           drain_microtasks_into_hooks(&mut runtime, &mut hooks);
           hooks.microtasks.teardown(&mut runtime);
-          Err(map_vm_error(case, source, cancel, &mut runtime, err))
+          return Err(map_vm_error(case, source, cancel, &mut runtime, err));
         }
-      };
+      }
+
+      if cancel.load(Ordering::Relaxed) {
+        return Err(ExecError::Cancelled);
+      }
+
+      // For async tests, require that `$DONE` was invoked (the harness injects a flag).
+      if expects_done {
+        let done = runtime
+          .exec_script("__test262AsyncDone__")
+          .map_err(|err| map_vm_error(case, source, cancel, &mut runtime, err))?;
+        if done != Value::Bool(true) {
+          return Err(ExecError::Js(JsError::new(
+            ExecPhase::Runtime,
+            None,
+            "async test did not call $DONE()",
+          )));
+        }
+      }
+
+      return Ok(());
     }
 
     execute_module(case, &file_name, source, cancel, &mut runtime)

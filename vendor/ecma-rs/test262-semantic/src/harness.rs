@@ -35,6 +35,7 @@ pub fn assemble_source(
   harness_mode: HarnessMode,
 ) -> Result<String> {
   let is_raw = frontmatter.flags.iter().any(|f| f == "raw");
+  let is_async = frontmatter.flags.iter().any(|f| f == "async");
   // `flags: [raw]` requires the test source to be executed verbatim (no harness injection, no
   // module-separator marker, etc).
   let harness_mode = if is_raw {
@@ -52,6 +53,24 @@ pub fn assemble_source(
   // authored.
   if variant == Variant::Strict && !is_raw {
     out.push_str("'use strict';\n\n");
+  }
+
+  // Minimal async harness support: test262 async tests signal completion by calling `$DONE()`.
+  //
+  // The upstream `doneprintHandle.js` implementation uses a host-provided `print` to communicate
+  // completion back to the runner. `test262-semantic` does not currently capture stdout from `vm-js`,
+  // so instead we:
+  // - mark completion via a global flag (`__test262AsyncDone__`), and
+  // - treat `$DONE(error)` as a thrown exception so failures are observable by the executor.
+  //
+  // This is intentionally small: it is sufficient for Promise-based async tests that only rely on
+  // microtasks (no timers/event loop).
+  if is_async && !is_raw {
+    out.push_str("var __test262AsyncDone__ = false;\n");
+    out.push_str("function $DONE(error) {\n");
+    out.push_str("  __test262AsyncDone__ = true;\n");
+    out.push_str("  if (error) { throw error; }\n");
+    out.push_str("}\n\n");
   }
 
   // In `none` mode, do not touch the filesystem at all.
@@ -354,5 +373,29 @@ mod tests {
     )
     .unwrap();
     assert_eq!(source, body);
+  }
+
+  #[test]
+  fn async_flag_injects_done_harness_before_includes_and_body() {
+    let temp = setup_test262_dir();
+    let frontmatter = Frontmatter {
+      flags: vec!["async".to_string()],
+      ..Frontmatter::default()
+    };
+    let body = "/*body*/\n";
+    let source = assemble_source(
+      temp.path(),
+      &frontmatter,
+      Variant::NonStrict,
+      body,
+      HarnessMode::Test262,
+    )
+    .unwrap();
+ 
+    let done_pos = source.find("function $DONE").expect("$DONE injected");
+    let assert_pos = source.find("/*assert*/").expect("assert.js included");
+    let body_pos = source.find("/*body*/").expect("body included");
+    assert!(done_pos < assert_pos);
+    assert!(assert_pos < body_pos);
   }
 }
