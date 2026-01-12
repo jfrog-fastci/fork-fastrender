@@ -34,6 +34,68 @@ fn asi_does_not_split_before_brace_without_line_terminator() {
 }
 
 #[test]
+fn let_in_statement_position_allows_asi_split_before_identifier() {
+  // `let` may be an IdentifierReference in non-strict scripts. In statement
+  // positions, a LineTerminator after `let` allows ASI to split it into its own
+  // ExpressionStatement.
+  let parsed =
+    parse_with_options("if (false) let // ASI\nx = 1;", ecma_script_opts()).expect("parse ok");
+  assert_eq!(parsed.stx.body.len(), 2);
+
+  let Stmt::If(if_stmt) = parsed.stx.body[0].stx.as_ref() else {
+    panic!("expected if statement");
+  };
+  assert!(matches!(if_stmt.stx.consequent.stx.as_ref(), Stmt::Expr(_)));
+  assert!(matches!(parsed.stx.body[1].stx.as_ref(), Stmt::Expr(_)));
+}
+
+#[test]
+fn let_in_statement_position_allows_asi_split_before_block() {
+  let parsed = parse_with_options("if (false) let // ASI\n{}", ecma_script_opts()).expect("parse ok");
+  assert_eq!(parsed.stx.body.len(), 2);
+
+  let Stmt::If(if_stmt) = parsed.stx.body[0].stx.as_ref() else {
+    panic!("expected if statement");
+  };
+  assert!(matches!(if_stmt.stx.consequent.stx.as_ref(), Stmt::Expr(_)));
+  assert!(matches!(parsed.stx.body[1].stx.as_ref(), Stmt::Block(_)));
+}
+
+#[test]
+fn let_in_statement_position_rejects_let_bracket_lookahead_even_with_line_terminator() {
+  // ExpressionStatement has a lookahead restriction for `let [` and this applies
+  // even when `let` and `[` are split by a LineTerminator.
+  let err = parse_with_options("if (false) let\n[a] = 0;", ecma_script_opts()).unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("statement (not a declaration)")
+  );
+}
+
+#[test]
+fn let_in_for_body_allows_asi_split() {
+  // `for` loop bodies use the same `stmt_in_statement_position` parsing as
+  // `if` statements, but do not permit legacy function declarations. Ensure the
+  // `let`/ASI disambiguation works in both codepaths.
+  let parsed = parse_with_options(
+    "for (; false; ) let // ASI\nx = 1;",
+    ecma_script_opts(),
+  )
+  .expect("parse ok");
+  assert_eq!(parsed.stx.body.len(), 2);
+
+  let Stmt::ForTriple(for_stmt) = parsed.stx.body[0].stx.as_ref() else {
+    panic!("expected for statement");
+  };
+  assert_eq!(for_stmt.stx.body.stx.body.len(), 1);
+  assert!(matches!(
+    for_stmt.stx.body.stx.body[0].stx.as_ref(),
+    Stmt::Expr(_)
+  ));
+  assert!(matches!(parsed.stx.body[1].stx.as_ref(), Stmt::Expr(_)));
+}
+
+#[test]
 fn asi_does_not_backtrack_to_treat_slash_as_regex_literal() {
   // In expression context, `/` is a division operator, not a regex literal. The
   // parser must not insert ASI at an earlier LineTerminator just because later

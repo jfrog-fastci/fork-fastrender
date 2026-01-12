@@ -92,11 +92,26 @@ impl<'a> Parser<'a> {
       TT::KeywordConst | TT::KeywordClass => Err(t0.error(SyntaxErrorType::ExpectedSyntax(
         "statement (not a declaration)",
       ))),
+      // `let` is contextual: in non-strict code it can be an IdentifierReference
+      // (ExpressionStatement) or a lexical declaration.
+      //
+      // In statement positions (`if (...) <here>`), lexical declarations are not
+      // permitted, so we must be careful not to eagerly reject `let` when ASI can
+      // split it into its own ExpressionStatement.
+      //
+      // test262 coverage:
+      // - `if (false) let // ASI\nx = 1;` must parse as `if (false) let; x = 1;`
+      // - `if (false) let\n[a] = 0;` is still a SyntaxError due to the `let [` lookahead restriction.
+      TT::KeywordLet if t1.typ == TT::BracketOpen => Err(t0.error(SyntaxErrorType::ExpectedSyntax(
+        "statement (not a declaration)",
+      ))),
       TT::KeywordLet
-        if t1.typ == TT::BraceOpen
-          || t1.typ == TT::BracketOpen
-          || is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+        if t1.preceded_by_line_terminator
+          && (t1.typ == TT::BraceOpen || is_valid_pattern_identifier(t1.typ, ctx.rules)) =>
       {
+        Ok(self.expr_stmt(ctx)?.into_wrapped())
+      }
+      TT::KeywordLet if t1.typ == TT::BraceOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) => {
         Err(t0.error(SyntaxErrorType::ExpectedSyntax(
           "statement (not a declaration)",
         )))

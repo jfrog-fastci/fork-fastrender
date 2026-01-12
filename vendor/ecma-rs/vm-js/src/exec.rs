@@ -6491,6 +6491,11 @@ impl<'a> Evaluator<'a> {
     label_set: &[String],
   ) -> Result<Completion, VmError> {
     let rhs_value = self.eval_expr(scope, &stmt.rhs)?;
+    // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
+    // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw).
+    if matches!(rhs_value, Value::Null | Value::Undefined) {
+      return Ok(Completion::normal(Value::Undefined));
+    }
     let object = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, rhs_value)?;
 
     // Root the base object while enumerating keys and executing the loop body.
