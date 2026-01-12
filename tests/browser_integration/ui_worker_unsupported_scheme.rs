@@ -10,6 +10,7 @@ use super::support::{
 
 #[test]
 fn ui_worker_rejects_unsupported_schemes_without_rendering_error_page() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-unsupported-scheme-test")

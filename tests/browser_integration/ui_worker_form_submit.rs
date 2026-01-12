@@ -18,6 +18,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
 fn click_submit_navigates_to_get_form_submission_url() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -135,6 +136,7 @@ fn click_submit_navigates_to_get_form_submission_url() {
 
 #[test]
 fn enter_in_text_input_navigates_to_get_form_submission_url() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -259,6 +261,7 @@ fn enter_in_text_input_navigates_to_get_form_submission_url() {
 
 #[test]
 fn enter_in_text_input_without_submitter_navigates_even_if_input_click_prevent_default() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -383,6 +386,7 @@ fn enter_in_text_input_without_submitter_navigates_even_if_input_click_prevent_d
 
 #[test]
 fn submit_prevent_default_blocks_enter_form_submission_navigation_without_submitter() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -485,6 +489,7 @@ fn submit_prevent_default_blocks_enter_form_submission_navigation_without_submit
 
 #[test]
 fn submit_prevent_default_blocks_click_submit_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -583,6 +588,7 @@ fn submit_prevent_default_blocks_click_submit_navigation() {
 
 #[test]
 fn submit_prevent_default_blocks_enter_form_submission_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -811,6 +817,7 @@ fn spawn_form_post_server() -> (
 
 #[test]
 fn click_submit_navigates_with_post_urlencoded_form_submission() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let (page_url, rx_request, server_join) = spawn_form_post_server();

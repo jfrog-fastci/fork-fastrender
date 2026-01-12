@@ -7,6 +7,7 @@ use super::support::{create_tab_msg, scroll_to_msg, viewport_changed_msg, DEFAUL
 
 #[test]
 fn ui_worker_reports_scroll_metrics_and_scroll_to_updates_scroll_state() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let handle = spawn_ui_worker("fastr-ui-worker-scroll-metrics").expect("spawn ui worker");

@@ -50,6 +50,7 @@ fn wait_for_navigation_complete(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> boo
 
 #[test]
 fn stage_heartbeats_forwarded_for_scroll_repaint_after_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempdir().expect("temp dir");

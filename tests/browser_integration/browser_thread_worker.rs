@@ -50,7 +50,7 @@ fn drain_after_frame(h: &WorkerHarness, mut events: Vec<WorkerToUiEvent>) -> Vec
 
 #[test]
 fn pointer_move_sets_hover_and_repaints() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("hover.html");
   std::fs::write(
@@ -100,7 +100,7 @@ fn pointer_move_sets_hover_and_repaints() {
 
 #[test]
 fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("select.html");
   std::fs::write(
@@ -211,7 +211,7 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
 
 #[test]
 fn navigation_about_newtab_renders_frame() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let h = WorkerHarness::spawn();
   let tab_id = create_tab(&h, (200, 140));
 
@@ -242,7 +242,7 @@ fn navigation_about_newtab_renders_frame() {
 
 #[test]
 fn navigation_file_url_emits_committed_and_frame() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("index.html");
   std::fs::write(
@@ -281,7 +281,7 @@ fn navigation_file_url_emits_committed_and_frame() {
 
 #[test]
 fn navigation_unsupported_scheme_rejects_with_failed() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let h = WorkerHarness::spawn();
   let tab_id = create_tab(&h, (120, 80));
 
@@ -316,7 +316,7 @@ fn navigation_unsupported_scheme_rejects_with_failed() {
 
 #[test]
 fn history_back_forward_emits_committed_urls() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let a_path = dir.path().join("a.html");
   let b_path = dir.path().join("b.html");
@@ -369,7 +369,7 @@ fn history_back_forward_emits_committed_urls() {
 
 #[test]
 fn reload_preserves_scroll_offset() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("scroll.html");
   std::fs::write(
@@ -422,7 +422,7 @@ fn reload_preserves_scroll_offset() {
 
 #[test]
 fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("scroll.html");
   std::fs::write(
@@ -486,7 +486,7 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
 
 #[test]
 fn interaction_click_link_navigates() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let a_path = dir.path().join("a.html");
   let b_path = dir.path().join("b.html");
@@ -535,7 +535,7 @@ fn interaction_click_link_navigates() {
 
 #[test]
 fn interaction_text_input_triggers_repaint_and_frame_changes() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("input.html");
   std::fs::write(
@@ -590,7 +590,7 @@ fn interaction_text_input_triggers_repaint_and_frame_changes() {
 
 #[test]
 fn cancellation_rapid_scroll_coalesces_to_last_frame() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("long.html");
   std::fs::write(

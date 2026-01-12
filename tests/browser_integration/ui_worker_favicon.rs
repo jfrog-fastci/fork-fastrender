@@ -8,6 +8,7 @@ use fastrender::ui::spawn_ui_worker;
 
 #[test]
 fn ui_worker_emits_favicon_for_link_rel_icon() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = TempSite::new();

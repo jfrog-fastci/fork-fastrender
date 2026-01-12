@@ -4,7 +4,7 @@ use std::process::Command;
 
 #[test]
 fn browser_help_exits_successfully_without_startup_logs() {
-  let _lock = super::stage_listener_test_lock();
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
   let output = Command::new("bash")
     .arg(run_limited)

@@ -23,6 +23,7 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
 
 #[test]
 fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let fastrender::ui::BrowserWorkerHandle {
@@ -72,6 +73,7 @@ fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
 
 #[test]
 fn scroll_produces_scroll_update_and_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let fastrender::ui::BrowserWorkerHandle {
@@ -140,6 +142,7 @@ fn scroll_produces_scroll_update_and_frame() {
 
 #[test]
 fn navigation_cancellation_drops_stale_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   // Slow down render stages on this worker thread to make cancellation deterministic without
@@ -229,6 +232,7 @@ fn navigation_cancellation_drops_stale_frame() {
 
 #[test]
 fn enter_submits_focused_text_input_form() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let fastrender::ui::BrowserWorkerHandle {
@@ -289,6 +293,7 @@ fn enter_submits_focused_text_input_form() {
 
 #[test]
 fn select_dropdown_choose_updates_dom_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = TempSite::new();

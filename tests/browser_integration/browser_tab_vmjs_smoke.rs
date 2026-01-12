@@ -6,6 +6,7 @@ use std::time::Duration;
 
 #[test]
 fn browser_tab_vmjs_smoke_runs_inline_script_and_mutates_dom() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 

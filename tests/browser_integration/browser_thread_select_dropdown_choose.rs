@@ -11,6 +11,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
 fn browser_thread_select_dropdown_choose_updates_styles_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

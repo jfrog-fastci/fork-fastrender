@@ -52,6 +52,7 @@ fn selected_option_indices(dom: &fastrender::dom::DomNode) -> Vec<usize> {
 
 #[test]
 fn browser_tab_controller_listbox_click_accounts_for_wheel_scroll() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (200, 200);

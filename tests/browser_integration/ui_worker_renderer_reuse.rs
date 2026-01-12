@@ -64,6 +64,7 @@ fn simple_color_page(color: &str) -> String {
 
 #[test]
 fn ui_worker_reuses_single_renderer_per_tab_across_navigations() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   reset_renderer_build_count_for_test();
 

@@ -2,6 +2,7 @@
 
 #[test]
 fn spawn_browser_ui_worker_uses_requested_thread_name() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let expected = "fastr-browser-ui-worker-test";

@@ -32,6 +32,7 @@ fn wait_for_frame(
 
 #[test]
 fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 

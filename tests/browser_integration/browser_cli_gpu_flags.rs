@@ -37,6 +37,7 @@ fn assert_browser_clap_error(output: &std::process::Output) {
 
 #[test]
 fn browser_accepts_gpu_flag_values() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   for pref in ["high", "low", "none"] {
@@ -60,6 +61,7 @@ fn browser_accepts_gpu_flag_values() {
 
 #[test]
 fn browser_rejects_invalid_gpu_flag_values() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let output = run_browser(&["--exit-immediately", "--power-preference", "potato"]);

@@ -48,6 +48,7 @@ fn spawn_worker() -> (
 
 #[test]
 fn scroll_snap_updates_viewport_scroll_state() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html = r#"<!doctype html>
@@ -107,6 +108,7 @@ fn scroll_snap_updates_viewport_scroll_state() {
 
 #[test]
 fn element_scroll_at_pointer_updates_element_scroll_state() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>

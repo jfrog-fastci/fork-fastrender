@@ -36,6 +36,7 @@ fn next_frame_ready(
 
 #[test]
 fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -111,6 +112,7 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
 
 #[test]
 fn navigation_with_percent_encoded_fragment_scrolls_to_target_before_first_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -186,6 +188,7 @@ fn navigation_with_percent_encoded_fragment_scrolls_to_target_before_first_frame
 
 #[test]
 fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -362,6 +365,7 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
 
 #[test]
 fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_without_reload() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -542,6 +546,7 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
 
 #[test]
 fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let page_url = site.write(

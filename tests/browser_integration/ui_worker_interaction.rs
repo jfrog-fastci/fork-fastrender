@@ -117,6 +117,7 @@ fn recv_until_pixel(
 
 #[test]
 fn label_click_toggles_checkbox_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");
@@ -176,6 +177,7 @@ fn label_click_toggles_checkbox_and_repaints() {
 
 #[test]
 fn text_input_updates_focused_input_value_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");
@@ -236,6 +238,7 @@ fn text_input_updates_focused_input_value_and_repaints() {
 
 #[test]
 fn link_click_triggers_navigation_to_resolved_url() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let page1_path = dir.path().join("page1.html");
@@ -346,6 +349,7 @@ fn link_click_triggers_navigation_to_resolved_url() {
 
 #[test]
 fn element_scroll_then_click_link_uses_scrolled_hit_testing() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let page1_path = dir.path().join("page1.html");
@@ -493,6 +497,7 @@ fn element_scroll_then_click_link_uses_scrolled_hit_testing() {
 
 #[test]
 fn select_dropdown_click_emits_select_dropdown_opened_message() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");

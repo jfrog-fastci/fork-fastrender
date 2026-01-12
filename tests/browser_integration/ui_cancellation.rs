@@ -15,6 +15,7 @@ const LONG_WAIT: Duration = Duration::from_secs(60);
 
 #[test]
 fn cancellation_on_new_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _stage_lock = super::stage_listener_test_lock();
   // Slow down deadline checks so the first navigation stays in-flight long enough for the UI to
   // bump cancellation.
@@ -131,6 +132,7 @@ fn cancellation_on_new_navigation() {
 
 #[test]
 fn cancellation_on_scroll_drops_stale_frames() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _stage_lock = super::stage_listener_test_lock();
 
   let cancel = CancelGens::new();

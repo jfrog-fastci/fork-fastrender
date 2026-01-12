@@ -48,6 +48,7 @@ fn context_menu_link_at(
 
 #[test]
 fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops_loading() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let missing_path = dir.path().join("missing.html");
@@ -188,6 +189,7 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
 
 #[test]
 fn unknown_about_page_still_commits_and_renders_error_page() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-unknown-about-test")
     .expect("spawn ui worker")
@@ -245,6 +247,7 @@ fn unknown_about_page_still_commits_and_renders_error_page() {
 
 #[test]
 fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let missing_path = dir.path().join("missing.html");
@@ -367,6 +370,7 @@ fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
 
 #[test]
 fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loading() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let missing_path = dir.path().join("missing.html");
@@ -470,6 +474,7 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
 
 #[test]
 fn model_worker_unknown_about_page_still_commits_and_renders_error_page() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
   let (ui_tx, ui_rx, join) = (worker.tx, worker.rx, worker.join);

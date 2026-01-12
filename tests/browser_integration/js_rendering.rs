@@ -557,6 +557,7 @@ impl JsFixtureHarness {
 
 #[test]
 fn js_inline_script_mutation_affects_render() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
@@ -586,6 +587,7 @@ fn js_inline_script_mutation_affects_render() -> Result<()> {
 
 #[test]
 fn js_external_defer_scripts_execute_in_order_after_parsing() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
@@ -640,6 +642,7 @@ fn js_external_defer_scripts_execute_in_order_after_parsing() -> Result<()> {
 
 #[test]
 fn js_external_async_script_runs_without_waiting_for_parsing_complete() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
@@ -697,6 +700,7 @@ fn js_external_async_script_runs_without_waiting_for_parsing_complete() -> Resul
 
 #[test]
 fn js_base_url_timing_script_before_base_href_uses_document_url() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);

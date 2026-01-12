@@ -1,5 +1,41 @@
 //! Browser integration tests consolidated from tests/browser_*.rs
 
+// -----------------------------------------------------------------------------
+// Test process initialization
+// -----------------------------------------------------------------------------
+//
+// Many integration tests create `FastRender` instances (directly or indirectly via browser worker
+// runtimes). On minimal/agent hosts, scanning system fonts can be very slow and can cause per-test
+// timeouts and worker thread shutdown hangs.
+//
+// Prefer deterministic bundled fonts for the entire integration test process unless the caller
+// explicitly opted out by setting `FASTR_USE_BUNDLED_FONTS=0`.
+//
+// We want this to run before *any* test executes, so use a small cross-platform "init array"
+// constructor rather than relying on a particular test calling a helper first.
+#[used]
+#[cfg_attr(
+  any(target_os = "linux", target_os = "android", target_os = "freebsd"),
+  link_section = ".init_array"
+)]
+#[cfg_attr(
+  any(target_os = "macos", target_os = "ios"),
+  link_section = "__DATA,__mod_init_func"
+)]
+#[cfg_attr(target_os = "windows", link_section = ".CRT$XCU")]
+static INIT_BROWSER_INTEGRATION_ENV: extern "C" fn() = {
+  extern "C" fn init() {
+    // Respect an explicit opt-out (e.g. FASTR_USE_BUNDLED_FONTS=0).
+    if let Some(raw) = std::env::var_os("FASTR_USE_BUNDLED_FONTS") {
+      if raw == "0" || raw.eq_ignore_ascii_case("false") {
+        return;
+      }
+    }
+    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+  }
+  init
+};
+
 mod author_css_cannot_observe_data_fastr_hover;
 mod browser_cli_gpu_flags;
 mod browser_cli_help;
@@ -12,6 +48,7 @@ mod browser_bookmarks_history_restore;
 mod browser_session_restore;
 mod browser_session_scroll_restore;
 mod browser_tab_vmjs_smoke;
+mod browser_tab_render_interleaving;
 mod browser_thread_base_url_across_navigations;
 mod browser_thread_cancellation;
 mod browser_thread_history_scroll_restore;
@@ -114,16 +151,19 @@ mod ui_worker_zoom;
 mod worker_harness;
 mod ui_text_control_pointer_selection;
 
-// Browser integration tests occasionally rely on process-global knobs (e.g. test render delays)
+// -----------------------------------------------------------------------------
+// Global integration test environment
+// -----------------------------------------------------------------------------
+
+// Browser UI integration tests occasionally rely on process-global knobs (e.g. test render delays)
 // and other shared state. Serialize tests with this lock to avoid cross-test interference and keep
 // CI runs deterministic under `cargo test`'s default parallelism.
-pub(crate) fn stage_listener_test_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn stage_listener_test_lock() -> parking_lot::ReentrantMutexGuard<'static, ()> {
+  // Pre-warm bundled font metadata so the first navigation in a freshly spawned UI worker does not
+  // block on expensive font parsing while the test is waiting on UI messages.
   #[cfg(feature = "browser_ui")]
-  {
-    // Pre-warm bundled font metadata so the first navigation in a freshly spawned UI worker does
-    // not block on expensive font parsing while the test is waiting on UI messages.
-    support::ensure_bundled_fonts_loaded();
-  }
-  static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-  LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+  support::ensure_bundled_fonts_loaded();
+
+  static LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
+  LOCK.lock()
 }

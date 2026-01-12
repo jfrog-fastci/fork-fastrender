@@ -201,6 +201,7 @@ impl BrowserTabJsExecutor for NoopExecutor {
 
 #[test]
 fn browser_tab_script_src_uses_base_url_at_discovery() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[derive(Clone)]
   struct RecordingExecutor {
     executed: Arc<Mutex<Vec<String>>>,
@@ -267,6 +268,7 @@ fn browser_tab_script_src_uses_base_url_at_discovery() -> Result<()> {
 
 #[test]
 fn browser_tab_parses_with_scripting_enabled_semantics() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -300,6 +302,7 @@ fn browser_tab_parses_with_scripting_enabled_semantics() -> Result<()> {
 
 #[test]
 fn browser_tab_runs_queued_tasks_and_microtasks_and_rerenders() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
@@ -406,6 +409,7 @@ impl BrowserTabJsExecutor for ErrorThenMutationExecutor {
 
 #[test]
 fn browser_tab_task_error_does_not_prevent_later_dom_mutations_and_rendering() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
@@ -519,6 +523,7 @@ impl BrowserTabJsExecutor for TimerMutationExecutor {
 
 #[test]
 fn browser_tab_timer_tasks_fire_after_clock_advance_and_rerender() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
@@ -632,6 +637,7 @@ impl BrowserTabJsExecutor for ParseTimeDomAssertionExecutor {
 
 #[test]
 fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -661,6 +667,7 @@ fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<
 #[test]
 fn browser_tab_with_event_loop_executes_parser_inserted_scripts_against_partial_dom() -> Result<()>
 {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -695,6 +702,7 @@ fn browser_tab_with_event_loop_executes_parser_inserted_scripts_against_partial_
 #[test]
 fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_dom() -> Result<()>
 {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let site = TempSite::new();
@@ -730,6 +738,7 @@ fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_
 
 #[test]
 fn browser_tab_navigate_to_url_resolves_script_src_against_parse_time_base_url() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let site = TempSite::new();
@@ -772,6 +781,7 @@ fn browser_tab_navigate_to_url_resolves_script_src_against_parse_time_base_url()
 
 #[test]
 fn browser_tab_navigate_to_url_honors_async_and_defer_scheduling() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let site = TempSite::new();
@@ -895,6 +905,7 @@ impl BrowserTabJsExecutor for NavigateUrlParseTimeExecutor {
 
 #[test]
 fn browser_tab_navigate_to_url_executes_inline_and_external_scripts_at_parse_time() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -962,6 +973,7 @@ fn browser_tab_navigate_to_url_executes_inline_and_external_scripts_at_parse_tim
 
 #[test]
 fn browser_tab_lifecycle_events_invoke_js_listeners_and_microtasks() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -1046,6 +1058,7 @@ fn browser_tab_lifecycle_events_invoke_js_listeners_and_microtasks() -> Result<(
 
 #[test]
 fn browser_tab_executes_vm_js_scripts_that_mutate_dom_and_pixels() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -1108,6 +1121,7 @@ fn browser_tab_executes_vm_js_scripts_that_mutate_dom_and_pixels() -> Result<()>
 
 #[test]
 fn browser_tab_vm_js_script_mutation_changes_pixels_after_event_loop() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
@@ -1147,6 +1161,7 @@ fn browser_tab_vm_js_script_mutation_changes_pixels_after_event_loop() -> Result
 
 #[test]
 fn browser_tab_vm_js_promise_jobs_run_in_microtask_checkpoint() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -1180,6 +1195,7 @@ fn browser_tab_vm_js_promise_jobs_run_in_microtask_checkpoint() -> Result<()> {
 
 #[test]
 fn browser_tab_vm_js_set_timeout_fires_after_virtual_clock_advance() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>

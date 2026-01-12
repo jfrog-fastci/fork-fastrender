@@ -37,6 +37,7 @@ fn wait_for_frame(
 
 #[test]
 fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempdir().expect("temp dir");
@@ -134,6 +135,7 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
 
 #[test]
 fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempdir().expect("temp dir");
@@ -271,6 +273,7 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
 
 #[test]
 fn tab_focus_scrolls_horizontal_scroller_to_reveal_focused_element() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempdir().expect("temp dir");
@@ -410,6 +413,7 @@ fn tab_focus_scrolls_horizontal_scroller_to_reveal_focused_element() {
 
 #[test]
 fn click_focus_scrolls_nested_scroller_to_reveal_focused_element() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempdir().expect("temp dir");
@@ -539,6 +543,7 @@ fn click_focus_scrolls_nested_scroller_to_reveal_focused_element() {
 
 #[test]
 fn tab_focus_scrolls_viewport_and_nested_scroller_when_scroller_is_below_fold() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempdir().expect("temp dir");
@@ -692,6 +697,7 @@ fn tab_focus_scrolls_viewport_and_nested_scroller_when_scroller_is_below_fold() 
 
 #[test]
 fn shift_tab_scrolls_viewport_back_up_to_reveal_previous_focus_target() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempdir().expect("temp dir");

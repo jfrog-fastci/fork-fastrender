@@ -71,6 +71,7 @@ fn next_select_dropdown_opened(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (usi
 
 #[test]
 fn select_dropdown_choose_updates_dom_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

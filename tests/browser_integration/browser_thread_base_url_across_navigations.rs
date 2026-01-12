@@ -78,6 +78,7 @@ fn wait_for_frame_for_committed_url(
 
 #[test]
 fn browser_thread_updates_base_url_between_navigations_in_same_tab() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site_red = support::TempSite::new();

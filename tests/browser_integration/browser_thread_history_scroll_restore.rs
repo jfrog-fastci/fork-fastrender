@@ -61,6 +61,7 @@ fn recv_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> Rend
 
 #[test]
 fn browser_thread_back_restores_scroll_saved_before_navigation_paint() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

@@ -112,6 +112,7 @@ impl BrowserTabJsExecutor for LoggingExecutor {
 
 #[test]
 fn browser_tab_navigate_to_url_uses_streaming_parser_and_script_scheduling() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
   let executor = LoggingExecutor {
     log: Arc::clone(&log),
@@ -168,6 +169,7 @@ fn browser_tab_navigate_to_url_uses_streaming_parser_and_script_scheduling() -> 
 
 #[test]
 fn browser_tab_async_script_executes_before_parse_completes() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
   let executor = LoggingExecutor {
     log: Arc::clone(&log),
@@ -210,6 +212,7 @@ fn browser_tab_async_script_executes_before_parse_completes() -> Result<()> {
 
 #[test]
 fn browser_tab_async_script_mutation_persists_across_parse_slices() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
   let executor = LoggingExecutor {
     log: Arc::clone(&log),

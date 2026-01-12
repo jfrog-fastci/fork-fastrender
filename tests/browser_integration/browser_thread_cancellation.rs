@@ -10,6 +10,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
 fn rapid_navigation_cancels_stale_navigation_without_emitting_stale_commits_or_frames() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

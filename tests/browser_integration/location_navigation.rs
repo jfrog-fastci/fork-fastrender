@@ -68,21 +68,25 @@ fn assert_navigation_from_inline_script(script: &str) -> Result<()> {
 
 #[test]
 fn location_href_navigates_to_new_document() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   assert_navigation_from_inline_script(r#"location.href = "page2.html";"#)
 }
 
 #[test]
 fn location_assign_navigates_to_new_document() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   assert_navigation_from_inline_script(r#"location.assign("page2.html");"#)
 }
 
 #[test]
 fn location_replace_navigates_to_new_document() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   assert_navigation_from_inline_script(r#"location.replace("page2.html");"#)
 }
 
 #[test]
 fn location_href_navigates_from_deferred_script_task() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -126,6 +130,7 @@ fn location_href_navigates_from_deferred_script_task() -> Result<()> {
 
 #[test]
 fn location_href_navigates_to_registered_html_source() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 

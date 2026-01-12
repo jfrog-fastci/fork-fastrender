@@ -81,6 +81,7 @@ fn assert_pixel_rgb(pixmap: &tiny_skia::Pixmap, x: u32, y: u32, expected: (u8, u
 
 #[test]
 fn ui_worker_text_input_caret_moves_and_inserts_in_middle() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = TempSite::new();
@@ -207,6 +208,7 @@ fn ui_worker_text_input_caret_moves_and_inserts_in_middle() {
 
 #[test]
 fn ui_worker_textarea_click_places_caret_on_clicked_line() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = TempSite::new();

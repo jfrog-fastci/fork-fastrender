@@ -39,6 +39,7 @@ fn next_hover_changed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (Option<Strin
 
 #[test]
 fn hover_changed_reports_link_url_and_cursor_kind() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -227,6 +228,7 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
 
 #[test]
 fn hover_updates_after_viewport_scroll_without_pointer_position() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

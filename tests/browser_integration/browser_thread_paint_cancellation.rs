@@ -15,6 +15,7 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 
 #[test]
 fn paint_cancellation_during_navigation_does_not_surface_error_page() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   // Keep renders fast enough to complete within CI timeouts. This test relies on the heavy DOM to
   // keep paints in-flight long enough for cancellation.

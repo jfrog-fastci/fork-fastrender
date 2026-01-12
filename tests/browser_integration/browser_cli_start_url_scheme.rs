@@ -30,6 +30,7 @@ fn assert_browser_succeeded(status: std::process::ExitStatus, stderr: &str, stdo
 
 #[test]
 fn browser_rejects_javascript_start_url_and_falls_back_to_newtab() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (status, stderr, stdout) = run_browser_with_url("javascript:alert(1)");
   assert_browser_succeeded(status, &stderr, &stdout);
@@ -50,6 +51,7 @@ fn browser_rejects_javascript_start_url_and_falls_back_to_newtab() {
 
 #[test]
 fn browser_rejects_unknown_scheme_start_url_and_falls_back_to_newtab() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (status, stderr, stdout) = run_browser_with_url("foo:bar");
   assert_browser_succeeded(status, &stderr, &stdout);

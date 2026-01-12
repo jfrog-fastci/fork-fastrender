@@ -152,6 +152,7 @@ fn wait_for_scroll_state_updated(
 
 #[test]
 fn click_after_scroll_hits_link() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site = TempSite::new();
   let page1_url = site.write(

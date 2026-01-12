@@ -110,6 +110,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
 
 #[test]
 fn pointer_move_sets_hover_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_site, url) = fixture();
 
@@ -162,6 +163,7 @@ fn pointer_move_sets_hover_and_repaints() {
 
 #[test]
 fn pointer_down_sets_active_until_pointer_up() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_site, url) = fixture();
 
@@ -226,6 +228,7 @@ fn pointer_down_sets_active_until_pointer_up() {
 
 #[test]
 fn scroll_with_pointer_updates_hover_target() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_site, url) = scroll_hover_fixture();
 
@@ -277,6 +280,7 @@ fn scroll_with_pointer_updates_hover_target() {
 
 #[test]
 fn activating_tab_clears_hover_state() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_site, url) = fixture();
 

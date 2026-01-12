@@ -56,6 +56,7 @@ fn assert_close(actual: f32, expected: f32, eps: f32, label: &str) {
 
 #[test]
 fn zoom_mapping_scales_css_viewport_without_changing_drawn_size() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("fastr-ui-worker-zoom-mapping").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();

@@ -13,6 +13,7 @@ fn attr(doc: &fastrender::dom2::Document, node: NodeId, name: &str) -> Result<Op
 
 #[test]
 fn tab_navigation_resets_vm_js_realm_and_current_script() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html_a = r#"<!doctype html>
     <html>
       <head>

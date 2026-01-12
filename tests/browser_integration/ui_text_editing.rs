@@ -29,6 +29,7 @@ fn insert_at_char_idx(original: &str, idx: usize, insert: &str) -> String {
 
 #[test]
 fn click_to_place_caret_then_text_input_inserts_at_caret() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (500, 200);
@@ -107,6 +108,7 @@ fn click_to_place_caret_then_text_input_inserts_at_caret() -> Result<()> {
 
 #[test]
 fn arrow_left_moves_caret_and_typing_inserts_before_last_char() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (400, 120);
@@ -154,6 +156,7 @@ fn arrow_left_moves_caret_and_typing_inserts_before_last_char() -> Result<()> {
 
 #[test]
 fn shift_arrow_creates_selection_and_typing_replaces_it() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (400, 120);
@@ -202,6 +205,7 @@ fn shift_arrow_creates_selection_and_typing_replaces_it() -> Result<()> {
 
 #[test]
 fn delete_removes_following_character() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (400, 120);
@@ -249,6 +253,7 @@ fn delete_removes_following_character() -> Result<()> {
 
 #[test]
 fn textarea_enter_inserts_newline_and_arrow_up_down_moves_between_lines() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (500, 220);

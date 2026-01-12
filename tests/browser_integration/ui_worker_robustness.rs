@@ -159,6 +159,7 @@ fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Durat
 
 #[test]
 fn messages_for_unknown_tab_are_ignored_without_panic() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("fastr-ui-worker-robustness-unknown").expect("spawn ui worker");
   let (tx, rx, join) = handle.split();
@@ -193,6 +194,7 @@ fn messages_for_unknown_tab_are_ignored_without_panic() {
 
 #[test]
 fn messages_after_close_tab_are_noops() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("fastr-ui-worker-robustness-close").expect("spawn ui worker");
   let (tx, rx, join) = handle.split();

@@ -8,6 +8,7 @@ use super::support;
 
 #[test]
 fn navigation_invalid_url_emits_navigation_failed() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker_with_factory(
     "fastr-ui-navigation-invalid-url-test",
@@ -60,6 +61,7 @@ fn navigation_invalid_url_emits_navigation_failed() {
 
 #[test]
 fn navigation_file_url_emits_started_committed_and_loading_toggle() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("index.html");

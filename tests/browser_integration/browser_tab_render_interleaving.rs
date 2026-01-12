@@ -116,6 +116,7 @@ impl BrowserTabJsExecutor for InterleavingExecutor {
 
 #[test]
 fn browser_tab_renders_between_tasks() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let assertions_ran = Arc::new(AtomicUsize::new(0));
   let executor = InterleavingExecutor {
     assertions_ran: Arc::clone(&assertions_ran),

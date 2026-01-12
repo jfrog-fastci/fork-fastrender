@@ -61,6 +61,7 @@ fn box_id_for_styled_node(box_tree: &BoxTree, styled_node_id: usize) -> usize {
 
 #[test]
 fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (200, 200);
@@ -241,6 +242,7 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
 
 #[test]
 fn browser_tab_controller_select_listbox_scroll_then_click_selects_scrolled_row() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (200, 200);
@@ -371,6 +373,7 @@ fn browser_tab_controller_select_listbox_scroll_then_click_selects_scrolled_row(
 
 #[test]
 fn browser_tab_controller_select_dropdown_popup_opens_and_selects() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (200, 120);
@@ -478,6 +481,7 @@ fn browser_tab_controller_select_dropdown_popup_opens_and_selects() -> Result<()
 
 #[test]
 fn browser_tab_controller_navigation_reuses_renderer_instance() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (64, 64);

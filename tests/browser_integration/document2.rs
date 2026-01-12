@@ -27,6 +27,7 @@ fn capture_stages<T>(f: impl FnOnce() -> Result<T>) -> Result<Vec<StageHeartbeat
 
 #[test]
 fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
@@ -102,6 +103,7 @@ fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
 #[cfg(feature = "quickjs")]
 #[test]
 fn browser_document_dom2_rerenders_after_js_dom_mutation() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
@@ -170,6 +172,7 @@ fn browser_document_dom2_rerenders_after_js_dom_mutation() -> Result<()> {
 
 #[test]
 fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
@@ -241,6 +244,7 @@ fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() 
 
 #[test]
 fn browser_document_dom2_text_mutation_skips_full_restyle() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 32);
@@ -334,6 +338,7 @@ fn browser_document_dom2_text_mutation_skips_full_restyle() -> Result<()> {
 
 #[test]
 fn browser_document_dom2_attribute_mutation_triggers_restyle() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
@@ -396,6 +401,7 @@ fn browser_document_dom2_attribute_mutation_triggers_restyle() -> Result<()> {
 
 #[test]
 fn browser_document_dom2_insert_remove_triggers_recompute() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);

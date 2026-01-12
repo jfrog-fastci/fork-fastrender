@@ -9,6 +9,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
 fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

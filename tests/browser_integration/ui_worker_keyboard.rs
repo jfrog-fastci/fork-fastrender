@@ -416,6 +416,7 @@ fn make_focus_attr_regression_page() -> (tempfile::TempDir, String) {
 
 #[test]
 fn backspace_edits_focused_input_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
@@ -463,6 +464,7 @@ fn backspace_edits_focused_input_and_repaints() {
 
 #[test]
 fn delete_edits_focused_input_selection_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
@@ -510,6 +512,7 @@ fn delete_edits_focused_input_selection_and_repaints() {
 
 #[test]
 fn focus_does_not_inject_data_fastr_focus_attribute() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_focus_attr_regression_page();
 
@@ -550,6 +553,7 @@ fn focus_does_not_inject_data_fastr_focus_attribute() {
 
 #[test]
 fn key_action_sets_focus_visible() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
@@ -593,6 +597,7 @@ fn key_action_sets_focus_visible() {
 
 #[test]
 fn autofocus_focuses_element_and_sets_focus_visible_on_load() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_autofocus_page();
 
@@ -628,6 +633,7 @@ fn autofocus_focuses_element_and_sets_focus_visible_on_load() {
 
 #[test]
 fn tab_order_honors_positive_tabindex_ordering() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_positive_tabindex_page();
 
@@ -673,6 +679,7 @@ fn tab_order_honors_positive_tabindex_ordering() {
 
 #[test]
 fn tab_focus_is_trapped_within_modal_dialog() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_modal_focus_trap_page();
 
@@ -718,6 +725,7 @@ fn tab_focus_is_trapped_within_modal_dialog() {
 
 #[test]
 fn tab_and_shift_tab_traverse_focus_and_wrap_in_ui_worker() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_tab_traversal_page();
 

@@ -34,6 +34,7 @@ fn next_frame_ready(
 
 #[test]
 fn fragment_navigation_updates_target_pseudoclass_even_without_scroll() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

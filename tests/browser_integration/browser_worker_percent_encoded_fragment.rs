@@ -37,6 +37,7 @@ fn next_frame_ready(
 
 #[test]
 fn navigation_with_percent_encoded_fragment_scrolls_and_updates_target_pseudoclass() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

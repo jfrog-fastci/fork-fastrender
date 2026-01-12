@@ -9,6 +9,7 @@ const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
 #[test]
 fn ui_worker_click_prevent_default_blocks_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -103,6 +104,7 @@ fn ui_worker_click_prevent_default_blocks_navigation() {
 
 #[test]
 fn ui_worker_enter_on_focused_link_respects_click_prevent_default() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

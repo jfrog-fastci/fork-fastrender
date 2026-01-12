@@ -23,6 +23,7 @@ fn next_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> Rend
 
 #[test]
 fn tick_unknown_tab_is_noop() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker_with_factory(
     "fastr-ui-worker-tick-unknown",
@@ -48,6 +49,7 @@ fn tick_unknown_tab_is_noop() {
 
 #[test]
 fn tick_does_not_repaint_clean_tab() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let handle = spawn_ui_worker_with_factory(
@@ -99,6 +101,7 @@ fn tick_does_not_repaint_clean_tab() {
 
 #[test]
 fn tick_emits_new_frames_for_css_animation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

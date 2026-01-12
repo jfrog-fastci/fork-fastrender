@@ -71,6 +71,7 @@ fn next_frame_ready(
 
 #[test]
 fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -140,6 +141,7 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
 
 #[test]
 fn navigation_with_percent_encoded_percent_fragment_scrolls_to_target_before_first_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   // Regression test for double-decoding fragment identifiers in browser worker navigation/scroll
@@ -217,6 +219,7 @@ fn navigation_with_percent_encoded_percent_fragment_scrolls_to_target_before_fir
 
 #[test]
 fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -422,6 +425,7 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
 
 #[test]
 fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_without_reload() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

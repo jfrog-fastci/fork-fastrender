@@ -10,6 +10,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
 fn active_tab_scroll_is_not_blocked_by_background_heavy_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let worker = fastrender::ui::spawn_browser_worker_for_test(Some(1)).expect("spawn worker");

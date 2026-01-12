@@ -46,6 +46,7 @@ fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> Re
 
 #[test]
 fn select_listbox_click_accounts_for_scroll_offset() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -205,6 +206,7 @@ fn select_listbox_click_accounts_for_scroll_offset() {
 
 #[test]
 fn select_listbox_click_on_scrollbar_does_not_select_option() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

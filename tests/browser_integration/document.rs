@@ -88,6 +88,7 @@ fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
 
 #[test]
 fn browser_document_rerenders_after_dom_mutation() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
@@ -166,6 +167,7 @@ fn browser_document_rerenders_after_dom_mutation() -> Result<()> {
 
 #[test]
 fn browser_document_render_frame_with_scroll_state_syncs_scroll_state() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
@@ -200,6 +202,7 @@ fn browser_document_render_frame_with_scroll_state_syncs_scroll_state() -> Resul
 #[test]
 fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_resolution(
 ) -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html><html><head>
@@ -246,6 +249,7 @@ fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_r
 #[test]
 fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_overrides_base_url(
 ) -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html><html><head>
@@ -282,6 +286,7 @@ fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_over
 
 #[test]
 fn base_href_does_not_override_target_fragment() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   // Regression test: `:target` must be based on the document URL fragment, not the effective base
@@ -315,6 +320,7 @@ fn base_href_does_not_override_target_fragment() -> Result<()> {
 
 #[test]
 fn browser_document_cached_paint_respects_cancel_callback() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
@@ -350,6 +356,7 @@ fn browser_document_cached_paint_respects_cancel_callback() -> Result<()> {
 
 #[test]
 fn browser_document2_cached_paint_respects_cancel_callback() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   use std::sync::atomic::{AtomicBool, Ordering};
@@ -393,6 +400,7 @@ fn browser_document2_cached_paint_respects_cancel_callback() -> Result<()> {
 
 #[test]
 fn browser_document2_retry_after_paint_cancellation_reuses_cached_layout() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   use fastrender::render_control::{push_stage_listener, RenderDeadline, StageHeartbeat};
@@ -482,6 +490,7 @@ fn browser_document2_retry_after_paint_cancellation_reuses_cached_layout() -> Re
 
 #[test]
 fn browser_document2_cancel_callback_can_target_paint_stage_via_active_stage() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   use fastrender::render_control::{active_stage, push_stage_listener, StageHeartbeat};

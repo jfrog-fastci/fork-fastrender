@@ -67,6 +67,7 @@ fn simple_color_page(color: &str) -> String {
 
 #[test]
 fn history_navigation_messages_update_history_and_restore_scroll() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let url_a = site.write("a.html", &simple_color_page("rgb(255, 0, 0)"));

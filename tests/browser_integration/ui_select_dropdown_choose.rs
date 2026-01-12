@@ -24,6 +24,7 @@ fn find_element_by_id<'a>(
 
 #[test]
 fn browser_tab_controller_select_dropdown_choose_updates_dom_and_repaints() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let tab_id = TabId(1);

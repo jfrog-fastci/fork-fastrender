@@ -82,6 +82,7 @@ where
 
 #[test]
 fn ui_clipboard_copy_cut_paste_for_focused_input() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -199,6 +200,7 @@ fn ui_clipboard_copy_cut_paste_for_focused_input() {
 
 #[test]
 fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -324,6 +326,7 @@ fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
 
 #[test]
 fn ui_clipboard_respects_readonly_input() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -474,6 +477,7 @@ fn ui_clipboard_respects_readonly_input() {
 
 #[test]
 fn ui_clipboard_copy_cut_respects_selection() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -594,6 +598,7 @@ fn ui_clipboard_copy_cut_respects_selection() {
 
 #[test]
 fn ui_clipboard_paste_replaces_selection() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -721,6 +726,7 @@ fn ui_clipboard_paste_replaces_selection() {
 
 #[test]
 fn ui_select_all_renders_selection_highlight() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

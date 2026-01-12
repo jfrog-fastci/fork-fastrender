@@ -20,6 +20,7 @@ fn dom_has_attr(root: &DomNode, name: &str) -> bool {
 
 #[test]
 fn author_css_cannot_observe_internal_hover_state_via_data_fastr_hover_attr() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   // Regression test: The renderer previously injected `data-fastr-hover` into the DOM to implement
   // `:hover`, which allowed author CSS to observe internal interaction state via `[data-fastr-hover]`
   // selectors. The DOM attribute must never be injected.

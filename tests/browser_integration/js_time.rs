@@ -10,6 +10,7 @@ use vm_js::Value;
 
 #[test]
 fn window_host_time_apis_are_deterministic_and_match_event_loop_clock() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let clock = Arc::new(VirtualClock::new());
   let clock_for_loop: Arc<dyn Clock> = clock.clone();
   let event_loop = EventLoop::<WindowHostState>::with_clock(clock_for_loop);

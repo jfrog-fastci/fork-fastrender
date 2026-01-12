@@ -15,6 +15,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
 fn navigation_cancellation_drops_stale_frame_and_is_silent() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let _delay = support::TestRenderDelayGuard::set(Some(1));
 
@@ -166,6 +167,7 @@ fn navigation_cancellation_drops_stale_frame_and_is_silent() {
 
 #[test]
 fn rapid_scroll_cancels_stale_paint() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -384,6 +386,7 @@ fn rapid_scroll_cancels_stale_paint() {
 
 #[test]
 fn bump_paint_during_navigation_does_not_emit_navigation_failed() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   // Slow down deadline checks so we have time to bump paint cancellation during the navigation
   // prepare stage (before the initial paint begins).
@@ -570,6 +573,7 @@ fn bump_paint_during_navigation_does_not_emit_navigation_failed() {
 
 #[test]
 fn canceled_navigation_does_not_mutate_committed_base_url_hints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

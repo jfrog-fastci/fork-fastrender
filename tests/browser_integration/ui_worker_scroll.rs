@@ -155,6 +155,7 @@ fn make_test_page_scroller_far_down() -> (tempfile::TempDir, String) {
 
 #[test]
 fn scroll_during_initial_navigation_is_applied_to_first_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
@@ -194,6 +195,7 @@ fn scroll_during_initial_navigation_is_applied_to_first_frame() {
 
 #[test]
 fn scroll_without_pointer_updates_viewport_scroll() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
@@ -238,6 +240,7 @@ fn scroll_without_pointer_updates_viewport_scroll() {
 
 #[test]
 fn scroll_with_pointer_updates_element_scroll_offsets() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
@@ -284,6 +287,7 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
 
 #[test]
 fn scroll_with_pointer_after_viewport_scroll_targets_element() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page_scroller_far_down();
 
@@ -350,6 +354,7 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
 
 #[test]
 fn scroll_with_pointer_outside_scroller_scrolls_viewport() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
@@ -400,6 +405,7 @@ fn scroll_with_pointer_outside_scroller_scrolls_viewport() {
 
 #[test]
 fn scroll_clamps_to_zero() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
@@ -446,6 +452,7 @@ fn scroll_clamps_to_zero() {
 
 #[test]
 fn pointer_hit_testing_uses_element_scroll_offsets() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html = r#"<!doctype html>

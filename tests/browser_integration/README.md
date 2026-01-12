@@ -7,7 +7,7 @@ real window or GPU**.
 The tests here are **not** a standalone Cargo integration-test target. They are Rust modules under
 `tests/browser_integration/` that are included by the main integration test harness:
 
-- Harness entrypoint: `tests/integration.rs` (includes `mod browser_integration;`)
+- Harness entrypoint: `tests/integration.rs` (includes this module via `mod browser_integration;`)
 - Module aggregator: `tests/browser_integration/mod.rs`
 
 This keeps test compilation/linking fast and avoids reintroducing per-category `tests/*.rs` test
@@ -39,7 +39,7 @@ bash scripts/cargo_agent.sh test -p fastrender --test integration browser_integr
 Run tests that are gated behind the UI feature (optionally filtered to a specific test name):
 
 ```bash
-bash scripts/cargo_agent.sh test -p fastrender --test integration --features browser_ui browser_integration::
+bash scripts/cargo_agent.sh test -p fastrender --test integration --features browser_ui browser_integration::<test-name>
 ```
 
 Notes:
@@ -58,10 +58,11 @@ Notes:
   ```bash
   bash scripts/cargo_agent.sh test -p fastrender --test integration browser_integration:: -- --test-threads 1
   ```
-- Browser integration tests should be hermetic with respect to fonts: prefer
-  `support::deterministic_renderer()` / `support::deterministic_factory()` (or pass an explicit
-  `FontConfig`, such as `FontConfig::bundled_only()`) so text rendering does not depend on
-  system-installed fonts or process-global env vars.
+- The browser integration harness prefers deterministic bundled fonts by default, setting
+  `FASTR_USE_BUNDLED_FONTS=1` unless explicitly opted out (`FASTR_USE_BUNDLED_FONTS=0`), but tests
+  should still be hermetic with respect to fonts: prefer `support::deterministic_renderer()` /
+  `support::deterministic_factory()` (or pass an explicit `FontConfig`, such as
+  `FontConfig::bundled_only()`) instead of mutating process-global env vars at runtime.
 
 ## Headless constraints (no winit/wgpu/egui)
 
@@ -127,7 +128,7 @@ interference, acquire the global lock for the duration of the test (see also
 `tests/common/global_state` for the shared lock used across integration suites):
 
 ```rust
-let _lock = crate::browser_integration::stage_listener_test_lock();
+let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
 ```
 
 ## Test render delays (cancellation determinism)

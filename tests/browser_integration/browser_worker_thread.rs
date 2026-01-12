@@ -161,6 +161,7 @@ fn heavy_file_html(rows: usize) -> String {
 
 #[test]
 fn create_tab_triggers_initial_navigation_and_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let worker = BrowserWorkerFixture::spawn();
 
@@ -285,6 +286,7 @@ fn create_tab_triggers_initial_navigation_and_frame() {
 
 #[test]
 fn scroll_produces_scroll_update_and_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let worker = BrowserWorkerFixture::spawn();
 
@@ -361,6 +363,7 @@ fn scroll_produces_scroll_update_and_frame() {
 
 #[test]
 fn cancellation_drops_stale_output() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let worker = BrowserWorkerFixture::spawn();
 

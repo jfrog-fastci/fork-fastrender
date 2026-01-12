@@ -44,6 +44,7 @@ impl Drop for EnvGuard {
 
 #[test]
 fn absurd_viewport_changed_is_clamped_before_pixmap_allocation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   // Keep this test cheap and deterministic: clamp to a small pixmap limit so we don't allocate

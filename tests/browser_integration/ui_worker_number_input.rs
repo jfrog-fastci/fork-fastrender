@@ -53,6 +53,7 @@ fn recv_until_pixel(
 
 #[test]
 fn number_input_spinner_click_steps_value_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -119,6 +120,7 @@ fn number_input_spinner_click_steps_value_and_repaints() {
 
 #[test]
 fn number_input_arrow_keys_step_value_and_repaint() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();
@@ -199,6 +201,7 @@ fn number_input_arrow_keys_step_value_and_repaint() {
 
 #[test]
 fn number_input_step_affects_get_form_submission_value() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

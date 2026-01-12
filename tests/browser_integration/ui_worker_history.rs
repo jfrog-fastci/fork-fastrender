@@ -148,6 +148,7 @@ fn write_fixtures(dir: &std::path::Path) -> (String, String) {
 
 #[test]
 fn back_forward_toggles_can_go_flags_and_restores_page() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("tempdir");
   let (a_url, b_url) = write_fixtures(dir.path());
@@ -216,6 +217,7 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
 
 #[test]
 fn reload_does_not_create_new_history_entry() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("tempdir");
   let (a_url, b_url) = write_fixtures(dir.path());
@@ -285,6 +287,7 @@ fn reload_does_not_create_new_history_entry() {
 
 #[test]
 fn scroll_is_restored_across_back_and_forward() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("tempdir");
   let (a_url, b_url) = write_fixtures(dir.path());

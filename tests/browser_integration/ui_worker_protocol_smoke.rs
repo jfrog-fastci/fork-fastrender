@@ -114,6 +114,7 @@ impl Harness {
 
 #[test]
 fn create_tab_with_initial_url_emits_navigation_and_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let tab_id = TabId::new();
@@ -271,6 +272,7 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
 
 #[test]
 fn viewport_changed_triggers_frame_ready() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let tab_id = TabId::new();

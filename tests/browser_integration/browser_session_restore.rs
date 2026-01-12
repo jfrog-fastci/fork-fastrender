@@ -65,6 +65,7 @@ fn parse_headless_session(stdout: &str) -> (String, fastrender::ui::BrowserSessi
 
 #[test]
 fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempfile::tempdir().expect("temp dir");

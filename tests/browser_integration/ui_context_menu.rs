@@ -44,6 +44,7 @@ fn fixture() -> (support::TempSite, String, String) {
 
 #[test]
 fn context_menu_request_resolves_link_url() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_site, index_url, expected_link_url) = fixture();
 

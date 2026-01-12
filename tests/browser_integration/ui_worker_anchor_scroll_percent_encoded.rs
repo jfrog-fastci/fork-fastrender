@@ -12,6 +12,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn navigation_with_percent_encoded_fragment_scrolls_and_targets_unicode_id() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

@@ -315,7 +315,7 @@ pub struct WorkerHarness {
   // The browser integration suite mutates a handful of process-global knobs (e.g.
   // `render_control::set_test_render_delay_ms`). Serialize the worker runtime harness with the rest
   // of the suite so those overrides don't leak across tests and cause flakiness/timeouts.
-  _stage_lock: std::sync::MutexGuard<'static, ()>,
+  _stage_lock: parking_lot::ReentrantMutexGuard<'static, ()>,
   ui_tx: Option<Sender<UiToWorker>>,
   ui_rx: Receiver<WorkerToUi>,
   handle: Option<JoinHandle<()>>,

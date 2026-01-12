@@ -72,6 +72,7 @@ fn wait_for_rgb_at_css(
 
 #[test]
 fn dropdown_select_pick_updates_dom_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let url = site.write(
@@ -208,6 +209,7 @@ fn dropdown_select_pick_updates_dom_and_repaints() {
 
 #[test]
 fn dropdown_select_cancel_emits_select_dropdown_closed_message() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let url = site.write(

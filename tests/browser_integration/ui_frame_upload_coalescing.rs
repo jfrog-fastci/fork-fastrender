@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let handle = fastrender::ui::spawn_ui_worker("fastr-ui-frame-upload-coalescing-test")

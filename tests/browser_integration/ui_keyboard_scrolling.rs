@@ -84,6 +84,7 @@ fn wait_for_scroll_response(
 
 #[test]
 fn keyboard_scroll_actions_update_viewport_scroll_state() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let fastrender::ui::BrowserWorkerHandle { tx, rx, join } =
@@ -167,6 +168,7 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
 
 #[test]
 fn home_end_space_keys_scroll_when_no_element_is_focused() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let fastrender::ui::BrowserWorkerHandle { tx, rx, join } =

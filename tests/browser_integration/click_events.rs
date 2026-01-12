@@ -3,6 +3,7 @@ use fastrender::{BrowserTab, RenderOptions, Result, VmJsBrowserTabExecutor};
 
 #[test]
 fn click_prevent_default_blocks_link_navigation() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
 <a id="link" href="https://example.com/next">next</a>
 <script>
@@ -26,6 +27,7 @@ fn click_prevent_default_blocks_link_navigation() -> Result<()> {
 
 #[test]
 fn click_default_action_resolves_link_when_not_canceled() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
 <a id="link" href="https://example.com/next">next</a>
 "#;
@@ -45,6 +47,7 @@ fn click_default_action_resolves_link_when_not_canceled() -> Result<()> {
 
 #[test]
 fn click_listeners_can_schedule_tasks_via_event_loop_web_apis() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
 <a id="link" href="https://example.com/next">next</a>
 <script>
@@ -79,6 +82,7 @@ fn click_listeners_can_schedule_tasks_via_event_loop_web_apis() -> Result<()> {
 
 #[test]
 fn script_load_listeners_can_schedule_microtasks_via_event_loop_web_apis() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
 <script id="s" src="a.js" async></script>
 <script>
@@ -108,6 +112,7 @@ fn script_load_listeners_can_schedule_microtasks_via_event_loop_web_apis() -> Re
 
 #[test]
 fn click_listener_registered_with_abort_signal_is_removed_when_signal_aborts() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
  <div id="target"></div>
  <script>

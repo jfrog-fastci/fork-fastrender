@@ -146,6 +146,7 @@ fn assert_pixmap_matches_viewport(frame: &RenderedFrame) {
 
 #[test]
 fn viewport_changed_does_not_repaint_before_first_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("fastr-ui-worker-viewport-changed-no-nav").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
@@ -192,6 +193,7 @@ fn viewport_changed_does_not_repaint_before_first_navigation() {
 
 #[test]
 fn viewport_changed_after_navigation_emits_new_frame_with_updated_dimensions() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let url = site.write(
@@ -241,6 +243,7 @@ fn viewport_changed_after_navigation_emits_new_frame_with_updated_dimensions() {
 
 #[test]
 fn viewport_changed_updates_dpr_and_pixmap_scale() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let url = site.write(
@@ -302,6 +305,7 @@ fn viewport_changed_updates_dpr_and_pixmap_scale() {
 
 #[test]
 fn viewport_changed_repaints_after_navigation_and_preserves_scroll() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let (_site, url) = scroll_fixture();
 
@@ -353,6 +357,7 @@ fn viewport_changed_repaints_after_navigation_and_preserves_scroll() {
 
 #[test]
 fn viewport_changed_coalesces_to_latest_state() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let url = site.write(

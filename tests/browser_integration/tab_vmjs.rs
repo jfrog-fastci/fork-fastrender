@@ -80,6 +80,7 @@ impl ResourceFetcher for StubFetcher {
 
 #[test]
 fn browser_tab_vmjs_executes_scripts_microtasks_timers_and_rerenders() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -193,6 +194,7 @@ fn browser_tab_vmjs_executes_scripts_microtasks_timers_and_rerenders() -> Result
 
 #[test]
 fn browser_tab_vmjs_document_current_script_is_set_and_cleared_before_microtasks() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -239,6 +241,7 @@ fn browser_tab_vmjs_document_current_script_is_set_and_cleared_before_microtasks
 
 #[test]
 fn browser_tab_vmjs_request_animation_frame_runs_and_triggers_rerender() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -339,6 +342,7 @@ fn browser_tab_vmjs_request_animation_frame_runs_and_triggers_rerender() -> Resu
 
 #[test]
 fn browser_tab_vmjs_fetch_resolves_and_triggers_rerender() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -441,6 +445,7 @@ fn browser_tab_vmjs_fetch_resolves_and_triggers_rerender() -> Result<()> {
 
 #[test]
 fn browser_tab_vmjs_fetch_rejects_when_signal_is_pre_aborted() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
@@ -503,6 +508,7 @@ fn browser_tab_vmjs_fetch_rejects_when_signal_is_pre_aborted() -> Result<()> {
 
 #[test]
 fn browser_tab_vmjs_fetch_can_be_aborted_after_scheduling_before_execution() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 

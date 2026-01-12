@@ -36,6 +36,7 @@ fn recv_until_frame(
 
 #[test]
 fn same_document_fragment_navigation_scrolls_without_fetching() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");

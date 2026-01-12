@@ -41,6 +41,7 @@ fn wait_for_navigation_committed(
 
 #[test]
 fn about_newtab_navigation_committed_includes_title() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("ui_worker_title_about_newtab").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
@@ -64,6 +65,7 @@ fn about_newtab_navigation_committed_includes_title() {
 
 #[test]
 fn file_page_navigation_committed_includes_title_and_trims_ascii_whitespace() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("page.html");
@@ -96,6 +98,7 @@ fn file_page_navigation_committed_includes_title_and_trims_ascii_whitespace() {
 
 #[test]
 fn missing_title_results_in_none() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("page.html");

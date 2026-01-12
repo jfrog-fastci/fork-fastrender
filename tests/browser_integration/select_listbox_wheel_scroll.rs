@@ -29,6 +29,7 @@ fn find_listbox_select_box_id(box_tree: &fastrender::BoxTree) -> Option<usize> {
 
 #[test]
 fn select_listbox_wheel_scroll_updates_element_scroll_state() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
@@ -90,6 +91,7 @@ fn select_listbox_wheel_scroll_updates_element_scroll_state() -> Result<()> {
 
 #[test]
 fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>

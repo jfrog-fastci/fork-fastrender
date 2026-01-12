@@ -65,6 +65,7 @@ fn find_select(dom: &DomNode) -> Option<&DomNode> {
 #[test]
 fn select_listbox_hidden_option_click_selects_first_visible_option_and_marks_user_validity(
 ) -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>

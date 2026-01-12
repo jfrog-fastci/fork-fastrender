@@ -44,6 +44,7 @@ fn recv_until<F: FnMut(&WorkerToUi) -> bool>(
 
 #[test]
 fn ui_worker_nav_generation_cancels_in_flight_navigation_and_drops_stale_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   // Slow down render stages to make cancellation deterministic.
   let (ui_tx, ui_rx, join) = spawn_ui_worker_for_test("fastr-ui-worker-cancel-nav-gens", Some(20))
@@ -137,6 +138,7 @@ fn ui_worker_nav_generation_cancels_in_flight_navigation_and_drops_stale_frame()
 
 #[test]
 fn rapid_navigation_cancels_stale_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 
@@ -317,6 +319,7 @@ fn rapid_navigation_cancels_stale_navigation() {
 
 #[test]
 fn rapid_scroll_cancels_stale_paint() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 

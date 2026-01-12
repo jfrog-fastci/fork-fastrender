@@ -32,6 +32,7 @@ fn assert_stage_order(stages: &[StageHeartbeat], expected: &[StageHeartbeat]) {
 
 #[test]
 fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   std::fs::write(
@@ -126,6 +127,7 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
 
 #[test]
 fn stage_heartbeats_forwarded_from_ui_worker_for_navigation_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 
@@ -296,6 +298,7 @@ fn stage_heartbeats_forwarded_from_ui_worker_for_navigation_and_repaints() {
 
 #[test]
 fn stage_heartbeats_forwarded_from_history_ui_worker_for_navigation_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 

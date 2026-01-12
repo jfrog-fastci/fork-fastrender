@@ -11,6 +11,7 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 
 #[test]
 fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   let site = support::TempSite::new();

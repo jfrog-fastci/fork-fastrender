@@ -17,6 +17,7 @@ fn console_logs(tab: &BrowserTab) -> Vec<String> {
 #[test]
 fn browser_tab_executes_dynamically_inserted_inline_scripts_synchronously() -> fastrender::Result<()>
 {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -50,6 +51,7 @@ fn browser_tab_executes_dynamically_inserted_inline_scripts_synchronously() -> f
 #[test]
 fn browser_tab_executes_dynamically_inserted_external_scripts_asynchronously(
 ) -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let external_url = "https://example.invalid/a.js";
 
   let html = format!(

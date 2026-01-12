@@ -17,6 +17,7 @@ fn attr(
 
 #[test]
 fn tab_vm_js_time_apis_follow_event_loop_clock() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>

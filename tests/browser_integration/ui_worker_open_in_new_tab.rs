@@ -32,6 +32,7 @@ fn wait_for_open_in_new_tab(rx: &Receiver<WorkerToUi>, tab_id: TabId, expected_u
 
 #[test]
 fn link_activation_can_request_open_in_new_tab() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let page1_path = dir.path().join("page1.html");

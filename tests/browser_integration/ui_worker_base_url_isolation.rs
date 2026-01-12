@@ -113,6 +113,7 @@ html.next, body.next {{ background: rgb({},{},{}); }}
 
 #[test]
 fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let site_a = support::TempSite::new();
   let site_b = support::TempSite::new();

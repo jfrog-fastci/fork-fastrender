@@ -3,6 +3,7 @@ use fastrender::{BrowserTab, RenderOptions, VmJsBrowserTabExecutor};
 
 #[test]
 fn browser_tab_records_js_exception_and_continues_rendering() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -34,6 +35,7 @@ fn browser_tab_records_js_exception_and_continues_rendering() -> fastrender::Res
 
 #[test]
 fn browser_tab_records_console_messages_with_levels() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -93,6 +95,7 @@ fn browser_tab_console_assert_preserves_substitution_string_formatting() -> fast
 
 #[test]
 fn browser_tab_exceptions_do_not_abort_subsequent_scripts() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -132,6 +135,7 @@ fn browser_tab_exceptions_do_not_abort_subsequent_scripts() -> fastrender::Resul
 
 #[test]
 fn browser_tab_js_exception_stack_includes_inline_script_name() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -174,6 +178,7 @@ fn browser_tab_js_exception_stack_includes_inline_script_name() -> fastrender::R
 
 #[test]
 fn browser_tab_js_exception_stack_includes_external_script_url() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let url = "https://example.com/a.js";
 
   let options = RenderOptions::new()
@@ -223,6 +228,7 @@ fn browser_tab_js_exception_stack_includes_external_script_url() -> fastrender::
 #[test]
 fn browser_tab_module_script_exception_stack_includes_inline_module_url() -> fastrender::Result<()>
 {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -273,6 +279,7 @@ fn browser_tab_module_script_exception_stack_includes_inline_module_url() -> fas
 #[test]
 fn browser_tab_module_script_exception_stack_includes_external_module_url() -> fastrender::Result<()>
 {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let url = "https://example.com/a.js";
 
   let options = RenderOptions::new()

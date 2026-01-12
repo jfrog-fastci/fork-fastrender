@@ -65,6 +65,7 @@ fn wait_for_navigation_committed_and_frame(
 
 #[test]
 fn about_pages_render_and_have_titles() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("ui_worker_about_pages").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();

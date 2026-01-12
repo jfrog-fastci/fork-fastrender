@@ -98,6 +98,7 @@ fn recv_nav_committed(
 
 #[test]
 fn per_tab_back_forward_state_machine() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let fetcher = Arc::new(
     StaticHtmlFetcher::default()
@@ -190,6 +191,7 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
 
 #[test]
 fn redirects_commit_final_url_into_history_entry() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
   let fetcher = Arc::new(
     StaticHtmlFetcher::default()
