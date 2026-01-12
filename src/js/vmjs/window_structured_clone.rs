@@ -1957,11 +1957,47 @@ mod tests {
   fn structured_clone_rejects_symbol_and_function() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
-    let sym = realm.exec_script("try { structuredClone(Symbol('x')); 'no' } catch (e) { e.name }")?;
-    assert_eq!(get_string(&realm, sym), "DataCloneError");
+    let sym_ok = realm.exec_script(
+      "(() => {\
+         try { structuredClone(Symbol('x')); return false; }\
+         catch (e) {\
+           return e.name === 'DataCloneError' && typeof DOMException !== 'undefined' && e instanceof DOMException;\
+         }\
+       })()",
+    )?;
+    assert_eq!(sym_ok, Value::Bool(true));
 
-    let fun = realm.exec_script("try { structuredClone(function(){}); 'no' } catch (e) { e.name }")?;
-    assert_eq!(get_string(&realm, fun), "DataCloneError");
+    let fun_ok = realm.exec_script(
+      "(() => {\
+         try { structuredClone(function(){}); return false; }\
+         catch (e) {\
+           return e.name === 'DataCloneError' && typeof DOMException !== 'undefined' && e instanceof DOMException;\
+         }\
+       })()",
+    )?;
+    assert_eq!(fun_ok, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_does_not_detach_transfer_list_on_serialize_error() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const ab = new ArrayBuffer(4);\
+         const v = new Uint8Array(ab);\
+         v[0] = 123;\
+         const len = ab.byteLength;\
+         const vlen = v.length;\
+         let threw = false;\
+         try { structuredClone({ bad: Symbol('x') }, { transfer: [ab] }); }\
+         catch (e) { threw = e.name === 'DataCloneError'; }\
+         return threw && ab.byteLength === len && v.length === vlen && v[0] === 123;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
 
     Ok(())
   }
