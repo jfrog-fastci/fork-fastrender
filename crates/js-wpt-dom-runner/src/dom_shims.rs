@@ -3587,10 +3587,18 @@ mod tests {
           select.selectedIndex = 1;
           var selectSelectedIndexAfterSelectedIndex = select.selectedIndex;
           var selectValueAfterSelectedIndex = select.value;
+          var optASelectedAfterSelectedIndex = optA.selected;
+          var optBSelectedAfterSelectedIndex = optB.selected;
+          var optASelectedAttrAfterSelectedIndex = optA.getAttribute("selected") !== null;
+          var optBSelectedAttrAfterSelectedIndex = optB.getAttribute("selected") !== null;
 
           select.value = "a";
           var selectSelectedIndexAfterValue = select.selectedIndex;
           var selectValueAfterValue = select.value;
+          var optASelectedAfterValue = optA.selected;
+          var optBSelectedAfterValue = optB.selected;
+          var optASelectedAttrAfterValue = optA.getAttribute("selected") !== null;
+          var optBSelectedAttrAfterValue = optB.getAttribute("selected") !== null;
 
           // Ensure options collection is live when nodes are removed (remove the non-selected option).
           select.removeChild(optB);
@@ -3668,8 +3676,16 @@ mod tests {
 
             selectSelectedIndexAfterSelectedIndex: selectSelectedIndexAfterSelectedIndex,
             selectValueAfterSelectedIndex: selectValueAfterSelectedIndex,
+            optASelectedAfterSelectedIndex: optASelectedAfterSelectedIndex,
+            optBSelectedAfterSelectedIndex: optBSelectedAfterSelectedIndex,
+            optASelectedAttrAfterSelectedIndex: optASelectedAttrAfterSelectedIndex,
+            optBSelectedAttrAfterSelectedIndex: optBSelectedAttrAfterSelectedIndex,
             selectSelectedIndexAfterValue: selectSelectedIndexAfterValue,
             selectValueAfterValue: selectValueAfterValue,
+            optASelectedAfterValue: optASelectedAfterValue,
+            optBSelectedAfterValue: optBSelectedAfterValue,
+            optASelectedAttrAfterValue: optASelectedAttrAfterValue,
+            optBSelectedAttrAfterValue: optBSelectedAttrAfterValue,
 
             elementsSame: elementsSame,
             elementsIsHTMLFormControlsCollection: elementsIsHTMLFormControlsCollection,
@@ -3722,8 +3738,16 @@ mod tests {
 
       assert_eq!(v["selectSelectedIndexAfterSelectedIndex"], 1);
       assert_eq!(v["selectValueAfterSelectedIndex"], "b");
+      assert_eq!(v["optASelectedAfterSelectedIndex"], false);
+      assert_eq!(v["optBSelectedAfterSelectedIndex"], true);
+      assert_eq!(v["optASelectedAttrAfterSelectedIndex"], false);
+      assert_eq!(v["optBSelectedAttrAfterSelectedIndex"], true);
       assert_eq!(v["selectSelectedIndexAfterValue"], 0);
       assert_eq!(v["selectValueAfterValue"], "a");
+      assert_eq!(v["optASelectedAfterValue"], true);
+      assert_eq!(v["optBSelectedAfterValue"], false);
+      assert_eq!(v["optASelectedAttrAfterValue"], true);
+      assert_eq!(v["optBSelectedAttrAfterValue"], false);
 
       assert_eq!(v["elementsSame"], true);
       assert_eq!(v["elementsIsHTMLFormControlsCollection"], true);
