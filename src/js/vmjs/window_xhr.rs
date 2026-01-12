@@ -4,7 +4,7 @@
 //! real-world scripts and analytics/instrumentation libraries:
 //!
 //! - `new XMLHttpRequest()`
-//! - `open()` / `setRequestHeader()` / `send()` / `abort()`
+//! - `open()` / `setRequestHeader()` / `overrideMimeType()` / `send()` / `abort()`
 //! - `getResponseHeader()` / `getAllResponseHeaders()`
 //! - `readyState`, `status`, `statusText`, `responseURL`, `responseType`, `timeout`, `responseText`, `response`
 //! - Event handler properties (`onload`, `onerror`, etc) and `addEventListener`/`removeEventListener`
@@ -50,6 +50,7 @@ const LISTENERS_KEY: &str = "__fastrender_xhr_listeners";
 const XHR_METHOD_MAX_BYTES: usize = 64;
 const XHR_EVENT_TYPE_MAX_BYTES: usize = 128;
 const XHR_STATUS_TEXT_MAX_BYTES: usize = 128;
+const XHR_OVERRIDE_MIME_TYPE_MAX_BYTES: usize = 256;
 
 const XHR_URL_TOO_LONG_ERROR: &str = "XMLHttpRequest.open URL exceeds maximum length";
 const XHR_METHOD_TOO_LONG_ERROR: &str = "XMLHttpRequest.open method exceeds maximum length";
@@ -63,6 +64,8 @@ const XHR_EVENT_TYPE_TOO_LONG_ERROR: &str = "XMLHttpRequest event type exceeds m
 const XHR_INVALID_RESPONSE_TYPE_ERROR: &str = "XMLHttpRequest.responseType unsupported value";
 const XHR_RESPONSE_HEADER_NAME_TOO_LONG_ERROR: &str =
   "XMLHttpRequest.getResponseHeader name exceeds maximum length";
+const XHR_OVERRIDE_MIME_TYPE_TOO_LONG_ERROR: &str =
+  "XMLHttpRequest.overrideMimeType exceeds maximum length";
 
 #[derive(Clone)]
 pub struct WindowXhrEnv {
@@ -129,6 +132,7 @@ struct XhrState {
   response_text: String,
   response_headers: Vec<(String, String)>,
   response_url: String,
+  override_mime_type: String,
   status: u16,
   status_text: String,
   with_credentials: bool,
@@ -154,6 +158,7 @@ impl Default for XhrState {
       response_text: String::new(),
       response_headers: Vec::new(),
       response_url: String::new(),
+      override_mime_type: String::new(),
       status: 0,
       status_text: String::new(),
       with_credentials: false,
@@ -387,6 +392,20 @@ fn truncate_string_to_max_bytes(value: &mut String, max_bytes: usize) {
     idx = idx.saturating_sub(1);
   }
   value.truncate(idx);
+}
+
+fn decode_response_text(bytes: &[u8], override_mime_type: &str) -> String {
+  if override_mime_type.is_empty() {
+    return String::from_utf8_lossy(bytes).to_string();
+  }
+  if override_mime_type.to_ascii_lowercase().contains("charset=x-user-defined") {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+      out.push(char::from(b));
+    }
+    return out;
+  }
+  String::from_utf8_lossy(bytes).to_string()
 }
 
 fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
@@ -935,6 +954,7 @@ fn xhr_open_native<Host: WindowRealmHost + 'static>(
     xhr.response_text.clear();
     xhr.response_headers.clear();
     xhr.response_url.clear();
+    xhr.override_mime_type.clear();
     xhr.send_in_progress = false;
     xhr.aborted = false;
     xhr.async_flag = async_flag;
@@ -1012,6 +1032,39 @@ fn xhr_set_request_header_native(
       ));
     }
     req.headers.push((name, value));
+    Ok(())
+  })?;
+
+  Ok(Value::Undefined)
+}
+
+fn xhr_override_mime_type_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
+  let mime_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mime = to_rust_string_limited(
+    scope.heap_mut(),
+    mime_val,
+    XHR_OVERRIDE_MIME_TYPE_MAX_BYTES,
+    XHR_OVERRIDE_MIME_TYPE_TOO_LONG_ERROR,
+  )?;
+
+  with_env_state_mut(env_id, |state| {
+    let xhr = state
+      .xhrs
+      .get_mut(&xhr_id)
+      .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+    if xhr.ready_state != XHR_OPENED || xhr.send_in_progress {
+      return Err(VmError::TypeError("XMLHttpRequest.overrideMimeType invalid state"));
+    }
+    xhr.override_mime_type = mime;
     Ok(())
   })?;
 
@@ -1314,7 +1367,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       } else {
         xhr.status = status;
         xhr.status_text = status_text;
-        xhr.response_text = String::from_utf8_lossy(&bytes).to_string();
+        xhr.response_text = decode_response_text(&bytes, &xhr.override_mime_type);
         xhr.response_bytes = bytes;
         xhr.response_headers = response_headers;
         xhr.response_url = response_url;
@@ -1583,7 +1636,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         xhr.ready_state = XHR_HEADERS_RECEIVED;
         xhr.status = status;
         xhr.status_text = status_text;
-        xhr.response_text = String::from_utf8_lossy(&bytes).to_string();
+        xhr.response_text = decode_response_text(&bytes, &xhr.override_mime_type);
         xhr.response_bytes = bytes;
         xhr.response_headers = response_headers;
         xhr.response_url = response_url;
@@ -2376,6 +2429,22 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
     true,
   )?;
 
+  let override_mime_type_id = vm.register_native_call(xhr_override_mime_type_native)?;
+  let override_mime_type_name = scope.alloc_string("overrideMimeType")?;
+  scope.push_root(Value::String(override_mime_type_name))?;
+  let override_mime_type_fn =
+    scope.alloc_native_function(override_mime_type_id, None, override_mime_type_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(override_mime_type_fn, Some(func_proto))?;
+  set_data_prop(
+    &mut scope,
+    proto,
+    "overrideMimeType",
+    Value::Object(override_mime_type_fn),
+    true,
+  )?;
+
   let get_response_header_id = vm.register_native_call(xhr_get_response_header_native)?;
   let get_response_header_name = scope.alloc_string("getResponseHeader")?;
   scope.push_root(Value::String(get_response_header_name))?;
@@ -2698,6 +2767,8 @@ mod tests {
 
       let mut res = if req.fetch.url.contains("json") {
         FetchedResource::new(br#"{"answer":42}"#.to_vec(), Some("application/json".to_string()))
+      } else if req.fetch.url.contains("binary") {
+        FetchedResource::new(vec![0xFF], Some("text/plain".to_string()))
       } else {
         FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string()))
       };
@@ -2944,6 +3015,42 @@ mod tests {
     let global = realm.global_object();
     let url = get_string(scope.heap(), get_prop(&mut scope, global, "__url"));
     assert_eq!(url, "https://example.invalid/ok");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_override_mime_type_x_user_defined_decodes_bytes() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "var xhr = new XMLHttpRequest();\n\
+         xhr.onload = function(){ globalThis.__code = xhr.responseText.charCodeAt(0); };\n\
+         xhr.open('GET', '/binary', true);\n\
+         xhr.overrideMimeType('text/plain; charset=x-user-defined');\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    assert_eq!(get_prop(&mut scope, global, "__code"), Value::Number(255.0));
     Ok(())
   }
 
