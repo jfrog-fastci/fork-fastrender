@@ -5037,6 +5037,21 @@ fn dom_platform_mut(vm: &mut Vm) -> Option<&mut DomPlatform> {
   vm.user_data_mut::<WindowRealmUserData>()
     .and_then(|data| data.dom_platform_mut())
 }
+
+fn proto_chain_has_own_property(
+  heap: &Heap,
+  start: GcObject,
+  key: &PropertyKey,
+) -> Result<bool, VmError> {
+  let mut current = heap.object_prototype(start)?;
+  while let Some(proto) = current {
+    if heap.object_get_own_property(proto, key)?.is_some() {
+      return Ok(true);
+    }
+    current = heap.object_prototype(proto)?;
+  }
+  Ok(false)
+}
 fn get_or_create_node_wrapper(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5628,22 +5643,30 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = element_query_selector {
     let key = alloc_key(scope, "querySelector")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = element_query_selector_all {
     let key = alloc_key(scope, "querySelectorAll")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = element_matches {
     let key = alloc_key(scope, "matches")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = element_closest {
     let key = alloc_key(scope, "closest")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = element_get_bounding_client_rect {
@@ -5653,34 +5676,38 @@ fn get_or_create_node_wrapper(
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (class_name_get, class_name_set) {
     let class_name_key = alloc_key(scope, "className")?;
-    scope.define_property(
-      wrapper,
-      class_name_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &class_name_key)? {
+      scope.define_property(
+        wrapper,
+        class_name_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (id_get, id_set) {
     let id_key = alloc_key(scope, "id")?;
-    scope.define_property(
-      wrapper,
-      id_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &id_key)? {
+      scope.define_property(
+        wrapper,
+        id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (title_get, title_set) {
@@ -5749,195 +5776,219 @@ fn get_or_create_node_wrapper(
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (src_get, src_set) {
     let key = alloc_key(scope, "src")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (srcset_get, srcset_set) {
     let key = alloc_key(scope, "srcset")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (sizes_get, sizes_set) {
     let key = alloc_key(scope, "sizes")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (href_get, href_set) {
     let key = alloc_key(scope, "href")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (rel_get, rel_set) {
     let key = alloc_key(scope, "rel")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (type_get, type_set) {
     let key = alloc_key(scope, "type")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (charset_get, charset_set) {
     let key = alloc_key(scope, "charset")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (cross_origin_get, cross_origin_set)
   {
     let key = alloc_key(scope, "crossOrigin")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (async_get, async_set) {
     let key = alloc_key(scope, "async")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (defer_get, defer_set) {
     let key = alloc_key(scope, "defer")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (height_get, height_set) {
     let key = alloc_key(scope, "height")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (width_get, width_set) {
     let key = alloc_key(scope, "width")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   let is_element_like = dom
@@ -5950,6 +6001,9 @@ fn get_or_create_node_wrapper(
     .unwrap_or(false);
 
   if is_element_like {
+    let class_list_key = alloc_key(scope, "classList")?;
+    let should_define_class_list =
+      !proto_chain_has_own_property(scope.heap(), wrapper, &class_list_key)?;
     if let (
       Some(Value::Object(add)),
       Some(Value::Object(remove)),
@@ -5963,66 +6017,69 @@ fn get_or_create_node_wrapper(
       class_list_contains,
       class_list_replace,
     ) {
-      let class_list = scope.alloc_object()?;
-      scope.push_root(Value::Object(class_list))?;
-      scope.heap_mut().object_set_host_slots(
-        class_list,
-        HostSlots {
-          a: node_id.index() as u64,
-          b: DOM_TOKEN_LIST_HOST_TAG,
-        },
-      )?;
-
-      let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-      scope.define_property(
-        class_list,
-        node_id_key,
-        data_desc(Value::Number(node_id.index() as f64)),
-      )?;
-
-      let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-      scope.define_property(
-        class_list,
-        wrapper_document_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: false,
-          kind: PropertyKind::Data {
-            value: Value::Object(document_obj),
-            writable: false,
+      if should_define_class_list {
+        let class_list = scope.alloc_object()?;
+        scope.push_root(Value::Object(class_list))?;
+        scope.heap_mut().object_set_host_slots(
+          class_list,
+          HostSlots {
+            a: node_id.index() as u64,
+            b: DOM_TOKEN_LIST_HOST_TAG,
           },
-        },
-      )?;
+        )?;
 
-      let add_key = alloc_key(scope, "add")?;
-      scope.define_property(class_list, add_key, data_desc(Value::Object(add)))?;
-      let remove_key = alloc_key(scope, "remove")?;
-      scope.define_property(class_list, remove_key, data_desc(Value::Object(remove)))?;
-      let toggle_key = alloc_key(scope, "toggle")?;
-      scope.define_property(class_list, toggle_key, data_desc(Value::Object(toggle)))?;
-      let contains_key = alloc_key(scope, "contains")?;
-      scope.define_property(class_list, contains_key, data_desc(Value::Object(contains)))?;
-      let replace_key = alloc_key(scope, "replace")?;
-      scope.define_property(class_list, replace_key, data_desc(Value::Object(replace)))?;
+        let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+        scope.define_property(
+          class_list,
+          node_id_key,
+          data_desc(Value::Number(node_id.index() as f64)),
+        )?;
 
-      let key = alloc_key(scope, "classList")?;
-      scope.define_property(wrapper, key, data_desc(Value::Object(class_list)))?;
+        let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+        scope.define_property(
+          class_list,
+          wrapper_document_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Object(document_obj),
+              writable: false,
+            },
+          },
+        )?;
+
+        let add_key = alloc_key(scope, "add")?;
+        scope.define_property(class_list, add_key, data_desc(Value::Object(add)))?;
+        let remove_key = alloc_key(scope, "remove")?;
+        scope.define_property(class_list, remove_key, data_desc(Value::Object(remove)))?;
+        let toggle_key = alloc_key(scope, "toggle")?;
+        scope.define_property(class_list, toggle_key, data_desc(Value::Object(toggle)))?;
+        let contains_key = alloc_key(scope, "contains")?;
+        scope.define_property(class_list, contains_key, data_desc(Value::Object(contains)))?;
+        let replace_key = alloc_key(scope, "replace")?;
+        scope.define_property(class_list, replace_key, data_desc(Value::Object(replace)))?;
+
+        scope.define_property(wrapper, class_list_key, data_desc(Value::Object(class_list)))?;
+      }
     }
 
     // `Element.dataset` (DOMStringMap-like): implemented via host exotic property hooks so
     // `el.dataset.fooBar = "x"` reflects to `data-foo-bar="x"`.
-    let dataset = scope.alloc_object()?;
-    scope.push_root(Value::Object(dataset))?;
-    scope.heap_mut().object_set_host_slots(
-      dataset,
-      HostSlots {
-        a: node_id.index() as u64,
-        b: DOM_STRING_MAP_HOST_KIND,
-      },
-    )?;
+    let dataset_key = alloc_key(scope, "dataset")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &dataset_key)? {
+      let dataset = scope.alloc_object()?;
+      scope.push_root(Value::Object(dataset))?;
+      scope.heap_mut().object_set_host_slots(
+        dataset,
+        HostSlots {
+          a: node_id.index() as u64,
+          b: DOM_STRING_MAP_HOST_KIND,
+        },
+      )?;
 
-    let key = alloc_key(scope, "dataset")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(dataset)))?;
+      scope.define_property(wrapper, dataset_key, data_desc(Value::Object(dataset)))?;
+    }
 
     // Form controls (minimal): input.value/input.checked/textarea.value/form.reset.
     if let Some(dom) = dom {
@@ -6127,326 +6184,372 @@ fn get_or_create_node_wrapper(
       style_width_get,
       style_width_set,
     ) {
-      let style = scope.alloc_object()?;
-      scope.push_root(Value::Object(style))?;
-      scope.heap_mut().object_set_host_slots(
-        style,
-        HostSlots {
-          a: node_id.index() as u64,
-          b: CSS_STYLE_DECL_HOST_TAG,
-        },
-      )?;
-
-      if let Some(Value::Object(proto)) = css_style_decl_proto {
-        scope
-          .heap_mut()
-          .object_set_prototype(style, Some(proto))
-          .map_err(|_| VmError::TypeError("failed to set CSSStyleDeclaration prototype"))?;
-      }
-
-      let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-      scope.define_property(
-        style,
-        node_id_key,
-        data_desc(Value::Number(node_id.index() as f64)),
-      )?;
-
-      let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-      scope.define_property(
-        style,
-        wrapper_document_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: false,
-          kind: PropertyKind::Data {
-            value: Value::Object(document_obj),
-            writable: false,
-          },
-        },
-      )?;
-
-      let get_property_value_key = alloc_key(scope, "getPropertyValue")?;
-      scope.define_property(
-        style,
-        get_property_value_key,
-        data_desc(Value::Object(get_property_value)),
-      )?;
-
-      let set_property_key = alloc_key(scope, "setProperty")?;
-      scope.define_property(
-        style,
-        set_property_key,
-        data_desc(Value::Object(set_property)),
-      )?;
-
-      let remove_property_key = alloc_key(scope, "removeProperty")?;
-      scope.define_property(
-        style,
-        remove_property_key,
-        data_desc(Value::Object(remove_property)),
-      )?;
-
-      let css_text_key = alloc_key(scope, "cssText")?;
-      scope.define_property(
-        style,
-        css_text_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(css_text_get),
-            set: Value::Object(css_text_set),
-          },
-        },
-      )?;
-
-      let display_key = alloc_key(scope, "display")?;
-      scope.define_property(
-        style,
-        display_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(display_get),
-            set: Value::Object(display_set),
-          },
-        },
-      )?;
-
-      let cursor_key = alloc_key(scope, "cursor")?;
-      scope.define_property(
-        style,
-        cursor_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(cursor_get),
-            set: Value::Object(cursor_set),
-          },
-        },
-      )?;
-
-      let height_key = alloc_key(scope, "height")?;
-      scope.define_property(
-        style,
-        height_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(height_get),
-            set: Value::Object(height_set),
-          },
-        },
-      )?;
-
-      let width_key = alloc_key(scope, "width")?;
-      scope.define_property(
-        style,
-        width_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(width_get),
-            set: Value::Object(width_set),
-          },
-        },
-      )?;
-
       let key = alloc_key(scope, "style")?;
-      scope.define_property(wrapper, key, data_desc(Value::Object(style)))?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        let style = scope.alloc_object()?;
+        scope.push_root(Value::Object(style))?;
+        scope.heap_mut().object_set_host_slots(
+          style,
+          HostSlots {
+            a: node_id.index() as u64,
+            b: CSS_STYLE_DECL_HOST_TAG,
+          },
+        )?;
+
+        if let Some(Value::Object(proto)) = css_style_decl_proto {
+          scope
+            .heap_mut()
+            .object_set_prototype(style, Some(proto))
+            .map_err(|_| VmError::TypeError("failed to set CSSStyleDeclaration prototype"))?;
+        }
+
+        let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+        scope.define_property(
+          style,
+          node_id_key,
+          data_desc(Value::Number(node_id.index() as f64)),
+        )?;
+
+        let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+        scope.define_property(
+          style,
+          wrapper_document_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Object(document_obj),
+              writable: false,
+            },
+          },
+        )?;
+
+        let get_property_value_key = alloc_key(scope, "getPropertyValue")?;
+        scope.define_property(
+          style,
+          get_property_value_key,
+          data_desc(Value::Object(get_property_value)),
+        )?;
+
+        let set_property_key = alloc_key(scope, "setProperty")?;
+        scope.define_property(
+          style,
+          set_property_key,
+          data_desc(Value::Object(set_property)),
+        )?;
+
+        let remove_property_key = alloc_key(scope, "removeProperty")?;
+        scope.define_property(
+          style,
+          remove_property_key,
+          data_desc(Value::Object(remove_property)),
+        )?;
+
+        let css_text_key = alloc_key(scope, "cssText")?;
+        scope.define_property(
+          style,
+          css_text_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(css_text_get),
+              set: Value::Object(css_text_set),
+            },
+          },
+        )?;
+
+        let display_key = alloc_key(scope, "display")?;
+        scope.define_property(
+          style,
+          display_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(display_get),
+              set: Value::Object(display_set),
+            },
+          },
+        )?;
+
+        let cursor_key = alloc_key(scope, "cursor")?;
+        scope.define_property(
+          style,
+          cursor_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(cursor_get),
+              set: Value::Object(cursor_set),
+            },
+          },
+        )?;
+
+        let height_key = alloc_key(scope, "height")?;
+        scope.define_property(
+          style,
+          height_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(height_get),
+              set: Value::Object(height_set),
+            },
+          },
+        )?;
+
+        let width_key = alloc_key(scope, "width")?;
+        scope.define_property(
+          style,
+          width_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(width_get),
+              set: Value::Object(width_set),
+            },
+          },
+        )?;
+
+        scope.define_property(wrapper, key, data_desc(Value::Object(style)))?;
+      }
     }
   }
 
   if let Some(Value::Object(func)) = append_child {
     let key = alloc_key(scope, "appendChild")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = insert_before {
     let key = alloc_key(scope, "insertBefore")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = remove_child {
     let key = alloc_key(scope, "removeChild")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = replace_child {
     let key = alloc_key(scope, "replaceChild")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = clone_node {
     let key = alloc_key(scope, "cloneNode")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(get)) = parent_node_get {
     let key = alloc_key(scope, "parentNode")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Undefined,
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let Some(Value::Object(get)) = first_child_get {
     let key = alloc_key(scope, "firstChild")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Undefined,
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let Some(Value::Object(get)) = previous_sibling_get {
     let key = alloc_key(scope, "previousSibling")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Undefined,
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let Some(Value::Object(get)) = next_sibling_get {
     let key = alloc_key(scope, "nextSibling")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Undefined,
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (text_content_get, text_content_set)
   {
     let key = alloc_key(scope, "textContent")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let Some(Value::Object(func)) = node_remove {
     let key = alloc_key(scope, "remove")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = add_event_listener {
     let key = alloc_key(scope, "addEventListener")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = remove_event_listener {
     let key = alloc_key(scope, "removeEventListener")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = dispatch_event {
     let key = alloc_key(scope, "dispatchEvent")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = get_attribute {
     let key = alloc_key(scope, "getAttribute")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = set_attribute {
     let key = alloc_key(scope, "setAttribute")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = remove_attribute {
     let key = alloc_key(scope, "removeAttribute")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (inner_html_get, inner_html_set) {
     let key = alloc_key(scope, "innerHTML")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (outer_html_get, outer_html_set) {
     let key = alloc_key(scope, "outerHTML")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let Some(Value::Object(func)) = insert_adjacent_html {
     let key = alloc_key(scope, "insertAdjacentHTML")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = insert_adjacent_element {
     let key = alloc_key(scope, "insertAdjacentElement")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = insert_adjacent_text {
     let key = alloc_key(scope, "insertAdjacentText")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   Ok(Value::Object(wrapper))
@@ -22280,7 +22383,11 @@ fn init_window_globals(
   // Minimal `EventTarget` constructor + prototype.
   let event_target_proto = match dom_platform.as_ref() {
     Some(platform) => platform.prototype_for(DomInterface::EventTarget),
-    None => scope.alloc_object()?,
+    None => {
+      let obj = scope.alloc_object()?;
+      scope.heap_mut().object_set_prototype(obj, Some(realm.intrinsics().object_prototype()))?;
+      obj
+    }
   };
   // Make the realm global object (`window`) a real `EventTarget` by placing it on the same
   // prototype chain as DOM wrappers (`Node`/`Document`).

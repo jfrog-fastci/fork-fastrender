@@ -1129,6 +1129,42 @@ mod tests {
   }
 
   #[test]
+  fn node_wrappers_do_not_shadow_event_target_prototype_methods() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return Object.prototype.hasOwnProperty.call(el, 'addEventListener');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return el.addEventListener === EventTarget.prototype.addEventListener;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    // Prove that inherited EventTarget.prototype methods still work on node wrappers.
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        let n = 0;\n\
+        el.addEventListener('x', () => { n++; });\n\
+        el.dispatchEvent(new Event('x'));\n\
+        return n;\n\
+      })()",
+    )?;
+    assert!(matches!(out, Value::Number(n) if n == 1.0));
+
+    Ok(())
+  }
+
+  #[test]
   fn webidl_event_target_prototype_methods_throw_on_illegal_invocation() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
