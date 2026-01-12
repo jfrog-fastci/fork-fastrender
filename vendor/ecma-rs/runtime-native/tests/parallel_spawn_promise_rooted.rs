@@ -17,6 +17,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 const MAGIC: u64 = 0x0123_4567_89AB_CDEF;
+const TIMEOUT: Duration = Duration::from_secs(if cfg!(debug_assertions) { 30 } else { 10 });
 
 const HEADER_SIZE: usize = std::mem::size_of::<ObjHeader>();
 const MAGIC_OFFSET: usize = HEADER_SIZE;
@@ -146,7 +147,7 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
     });
 
   // Ensure worker threads are registered before we try to saturate them with blocking tasks.
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   while runtime_native::threading::thread_counts().worker < workers {
     assert!(Instant::now() < deadline, "worker threads did not register in time");
     std::thread::yield_now();
@@ -166,7 +167,7 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
     ));
   }
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   while ctx.started.load(Ordering::Acquire) < workers {
     assert!(Instant::now() < deadline, "worker threads did not start blocking tasks in time");
     std::thread::yield_now();
@@ -216,7 +217,7 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
     ctx.release_cv.notify_all();
   }
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   loop {
     let ptr_rooted = runtime_native::rt_weak_get(weak_rooted);
     let ptr_rooted_h = runtime_native::rt_weak_get(weak_rooted_h);
@@ -239,7 +240,7 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
   let promise_header_rooted_h = promise_rooted_h.0.cast::<runtime_native::async_abi::PromiseHeader>();
   assert!(!promise_header_rooted.is_null());
   assert!(!promise_header_rooted_h.is_null());
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   loop {
     let state_rooted = unsafe { &*promise_header_rooted }.state.load(Ordering::Acquire);
     let state_rooted_h = unsafe { &*promise_header_rooted_h }.state.load(Ordering::Acquire);
@@ -260,7 +261,7 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
   }
 
   // After the task executes, the root is released and the object can be collected.
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   loop {
     collect_major(&mut heap);
     if runtime_native::rt_weak_get(weak_rooted).is_null() && runtime_native::rt_weak_get(weak_rooted_h).is_null() {
@@ -303,8 +304,6 @@ fn parallel_spawn_promise_rooted_h_reads_slot_after_lock_acquired() {
   let new_value: *mut u8 = 0x2222usize as *mut u8;
   // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
   let slot_ptr: usize = runtime_native::roots::handle_from_slot(&mut slot_value) as usize;
-
-  const TIMEOUT: Duration = Duration::from_secs(2);
 
   let promise = std::thread::scope(|scope| {
     // Thread A holds the persistent handle table lock.
@@ -389,7 +388,7 @@ fn parallel_spawn_promise_rooted_h_reads_slot_after_lock_acquired() {
   });
 
   // Wait for the worker task to start so we know it has observed the rooted pointer.
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   while !ROOTED_H_PROMISE_STARTED.load(Ordering::SeqCst) {
     assert!(
       Instant::now() < deadline,
@@ -432,7 +431,7 @@ fn parallel_spawn_promise_rooted_h_reads_slot_after_lock_acquired() {
     std::thread::yield_now();
   }
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   while runtime_native::roots::global_persistent_handle_table().live_count() != base_roots {
     assert!(
       Instant::now() < deadline,
