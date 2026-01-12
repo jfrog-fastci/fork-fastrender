@@ -407,3 +407,60 @@ fn iterator_close_get_method_non_callable_suppressed_on_throw_completion_in_arra
     .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
   assert_value_is_utf8(&rt, thrown, "body");
 }
+
+#[test]
+fn iterator_step_done_getter_error_does_not_invoke_iterator_close() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var closed = false;
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () {
+            return {
+              get done() { throw "done"; }
+            };
+          },
+          "return": function () { closed = true; return {}; }
+        };
+      };
+      try {
+        for (var x of iterable) {}
+      } catch (e) {}
+      closed
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(false));
+}
+
+#[test]
+fn iterator_value_getter_error_does_not_invoke_iterator_close() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var closed = false;
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () {
+            return {
+              done: false,
+              get value() { throw "value"; }
+            };
+          },
+          "return": function () { closed = true; return {}; }
+        };
+      };
+      try {
+        for (var x of iterable) {}
+      } catch (e) {}
+      closed
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(false));
+}

@@ -2,7 +2,10 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Async spread tests exercise Promise jobs + stack capture. Use a slightly larger heap than the
+  // default 1MiB used by many unit tests to avoid spurious OOM failures when implementation details
+  // change.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 

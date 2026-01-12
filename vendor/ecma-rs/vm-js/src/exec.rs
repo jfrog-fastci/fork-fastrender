@@ -18190,13 +18190,11 @@ fn async_call_store_arg_value(
       ) {
         Ok(v) => v,
         Err(err) => {
+          // Spec: iterator consumers only perform `IteratorClose` on *consumer* abrupt completion.
+          // If the iterator itself throws during `IteratorStep`/`IteratorValue`
+          // (`next`/`done`/`value`), engines must propagate that error and must not call `return()`.
           let err = coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err);
-          return Err(async_iterator_close_on_error_force_close(
-            evaluator,
-            &mut iter_scope,
-            &iter,
-            err,
-          ));
+          return Err(err);
         }
       };
 
