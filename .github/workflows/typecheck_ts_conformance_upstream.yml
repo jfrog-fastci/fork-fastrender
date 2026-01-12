@@ -93,6 +93,10 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${UPSTREAM_CONFORMANCE_SHARD_TOTAL_INPUT:-}" ]]; then
             shard_total="${UPSTREAM_CONFORMANCE_SHARD_TOTAL_INPUT}"
           fi
+          if [[ ! "${shard_total}" =~ ^[0-9]+$ || "${shard_total}" -eq 0 ]]; then
+            echo "::error::Invalid shard_total '${shard_total}' (expected a positive integer)." >&2
+            exit 1
+          fi
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             if [[ -n "${UPSTREAM_CONFORMANCE_SHARDS_INPUT:-}" ]]; then
@@ -107,8 +111,8 @@ jobs:
             fi
           elif [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
             shard_indices="$(python3 - <<PY
-          import json, os
-          n = int(os.environ["UPSTREAM_CONFORMANCE_SHARD_TOTAL"])
+          import os
+          n = int(os.environ["shard_total"])
           print(",".join(str(i) for i in range(n)))
           PY
             )"
@@ -119,10 +123,36 @@ jobs:
 
           export shard_total shard_indices
           matrix="$(python3 - <<PY
-          import json, os
+          import json
+          import os
+          import re
+          
           n = int(os.environ["shard_total"])
-          indices = [int(x) for x in os.environ["shard_indices"].split(",") if x.strip() != ""]
-          print(json.dumps({"include": [{"shard_index": i, "shard_total": n} for i in indices]}))
+          raw = os.environ.get("shard_indices", "").strip()
+          if raw:
+            parts = [p.strip() for p in raw.split(",") if p.strip() != ""]
+          else:
+            parts = []
+          
+          indices = []
+          for part in parts:
+            if not re.fullmatch(r"\\d+", part):
+              raise SystemExit(f"error: invalid shard index '{part}' (expected integer)")
+            idx = int(part)
+            if idx < 0 or idx >= n:
+              raise SystemExit(f"error: shard index {idx} out of range (valid: 0..{n - 1})")
+            indices.append(idx)
+          
+          # Preserve order but drop duplicates.
+          seen = set()
+          deduped = []
+          for idx in indices:
+            if idx in seen:
+              continue
+            seen.add(idx)
+            deduped.append(idx)
+          
+          print(json.dumps({"include": [{"shard_index": i, "shard_total": n} for i in deduped]}))
           PY
           )"
 
