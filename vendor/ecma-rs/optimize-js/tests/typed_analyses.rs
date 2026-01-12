@@ -117,8 +117,8 @@ fn typed_encoding_propagates_through_string_concat_with_number_operand() {
   let program = common::compile_source_typed(src, TopLevelMode::Module, false);
   let cfg = &program.top_level.body;
 
-  let (label, add_inst) = find_bin(cfg, |_, inst| {
-    if inst.t != InstTyp::Bin || inst.bin_op != BinOp::Add {
+  let (label, concat_inst) = find_bin(cfg, |_, inst| {
+    if inst.t != InstTyp::StringConcat {
       return false;
     }
     matches!(
@@ -126,9 +126,9 @@ fn typed_encoding_propagates_through_string_concat_with_number_operand() {
       [Arg::Const(Const::Str(s)), Arg::Var(_)] if s == "ENC"
     )
   })
-  .expect("expected string concat `\"ENC\" + n`");
+  .expect("expected StringConcat lowering for `\"ENC\" + n`");
 
-  let (tgt, _left, _op, _right) = add_inst.as_bin();
+  let (tgt, _parts) = concat_inst.as_string_concat();
   let enc = encoding::analyze_cfg_encoding(cfg).encoding_at_exit(label, tgt);
   assert_eq!(enc, StringEncoding::Ascii);
 }

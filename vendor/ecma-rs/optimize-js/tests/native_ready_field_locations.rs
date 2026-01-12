@@ -31,11 +31,9 @@ fn compile_native_ready(source: &str, native_strict: bool) -> optimize_js::Nativ
     false,
     NativeReadyOptions {
       run_opt_passes: false,
-      // This test intentionally exercises both strict-native and non-strict-native compilation.
-      // When optimization passes are disabled, the SSA graph can contain redundant copy
-      // `VarAssign`s without full typed metadata; strict-native verification is intended for the
-      // optimized native pipeline, so disable it here.
-      verify_strict_native: false,
+      // When compiling without `native_strict`, strict-native validation may reject programs that
+      // are still useful for analysis coverage (e.g. effect-location fallback behaviour).
+      verify_strict_native: native_strict,
       ..NativeReadyOptions::default()
     },
   )
@@ -71,7 +69,7 @@ fn native_ready_strict_native_populates_field_locations() {
   let effects = collect_prop_assign_effects(&native.program);
   assert_eq!(effects.len(), 2, "expected two PropAssign instructions");
 
-  let mut fields = Vec::new();
+  let mut fields: Vec<(optimize_js::analysis::alias::AbstractLoc, String)> = Vec::new();
   for effects in effects {
     assert!(
       !effects.writes.contains(&EffectLocation::Heap),
@@ -86,14 +84,14 @@ fn native_ready_strict_native_populates_field_locations() {
     );
     let loc = effects.writes.iter().next().unwrap();
     match loc {
-      EffectLocation::Field { shape, key } => fields.push((*shape, key.clone())),
-      other => panic!("expected EffectLocation::Field but got {other:?}"),
+      EffectLocation::AllocField { alloc, key } => fields.push((alloc.clone(), key.clone())),
+      other => panic!("expected EffectLocation::AllocField but got {other:?}"),
     }
   }
 
   assert_eq!(
     fields[0].0, fields[1].0,
-    "expected both writes to use the same shape"
+    "expected both writes to use the same allocation site"
   );
   assert_ne!(
     fields[0].1, fields[1].1,

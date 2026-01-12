@@ -64,13 +64,11 @@ fn typed_encoding_uses_value_type_after_dvn_rewrite() {
 
   assert!(
     any_inst(&program.top_level.body, |inst| {
-      if inst.t != InstTyp::Bin {
+      if inst.t != InstTyp::StringConcat {
         return false;
       }
-      let (_tgt, _left, op, _right) = inst.as_bin();
-      op == BinOp::Add && inst.meta.result_type.string_encoding == Some(StringEncoding::Ascii)
+      inst.meta.result_type.string_encoding == Some(StringEncoding::Ascii)
     }),
     "expected string concatenation to be annotated as ASCII even when its numeric operand is DVN-rewritten"
   );
 }
-

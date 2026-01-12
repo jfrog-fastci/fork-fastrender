@@ -45,6 +45,14 @@ pub struct HirSourceToInst<'p> {
   pub in_function: bool,
   #[cfg(feature = "typed")]
   pub native_layout_cache: HashMap<crate::types::TypeId, types_ts_interned::LayoutId>,
+  /// Best-effort mapping from SSA temp variables to their native runtime layout.
+  ///
+  /// This is only used during HIR->IL lowering to propagate layouts through
+  /// value copies that are not directly associated with a HIR expression (e.g.
+  /// pattern bindings in declarations). Downstream passes should rely on
+  /// `InstMeta::native_layout` on the instructions themselves.
+  #[cfg(feature = "typed")]
+  pub var_layouts: HashMap<u32, types_ts_interned::LayoutId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,6 +80,8 @@ impl<'p> HirSourceToInst<'p> {
       in_function: body.kind == hir_js::BodyKind::Function,
       #[cfg(feature = "typed")]
       native_layout_cache: HashMap::new(),
+      #[cfg(feature = "typed")]
+      var_layouts: HashMap::new(),
     }
   }
 
@@ -173,6 +183,12 @@ impl<'p> HirSourceToInst<'p> {
         inst.meta.type_summary = Some(summary);
       }
       inst.meta.excludes_nullish = self.expr_excludes_nullish(expr);
+
+      if let Some(layout) = inst.meta.native_layout {
+        for &tgt in inst.tgts.iter() {
+          self.var_layouts.insert(tgt, layout);
+        }
+      }
     }
     self.out.push(inst);
   }
@@ -206,6 +222,10 @@ impl<'p> HirSourceToInst<'p> {
         inst.meta.type_summary = Some(summary);
       }
       inst.meta.excludes_nullish = self.expr_excludes_nullish(expr);
+
+      if let Some(layout) = inst.meta.native_layout {
+        self.var_layouts.insert(tgt, layout);
+      }
     }
     self.out.push(inst);
     Arg::Var(tgt)

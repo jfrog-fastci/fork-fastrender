@@ -223,7 +223,7 @@ fn does_not_inline_when_callee_too_large() {
 }
 
 #[test]
-fn does_not_inline_recursive_callees() {
+fn inlines_recursive_callees_once() {
   // Build:
   // - caller (fn 0): %0 = call Fn1(); return %0
   // - callee (fn 1): call Fn1(); return undefined
@@ -308,13 +308,14 @@ fn does_not_inline_recursive_callees() {
     },
     false,
   );
-  assert!(!pass.changed);
+  assert!(pass.changed);
 
   let cfg = program.functions[0].ssa_body.as_ref().unwrap();
   let insts = collect_insts(cfg);
-  assert!(
-    insts.iter().any(|i| i.t == InstTyp::Call),
-    "expected recursive callee call to remain, got {insts:?}"
+  let calls = insts.iter().filter(|i| i.t == InstTyp::Call).count();
+  assert_eq!(
+    calls, 1,
+    "expected recursion call to remain after inlining (no unbounded growth), got {calls} calls: {insts:?}"
   );
 }
 

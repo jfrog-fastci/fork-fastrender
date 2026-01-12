@@ -265,7 +265,42 @@ impl<'p> HirSourceToInst<'p> {
       PatKind::Ident(name) => {
         let var_type = self.classify_symbol(self.symbol_for_pat(pat), self.name_for(*name));
         let inst = match var_type {
-          VarType::Local(local) => Inst::var_assign(self.symbol_to_temp(local), rval.clone()),
+          VarType::Local(local) => {
+            let tgt = self.symbol_to_temp(local);
+            let mut inst = Inst::var_assign(tgt, rval.clone());
+            #[cfg(feature = "typed")]
+            {
+              let layout_for_const = |program: &typecheck_ts::Program, c: &Const| {
+                let store = program.interned_type_store();
+                let prim = store.primitive_ids();
+                let ty = match c {
+                  Const::Bool(_) => prim.boolean,
+                  Const::Num(_) => prim.number,
+                  Const::Str(_) => prim.string,
+                  Const::Null => prim.null,
+                  Const::Undefined => prim.undefined,
+                  Const::BigInt(_) => prim.bigint,
+                };
+                store.layout_of(ty)
+              };
+
+              if let Some(program) = self.program.types.program.as_ref() {
+                inst.meta.native_layout = match &rval {
+                  Arg::Var(src) => self.var_layouts.get(src).copied(),
+                  Arg::Const(c) => Some(layout_for_const(program, c)),
+                  Arg::Builtin(_) | Arg::Fn(_) => {
+                    let store = program.interned_type_store();
+                    Some(store.layout_of(store.primitive_ids().unknown))
+                  }
+                };
+              }
+
+              if let Some(layout) = inst.meta.native_layout {
+                self.var_layouts.insert(tgt, layout);
+              }
+            }
+            inst
+          }
           VarType::Foreign(foreign) => Inst::foreign_store(foreign, rval.clone()),
           VarType::Unknown(unknown) => Inst::unknown_store(unknown, rval.clone()),
           VarType::Builtin(builtin) => {
