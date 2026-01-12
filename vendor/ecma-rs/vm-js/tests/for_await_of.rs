@@ -200,3 +200,49 @@ fn for_await_of_break_calls_iterator_return_on_custom_array_iterator() -> Result
   assert_eq!(value, Value::Number(1.0));
   Ok(())
 }
+
+#[test]
+fn for_await_of_throw_calls_iterator_return_on_custom_array_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const arr = [1, 2, 3];
+      arr[Symbol.iterator] = function () {
+        let i = 0;
+        return {
+          next() {
+            if (i >= 3) return { value: undefined, done: true };
+            return { value: i++, done: false };
+          },
+          return() {
+            returnCalls++;
+            return { done: true };
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of arr) {
+          throw "boom";
+        }
+      }
+
+      f().then(function () { out = "bad"; }, function (e) { out = e; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "boom");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}
