@@ -2179,14 +2179,14 @@ impl Canvas {
   /// ±1 in each channel). For pageset comparisons this can account for hundreds of thousands of
   /// differing pixels on large translucent panels.
   ///
-  /// When the rectangle maps to integer device pixels and there is no complex clip, we can
-  /// composite directly into the destination premultiplied buffer using the same truncating
-  /// `mul/255` arithmetic as Chrome's Skia backend.
+  /// When there is no complex clip, we can composite directly into the destination premultiplied
+  /// buffer using the same truncating `mul/255` arithmetic as Chrome's Skia backend.
+  ///
+  /// This path also supports fractional device bounds by applying per-pixel coverage (like
+  /// anti-aliasing) manually. This keeps fully covered interior pixels stable (no tiny-skia ±1
+  /// bias) while still respecting subpixel edges.
   fn try_fill_rect_source_over_trunc(&mut self, rect: Rect, color: Rgba) -> bool {
     if self.current_state.blend_mode != SkiaBlendMode::SourceOver {
-      return false;
-    }
-    if self.current_state.clip_mask.is_some() {
       return false;
     }
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -2257,62 +2257,208 @@ impl Canvas {
     let x1 = dev_rect.max_x();
     let y1 = dev_rect.max_y();
 
-    // Require integer device bounds; otherwise we'd need anti-aliasing. As with translation, allow
-    // a small epsilon for float noise so near-integer edges still take the Chrome-matching path.
-    let x0i = x0.round();
-    let y0i = y0.round();
-    let x1i = x1.round();
-    let y1i = y1.round();
-    if (x0 - x0i).abs() > NEAR_INTEGER_EPSILON_PX
-      || (y0 - y0i).abs() > NEAR_INTEGER_EPSILON_PX
-      || (x1 - x1i).abs() > NEAR_INTEGER_EPSILON_PX
-      || (y1 - y1i).abs() > NEAR_INTEGER_EPSILON_PX
-    {
-      return false;
-    }
-
-    let x0i = x0i as i32;
-    let y0i = y0i as i32;
-    let x1i = x1i as i32;
-    let y1i = y1i as i32;
-    if x0i >= x1i || y0i >= y1i {
+    if x0 >= x1 || y0 >= y1 {
       return true;
     }
 
-    let sa = sa as u16;
-    let inv_sa = 255u16 - sa;
-    let sr = (color.r as u16 * sa) / 255u16;
-    let sg = (color.g as u16 * sa) / 255u16;
-    let sb = (color.b as u16 * sa) / 255u16;
-
-    let stride = self.pixmap.width() as usize * 4;
-    let data = self.pixmap.data_mut();
-    let w = (x1i - x0i) as usize;
-
-    for y in y0i..y1i {
-      let mut idx = y as usize * stride + x0i as usize * 4;
-      for _ in 0..w {
-        let dr = data[idx] as u16;
-        let dg = data[idx + 1] as u16;
-        let db = data[idx + 2] as u16;
-        let da = data[idx + 3] as u16;
-
-        let out_a = sa + (da * inv_sa) / 255u16;
-        let out_r = sr + (dr * inv_sa) / 255u16;
-        let out_g = sg + (dg * inv_sa) / 255u16;
-        let out_b = sb + (db * inv_sa) / 255u16;
-
-        // Clamp channels to the resulting alpha to preserve premultiplied invariants.
-        let out_a_u8 = out_a.min(255) as u8;
-        data[idx + 3] = out_a_u8;
-        let clamp = out_a_u8 as u16;
-        data[idx] = out_r.min(clamp).min(255) as u8;
-        data[idx + 1] = out_g.min(clamp).min(255) as u8;
-        data[idx + 2] = out_b.min(clamp).min(255) as u8;
-
-        idx += 4;
+    // Snap "should-be-integer" edges that are only fractional due to float noise.
+    //
+    // This preserves existing behavior from the integer-bounds fast path (regression tests in
+    // `tests/paint/canvas_test.rs`) while still allowing meaningfully fractional edges.
+    let mut x0 = x0;
+    let mut y0 = y0;
+    let mut x1 = x1;
+    let mut y1 = y1;
+    for v in [&mut x0, &mut y0, &mut x1, &mut y1] {
+      let r = v.round();
+      if (*v - r).abs() <= NEAR_INTEGER_EPSILON_PX {
+        *v = r;
       }
     }
+
+    // Compute pixel bounding box.
+    let pix_w = self.pixmap.width() as i32;
+    let pix_h = self.pixmap.height() as i32;
+
+    let mut start_x = x0.floor() as i32;
+    let mut start_y = y0.floor() as i32;
+    let mut end_x = x1.ceil() as i32;
+    let mut end_y = y1.ceil() as i32;
+
+    start_x = start_x.clamp(0, pix_w);
+    end_x = end_x.clamp(0, pix_w);
+    start_y = start_y.clamp(0, pix_h);
+    end_y = end_y.clamp(0, pix_h);
+    if start_x >= end_x || start_y >= end_y {
+      return true;
+    }
+
+    // Fully covered interior (coverage=1). These pixels dominate large translucent fills.
+    let mut full_x0 = x0.ceil() as i32;
+    let mut full_x1 = x1.floor() as i32;
+    let mut full_y0 = y0.ceil() as i32;
+    let mut full_y1 = y1.floor() as i32;
+    full_x0 = full_x0.clamp(0, pix_w);
+    full_x1 = full_x1.clamp(0, pix_w);
+    full_y0 = full_y0.clamp(0, pix_h);
+    full_y1 = full_y1.clamp(0, pix_h);
+
+    let clip_mask = self.current_state.clip_mask.as_deref();
+    let clip_mask_data = clip_mask.map(|mask| mask.data());
+    let clip_mask_stride = clip_mask.map(|mask| mask.width() as usize).unwrap_or(0);
+    let stride = self.pixmap.width() as usize * 4;
+    let data = self.pixmap.data_mut();
+
+    #[inline]
+    fn blend_pixel(dst: &mut [u8], idx: usize, color: Rgba, sa_u8: u8) {
+      if sa_u8 == 0 {
+        return;
+      }
+      let sa = sa_u8 as u16;
+      let inv_sa = 255u16 - sa;
+      let sr = (color.r as u16 * sa) / 255u16;
+      let sg = (color.g as u16 * sa) / 255u16;
+      let sb = (color.b as u16 * sa) / 255u16;
+
+      let dr = dst[idx] as u16;
+      let dg = dst[idx + 1] as u16;
+      let db = dst[idx + 2] as u16;
+      let da = dst[idx + 3] as u16;
+
+      let out_a = sa + (da * inv_sa) / 255u16;
+      let out_r = sr + (dr * inv_sa) / 255u16;
+      let out_g = sg + (dg * inv_sa) / 255u16;
+      let out_b = sb + (db * inv_sa) / 255u16;
+
+      // Clamp channels to the resulting alpha to preserve premultiplied invariants.
+      let out_a_u8 = out_a.min(255) as u8;
+      dst[idx + 3] = out_a_u8;
+      let clamp = out_a_u8 as u16;
+      dst[idx] = out_r.min(clamp).min(255) as u8;
+      dst[idx + 1] = out_g.min(clamp).min(255) as u8;
+      dst[idx + 2] = out_b.min(clamp).min(255) as u8;
+    }
+
+    // Fill interior with constant alpha using truncating `mul/255`.
+    //
+    // When a clip mask exists (rounded corners, clip-path, etc.) we still need to respect the mask
+    // even for fully-covered pixels, so fall back to per-pixel alpha there.
+    if full_x0 < full_x1 && full_y0 < full_y1 {
+      let w = (full_x1 - full_x0) as usize;
+      if let Some(src) = clip_mask_data {
+        for y in full_y0..full_y1 {
+          let mut idx = y as usize * stride + full_x0 as usize * 4;
+          let mut midx = y as usize * clip_mask_stride + full_x0 as usize;
+          for _ in 0..w {
+            let mask_a = src[midx] as f32;
+            let pix_sa = (combined_alpha * mask_a).round().clamp(0.0, 255.0) as u8;
+            blend_pixel(data, idx, color, pix_sa);
+            idx += 4;
+            midx += 1;
+          }
+        }
+      } else {
+        let sa = sa as u16;
+        let inv_sa = 255u16 - sa;
+        let sr = (color.r as u16 * sa) / 255u16;
+        let sg = (color.g as u16 * sa) / 255u16;
+        let sb = (color.b as u16 * sa) / 255u16;
+
+        for y in full_y0..full_y1 {
+          let mut idx = y as usize * stride + full_x0 as usize * 4;
+          for _ in 0..w {
+            let dr = data[idx] as u16;
+            let dg = data[idx + 1] as u16;
+            let db = data[idx + 2] as u16;
+            let da = data[idx + 3] as u16;
+
+            let out_a = sa + (da * inv_sa) / 255u16;
+            let out_r = sr + (dr * inv_sa) / 255u16;
+            let out_g = sg + (dg * inv_sa) / 255u16;
+            let out_b = sb + (db * inv_sa) / 255u16;
+
+            // Clamp channels to the resulting alpha to preserve premultiplied invariants.
+            let out_a_u8 = out_a.min(255) as u8;
+            data[idx + 3] = out_a_u8;
+            let clamp = out_a_u8 as u16;
+            data[idx] = out_r.min(clamp).min(255) as u8;
+            data[idx + 1] = out_g.min(clamp).min(255) as u8;
+            data[idx + 2] = out_b.min(clamp).min(255) as u8;
+
+            idx += 4;
+          }
+        }
+      }
+    }
+
+    // Blend the surrounding edge pixels with per-pixel coverage.
+    //
+    // We only iterate the bounding box and skip the fully-covered interior to keep this fast.
+    for y in start_y..end_y {
+      let py0 = y as f32;
+      let py1 = (y + 1) as f32;
+      let cover_y = (y1.min(py1) - y0.max(py0)).clamp(0.0, 1.0);
+      if cover_y <= 0.0 {
+        continue;
+      }
+
+      let is_interior_row = y >= full_y0 && y < full_y1;
+      let (left_x_end, right_x_start) = if is_interior_row {
+        (full_x0.min(end_x), full_x1.max(start_x))
+      } else {
+        (end_x, end_x)
+      };
+
+      // Left band.
+      for x in start_x..left_x_end {
+        let px0 = x as f32;
+        let px1 = (x + 1) as f32;
+        let cover_x = (x1.min(px1) - x0.max(px0)).clamp(0.0, 1.0);
+        let cover = cover_x * cover_y;
+        if cover <= 0.0 {
+          continue;
+        }
+        let mask_a = clip_mask_data
+          .map(|src| src[y as usize * clip_mask_stride + x as usize] as f32)
+          .unwrap_or(255.0);
+        let pix_sa = (combined_alpha * cover * mask_a).round().clamp(0.0, 255.0) as u8;
+        if pix_sa == 0 {
+          continue;
+        }
+        let idx = y as usize * stride + x as usize * 4;
+        blend_pixel(data, idx, color, pix_sa);
+      }
+
+      // Right band (interior rows only). For top/bottom rows we already processed the full row.
+      if is_interior_row {
+        for x in right_x_start..end_x {
+          // Skip fully-covered interior columns.
+          if x >= full_x0 && x < full_x1 {
+            continue;
+          }
+          let px0 = x as f32;
+          let px1 = (x + 1) as f32;
+          let cover_x = (x1.min(px1) - x0.max(px0)).clamp(0.0, 1.0);
+          let cover = cover_x * cover_y;
+          if cover <= 0.0 {
+            continue;
+          }
+          let mask_a = clip_mask_data
+            .map(|src| src[y as usize * clip_mask_stride + x as usize] as f32)
+            .unwrap_or(255.0);
+          let pix_sa = (combined_alpha * cover * mask_a).round().clamp(0.0, 255.0) as u8;
+          if pix_sa == 0 {
+            continue;
+          }
+          let idx = y as usize * stride + x as usize * 4;
+          blend_pixel(data, idx, color, pix_sa);
+        }
+      }
+    }
+
+    // For interior rows, the right-band loop above deliberately avoids iterating the fully-covered
+    // columns. The left-band loop always covers the full `start_x..end_x` range for top/bottom
+    // rows, so no pixels are missed.
 
     true
   }

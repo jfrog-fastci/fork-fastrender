@@ -331,66 +331,78 @@ pub fn fill_rect(
     return false;
   }
 
-  // Fast path for source-over compositing of axis-aligned integer rectangles.
+  // Fast path for source-over compositing of axis-aligned rectangles.
   //
   // tiny-skia's blending math differs subtly from Chrome/Skia for semi-transparent fills (often by
   // ±1 in each channel). For large translucent backgrounds this can produce huge pageset diffs.
   //
-  // When the rect aligns to integer device pixels we can composite directly into the destination
-  // premultiplied buffer using the same truncating `mul/255` arithmetic as Chrome.
-  let sa_f = (color.a * 255.0).round().clamp(0.0, 255.0);
-  let sa = sa_f as u8;
-  if sa == 0 {
+  // We therefore bypass tiny-skia for axis-aligned rects and composite directly into the
+  // destination premultiplied buffer using `mul/255` integer arithmetic (matching Chrome).
+  //
+  // For fractional edges we:
+  // - blend the fully-covered integer interior (fast loop, exact match),
+  // - then blend the at-most-1px edge strips with per-pixel coverage.
+  //
+  // This keeps large interior areas stable while preserving anti-aliased edges.
+  let sa_f_full = (color.a * 255.0).round().clamp(0.0, 255.0);
+  let sa_full = sa_f_full as u8;
+  if sa_full == 0 {
     return true;
   }
-  if sa != 255 && x.is_finite() && y.is_finite() && width.is_finite() && height.is_finite() && {
+
+  if sa_full != 255 && x.is_finite() && y.is_finite() && width.is_finite() && height.is_finite() && {
     let x1 = x + width;
     let y1 = y + height;
     x1.is_finite() && y1.is_finite()
   } {
-    let x0 = x;
-    let y0 = y;
-    let x1 = x + width;
-    let y1 = y + height;
+    let mut x0 = x;
+    let mut y0 = y;
+    let mut x1 = x + width;
+    let mut y1 = y + height;
 
-    let x0i = x0.round();
-    let y0i = y0.round();
-    let x1i = x1.round();
-    let y1i = y1.round();
+    // Normalize (avoid negative widths/heights and keep x0<x1/y0<y1).
+    if x1 < x0 {
+      std::mem::swap(&mut x0, &mut x1);
+    }
+    if y1 < y0 {
+      std::mem::swap(&mut y0, &mut y1);
+    }
 
-    if (x0 - x0i).abs() <= 1e-6
-      && (y0 - y0i).abs() <= 1e-6
-      && (x1 - x1i).abs() <= 1e-6
-      && (y1 - y1i).abs() <= 1e-6
-      && x0i >= i32::MIN as f32
-      && y0i >= i32::MIN as f32
-      && x1i <= i32::MAX as f32
-      && y1i <= i32::MAX as f32
-    {
-      let mut x0i = x0i as i32;
-      let mut y0i = y0i as i32;
-      let mut x1i = x1i as i32;
-      let mut y1i = y1i as i32;
+    // Clip to pixmap bounds.
+    let pix_w = pixmap.width() as i32;
+    let pix_h = pixmap.height() as i32;
+    if pix_w <= 0 || pix_h <= 0 {
+      return true;
+    }
 
-      let pix_w = pixmap.width() as i32;
-      let pix_h = pixmap.height() as i32;
-      x0i = x0i.clamp(0, pix_w);
-      x1i = x1i.clamp(0, pix_w);
-      y0i = y0i.clamp(0, pix_h);
-      y1i = y1i.clamp(0, pix_h);
+    x0 = x0.clamp(0.0, pix_w as f32);
+    x1 = x1.clamp(0.0, pix_w as f32);
+    y0 = y0.clamp(0.0, pix_h as f32);
+    y1 = y1.clamp(0.0, pix_h as f32);
+    if x0 >= x1 || y0 >= y1 {
+      return true;
+    }
 
-      if x0i >= x1i || y0i >= y1i {
-        return true;
+    #[inline]
+    fn blend_solid_span(
+      data: &mut [u8],
+      stride: usize,
+      x0i: i32,
+      x1i: i32,
+      y0i: i32,
+      y1i: i32,
+      color: Rgba,
+      sa_u8: u8,
+    ) {
+      if sa_u8 == 0 {
+        return;
       }
-
-      let sa = sa as u16;
+      let sa = sa_u8 as u16;
       let inv_sa = 255u16 - sa;
       let sr = (color.r as u16 * sa) / 255u16;
       let sg = (color.g as u16 * sa) / 255u16;
       let sb = (color.b as u16 * sa) / 255u16;
 
-      let stride = pixmap.width() as usize * 4;
-      let data = pixmap.data_mut();
       let w = (x1i - x0i) as usize;
       for yy in y0i..y1i {
         let mut idx = yy as usize * stride + x0i as usize * 4;
@@ -416,9 +428,154 @@ pub fn fill_rect(
           idx += 4;
         }
       }
+    }
 
+    #[inline]
+    fn blend_pixel(data: &mut [u8], idx: usize, color: Rgba, sa_u8: u8) {
+      if sa_u8 == 0 {
+        return;
+      }
+      let sa = sa_u8 as u16;
+      let inv_sa = 255u16 - sa;
+      let sr = (color.r as u16 * sa) / 255u16;
+      let sg = (color.g as u16 * sa) / 255u16;
+      let sb = (color.b as u16 * sa) / 255u16;
+
+      let dr = data[idx] as u16;
+      let dg = data[idx + 1] as u16;
+      let db = data[idx + 2] as u16;
+      let da = data[idx + 3] as u16;
+
+      let out_a = sa + (da * inv_sa) / 255u16;
+      let out_r = sr + (dr * inv_sa) / 255u16;
+      let out_g = sg + (dg * inv_sa) / 255u16;
+      let out_b = sb + (db * inv_sa) / 255u16;
+
+      let out_a_u8 = out_a.min(255) as u8;
+      data[idx + 3] = out_a_u8;
+      let clamp = out_a_u8 as u16;
+      data[idx] = out_r.min(clamp).min(255) as u8;
+      data[idx + 1] = out_g.min(clamp).min(255) as u8;
+      data[idx + 2] = out_b.min(clamp).min(255) as u8;
+    }
+
+    let stride = pixmap.width() as usize * 4;
+    let data = pixmap.data_mut();
+
+    // Fully covered interior (coverage=1). These pixels dominate large translucent fills.
+    let mut x_full0 = x0.ceil() as i32;
+    let mut x_full1 = x1.floor() as i32;
+    let mut y_full0 = y0.ceil() as i32;
+    let mut y_full1 = y1.floor() as i32;
+    x_full0 = x_full0.clamp(0, pix_w);
+    x_full1 = x_full1.clamp(0, pix_w);
+    y_full0 = y_full0.clamp(0, pix_h);
+    y_full1 = y_full1.clamp(0, pix_h);
+
+    if x_full0 < x_full1 && y_full0 < y_full1 {
+      blend_solid_span(data, stride, x_full0, x_full1, y_full0, y_full1, color, sa_full);
+    }
+
+    // Edge strips (at most 1px thick each side), blended with coverage.
+    let x0i = x0.floor() as i32;
+    let x1i_excl = x1.ceil() as i32;
+    let y0i = y0.floor() as i32;
+    let y1i_excl = y1.ceil() as i32;
+
+    let x0i = x0i.clamp(0, pix_w);
+    let x1i_excl = x1i_excl.clamp(0, pix_w);
+    let y0i = y0i.clamp(0, pix_h);
+    let y1i_excl = y1i_excl.clamp(0, pix_h);
+    if x0i >= x1i_excl || y0i >= y1i_excl {
       return true;
     }
+
+    // Top partial row.
+    if y0.fract() != 0.0 {
+      let yy = y0.floor() as i32;
+      if yy >= 0 && yy < pix_h {
+        let cover_y = ((yy + 1) as f32 - y0).clamp(0.0, 1.0);
+        if cover_y > 0.0 {
+          for xx in x0i..x1i_excl {
+            // Skip interior pixels (already blended).
+            if xx >= x_full0 && xx < x_full1 && yy >= y_full0 && yy < y_full1 {
+              continue;
+            }
+            let cover_x = (x1.min((xx + 1) as f32) - x0.max(xx as f32)).clamp(0.0, 1.0);
+            let cover = cover_x * cover_y;
+            if cover <= 0.0 {
+              continue;
+            }
+            let sa = (color.a * cover * 255.0).round().clamp(0.0, 255.0) as u8;
+            let idx = yy as usize * stride + xx as usize * 4;
+            blend_pixel(data, idx, color, sa);
+          }
+        }
+      }
+    }
+
+    // Bottom partial row.
+    if y1.fract() != 0.0 {
+      let yy = y1.floor() as i32;
+      if yy >= 0 && yy < pix_h {
+        let cover_y = (y1 - yy as f32).clamp(0.0, 1.0);
+        if cover_y > 0.0 {
+          for xx in x0i..x1i_excl {
+            if xx >= x_full0 && xx < x_full1 && yy >= y_full0 && yy < y_full1 {
+              continue;
+            }
+            let cover_x = (x1.min((xx + 1) as f32) - x0.max(xx as f32)).clamp(0.0, 1.0);
+            let cover = cover_x * cover_y;
+            if cover <= 0.0 {
+              continue;
+            }
+            let sa = (color.a * cover * 255.0).round().clamp(0.0, 255.0) as u8;
+            let idx = yy as usize * stride + xx as usize * 4;
+            blend_pixel(data, idx, color, sa);
+          }
+        }
+      }
+    }
+
+    // Left partial column (excluding any top/bottom partial rows already handled).
+    if x0.fract() != 0.0 {
+      let xx = x0.floor() as i32;
+      if xx >= 0 && xx < pix_w {
+        let cover_x = ((xx + 1) as f32 - x0).clamp(0.0, 1.0);
+        if cover_x > 0.0 {
+          for yy in y_full0..y_full1 {
+            if xx >= x_full0 && xx < x_full1 && yy >= y_full0 && yy < y_full1 {
+              continue;
+            }
+            let cover = cover_x; // cover_y is 1 for interior rows.
+            let sa = (color.a * cover * 255.0).round().clamp(0.0, 255.0) as u8;
+            let idx = yy as usize * stride + xx as usize * 4;
+            blend_pixel(data, idx, color, sa);
+          }
+        }
+      }
+    }
+
+    // Right partial column.
+    if x1.fract() != 0.0 {
+      let xx = x1.floor() as i32;
+      if xx >= 0 && xx < pix_w {
+        let cover_x = (x1 - xx as f32).clamp(0.0, 1.0);
+        if cover_x > 0.0 {
+          for yy in y_full0..y_full1 {
+            if xx >= x_full0 && xx < x_full1 && yy >= y_full0 && yy < y_full1 {
+              continue;
+            }
+            let cover = cover_x;
+            let sa = (color.a * cover * 255.0).round().clamp(0.0, 255.0) as u8;
+            let idx = yy as usize * stride + xx as usize * 4;
+            blend_pixel(data, idx, color, sa);
+          }
+        }
+      }
+    }
+
+    return true;
   }
 
   // Create rectangle path
@@ -450,6 +607,50 @@ pub fn fill_rect_from_rect(pixmap: &mut Pixmap, rect: &Rect, color: Rgba) -> boo
     rect.height(),
     color,
   )
+}
+
+#[cfg(test)]
+mod fill_rect_tests {
+  use super::*;
+
+  fn get_rgba(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
+    let w = pixmap.width();
+    let idx = ((y * w + x) * 4) as usize;
+    let data = pixmap.data();
+    (data[idx], data[idx + 1], data[idx + 2], data[idx + 3])
+  }
+
+  #[test]
+  fn fill_rect_semitransparent_fractional_edges_matches_chrome_u8_math() {
+    let mut pixmap = Pixmap::new(4, 4).unwrap();
+    // Fill background with opaque (18,18,18) to match the IMDb "slate" placeholder.
+    for px in pixmap.pixels_mut() {
+      *px = PremultipliedColorU8::from_rgba(18, 18, 18, 255).unwrap();
+    }
+
+    // A semi-transparent white overlay with fractional edges should still blend the fully-covered
+    // interior pixels using Chrome-like `mul/255` math (no tiny-skia ±1 bias).
+    fill_rect(&mut pixmap, 0.0, 0.0001, 4.0, 4.0, Rgba::new(255, 255, 255, 0.1));
+
+    // Pixel (1,1) is fully covered by the rect (y0 is < 1 and y1 is clamped to 4), so the result
+    // should be deterministic and match integer math:
+    // sa = round(0.1 * 255) = 26
+    // out = 255*(26/255) + 18*(1-26/255) = 42.16 -> 42
+    assert_eq!(get_rgba(&pixmap, 1, 1), (42, 42, 42, 255));
+  }
+
+  #[test]
+  fn fill_rect_semitransparent_fractional_x_edges_preserves_interior() {
+    let mut pixmap = Pixmap::new(6, 6).unwrap();
+    for px in pixmap.pixels_mut() {
+      *px = PremultipliedColorU8::from_rgba(18, 18, 18, 255).unwrap();
+    }
+
+    // Fractional left and right edges; interior (x=2,y=2) is fully covered.
+    fill_rect(&mut pixmap, 0.25, 0.0, 5.5, 6.0, Rgba::new(255, 255, 255, 0.1));
+
+    assert_eq!(get_rgba(&pixmap, 2, 2), (42, 42, 42, 255));
+  }
 }
 
 /// Strokes a rectangle outline

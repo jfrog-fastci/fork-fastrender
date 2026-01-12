@@ -509,6 +509,43 @@ fn semi_transparent_source_over_rect_fills_match_chrome_blending() {
 }
 
 #[test]
+fn semi_transparent_source_over_rect_fills_with_fractional_bounds_match_chrome_blending() {
+  // Regression for large translucent overlays with fractional device bounds (e.g. `imdb.com` hero
+  // panels), where tiny-skia's blending math produces a pervasive ±1 LSB mismatch even for
+  // *fully covered* interior pixels.
+  let mut canvas = Canvas::new(6, 6, Rgba::rgb(18, 18, 18)).unwrap();
+  canvas.draw_rect(
+    // Fractional left and right edges. Pixel (2,2) is fully covered.
+    Rect::from_xywh(0.25, 0.0, 5.5, 6.0),
+    Rgba::WHITE.with_alpha(0.1),
+  );
+
+  let p = canvas.pixmap().pixel(2, 2).unwrap();
+  assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (42, 42, 42, 255));
+}
+
+#[test]
+fn semi_transparent_source_over_rect_fills_inside_rounded_clips_match_chrome_blending() {
+  // Like `semi_transparent_source_over_rect_fills_with_fractional_bounds_match_chrome_blending`,
+  // but with an active rounded-rect clip mask. IMDb's hero overlays are drawn inside a rounded
+  // clip (border-radius), and the same ±1 blending mismatch shows up across the clipped interior.
+  let mut canvas = Canvas::new(40, 40, Rgba::rgb(18, 18, 18)).unwrap();
+  canvas
+    .set_clip_with_radii(
+      Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+      Some(BorderRadii::uniform(12.0)),
+    )
+    .unwrap();
+  canvas.draw_rect(
+    Rect::from_xywh(0.25, 0.0, 39.5, 40.0),
+    Rgba::WHITE.with_alpha(0.1),
+  );
+
+  let p = canvas.pixmap().pixel(20, 20).unwrap();
+  assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (42, 42, 42, 255));
+}
+
+#[test]
 fn source_over_trunc_fast_path_accepts_near_integer_translation_and_bounds() {
   let bg = Rgba::BLACK;
   let src = Rgba::rgb(5, 0, 0).with_alpha(0.5);
