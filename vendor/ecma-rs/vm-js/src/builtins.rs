@@ -470,6 +470,75 @@ pub fn object_define_property(
   Ok(Value::Object(target))
 }
 
+pub fn object_get_own_property_descriptor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = scope.to_object(vm, host, hooks, target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let Some(desc) = scope.heap().object_get_own_property(target, &key)? else {
+    return Ok(Value::Undefined);
+  };
+
+  // `FromPropertyDescriptor` (ECMA-262).
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+
+  let enumerable_key = PropertyKey::from_string(scope.alloc_string("enumerable")?);
+  scope.define_property(
+    out,
+    enumerable_key,
+    data_desc(Value::Bool(desc.enumerable), true, true, true),
+  )?;
+
+  let configurable_key = PropertyKey::from_string(scope.alloc_string("configurable")?);
+  scope.define_property(
+    out,
+    configurable_key,
+    data_desc(Value::Bool(desc.configurable), true, true, true),
+  )?;
+
+  match desc.kind {
+    PropertyKind::Data { value, writable } => {
+      scope.push_root(value)?;
+
+      let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+      scope.define_property(out, value_key, data_desc(value, true, true, true))?;
+
+      let writable_key = PropertyKey::from_string(scope.alloc_string("writable")?);
+      scope.define_property(
+        out,
+        writable_key,
+        data_desc(Value::Bool(writable), true, true, true),
+      )?;
+    }
+    PropertyKind::Accessor { get, set } => {
+      scope.push_roots(&[get, set])?;
+
+      let get_key = PropertyKey::from_string(scope.alloc_string("get")?);
+      scope.define_property(out, get_key, data_desc(get, true, true, true))?;
+
+      let set_key = PropertyKey::from_string(scope.alloc_string("set")?);
+      scope.define_property(out, set_key, data_desc(set, true, true, true))?;
+    }
+  }
+
+  Ok(Value::Object(out))
+}
+
 pub fn object_create(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3253,6 +3322,28 @@ fn throw_type_error(
 ) -> Result<Value, VmError> {
   let err = create_type_error(vm, scope, host, message)?;
   Err(VmError::Throw(err))
+}
+
+/// %ThrowTypeError% intrinsic used by restricted function properties (ECMA-262).
+///
+/// This must always throw a `TypeError` and is shared between:
+/// - `Function.prototype.caller`
+/// - `Function.prototype.arguments`
+///
+/// Test262 also asserts that the same function object is used as both the getter and setter and
+/// that it is shared across both properties.
+pub fn throw_type_error_intrinsic(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let err_obj = crate::error_object::new_type_error_object(scope, &intr, "Restricted function property")?;
+  Err(VmError::Throw(err_obj))
 }
 
 #[allow(dead_code)]

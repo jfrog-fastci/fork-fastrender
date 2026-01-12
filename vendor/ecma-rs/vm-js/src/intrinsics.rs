@@ -292,6 +292,16 @@ fn install_object_static_methods(
     roots,
     function_prototype,
     object_constructor,
+    "getOwnPropertyDescriptor",
+    2,
+    builtins::object_get_own_property_descriptor,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
     "create",
     2,
     builtins::object_create,
@@ -575,6 +585,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::function_prototype_bind)?;
     let function_prototype_to_string_method =
       vm.register_native_call(builtins::function_prototype_to_string)?;
+    let throw_type_error_intrinsic_call =
+      vm.register_native_call(builtins::throw_type_error_intrinsic)?;
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
     let array_prototype_for_each = vm.register_native_call(builtins::array_prototype_for_each)?;
     let array_prototype_index_of = vm.register_native_call(builtins::array_prototype_index_of)?;
@@ -922,6 +934,54 @@ impl Intrinsics {
         function_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Function.prototype.caller / Function.prototype.arguments (restricted properties).
+    {
+      let thrower_name = scope.alloc_string("%ThrowTypeError%")?;
+      let thrower_fn = alloc_rooted_native_function(
+        scope,
+        roots,
+        throw_type_error_intrinsic_call,
+        None,
+        thrower_name,
+        0,
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(thrower_fn, Some(function_prototype))?;
+
+      let caller_s = scope.alloc_string("caller")?;
+      scope.push_root(Value::String(caller_s))?;
+      let caller_key = PropertyKey::from_string(caller_s);
+      scope.define_property(
+        function_prototype,
+        caller_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(thrower_fn),
+            set: Value::Object(thrower_fn),
+          },
+        },
+      )?;
+
+      let arguments_s = scope.alloc_string("arguments")?;
+      scope.push_root(Value::String(arguments_s))?;
+      let arguments_key = PropertyKey::from_string(arguments_s);
+      scope.define_property(
+        function_prototype,
+        arguments_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(thrower_fn),
+            set: Value::Object(thrower_fn),
+          },
+        },
       )?;
     }
 
