@@ -591,6 +591,7 @@ impl Document {
       (prev, next)
     };
 
+    self.live_mutation.pre_remove(child, old_parent, pos);
     self.nodes[old_parent.index()].children.remove(pos);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, old_parent);
     self.nodes[child.index()].parent = None;
@@ -701,29 +702,35 @@ impl Document {
 
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     let node_id = node;
-    let (changed, old_value) = {
-      let node = self.node_checked_mut(node_id)?;
-      match &mut node.kind {
-        NodeKind::Text { content } => {
-          if content == data {
-            return Ok(false);
-          }
-          let old = Some(content.clone());
-          content.clear();
-          content.push_str(data);
-          (true, old)
+    self.node_checked(node_id)?;
+    let (old_len, old_value) = match &self.nodes[node_id.index()].kind {
+      NodeKind::Text { content } => {
+        if content == data {
+          return Ok(false);
         }
-        _ => return Err(DomError::InvalidNodeType),
+        (content.len(), Some(content.clone()))
       }
+      _ => return Err(DomError::InvalidNodeType),
     };
 
-    if changed {
-      self.record_text_mutation(node_id);
-      self.bump_mutation_generation();
-      let _ = self.queue_mutation_record_character_data(node_id, old_value);
+    self
+      .live_mutation
+      .replace_data(node_id, 0, old_len, data.len());
+
+    {
+      let node = self.node_checked_mut(node_id)?;
+      let NodeKind::Text { content } = &mut node.kind else {
+        unreachable!();
+      };
+      content.clear();
+      content.push_str(data);
     }
 
-    Ok(changed)
+    self.record_text_mutation(node_id);
+    self.bump_mutation_generation();
+    let _ = self.queue_mutation_record_character_data(node_id, old_value);
+
+    Ok(true)
   }
   pub fn parent(&self, node: NodeId) -> Result<Option<NodeId>, DomError> {
     Ok(self.node_checked(node)?.parent)
@@ -802,8 +809,15 @@ impl Document {
         self.nodes[new_child.index()].children.as_slice(),
       )?;
 
+      let moved_children = self.nodes[new_child.index()].children.clone();
+      for (idx, &child) in moved_children.iter().enumerate() {
+        self.live_mutation.pre_remove(child, new_child, idx);
+      }
+      self
+        .live_mutation
+        .pre_insert(parent, insertion_idx, moved_children.len());
+
       let children_to_move = std::mem::take(&mut self.nodes[new_child.index()].children);
-      let moved_children = children_to_move.clone();
       // Fragments are always detached.
       self.nodes[new_child.index()].parent = None;
 
@@ -877,6 +891,8 @@ impl Document {
       self.detach_from_parent(new_child)?;
     }
 
+    self.live_mutation.pre_insert(parent, insertion_idx, 1);
+
     self.nodes[parent.index()]
       .children
       .insert(insertion_idx, new_child);
@@ -911,6 +927,7 @@ impl Document {
       (prev, next)
     };
 
+    self.live_mutation.pre_remove(child, parent, idx);
     self.nodes[parent.index()].children.remove(idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, parent);
     self.nodes[child.index()].parent = None;
@@ -966,12 +983,9 @@ impl Document {
       (prev, next)
     };
 
-    if matches!(
-      self.nodes[new_child.index()].kind,
-      NodeKind::DocumentFragment
-    ) {
-      // DocumentFragment insertion is transparent: insert its children before `old_child`, then
-      // remove `old_child`.
+    if matches!(self.nodes[new_child.index()].kind, NodeKind::DocumentFragment) {
+      // DocumentFragment replacement is transparent: remove `old_child`, then insert the
+      // fragment's children in its place, and finally empty the fragment.
       //
       // Pre-validate all children before mutating to ensure atomicity.
       let frag_children_len = self.nodes[new_child.index()].children.len();
@@ -987,8 +1001,22 @@ impl Document {
         self.nodes[new_child.index()].children.as_slice(),
       )?;
 
+      self.live_mutation.pre_remove(old_child, parent, old_child_idx);
+      self.nodes[parent.index()].children.remove(old_child_idx);
+      let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
+      self.nodes[old_child.index()].parent = None;
+
+      let moved_children = self.nodes[new_child.index()].children.clone();
+      for (idx, &child) in moved_children.iter().enumerate() {
+        self.live_mutation.pre_remove(child, new_child, idx);
+      }
+      if !moved_children.is_empty() {
+        self
+          .live_mutation
+          .pre_insert(parent, old_child_idx, moved_children.len());
+      }
+
       let children_to_move = std::mem::take(&mut self.nodes[new_child.index()].children);
-      let moved_children = children_to_move.clone();
       self.nodes[new_child.index()].parent = None;
 
       for &child in &children_to_move {
@@ -1011,17 +1039,9 @@ impl Document {
         self.nodes[child.index()].parent = Some(parent);
       }
 
-      let inserted_len = children_to_move.len();
       self.nodes[parent.index()]
         .children
         .splice(old_child_idx..old_child_idx, children_to_move);
-
-      // `old_child` has been shifted to the right by `inserted_len`.
-      self.nodes[parent.index()]
-        .children
-        .remove(old_child_idx + inserted_len);
-      let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
-      self.nodes[old_child.index()].parent = None;
 
       self.record_child_list_mutation(parent);
       self.bump_mutation_generation();
@@ -1051,10 +1071,12 @@ impl Document {
       self.detach_from_parent(new_child)?;
     }
 
+    self.live_mutation.pre_remove(old_child, parent, old_child_idx);
     self.nodes[parent.index()].children.remove(old_child_idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
     self.nodes[old_child.index()].parent = None;
 
+    self.live_mutation.pre_insert(parent, old_child_idx, 1);
     self.nodes[parent.index()]
       .children
       .insert(old_child_idx, new_child);

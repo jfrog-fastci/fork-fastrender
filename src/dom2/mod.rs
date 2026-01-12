@@ -34,6 +34,7 @@ mod html_parse;
 pub mod import;
 mod js_shims;
 mod live_collection_query;
+mod live_mutation;
 mod mutation;
 mod mutation_observer;
 mod scripting_parser;
@@ -214,6 +215,7 @@ pub struct Document {
   mutation_generation: u64,
   selector_snapshot_cache: Option<SelectorSnapshotCache>,
   mutation_observer_agent: Rc<RefCell<mutation_observer::MutationObserverAgent>>,
+  live_mutation: live_mutation::LiveMutation,
 }
 
 impl Clone for Document {
@@ -233,6 +235,7 @@ impl Clone for Document {
       mutation_generation: self.mutation_generation,
       selector_snapshot_cache: None,
       mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
+      live_mutation: live_mutation::LiveMutation::default(),
     }
   }
 }
@@ -403,6 +406,7 @@ impl Document {
       mutation_generation: self.mutation_generation,
       selector_snapshot_cache: None,
       mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
+      live_mutation: live_mutation::LiveMutation::default(),
     }
   }
 
@@ -483,6 +487,7 @@ impl Document {
       mutation_generation: 0,
       selector_snapshot_cache: None,
       mutation_observer_agent,
+      live_mutation: live_mutation::LiveMutation::default(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -610,6 +615,13 @@ impl Document {
   /// Take (and clear) the accumulated mutation log.
   pub(crate) fn take_mutations(&mut self) -> MutationLog {
     std::mem::take(&mut self.mutations)
+  }
+
+  pub(crate) fn set_live_mutation_hook(
+    &mut self,
+    hook: Option<Box<dyn live_mutation::LiveMutationHook>>,
+  ) {
+    self.live_mutation.set_hook(hook);
   }
 
   /// Clear any accumulated mutation records.
@@ -1997,6 +2009,8 @@ mod html5ever_sink_tests;
 mod html_tests;
 #[cfg(test)]
 mod inner_html_tests;
+#[cfg(test)]
+mod live_mutation_tests;
 #[cfg(test)]
 mod mapping_tests;
 #[cfg(test)]
