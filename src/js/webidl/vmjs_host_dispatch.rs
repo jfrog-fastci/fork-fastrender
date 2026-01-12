@@ -1165,11 +1165,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       }
 
       let any = host.as_any_mut();
-      if let Some(dom) = any.downcast_mut::<crate::api::BrowserDocumentDom2>() {
-        return Ok(Some(dom.call_operation(
-          vm, scope, receiver, interface, operation, overload, args,
-        )?));
-      }
       if let Some(dom) = any.downcast_mut::<crate::js::host_document::HostDocumentState>() {
         return Ok(Some(dom.call_operation(
           vm, scope, receiver, interface, operation, overload, args,
@@ -1207,11 +1202,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       }
 
       let any = host.as_any_mut();
-      if let Some(dom) = any.downcast_mut::<crate::api::BrowserDocumentDom2>() {
-        return Ok(Some(
-          dom.iterable_snapshot(vm, scope, receiver, interface, kind)?,
-        ));
-      }
       if let Some(dom) = any.downcast_mut::<crate::js::host_document::HostDocumentState>() {
         return Ok(Some(
           dom.iterable_snapshot(vm, scope, receiver, interface, kind)?,
