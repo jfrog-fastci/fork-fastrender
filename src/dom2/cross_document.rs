@@ -1,9 +1,11 @@
 use super::{Document, DomError, NodeId, NodeKind};
 
+pub type NodeIdMapping = Vec<(NodeId, NodeId)>;
+
 #[derive(Debug, Clone)]
 pub struct AdoptedSubtree {
   pub new_root: NodeId,
-  pub mapping: Vec<(NodeId, NodeId)>,
+  pub mapping: NodeIdMapping,
 }
 
 /// Clone a `dom2` subtree from `src` into the `dst` document, returning the new root plus a mapping
@@ -18,8 +20,8 @@ pub fn clone_node_into_document(
   src_root: NodeId,
   dst: &mut Document,
   deep: bool,
-) -> Result<(NodeId, Vec<(NodeId, NodeId)>), DomError> {
-  let mut mapping: Vec<(NodeId, NodeId)> = Vec::new();
+) -> Result<(NodeId, NodeIdMapping), DomError> {
+  let mut mapping: NodeIdMapping = Vec::new();
   let new_root = clone_subtree_from_other_document(
     dst,
     src,
@@ -37,7 +39,7 @@ pub fn clone_node_into_document_deep(
   src: &Document,
   src_root: NodeId,
   dst: &mut Document,
-) -> Result<(NodeId, Vec<(NodeId, NodeId)>), DomError> {
+) -> Result<(NodeId, NodeIdMapping), DomError> {
   clone_node_into_document(src, src_root, dst, /* deep */ true)
 }
 
@@ -252,7 +254,7 @@ fn clone_subtree_from_other_document(
   src_root: NodeId,
   dst_parent: Option<NodeId>,
   deep: bool,
-  mut mapping: Option<&mut Vec<(NodeId, NodeId)>>,
+  mut mapping: Option<&mut NodeIdMapping>,
   semantics: CrossDocumentCloneSemantics,
 ) -> Result<NodeId, DomError> {
   src.node_checked(src_root)?;
@@ -385,7 +387,7 @@ impl Document {
       let _ = src.remove_child(old_parent, node)?;
     }
 
-    let mut mapping: Vec<(NodeId, NodeId)> = Vec::new();
+    let mut mapping: NodeIdMapping = Vec::new();
     let new_root = {
       let src_ref: &Document = &*src;
       clone_subtree_from_other_document(
