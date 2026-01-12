@@ -813,6 +813,62 @@ mod tests {
   }
 
   #[test]
+  fn bidi_text_input_preserves_split_caret_affinity_after_insert() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input dir=\"ltr\" value=\"ABC אבג\"></body></html>")
+        .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Move to the split-caret boundary at char_idx=4 on the upstream (LTR) side.
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    for _ in 0..4 {
+      assert!(engine.key_action(&mut dom, KeyAction::ArrowRight));
+    }
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+
+    assert!(engine.text_input(&mut dom, "X"));
+    assert_eq!(input_value(&mut dom, input_id), "ABC Xאבג");
+
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), None);
+    assert_eq!(edit.caret, 5);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+  }
+
+  #[test]
+  fn bidi_clipboard_paste_preserves_split_caret_affinity_after_insert() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input dir=\"ltr\" value=\"ABC אבג\"></body></html>")
+        .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Move to the split-caret boundary at char_idx=4 on the upstream (LTR) side.
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    for _ in 0..4 {
+      assert!(engine.key_action(&mut dom, KeyAction::ArrowRight));
+    }
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+
+    assert!(engine.clipboard_paste(&mut dom, "X"));
+    assert_eq!(input_value(&mut dom, input_id), "ABC Xאבג");
+
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), None);
+    assert_eq!(edit.caret, 5);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+  }
+
+  #[test]
   fn bidi_arrow_down_selection_collapse_preserves_split_caret_affinity() {
     let mut dom =
       crate::dom::parse_html("<html><body><textarea dir=\"ltr\">ABC אבג</textarea></body></html>")
@@ -3407,7 +3463,10 @@ impl InteractionEngine {
     self.text_edit = Some(TextEditState {
       node_id: focused,
       caret: next_caret,
-      caret_affinity: CaretAffinity::Downstream,
+      // After inserting text, keep the caret attached to the inserted content. This matters at
+      // split-caret bidi boundaries where the same logical caret position maps to multiple visual
+      // x positions.
+      caret_affinity: CaretAffinity::Upstream,
       selection_anchor: None,
       preferred_column: None,
     });
@@ -3835,7 +3894,10 @@ impl InteractionEngine {
     self.text_edit = Some(TextEditState {
       node_id: focused,
       caret: next_caret,
-      caret_affinity: CaretAffinity::Downstream,
+      // After inserting text, keep the caret attached to the inserted content. This matters at
+      // split-caret bidi boundaries where the same logical caret position maps to multiple visual
+      // x positions.
+      caret_affinity: CaretAffinity::Upstream,
       selection_anchor: None,
       preferred_column: None,
     });
