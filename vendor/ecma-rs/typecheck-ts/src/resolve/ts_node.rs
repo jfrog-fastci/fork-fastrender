@@ -432,7 +432,23 @@ impl<F: ResolveFs> Resolver<F> {
     }
 
     if self.options.module_resolution == ModuleResolutionMode::Classic {
-      return self.resolve_non_relative_classic(from, specifier);
+      // Classic module resolution does not search `node_modules/` for normal
+      // package specifiers. It does, however, perform the classic upward file
+      // search (see `resolve_non_relative_classic`).
+      if let Some(found) = self.resolve_non_relative_classic(from, specifier) {
+        return Some(found);
+      }
+
+      // TypeScript resolves `/// <reference types="..." />` and
+      // `compilerOptions.types` using a separate type-package lookup that
+      // consults `node_modules/@types`, regardless of the `moduleResolution`
+      // setting. `typecheck-ts` core models that by mapping type packages to
+      // explicit `@types/*` specifiers. Allow those `@types/*` specifiers to be
+      // resolved via `node_modules/` when the host enables `node_modules`
+      // resolution for them.
+      if !(self.options.node_modules && specifier.starts_with("@types/")) {
+        return None;
+      }
     }
 
     if !self.options.node_modules {
@@ -1526,6 +1542,33 @@ mod tests {
     assert!(
       resolver.resolve(Path::new("/src/app.ts"), "pkg").is_none(),
       "Classic module resolution should not search node_modules for bare specifiers"
+    );
+  }
+
+  #[test]
+  fn classic_mode_resolves_at_types_packages_when_node_modules_enabled() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert("/node_modules/@types/foo/index.d.ts", "export {};\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        package_imports: false,
+        module_resolution: ModuleResolutionMode::Classic,
+        ..ResolveOptions::default()
+      },
+    );
+
+    let resolved = resolver
+      .resolve(Path::new("/src/app.ts"), "@types/foo")
+      .expect("@types package should resolve");
+    assert_eq!(resolved, PathBuf::from("/node_modules/@types/foo/index.d.ts"));
+
+    assert!(
+      resolver.resolve(Path::new("/src/app.ts"), "foo").is_none(),
+      "Classic module resolution should not consult node_modules for normal bare specifiers"
     );
   }
 
