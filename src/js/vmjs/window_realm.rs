@@ -10589,9 +10589,16 @@ fn event_target_add_event_listener_native(
     .unwrap_or_default();
 
   let callback = args.get(1).copied().unwrap_or(Value::Undefined);
-  let Value::Object(callback_obj) = callback else {
-    // Per WebIDL/DOM, `null` callbacks are no-ops.
-    return Ok(Value::Undefined);
+  let callback_obj = match callback {
+    // Per WebIDL/DOM, `EventListener?` converts `null`/`undefined` to `null`, and `null` listeners
+    // are treated as no-ops.
+    Value::Undefined | Value::Null => return Ok(Value::Undefined),
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "EventTarget.addEventListener: callback must be an object or null",
+      ))
+    }
   };
 
   let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
@@ -10744,8 +10751,14 @@ fn event_target_remove_event_listener_native(
     .unwrap_or_default();
 
   let callback = args.get(1).copied().unwrap_or(Value::Undefined);
-  let Value::Object(callback_obj) = callback else {
-    return Ok(Value::Undefined);
+  let callback_obj = match callback {
+    Value::Undefined | Value::Null => return Ok(Value::Undefined),
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "EventTarget.removeEventListener: callback must be an object or null",
+      ))
+    }
   };
 
   let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
@@ -22805,6 +22818,50 @@ mod tests {
   }
 
   #[test]
+  fn event_target_add_remove_event_listener_callback_argument_conversion_is_spec_compliant(
+  ) -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let add_type_error = realm.exec_script(
+      "(() => {\n\
+        try {\n\
+          new EventTarget().addEventListener('x', 1);\n\
+          return 'no';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), add_type_error), "TypeError");
+
+    let remove_type_error = realm.exec_script(
+      "(() => {\n\
+        try {\n\
+          new EventTarget().removeEventListener('x', 1);\n\
+          return 'no';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), remove_type_error), "TypeError");
+
+    let add_null_is_noop = realm.exec_script(
+      "(() => {\n\
+        try {\n\
+          new EventTarget().addEventListener('x', null);\n\
+          return 'ok';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), add_null_is_noop), "ok");
+
+    Ok(())
+  }
+
+  #[test]
   fn dom_event_listeners_are_registered_in_dom2_and_invoked_by_host_dispatch() -> Result<(), VmError>
   {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
@@ -23698,6 +23755,62 @@ mod tests {
       })()",
     )?;
     assert_eq!(called, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_wrapper_add_remove_event_listener_callback_argument_conversion_is_spec_compliant(
+  ) -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let add_type_error = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        try {\n\
+          el.addEventListener('x', 1);\n\
+          return 'no';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), add_type_error), "TypeError");
+
+    let remove_type_error = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        try {\n\
+          el.removeEventListener('x', 1);\n\
+          return 'no';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), remove_type_error), "TypeError");
+
+    let add_null_is_noop = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        try {\n\
+          el.addEventListener('x', null);\n\
+          return 'ok';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), add_null_is_noop), "ok");
+
     Ok(())
   }
 
