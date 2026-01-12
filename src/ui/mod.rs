@@ -63,6 +63,9 @@ pub mod history_persistence;
 #[cfg(feature = "browser_ui")]
 pub mod session;
 
+#[cfg(feature = "browser_ui")]
+pub mod session_autosave;
+
 // CLI parsing and wgpu-adapter selection knobs for the `browser` binary.
 #[cfg(feature = "browser_ui")]
 pub mod browser_cli;
@@ -126,6 +129,8 @@ pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
 pub use chrome::{chrome_ui, ChromeAction};
 #[cfg(feature = "browser_ui")]
 pub use session::{BrowserSession, BrowserSessionTab, BrowserSessionWindow, BrowserWindowState};
+#[cfg(feature = "browser_ui")]
+pub use session_autosave::SessionAutosave;
 #[cfg(feature = "browser_ui")]
 pub use icons::{icon, icon_button, icon_tinted, spinner, BrowserIcon};
 #[cfg(feature = "browser_ui")]
