@@ -337,6 +337,7 @@ pub struct Vm {
   async_resume_call: Option<NativeFunctionId>,
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
   module_tla_on_rejected_call: Option<NativeFunctionId>,
+  module_tla_init_default_export_on_fulfilled_call: Option<NativeFunctionId>,
   async_from_sync_iterator_unwrap_call: Option<NativeFunctionId>,
   async_from_sync_iterator_close_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
@@ -569,6 +570,7 @@ impl Vm {
       async_resume_call: None,
       module_tla_on_fulfilled_call: None,
       module_tla_on_rejected_call: None,
+      module_tla_init_default_export_on_fulfilled_call: None,
       async_from_sync_iterator_unwrap_call: None,
       async_from_sync_iterator_close_call: None,
       next_async_continuation_id: 0,
@@ -652,6 +654,18 @@ impl Vm {
     }
     let id = self.register_native_call(crate::module_graph::module_tla_on_rejected)?;
     self.module_tla_on_rejected_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn module_tla_init_default_export_on_fulfilled_call_id(
+    &mut self,
+  ) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.module_tla_init_default_export_on_fulfilled_call {
+      return Ok(id);
+    }
+    let id =
+      self.register_native_call(crate::exec::module_tla_init_default_export_on_fulfilled)?;
+    self.module_tla_init_default_export_on_fulfilled_call = Some(id);
     Ok(id)
   }
 
@@ -3219,6 +3233,12 @@ mod tests {
     let close_second = vm.async_from_sync_iterator_close_call_id()?;
     assert_eq!(close_first, close_second);
     assert_eq!(close_len, vm.native_calls.len());
+
+    let init_default_first = vm.module_tla_init_default_export_on_fulfilled_call_id()?;
+    let init_default_len = vm.native_calls.len();
+    let init_default_second = vm.module_tla_init_default_export_on_fulfilled_call_id()?;
+    assert_eq!(init_default_first, init_default_second);
+    assert_eq!(init_default_len, vm.native_calls.len());
 
     Ok(())
   }

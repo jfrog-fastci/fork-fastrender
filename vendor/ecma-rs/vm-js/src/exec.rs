@@ -13292,7 +13292,7 @@ pub(crate) fn run_module(
   result
 }
 
-fn module_tla_init_default_export_on_fulfilled(
+pub(crate) fn module_tla_init_default_export_on_fulfilled(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -13453,7 +13453,7 @@ pub(crate) fn run_module_until_await(
 
               // Defer default export binding initialization until the awaited promise is fulfilled,
               // but ensure it runs before the module body resumes.
-              let call_id = vm_frame.register_native_call(module_tla_init_default_export_on_fulfilled)?;
+              let call_id = vm_frame.module_tla_init_default_export_on_fulfilled_call_id()?;
               let name = promise_scope.alloc_string("")?;
               let on_fulfilled = promise_scope.alloc_native_function_with_env(
                 call_id,
