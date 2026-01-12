@@ -14616,19 +14616,9 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
         let obj = Self::require_receiver_object(receiver)?;
 
         // Brand-check for EventTarget.prototype methods.
-        let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
-        scope.define_property(
-          obj,
-          brand_key,
-          PropertyDescriptor {
-            enumerable: false,
-            configurable: false,
-            kind: PropertyKind::Data {
-              value: Value::Bool(true),
-              writable: false,
-            },
-          },
-        )?;
+        scope
+          .heap_mut()
+          .object_set_host_slots(obj, HostSlots { a: EVENT_TARGET_HOST_TAG, b: 0 })?;
 
         // Resolve the parent before taking a mutable reference to the fallback DOM so we don't
         // alias `WindowRealmUserData` (which owns the fallback document) through both safe borrows
