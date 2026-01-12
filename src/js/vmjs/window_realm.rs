@@ -9055,10 +9055,143 @@ fn node_wrapper_document_obj(
   }
 }
 
+fn transfer_event_listener_state_after_node_adoption(
+  scope: &mut Scope<'_>,
+  src_document_obj: GcObject,
+  src_registry: &web_events::EventListenerRegistry,
+  dest_document_obj: GcObject,
+  dest_registry: &web_events::EventListenerRegistry,
+  mapping: &HashMap<NodeId, NodeId>,
+) -> Result<(), VmError> {
+  if mapping.is_empty() {
+    return Ok(());
+  }
+
+  scope.push_root(Value::Object(src_document_obj))?;
+  scope.push_root(Value::Object(dest_document_obj))?;
+
+  // Transfer `on{type}` EventHandler wrapper bookkeeping so `el.onclick` etc keeps working after
+  // cross-document adoption.
+  if let Some(src_wrappers) = get_event_handler_wrappers_map(scope, src_document_obj)? {
+    let keys = scope.heap().own_property_keys(src_wrappers)?;
+    let mut dest_wrappers: Option<GcObject> = None;
+
+    for key in keys {
+      let PropertyKey::String(key_s) = key else {
+        continue;
+      };
+      let key_name = scope.heap().get_string(key_s)?.to_utf8_lossy();
+      let Some(rest) = key_name.strip_prefix("node:") else {
+        continue;
+      };
+      let Some((old_idx_str, type_part)) = rest.split_once(':') else {
+        continue;
+      };
+      let Ok(old_idx) = old_idx_str.parse::<usize>() else {
+        continue;
+      };
+      let old_node_id = NodeId::from_index(old_idx);
+      let Some(&new_node_id) = mapping.get(&old_node_id) else {
+        continue;
+      };
+
+      let new_key_str = format!("node:{}:{type_part}", new_node_id.index());
+      let new_key = alloc_key(scope, &new_key_str)?;
+
+      let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(src_wrappers, &key)?
+      else {
+        continue;
+      };
+
+      let dst_map = if let Some(obj) = dest_wrappers {
+        obj
+      } else {
+        let obj = get_or_create_event_handler_wrappers_map(scope, dest_document_obj)?;
+        dest_wrappers = Some(obj);
+        obj
+      };
+
+      // Root while defining: `define_property` can allocate and trigger GC.
+      {
+        let mut scope = scope.reborrow();
+        scope.push_root(Value::Object(dst_map))?;
+        scope.push_root(value)?;
+        scope.define_property(dst_map, new_key, data_desc(value))?;
+      }
+
+      let _ = scope.ordinary_delete(src_wrappers, key)?;
+    }
+  }
+
+  // Transfer callback roots for listeners now reachable through the destination registry.
+  let roots_key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)?;
+  let Some(Value::Object(src_roots)) = scope
+    .heap()
+    .object_get_own_data_property_value(src_document_obj, &roots_key)?
+  else {
+    return Ok(());
+  };
+
+  let keys = scope.heap().own_property_keys(src_roots)?;
+  let mut dest_roots: Option<GcObject> = None;
+  for key in &keys {
+    let PropertyKey::String(key_s) = *key else {
+      continue;
+    };
+    let id_str = scope.heap().get_string(key_s)?.to_utf8_lossy();
+    let Ok(id) = id_str.parse::<u64>() else {
+      continue;
+    };
+    let listener_id = web_events::ListenerId::new(id);
+    if !dest_registry.contains_listener_id(listener_id) {
+      continue;
+    }
+
+    let dst_roots = if let Some(obj) = dest_roots {
+      obj
+    } else {
+      let obj = get_or_create_event_listener_roots(scope, dest_document_obj)?;
+      dest_roots = Some(obj);
+      obj
+    };
+
+    let Some(value) = scope
+      .heap()
+      .object_get_own_data_property_value(src_roots, key)?
+    else {
+      continue;
+    };
+    {
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(dst_roots))?;
+      scope.push_root(value)?;
+      scope.define_property(dst_roots, *key, data_desc(value))?;
+    }
+  }
+
+  // Drop roots from the source document for callbacks that are no longer referenced after adoption.
+  for key in &keys {
+    let PropertyKey::String(key_s) = *key else {
+      continue;
+    };
+    let id_str = scope.heap().get_string(key_s)?.to_utf8_lossy();
+    let Ok(id) = id_str.parse::<u64>() else {
+      continue;
+    };
+    let listener_id = web_events::ListenerId::new(id);
+    remove_listener_root_if_unused(scope, src_document_obj, src_registry, listener_id, None)?;
+  }
+
+  Ok(())
+}
+
 fn maybe_adopt_node_into_document(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
+  src_document_obj: GcObject,
   dest_document_obj: GcObject,
   mut dest_dom_ptr: NonNull<dom2::Document>,
   node: DomNodeKey,
@@ -9071,6 +9204,8 @@ fn maybe_adopt_node_into_document(
   if node.document_id == dest_document_id {
     return Ok(node);
   }
+
+  debug_assert_eq!(gc_object_id(src_document_obj), node.document_id);
 
   let Some(mut src_dom_ptr) = dom_ptr_for_document_id_mut(vm, host, node.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
@@ -9129,6 +9264,35 @@ fn maybe_adopt_node_into_document(
     let mapping: HashMap<NodeId, NodeId> = adopted.mapping.into_iter().collect();
     (adopted.new_root, mapping)
   };
+
+  // Transfer event listeners (and their rooted callbacks) from the source document registry into the
+  // destination. Listener registrations are associated with the node object, so adopting a node
+  // must preserve its event listeners.
+  //
+  // `dom2` keeps event listener registries per-document, so cross-document adoption needs to
+  // transfer registrations using the `NodeId` remapping produced by the DOM adoption algorithm.
+  //
+  // Note: callback roots are stored on the owning `Document` wrapper object, so we also need to
+  // copy roots (and internal EventHandler wrapper bookkeeping) to the destination document.
+  {
+    // SAFETY: pointers are valid for the duration of this native call.
+    let src_dom = unsafe { src_dom_ptr.as_ref() };
+    let dest_dom = unsafe { dest_dom_ptr.as_ref() };
+    if src_dom_ptr != dest_dom_ptr {
+      let mapping_pairs: Vec<(NodeId, NodeId)> = mapping.iter().map(|(&a, &b)| (a, b)).collect();
+      src_dom
+        .events()
+        .transfer_node_listeners(dest_dom.events(), &mapping_pairs);
+    }
+    transfer_event_listener_state_after_node_adoption(
+      scope,
+      src_document_obj,
+      src_dom.events(),
+      dest_document_obj,
+      dest_dom.events(),
+      &mapping,
+    )?;
+  }
 
   let Some(platform) = dom_platform_mut(vm) else {
     return Ok(DomNodeKey::new(dest_document_id, new_root));
@@ -12644,6 +12808,12 @@ fn document_adopt_node_native(
   let node_key = platform
     .require_node_handle(scope.heap(), node_value)
     .map_err(|_| VmError::TypeError("Document.adoptNode requires a node argument"))?;
+  let Value::Object(node_obj) = node_value else {
+    return Err(VmError::TypeError("Document.adoptNode requires a node argument"));
+  };
+  let src_document_obj =
+    node_wrapper_document_obj(scope, node_obj, node_key.node_id)
+      .map_err(|_| VmError::TypeError("Document.adoptNode requires a node argument"))?;
 
   if node_key.document_id == target_document_id {
     // No-op adoption: keep the same node object and document association.
@@ -12655,7 +12825,15 @@ fn document_adopt_node_native(
   )?;
   // Delegate to the shared adoption helper so wrapper remapping and aliasing document arena cases
   // stay consistent with insertion APIs (appendChild/insertBefore/etc).
-  let _ = maybe_adopt_node_into_document(vm, scope, host, document_obj, target_dom_ptr, node_key)?;
+  let _ = maybe_adopt_node_into_document(
+    vm,
+    scope,
+    host,
+    src_document_obj,
+    document_obj,
+    target_dom_ptr,
+    node_key,
+  )?;
 
   Ok(node_value)
 }
@@ -23447,6 +23625,7 @@ fn node_append_child_native(
           vm,
           scope,
           host,
+          child_document_obj,
           document_obj,
           dom_ptr,
           DomNodeKey::new(child_handle.document_id, child_id),
@@ -23464,6 +23643,7 @@ fn node_append_child_native(
           vm,
           scope,
           host,
+          child_document_obj,
           document_obj,
           dom_ptr,
           DomNodeKey::new(child_handle.document_id, child_id),
@@ -23483,7 +23663,7 @@ fn node_append_child_native(
     let child_for_insert = if child_is_fragment {
       child_handle.node_id
     } else {
-      maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, child_handle)
+      maybe_adopt_node_into_document(vm, scope, host, child_document_obj, document_obj, dom_ptr, child_handle)
         .map_err(|err| match err {
           VmError::TypeError(_) => VmError::TypeError("Node.appendChild requires a node argument"),
           err => err,
@@ -23697,6 +23877,7 @@ fn node_insert_before_native(
           vm,
           scope,
           host,
+          new_child_document_obj,
           document_obj,
           dom_ptr,
           DomNodeKey::new(new_child_handle.document_id, child_id),
@@ -23711,6 +23892,7 @@ fn node_insert_before_native(
           vm,
           scope,
           host,
+          new_child_document_obj,
           document_obj,
           dom_ptr,
           DomNodeKey::new(new_child_handle.document_id, child_id),
@@ -23731,7 +23913,15 @@ fn node_insert_before_native(
     let new_child_for_insert = if new_child_is_fragment {
       new_child_handle.node_id
     } else {
-      maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, new_child_handle)
+      maybe_adopt_node_into_document(
+        vm,
+        scope,
+        host,
+        new_child_document_obj,
+        document_obj,
+        dom_ptr,
+        new_child_handle,
+      )
         .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?
         .node_id
     };
@@ -24006,6 +24196,7 @@ fn node_replace_child_native(
           vm,
           scope,
           host,
+          new_child_document_obj,
           document_obj,
           dom_ptr,
           DomNodeKey::new(new_child_handle.document_id, child_id),
@@ -24020,6 +24211,7 @@ fn node_replace_child_native(
           vm,
           scope,
           host,
+          new_child_document_obj,
           document_obj,
           dom_ptr,
           DomNodeKey::new(new_child_handle.document_id, child_id),
@@ -24043,7 +24235,15 @@ fn node_replace_child_native(
     let new_child_for_replace = if new_child_is_fragment {
       new_child_handle.node_id
     } else {
-      maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, new_child_handle)
+      maybe_adopt_node_into_document(
+        vm,
+        scope,
+        host,
+        new_child_document_obj,
+        document_obj,
+        dom_ptr,
+        new_child_handle,
+      )
         .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?
         .node_id
     };
@@ -31385,9 +31585,16 @@ fn element_insert_adjacent_element_native(
   let element_dom = unsafe { element_dom_ptr.as_ref() };
   let old_parent = element_dom.parent_node(element_handle.node_id);
 
-  let adopted = maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, element_handle).map_err(
-    |_| VmError::TypeError("Element.insertAdjacentElement requires an element argument"),
-  )?;
+  let adopted = maybe_adopt_node_into_document(
+    vm,
+    scope,
+    host,
+    element_document_obj,
+    document_obj,
+    dom_ptr,
+    element_handle,
+  )
+  .map_err(|_| VmError::TypeError("Element.insertAdjacentElement requires an element argument"))?;
 
   let result = match unsafe { dom_ptr.as_mut() }.insert_adjacent_element(target_handle.node_id, &position, adopted.node_id) {
     Ok(Some(_)) => element_value,
@@ -40595,6 +40802,54 @@ mod tests {
         document.body.appendChild(el);
         if (el.ownerDocument !== document) throw new Error('expected ownerDocument to update on cross-document append');
         if (el.parentNode !== document.body) throw new Error('expected node to be inserted into document.body');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn detached_document_event_listeners_work() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc2 = document.implementation.createHTMLDocument('');
+        const el = doc2.createElement('div');
+        let fired = 0;
+        el.addEventListener('click', () => { fired++; });
+        el.dispatchEvent(new Event('click'));
+        if (fired !== 1) throw new Error(`expected fired 1, got ${fired}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn event_listeners_survive_document_adopt_node() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc2 = document.implementation.createHTMLDocument('');
+        const el = doc2.createElement('div');
+        let fired = 0;
+        function a() { fired++; }
+        function b() { fired += 10; }
+        el.addEventListener('click', a);
+        el.onclick = b;
+        document.adoptNode(el);
+        document.body.appendChild(el);
+        el.dispatchEvent(new Event('click'));
+        if (fired !== 11) throw new Error(`expected fired 11, got ${fired}`);
+        if (el.onclick !== b) throw new Error('expected el.onclick getter to survive adoption');
         return true;
       })()"#,
     )?;
