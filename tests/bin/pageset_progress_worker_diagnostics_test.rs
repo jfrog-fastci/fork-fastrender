@@ -110,6 +110,10 @@ fn pageset_progress_worker_writes_fetch_error_summary_for_ok_pages() {
   let contents = fs::read_to_string(&progress_path).expect("read progress");
   let json: Value = serde_json::from_str(&contents).expect("parse progress JSON");
   assert_eq!(json["status"], "ok", "worker should record ok status");
+  assert_eq!(
+    json["failure_stage"], "paint",
+    "missing image fetch should set failure_stage=paint"
+  );
 
   let summary = json
     .get("diagnostics")
