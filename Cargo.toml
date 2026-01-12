@@ -309,6 +309,18 @@ lto = true
 codegen-units = 1
 strip = true
 
+[profile.bench]
+# Benchmarks should be representative (optimized) but also fast to build in CI/agent environments.
+#
+# The release profile enables LTO + single codegen unit for the smallest/fastest shipped binaries,
+# but those settings can make `cargo bench` painfully slow on large crates (especially when many
+# agents compile concurrently). Use a more compilation-friendly profile for benches.
+opt-level = 2
+lto = false
+codegen-units = 64
+debug = false
+strip = false
+
 [patch.crates-io]
 cmake = { path = "vendor/cmake" }
 selectors = { path = "vendor/selectors" }
