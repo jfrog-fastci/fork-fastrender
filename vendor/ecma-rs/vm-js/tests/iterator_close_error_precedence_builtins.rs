@@ -152,3 +152,111 @@ fn promise_all_suppresses_iterator_close_throw_on_reject() -> Result<(), VmError
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn promise_all_does_not_close_iterator_when_next_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.exec_script(
+    r#"
+      var returnCount = 0;
+      var caught = undefined;
+
+      var iter = {};
+      iter[Symbol.iterator] = function() {
+        return {
+          next: function() { throw "next"; },
+          return: function() { returnCount++; return {}; },
+        };
+      };
+
+      Promise.all(iter).catch(function(e) { caught = e; });
+    "#,
+  )?;
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script(r#"caught === "next" && returnCount === 0"#)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn promise_race_does_not_close_iterator_when_next_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.exec_script(
+    r#"
+      var returnCount = 0;
+      var caught = undefined;
+
+      var iter = {};
+      iter[Symbol.iterator] = function() {
+        return {
+          next: function() { throw "next"; },
+          return: function() { returnCount++; return {}; },
+        };
+      };
+
+      Promise.race(iter).catch(function(e) { caught = e; });
+    "#,
+  )?;
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script(r#"caught === "next" && returnCount === 0"#)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn promise_all_settled_does_not_close_iterator_when_next_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.exec_script(
+    r#"
+      var returnCount = 0;
+      var caught = undefined;
+
+      var iter = {};
+      iter[Symbol.iterator] = function() {
+        return {
+          next: function() { throw "next"; },
+          return: function() { returnCount++; return {}; },
+        };
+      };
+
+      Promise.allSettled(iter).catch(function(e) { caught = e; });
+    "#,
+  )?;
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script(r#"caught === "next" && returnCount === 0"#)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn promise_any_does_not_close_iterator_when_next_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.exec_script(
+    r#"
+      var returnCount = 0;
+      var caught = undefined;
+
+      var iter = {};
+      iter[Symbol.iterator] = function() {
+        return {
+          next: function() { throw "next"; },
+          return: function() { returnCount++; return {}; },
+        };
+      };
+
+      Promise.any(iter).catch(function(e) { caught = e; });
+    "#,
+  )?;
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script(r#"caught === "next" && returnCount === 0"#)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

@@ -6721,16 +6721,11 @@ fn perform_promise_all(
   let mut index: u32 = 0;
 
   loop {
-    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record) {
-      Ok(v) => v,
-      // ECMA-262 `PerformPromiseAll`: on an abrupt completion from `IteratorStep`/`IteratorValue`,
-      // set `iteratorRecord.[[Done]] = true` so the outer algorithm does not attempt
-      // `IteratorClose`. (The iterator protocol itself failed, so `return()` must not be invoked.)
-      Err(err) => {
-        iterator_record.done = true;
-        return Err(err);
-      }
-    };
+    // Spec: iterator protocol failures (errors from `next`/`done`/`value`, as well as non-object
+    // iterator results) set `iteratorRecord.[[Done]] = true` via `IteratorNext` / `IteratorStep` /
+    // `IteratorStepValue`. In those cases the outer combinator algorithm must not perform
+    // `IteratorClose`.
+    let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record)?;
     let Some(next_value) = next_value else {
       // Done: decrement initial 1.
       let remaining_value = read_internal_record_value(scope, remaining)?;
@@ -6892,14 +6887,7 @@ fn perform_promise_race(
 ) -> Result<Value, VmError> {
   // `PerformPromiseRace` (ECMA-262).
   loop {
-    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record) {
-      Ok(v) => v,
-      // See `perform_promise_all` for why we force `[[Done]] = true` here.
-      Err(err) => {
-        iterator_record.done = true;
-        return Err(err);
-      }
-    };
+    let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record)?;
     let Some(next_value) = next_value else {
       return Ok(capability.promise);
     };
@@ -6997,14 +6985,7 @@ fn perform_promise_all_settled(
   let mut index: u32 = 0;
 
   loop {
-    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record) {
-      Ok(v) => v,
-      // See `perform_promise_all` for why we force `[[Done]] = true` here.
-      Err(err) => {
-        iterator_record.done = true;
-        return Err(err);
-      }
-    };
+    let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record)?;
     let Some(next_value) = next_value else {
       let remaining_value = read_internal_record_value(scope, remaining)?;
       let Value::Number(n) = remaining_value else {
@@ -7198,14 +7179,7 @@ fn perform_promise_any(
   let mut index: u32 = 0;
 
   loop {
-    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record) {
-      Ok(v) => v,
-      // See `perform_promise_all` for why we force `[[Done]] = true` here.
-      Err(err) => {
-        iterator_record.done = true;
-        return Err(err);
-      }
-    };
+    let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record)?;
     let Some(next_value) = next_value else {
       let remaining_value = read_internal_record_value(scope, remaining)?;
       let Value::Number(n) = remaining_value else {
