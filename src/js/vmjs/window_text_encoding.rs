@@ -6,7 +6,7 @@
 
 use std::char;
 
-use encoding_rs::UTF_8;
+use encoding_rs::{Encoding, UTF_16BE, UTF_16LE, UTF_8, WINDOWS_1252};
 use vm_js::{
   new_range_error, HostSlots, Intrinsics, NativeConstructId, NativeFunctionId, PropertyDescriptor,
   PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -17,6 +17,16 @@ const TEXT_DECODER_HOST_TAG: u64 = 0x5445_5854_4445_4344; // "TEXTDECD"
 
 const TEXT_DECODER_FLAG_FATAL: u64 = 1 << 0;
 const TEXT_DECODER_FLAG_IGNORE_BOM: u64 = 1 << 1;
+const TEXT_DECODER_FLAGS_MASK: u64 = TEXT_DECODER_FLAG_FATAL | TEXT_DECODER_FLAG_IGNORE_BOM;
+
+// Internal encoding identifiers stored in the TextDecoder host slots. We intentionally support a
+// small set of encodings for now for determinism and boundedness.
+const TEXT_DECODER_ENCODING_UTF8: u64 = 0;
+const TEXT_DECODER_ENCODING_WINDOWS_1252: u64 = 1;
+const TEXT_DECODER_ENCODING_UTF16LE: u64 = 2;
+const TEXT_DECODER_ENCODING_UTF16BE: u64 = 3;
+
+const TEXT_DECODER_ENCODING_SHIFT: u64 = 2;
 
 /// Upper bound on the number of UTF-16 code units accepted for a `TextDecoder` label.
 ///
@@ -86,13 +96,13 @@ fn trim_ascii_whitespace_units(mut units: &[u16]) -> &[u16] {
   units
 }
 
-fn label_is_utf8(code_units: &[u16]) -> Result<bool, VmError> {
+fn encoding_from_label_code_units(code_units: &[u16]) -> Result<Option<&'static Encoding>, VmError> {
   let trimmed = trim_ascii_whitespace_units(code_units);
   if trimmed.is_empty() {
-    return Ok(false);
+    return Ok(None);
   }
   if trimmed.len() > MAX_TEXT_DECODER_LABEL_CODE_UNITS {
-    return Ok(false);
+    return Ok(None);
   }
 
   // Encoding labels are ASCII. Convert to lowercase bytes for `encoding_rs`.
@@ -103,12 +113,73 @@ fn label_is_utf8(code_units: &[u16]) -> Result<bool, VmError> {
 
   for &unit in trimmed {
     if unit > 0x7F {
-      return Ok(false);
+      return Ok(None);
     }
     bytes.push((unit as u8).to_ascii_lowercase());
   }
 
-  Ok(encoding_rs::Encoding::for_label(bytes.as_slice()) == Some(UTF_8))
+  Ok(Encoding::for_label(bytes.as_slice()))
+}
+
+fn text_decoder_encoding_id(enc: &'static Encoding) -> Option<u64> {
+  if std::ptr::eq(enc, UTF_8) {
+    Some(TEXT_DECODER_ENCODING_UTF8)
+  } else if std::ptr::eq(enc, WINDOWS_1252) {
+    Some(TEXT_DECODER_ENCODING_WINDOWS_1252)
+  } else if std::ptr::eq(enc, UTF_16LE) {
+    Some(TEXT_DECODER_ENCODING_UTF16LE)
+  } else if std::ptr::eq(enc, UTF_16BE) {
+    Some(TEXT_DECODER_ENCODING_UTF16BE)
+  } else {
+    None
+  }
+}
+
+fn text_decoder_encoding_from_id(id: u64) -> Option<&'static Encoding> {
+  match id {
+    TEXT_DECODER_ENCODING_UTF8 => Some(UTF_8),
+    TEXT_DECODER_ENCODING_WINDOWS_1252 => Some(WINDOWS_1252),
+    TEXT_DECODER_ENCODING_UTF16LE => Some(UTF_16LE),
+    TEXT_DECODER_ENCODING_UTF16BE => Some(UTF_16BE),
+    _ => None,
+  }
+}
+
+fn text_decoder_encoding_label_from_id(id: u64) -> Option<&'static str> {
+  match id {
+    TEXT_DECODER_ENCODING_UTF8 => Some("utf-8"),
+    TEXT_DECODER_ENCODING_WINDOWS_1252 => Some("windows-1252"),
+    TEXT_DECODER_ENCODING_UTF16LE => Some("utf-16le"),
+    TEXT_DECODER_ENCODING_UTF16BE => Some("utf-16be"),
+    _ => None,
+  }
+}
+
+fn text_decoder_pack_state(encoding_id: u64, flags: u64) -> u64 {
+  debug_assert_eq!(
+    flags & !TEXT_DECODER_FLAGS_MASK,
+    0,
+    "TextDecoder flags must fit in mask"
+  );
+  flags | (encoding_id << TEXT_DECODER_ENCODING_SHIFT)
+}
+
+fn text_decoder_state_flags(state: u64) -> u64 {
+  state & TEXT_DECODER_FLAGS_MASK
+}
+
+fn text_decoder_state_encoding(state: u64) -> Result<&'static Encoding, VmError> {
+  let id = state >> TEXT_DECODER_ENCODING_SHIFT;
+  text_decoder_encoding_from_id(id).ok_or(VmError::InvariantViolation(
+    "TextDecoder internal encoding id is invalid",
+  ))
+}
+
+fn text_decoder_state_encoding_label(state: u64) -> Result<&'static str, VmError> {
+  let id = state >> TEXT_DECODER_ENCODING_SHIFT;
+  text_decoder_encoding_label_from_id(id).ok_or(VmError::InvariantViolation(
+    "TextDecoder internal encoding id is invalid",
+  ))
 }
 
 fn require_intrinsics(vm: &Vm) -> Result<Intrinsics, VmError> {
@@ -182,47 +253,6 @@ fn encode_utf16_units_to_utf8(units: &[u16], out: &mut Vec<u8>) {
     let encoded = ch.encode_utf8(&mut buf);
     out.extend_from_slice(encoded.as_bytes());
   }
-}
-
-fn decode_utf8_lossy_to_utf16_units(bytes: &[u8]) -> Result<Vec<u16>, VmError> {
-  let mut out: Vec<u16> = Vec::new();
-  out
-    .try_reserve_exact(bytes.len())
-    .map_err(|_| VmError::OutOfMemory)?;
-
-  let mut i = 0usize;
-  while i < bytes.len() {
-    match std::str::from_utf8(&bytes[i..]) {
-      Ok(valid) => {
-        for ch in valid.chars() {
-          let mut buf = [0u16; 2];
-          let encoded = ch.encode_utf16(&mut buf);
-          out.extend_from_slice(encoded);
-        }
-        break;
-      }
-      Err(err) => {
-        let valid_up_to = err.valid_up_to();
-        if valid_up_to > 0 {
-          let valid =
-            unsafe { std::str::from_utf8_unchecked(&bytes[i..i.saturating_add(valid_up_to)]) };
-          for ch in valid.chars() {
-            let mut buf = [0u16; 2];
-            let encoded = ch.encode_utf16(&mut buf);
-            out.extend_from_slice(encoded);
-          }
-        }
-        out.push(0xFFFD);
-        let err_len = err.error_len().unwrap_or(1);
-        i = i
-          .checked_add(valid_up_to)
-          .and_then(|v| v.checked_add(err_len))
-          .ok_or(VmError::OutOfMemory)?;
-      }
-    }
-  }
-
-  Ok(out)
 }
 
 fn text_encoder_call(
@@ -303,7 +333,8 @@ fn text_decoder_construct(
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(callee))?;
 
-  // Validate encoding label.
+  // Validate encoding label (Encoding Standard: trim ASCII whitespace, ASCII case-insensitive).
+  let mut encoding: &'static Encoding = UTF_8;
   if let Some(label_value) = args.get(0).copied() {
     if !matches!(label_value, Value::Undefined) {
       let label_string = match label_value {
@@ -311,14 +342,18 @@ fn text_decoder_construct(
         other => scope.heap_mut().to_string(other)?,
       };
       let label_units = scope.heap().get_string(label_string)?.as_code_units();
-      let ok = label_is_utf8(label_units)?;
-      if !ok {
-        return Err(VmError::Throw(new_range_error(
-          &mut scope,
-          intr,
-          "The encoding label provided is invalid.",
-        )?));
+      let enc = encoding_from_label_code_units(label_units)?;
+      let Some(enc) = enc else {
+        return Err(VmError::Throw(
+          new_range_error(&mut scope, intr, "The encoding label provided is invalid.")?,
+        ));
+      };
+      if text_decoder_encoding_id(enc).is_none() {
+        return Err(VmError::Throw(
+          new_range_error(&mut scope, intr, "The encoding label provided is invalid.")?,
+        ));
       }
+      encoding = enc;
     }
   }
 
@@ -344,6 +379,11 @@ fn text_decoder_construct(
     }
   }
 
+  let encoding_id = text_decoder_encoding_id(encoding).ok_or(VmError::InvariantViolation(
+    "TextDecoder constructed with unsupported encoding",
+  ))?;
+  let state = text_decoder_pack_state(encoding_id, flags);
+
   let proto = {
     let key_s = scope.alloc_string("prototype")?;
     scope.push_root(Value::String(key_s))?;
@@ -360,13 +400,9 @@ fn text_decoder_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
-  scope.heap_mut().object_set_host_slots(
-    obj,
-    HostSlots {
-      a: TEXT_DECODER_HOST_TAG,
-      b: flags,
-    },
-  )?;
+  scope
+    .heap_mut()
+    .object_set_host_slots(obj, HostSlots { a: TEXT_DECODER_HOST_TAG, b: state })?;
 
   Ok(Value::Object(obj))
 }
@@ -395,18 +431,14 @@ fn text_decoder_get_encoding(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: vm_js::GcObject,
+  _callee: vm_js::GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let _ = require_text_decoder_receiver(scope, this)?;
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  match slots.first().copied() {
-    Some(Value::String(s)) => Ok(Value::String(s)),
-    _ => Err(VmError::InvariantViolation(
-      "TextDecoder encoding getter missing utf-8 slot",
-    )),
-  }
+  let (_obj, state) = require_text_decoder_receiver(scope, this)?;
+  let label = text_decoder_state_encoding_label(state)?;
+  let s = scope.alloc_string(label)?;
+  Ok(Value::String(s))
 }
 
 fn text_decoder_get_fatal(
@@ -418,8 +450,10 @@ fn text_decoder_get_fatal(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (_obj, flags) = require_text_decoder_receiver(scope, this)?;
-  Ok(Value::Bool((flags & TEXT_DECODER_FLAG_FATAL) != 0))
+  let (_obj, state) = require_text_decoder_receiver(scope, this)?;
+  Ok(Value::Bool(
+    (text_decoder_state_flags(state) & TEXT_DECODER_FLAG_FATAL) != 0,
+  ))
 }
 
 fn text_decoder_get_ignore_bom(
@@ -431,8 +465,10 @@ fn text_decoder_get_ignore_bom(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (_obj, flags) = require_text_decoder_receiver(scope, this)?;
-  Ok(Value::Bool((flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0))
+  let (_obj, state) = require_text_decoder_receiver(scope, this)?;
+  Ok(Value::Bool(
+    (text_decoder_state_flags(state) & TEXT_DECODER_FLAG_IGNORE_BOM) != 0,
+  ))
 }
 
 fn text_encoder_encode(
@@ -653,9 +689,11 @@ fn text_decoder_decode(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (_obj, flags) = require_text_decoder_receiver(scope, this)?;
+  let (_obj, state) = require_text_decoder_receiver(scope, this)?;
+  let flags = text_decoder_state_flags(state);
   let ignore_bom = (flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0;
   let fatal = (flags & TEXT_DECODER_FLAG_FATAL) != 0;
+  let encoding = text_decoder_state_encoding(state)?;
 
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
 
@@ -665,7 +703,7 @@ fn text_decoder_decode(
       Ok(Value::String(empty))
     }
     Value::Object(obj) => {
-      let units = {
+      let decoded: String = {
         let heap = scope.heap();
         let data = if heap.is_array_buffer_object(obj) {
           heap.array_buffer_data(obj)?
@@ -681,20 +719,20 @@ fn text_decoder_decode(
           return Err(VmError::TypeError("TextDecoder input too large"));
         }
 
-        let data = if !ignore_bom && data.starts_with(&[0xEF, 0xBB, 0xBF]) {
-          &data[3..]
+        let (decoded, had_errors) = if ignore_bom {
+          encoding.decode_without_bom_handling(data)
         } else {
-          data
+          encoding.decode_with_bom_removal(data)
         };
-
-        if fatal && std::str::from_utf8(data).is_err() {
-          return Err(VmError::TypeError("The encoded data was not valid UTF-8"));
+        if fatal && had_errors {
+          return Err(VmError::TypeError(
+            "The encoded data was not valid for the specified encoding",
+          ));
         }
-
-        decode_utf8_lossy_to_utf16_units(data)?
+        decoded.into_owned()
       };
 
-      let out = scope.alloc_string_from_u16_vec(units)?;
+      let out = scope.alloc_string(&decoded)?;
       Ok(Value::String(out))
     }
     _ => Err(VmError::TypeError(
@@ -864,14 +902,8 @@ pub(crate) fn install_window_text_encoding_bindings(
     vm.register_native_call(text_decoder_get_encoding)?;
   let td_encoding_get_name_s = scope.alloc_string("get encoding")?;
   scope.push_root(Value::String(td_encoding_get_name_s))?;
-  let td_encoding_get_slots = [Value::String(utf8_s)];
-  let td_encoding_get_fn = scope.alloc_native_function_with_slots(
-    td_encoding_get_call_id,
-    None,
-    td_encoding_get_name_s,
-    0,
-    &td_encoding_get_slots,
-  )?;
+  let td_encoding_get_fn =
+    scope.alloc_native_function(td_encoding_get_call_id, None, td_encoding_get_name_s, 0)?;
   scope.push_root(Value::Object(td_encoding_get_fn))?;
   scope
     .heap_mut()
@@ -1079,6 +1111,155 @@ mod tests {
   }
 
   #[test]
+  fn text_decoder_windows_1252_decodes_euro_sign() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    // new TextDecoder('windows-1252')
+    let decoder_ctor_key = alloc_key(&mut scope, "TextDecoder")?;
+    let decoder_ctor = vm.get(&mut scope, global, decoder_ctor_key)?;
+    let Value::Object(decoder_ctor_obj) = decoder_ctor else {
+      return Err(VmError::InvariantViolation("TextDecoder missing"));
+    };
+    let label = scope.alloc_string("windows-1252")?;
+    scope.push_root(Value::String(label))?;
+    let decoder = vm.construct_without_host(
+      &mut scope,
+      decoder_ctor,
+      &[Value::String(label)],
+      Value::Object(decoder_ctor_obj),
+    )?;
+    let Value::Object(decoder_obj) = decoder else {
+      return Err(VmError::InvariantViolation("TextDecoder must construct object"));
+    };
+    scope.push_root(Value::Object(decoder_obj))?;
+
+    // Ensure `.encoding` returns canonical lowercase label.
+    let encoding_key = alloc_key(&mut scope, "encoding")?;
+    let encoding_val = vm.get(&mut scope, decoder_obj, encoding_key)?;
+    assert_eq!(get_string(scope.heap(), encoding_val), "windows-1252");
+
+    // new Uint8Array([0x80])
+    let u8_ctor_key = alloc_key(&mut scope, "Uint8Array")?;
+    let u8_ctor = vm.get(&mut scope, global, u8_ctor_key)?;
+    let Value::Object(u8_ctor_obj) = u8_ctor else {
+      return Err(VmError::InvariantViolation("Uint8Array missing"));
+    };
+    let u8 = vm.construct_without_host(
+      &mut scope,
+      u8_ctor,
+      &[Value::Number(1.0)],
+      Value::Object(u8_ctor_obj),
+    )?;
+    let Value::Object(u8_obj) = u8 else {
+      return Err(VmError::InvariantViolation("Uint8Array construct must return object"));
+    };
+    scope.push_root(Value::Object(u8_obj))?;
+
+    let key0_s = scope.alloc_string("0")?;
+    scope.push_root(Value::String(key0_s))?;
+    let key0 = PropertyKey::from_string(key0_s);
+    scope.ordinary_set(&mut vm, u8_obj, key0, Value::Number(0x80 as f64), Value::Object(u8_obj))?;
+
+    // decoder.decode(u8) === "€"
+    let decode_key = alloc_key(&mut scope, "decode")?;
+    let decode_fn = vm.get(&mut scope, decoder_obj, decode_key)?;
+    let decoded = vm.call_without_host(
+      &mut scope,
+      decode_fn,
+      Value::Object(decoder_obj),
+      &[Value::Object(u8_obj)],
+    )?;
+    assert_eq!(get_string(scope.heap(), decoded), "€");
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_utf16le_decodes_basic_code_unit() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    // new TextDecoder('utf-16le')
+    let decoder_ctor_key = alloc_key(&mut scope, "TextDecoder")?;
+    let decoder_ctor = vm.get(&mut scope, global, decoder_ctor_key)?;
+    let Value::Object(decoder_ctor_obj) = decoder_ctor else {
+      return Err(VmError::InvariantViolation("TextDecoder missing"));
+    };
+    let label = scope.alloc_string("utf-16le")?;
+    scope.push_root(Value::String(label))?;
+    let decoder = vm.construct_without_host(
+      &mut scope,
+      decoder_ctor,
+      &[Value::String(label)],
+      Value::Object(decoder_ctor_obj),
+    )?;
+    let Value::Object(decoder_obj) = decoder else {
+      return Err(VmError::InvariantViolation("TextDecoder must construct object"));
+    };
+    scope.push_root(Value::Object(decoder_obj))?;
+
+    let encoding_key = alloc_key(&mut scope, "encoding")?;
+    let encoding_val = vm.get(&mut scope, decoder_obj, encoding_key)?;
+    assert_eq!(get_string(scope.heap(), encoding_val), "utf-16le");
+
+    // Uint8Array.of(0x61, 0x00) => "a"
+    let u8_ctor_key = alloc_key(&mut scope, "Uint8Array")?;
+    let u8_ctor = vm.get(&mut scope, global, u8_ctor_key)?;
+    let Value::Object(u8_ctor_obj) = u8_ctor else {
+      return Err(VmError::InvariantViolation("Uint8Array missing"));
+    };
+    let u8 = vm.construct_without_host(
+      &mut scope,
+      u8_ctor,
+      &[Value::Number(2.0)],
+      Value::Object(u8_ctor_obj),
+    )?;
+    let Value::Object(u8_obj) = u8 else {
+      return Err(VmError::InvariantViolation("Uint8Array construct must return object"));
+    };
+    scope.push_root(Value::Object(u8_obj))?;
+
+    let key0_s = scope.alloc_string("0")?;
+    scope.push_root(Value::String(key0_s))?;
+    let key0 = PropertyKey::from_string(key0_s);
+    scope.ordinary_set(&mut vm, u8_obj, key0, Value::Number(0x61 as f64), Value::Object(u8_obj))?;
+
+    let key1_s = scope.alloc_string("1")?;
+    scope.push_root(Value::String(key1_s))?;
+    let key1 = PropertyKey::from_string(key1_s);
+    scope.ordinary_set(&mut vm, u8_obj, key1, Value::Number(0.0), Value::Object(u8_obj))?;
+
+    let decode_key = alloc_key(&mut scope, "decode")?;
+    let decode_fn = vm.get(&mut scope, decoder_obj, decode_key)?;
+    let decoded = vm.call_without_host(
+      &mut scope,
+      decode_fn,
+      Value::Object(decoder_obj),
+      &[Value::Object(u8_obj)],
+    )?;
+    assert_eq!(get_string(scope.heap(), decoded), "a");
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
   fn text_encoder_encode_into_writes_into_destination_and_returns_counts() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
@@ -1247,7 +1428,7 @@ mod tests {
       return Err(VmError::InvariantViolation("TextDecoder missing"));
     };
 
-    let bad_label = scope.alloc_string("utf-16")?;
+    let bad_label = scope.alloc_string("definitely-not-an-encoding")?;
     scope.push_root(Value::String(bad_label))?;
     let err = vm
       .construct_without_host(
