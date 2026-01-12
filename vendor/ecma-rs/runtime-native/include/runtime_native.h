@@ -678,13 +678,20 @@ StringRef rt_string_as_utf8(GcPtr s);
 // The returned `StringRef` must be freed via `rt_string_free` (or `rt_stringref_free`).
 StringRef rt_string_to_owned_utf8(GcPtr s);
 InternedId rt_string_intern(const uint8_t* s, size_t len);
+// Lookup an interned string by stable ID.
+//
+// Return value contract:
+// - On success: returns `{ptr, len}` for the UTF-8 bytes.
+// - On invalid/reclaimed ID: returns `{ptr = NULL, len = 0}` (distinct from the valid empty string,
+//   which returns `{ptr != NULL, len = 0}`).
+StringRef rt_string_lookup(InternedId id);
 void rt_string_pin_interned(InternedId id);
-// Look up the UTF-8 bytes for an interned string ID.
+// Look up the UTF-8 bytes for a **pinned** interned string ID.
 //
 // GC-safety / lifetime contract:
 // - The runtime may use a moving GC for GC-backed interned strings. Returning a raw pointer into a
 //   movable GC allocation would be unsafe unless the object is pinned or the bytes are copied out.
-// - `rt_string_lookup` only succeeds for **pinned** interned strings. If the entry is not pinned,
+// - `rt_string_lookup_pinned` only succeeds for **pinned** interned strings. If the entry is not pinned,
 //   this returns false.
 // - On success, `out->ptr..out->ptr+out->len` points to non-GC memory owned by the interner and is
 //   stable for the lifetime of the process.
@@ -694,7 +701,7 @@ void rt_string_pin_interned(InternedId id);
 //
 // Contract:
 // - `out` must be non-null.
-bool rt_string_lookup(InternedId id, StringRef* out);
+bool rt_string_lookup_pinned(InternedId id, StringRef* out);
 
 // -----------------------------------------------------------------------------
 // Parallel

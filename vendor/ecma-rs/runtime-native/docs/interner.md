@@ -8,7 +8,8 @@ The stable C ABI surface is:
 ```c
 InternedId rt_string_intern(const uint8_t* s, size_t len);
 void rt_string_pin_interned(InternedId id);
-bool rt_string_lookup(InternedId id, StringRef* out);
+StringRef rt_string_lookup(InternedId id);
+bool rt_string_lookup_pinned(InternedId id, StringRef* out);
 ```
 
 ## ID lifetime
@@ -21,18 +22,19 @@ different string.
 
 Re-interning the same bytes after reclamation yields a **new** `InternedId`.
 
-## GC-safety and `rt_string_lookup`
+## GC-safety and `rt_string_lookup_pinned`
 
 The runtime uses a moving GC for GC-managed allocations. Returning raw pointers into movable GC
 objects is unsafe unless the object is pinned or the bytes are copied out.
 
-To keep the C ABI GC-safe, `rt_string_lookup` uses a **pinned-only** contract:
+To keep a GC-safe lookup path for callers that need a stable byte pointer, `rt_string_lookup_pinned`
+uses a **pinned-only** contract:
 
-- `rt_string_lookup(id, out)` only succeeds for **pinned** interned strings.
+- `rt_string_lookup_pinned(id, out)` only succeeds for **pinned** interned strings.
 - Call `rt_string_pin_interned(id)` to pin an ID before looking it up.
 - On success, `out->ptr..out->ptr+out->len` points to **non-GC memory owned by the interner** and is
   stable for the lifetime of the process.
-- If the ID is invalid, reclaimed, or not pinned, `rt_string_lookup` returns `false`.
+- If the ID is invalid, reclaimed, or not pinned, `rt_string_lookup_pinned` returns `false`.
 
 ### Example (C)
 
@@ -41,9 +43,8 @@ InternedId id = rt_string_intern((const uint8_t*)"perm", 4);
 rt_string_pin_interned(id);
 
 StringRef s;
-if (rt_string_lookup(id, &s)) {
+if (rt_string_lookup_pinned(id, &s)) {
   // `s.ptr` is stable and can be used across GC/safepoints.
   fwrite(s.ptr, 1, s.len, stdout);
 }
 ```
-

@@ -942,8 +942,9 @@ mod tests {
       "StringRef rt_string_as_utf8(GcPtr s);",
       "StringRef rt_string_to_owned_utf8(GcPtr s);",
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
+      "StringRef rt_string_lookup(InternedId id);",
       "void rt_string_pin_interned(InternedId id);",
-      "bool rt_string_lookup(InternedId id, StringRef* out);",
+      "bool rt_string_lookup_pinned(InternedId id, StringRef* out);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
       "TaskId rt_parallel_spawn_rooted(void (*task)(uint8_t*), uint8_t* data);",
       "LegacyPromiseRef rt_parallel_spawn_promise_legacy(void (*task)(uint8_t* data, LegacyPromiseRef promise), uint8_t* data);",
@@ -1109,8 +1110,10 @@ mod tests {
     let _string_as_utf8: extern "C" fn(*mut u8) -> abi::StringRef = rt_string_as_utf8;
     let _string_to_owned_utf8: extern "C" fn(*mut u8) -> abi::StringRef = rt_string_to_owned_utf8;
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
+    let _lookup_interned: extern "C" fn(abi::InternedId) -> abi::StringRef = rt_string_lookup;
     let _pin_interned: extern "C" fn(abi::InternedId) = rt_string_pin_interned;
-    let _lookup_interned: unsafe extern "C" fn(abi::InternedId, *mut abi::StringRef) -> bool = rt_string_lookup;
+    let _lookup_interned_pinned: unsafe extern "C" fn(abi::InternedId, *mut abi::StringRef) -> bool =
+      rt_string_lookup_pinned;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
     let _spawn_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn_rooted;
     let _spawn_promise_legacy: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =

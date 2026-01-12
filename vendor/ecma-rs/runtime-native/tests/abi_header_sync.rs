@@ -108,15 +108,16 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_io_register_with_drop(",
     "rt_io_update(",
      "rt_io_unregister(",
-     // Interned strings.
-     "rt_string_intern(",
-     "rt_string_pin_interned(",
-     "rt_string_lookup(",
-     // Legacy promise resolution ABI.
-     "rt_promise_resolve_into_legacy(",
-     "rt_promise_resolve_promise_legacy(",
-     "rt_promise_resolve_thenable_legacy(",
-     "rt_coro_await_value_legacy(",
+      // Interned strings.
+      "rt_string_intern(",
+      "rt_string_pin_interned(",
+      "rt_string_lookup(",
+      "rt_string_lookup_pinned(",
+      // Legacy promise resolution ABI.
+      "rt_promise_resolve_into_legacy(",
+      "rt_promise_resolve_promise_legacy(",
+      "rt_promise_resolve_thenable_legacy(",
+      "rt_coro_await_value_legacy(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -273,8 +274,12 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_string_intern;
   let _string_pin_interned: extern "C" fn(runtime_native::abi::InternedId) =
     runtime_native::rt_string_pin_interned;
-  let _string_lookup: unsafe extern "C" fn(runtime_native::abi::InternedId, *mut runtime_native::abi::StringRef) -> bool =
+  let _string_lookup: extern "C" fn(runtime_native::abi::InternedId) -> runtime_native::abi::StringRef =
     runtime_native::rt_string_lookup;
+  let _string_lookup_pinned: unsafe extern "C" fn(
+    runtime_native::abi::InternedId,
+    *mut runtime_native::abi::StringRef,
+  ) -> bool = runtime_native::rt_string_lookup_pinned;
 
   // Parallel → Promise bridge.
   let _parallel_spawn_promise: extern "C" fn(
@@ -501,6 +506,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _string_intern,
     _string_pin_interned,
     _string_lookup,
+    _string_lookup_pinned,
     _parallel_spawn_promise,
     _promise_init,
     _promise_fulfill,

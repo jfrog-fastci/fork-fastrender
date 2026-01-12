@@ -472,23 +472,37 @@ pub extern "C" fn rt_string_pin_interned(id: InternedId) {
   })
 }
 
-/// Look up the bytes for a pinned interned string ID.
+/// Lookup an interned string by stable ID.
+///
+/// Returns `{ptr = NULL, len = 0}` if the ID is invalid or the entry was reclaimed.
+#[no_mangle]
+pub extern "C" fn rt_string_lookup(id: InternedId) -> StringRef {
+  abort_on_panic(|| interner::lookup(id).unwrap_or(StringRef { ptr: ptr::null(), len: 0 }))
+}
+
+/// Look up the UTF-8 bytes for a pinned interned string ID.
+///
+/// This API is intended for callers that require a GC-stable byte pointer: pinned interned strings
+/// are stored out-of-line (owned by the interner) so their bytes are stable for the lifetime of the
+/// process.
 ///
 /// Returns false if `id` is invalid, was reclaimed, or is not pinned.
 ///
 /// # Safety
 /// `out` must be a valid, aligned pointer to a writable [`StringRef`].
 #[no_mangle]
-pub unsafe extern "C" fn rt_string_lookup(id: InternedId, out: *mut StringRef) -> bool {
+pub unsafe extern "C" fn rt_string_lookup_pinned(id: InternedId, out: *mut StringRef) -> bool {
   abort_on_panic(|| unsafe {
     if out.is_null() {
-      trap::rt_trap_invalid_arg("rt_string_lookup: `out` was null");
+      trap::rt_trap_invalid_arg("rt_string_lookup_pinned: `out` was null");
     }
 
     if let Some(s) = interner::lookup_pinned(id) {
       *out = s;
       true
     } else {
+      // Use a valid empty slice (non-null pointer) so callers can safely treat `out` as a slice even
+      // on failure (as long as they also check `len`).
       *out = StringRef::empty();
       false
     }

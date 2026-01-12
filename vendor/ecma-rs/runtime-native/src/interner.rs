@@ -354,7 +354,7 @@ pub(crate) fn pin_interned(id: InternedId) {
 ///
 /// IMPORTANT: For non-pinned entries this returns a `StringRef` into a GC-managed allocation. The
 /// returned `ptr` must not be kept across any operation that may GC/safepoint. Use
-/// [`lookup_pinned`] (or the stable `rt_string_lookup` ABI) when a GC-stable byte pointer is
+/// [`lookup_pinned`] (or the stable `rt_string_lookup_pinned` ABI) when a GC-stable byte pointer is
 /// required.
 #[allow(dead_code)] // Planned runtime API; currently used by tests and future debug tooling.
 pub(crate) fn lookup(id: InternedId) -> Option<StringRef> {
@@ -388,8 +388,8 @@ pub(crate) fn with_test_lock<T>(f: impl FnOnce() -> T) -> T {
 
 /// Resolve an interned ID back to a [`StringRef`], but only for pinned entries.
 ///
-/// This is the GC-safe lookup used by the stable `rt_string_lookup` ABI: pinned entries are stored
-/// as owned `Arc<[u8]>` outside the GC heap, so the returned `ptr` is stable across moving GC
+/// This is the GC-safe lookup used by the stable `rt_string_lookup_pinned` ABI: pinned entries are
+/// stored as owned `Arc<[u8]>` outside the GC heap, so the returned `ptr` is stable across moving GC
 /// cycles.
 pub(crate) fn lookup_pinned(id: InternedId) -> Option<StringRef> {
   ensure_thread_registered();

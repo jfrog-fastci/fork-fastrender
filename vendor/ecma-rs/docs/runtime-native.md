@@ -358,8 +358,9 @@ pub fn rt_string_len(s: GcPtr) -> usize;
 pub fn rt_string_as_utf8(s: GcPtr) -> StringRef;
 pub fn rt_string_to_owned_utf8(s: GcPtr) -> StringRef;
 pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
+pub fn rt_string_lookup(id: InternedId) -> StringRef;
 pub fn rt_string_pin_interned(id: InternedId);
-pub fn rt_string_lookup(id: InternedId, out: *mut StringRef) -> bool;
+pub fn rt_string_lookup_pinned(id: InternedId, out: *mut StringRef) -> bool;
 
 // Parallel
 pub fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId;
@@ -435,8 +436,9 @@ around `MayGC` calls (the runtime may safepoint/collect and relocate nursery obj
 | `rt_string_as_utf8` | NoGC | Returns a borrowed view into the GC heap (valid until next GC). |
 | `rt_string_to_owned_utf8` | NoGC | Allocates an owned UTF-8 `StringRef` outside the GC heap (must be freed via `rt_string_free` / `rt_stringref_free`). |
 | `rt_string_intern` | MayGC | May allocate/update interner tables. |
+| `rt_string_lookup` | MayGC | Looks up an interned string's bytes; returns `{ptr=NULL,len=0}` for invalid/reclaimed IDs. |
 | `rt_string_pin_interned` | MayGC | May allocate/promote and pin interned strings. |
-| `rt_string_lookup` | MayGC | Looks up a pinned interned string's bytes (writes to `out`; returns false for invalid/unpinned ids). |
+| `rt_string_lookup_pinned` | MayGC | Looks up a pinned interned string's bytes (writes to `out`; returns false for invalid/unpinned ids). |
 | `rt_parallel_spawn` | MayGC | May allocate task metadata / interact with scheduler. |
 | `rt_parallel_join` | MayGC | May block/safepoint while waiting. |
 | `rt_parallel_for` | MayGC | May spawn tasks and/or block while waiting. |
