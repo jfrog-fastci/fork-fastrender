@@ -94,6 +94,45 @@ fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmErro
   }
 }
 
+fn create_array_from_list(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  elements: &[Value],
+) -> Result<GcObject, VmError> {
+  // Mirror `CreateArrayFromList` enough for Proxy apply/construct trap dispatch:
+  // - allocate an Array exotic object
+  // - populate indices 0..len-1 via CreateDataProperty
+  //
+  // This intentionally skips full exotic Array semantics/invariants; those live elsewhere.
+  let mut scope = scope.reborrow();
+  let arr = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(arr))?;
+
+  if let Some(intr) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(arr, Some(intr.array_prototype()))?;
+  }
+
+  for (i, v) in elements.iter().copied().enumerate() {
+    if i % ARG_HANDLING_CHUNK_SIZE == 0 {
+      vm.tick()?;
+    }
+    let mut elem_scope = scope.reborrow();
+    elem_scope.push_root(Value::Object(arr))?;
+    elem_scope.push_root(v)?;
+    let key_s = elem_scope.alloc_string(&i.to_string())?;
+    elem_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    let ok = elem_scope.create_data_property(arr, key, v)?;
+    if !ok {
+      return Err(VmError::Unimplemented("CreateDataProperty returned false"));
+    }
+  }
+
+  Ok(arr)
+}
+
 /// A native (host-implemented) function call handler.
 pub type NativeCall = for<'a> fn(
   &mut Vm,
@@ -2053,6 +2092,109 @@ impl Vm {
         ));
       }
     };
+
+    // --- Proxy [[Call]] dispatch ---
+    //
+    // Callable Proxy objects are not `HeapObject::Function`, so `get_function_call_handler` would
+    // normally treat them as non-callable. Detect Proxy objects explicitly and follow the spec
+    // algorithm:
+    // - throw on revoked proxies
+    // - if `handler.apply` exists, call it
+    // - otherwise forward to `target`
+    let proxy_data = match scope.heap().get_proxy_data(callee_obj) {
+      Ok(d) => d,
+      Err(e) => {
+        self.tick()?;
+        let roots = [callee, this];
+        scope.push_roots_with_extra_roots(&roots, args, &[])?;
+        self.push_roots_with_ticks(&mut scope, args)?;
+        return Err(coerce_error_to_throw(self, &mut scope, e));
+      }
+    };
+    if let Some(proxy) = proxy_data {
+      // Construct a synthetic frame so revoked-proxy errors capture a stack.
+      let frame = StackFrame {
+        function: None,
+        source: Arc::<str>::from("<proxy>"),
+        line: 0,
+        col: 0,
+      };
+
+      let mut vm = self.enter_frame(frame)?;
+      vm.tick()?;
+
+      // Root all inputs robustly; see the ordinary function call path below for rationale.
+      let roots = [callee, this];
+      scope.push_roots_with_extra_roots(&roots, args, &[])?;
+      vm.push_roots_with_ticks(&mut scope, args)?;
+
+      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+        let err = VmError::TypeError("Cannot perform 'apply' on a proxy that has been revoked");
+        let err = coerce_error_to_throw(&vm, &mut scope, err);
+        return match err {
+          VmError::Throw(value) => Err(VmError::ThrowWithStack {
+            value,
+            stack: vm.capture_stack(),
+          }),
+          other => Err(other),
+        };
+      };
+
+      // Non-callable proxies do not have a `[[Call]]` internal method.
+      if !scope.heap().is_callable(Value::Object(target))? {
+        let err = coerce_error_to_throw(&vm, &mut scope, VmError::NotCallable);
+        return match err {
+          VmError::Throw(value) => Err(VmError::ThrowWithStack {
+            value,
+            stack: vm.capture_stack(),
+          }),
+          other => Err(other),
+        };
+      }
+
+      let apply_key_s = scope.alloc_string("apply")?;
+      scope.push_root(Value::String(apply_key_s))?;
+      let apply_key = PropertyKey::from_string(apply_key_s);
+
+      let trap = vm.get_method_with_host_and_hooks(host, &mut scope, hooks, Value::Object(handler), apply_key)?;
+      let result = match trap {
+        None => vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          Value::Object(target),
+          this,
+          args,
+        ),
+        Some(trap) => {
+          let arg_array = create_array_from_list(&mut vm, &mut scope, args)?;
+          let trap_args = [Value::Object(target), this, Value::Object(arg_array)];
+          vm.call_with_host_and_hooks(
+            host,
+            &mut scope,
+            hooks,
+            trap,
+            Value::Object(handler),
+            &trap_args,
+          )
+        }
+      };
+
+      // Capture a stack trace for thrown exceptions before the current frame is popped.
+      let result = match result {
+        Err(e) => Err(coerce_error_to_throw(&vm, &mut scope, e)),
+        Ok(v) => Ok(v),
+      };
+
+      return match result {
+        Err(VmError::Throw(value)) => Err(VmError::ThrowWithStack {
+          value,
+          stack: vm.capture_stack(),
+        }),
+        other => other,
+      };
+    }
+
     let call_handler = match scope.heap().get_function_call_handler(callee_obj) {
       Ok(h) => h,
       Err(e) => {
@@ -2496,6 +2638,112 @@ impl Vm {
         ));
       }
     };
+
+    // --- Proxy [[Construct]] dispatch ---
+    let proxy_data = match scope.heap().get_proxy_data(callee_obj) {
+      Ok(d) => d,
+      Err(e) => {
+        self.tick()?;
+        let roots = [callee, new_target];
+        scope.push_roots_with_extra_roots(&roots, args, &[])?;
+        self.push_roots_with_ticks(&mut scope, args)?;
+        return Err(coerce_error_to_throw(self, &mut scope, e));
+      }
+    };
+    if let Some(proxy) = proxy_data {
+      let frame = StackFrame {
+        function: None,
+        source: Arc::<str>::from("<proxy>"),
+        line: 0,
+        col: 0,
+      };
+
+      let mut vm = self.enter_frame(frame)?;
+      vm.tick()?;
+
+      // Root all inputs robustly; see the ordinary construct path below for rationale.
+      let roots = [callee, new_target];
+      scope.push_roots_with_extra_roots(&roots, args, &[])?;
+      vm.push_roots_with_ticks(&mut scope, args)?;
+
+      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+        let err = VmError::TypeError("Cannot perform 'construct' on a proxy that has been revoked");
+        let err = coerce_error_to_throw(&vm, &mut scope, err);
+        return match err {
+          VmError::Throw(value) => Err(VmError::ThrowWithStack {
+            value,
+            stack: vm.capture_stack(),
+          }),
+          other => Err(other),
+        };
+      };
+
+      // Non-constructable proxies do not have a `[[Construct]]` internal method.
+      if !scope.heap().is_constructor(Value::Object(target))? {
+        let err = coerce_error_to_throw(&vm, &mut scope, VmError::NotConstructable);
+        return match err {
+          VmError::Throw(value) => Err(VmError::ThrowWithStack {
+            value,
+            stack: vm.capture_stack(),
+          }),
+          other => Err(other),
+        };
+      }
+
+      let construct_key_s = scope.alloc_string("construct")?;
+      scope.push_root(Value::String(construct_key_s))?;
+      let construct_key = PropertyKey::from_string(construct_key_s);
+
+      let trap = vm.get_method_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        Value::Object(handler),
+        construct_key,
+      )?;
+
+      let result = match trap {
+        None => vm.construct_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          Value::Object(target),
+          args,
+          new_target,
+        ),
+        Some(trap) => {
+          let arg_array = create_array_from_list(&mut vm, &mut scope, args)?;
+          let trap_args = [Value::Object(target), Value::Object(arg_array), new_target];
+          let new_obj = vm.call_with_host_and_hooks(
+            host,
+            &mut scope,
+            hooks,
+            trap,
+            Value::Object(handler),
+            &trap_args,
+          )?;
+          match new_obj {
+            Value::Object(_) => Ok(new_obj),
+            _ => Err(VmError::TypeError("Proxy construct trap returned non-object")),
+          }
+        }
+      };
+
+      // Capture a stack trace for thrown exceptions before the current frame is popped.
+      let result = match result {
+        Err(e) => Err(coerce_error_to_throw(&vm, &mut scope, e)),
+        Ok(v) => Ok(v),
+      };
+
+      return match result {
+        Err(VmError::Throw(value)) => Err(VmError::ThrowWithStack {
+          value,
+          stack: vm.capture_stack(),
+        }),
+        other => other,
+      };
+    }
+
     let construct_handler = match scope.heap().get_function_construct_handler(callee_obj) {
       Ok(Some(h)) => h,
       Ok(None) => {

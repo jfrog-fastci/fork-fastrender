@@ -13420,11 +13420,13 @@ fn typeof_name(heap: &Heap, value: Value) -> Result<&'static str, VmError> {
     Value::BigInt(_) => "bigint",
     Value::String(_) => "string",
     Value::Symbol(_) => "symbol",
-    Value::Object(obj) => match heap.get_function_call_handler(obj) {
-      Ok(_) => "function",
-      Err(VmError::NotCallable) => "object",
-      Err(err) => return Err(err),
-    },
+    Value::Object(_) => {
+      if heap.is_callable(value)? {
+        "function"
+      } else {
+        "object"
+      }
+    }
   })
 }
 

@@ -111,10 +111,10 @@ fn is_callable(heap: &Heap, value: Value) -> Result<Option<GcObject>, VmError> {
     return Ok(None);
   };
 
-  match heap.get_function_call_handler(obj) {
-    Ok(_) => Ok(Some(obj)),
-    Err(VmError::NotCallable) => Ok(None),
-    Err(e) => Err(e),
+  if heap.is_callable(value)? {
+    Ok(Some(obj))
+  } else {
+    Ok(None)
   }
 }
 

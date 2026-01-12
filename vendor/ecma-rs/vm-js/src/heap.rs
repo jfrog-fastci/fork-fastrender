@@ -24,6 +24,16 @@ use std::collections::HashSet;
 /// embeddings (or unsafe internal helpers) can violate invariants.
 pub const MAX_PROTOTYPE_CHAIN: usize = 10_000;
 
+/// Lightweight copy of a Proxy's internal slots.
+///
+/// This exists so callers can query proxy state without holding a borrow of the underlying heap
+/// allocation across further heap operations (which may need `&mut Heap`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProxyData {
+  pub target: Option<GcObject>,
+  pub handler: Option<GcObject>,
+}
+
 /// Minimum non-zero capacity for heap-internal vectors that can grow due to hostile input.
 ///
 /// Keeping a small floor avoids pathological "grow by 1" patterns while still being conservative
@@ -1053,25 +1063,54 @@ impl Heap {
 
   /// Returns `true` if `value` is callable (i.e. has an ECMAScript `[[Call]]` internal method).
   pub fn is_callable(&self, value: Value) -> Result<bool, VmError> {
-    match value {
-      Value::Object(obj) => match self.get_heap_object(obj.0)? {
-        HeapObject::Function(_) => Ok(true),
-        _ => Ok(false),
-      },
-      _ => Ok(false),
+    let Value::Object(mut obj) = value else {
+      return Ok(false);
+    };
+
+    // Follow Proxy chains iteratively to avoid recursion.
+    for _ in 0..MAX_PROTOTYPE_CHAIN {
+      match self.get_heap_object(obj.0)? {
+        HeapObject::Function(_) => return Ok(true),
+        HeapObject::Proxy(p) => {
+          let (Some(target), Some(_handler)) = (p.target, p.handler) else {
+            // Revoked proxy.
+            return Ok(false);
+          };
+          obj = target;
+        }
+        _ => return Ok(false),
+      }
     }
+
+    // If we hit the hard traversal limit, treat it as non-callable rather than surfacing an
+    // internal error. (In particular, `typeof` must not throw.)
+    Ok(false)
   }
 
   /// Returns `true` if `value` is a constructor (i.e. has an ECMAScript `[[Construct]]` internal
   /// method).
   pub fn is_constructor(&self, value: Value) -> Result<bool, VmError> {
-    match value {
-      Value::Object(obj) => match self.get_heap_object(obj.0)? {
-        HeapObject::Function(f) => Ok(f.construct.is_some()),
-        _ => Ok(false),
-      },
-      _ => Ok(false),
+    let Value::Object(mut obj) = value else {
+      return Ok(false);
+    };
+
+    // Follow Proxy chains iteratively to avoid recursion.
+    for _ in 0..MAX_PROTOTYPE_CHAIN {
+      match self.get_heap_object(obj.0)? {
+        HeapObject::Function(f) => return Ok(f.construct.is_some()),
+        HeapObject::Proxy(p) => {
+          let (Some(target), Some(_handler)) = (p.target, p.handler) else {
+            // Revoked proxy.
+            return Ok(false);
+          };
+          obj = target;
+        }
+        _ => return Ok(false),
+      }
     }
+
+    // Avoid surfacing internal errors to user code; see `Heap::is_callable`.
+    Ok(false)
   }
 
   /// Calls `callee` with the provided `this` value and arguments.
@@ -3531,6 +3570,27 @@ impl Heap {
     }
   }
 
+  pub(crate) fn get_proxy_data(&self, obj: GcObject) -> Result<Option<ProxyData>, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::Proxy(p) => Ok(Some(ProxyData {
+        target: p.target,
+        handler: p.handler,
+      })),
+      _ => Ok(None),
+    }
+  }
+
+  pub(crate) fn proxy_revoke(&mut self, obj: GcObject) -> Result<(), VmError> {
+    match self.get_heap_object_mut(obj.0)? {
+      HeapObject::Proxy(p) => {
+        p.target = None;
+        p.handler = None;
+        Ok(())
+      }
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
   /// Returns the captured native slots for a function object.
   ///
   /// If the function has no native slots, this returns an empty slice.
@@ -3588,10 +3648,21 @@ impl Heap {
   }
 
   pub(crate) fn get_function_job_realm(&self, func: GcObject) -> Option<RealmId> {
-    match self.get_heap_object(func.0) {
-      Ok(HeapObject::Function(f)) => f.job_realm,
-      _ => None,
+    // Promise job callbacks may be Proxy objects; follow the proxy chain to the underlying target.
+    let mut obj = func;
+    for _ in 0..MAX_PROTOTYPE_CHAIN {
+      match self.get_heap_object(obj.0) {
+        Ok(HeapObject::Function(f)) => return f.job_realm,
+        Ok(HeapObject::Proxy(p)) => {
+          let (Some(target), Some(_handler)) = (p.target, p.handler) else {
+            return None;
+          };
+          obj = target;
+        }
+        _ => return None,
+      }
     }
+    None
   }
 
   pub(crate) fn get_function_closure_env(&self, func: GcObject) -> Result<Option<GcEnv>, VmError> {
@@ -4011,6 +4082,41 @@ impl<'a> Scope<'a> {
         .heap
         .alloc_unchecked(HeapObject::Object(obj), new_bytes)?,
     ))
+  }
+
+  /// Allocates a Proxy exotic object on the heap.
+  ///
+  /// If either `target` or `handler` is `None`, the Proxy is considered **revoked**.
+  pub fn alloc_proxy(
+    &mut self,
+    target: Option<GcObject>,
+    handler: Option<GcObject>,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `alloc_unchecked` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(target) = target {
+      if !scope.heap.is_valid_object(target) {
+        return Err(VmError::invalid_handle());
+      }
+      scope.push_root(Value::Object(target))?;
+    }
+    if let Some(handler) = handler {
+      if !scope.heap.is_valid_object(handler) {
+        return Err(VmError::invalid_handle());
+      }
+      scope.push_root(Value::Object(handler))?;
+    }
+
+    // Proxies have no heap-owned payload allocations today; they store only GC handles inline.
+    let new_bytes = 0usize;
+    scope.heap.ensure_can_allocate(new_bytes)?;
+    let obj = HeapObject::Proxy(JsProxy { target, handler });
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Revokes a Proxy exotic object by clearing its target and handler.
+  pub fn revoke_proxy(&mut self, proxy: GcObject) -> Result<(), VmError> {
+    self.heap.proxy_revoke(proxy)
   }
 
   /// Allocates a new `ArrayBuffer` object with `byte_length` zero-initialized bytes.
@@ -4771,6 +4877,7 @@ enum HeapObject {
   ArrayBuffer(JsArrayBuffer),
   Uint8Array(JsUint8Array),
   Function(JsFunction),
+  Proxy(JsProxy),
   Env(EnvRecord),
   Proxy(JsProxy),
   Promise(JsPromise),
@@ -4785,6 +4892,7 @@ impl Trace for HeapObject {
       HeapObject::ArrayBuffer(b) => b.trace(tracer),
       HeapObject::Uint8Array(a) => a.trace(tracer),
       HeapObject::Function(f) => f.trace(tracer),
+      HeapObject::Proxy(p) => p.trace(tracer),
       HeapObject::Env(e) => e.trace(tracer),
       HeapObject::Proxy(p) => p.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
@@ -4821,6 +4929,23 @@ impl Trace for JsSymbol {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     if let Some(desc) = self.description() {
       tracer.trace_heap_id(desc.0);
+    }
+  }
+}
+
+#[derive(Debug)]
+struct JsProxy {
+  target: Option<GcObject>,
+  handler: Option<GcObject>,
+}
+
+impl Trace for JsProxy {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    if let Some(target) = self.target {
+      tracer.trace_value(Value::Object(target));
+    }
+    if let Some(handler) = self.handler {
+      tracer.trace_value(Value::Object(handler));
     }
   }
 }
