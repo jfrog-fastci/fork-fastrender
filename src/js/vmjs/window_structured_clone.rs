@@ -38,7 +38,6 @@ pub(crate) const STRUCTURED_CLONE_REALM_ID_SLOT: usize = 1;
 //
 // These are not spec-defined; they are hard caps to keep structured cloning safe under hostile
 // inputs.
-const MAX_RECURSION_DEPTH: usize = 256;
 const MAX_VISITED_NODES: usize = 100_000;
 const MAX_ENUMERABLE_PROPS: usize = 1_000_000;
 const MAX_COPIED_BYTES: usize = 32 * 1024 * 1024; // 32MiB (copied ArrayBuffer/Blob bytes only)
@@ -401,6 +400,7 @@ impl SerializeState {
     if self.nodes.len() >= MAX_VISITED_NODES {
       return Err(throw_range_error(vm, scope, "structuredClone: max object count exceeded"));
     }
+    self.nodes.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     self.nodes.push(node);
     Ok(self.nodes.len() - 1)
   }
@@ -495,7 +495,7 @@ fn structured_clone_native(
     error_message_key,
     markers,
   );
-  let root = serialize_value(vm, &mut scope, host, hooks, &mut state, value, 0)?;
+  let root = serialize_value_iterative(vm, &mut scope, host, hooks, &mut state, value)?;
 
   // --- Transfer/detach transfer list buffers (must not run on DataCloneError paths) ---
   let transfer_data = prepare_transfer_list_buffers(vm, &mut scope, global, &transfer_list, &state.nodes)?;
@@ -509,7 +509,7 @@ fn structured_clone_native(
     clones: HashMap::new(),
     transfer_data,
   };
-  deserialize_value(vm, &mut scope, &mut deser, callee, root, 0)
+  deserialize_value_iterative(vm, &mut scope, &mut deser, callee, root)
 }
 
 fn prepare_cached_keys(scope: &mut Scope<'_>) -> Result<(PropertyKey, PropertyKey, PropertyKey), VmError> {
@@ -634,37 +634,103 @@ fn parse_transfer_list(
   Ok(out)
 }
 
-fn serialize_value(
+#[derive(Debug)]
+struct SerializeFrame {
+  obj: GcObject,
+  node_id: NodeId,
+  keys: Vec<PropertyKey>,
+  next_key_idx: usize,
+}
+
+fn serialize_value_iterative(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   state: &mut SerializeState,
   value: Value,
-  depth: usize,
 ) -> Result<EncodedValue, VmError> {
-  if depth > MAX_RECURSION_DEPTH {
-    return Err(throw_range_error(
-      vm,
-      scope,
-      "structuredClone: max recursion depth exceeded",
-    ));
+  let (root, root_frame) = serialize_value_shallow(vm, scope, host, hooks, state, value)?;
+  let mut stack: Vec<SerializeFrame> = Vec::new();
+  if let Some(frame) = root_frame {
+    stack.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    stack.push(frame);
   }
 
+  'frames: while let Some(mut frame) = stack.pop() {
+    // Tick once per frame so even empty objects participate in budget/interrupt checks.
+    vm.tick()?;
+
+    while frame.next_key_idx < frame.keys.len() {
+      // Tick at least once per processed property so a large clone can't bypass budgets.
+      vm.tick()?;
+
+      let key = frame.keys[frame.next_key_idx];
+      frame.next_key_idx += 1;
+
+      let PropertyKey::String(key_s) = key else {
+        continue;
+      };
+
+      let Some(desc) = scope
+        .heap()
+        .object_get_own_property_with_tick(frame.obj, &key, || vm.tick())?
+      else {
+        continue;
+      };
+      if !desc.enumerable {
+        continue;
+      }
+
+      state.count_prop(vm, scope)?;
+
+      // `Get` can invoke user code, but `vm-js` roots the key for the duration of the operation.
+      let prop_val = vm.get_with_host_and_hooks(host, scope, hooks, frame.obj, key)?;
+      let (encoded, child_frame) = serialize_value_shallow(vm, scope, host, hooks, state, prop_val)?;
+
+      match state.nodes.get_mut(frame.node_id) {
+        Some(Node::Array { props, .. } | Node::Object { props }) => props.push((key_s, encoded)),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      }
+
+      if let Some(child_frame) = child_frame {
+        // Depth-first traversal: resume this frame after we serialize the nested object.
+        stack.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
+        stack.push(frame);
+        stack.push(child_frame);
+        continue 'frames;
+      }
+    }
+  }
+
+  Ok(root)
+}
+
+fn serialize_value_shallow(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  state: &mut SerializeState,
+  value: Value,
+) -> Result<(EncodedValue, Option<SerializeFrame>), VmError> {
   match value {
     Value::Undefined
     | Value::Null
     | Value::Bool(_)
     | Value::Number(_)
     | Value::BigInt(_)
-    | Value::String(_) => Ok(EncodedValue::Primitive(value)),
+    | Value::String(_) => Ok((EncodedValue::Primitive(value), None)),
     Value::Symbol(_) => Err(throw_data_clone_error(
       vm,
       scope,
       state.global,
       "structuredClone: cannot clone Symbol",
     )),
-    Value::Object(obj) => serialize_object(vm, scope, host, hooks, state, obj, depth),
+    Value::Object(obj) => {
+      let (id, frame) = serialize_object_shallow(vm, scope, host, hooks, state, obj)?;
+      Ok((EncodedValue::Object(id), frame))
+    }
   }
 }
 
@@ -765,81 +831,113 @@ fn error_kind_for_object(
   Ok(None)
 }
 
-fn serialize_enumerable_own_string_keys_into_node(
+fn serialize_array_buffer_object(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
   state: &mut SerializeState,
   obj: GcObject,
-  depth: usize,
-  node_id: NodeId,
-) -> Result<(), VmError> {
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(obj))?;
+) -> Result<NodeId, VmError> {
+  if let Some(id) = state.object_to_id.get(&obj).copied() {
+    return Ok(id);
+  }
 
-  let keys = scope.heap().own_property_keys(obj)?;
-  for (i, key) in keys.iter().copied().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
+  if scope.heap().is_detached_array_buffer(obj).unwrap_or(false) {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone detached ArrayBuffer",
+    ));
+  }
 
-    let PropertyKey::String(key_s) = key else {
-      continue;
+  let transferred = state.transfer_set.contains(&obj);
+
+  // Insert the node ID eagerly so cycles/duplicates resolve.
+  let id = state.push_node(
+    Node::ArrayBuffer {
+      source: obj,
+      transferred,
+      bytes: None,
+    },
+    vm,
+    scope,
+  )?;
+  state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+  state.object_to_id.insert(obj, id);
+
+  if !transferred {
+    const INVALID_BACKING_STORE_MSG: &str = "structuredClone: invalid ArrayBuffer backing store";
+    // Avoid holding a borrowed slice from `heap` across `state.add_copied_bytes`, which needs a
+    // mutable borrow of `scope` to allocate errors.
+    let bytes_len = match scope.heap().array_buffer_data(obj) {
+      Ok(bytes) => bytes.len(),
+      Err(_) => {
+        return Err(throw_data_clone_error(
+          vm,
+          scope,
+          state.global,
+          INVALID_BACKING_STORE_MSG,
+        ));
+      }
     };
+    state.add_copied_bytes(vm, scope, bytes_len)?;
 
-    let Some(desc) = scope
-      .heap()
-      .object_get_own_property_with_tick(obj, &key, || vm.tick())?
-    else {
-      continue;
+    let mut out: Vec<u8> = Vec::new();
+    out
+      .try_reserve_exact(bytes_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let bytes = match scope.heap().array_buffer_data(obj) {
+      Ok(bytes) => bytes,
+      Err(_) => {
+        return Err(throw_data_clone_error(
+          vm,
+          scope,
+          state.global,
+          INVALID_BACKING_STORE_MSG,
+        ));
+      }
     };
-    if !desc.enumerable {
-      continue;
-    }
+    out.extend_from_slice(bytes);
 
-    state.count_prop(vm, &mut scope)?;
-
-    // Root key while we perform `Get`, which can invoke user code.
-    scope.push_root(Value::String(key_s))?;
-    let prop_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, key)?;
-    let encoded = serialize_value(vm, &mut scope, host, hooks, state, prop_val, depth + 1)?;
-
-    match state.nodes.get_mut(node_id) {
-      Some(Node::Array { props, .. } | Node::Object { props }) => props.push((key_s, encoded)),
-      _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+    // Populate the node payload.
+    if let Some(Node::ArrayBuffer { bytes: slot, .. }) = state.nodes.get_mut(id) {
+      *slot = Some(out);
     }
   }
 
-  Ok(())
+  Ok(id)
 }
 
-fn serialize_object(
+fn serialize_object_shallow(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   state: &mut SerializeState,
   obj: GcObject,
-  depth: usize,
-) -> Result<EncodedValue, VmError> {
+) -> Result<(NodeId, Option<SerializeFrame>), VmError> {
   if let Some(id) = state.object_to_id.get(&obj).copied() {
-    return Ok(EncodedValue::Object(id));
+    return Ok((id, None));
   }
+
+  // Root the source object for the remainder of the clone so any serialized `Gc*` handles (e.g.
+  // property keys) remain valid through deserialization.
+  scope.push_root(Value::Object(obj))?;
 
   fn try_serialize_blob_object(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     state: &mut SerializeState,
     obj: GcObject,
-  ) -> Result<Option<EncodedValue>, VmError> {
+  ) -> Result<Option<NodeId>, VmError> {
     let Some(data) = clone_blob_data_for_fetch(vm, scope.heap(), Value::Object(obj))? else {
       return Ok(None);
     };
     state.add_copied_bytes(vm, scope, data.bytes.len())?;
     let id = state.push_node(Node::Blob { data: Some(data) }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
-    Ok(Some(EncodedValue::Object(id)))
+    Ok(Some(id))
   }
 
   // Reject platform objects branded via `HostSlots` (e.g. DOM helper interface objects).
@@ -848,8 +946,8 @@ fn serialize_object(
   // `RegExp`), so use a defensive wrapper.
   if is_platform_object(scope, obj)? {
     // `Blob` is a platform object but structured-cloneable; allow it even if `HostSlots`-branded.
-    if let Some(encoded) = try_serialize_blob_object(vm, scope, state, obj)? {
-      return Ok(encoded);
+    if let Some(id) = try_serialize_blob_object(vm, scope, state, obj)? {
+      return Ok((id, None));
     }
     return Err(throw_data_clone_error(
       vm,
@@ -913,70 +1011,8 @@ fn serialize_object(
 
   // ArrayBuffer.
   if scope.heap().is_array_buffer_object(obj) {
-    if scope.heap().is_detached_array_buffer(obj).unwrap_or(false) {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        state.global,
-        "structuredClone: cannot clone detached ArrayBuffer",
-      ));
-    }
-
-    let transferred = state.transfer_set.contains(&obj);
-
-    // Insert the node ID eagerly so cycles/duplicates resolve.
-    let id = state.push_node(
-      Node::ArrayBuffer {
-        source: obj,
-        transferred,
-        bytes: None,
-      },
-      vm,
-      scope,
-    )?;
-    state.object_to_id.insert(obj, id);
-
-    if !transferred {
-      const INVALID_BACKING_STORE_MSG: &str = "structuredClone: invalid ArrayBuffer backing store";
-      // Avoid holding a borrowed slice from `heap` across `state.add_copied_bytes`, which needs a
-      // mutable borrow of `scope` to allocate errors.
-      let bytes_len = match scope.heap().array_buffer_data(obj) {
-        Ok(bytes) => bytes.len(),
-        Err(_) => {
-          return Err(throw_data_clone_error(
-            vm,
-            scope,
-            state.global,
-            INVALID_BACKING_STORE_MSG,
-          ));
-        }
-      };
-      state.add_copied_bytes(vm, scope, bytes_len)?;
-
-      let mut out: Vec<u8> = Vec::new();
-      out
-        .try_reserve_exact(bytes_len)
-        .map_err(|_| VmError::OutOfMemory)?;
-      let bytes = match scope.heap().array_buffer_data(obj) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-          return Err(throw_data_clone_error(
-            vm,
-            scope,
-            state.global,
-            INVALID_BACKING_STORE_MSG,
-          ));
-        }
-      };
-      out.extend_from_slice(bytes);
-
-      // Populate the node payload.
-      if let Some(Node::ArrayBuffer { bytes: slot, .. }) = state.nodes.get_mut(id) {
-        *slot = Some(out);
-      }
-    }
-
-    return Ok(EncodedValue::Object(id));
+    let id = serialize_array_buffer_object(vm, scope, state, obj)?;
+    return Ok((id, None));
   }
 
   // Uint8Array.
@@ -1029,20 +1065,10 @@ fn serialize_object(
     }
 
     // Ensure the buffer is serialized before creating the view node (for easier deserialization).
-    let buffer_encoded = serialize_value(
-      vm,
-      scope,
-      host,
-      hooks,
-      state,
-      Value::Object(buffer_obj),
-      depth + 1,
-    )?;
-    let EncodedValue::Object(buffer_id) = buffer_encoded else {
-      return Err(VmError::InvariantViolation(
-        "ArrayBuffer must serialize to an object node",
-      ));
-    };
+    if !state.object_to_id.contains_key(&buffer_obj) {
+      scope.push_root(Value::Object(buffer_obj))?;
+    }
+    let buffer_id = serialize_array_buffer_object(vm, scope, state, buffer_obj)?;
 
     let id = state.push_node(
       Node::Uint8Array {
@@ -1053,16 +1079,18 @@ fn serialize_object(
       vm,
       scope,
     )?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
 
-    return Ok(EncodedValue::Object(id));
+    return Ok((id, None));
   }
 
   // Date.
   if let Some(time) = scope.heap().date_value(obj)? {
     let id = state.push_node(Node::Date { time }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
-    return Ok(EncodedValue::Object(id));
+    return Ok((id, None));
   }
 
   // RegExp.
@@ -1082,13 +1110,14 @@ fn serialize_object(
       vm,
       scope,
     )?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
-    return Ok(EncodedValue::Object(id));
+    return Ok((id, None));
   }
 
   // Blob.
-  if let Some(encoded) = try_serialize_blob_object(vm, scope, state, obj)? {
-    return Ok(encoded);
+  if let Some(id) = try_serialize_blob_object(vm, scope, state, obj)? {
+    return Ok((id, None));
   }
 
   // Boxed Symbol objects.
@@ -1117,8 +1146,9 @@ fn serialize_object(
     .object_get_own_data_property_value(obj, &boolean_marker_key)?
   {
     let id = state.push_node(Node::BooleanObject { value: b }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
-    return Ok(EncodedValue::Object(id));
+    return Ok((id, None));
   }
 
   let number_marker_key = PropertyKey::from_symbol(state.markers.number_data);
@@ -1127,8 +1157,9 @@ fn serialize_object(
     .object_get_own_data_property_value(obj, &number_marker_key)?
   {
     let id = state.push_node(Node::NumberObject { value: n }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
-    return Ok(EncodedValue::Object(id));
+    return Ok((id, None));
   }
 
   let string_marker_key = PropertyKey::from_symbol(state.markers.string_data);
@@ -1137,8 +1168,9 @@ fn serialize_object(
     .object_get_own_data_property_value(obj, &string_marker_key)?
   {
     let id = state.push_node(Node::StringObject { value: s }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
-    return Ok(EncodedValue::Object(id));
+    return Ok((id, None));
   }
 
   let bigint_marker_key = PropertyKey::from_symbol(state.markers.bigint_data);
@@ -1147,8 +1179,9 @@ fn serialize_object(
     .object_get_own_data_property_value(obj, &bigint_marker_key)?
   {
     let id = state.push_node(Node::BigIntObject { value: v }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
-    return Ok(EncodedValue::Object(id));
+    return Ok((id, None));
   }
 
   // Error objects.
@@ -1190,8 +1223,9 @@ fn serialize_object(
         vm,
         scope,
       )?;
+      state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.object_to_id.insert(obj, id);
-      return Ok(EncodedValue::Object(id));
+      return Ok((id, None));
     }
   }
 
@@ -1226,7 +1260,7 @@ fn serialize_object(
   // Array / ordinary object.
   let is_array = scope.heap().object_is_array(obj)?;
 
-  let placeholder_id = if is_array {
+  if is_array {
     let length_val = scope
       .heap()
       .object_get_own_data_property_value(obj, &state.uint8_length_key)?
@@ -1255,24 +1289,38 @@ fn serialize_object(
       ));
     }
     let length = length_n as u32;
-    state.push_node(Node::Array { length, props: Vec::new() }, vm, scope)?
-  } else {
-    state.push_node(Node::Object { props: Vec::new() }, vm, scope)?
+    let keys = scope.heap().own_property_keys(obj)?;
+    let mut props: Vec<(GcString, EncodedValue)> = Vec::new();
+    props
+      .try_reserve_exact(keys.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    let id = state.push_node(Node::Array { length, props }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    state.object_to_id.insert(obj, id);
+    let frame = SerializeFrame {
+      obj,
+      node_id: id,
+      keys,
+      next_key_idx: 0,
+    };
+    return Ok((id, Some(frame)));
   };
-  state.object_to_id.insert(obj, placeholder_id);
 
-  serialize_enumerable_own_string_keys_into_node(
-    vm,
-    scope,
-    host,
-    hooks,
-    state,
+  let keys = scope.heap().own_property_keys(obj)?;
+  let mut props: Vec<(GcString, EncodedValue)> = Vec::new();
+  props
+    .try_reserve_exact(keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  let id = state.push_node(Node::Object { props }, vm, scope)?;
+  state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+  state.object_to_id.insert(obj, id);
+  let frame = SerializeFrame {
     obj,
-    depth,
-    placeholder_id,
-  )?;
-
-  Ok(EncodedValue::Object(placeholder_id))
+    node_id: id,
+    keys,
+    next_key_idx: 0,
+  };
+  Ok((id, Some(frame)))
 }
 
 fn prepare_transfer_list_buffers(
@@ -1376,45 +1424,96 @@ fn prepare_transfer_list_buffers(
   Ok(out)
 }
 
-fn deserialize_value(
+#[derive(Debug)]
+struct DeserializeFrame {
+  dst: GcObject,
+  props: Vec<(GcString, EncodedValue)>,
+  next_prop_idx: usize,
+}
+
+fn deserialize_value_iterative(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   state: &mut DeserializeState,
   callee: GcObject,
   value: EncodedValue,
-  depth: usize,
 ) -> Result<Value, VmError> {
-  if depth > MAX_RECURSION_DEPTH {
-    return Err(throw_range_error(
-      vm,
-      scope,
-      "structuredClone: max recursion depth exceeded",
-    ));
+  let (root, root_frame) = deserialize_value_shallow(vm, scope, state, callee, value)?;
+  let mut stack: Vec<DeserializeFrame> = Vec::new();
+  if let Some(frame) = root_frame {
+    stack.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    stack.push(frame);
   }
 
+  'frames: while let Some(mut frame) = stack.pop() {
+    vm.tick()?;
+
+    while frame.next_prop_idx < frame.props.len() {
+      vm.tick()?;
+      let (key_s, val) = frame.props[frame.next_prop_idx];
+      frame.next_prop_idx += 1;
+
+      let (cloned_val, child_frame) = deserialize_value_shallow(vm, scope, state, callee, val)?;
+      let key = PropertyKey::from_string(key_s);
+      scope.define_property(
+        frame.dst,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: cloned_val,
+            writable: true,
+          },
+        },
+      )?;
+
+      if let Some(child_frame) = child_frame {
+        // Depth-first traversal: populate nested objects before continuing with sibling properties.
+        stack.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
+        stack.push(frame);
+        stack.push(child_frame);
+        continue 'frames;
+      }
+    }
+  }
+
+  Ok(root)
+}
+
+fn deserialize_value_shallow(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  state: &mut DeserializeState,
+  callee: GcObject,
+  value: EncodedValue,
+) -> Result<(Value, Option<DeserializeFrame>), VmError> {
   match value {
-    EncodedValue::Primitive(v) => Ok(v),
-    EncodedValue::Object(id) => Ok(Value::Object(deserialize_node(vm, scope, state, callee, id, depth)?)),
+    EncodedValue::Primitive(v) => Ok((v, None)),
+    EncodedValue::Object(id) => {
+      let (obj, frame) = deserialize_node_shallow(vm, scope, state, callee, id)?;
+      Ok((Value::Object(obj), frame))
+    }
   }
 }
 
-fn deserialize_node(
+fn deserialize_node_shallow(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   state: &mut DeserializeState,
   callee: GcObject,
   id: NodeId,
-  depth: usize,
-) -> Result<GcObject, VmError> {
+) -> Result<(GcObject, Option<DeserializeFrame>), VmError> {
   if let Some(obj) = state.clones.get(&id).copied() {
-    return Ok(obj);
+    return Ok((obj, None));
   }
 
   let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
     "structuredClone requires intrinsics (create a Realm first)",
   ))?;
 
-  // Allocate a placeholder object first (for cycle support), then populate.
+  // Allocate a placeholder object first (for cycle support), then (if needed) return a frame to
+  // populate its enumerable properties.
   let kind_tag = match state.nodes.get(id) {
     Some(Node::Array { .. }) => 1u8,
     Some(Node::Object { .. }) => 2u8,
@@ -1442,32 +1541,19 @@ fn deserialize_node(
       scope
         .heap_mut()
         .object_set_prototype(arr, Some(intr.array_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, arr);
 
       let props = match state.nodes.get_mut(id) {
         Some(Node::Array { props, .. }) => std::mem::take(props),
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
-      for (i, (key_s, val)) in props.into_iter().enumerate() {
-        if i % 1024 == 0 {
-          vm.tick()?;
-        }
-        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
-        let key = PropertyKey::from_string(key_s);
-        scope.define_property(
-          arr,
-          key,
-          PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: cloned_val,
-              writable: true,
-            },
-          },
-        )?;
-      }
-      arr
+      let frame = DeserializeFrame {
+        dst: arr,
+        props,
+        next_prop_idx: 0,
+      };
+      return Ok((arr, Some(frame)));
     }
     2 => {
       let obj = scope.alloc_object()?;
@@ -1475,32 +1561,19 @@ fn deserialize_node(
       scope
         .heap_mut()
         .object_set_prototype(obj, Some(intr.object_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, obj);
 
       let props = match state.nodes.get_mut(id) {
         Some(Node::Object { props }) => std::mem::take(props),
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
-      for (i, (key_s, val)) in props.into_iter().enumerate() {
-        if i % 1024 == 0 {
-          vm.tick()?;
-        }
-        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
-        let key = PropertyKey::from_string(key_s);
-        scope.define_property(
-          obj,
-          key,
-          PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: cloned_val,
-              writable: true,
-            },
-          },
-        )?;
-      }
-      obj
+      let frame = DeserializeFrame {
+        dst: obj,
+        props,
+        next_prop_idx: 0,
+      };
+      return Ok((obj, Some(frame)));
     }
     3 => {
       // ArrayBuffer.
@@ -1513,7 +1586,7 @@ fn deserialize_node(
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
 
-      if transferred {
+      let ab = if transferred {
         let dst = state
           .transfer_data
           .remove(&source)
@@ -1523,7 +1596,9 @@ fn deserialize_node(
         scope
           .heap_mut()
           .object_set_prototype(dst, Some(intr.array_buffer_prototype()))?;
-        state.clones.insert(id, dst);
+        // Root defensively: transfer list buffers were pre-rooted, but keeping this local invariant
+        // makes deserialization safer if transfer handling changes in the future.
+        scope.push_root(Value::Object(dst))?;
         dst
       } else {
         let data_vec =
@@ -1534,9 +1609,12 @@ fn deserialize_node(
         scope
           .heap_mut()
           .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-        state.clones.insert(id, ab);
         ab
-      }
+      };
+
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      state.clones.insert(id, ab);
+      ab
     }
     4 => {
       // Uint8Array.
@@ -1548,13 +1626,19 @@ fn deserialize_node(
         }) => (*buffer, *byte_offset, *length),
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
-      let buffer_obj = deserialize_node(vm, scope, state, callee, buffer_id, depth + 1)?;
+      let (buffer_obj, buffer_frame) = deserialize_node_shallow(vm, scope, state, callee, buffer_id)?;
+      if buffer_frame.is_some() {
+        return Err(VmError::InvariantViolation(
+          "structuredClone Uint8Array buffer must not require property population",
+        ));
+      }
 
       let view = scope.alloc_uint8_array(buffer_obj, byte_offset, length)?;
       scope.push_root(Value::Object(view))?;
       scope
         .heap_mut()
         .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, view);
       view
     }
@@ -1569,6 +1653,7 @@ fn deserialize_node(
       scope
         .heap_mut()
         .object_set_prototype(date, Some(intr.date_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, date);
       date
     }
@@ -1592,6 +1677,7 @@ fn deserialize_node(
 
       let blob_obj = create_blob_with_proto(vm, scope, callee, proto, data)?;
       scope.push_root(Value::Object(blob_obj))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, blob_obj);
       blob_obj
     }
@@ -1607,6 +1693,7 @@ fn deserialize_node(
       scope
         .heap_mut()
         .object_set_prototype(obj, Some(intr.boolean_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, obj);
 
       let marker_key = PropertyKey::from_symbol(state.markers.boolean_data);
@@ -1637,6 +1724,7 @@ fn deserialize_node(
       scope
         .heap_mut()
         .object_set_prototype(obj, Some(intr.number_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, obj);
 
       let marker_key = PropertyKey::from_symbol(state.markers.number_data);
@@ -1667,6 +1755,7 @@ fn deserialize_node(
       scope
         .heap_mut()
         .object_set_prototype(obj, Some(intr.string_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, obj);
 
       let marker_key = PropertyKey::from_symbol(state.markers.string_data);
@@ -1697,6 +1786,7 @@ fn deserialize_node(
       scope
         .heap_mut()
         .object_set_prototype(obj, Some(intr.bigint_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, obj);
 
       let marker_key = PropertyKey::from_symbol(state.markers.bigint_data);
@@ -1726,6 +1816,7 @@ fn deserialize_node(
       let obj = scope.alloc_error()?;
       scope.push_root(Value::Object(obj))?;
       scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, obj);
 
       let name_s = scope.alloc_string(name.as_str())?;
@@ -1766,13 +1857,14 @@ fn deserialize_node(
       scope
         .heap_mut()
         .object_set_prototype(re, Some(intr.regexp_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, re);
       re
     }
     _ => return Err(VmError::InvariantViolation("structuredClone invalid node kind tag")),
   };
 
-  Ok(obj)
+  Ok((obj, None))
 }
 
 fn throw_data_clone_error(vm: &mut Vm, scope: &mut Scope<'_>, global: GcObject, message: &str) -> VmError {

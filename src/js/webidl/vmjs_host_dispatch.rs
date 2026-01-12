@@ -3750,13 +3750,11 @@ mod tests {
 #[cfg(test)]
 mod element_dispatch_tests {
   use super::*;
-  use crate::dom2;
   use crate::js::dom_platform::DomInterface;
   use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
   use crate::js::{WindowHostState, WindowRealm, WindowRealmConfig};
   use selectors::context::QuirksMode;
   use std::any::Any;
-  use webidl_vm_js::host_from_hooks;
 
   #[derive(Default)]
   struct TestHooks {
@@ -3809,11 +3807,6 @@ mod element_dispatch_tests {
     let document_key = WeakGcObject::from(document_obj);
 
     let wrapper = {
-      // `DomPlatform` caches wrappers keyed by `(document, node_id)`; tests can use a synthetic
-      // document object as the key.
-      let document_obj = scope.alloc_object()?;
-      scope.push_root(Value::Object(document_obj))?;
-      let document_key = WeakGcObject::from(document_obj);
       let data = vm.user_data_mut::<WindowRealmUserData>().expect("user data");
       let platform = data.dom_platform_mut().expect("platform");
       platform.get_or_create_wrapper(&mut scope, document_key, div, DomInterface::Element)?
@@ -3983,7 +3976,7 @@ mod element_dispatch_tests {
     scope.push_root(Value::String(id_s))?;
     let id_value = Value::String(id_s);
 
-    let host_dispatch = host_from_hooks(hooks)?;
+    let host_dispatch = webidl_vm_js::host_from_hooks(hooks)?;
     host_dispatch.call_operation(
       vm,
       scope,
@@ -3997,7 +3990,8 @@ mod element_dispatch_tests {
 
   #[test]
   fn dom_dispatch_can_recover_dom_host_without_embedder_state() -> Result<(), VmError> {
-    let dom = dom2::parse_html("<!doctype html><html><body><div id=\"target\"></div></body></html>")
+    let dom =
+      crate::dom2::parse_html("<!doctype html><html><body><div id=\"target\"></div></body></html>")
       .expect("parse_html");
     let mut doc_host = DocumentHostState::new(dom);
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;

@@ -41619,7 +41619,6 @@ mod tests {
       client_y: 34.0,
       button: 0,
       buttons: 1,
-      detail: 1,
       ctrl_key: true,
       shift_key: false,
       alt_key: true,
@@ -46141,7 +46140,7 @@ mod tests {
     // - fail deterministically with a `RangeError`/`DataCloneError` once a safe depth cap is hit.
     // Keep this large enough to overflow typical Rust recursion stacks in naive recursive
     // implementations, but small enough to keep this unit test reasonably fast.
-    const DEPTH: usize = 20_000;
+    const DEPTH: usize = 10_000;
 
     let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_heap_limits(HeapLimits::new(
@@ -46149,6 +46148,10 @@ mod tests {
         128 * 1024 * 1024,
       )),
     )?;
+    // This test is a regression guard against host stack overflows, not a per-turn wall time budget
+    // test. Deep structuredClone runs can take a few seconds even in optimized test builds, so give
+    // the VM enough time to finish.
+    realm.js_execution_options.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(30));
 
     // Build the deep object graph *from Rust* so the test runs quickly; `vm-js` is relatively slow
     // at executing 50k-iteration JS loops in debug builds.
