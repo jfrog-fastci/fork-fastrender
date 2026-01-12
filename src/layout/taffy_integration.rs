@@ -1649,6 +1649,24 @@ mod tests {
     );
     assert_eq!(limit_two, 2);
 
+    // Values should be clamped to the supported range.
+    let clamped_low = with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_TAFFY_CACHE_LIMIT".to_string(),
+        "0".to_string(),
+      )]))),
+      || taffy_template_cache_limit(TaffyAdapterKind::Flex),
+    );
+    assert_eq!(clamped_low, MIN_TAFFY_CACHE_LIMIT);
+    let clamped_high = with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_TAFFY_CACHE_LIMIT".to_string(),
+        (MAX_TAFFY_CACHE_LIMIT + 1).to_string(),
+      )]))),
+      || taffy_template_cache_limit(TaffyAdapterKind::Flex),
+    );
+    assert_eq!(clamped_high, MAX_TAFFY_CACHE_LIMIT);
+
     // Adapter-specific overrides should take precedence over the global default.
     let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
       ("FASTR_TAFFY_CACHE_LIMIT".to_string(), "3".to_string()),
@@ -1660,6 +1678,18 @@ mod tests {
     let grid = with_runtime_toggles(toggles, || taffy_template_cache_limit(TaffyAdapterKind::Grid));
     assert_eq!(flex, 4);
     assert_eq!(grid, 3);
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_TAFFY_CACHE_LIMIT".to_string(), "3".to_string()),
+      ("FASTR_TAFFY_FLEX_CACHE_LIMIT".to_string(), "4".to_string()),
+      ("FASTR_TAFFY_GRID_CACHE_LIMIT".to_string(), "5".to_string()),
+    ])));
+    let flex = with_runtime_toggles(toggles.clone(), || {
+      taffy_template_cache_limit(TaffyAdapterKind::Flex)
+    });
+    let grid = with_runtime_toggles(toggles, || taffy_template_cache_limit(TaffyAdapterKind::Grid));
+    assert_eq!(flex, 4);
+    assert_eq!(grid, 5);
   }
 
   #[test]
