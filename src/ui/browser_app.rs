@@ -12,6 +12,23 @@ use url::Url;
 const DEBUG_LOG_CAPACITY: usize = 256;
 const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 
+fn progress_for_stage(stage: StageHeartbeat) -> f32 {
+  match stage {
+    StageHeartbeat::ReadCache => 1.0 / 12.0,
+    StageHeartbeat::FollowRedirects => 2.0 / 12.0,
+    StageHeartbeat::CssInline => 3.0 / 12.0,
+    StageHeartbeat::DomParse => 4.0 / 12.0,
+    StageHeartbeat::Script => 5.0 / 12.0,
+    StageHeartbeat::CssParse => 6.0 / 12.0,
+    StageHeartbeat::Cascade => 7.0 / 12.0,
+    StageHeartbeat::BoxTree => 8.0 / 12.0,
+    StageHeartbeat::Layout => 9.0 / 12.0,
+    StageHeartbeat::PaintBuild => 10.0 / 12.0,
+    StageHeartbeat::PaintRasterize => 11.0 / 12.0,
+    StageHeartbeat::Done => 1.0,
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatestFrameMeta {
   pub pixmap_px: (u32, u32),
@@ -117,6 +134,8 @@ pub struct BrowserTabState {
   /// Optional non-fatal warning for this tab (e.g. viewport clamping).
   pub warning: Option<String>,
   pub stage: Option<StageHeartbeat>,
+  pub load_stage: Option<StageHeartbeat>,
+  pub load_progress: Option<f32>,
   pub can_go_back: bool,
   pub can_go_forward: bool,
   /// Per-tab page zoom factor.
@@ -148,6 +167,8 @@ impl BrowserTabState {
       error: None,
       warning: None,
       stage: None,
+      load_stage: None,
+      load_progress: None,
       can_go_back: false,
       can_go_forward: false,
       zoom: crate::ui::zoom::DEFAULT_ZOOM,
@@ -208,6 +229,7 @@ impl BrowserTabState {
     self.error = None;
     self.title = None;
     self.stage = None;
+    self.reset_load_progress();
 
     Ok(UiToWorker::Navigate {
       tab_id: self.id,
@@ -218,6 +240,36 @@ impl BrowserTabState {
 
   pub fn debug_log(&self) -> impl Iterator<Item = &str> {
     self.debug_log.iter().map(String::as_str)
+  }
+
+  fn reset_load_progress(&mut self) {
+    self.load_stage = None;
+    self.load_progress = Some(0.0);
+  }
+
+  fn clear_load_progress(&mut self) {
+    self.load_stage = None;
+    self.load_progress = None;
+  }
+
+  fn update_load_progress_for_stage(&mut self, stage: StageHeartbeat) {
+    if !self.loading {
+      return;
+    }
+
+    let prev = self
+      .load_progress
+      .filter(|p| p.is_finite())
+      .map(|p| p.clamp(0.0, 1.0))
+      .unwrap_or(0.0);
+
+    let stage_progress = progress_for_stage(stage).clamp(0.0, 1.0);
+    let next = prev.max(stage_progress);
+
+    if stage_progress >= prev {
+      self.load_stage = Some(stage);
+    }
+    self.load_progress = Some(next);
   }
 
   fn push_debug_log(&mut self, line: String) {
@@ -549,6 +601,7 @@ impl BrowserAppState {
       tab.loading = true;
       tab.error = None;
       tab.stage = None;
+      tab.reset_load_progress();
     }
 
     Ok(normalized)
@@ -622,6 +675,7 @@ impl BrowserAppState {
       WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.stage = Some(stage);
+          tab.update_load_progress_for_stage(stage);
           update.request_redraw = true;
         }
       }
@@ -631,6 +685,7 @@ impl BrowserAppState {
           tab.loading = true;
           tab.error = None;
           tab.stage = None;
+          tab.reset_load_progress();
           tab.favicon_meta = None;
           tab.hovered_url = None;
           tab.cursor = CursorKind::Default;
@@ -656,6 +711,7 @@ impl BrowserAppState {
           tab.loading = false;
           tab.error = None;
           tab.stage = None;
+          tab.clear_load_progress();
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
           tab.hovered_url = None;
@@ -678,6 +734,7 @@ impl BrowserAppState {
           tab.loading = false;
           tab.error = Some(error);
           tab.stage = None;
+          tab.clear_load_progress();
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
           tab.title = None;
@@ -724,6 +781,13 @@ impl BrowserAppState {
       WorkerToUi::LoadingState { tab_id, loading } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.loading = loading;
+          if loading {
+            if tab.load_progress.is_none() {
+              tab.reset_load_progress();
+            }
+          } else {
+            tab.clear_load_progress();
+          }
         }
         update.request_redraw = true;
       }
@@ -1035,6 +1099,137 @@ mod browser_app_tests {
       app.closed_tabs.last().map(|t| t.url.as_str()),
       Some(expected_last.as_str())
     );
+  }
+
+  fn ordered_stage_heartbeats() -> [StageHeartbeat; 12] {
+    [
+      StageHeartbeat::ReadCache,
+      StageHeartbeat::FollowRedirects,
+      StageHeartbeat::CssInline,
+      StageHeartbeat::DomParse,
+      StageHeartbeat::Script,
+      StageHeartbeat::CssParse,
+      StageHeartbeat::Cascade,
+      StageHeartbeat::BoxTree,
+      StageHeartbeat::Layout,
+      StageHeartbeat::PaintBuild,
+      StageHeartbeat::PaintRasterize,
+      StageHeartbeat::Done,
+    ]
+  }
+
+  #[test]
+  fn progress_for_stage_is_monotonic_in_stage_order() {
+    let mut prev = 0.0;
+    for stage in ordered_stage_heartbeats() {
+      let p = progress_for_stage(stage);
+      assert!(p.is_finite());
+      assert!(p > prev, "expected progress to increase (prev={prev}, next={p})");
+      assert!(p >= 0.0);
+      assert!(p <= 1.0);
+      prev = p;
+    }
+    assert!((prev - 1.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn stage_ordering_produces_monotonic_load_progress() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    app.apply_worker_msg(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+    });
+
+    let mut prev = app.active_tab().unwrap().load_progress.unwrap();
+    assert!((prev - 0.0).abs() < 1e-6);
+
+    for stage in ordered_stage_heartbeats() {
+      app.apply_worker_msg(WorkerToUi::Stage { tab_id, stage });
+      let p = app.active_tab().unwrap().load_progress.unwrap();
+      assert!(
+        p + 1e-6 >= prev,
+        "expected load progress to be monotonic (prev={prev}, next={p}, stage={stage:?})"
+      );
+      prev = p;
+    }
+  }
+
+  #[test]
+  fn duplicate_stages_do_not_change_load_progress() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+    app.apply_worker_msg(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+    });
+
+    app.apply_worker_msg(WorkerToUi::Stage {
+      tab_id,
+      stage: StageHeartbeat::DomParse,
+    });
+    let p1 = app.active_tab().unwrap().load_progress.unwrap();
+
+    app.apply_worker_msg(WorkerToUi::Stage {
+      tab_id,
+      stage: StageHeartbeat::DomParse,
+    });
+    let p2 = app.active_tab().unwrap().load_progress.unwrap();
+
+    assert!((p2 - p1).abs() < 1e-6);
+  }
+
+  #[test]
+  fn out_of_order_stages_do_not_reduce_load_progress() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+    app.apply_worker_msg(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+    });
+
+    app.apply_worker_msg(WorkerToUi::Stage {
+      tab_id,
+      stage: StageHeartbeat::Layout,
+    });
+    let p1 = app.active_tab().unwrap().load_progress.unwrap();
+
+    // Regressing heartbeat must not reduce progress.
+    app.apply_worker_msg(WorkerToUi::Stage {
+      tab_id,
+      stage: StageHeartbeat::ReadCache,
+    });
+    let p2 = app.active_tab().unwrap().load_progress.unwrap();
+
+    assert!((p2 - p1).abs() < 1e-6);
+  }
+
+  #[test]
+  fn load_progress_resets_on_navigation_started() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    app.apply_worker_msg(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+    });
+    app.apply_worker_msg(WorkerToUi::Stage {
+      tab_id,
+      stage: StageHeartbeat::Layout,
+    });
+
+    let before = app.active_tab().unwrap().load_progress.unwrap();
+    assert!(before > 0.0);
+
+    app.apply_worker_msg(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: "https://second.example/".to_string(),
+    });
+
+    let tab = app.active_tab().unwrap();
+    assert_eq!(tab.load_stage, None);
+    assert_eq!(tab.load_progress, Some(0.0));
   }
 
   // Note: scroll restoration is worker-owned (see `ui::render_worker`), so the windowed UI state
