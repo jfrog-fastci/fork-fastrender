@@ -148,10 +148,7 @@ fn scalar_replace_preserves_literal_initializer_eval_order() {
 
   assert_eq!(program.functions.len(), 1, "expected one nested function");
   let func = &mut program.functions[0];
-  let cfg = func
-    .ssa_body
-    .as_mut()
-    .expect("expected SSA body to be preserved for analyses");
+  let cfg = &mut func.body;
 
   assert_eq!(count_object_allocs(cfg), 1, "expected allocation before replacement");
 

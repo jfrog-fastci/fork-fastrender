@@ -127,10 +127,7 @@ fn scalar_replace_eliminates_object_literal_and_field_ops() {
 
   assert_eq!(program.functions.len(), 1);
   let func = &mut program.functions[0];
-  let cfg = func
-    .ssa_body
-    .as_mut()
-    .expect("expected SSA body to be preserved for analyses");
+  let cfg = &mut func.body;
 
   assert_eq!(
     count_object_allocs(cfg),

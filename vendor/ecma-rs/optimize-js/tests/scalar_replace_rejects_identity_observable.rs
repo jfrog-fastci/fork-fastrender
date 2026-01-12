@@ -1,6 +1,7 @@
 use optimize_js::analysis::annotate_program;
 use optimize_js::il::inst::{Arg, InstTyp};
 use optimize_js::opt::optpass_scalar_replace::optpass_scalar_replace;
+use optimize_js::CompileCfgOptions;
 use optimize_js::TopLevelMode;
 
 fn count_object_allocs(cfg: &optimize_js::cfg::cfg::Cfg) -> usize {
@@ -17,7 +18,10 @@ fn count_object_allocs(cfg: &optimize_js::cfg::cfg::Cfg) -> usize {
 
 #[test]
 fn scalar_replace_rejects_strict_equality_identity_observation() {
-  let mut program = optimize_js::compile_source(
+  // `Program::compile*` runs scalar replacement on preserved SSA CFGs (`ssa_body`) as part of the
+  // whole-program metadata pipeline. To test `optpass_scalar_replace` directly, keep SSA in
+  // `ProgramFunction::body` so we can run the pass ourselves on the pre-scalar-replacement CFG.
+  let mut program = optimize_js::compile_source_with_cfg_options(
     r#"
       const f = () => {
         const a = { x: 1 };
@@ -29,6 +33,12 @@ fn scalar_replace_rejects_strict_equality_identity_observation() {
     "#,
     TopLevelMode::Module,
     false,
+    CompileCfgOptions {
+      keep_ssa: true,
+      // Avoid unrelated opt passes from rewriting the CFG under test.
+      run_opt_passes: false,
+      ..Default::default()
+    },
   )
   .expect("compile");
 
@@ -36,10 +46,7 @@ fn scalar_replace_rejects_strict_equality_identity_observation() {
 
   assert_eq!(program.functions.len(), 1, "expected one nested function");
   let func = &mut program.functions[0];
-  let cfg = func
-    .ssa_body
-    .as_mut()
-    .expect("expected SSA body to be preserved for analyses");
+  let cfg = &mut func.body;
 
   assert_eq!(
     count_object_allocs(cfg),
@@ -56,4 +63,3 @@ fn scalar_replace_rejects_strict_equality_identity_observation() {
     "expected allocations to remain when identity is observable"
   );
 }
-

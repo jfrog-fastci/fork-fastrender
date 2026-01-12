@@ -375,7 +375,6 @@ fn earlier_prop_assign_borrows_when_value_is_used_again() {
     top_level_mode: TopLevelMode::Module,
     symbols: None,
   };
-
   let analyses = annotate_program(&mut program);
   let cfg = program.functions[0].analyzed_cfg();
   let ownership = analyses

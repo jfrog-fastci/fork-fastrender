@@ -317,7 +317,7 @@ fn inlines_recursive_callees_once() {
     },
     false,
   );
-  assert!(pass.changed);
+  assert!(pass.changed, "expected recursive callee to be inlined once");
 
   let cfg = program.functions[0].ssa_body.as_ref().unwrap();
   let insts = collect_insts(cfg);

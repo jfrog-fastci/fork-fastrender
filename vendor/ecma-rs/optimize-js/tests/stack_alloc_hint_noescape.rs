@@ -2,6 +2,7 @@ use optimize_js::analysis::annotate_program;
 use optimize_js::analysis::escape::EscapeState;
 use optimize_js::il::inst::{Arg, InstTyp};
 use optimize_js::opt::optpass_scalar_replace::optpass_scalar_replace;
+use optimize_js::CompileCfgOptions;
 use optimize_js::TopLevelMode;
 
 fn find_object_alloc<'a>(
@@ -24,7 +25,10 @@ fn find_object_alloc<'a>(
 
 #[test]
 fn noescape_allocations_get_stack_alloc_candidate_hint() {
-  let mut program = optimize_js::compile_source(
+  // `Program::compile*` runs scalar replacement on preserved SSA CFGs (`ssa_body`) as part of the
+  // whole-program metadata pipeline. To test `optpass_scalar_replace` directly, keep SSA in
+  // `ProgramFunction::body` so we can run the pass ourselves on the pre-scalar-replacement CFG.
+  let mut program = optimize_js::compile_source_with_cfg_options(
     r#"
       function caller() {
         const o = {};
@@ -35,6 +39,12 @@ fn noescape_allocations_get_stack_alloc_candidate_hint() {
     "#,
     TopLevelMode::Module,
     false,
+    CompileCfgOptions {
+      keep_ssa: true,
+      // Avoid unrelated opt passes from rewriting the CFG under test.
+      run_opt_passes: false,
+      ..Default::default()
+    },
   )
   .expect("compile");
 
@@ -45,28 +55,14 @@ fn noescape_allocations_get_stack_alloc_candidate_hint() {
     .functions
     .iter()
     .position(|func| {
-      func
-        .ssa_body
-        .as_ref()
-        .and_then(|cfg| {
-          cfg
-            .bblocks
-            .all()
-            .flat_map(|(_, block)| block.iter())
-            .find(|inst| {
-              inst.t == InstTyp::Call
-                && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object")
-            })
-            .map(|_| ())
-        })
-        .is_some()
+      func.body.bblocks.all().flat_map(|(_, block)| block.iter()).any(|inst| {
+        inst.t == InstTyp::Call
+          && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object")
+      })
     })
     .expect("expected one function to contain an object allocation");
 
-  let cfg = program.functions[idx]
-    .ssa_body
-    .as_mut()
-    .expect("expected SSA cfg");
+  let cfg = &mut program.functions[idx].body;
 
   // The main compilation pipeline may already set `stack_alloc_candidate` on SSA bodies. Clear it so
   // this test continues to validate that `optpass_scalar_replace` can (re)apply the hint and report
