@@ -1039,6 +1039,27 @@ impl Heap {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::TypedArray(_)))
   }
 
+  /// Returns the `%TypedArray%.prototype[@@toStringTag]` name for `obj` when it is a typed array.
+  ///
+  /// This corresponds to the ECMA-262 `TypedArrayName` internal slot used by WebIDL overload
+  /// resolution and BufferSource conversions.
+  pub fn typed_array_name(&self, obj: GcObject) -> Option<&'static str> {
+    match self.get_heap_object(obj.0) {
+      Ok(HeapObject::TypedArray(arr)) => Some(match arr.kind {
+        TypedArrayKind::Int8 => "Int8Array",
+        TypedArrayKind::Uint8 => "Uint8Array",
+        TypedArrayKind::Uint8Clamped => "Uint8ClampedArray",
+        TypedArrayKind::Int16 => "Int16Array",
+        TypedArrayKind::Uint16 => "Uint16Array",
+        TypedArrayKind::Int32 => "Int32Array",
+        TypedArrayKind::Uint32 => "Uint32Array",
+        TypedArrayKind::Float32 => "Float32Array",
+        TypedArrayKind::Float64 => "Float64Array",
+      }),
+      Ok(_) | Err(_) => None,
+    }
+  }
+
   /// Returns `true` if `obj` currently points to a live DataView object allocation.
   pub fn is_data_view_object(&self, obj: GcObject) -> bool {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::DataView(_)))

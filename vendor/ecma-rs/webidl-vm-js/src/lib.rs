@@ -1427,6 +1427,12 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
   }
 
   fn is_array_buffer(&self, value: Self::Value) -> bool {
+    if let Value::Object(obj) = value {
+      if self.scope.heap().is_array_buffer_object(obj) {
+        return true;
+      }
+    }
+    // Allow embedder hooks to treat host objects as ArrayBuffers if needed.
     self.hooks.is_array_buffer(value)
   }
 
@@ -1434,12 +1440,18 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
     false
   }
 
-  fn is_data_view(&self, _value: Self::Value) -> bool {
-    false
+  fn is_data_view(&self, value: Self::Value) -> bool {
+    let Value::Object(obj) = value else {
+      return false;
+    };
+    self.scope.heap().is_data_view_object(obj)
   }
 
-  fn typed_array_name(&self, _value: Self::Value) -> Option<&'static str> {
-    None
+  fn typed_array_name(&self, value: Self::Value) -> Option<&'static str> {
+    let Value::Object(obj) = value else {
+      return None;
+    };
+    self.scope.heap().typed_array_name(obj)
   }
 }
 
