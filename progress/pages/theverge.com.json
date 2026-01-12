@@ -14,7 +14,7 @@
     "layout": 203.00690720512824,
     "paint": 83.00282412820515
   },
-  "notes": "",
+  "notes": "Visually good. Reconfirmed via fixture page-loop: remaining ~9% pixel diffs vs Chrome are dominated by text rasterization/hinting differences (no subpixel AA; high-contrast edges in the Top Stories list) plus minor 1-off per-pixel rounding noise; no structural layout/paint issues identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 89296,
