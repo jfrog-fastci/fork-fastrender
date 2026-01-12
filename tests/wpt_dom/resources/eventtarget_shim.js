@@ -1,10 +1,10 @@
-// Minimal EventTarget/Event polyfill for FastRender's offline WPT DOM corpus.
+// Legacy (unused) EventTarget/Event polyfill for FastRender's offline WPT DOM corpus.
 //
-// This is *not* a full WHATWG DOM implementation; it exists to keep the curated WPT corpus runnable
-// under the QuickJS backend while the real DOM bindings are still being wired up.
+// IMPORTANT: This file is currently **not loaded by the runner**.
+// The QuickJS WPT DOM runner injects an inline DOM+Events shim from:
+//   `crates/js-wpt-dom-runner/src/dom_shims.rs` (see `DOM_SHIM`).
 //
-// The polyfill is idempotent and will not override native `EventTarget`/`Event` if the backend
-// provides them.
+// This file is kept only for historical reference. Editing it will not affect test behavior.
 (function () {
   var g = typeof globalThis !== "undefined" ? globalThis : this;
   if (typeof g.EventTarget === "function" && typeof g.Event === "function") return;
@@ -154,4 +154,3 @@
   if (typeof g.Event !== "function") g.Event = Event;
   if (typeof g.EventTarget !== "function") g.EventTarget = EventTarget;
 })();
-
