@@ -88,6 +88,7 @@ impl ProgramState {
     def_ids.dedup();
 
     let max_passes = def_ids.len().max(1).min(64);
+    let mut any_changed = false;
     for _ in 0..max_passes {
       let mut changed = false;
       for def in def_ids.iter().copied() {
@@ -113,6 +114,11 @@ impl ProgramState {
       if !changed {
         break;
       }
+      any_changed = true;
+    }
+
+    if any_changed {
+      self.checker_caches.invalidate_shared();
     }
   }
 
