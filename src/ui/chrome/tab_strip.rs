@@ -1,4 +1,5 @@
 use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
+use crate::ui::a11y;
 use crate::ui::messages::TabId;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -103,6 +104,10 @@ fn tab_ui(
   let response = ui
     .interact(tab_rect, tab_id, Sense::click())
     .on_hover_text(title.as_str());
+  response.widget_info({
+    let title = title.clone();
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
+  });
 
   let visuals = ui.style().visuals.clone();
 
@@ -169,6 +174,10 @@ fn tab_ui(
     let close_resp = ui
       .interact(close_rect, close_id, Sense::click())
       .on_hover_text("Close tab (Ctrl/Cmd+W)");
+    close_resp.widget_info({
+      let label = format!("{}: {}", a11y::ChromeIconButton::CloseTab.label(), title);
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+    });
     close_clicked = close_resp.clicked();
 
     if close_resp.hovered() {
@@ -280,8 +289,12 @@ pub(super) fn tab_strip_ui(
   }
 
   // New tab button stays visible even when the tab list overflows.
-  let new_tab_resp =
-    ui.put(button_rect, egui::Button::new("+")).on_hover_text("New tab (Ctrl/Cmd+T)");
+  let new_tab_resp = ui
+    .put(button_rect, egui::Button::new("+"))
+    .on_hover_text("New tab (Ctrl/Cmd+T)");
+  new_tab_resp.widget_info(|| {
+    egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::ChromeIconButton::NewTab.label())
+  });
   if new_tab_resp.clicked() {
     actions.push(ChromeAction::NewTab);
   }
