@@ -3,6 +3,10 @@
 // Curated DOM EventTarget semantics checks. This file intentionally uses conservative JS syntax so
 // it can run on the minimal vm-js backend.
 
+test(function () {
+  assert_true(window instanceof EventTarget);
+}, "Window global object is an EventTarget");
+
 // --- capture/bubble ordering ---
 var eventtarget_capture_bubble_order_step = 0;
 

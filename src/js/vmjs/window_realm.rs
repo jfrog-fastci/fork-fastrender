@@ -19504,6 +19504,11 @@ fn init_window_globals(
     Some(platform) => platform.prototype_for(DomInterface::EventTarget),
     None => scope.alloc_object()?,
   };
+  // Make the realm global object (`window`) a real `EventTarget` by placing it on the same
+  // prototype chain as DOM wrappers (`Node`/`Document`).
+  scope
+    .heap_mut()
+    .object_set_prototype(global, Some(event_target_proto))?;
   scope.push_root(Value::Object(event_target_proto))?;
   scope.define_property(
     event_target_proto,
