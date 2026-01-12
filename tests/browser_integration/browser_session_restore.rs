@@ -70,15 +70,25 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   let dir = tempfile::tempdir().expect("temp dir");
   let session_path = dir.path().join("session.json");
 
-  // Provide a legacy v1 session payload and assert the browser upgrades it to the v2
-  // multi-window in-memory/session-file representation.
+  // Seed the session via the headless override hook, including a non-default appearance payload to
+  // ensure appearance settings are persisted/restored alongside tabs.
   let expected_json = r#"{
-    "tabs": [
-      {"url": "about:newtab", "zoom": 1.5},
-      {"url": "about:blank", "zoom": 0.75},
-      {"url": "about:test-scroll", "zoom": 2.0}
-    ],
-    "active_tab_index": 2
+    "version": 2,
+    "windows": [{
+      "tabs": [
+        {"url": "about:newtab", "zoom": 1.5},
+        {"url": "about:blank", "zoom": 0.75},
+        {"url": "about:test-scroll", "zoom": 2.0}
+      ],
+      "active_tab_index": 2
+    }],
+    "active_window_index": 0,
+    "appearance": {
+      "theme": "dark",
+      "high_contrast": true,
+      "reduced_motion": true,
+      "ui_scale": 1.25
+    }
   }"#;
   let expected_session = fastrender::ui::session::parse_session_json(expected_json)
     .expect("parse expected session JSON");
@@ -109,6 +119,29 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
     Some(2)
   );
   assert!(persisted_value.get("windows").is_some());
+  let appearance_value = persisted_value
+    .get("appearance")
+    .expect("expected persisted appearance settings");
+  assert_eq!(
+    appearance_value.get("theme").and_then(|v| v.as_str()),
+    Some("dark")
+  );
+  assert_eq!(
+    appearance_value
+      .get("high_contrast")
+      .and_then(|v| v.as_bool()),
+    Some(true)
+  );
+  assert_eq!(
+    appearance_value
+      .get("reduced_motion")
+      .and_then(|v| v.as_bool()),
+    Some(true)
+  );
+  assert_eq!(
+    appearance_value.get("ui_scale").and_then(|v| v.as_f64()),
+    Some(1.25)
+  );
   // Legacy v1 top-level keys should never be written.
   assert!(persisted_value.get("tabs").is_none());
   assert!(persisted_value.get("active_tab_index").is_none());
@@ -190,6 +223,10 @@ fn browser_restores_legacy_v1_session_file_and_upgrades_to_v2() {
   assert_eq!(restored.windows[0].tabs[0].zoom, Some(1.25));
   assert_eq!(restored.windows[0].tabs[1].url, "about:error");
   assert_eq!(restored.windows[0].tabs[1].zoom, Some(0.8));
+  assert_eq!(
+    restored.appearance,
+    fastrender::ui::appearance::AppearanceSettings::default()
+  );
 
   // The browser should rewrite the session file in the new v2 format.
   let disk_json = std::fs::read_to_string(&session_path).expect("read upgraded session file");

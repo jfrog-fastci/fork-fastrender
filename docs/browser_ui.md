@@ -124,12 +124,13 @@ which acts as a basic start page (showing bookmarks + recently visited pages whe
 
 ## Appearance
 
-The windowed browser UI is gaining a small set of appearance/accessibility knobs (theme, UI scale,
-high-contrast, reduced-motion, and debug overlays). These are configured via environment variables;
-see [env-vars.md](env-vars.md).
+The windowed browser UI exposes a small set of appearance/accessibility knobs (theme, UI scale,
+high-contrast, reduced motion) via an in-app **Appearance** popup (gear icon in the toolbar).
 
-Note: not all builds implement all of these toggles yet; unsupported env vars are expected to be
-ignored.
+These settings are persisted in the browser session file so they survive restarts.
+
+Environment variables like `FASTR_BROWSER_THEME=...` are still supported as overrides (useful for
+scripting/CI); see [env-vars.md](env-vars.md).
 
 ### Theme mode selection
 
@@ -171,7 +172,7 @@ Interaction with rendered pages:
 
 ### Persistence (session file)
 
-The browser uses a lightweight session file for restoring state across restarts.
+The browser persists a lightweight session file for restoring state across restarts.
 
 - Default location: a per-user config directory (via `directories`), e.g.
   `~/.config/fastrender/fastrender_session.json` on Linux.
@@ -183,6 +184,7 @@ The session file format is versioned (currently v2) and includes:
 - Per-tab zoom
 - Best-effort window geometry (position/size/maximized) when available
 - A crash marker (`did_exit_cleanly`) for detecting unclean exits
+- Appearance settings (theme mode, high contrast, reduced motion, UI scale)
 
 Note: the `browser` binary currently writes the session file on clean shutdown. The UI module also
 exposes `SessionAutosave` (`src/ui/session_autosave.rs`) for background autosave + crash-marker

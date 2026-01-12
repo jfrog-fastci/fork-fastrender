@@ -95,6 +95,10 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 
 These are intended for the windowed `browser` UI and affect the browser chrome (and, where noted, the default user-preference media query surface seen by rendered pages).
 
+Many of these settings can also be changed in-app via the browser’s Appearance menu (gear icon in
+the toolbar). Those in-app settings are persisted in the browser session file so they survive
+restarts.
+
 Not all builds implement all of these toggles yet; unsupported values are expected to be ignored. When in doubt, confirm the current behaviour in `src/bin/browser.rs` / `src/ui/`.
 
 - `FASTR_BROWSER_THEME=system|light|dark` – select the browser chrome theme.

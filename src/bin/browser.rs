@@ -7597,6 +7597,7 @@ impl App {
       }
     }
 
+    let appearance_before = self.browser_state.appearance;
     let chrome_actions = fastrender::ui::chrome_ui_with_bookmarks(
       &ctx,
       &mut self.browser_state,
@@ -7604,6 +7605,7 @@ impl App {
       |tab_id| self.tab_favicons.get(&tab_id).map(|tex| tex.id()),
     );
     let zoom_after = self.browser_state.active_tab().map(|t| t.zoom);
+    let appearance_after = self.browser_state.appearance;
 
     #[cfg(target_os = "macos")]
     {
@@ -7625,6 +7627,7 @@ impl App {
     }
 
     session_dirty |= zoom_before != zoom_after;
+    session_dirty |= appearance_before != appearance_after;
     session_dirty |= self.handle_chrome_actions(chrome_actions);
     self.sync_window_title();
 

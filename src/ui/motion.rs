@@ -129,7 +129,10 @@ impl UiMotion {
     target: bool,
     duration: f32,
   ) -> f32 {
-    if !self.enabled || duration <= 0.0 {
+    // Respect both the motion policy (derived from env + runtime settings) and egui's global
+    // animation toggle. When `Style::animation_time` is 0, egui itself disables animations; treat
+    // that as a hard "animations off" signal for our micro-interactions as well.
+    if !self.enabled || duration <= 0.0 || ctx.style().animation_time <= 0.0 {
       return if target { 1.0 } else { 0.0 };
     }
     ctx.animate_value_with_time(id, if target { 1.0 } else { 0.0 }, duration)
@@ -143,7 +146,7 @@ impl UiMotion {
     target: f32,
     duration: f32,
   ) -> f32 {
-    if !self.enabled || duration <= 0.0 {
+    if !self.enabled || duration <= 0.0 || ctx.style().animation_time <= 0.0 {
       return target;
     }
     ctx.animate_value_with_time(id, target, duration)
