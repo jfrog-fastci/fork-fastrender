@@ -33,7 +33,6 @@ mod template_inert_styles;
 mod textarea_runtime_value;
 mod transition_behavior_property_test;
 mod ua_form_control_defaults_test;
-mod vendor_prefix_aliasing_test;
 mod vm_js_crypto_subtle_digest;
 mod vm_js_define_own_property_smoke;
 mod vm_js_dom_exception_smoke;

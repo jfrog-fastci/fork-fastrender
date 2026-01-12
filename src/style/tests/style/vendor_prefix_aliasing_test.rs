@@ -1,8 +1,8 @@
-use fastrender::css::parser::{parse_declarations, parse_stylesheet};
-use fastrender::css::types::PropertyName;
-use fastrender::dom;
-use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
-use fastrender::style::media::MediaContext;
+use crate::css::parser::{parse_declarations, parse_stylesheet};
+use crate::css::types::PropertyName;
+use crate::dom;
+use crate::style::cascade::{apply_styles_with_media, StyledNode};
+use crate::style::media::MediaContext;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {
