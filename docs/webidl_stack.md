@@ -1,12 +1,16 @@
-# WebIDL stack (post-consolidation)
+# WebIDL stack (consolidation guide)
 
 FastRender’s WebIDL implementation is split into:
 
 - **Generic JS/WebIDL infrastructure** in `vendor/ecma-rs/` (owned by FastRender; modify it freely).
 - **FastRender-specific bindings and embedding glue** in `src/js/`.
 
-This document is the contributor-facing “where does this live?” reference for the consolidated WebIDL
-stack (see also: [`instructions/ecma_rs_ownership.md`](../instructions/ecma_rs_ownership.md)).
+This document is the contributor-facing “where does this live?” reference for FastRender’s WebIDL
+stack (and the boundary between `vendor/ecma-rs/` vs `src/`).
+
+Note: the consolidation is still in progress; some legacy WebIDL crates may still exist under
+`crates/`, but **new** WebIDL infrastructure should follow the rules below (see also:
+[`instructions/ecma_rs_ownership.md`](../instructions/ecma_rs_ownership.md)).
 
 ## Crate / code layout
 
@@ -39,14 +43,13 @@ belongs here.
 If you need a new feature in the `webidl` ↔ `vm-js` adapter (rooting, iterator helpers, host dispatch
 plumbing), it belongs here.
 
-### `vendor/ecma-rs/webidl-runtime` (legacy heap-only runtime; compat)
+### Legacy heap-only runtime (compat): `crates/webidl-js-runtime` (migration target: `vendor/ecma-rs/webidl-runtime`)
 
 The legacy heap-only runtime adapter is used by early scaffolding and some unit tests. It cannot
 execute author scripts and should not be used for new bindings work.
 
 - Cargo package name: `webidl-js-runtime`
 - Rust crate name: `webidl_js_runtime`
-- Current location: `crates/webidl-js-runtime/`
 
 This layer exists for migration/testing where older heap-only bindings/runtime code is still
 referenced. Prefer the realm-based `webidl-vm-js` path for new bindings work.
@@ -127,7 +130,7 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-vm-js
 bash scripts/cargo_agent.sh test -p xtask --test webidl_bindings_snapshots_up_to_date
 
 # FastRender integration tests that exercise WebIDL-driven bindings.
-bash scripts/cargo_agent.sh test -p fastrender --test integration js_webidl
+bash scripts/cargo_agent.sh test -p fastrender --test misc_tests -- js_webidl
 ```
 
 ## Related docs
