@@ -713,15 +713,10 @@ impl BuildBreakdown {
 fn parallel_config_from_env() -> (bool, usize, bool) {
   let toggles = runtime::runtime_toggles();
   let enabled = toggles.truthy_with_default("FASTR_DISPLAY_LIST_PARALLEL", true);
-  let (min, explicit_min) = match std::env::var("FASTR_DISPLAY_LIST_PARALLEL_MIN") {
-    Ok(raw) => (raw.parse::<usize>().unwrap_or(32).max(1), true),
-    Err(_) => (
-      toggles
-        .usize_with_default("FASTR_DISPLAY_LIST_PARALLEL_MIN", 32)
-        .max(1),
-      false,
-    ),
-  };
+  let explicit_min = toggles.get("FASTR_DISPLAY_LIST_PARALLEL_MIN").is_some();
+  let min = toggles
+    .usize_with_default("FASTR_DISPLAY_LIST_PARALLEL_MIN", 32)
+    .max(1);
   (enabled, min, explicit_min)
 }
 
