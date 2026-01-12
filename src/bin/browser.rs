@@ -2638,6 +2638,7 @@ impl App {
           | UiToWorker::CloseTab { .. }
           | UiToWorker::SetActiveTab { .. }
           | UiToWorker::SetDownloadDirectory { .. }
+          | UiToWorker::CancelDownload { .. }
           | UiToWorker::Copy { .. }
           | UiToWorker::SelectAll { .. } => {}
         }
