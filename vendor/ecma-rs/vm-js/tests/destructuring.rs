@@ -689,3 +689,41 @@ fn array_destructuring_uses_proxy_get_trap_for_length_and_index() -> Result<(), 
   assert_eq!(ok, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn array_destructuring_accepts_computed_symbol_iterator_method() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        // Regression test: object literal methods with computed keys (`[Symbol.iterator]`) are
+        // reparsed lazily by slicing their source span. The span must include the leading `[` so the
+        // method can be parsed/executed.
+        //
+        // Upstream test262 coverage: `staging/sm/destructuring/iterator-primitive.js`.
+        // Keep the test small to avoid OOM in the unit-test heap limits.
+        var obj = {
+          [Symbol.iterator]() {
+            return 1;
+          },
+        };
+        try {
+          var [] = obj;
+          return false;
+        } catch (e) {
+          if (!(e instanceof TypeError)) return false;
+        }
+        try {
+          [] = obj;
+          return false;
+        } catch (e) {
+          if (!(e instanceof TypeError)) return false;
+        }
+        return true;
+      })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
