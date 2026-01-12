@@ -75,24 +75,27 @@ impl ShadowStack {
     self.slots()[idx]
   }
 
-  #[inline]
-  pub(crate) fn slot_ptr(&self, idx: usize) -> *mut *mut u8 {
-    let slots = self.slots();
-    debug_assert!(idx < slots.len());
-    // SAFETY:
-    // - `idx < slots.len()` so the element is in-bounds.
-    // - `Vec<*mut u8>` elements are naturally aligned for `*mut u8`.
-    // - The returned pointer remains valid as long as the underlying `Vec` is not reallocated.
-    //   The caller must ensure no further pushes/reserves occur while the pointer is in use.
-    unsafe { (slots.as_ptr() as *mut *mut u8).add(idx) }
-  }
-
   pub(crate) fn set(&self, idx: usize, ptr: *mut u8) {
     debug_assert!(
       !super::gc_in_progress(),
       "cannot mutate shadow stack while GC is in progress"
     );
     self.slots_mut()[idx] = ptr;
+  }
+
+  /// Return a raw pointer to the addressable slot at `idx`.
+  ///
+  /// # Safety notes
+  /// The returned pointer is only stable as long as the current thread does not
+  /// mutate the shadow stack in a way that can reallocate the underlying `Vec`
+  /// (e.g. by pushing more roots). Callers should typically obtain this pointer
+  /// and immediately pass it to a GC-aware API that reads from the slot after
+  /// acquiring its own locks (see `roots::PersistentHandleTable::{alloc,set}_from_slot`).
+  pub(crate) fn slot_ptr(&self, idx: usize) -> *mut *mut u8 {
+    // Safety: per-thread access (mutator) or GC access while the world is
+    // stopped. Returning a raw pointer drops the borrow immediately.
+    let slots = self.slots_mut();
+    (&mut slots[idx]) as *mut *mut u8
   }
 }
 
@@ -194,6 +197,9 @@ impl RootHandle<'_> {
   pub fn set(&self, ptr: *mut u8) {
     self.ts.shadow_stack().set(self.idx, ptr);
   }
+
+  // Note: `slot_ptr` is intentionally `pub(crate)` (not public API). Callers must ensure the
+  // underlying shadow stack vector is not reallocated while the returned pointer is in use.
 }
 
 /// Root set consisting of the shadow stacks for *all* registered threads.

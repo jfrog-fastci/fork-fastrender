@@ -11,6 +11,7 @@ See also:
 * `docs/safepoint_abi.md` — thread registration + parked/unparked safepoint protocol
 * `docs/reactor.md` — cross-platform reactor contract (epoll/kqueue)
 * `docs/write_barrier.md` — generational write barrier contract
+* `docs/gc_config.md` — configuring GC sizing/thresholds (tests/embedders)
 
 ## Frame-pointer ABI contract
 
