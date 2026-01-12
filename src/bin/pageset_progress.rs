@@ -53,7 +53,7 @@ use fastrender::resource::ResourceFetcher;
 use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
 use fastrender::resource::DEFAULT_USER_AGENT;
 use fastrender::text::font_db::FontConfig;
-use image::RgbaImage;
+use image::{Rgba, RgbaImage};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1694,50 +1694,177 @@ fn compute_accuracy_for_pixmap(
     }
   };
 
-  let config = CompareConfig::strict()
-    .with_channel_tolerance(tolerance)
-    .with_max_different_percent(max_diff_percent)
-    .with_generate_diff_image(diff_dir.is_some());
-  let diff = image_compare::compare_images(&rendered_img, &baseline_img, &config);
+  if rendered_img.width() == baseline_img.width() && rendered_img.height() == baseline_img.height()
+  {
+    let config = CompareConfig::strict()
+      .with_channel_tolerance(tolerance)
+      .with_max_different_percent(max_diff_percent)
+      .with_generate_diff_image(diff_dir.is_some());
+    let diff = image_compare::compare_images(&rendered_img, &baseline_img, &config);
+    let accuracy = ProgressAccuracy::from_diff(&diff, "chrome", computed_at_commit);
 
-  let accuracy = if diff.dimensions_match {
-    ProgressAccuracy::from_diff(&diff, "chrome", computed_at_commit)
-  } else {
-    // Treat a dimension mismatch as a total failure (we can't meaningfully diff pixels).
-    let expected_total_pixels = baseline_img.width() as u64 * baseline_img.height() as u64;
-    ProgressAccuracy {
-      baseline: "chrome".to_string(),
-      diff_pixels: expected_total_pixels,
-      diff_percent: 100.0,
-      perceptual: 1.0,
-      first_mismatch: None,
-      tolerance,
-      max_diff_percent,
-      computed_at_commit: computed_at_commit.unwrap_or_default().to_string(),
+    if let Some(diff_dir) = diff_dir {
+      if diff.statistics.different_pixels > 0 {
+        if let Err(err) = fs::create_dir_all(diff_dir) {
+          log.push_str(&format!(
+            "Accuracy: failed to create diff dir {} ({err})\n",
+            diff_dir.display()
+          ));
+        } else {
+          match diff.diff_png() {
+            Ok(Some(bytes)) => {
+              let diff_path = diff_dir.join(format!("{stem}.diff.png"));
+              if let Err(err) = atomic_write_fast(&diff_path, &bytes) {
+                log.push_str(&format!(
+                  "Accuracy: failed to write diff image {} ({err})\n",
+                  diff_path.display()
+                ));
+              }
+            }
+            Ok(None) => {}
+            Err(err) => log.push_str(&format!("Accuracy: failed to encode diff PNG ({err})\n")),
+          }
+        }
+      }
     }
+
+    return Some(accuracy);
+  }
+
+  // Dimensions mismatch: treat missing pixels as differences and compute perceptual distance over
+  // the overlapping region so the metric remains informative.
+  let overlap_width = rendered_img.width().min(baseline_img.width());
+  let overlap_height = rendered_img.height().min(baseline_img.height());
+  let perceptual = image_compare::perceptual_distance_region(
+    &rendered_img,
+    &baseline_img,
+    true,
+    overlap_width,
+    overlap_height,
+  );
+
+  let max_width = rendered_img.width().max(baseline_img.width());
+  let max_height = rendered_img.height().max(baseline_img.height());
+
+  let mut total_pixels = 0u64;
+  let mut different_pixels = 0u64;
+  let mut first_mismatch: Option<(u32, u32)> = None;
+  let mut first_mismatch_rgba: Option<([u8; 4], [u8; 4])> = None;
+  let mut diff_image = diff_dir.map(|_| RgbaImage::new(max_width, max_height));
+
+  for y in 0..max_height {
+    for x in 0..max_width {
+      let rendered_px = if x < rendered_img.width() && y < rendered_img.height() {
+        Some(*rendered_img.get_pixel(x, y))
+      } else {
+        None
+      };
+      let baseline_px = if x < baseline_img.width() && y < baseline_img.height() {
+        Some(*baseline_img.get_pixel(x, y))
+      } else {
+        None
+      };
+
+      match (rendered_px, baseline_px) {
+        (Some(rendered_px), Some(baseline_px)) => {
+          total_pixels += 1;
+          let diff_r = rendered_px[0].abs_diff(baseline_px[0]);
+          let diff_g = rendered_px[1].abs_diff(baseline_px[1]);
+          let diff_b = rendered_px[2].abs_diff(baseline_px[2]);
+          let diff_a = rendered_px[3].abs_diff(baseline_px[3]);
+          let max_diff = diff_r.max(diff_g).max(diff_b).max(diff_a);
+
+          let is_different =
+            diff_r > tolerance || diff_g > tolerance || diff_b > tolerance || diff_a > tolerance;
+          if is_different {
+            different_pixels += 1;
+            if first_mismatch.is_none() {
+              first_mismatch = Some((x, y));
+              first_mismatch_rgba = Some((rendered_px.0, baseline_px.0));
+            }
+            if let Some(diff_image) = diff_image.as_mut() {
+              let alpha = max_diff.saturating_mul(2).min(255);
+              diff_image.put_pixel(x, y, Rgba([255, 0, 0, alpha]));
+            }
+          } else if let Some(diff_image) = diff_image.as_mut() {
+            diff_image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+          }
+        }
+        (Some(rendered_px), None) => {
+          total_pixels += 1;
+          different_pixels += 1;
+          if first_mismatch.is_none() {
+            first_mismatch = Some((x, y));
+            first_mismatch_rgba = Some((rendered_px.0, [0, 0, 0, 0]));
+          }
+          if let Some(diff_image) = diff_image.as_mut() {
+            diff_image.put_pixel(x, y, Rgba([255, 0, 255, 255]));
+          }
+        }
+        (None, Some(baseline_px)) => {
+          total_pixels += 1;
+          different_pixels += 1;
+          if first_mismatch.is_none() {
+            first_mismatch = Some((x, y));
+            first_mismatch_rgba = Some(([0, 0, 0, 0], baseline_px.0));
+          }
+          if let Some(diff_image) = diff_image.as_mut() {
+            diff_image.put_pixel(x, y, Rgba([255, 0, 255, 255]));
+          }
+        }
+        (None, None) => {
+          // Both images are missing this pixel (can happen when each image provides one of the max
+          // dimensions). Treat this as an identical transparent pixel.
+          if let Some(diff_image) = diff_image.as_mut() {
+            diff_image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+          }
+        }
+      }
+    }
+  }
+
+  let diff_percent = if total_pixels > 0 {
+    (different_pixels as f64 / total_pixels as f64) * 100.0
+  } else {
+    0.0
+  };
+
+  let accuracy = ProgressAccuracy {
+    baseline: "chrome".to_string(),
+    diff_pixels: different_pixels,
+    diff_percent: round_accuracy_metric(diff_percent, 4),
+    perceptual: round_accuracy_metric(perceptual, 4),
+    first_mismatch: first_mismatch.and_then(|(x, y)| {
+      first_mismatch_rgba.map(|(rendered_rgba, baseline_rgba)| ProgressAccuracyFirstMismatch {
+        x,
+        y,
+        rendered_rgba,
+        baseline_rgba,
+      })
+    }),
+    tolerance,
+    max_diff_percent,
+    computed_at_commit: computed_at_commit.unwrap_or_default().to_string(),
   };
 
   if let Some(diff_dir) = diff_dir {
-    if diff.dimensions_match && diff.statistics.different_pixels > 0 {
-      if let Err(err) = fs::create_dir_all(diff_dir) {
-        log.push_str(&format!(
-          "Accuracy: failed to create diff dir {} ({err})\n",
-          diff_dir.display()
-        ));
-      } else {
-        match diff.diff_png() {
-          Ok(Some(bytes)) => {
-            let diff_path = diff_dir.join(format!("{stem}.diff.png"));
-            if let Err(err) = atomic_write_fast(&diff_path, &bytes) {
-              log.push_str(&format!(
-                "Accuracy: failed to write diff image {} ({err})\n",
-                diff_path.display()
-              ));
-            }
+    if let Err(err) = fs::create_dir_all(diff_dir) {
+      log.push_str(&format!(
+        "Accuracy: failed to create diff dir {} ({err})\n",
+        diff_dir.display()
+      ));
+    } else if let Some(diff_image) = diff_image {
+      match image_compare::encode_png(&diff_image) {
+        Ok(bytes) => {
+          let diff_path = diff_dir.join(format!("{stem}.diff.png"));
+          if let Err(err) = atomic_write_fast(&diff_path, &bytes) {
+            log.push_str(&format!(
+              "Accuracy: failed to write diff image {} ({err})\n",
+              diff_path.display()
+            ));
           }
-          Ok(None) => {}
-          Err(err) => log.push_str(&format!("Accuracy: failed to encode diff PNG ({err})\n")),
         }
+        Err(err) => log.push_str(&format!("Accuracy: failed to encode diff PNG ({err})\n")),
       }
     }
   }
@@ -12783,6 +12910,64 @@ mod tests {
     );
     let diff_size = fs::metadata(&diff_path).expect("diff metadata").len();
     assert!(diff_size > 0, "diff image is empty");
+  }
+
+  #[test]
+  fn compute_accuracy_for_pixmap_dimension_mismatch_computes_perceptual_over_overlap_and_writes_diff()
+  {
+    let baseline_img = RgbaImage::from_pixel(2, 2, Rgba([10, 20, 30, 255]));
+    let rendered_img = RgbaImage::from_pixel(3, 2, Rgba([10, 20, 30, 255]));
+
+    let baseline_bytes = image_compare::encode_png(&baseline_img).expect("encode baseline PNG");
+
+    let mut pixmap = Pixmap::new(rendered_img.width(), rendered_img.height()).expect("pixmap");
+    pixmap
+      .data_mut()
+      .copy_from_slice(rendered_img.as_raw().as_slice());
+
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join("mismatch.png"), baseline_bytes).expect("write baseline");
+
+    let diff_dir = dir.path().join("diffs");
+    let mut log = String::new();
+    let acc = compute_accuracy_for_pixmap(
+      "mismatch",
+      &pixmap,
+      dir.path(),
+      0,
+      0.0,
+      Some(&diff_dir),
+      Some("deadbeef"),
+      &mut log,
+    )
+    .expect("expected accuracy metrics");
+
+    assert!(acc.diff_percent.is_finite());
+    assert!(acc.diff_percent > 0.0, "diff_percent={}", acc.diff_percent);
+    assert!(
+      acc.perceptual.abs() < 0.0001,
+      "expected perceptual distance over overlap to be ~0, got {}",
+      acc.perceptual
+    );
+
+    let mismatch = acc
+      .first_mismatch
+      .expect("expected first_mismatch for dimension mismatch");
+    assert_eq!((mismatch.x, mismatch.y), (2, 0));
+    assert_eq!(mismatch.baseline_rgba, [0, 0, 0, 0]);
+    assert_eq!(mismatch.rendered_rgba, [10, 20, 30, 255]);
+
+    let diff_path = diff_dir.join("mismatch.diff.png");
+    assert!(
+      diff_path.exists(),
+      "expected diff image to be written for dimension mismatch (log={log})"
+    );
+    let diff_bytes = fs::read(&diff_path).expect("read diff image");
+    let diff_img = image_compare::decode_png(&diff_bytes).expect("decode diff PNG");
+    assert_eq!(diff_img.dimensions(), (3, 2));
+    assert_eq!(diff_img.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    assert_eq!(diff_img.get_pixel(2, 0).0, [255, 0, 255, 255]);
+    assert_eq!(diff_img.get_pixel(2, 1).0, [255, 0, 255, 255]);
   }
 }
 

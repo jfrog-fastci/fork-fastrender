@@ -414,7 +414,7 @@ pub fn compare_images(
 ///
 /// This helper exists so callers can compute a meaningful perceptual metric even when the two
 /// images have different dimensions (e.g. by passing `min(width)`/`min(height)`).
-pub(crate) fn perceptual_distance_region(
+pub fn perceptual_distance_region(
   actual: &RgbaImage,
   expected: &RgbaImage,
   compare_alpha: bool,
