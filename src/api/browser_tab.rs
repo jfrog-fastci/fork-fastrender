@@ -29,7 +29,6 @@ use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
 use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 use crate::web::dom::DocumentVisibilityState;
-use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 use crate::ui::{PointerButton, PointerModifiers};
 
 use encoding_rs::{Encoding, UTF_8};
@@ -5269,6 +5268,7 @@ impl BrowserTab {
       PointerButton::None | PointerButton::Other(_) => (-1i16, 0u16),
     };
     let mouse = MouseEvent {
+      detail: 1,
       client_x: pos_css.0 as f64,
       client_y: pos_css.1 as f64,
       button: dom_button,

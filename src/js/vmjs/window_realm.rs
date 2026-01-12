@@ -32959,7 +32959,8 @@ fn init_window_globals(
     data_desc(Value::Object(parse_from_string_func)),
   )?;
 
-  let dom_parser_ctor_call_id = vm.register_native_call(dom_parser_constructor_native)?;
+  // `DOMParser` is constructible but not callable (calling without `new` throws a TypeError).
+  let dom_parser_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
   let dom_parser_ctor_construct_id =
     vm.register_native_construct(dom_parser_constructor_construct_native)?;
   let dom_parser_ctor_name = scope.alloc_string("DOMParser")?;
