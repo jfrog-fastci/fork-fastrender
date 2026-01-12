@@ -355,8 +355,8 @@ impl WindowHost {
 
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state)?;
       hooks.set_event_loop(event_loop);
- 
-      let result: Result<()> = {
+
+      let result: Result<()> = (|| {
         let (vm_host, window) = host_state.vm_host_and_window_realm()?;
         let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
         let vm_result = {
@@ -370,7 +370,7 @@ impl WindowHost {
           )
         };
         vm_result.map_err(|err| vm_error_format::vm_error_to_error(heap, err))
-      };
+      })();
 
       // Ensure any queued Promise jobs are properly discarded even if dispatch fails.
       if let Some(err) = hooks.finish(host_state.window_mut().heap_mut()) {
