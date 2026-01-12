@@ -114,7 +114,6 @@ fn dwarf_line_program_has_main_ts_rows_for_real_code() {
     if let Some(name) = compile_unit_name(&dwarf, &unit) {
       cu_names.push(name);
     }
-
     let Some(program) = unit.line_program.clone() else {
       continue;
     };
@@ -136,6 +135,9 @@ fn dwarf_line_program_has_main_ts_rows_for_real_code() {
         return_addr = Some(row.address());
         break;
       }
+    }
+    if found_return_line_row {
+      break;
     }
   }
 

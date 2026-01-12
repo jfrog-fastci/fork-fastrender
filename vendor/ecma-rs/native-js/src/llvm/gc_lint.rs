@@ -602,7 +602,10 @@ unsafe fn scan_forbidden_constexprs(
   visited: &mut HashSet<LLVMValueRef>,
   violations: &mut Vec<LintViolation>,
 ) {
-  if value.is_null() || visited.contains(&value) {
+  if value.is_null()
+    || visited.contains(&value)
+    || LLVMGetValueKind(value) == LLVMValueKind::LLVMMetadataAsValueValueKind
+  {
     return;
   }
   visited.insert(value);
@@ -756,6 +759,12 @@ unsafe fn is_gc_pointer_type(ty: LLVMTypeRef) -> bool {
 }
 
 unsafe fn value_is_gc_ptr(val: LLVMValueRef) -> bool {
+  if val.is_null() {
+    return false;
+  }
+  if LLVMGetValueKind(val) == LLVMValueKind::LLVMMetadataAsValueValueKind {
+    return false;
+  }
   is_gc_pointer_type(LLVMTypeOf(val))
 }
 

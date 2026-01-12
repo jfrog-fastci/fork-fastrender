@@ -1,4 +1,4 @@
-use diagnostics::FileId;
+use diagnostics::{FileId, TextRange};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
@@ -16,10 +16,57 @@ use llvm_sys::prelude::{LLVMMetadataRef, LLVMTypeRef, LLVMValueRef};
 use std::ffi::CString;
 use std::collections::HashMap;
 use std::os::raw::c_uint;
+use std::sync::Arc;
 use typecheck_ts::Program;
 
 use crate::OptLevel;
 use super::TsAbiKind;
+
+#[derive(Clone)]
+struct LineIndex {
+  text: Arc<str>,
+  /// 0-based byte offsets of the start of each line.
+  line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+  fn new(text: Arc<str>) -> Self {
+    let mut line_starts = vec![0usize];
+    for (idx, b) in text.as_bytes().iter().enumerate() {
+      if *b == b'\n' {
+        line_starts.push(idx + 1);
+      }
+    }
+    Self { text, line_starts }
+  }
+
+  fn clamp_offset_to_char_boundary(&self, mut offset: usize) -> usize {
+    if offset > self.text.len() {
+      offset = self.text.len();
+    }
+    while offset > 0 && !self.text.is_char_boundary(offset) {
+      offset -= 1;
+    }
+    offset
+  }
+
+  fn line_col(&self, offset: u32) -> (u32, u32) {
+    let offset = self.clamp_offset_to_char_boundary(offset as usize);
+
+    // Find the last line start that is <= offset.
+    let line_idx = match self.line_starts.binary_search(&offset) {
+      Ok(idx) => idx.min(self.line_starts.len().saturating_sub(1)),
+      Err(0) => 0,
+      Err(idx) => idx - 1,
+    };
+    let line_start = *self.line_starts.get(line_idx).unwrap_or(&0);
+
+    // DWARF columns are 1-based UTF-8 byte offsets within the line (0 means unknown).
+    let line = (line_idx + 1) as u32;
+    let col = offset.saturating_sub(line_start).saturating_add(1) as u32;
+    (line, col)
+  }
+}
 
 /// Debug info state for the HIR-driven native-js codegen backend.
 ///
@@ -34,6 +81,7 @@ pub(crate) struct CodegenDebug<'ctx> {
   compile_unit: DICompileUnit<'ctx>,
   files: HashMap<FileId, DIFile<'ctx>>,
   types: DebugTypes<'ctx>,
+  line_index: HashMap<FileId, LineIndex>,
 }
 
 #[derive(Clone, Copy)]
@@ -54,6 +102,9 @@ impl<'ctx> CodegenDebug<'ctx> {
       .file_key(entry_file)
       .map(|k| k.to_string())
       .unwrap_or_else(|| "entry.ts".to_string());
+    // Keep the module-level `source_filename` in sync with the DWARF compile-unit file so tools
+    // that inspect LLVM IR (or fall back to the module header) see a meaningful entry filename.
+    module.set_source_file_name(&entry_name);
     let (builder, compile_unit) = module.create_debug_info_builder(
       true,
       DWARFSourceLanguage::C,
@@ -99,6 +150,7 @@ impl<'ctx> CodegenDebug<'ctx> {
       compile_unit,
       files: HashMap::new(),
       types,
+      line_index: HashMap::new(),
     }
   }
 
@@ -122,6 +174,20 @@ impl<'ctx> CodegenDebug<'ctx> {
     let di_file = self.builder.create_file(&name, ".");
     self.files.insert(file, di_file);
     di_file
+  }
+
+  pub(crate) fn line_col(&mut self, program: &Program, file: FileId, span: TextRange) -> (u32, u32) {
+    if !self.line_index.contains_key(&file) {
+      let Some(text) = program.file_text(file) else {
+        return (1, 0);
+      };
+      self.line_index.insert(file, LineIndex::new(text));
+    }
+    self
+      .line_index
+      .get(&file)
+      .map(|idx| idx.line_col(span.start))
+      .unwrap_or((1, 0))
   }
 
   pub(crate) fn basic_type(&self, kind: TsAbiKind) -> DIType<'ctx> {
@@ -258,7 +324,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     is_local_to_unit: bool,
   ) {
     let di_file = self.file(program, file);
-    let (line, _col) = line_col(program, file, offset);
+    let (line, _col) = self.line_col(program, file, TextRange::new(offset, offset));
     let ty = self.basic_type(kind);
 
     let gv_expr = self.builder.create_global_variable_expression(
@@ -369,25 +435,4 @@ impl<'ctx> CodegenDebug<'ctx> {
       builder.position_at_end(bb);
     }
   }
-}
-
-pub(crate) fn line_col(program: &Program, file: FileId, offset: u32) -> (u32, u32) {
-  let Some(text) = program.file_text(file) else {
-    return (1, 1);
-  };
-
-  let mut line: u32 = 1;
-  let mut col: u32 = 1;
-  for (idx, b) in text.as_bytes().iter().enumerate() {
-    if idx as u32 >= offset {
-      break;
-    }
-    if *b == b'\n' {
-      line += 1;
-      col = 1;
-    } else {
-      col += 1;
-    }
-  }
-  (line, col)
 }
