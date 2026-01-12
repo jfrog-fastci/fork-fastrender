@@ -24,7 +24,7 @@ mod js_fetch_bindings;
 #[cfg(feature = "quickjs")]
 mod js_url_bindings;
 mod pages;
-mod pageset_filter_url_matching;
+mod pseudo_element_generated_content;
 mod rayon_global_thread_pool;
 mod stretch_sizing_inline_block;
 mod vm_js_generated_bindings_event_target_add_event_listener_options;
