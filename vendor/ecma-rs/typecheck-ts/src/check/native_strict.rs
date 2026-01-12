@@ -90,6 +90,24 @@ pub fn validate_native_strict_body(
     let mut visited = Vec::new();
     loop {
       expr_id = expr_unwrap_comma(body, expr_id);
+
+      // Unwrap TypeScript-only "no-op" wrappers that do not affect runtime behavior. These can
+      // otherwise be used to hide banned call targets (e.g. `(eval as typeof eval)("1")`,
+      // `(eval!)("1")`).
+      loop {
+        let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+          return expr_id;
+        };
+        match &expr.kind {
+          ExprKind::TypeAssertion { expr: inner, .. }
+          | ExprKind::NonNull { expr: inner }
+          | ExprKind::Satisfies { expr: inner, .. } => {
+            expr_id = *inner;
+          }
+          _ => break,
+        }
+      }
+
       let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
         return expr_id;
       };

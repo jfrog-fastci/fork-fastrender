@@ -161,6 +161,58 @@ fn native_strict_bans_eval_via_global_this_const_alias() {
 }
 
 #[test]
+fn native_strict_bans_eval_via_type_assertion_callee() {
+  let source = "(eval as typeof eval)(\"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  // The callee expression span includes the closing `)` (but not the opening `(`).
+  let needle = "eval as typeof eval)";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_eval_via_non_null_callee() {
+  let source = "eval!(\"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "eval!";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_eval_via_const_alias_type_assertion_init() {
+  let source = "const e = eval as typeof eval;\ne(\"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "e(\"1\")";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + 1);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_eval_call_via_comma_object() {
   let source = "(0, eval).call(null, \"1\");";
   let (diagnostics, file_id) = check(source, true);
@@ -499,6 +551,24 @@ fn native_strict_bans_function_via_comma_callee() {
 }
 
 #[test]
+fn native_strict_bans_function_via_type_assertion_callee() {
+  let source = "(Function as typeof Function)(\"return 1\");";
+  let (diagnostics, file_id) = check(source, true);
+  // The callee expression span includes the closing `)` (but not the opening `(`).
+  let needle = "Function as typeof Function)";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_function_call() {
   let source = "Function.call(null, \"return 1\");";
   let (diagnostics, file_id) = check(source, true);
@@ -799,6 +869,24 @@ fn native_strict_bans_new_proxy_via_comma_callee() {
   let (diagnostics, file_id) = check(source, true);
   let start = source.find("Proxy").expect("Proxy") as u32;
   let span = TextRange::new(start, start + "Proxy".len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Proxy diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_new_proxy_via_type_assertion_callee() {
+  let source = "new (Proxy as typeof Proxy)({}, {});";
+  let (diagnostics, file_id) = check(source, true);
+  // The callee expression span includes the closing `)` (but not the opening `(`).
+  let needle = "Proxy as typeof Proxy)";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
   assert!(
     diagnostics.iter().any(|diag| {
       diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
