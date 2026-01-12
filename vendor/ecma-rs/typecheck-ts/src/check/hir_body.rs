@@ -4782,11 +4782,19 @@ impl<'a> Checker<'a> {
     selected
   }
 
-  fn jsx_children_prop_key(&mut self, _loc: Loc) -> TsNameId {
+  fn jsx_children_prop_key(&mut self, loc: Loc) -> TsNameId {
     if let Some(id) = self.jsx_children_prop_name {
       return id;
     }
     let fallback = self.store.intern_name("children".to_string());
+    if matches!(
+      self.jsx_mode,
+      Some(JsxMode::ReactJsx | JsxMode::ReactJsxdev)
+    ) {
+      self.jsx_children_prop_name = Some(fallback);
+      return fallback;
+    }
+
     let Some(children_attr_ty) = self.resolve_type_ref(&["JSX", "ElementChildrenAttribute"]) else {
       self.jsx_children_prop_name = Some(fallback);
       return fallback;
@@ -4797,11 +4805,19 @@ impl<'a> Checker<'a> {
     self.jsx_collect_children_attribute_keys(children_attr_ty, &mut candidates, &mut seen);
     candidates.sort();
     candidates.dedup();
-    let selected = candidates
-      .into_iter()
-      .next()
-      .map(|name| self.store.intern_name(name))
-      .unwrap_or(fallback);
+    let selected = match candidates.as_slice() {
+      [] => fallback,
+      [only] => self.store.intern_name(only.clone()),
+      _ => {
+        self.diagnostics.push(
+          codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
+            "The global type 'JSX.ElementChildrenAttribute' may not have more than one property.",
+            Span::new(self.file, loc_to_range(self.file, loc)),
+          ),
+        );
+        fallback
+      }
+    };
     self.jsx_children_prop_name = Some(selected);
     selected
   }

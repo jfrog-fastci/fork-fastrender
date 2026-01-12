@@ -1065,6 +1065,45 @@ declare namespace JSX {
 }
 
 #[test]
+fn element_children_attribute_with_multiple_properties_emits_ts2608() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { a: {}; b: {} }
+  interface IntrinsicElements {
+    div: { children?: string };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = "const el = <div>hi</div>;";
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.iter().any(|d| {
+      d.code.as_str() == codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.as_str()
+    }),
+    "expected TS2608 for invalid ElementChildrenAttribute, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn qualified_jsx_element_return_type_is_resolved() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;

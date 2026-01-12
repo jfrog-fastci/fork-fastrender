@@ -728,6 +728,26 @@ pub const UNSAFE_TYPE_ASSERTION: Code = NATIVE_STRICT_UNSAFE_ASSERTION;
 /// type-soundness checks reuse the native-strict diagnostic codes.
 pub const INVALID_NON_NULL_ASSERTION: Code = NATIVE_STRICT_NONNULL_ASSERTION;
 
+/// TS2608: The global type `JSX.<name>` may not have more than one property.
+///
+/// TypeScript uses a number of JSX container types (for example
+/// `JSX.ElementChildrenAttribute` and `JSX.ElementAttributesProperty`) whose
+/// single property name controls how the checker maps JSX attributes/children
+/// into the props object. When the container resolves to more than one property,
+/// `tsc` reports TS2608.
+///
+/// - Primary span: the JSX element span that triggered resolution of the
+///   offending container type.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY: Code = Code::new(
+  "TS2608",
+  "JSX global type may not have more than one property",
+  "JSX element span that triggered resolution of the offending JSX container type",
+  &["primary: JSX element span"],
+  &[],
+);
+
 /// TC3001: JSX syntax is present but the compiler is not configured to allow it.
 ///
 /// - Primary span: the JSX element expression.
