@@ -219,11 +219,6 @@ impl GcHeap {
   ) -> Self {
     let nursery =
       nursery::NurserySpace::new(config.nursery_size_bytes).expect("failed to reserve nursery space");
-    let min_obj_size = array::RT_ARRAY_DATA_OFFSET
-      .saturating_add(super::CARD_TABLE_MIN_BYTES)
-      .max(1);
-    let max_new = config.nursery_size_bytes.div_ceil(min_obj_size);
-    let card_table_objects_capacity = max_new.saturating_add(1);
 
     let mut heap = Self {
       config,
@@ -239,7 +234,7 @@ impl GcHeap {
       backing_store_alloc: Box::new(backing_store_alloc),
       external_bytes: 0,
       finalizers: Vec::new(),
-      card_table_objects: Vec::with_capacity(card_table_objects_capacity),
+      card_table_objects: Vec::new(),
       mark_epoch: 0,
       major_compaction: MajorCompactionConfig::default(),
       stats: GcStats::default(),
