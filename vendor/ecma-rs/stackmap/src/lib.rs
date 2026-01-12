@@ -658,9 +658,16 @@ mod tests {
 
   #[test]
   fn golden_statepoint_record_layout_from_llvm_readobj() {
-    let llc = find_llvm_tool(&["llc-18", "llc"]).expect("llc not found");
-    let llvm_readobj =
-      find_llvm_tool(&["llvm-readobj-18", "llvm-readobj"]).expect("llvm-readobj not found");
+    let Some(llc) = find_llvm_tool(&["llc-18", "llc"]) else {
+      eprintln!("skipping golden_statepoint_record_layout_from_llvm_readobj: llc not found");
+      return;
+    };
+    let Some(llvm_readobj) = find_llvm_tool(&["llvm-readobj-18", "llvm-readobj"]) else {
+      eprintln!(
+        "skipping golden_statepoint_record_layout_from_llvm_readobj: llvm-readobj not found"
+      );
+      return;
+    };
 
     let dir = tempdir().unwrap();
     let ll_path = dir.path().join("test.ll");
