@@ -63,6 +63,27 @@ fn run_outcome_captures_console_log() {
 }
 
 #[test]
+fn run_outcome_captures_console_error() {
+  let out = run_js_source_outcome_with_options(
+    "<fixture>",
+    r#"console.error("oops"); "ok";"#,
+    &OracleHarnessOptions::default(),
+  );
+  match out {
+    RunOutcome::Ok {
+      value,
+      stdout,
+      stderr,
+    } => {
+      assert_eq!(value, "ok");
+      assert_eq!(stdout, "");
+      assert_eq!(stderr, "oops");
+    }
+    other => panic!("expected Ok, got {other:?}"),
+  }
+}
+
+#[test]
 fn run_outcome_promise_aware_ok() {
   let out = run_fixture_outcome_with_options(
     fixture_path("await_promise_resolve.js"),

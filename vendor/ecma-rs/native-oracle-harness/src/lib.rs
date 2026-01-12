@@ -42,10 +42,11 @@ const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
 const OBSERVE_SOURCE_NAME: &str = "<native-oracle-observe>";
 
 const NATIVE_PRINT_NAME: &str = "__native_print";
+const NATIVE_EPRINT_NAME: &str = "__native_eprint";
 const NATIVE_BUILTINS_PRELUDE_SOURCE_NAME: &str = "<native-oracle-builtins>";
 const NATIVE_BUILTINS_PRELUDE_SCRIPT: &str = r#"
 globalThis.print = (...values) => __native_print(...values);
-globalThis.console = { log: (...values) => __native_print(...values) };
+globalThis.console = { log: (...values) => __native_print(...values), error: (...values) => __native_eprint(...values) };
 globalThis.assert = (cond, msg) => {
   if (!cond) throw new Error(msg === undefined ? "assertion failed" : String(msg));
 };
@@ -344,19 +345,18 @@ pub enum OracleHarnessError {
 }
 
 #[derive(Default)]
-struct StdoutCapture {
-  buf: String,
+struct ConsoleCapture {
+  stdout: String,
+  stderr: String,
 }
 
-fn native_print(
+fn format_console_line(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
   args: &[Value],
-) -> Result<Value, VmError> {
+) -> Result<String, VmError> {
   // `Scope::to_string` requires `&mut Vm`, so we must not hold a mutable borrow of
   // `vm.user_data_mut()` across the conversion loop.
   let mut line = String::new();
@@ -370,27 +370,61 @@ fn native_print(
     line.push_str(&js.to_utf8_lossy());
   }
   line.push('\n');
+  Ok(line)
+}
 
-  let Some(capture) = vm.user_data_mut::<StdoutCapture>() else {
-    return Err(VmError::Unimplemented("stdout capture buffer missing"));
+fn native_print(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let line = format_console_line(vm, scope, host, hooks, args)?;
+  let Some(capture) = vm.user_data_mut::<ConsoleCapture>() else {
+    return Err(VmError::Unimplemented("console capture buffer missing"));
   };
-  capture.buf.push_str(&line);
+  capture.stdout.push_str(&line);
   Ok(Value::Undefined)
 }
 
-fn take_captured_stdout(vm: &mut Vm) -> String {
-  let Some(capture) = vm.take_user_data::<StdoutCapture>() else {
-    return String::new();
+fn native_eprint(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let line = format_console_line(vm, scope, host, hooks, args)?;
+  let Some(capture) = vm.user_data_mut::<ConsoleCapture>() else {
+    return Err(VmError::Unimplemented("console capture buffer missing"));
   };
-  let mut out = capture.buf;
-  if out.ends_with('\n') {
-    out.pop();
+  capture.stderr.push_str(&line);
+  Ok(Value::Undefined)
+}
+
+fn take_captured_console(vm: &mut Vm) -> (String, String) {
+  let Some(capture) = vm.take_user_data::<ConsoleCapture>() else {
+    return (String::new(), String::new());
+  };
+  let mut stdout = capture.stdout;
+  let mut stderr = capture.stderr;
+  if stdout.ends_with('\n') {
+    stdout.pop();
   }
-  out
+  if stderr.ends_with('\n') {
+    stderr.pop();
+  }
+  (stdout, stderr)
 }
 
 fn install_native_builtins(rt: &mut JsRuntime) -> Result<(), VmError> {
   rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)?;
+  rt.register_global_native_function(NATIVE_EPRINT_NAME, native_eprint, 0)?;
   rt.exec_script_source(Arc::new(SourceText::new(
     NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
     NATIVE_BUILTINS_PRELUDE_SCRIPT,
@@ -675,8 +709,9 @@ pub fn run_typescript_source_outcome_with_options(
 
 /// Execute already-erased JavaScript source, returning a structured [`RunOutcome`].
 ///
-/// This captures `print(...)` / `console.log(...)` output into [`RunOutcome::stdout`] using the same
-/// native builtins prelude as [`run_js_source_capture_stdout_with_options`].
+/// This captures output written via `print(...)`, `console.log(...)`, and `console.error(...)` into
+/// [`RunOutcome::stdout`] / [`RunOutcome::stderr`] using the same native builtins prelude as
+/// [`run_js_source_capture_stdout_with_options`].
 pub fn run_js_source_outcome_with_options(
   source_name: impl Into<Arc<str>>,
   source_text: impl Into<Arc<str>>,
@@ -692,7 +727,7 @@ pub fn run_js_source_outcome_with_options(
       }
     }
   };
-  rt.vm.set_user_data(StdoutCapture::default());
+  rt.vm.set_user_data(ConsoleCapture::default());
 
   let outcome = (|| {
     if let Err(err) = install_native_builtins(&mut rt) {
@@ -715,9 +750,9 @@ pub fn run_js_source_outcome_with_options(
     }
   })();
 
-  let stdout = take_captured_stdout(&mut rt.vm);
+  let (stdout, stderr) = take_captured_console(&mut rt.vm);
   teardown_microtasks(&mut rt);
-  attach_stdio(outcome, stdout, String::new())
+  attach_stdio(outcome, stdout, stderr)
 }
 
 /// Execute a TypeScript snippet in the oracle VM, returning its output string.
@@ -760,14 +795,14 @@ pub fn run_js_source_with_options(
 /// this harness injects a minimal native-js-style prelude before evaluating `source_text`:
 ///
 /// - `globalThis.print = (...values) => __native_print(...values);`
-/// - `globalThis.console = { log: (...values) => __native_print(...values) };`
+/// - `globalThis.console = { log: (...values) => __native_print(...values), error: (...values) => __native_eprint(...values) };`
 /// - `globalThis.assert = (cond, msg?) => { if (!cond) throw new Error(...); }`
 /// - `globalThis.panic = (msg?) => { throw new Error(...); }`
 /// - `globalThis.trap = () => { throw new Error('trap'); }`
 ///
 /// Each `print(...)` / `console.log(...)` call appends
-/// `String(a) + " " + String(b) + ... + "\n"` to an internal host-owned buffer (arguments are
-/// joined with a single ASCII space).
+/// `String(a) + " " + String(b) + ... + "\n"` to an internal host-owned stdout buffer (arguments are
+/// joined with a single ASCII space). Each `console.error(...)` call appends to a stderr buffer.
 ///
 /// The returned string is the concatenated buffer with a single trailing `\n` removed (if present),
 /// matching the common “captured stdout” convention used by this repository's fixture runners.
@@ -779,7 +814,7 @@ pub fn run_js_source_capture_stdout_with_options(
   let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
     message: e.to_string(),
   })?;
-  rt.vm.set_user_data(StdoutCapture::default());
+  rt.vm.set_user_data(ConsoleCapture::default());
 
   let out = (|| {
     install_native_builtins(&mut rt).map_err(|err| map_vm_error(&mut rt, err))?;
@@ -791,14 +826,15 @@ pub fn run_js_source_capture_stdout_with_options(
       .perform_microtask_checkpoint(&mut rt.heap)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
-    let capture = rt
-      .vm
-      .take_user_data::<StdoutCapture>()
-      .ok_or_else(|| OracleHarnessError::Vm {
-        message: "stdout capture buffer missing".to_string(),
-      })?;
+    let capture =
+      rt
+        .vm
+        .take_user_data::<ConsoleCapture>()
+        .ok_or_else(|| OracleHarnessError::Vm {
+          message: "stdout capture buffer missing".to_string(),
+        })?;
 
-    let mut out = capture.buf;
+    let mut out = capture.stdout;
     if out.ends_with('\n') {
       out.pop();
     }
@@ -871,10 +907,12 @@ pub fn run_js_source_with_native_builtins_capture_stdout_with_options(
   let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
     message: e.to_string(),
   })?;
-  rt.vm.set_user_data(StdoutCapture::default());
+  rt.vm.set_user_data(ConsoleCapture::default());
 
   let out = (|| {
     rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)
+      .map_err(|err| map_vm_error(&mut rt, err))?;
+    rt.register_global_native_function(NATIVE_EPRINT_NAME, native_eprint, 0)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
     rt.exec_script_source(Arc::new(SourceText::new(
@@ -890,13 +928,14 @@ pub fn run_js_source_with_native_builtins_capture_stdout_with_options(
       .perform_microtask_checkpoint(&mut rt.heap)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
-    let capture = rt
-      .vm
-      .take_user_data::<StdoutCapture>()
-      .ok_or_else(|| OracleHarnessError::Vm {
-        message: "stdout capture buffer missing".to_string(),
-      })?;
-    Ok(capture.buf)
+    let capture =
+      rt
+        .vm
+        .take_user_data::<ConsoleCapture>()
+        .ok_or_else(|| OracleHarnessError::Vm {
+          message: "stdout capture buffer missing".to_string(),
+        })?;
+    Ok(capture.stdout)
   })();
 
   teardown_microtasks(&mut rt);
@@ -1441,7 +1480,7 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
       }
     }
   };
-  rt.vm.set_user_data(StdoutCapture::default());
+  rt.vm.set_user_data(ConsoleCapture::default());
 
   let outcome = (|| {
     if let Err(err) = install_native_builtins(&mut rt) {
@@ -1491,9 +1530,9 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
     }
   })();
 
-  let stdout = take_captured_stdout(&mut rt.vm);
+  let (stdout, stderr) = take_captured_console(&mut rt.vm);
   teardown_microtasks(&mut rt);
-  attach_stdio(outcome, stdout, String::new())
+  attach_stdio(outcome, stdout, stderr)
 }
 
 /// A [`NativeRunner`] implementation backed by the `native-js` AOT compiler.
