@@ -2,6 +2,7 @@
 
 use super::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
 use super::Document;
+use super::NodeKind;
 use selectors::context::QuirksMode;
 
 #[test]
@@ -164,6 +165,90 @@ fn set_text_data_emits_replace_data() {
 }
 
 #[test]
+fn replace_data_uses_utf16_code_units() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let recorder = LiveMutationTestRecorder::default();
+  doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  // U+1F600 GRINNING FACE is encoded as a surrogate pair in UTF-16 (2 code units).
+  let text = doc.create_text("😀");
+  doc.append_child(parent, text).unwrap();
+  let _ = recorder.take();
+
+  assert!(doc.set_text_data(text, "a").unwrap());
+
+  assert_eq!(
+    recorder.take(),
+    vec![LiveMutationEvent::ReplaceData {
+      node: text,
+      offset: 0,
+      removed_len: 2,
+      inserted_len: 1,
+    }]
+  );
+}
+
+#[test]
+fn set_comment_data_emits_replace_data() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let recorder = LiveMutationTestRecorder::default();
+  doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let comment = doc.create_comment("hi");
+  doc.append_child(parent, comment).unwrap();
+  let _ = recorder.take();
+
+  assert!(doc.set_comment_data(comment, "bye").unwrap());
+
+  assert_eq!(
+    recorder.take(),
+    vec![LiveMutationEvent::ReplaceData {
+      node: comment,
+      offset: 0,
+      removed_len: 2,
+      inserted_len: 3,
+    }]
+  );
+}
+
+#[test]
+fn set_processing_instruction_data_emits_replace_data() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let recorder = LiveMutationTestRecorder::default();
+  doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+  let pi = doc.push_node(
+    NodeKind::ProcessingInstruction {
+      target: "x".to_string(),
+      data: "hi".to_string(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  let _ = recorder.take();
+
+  assert!(doc.set_processing_instruction_data(pi, "bye").unwrap());
+
+  assert_eq!(
+    recorder.take(),
+    vec![LiveMutationEvent::ReplaceData {
+      node: pi,
+      offset: 0,
+      removed_len: 2,
+      inserted_len: 3,
+    }]
+  );
+}
+
+#[test]
 fn move_between_parents_emits_pre_remove_then_pre_insert() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let recorder = LiveMutationTestRecorder::default();
@@ -226,4 +311,3 @@ fn live_traversal_registry_is_gc_safe_and_sweeps_dead_entries() -> Result<(), vm
   assert_eq!(doc.live_mutation.live_range_len(), 0);
   Ok(())
 }
-

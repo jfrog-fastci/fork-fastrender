@@ -793,58 +793,70 @@ impl Document {
 
   pub fn set_comment_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     let node_id = node;
-    let (changed, old_value) = {
-      let node = self.node_checked_mut(node_id)?;
-      match &mut node.kind {
-        NodeKind::Comment { content } => {
-          if content == data {
-            return Ok(false);
-          }
-          let old = Some(content.clone());
-          content.clear();
-          content.push_str(data);
-          (true, old)
-        }
-        _ => return Err(DomError::InvalidNodeType),
-      }
+    // Drive live Range/NodeIterator updates via the DOM "replace data" primitive.
+    let old_value = match &self.node_checked(node_id)?.kind {
+      NodeKind::Comment { content } => content.clone(),
+      _ => return Err(DomError::InvalidNodeType),
     };
-
-    if changed {
-      // Comments are currently ignored by renderer DOM snapshots, so treat comment data changes as
-      // non-render-affecting. Still queue MutationObserver CharacterData records so observers and
-      // future live-mutation hooks (e.g. Range/NodeIterator) observe the update.
-      let _ = self.queue_mutation_record_character_data(node_id, old_value);
+    if old_value == data {
+      return Ok(false);
     }
 
-    Ok(changed)
+    self.live_mutation.replace_data(
+      node_id,
+      /* offset */ 0,
+      /* removed_len */ old_value.encode_utf16().count(),
+      /* inserted_len */ data.encode_utf16().count(),
+    );
+
+    {
+      let node = self.node_checked_mut(node_id)?;
+      let NodeKind::Comment { content } = &mut node.kind else {
+        return Err(DomError::InvalidNodeType);
+      };
+      content.clear();
+      content.push_str(data);
+    }
+
+    // Comments are currently ignored by renderer DOM snapshots, so treat comment data changes as
+    // non-render-affecting. Still queue MutationObserver CharacterData records so observers and
+    // future live-mutation hooks (e.g. Range/NodeIterator) observe the update.
+    let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
+    Ok(true)
   }
 
   pub fn set_processing_instruction_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     let node_id = node;
-    let (changed, old_value) = {
-      let node = self.node_checked_mut(node_id)?;
-      match &mut node.kind {
-        NodeKind::ProcessingInstruction { data: value, .. } => {
-          if value == data {
-            return Ok(false);
-          }
-          let old = Some(value.clone());
-          value.clear();
-          value.push_str(data);
-          (true, old)
-        }
-        _ => return Err(DomError::InvalidNodeType),
-      }
+    // Drive live Range/NodeIterator updates via the DOM "replace data" primitive.
+    let old_value = match &self.node_checked(node_id)?.kind {
+      NodeKind::ProcessingInstruction { data: value, .. } => value.clone(),
+      _ => return Err(DomError::InvalidNodeType),
     };
-
-    if changed {
-      // Processing instructions are currently ignored by renderer DOM snapshots, so treat data
-      // changes as non-render-affecting. Still queue MutationObserver CharacterData records so
-      // observers and future live-mutation hooks observe the update.
-      let _ = self.queue_mutation_record_character_data(node_id, old_value);
+    if old_value == data {
+      return Ok(false);
     }
 
-    Ok(changed)
+    self.live_mutation.replace_data(
+      node_id,
+      /* offset */ 0,
+      /* removed_len */ old_value.encode_utf16().count(),
+      /* inserted_len */ data.encode_utf16().count(),
+    );
+
+    {
+      let node = self.node_checked_mut(node_id)?;
+      let NodeKind::ProcessingInstruction { data: value, .. } = &mut node.kind else {
+        return Err(DomError::InvalidNodeType);
+      };
+      value.clear();
+      value.push_str(data);
+    }
+
+    // Processing instructions are currently ignored by renderer DOM snapshots, so treat data
+    // changes as non-render-affecting. Still queue MutationObserver CharacterData records so
+    // observers and future live-mutation hooks observe the update.
+    let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
+    Ok(true)
   }
   pub fn parent(&self, node: NodeId) -> Result<Option<NodeId>, DomError> {
     Ok(self.node_checked(node)?.parent)
