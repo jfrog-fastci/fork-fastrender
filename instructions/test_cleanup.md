@@ -370,17 +370,9 @@ bash scripts/cargo_agent.sh test --lib
 ### 5.1 Identify all shims
 
 ```bash
-grep -l "#\[path = " tests/*.rs
+# Any `#[path = "..."]` attribute under tests/ is a shim.
+rg -n '#\[path\s*=\s*"' tests/
 ```
-
-Current shims:
-- `calc_percent_height_is_not_collapsible_through.rs`
-- `flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs`
-- `flex_wrap_order_does_not_trigger_manual_placement.rs`
-- `container_scroll_state_queries_test.rs`
-- `container_style_queries.rs`
-- `pipeline_churn_guardrail.rs`
-- ... and others
 
 ### 5.2 Delete them
 
