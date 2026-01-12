@@ -8241,7 +8241,7 @@ impl<'a> Checker<'a> {
     // class, a protected member declared in the base can only be accessed
     // through an expression whose type is derived from the *current* class.
     //
-    // Example (tsc TS2445):
+    // Example (tsc TS2446):
     //   class Base { protected x = 1; }
     //   class Derived extends Base {
     //     f(b: Base) { return b.x; } // error
@@ -8300,8 +8300,10 @@ impl<'a> Checker<'a> {
 
       self
         .diagnostics
-        .push(codes::PROTECTED_MEMBER_ACCESS.error(
-          format!("Property '{prop}' is protected and only accessible within class and its subclasses."),
+        .push(codes::PROTECTED_MEMBER_ACCESS_THROUGH_INSTANCE.error(
+          format!(
+            "Property '{prop}' is protected and only accessible through an instance of the current class."
+          ),
           Span::new(self.file, span),
         ));
       return true;

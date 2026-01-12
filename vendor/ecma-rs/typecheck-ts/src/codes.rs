@@ -317,6 +317,19 @@ pub const PROTECTED_MEMBER_ACCESS: Code = Code::new(
   &[],
 );
 
+/// TS2446: Protected member access through an incompatible receiver type.
+///
+/// - Primary span: the property name within a member expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const PROTECTED_MEMBER_ACCESS_THROUGH_INSTANCE: Code = Code::new(
+  "TS2446",
+  "protected member access requires an instance of the current class",
+  "property name within a member expression",
+  &["primary: property name"],
+  &[],
+);
+
 /// TS2395: Merged declarations must be all exported or all local.
 ///
 /// - Primary span: the identifier name of the declaration participating in the merge.
