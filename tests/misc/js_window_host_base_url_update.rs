@@ -236,3 +236,83 @@ fn window_host_cleared_base_url_falls_back_to_document_url_for_fetch() -> Result
   assert_eq!(fetcher.request_urls(), vec!["https://example.com/a/b/c".to_string()]);
   Ok(())
 }
+
+#[test]
+fn window_host_base_url_propagates_to_xhr_relative_urls() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let fetcher = Arc::new(RecordingFetcher::default());
+  fetcher.insert(
+    "https://example.com/a/b/c",
+    FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string())),
+  );
+
+  let mut host = WindowHost::new_with_fetcher_and_options(
+    dom,
+    "https://example.com/original/page.html",
+    fetcher.clone() as Arc<dyn ResourceFetcher>,
+    js_opts_for_test(),
+  )?;
+
+  host
+    .host_mut()
+    .set_document_base_url(Some("https://example.com/a/b/".to_string()));
+
+  host.exec_script(
+    r#"
+    globalThis.__err = '';
+    globalThis.__text = '';
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', 'c', false);
+      xhr.send();
+      globalThis.__text = xhr.responseText;
+    } catch (e) {
+      globalThis.__err = String(e && (e.stack || e.message) || e);
+    }
+    "#,
+  )?;
+
+  assert_eq!(get_global_string(&mut host, "__err").unwrap_or_default(), "");
+  assert_eq!(get_global_string(&mut host, "__text").as_deref(), Some("ok"));
+  assert_eq!(fetcher.request_urls(), vec!["https://example.com/a/b/c".to_string()]);
+  Ok(())
+}
+
+#[test]
+fn window_host_cleared_base_url_falls_back_to_document_url_for_xhr() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let fetcher = Arc::new(RecordingFetcher::default());
+  fetcher.insert(
+    "https://example.com/a/b/c",
+    FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string())),
+  );
+
+  let mut host = WindowHost::new_with_fetcher_and_options(
+    dom,
+    "https://example.com/a/b/page.html",
+    fetcher.clone() as Arc<dyn ResourceFetcher>,
+    js_opts_for_test(),
+  )?;
+
+  host.host_mut().set_document_base_url(None);
+
+  host.exec_script(
+    r#"
+    globalThis.__err = '';
+    globalThis.__text = '';
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', 'c', false);
+      xhr.send();
+      globalThis.__text = xhr.responseText;
+    } catch (e) {
+      globalThis.__err = String(e && (e.stack || e.message) || e);
+    }
+    "#,
+  )?;
+
+  assert_eq!(get_global_string(&mut host, "__err").unwrap_or_default(), "");
+  assert_eq!(get_global_string(&mut host, "__text").as_deref(), Some("ok"));
+  assert_eq!(fetcher.request_urls(), vec!["https://example.com/a/b/c".to_string()]);
+  Ok(())
+}
