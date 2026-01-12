@@ -21731,6 +21731,7 @@ mod tests {
 
   #[test]
   fn window_storage_set_item_enforces_quota() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_web_storage_quota_utf16_bytes(20),
     )?;

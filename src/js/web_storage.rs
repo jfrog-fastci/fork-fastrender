@@ -429,6 +429,15 @@ mod tests {
   #[test]
   fn reset_and_quota_overrides_are_deterministic() {
     reset_default_web_storage_hub_for_tests();
+    // Ensure this test leaves the thread-local hub in a clean state even if it fails (the Rust test
+    // harness may reuse worker threads between tests).
+    struct ResetGuard;
+    impl Drop for ResetGuard {
+      fn drop(&mut self) {
+        reset_default_web_storage_hub_for_tests();
+      }
+    }
+    let _guard = ResetGuard;
 
     {
       let area = get_local_area(Some("https://example.com"));
