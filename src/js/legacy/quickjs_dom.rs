@@ -418,27 +418,14 @@ fn install_dom2_bindings_internal<'js>(
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(
-      ctx.clone(),
-      move |raw: u32, value: String| -> rquickjs::Result<()> {
-        let mut dom = dom.borrow_mut();
-        let Ok(id) = dom.node_id_from_index(raw as usize) else {
-          return Ok(());
-        };
-        match &mut dom.node_mut(id).kind {
-          NodeKind::Text { content } | NodeKind::Comment { content } => {
-            content.clear();
-            content.push_str(&value);
-          }
-          NodeKind::ProcessingInstruction { data, .. } => {
-            data.clear();
-            data.push_str(&value);
-          }
-          _ => {}
-        }
-        Ok(())
-      },
-    )?;
+    let f = Function::new(ctx.clone(), move |raw: u32, value: String| -> rquickjs::Result<()> {
+      let mut dom = dom.borrow_mut();
+      let Ok(id) = dom.node_id_from_index(raw as usize) else {
+        return Ok(());
+      };
+      let _ = dom.set_character_data(id, &value);
+      Ok(())
+    })?;
     globals.set("__dom_set_node_value", f)?;
   }
 
@@ -1011,6 +998,10 @@ mod tests {
   use super::*;
 
   use crate::dom::parse_html;
+  use crate::dom2::{
+    LiveMutationEvent, LiveMutationTestRecorder, MutationObserverId, MutationObserverInit,
+    MutationRecordType,
+  };
   use crate::error::{Error, Result};
   use crate::resource::{FetchedResource, ResourceFetcher};
   use rquickjs::{Context, Runtime};
@@ -1130,6 +1121,98 @@ mod tests {
         Ok(())
       })
       .expect("js eval");
+  }
+
+  #[test]
+  fn node_value_mutations_go_through_dom2_pipeline() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let root = doc.root();
+    let text = doc.create_text("a");
+    let comment = doc.create_comment("b");
+
+    // Attach nodes directly under the document node so JS can reach them via
+    // `document.firstChild` / `nextSibling`. This bypasses hierarchy constraints but is sufficient
+    // for exercising the `nodeValue` setter plumbing.
+    doc.node_mut(root).children.push(text);
+    doc.node_mut(root).children.push(comment);
+    doc.node_mut(text).parent = Some(root);
+    doc.node_mut(comment).parent = Some(root);
+
+    let observer_id: MutationObserverId = 1;
+    let mut options = MutationObserverInit::default();
+    options.character_data = true;
+    options.character_data_old_value = true;
+    options.subtree = true;
+    doc
+      .mutation_observer_observe(observer_id, root, options)
+      .expect("observe should succeed");
+
+    let recorder = LiveMutationTestRecorder::default();
+    doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+    let dom: SharedDom2Document = Rc::new(RefCell::new(doc));
+    let gen_before = dom.borrow().mutation_generation();
+
+    let rt = Runtime::new().expect("quickjs runtime");
+    let ctx = Context::full(&rt).expect("quickjs context");
+    ctx
+      .with(|ctx| -> rquickjs::Result<()> {
+        install_dom2_bindings(ctx.clone(), Rc::clone(&dom))?;
+        ctx.eval::<(), _>(
+          "document.firstChild.nodeValue = 'hello';\
+           document.firstChild.nextSibling.nodeValue = 'world';",
+        )?;
+        Ok(())
+      })
+      .expect("js eval");
+
+    {
+      let dom_ref = dom.borrow();
+      assert_eq!(dom_ref.text_data(text).unwrap(), "hello");
+      assert_eq!(dom_ref.comment_data(comment).unwrap(), "world");
+      assert_eq!(
+        dom_ref.mutation_generation(),
+        gen_before + 1,
+        "mutation_generation should bump only for Text node replacements"
+      );
+    }
+
+    let records = dom
+      .borrow_mut()
+      .mutation_observer_take_records(observer_id);
+    assert_eq!(records.len(), 2);
+
+    let text_record = records
+      .iter()
+      .find(|record| record.target == text)
+      .expect("expected characterData record for Text node");
+    assert_eq!(text_record.type_, MutationRecordType::CharacterData);
+    assert_eq!(text_record.old_value.as_deref(), Some("a"));
+
+    let comment_record = records
+      .iter()
+      .find(|record| record.target == comment)
+      .expect("expected characterData record for Comment node");
+    assert_eq!(comment_record.type_, MutationRecordType::CharacterData);
+    assert_eq!(comment_record.old_value.as_deref(), Some("b"));
+
+    assert_eq!(
+      recorder.take(),
+      vec![
+        LiveMutationEvent::ReplaceData {
+          node: text,
+          offset: 0,
+          removed_len: 1,
+          inserted_len: 5,
+        },
+        LiveMutationEvent::ReplaceData {
+          node: comment,
+          offset: 0,
+          removed_len: 1,
+          inserted_len: 5,
+        },
+      ]
+    );
   }
 
   fn find_first_element(dom: &Document, tag: &str) -> Option<NodeId> {

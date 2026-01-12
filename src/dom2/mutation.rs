@@ -832,7 +832,6 @@ impl Document {
       Comment,
       ProcessingInstruction,
     }
-
     let (target_kind, old_value) = match &self.node(node_id).kind {
       NodeKind::Text { content } => (ReplaceTarget::Text, content.clone()),
       NodeKind::Comment { content } => (ReplaceTarget::Comment, content.clone()),
@@ -884,6 +883,19 @@ impl Document {
     }
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
+  }
+
+  /// Set the `data` string for any CharacterData node (Text, Comment, ProcessingInstruction).
+  ///
+  /// This is primarily used by binding layers implementing `Node.nodeValue` / `CharacterData.data`.
+  ///
+  /// Per DOM, setting `nodeValue` on non-CharacterData nodes is a no-op.
+  pub fn set_character_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
+    match self.replace_data(node, 0, usize::MAX, data) {
+      Ok(changed) => Ok(changed),
+      Err(DomError::InvalidNodeType) => Ok(false),
+      Err(err) => Err(err),
+    }
   }
 
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {

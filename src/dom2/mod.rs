@@ -668,7 +668,6 @@ impl Document {
   pub fn set_has_window_event_parent(&mut self, has: bool) {
     self.has_window_event_parent = has;
   }
-
   pub fn node(&self, id: NodeId) -> &Node {
     &self.nodes[id.0]
   }
