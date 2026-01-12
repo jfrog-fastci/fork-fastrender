@@ -34,11 +34,15 @@ pub struct RuntimeToggles {
 impl RuntimeToggles {
   /// Parse all `FASTR_*` environment variables into a toggle map.
   pub fn from_env() -> Self {
-    let raw = std::env::vars()
+    Self::from_vars_iter(std::env::vars())
+  }
+
+  pub(crate) fn from_vars_iter(vars: impl IntoIterator<Item = (String, String)>) -> Self {
+    let raw = vars
+      .into_iter()
       .filter(|(k, _)| k.starts_with("FASTR_"))
       .collect::<HashMap<_, _>>();
-    let config = DebugConfig::from_env_map(&raw);
-    Self { raw, config }
+    Self::from_map(raw)
   }
 
   /// Construct a toggle set from a provided map of key/value pairs.
@@ -1159,38 +1163,6 @@ fn parse_presence_bool(raw: Option<&String>) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::collections::HashMap;
-
-  struct EnvGuard {
-    vars: Vec<(String, Option<String>)>,
-  }
-
-  impl EnvGuard {
-    fn set(pairs: &[(&str, &str)]) -> Self {
-      let vars = pairs
-        .iter()
-        .map(|(key, val)| {
-          let key = key.to_string();
-          let prev = std::env::var(key.clone()).ok();
-          std::env::set_var(key.clone(), val);
-          (key, prev)
-        })
-        .collect();
-      Self { vars }
-    }
-  }
-
-  impl Drop for EnvGuard {
-    fn drop(&mut self) {
-      for (key, prev) in self.vars.iter().rev() {
-        if let Some(val) = prev {
-          std::env::set_var(key, val);
-        } else {
-          std::env::remove_var(key);
-        }
-      }
-    }
-  }
 
   #[test]
   fn runtime_toggles_recovers_from_poisoned_lock() {
@@ -1260,17 +1232,19 @@ mod tests {
   }
 
   #[test]
-  fn parses_debug_config_from_env() {
-    let _guard = EnvGuard::set(&[
-      ("FASTR_RENDER_TIMINGS", "1"),
-      ("FASTR_DISPLAY_LIST_PARALLEL", "0"),
-      ("FASTR_TRACE_TEXT", "needle"),
-      ("FASTR_TRACE_FLEX_TEXT", "4,5"),
-      ("FASTR_LOG_SLOW_LAYOUT_MS", "250"),
-      ("FASTR_PREFERS_COLOR_SCHEME", "dark"),
-    ]);
+  fn parses_debug_config_from_vars_iter() {
+    let vars = [
+      ("FASTR_RENDER_TIMINGS".to_string(), "1".to_string()),
+      ("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string()),
+      ("FASTR_TRACE_TEXT".to_string(), "needle".to_string()),
+      ("FASTR_TRACE_FLEX_TEXT".to_string(), "4,5".to_string()),
+      ("FASTR_LOG_SLOW_LAYOUT_MS".to_string(), "250".to_string()),
+      ("FASTR_PREFERS_COLOR_SCHEME".to_string(), "dark".to_string()),
+      // Non-FASTR variables must be ignored, matching `RuntimeToggles::from_env`.
+      ("RUST_LOG".to_string(), "debug".to_string()),
+    ];
 
-    let toggles = RuntimeToggles::from_env();
+    let toggles = RuntimeToggles::from_vars_iter(vars);
 
     assert!(toggles.truthy("FASTR_RENDER_TIMINGS"));
     assert!(!toggles.truthy_with_default("FASTR_DISPLAY_LIST_PARALLEL", true));
@@ -1284,5 +1258,6 @@ mod tests {
       toggles.config().media.prefers_color_scheme,
       Some(ColorScheme::Dark)
     );
+    assert_eq!(toggles.get("RUST_LOG"), None);
   }
 }
