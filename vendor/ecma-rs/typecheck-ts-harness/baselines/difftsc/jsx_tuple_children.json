@@ -2,10 +2,10 @@
   "schema_version": 2,
   "metadata": {
     "typescript_version": "5.9.3",
+    "bundled_typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
       "jsx": 2,
-      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": true,
       "noUncheckedIndexedAccess": false,
@@ -32,6 +32,14 @@
       "file": "main.tsx",
       "start": 190,
       "end": 193,
+      "category": "error",
+      "message": "Type 'number' is not assignable to type 'string'."
+    },
+    {
+      "code": 2322,
+      "file": "main.tsx",
+      "start": 311,
+      "end": 314,
       "category": "error",
       "message": "Type 'number' is not assignable to type 'string'."
     }

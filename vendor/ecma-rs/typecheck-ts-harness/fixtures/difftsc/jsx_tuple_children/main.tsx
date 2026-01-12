@@ -12,6 +12,10 @@ const fail = (
   </div>
 );
 
+// Variadic tuple-typed children.
+const variadicPass = <p>{1}{"a"}{"b"}</p>;
+const variadicFail = <p>{1}{2}</p>;
+
 // Per-index contextual typing (strict includes noImplicitAny).
 const contextual = (
   <span>
@@ -23,4 +27,3 @@ const contextual = (
     }}
   </span>
 );
-
