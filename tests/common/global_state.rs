@@ -5,6 +5,7 @@
 //! tests that mutate process-global state (environment variables, current directory, stage
 //! listeners, etc.) must coordinate to remain deterministic under parallel execution.
 
+use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -174,20 +175,35 @@ impl Drop for CurrentDirGuard {
 /// RAII guard that installs a process-global stage listener while holding the global test lock.
 #[must_use]
 pub(crate) struct StageListenerGuard {
-  _lock: MutexGuard<'static, ()>,
+  previous: Option<fastrender::render_control::StageListener>,
+  _lock: Option<MutexGuard<'static, ()>>,
+}
+
+thread_local! {
+  static STAGE_LISTENER_GUARD_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
 impl StageListenerGuard {
   pub(crate) fn new(listener: fastrender::render_control::StageListener) -> Self {
-    let lock = global_test_lock();
-    fastrender::render_control::set_stage_listener(Some(listener));
-    Self { _lock: lock }
+    let lock = STAGE_LISTENER_GUARD_DEPTH.with(|depth| {
+      let prev = depth.get();
+      depth.set(prev.saturating_add(1));
+      if prev == 0 {
+        Some(global_test_lock())
+      } else {
+        None
+      }
+    });
+
+    let previous = fastrender::render_control::swap_stage_listener(Some(listener));
+    Self { previous, _lock: lock }
   }
 }
 
 impl Drop for StageListenerGuard {
   fn drop(&mut self) {
-    fastrender::render_control::set_stage_listener(None);
+    fastrender::render_control::set_stage_listener(self.previous.take());
+    STAGE_LISTENER_GUARD_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
   }
 }
 
