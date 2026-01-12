@@ -134,8 +134,8 @@ impl VmError {
   /// available.
   ///
   /// This is useful for implementing spec algorithms like `IteratorClose` where iterator-closing
-  /// errors are suppressed for throw completions but override non-throw completions, and must
-  /// never replace VM-internal fatal errors such as `Termination`/`OutOfMemory`.
+  /// errors (from `GetMethod`/`Call`) can override an incoming completion, but must never replace
+  /// VM-internal fatal errors such as `Termination`/`OutOfMemory`.
   pub fn is_throw_completion(&self) -> bool {
     matches!(
       self,

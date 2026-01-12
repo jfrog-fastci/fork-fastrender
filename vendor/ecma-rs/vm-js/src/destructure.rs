@@ -33,10 +33,12 @@ fn iterator_close_on_err(
     return Err(err);
   }
 
-  // `IteratorClose` suppression rules (ECMA-262):
-  // - If the original completion is a throw completion, iterator closing is best-effort and any
-  //   *catchable* closing error is suppressed.
-  // - Never allow JS-visible closing errors to replace fatal VM failures (termination, OOM, etc).
+  // `IteratorClose` precedence rules (ECMA-262):
+  // - Errors produced while getting/calling `iterator.return` override the incoming completion
+  //   (even when the incoming completion is a throw completion).
+  // - Only the return-value-is-not-object TypeError check is skipped for throw completions.
+  // - Never allow close-time JS throw completions to replace fatal VM failures (termination, OOM,
+  //   etc).
   let original_is_throw = err.is_throw_completion();
 
   // Root the pending thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -55,18 +57,7 @@ fn iterator_close_on_err(
     crate::iterator::CloseCompletionKind::Throw,
   ) {
     Ok(()) => Err(err),
-    Err(close_err) => {
-      if original_is_throw && close_err.is_throw_completion() {
-        // Suppress JS-visible `IteratorClose` errors when we are already throwing.
-        Err(err)
-      } else if original_is_throw {
-        // Never suppress fatal VM errors (OOM/termination/etc).
-        Err(close_err)
-      } else {
-        // Preserve fatal/non-catchable original errors even if closing throws.
-        Err(err)
-      }
-    }
+    Err(close_err) => Err(if original_is_throw { close_err } else { err }),
   }
 }
 

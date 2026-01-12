@@ -16,7 +16,7 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn for_await_of_sync_iterator_suppresses_iterator_close_error_when_promise_resolve_throws() -> Result<(), VmError> {
+fn for_await_of_sync_iterator_close_error_overrides_promise_resolve_throw() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -51,13 +51,13 @@ fn for_await_of_sync_iterator_suppresses_iterator_close_error_when_promise_resol
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script("out.tag")?;
-  assert_eq!(value_to_string(&rt, value), "then");
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "close");
   Ok(())
 }
 
 #[test]
-fn for_await_of_sync_iterator_suppresses_iterator_close_error_when_awaited_value_rejects() -> Result<(), VmError> {
+fn for_await_of_sync_iterator_close_error_overrides_awaited_value_rejection() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -87,7 +87,7 @@ fn for_await_of_sync_iterator_suppresses_iterator_close_error_when_awaited_value
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script("out.tag")?;
-  assert_eq!(value_to_string(&rt, value), "reason");
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "close");
   Ok(())
 }

@@ -9,13 +9,13 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion_return_getter_throws(
+fn object_from_entries_iterator_close_return_getter_throw_overrides_original_throw(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   // When the iterator value access throws, `Object.fromEntries` performs `IteratorClose`. Per
-  // ECMA-262 `IteratorClose`, if the original completion is a throw completion, errors produced
-  // while getting/calling `iterator.return` must be suppressed.
+  // ECMA-262 `IteratorClose`, errors produced while getting/calling `iterator.return` override the
+  // incoming completion (even when the incoming completion is a throw completion).
   let value = rt.exec_script(
     r#"
       (function () {
@@ -41,7 +41,7 @@ fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion_retu
         try {
           Object.fromEntries(iter);
         } catch (e) {
-          return e === original;
+          return e === close;
         }
         return false;
       })()
@@ -52,7 +52,7 @@ fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion_retu
 }
 
 #[test]
-fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion_return_not_callable(
+fn object_from_entries_iterator_close_return_not_callable_overrides_original_throw(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -80,7 +80,7 @@ fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion_retu
         try {
           Object.fromEntries(iter);
         } catch (e) {
-          return e === original;
+          return e && e.name === "TypeError";
         }
         return false;
       })()
@@ -91,11 +91,11 @@ fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion_retu
 }
 
 #[test]
-fn promise_all_suppresses_iterator_close_errors_on_throw_completion() -> Result<(), VmError> {
+fn promise_all_step_error_does_not_invoke_iterator_close() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  // If `Promise.all`'s iterator step throws, `IteratorClose` is performed. If the close operation
-  // throws, it must not replace the original throw completion.
+  // If `Promise.all`'s iterator step throws, `PerformPromiseAll` does not perform `IteratorClose`
+  // (the iterator protocol itself failed, so `return()` must not be invoked).
   let promise_value = rt.exec_script(
     r#"
       var original = "original";
@@ -129,7 +129,7 @@ fn promise_all_suppresses_iterator_close_errors_on_throw_completion() -> Result<
 }
 
 #[test]
-fn promise_race_suppresses_iterator_close_errors_on_throw_completion() -> Result<(), VmError> {
+fn promise_race_step_error_does_not_invoke_iterator_close() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let promise_value = rt.exec_script(
@@ -165,7 +165,8 @@ fn promise_race_suppresses_iterator_close_errors_on_throw_completion() -> Result
 }
 
 #[test]
-fn weak_map_constructor_suppresses_iterator_close_errors_on_throw_completion() -> Result<(), VmError> {
+fn weak_map_constructor_iterator_close_return_getter_throw_overrides_original_throw(
+) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -193,7 +194,7 @@ fn weak_map_constructor_suppresses_iterator_close_errors_on_throw_completion() -
         try {
           new WeakMap(iter);
         } catch (e) {
-          return e === original;
+          return e === close;
         }
         return false;
       })()
@@ -204,7 +205,8 @@ fn weak_map_constructor_suppresses_iterator_close_errors_on_throw_completion() -
 }
 
 #[test]
-fn weak_set_constructor_suppresses_iterator_close_errors_on_throw_completion() -> Result<(), VmError> {
+fn weak_set_constructor_iterator_close_return_getter_throw_overrides_original_throw(
+) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -227,7 +229,7 @@ fn weak_set_constructor_suppresses_iterator_close_errors_on_throw_completion() -
         try {
           new WeakSet(iter);
         } catch (e) {
-          return e === original;
+          return e === close;
         }
         return false;
       })()

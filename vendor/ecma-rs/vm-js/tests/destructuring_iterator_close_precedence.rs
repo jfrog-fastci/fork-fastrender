@@ -7,7 +7,7 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn array_destructuring_suppresses_iterator_close_throw_on_throw_completion() {
+fn array_destructuring_iterator_close_throw_overrides_throw_completion() {
   let mut rt = new_runtime();
 
   let ok = rt
@@ -34,7 +34,7 @@ fn array_destructuring_suppresses_iterator_close_throw_on_throw_completion() {
         caught = e;
       }
 
-      caught === "default" && returnCalled === true
+      caught === "return" && returnCalled === true
       "#,
     )
     .unwrap();
@@ -77,4 +77,3 @@ fn array_destructuring_suppresses_iterator_close_non_object_return_on_throw_comp
 
   assert_eq!(ok, Value::Bool(true));
 }
-

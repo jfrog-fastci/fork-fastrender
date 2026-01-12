@@ -17,17 +17,18 @@ pub struct IteratorRecord {
 pub enum CloseCompletionKind {
   /// Closing on a *throw* completion.
   ///
-  /// Per ECMA-262 `IteratorClose`, when closing due to a throw completion, errors from
-  /// getting/calling `iterator.return` are suppressed and the non-object return-result TypeError
-  /// check is also skipped.
+  /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, `GetMethod(iterator, "return")` and
+  /// `Call(return, iterator)` are still performed. If either of those operations throws, that
+  /// throw completion overrides the incoming completion (even when the incoming completion is
+  /// itself a throw completion).
   ///
-  /// `vm-js` also has non-catchable VM failures (termination, OOM, invariant violations, etc);
-  /// those are never suppressed.
+  /// Only the non-object return-result TypeError check is skipped for throw completions.
   Throw,
   /// Closing on a *non-throw* completion.
   ///
-  /// Per ECMA-262 `IteratorClose`, throw completions produced while closing (`GetMethod`/`Call`)
-  /// override the incoming completion.
+  /// Per ECMA-262 `IteratorClose`, errors thrown while getting/calling `iterator.return` override
+  /// the incoming completion, and a non-object return value from `iterator.return` throws a
+  /// TypeError.
   NonThrow,
 }
 
@@ -324,15 +325,9 @@ pub fn iterator_close(
     record.iterator,
     return_key,
   ) {
-    Ok(v) => v,
-    Err(err) => {
-      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
-        // Spec: `IteratorClose` suppresses iterator-closing throw completions when the incoming
-        // completion is itself a throw completion.
-        return Ok(());
-      }
-      return Err(err);
-    }
+    Ok(m) => m,
+    // Spec: if `GetMethod` throws, that abrupt completion overrides the incoming completion.
+    Err(err) => return Err(err),
   };
   let Some(return_method) = return_method else {
     return Ok(());
@@ -348,17 +343,13 @@ pub fn iterator_close(
     &[],
   ) {
     Ok(v) => v,
-    Err(err) => {
-      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
-        return Ok(());
-      }
-      return Err(err);
-    }
+    // Spec: if `Call` throws, that abrupt completion overrides the incoming completion.
+    Err(err) => return Err(err),
   };
 
   if completion_kind == CloseCompletionKind::Throw {
-    // Spec: for throw completions, ignore iterator-closing errors and skip the return-result type
-    // check.
+    // Spec: for throw completions, return the incoming completion before performing the
+    // return-result type check (so non-object return values are ignored).
     return Ok(());
   }
 
@@ -380,10 +371,11 @@ pub fn iterator_close(
 /// This is a convenience wrapper for callers that need the *full* `IteratorClose` semantics from
 /// ECMA-262 (which takes an input completion):
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
-/// - If `completion_is_throw` is `true`, iterator-closing throw completions are suppressed and the
-///   "return result is not object" TypeError check is skipped.
-/// - If `completion_is_throw` is `false`, iterator-closing throw completions override the incoming
-///   completion.
+/// - If `completion_is_throw` is `true`, the return-result type check is skipped (matching spec
+///   step 7).
+/// - If `completion_is_throw` is `false`, a non-object return result throws a TypeError.
+///
+/// In both cases, errors thrown while getting/calling `iterator.return` are propagated.
 pub fn iterator_close_strict(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -404,9 +396,13 @@ pub fn iterator_close_strict(
 ///
 /// This is the spec-shaped form of iterator closing used by `for..of` and iterator-consuming
 /// algorithms:
-/// - For throw completions, iterator-closing throw completions are suppressed (and the return-result
-///   type check is skipped).
-/// - For non-throw completions, iterator-closing throw completions override the incoming completion.
+/// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
+/// - If getting/calling `iterator.return` throws, that throw completion overrides `completion` and
+///   is returned.
+/// - If `completion` is a throw completion, the non-object return-result TypeError check is skipped
+///   and `completion` is returned.
+/// - If `completion` is a non-throw completion and `iterator.return` does not return an object,
+///   a TypeError is thrown.
 pub fn iterator_close_with_completion(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -529,8 +525,9 @@ pub(crate) fn async_from_sync_iterator_close_call(
   };
 
   // `closeIterator` implements `IteratorClose(syncIteratorRecord, ThrowCompletion(reason))`.
-  // Closing errors are suppressed for throw completions, but fatal VM errors (OOM/termination) must
-  // still propagate.
+  // Per ECMA-262 `IteratorClose`, errors thrown while getting/calling `iterator.return` override the
+  // incoming completion (even when it is a throw completion). Only the non-object return-result
+  // TypeError check is skipped for throw completions.
   iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)?;
   Err(VmError::Throw(reason))
 }
@@ -719,8 +716,11 @@ fn async_from_sync_iterator_continuation(
     Err(err) => {
       if !done && close_on_rejection {
         // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
-        if let Some(thrown) = err.thrown_value() {
-          scope.push_root(thrown)?;
+        let original_is_throw = err.is_throw_completion();
+        if original_is_throw {
+          if let Some(thrown) = err.thrown_value() {
+            scope.push_root(thrown)?;
+          }
         }
         let record = IteratorRecord {
           iterator: sync_iterator,
@@ -728,12 +728,20 @@ fn async_from_sync_iterator_continuation(
           done: false,
         };
         // `AsyncFromSyncIteratorContinuation` calls `IteratorClose(syncIteratorRecord, valueWrapper)`
-        // where `valueWrapper` is a throw completion (`PromiseResolve` failed), so close errors are
-        // suppressed unless they represent a fatal VM failure (OOM/termination/etc).
-        if let Err(close_err) =
-          iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)
-        {
-          return Err(close_err);
+        // where `valueWrapper` is a throw completion (`PromiseResolve` failed). Closing errors
+        // override the incoming completion, but must never replace fatal VM failures
+        // (OOM/termination/etc).
+        if let Err(close_err) = iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw) {
+          if original_is_throw {
+            return if_abrupt_reject_promise(
+              vm,
+              host,
+              hooks,
+              &mut scope,
+              promise_capability,
+              close_err,
+            );
+          }
         }
       }
       return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err);

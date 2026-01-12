@@ -7,7 +7,7 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn promise_all_suppresses_iterator_close_errors_when_resolve_throws() -> Result<(), VmError> {
+fn promise_all_close_error_overrides_promise_resolve_throw() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -38,8 +38,7 @@ fn promise_all_suppresses_iterator_close_errors_when_resolve_throws() -> Result<
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script("out === 'bad promise resolve'")?;
+  let value = rt.exec_script("out && out.name === 'TypeError'")?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
-

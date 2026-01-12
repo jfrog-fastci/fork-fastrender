@@ -499,7 +499,7 @@ fn async_iterator_close_invokes_sync_return() -> Result<(), VmError> {
 }
 
 #[test]
-fn async_from_sync_iterator_continuation_promise_resolve_throw_suppresses_iterator_close_error(
+fn async_from_sync_iterator_continuation_close_error_overrides_promise_resolve_throw(
 ) -> Result<(), VmError> {
   ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
     cell.borrow_mut().take();
@@ -698,12 +698,12 @@ fn async_from_sync_iterator_continuation_promise_resolve_throw_suppresses_iterat
   result?;
 
   let reason = ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| cell.borrow_mut().take());
-  assert_eq!(reason.as_deref(), Some("promiseResolve"));
+  assert_eq!(reason.as_deref(), Some("close"));
   Ok(())
 }
 
 #[test]
-fn async_from_sync_iterator_close_iterator_suppresses_iterator_close_error() -> Result<(), VmError> {
+fn async_from_sync_iterator_close_iterator_error_overrides_value_rejection() -> Result<(), VmError> {
   ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
     cell.borrow_mut().take();
   });
@@ -871,6 +871,6 @@ fn async_from_sync_iterator_close_iterator_suppresses_iterator_close_error() -> 
   result?;
 
   let reason = ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| cell.borrow_mut().take());
-  assert_eq!(reason.as_deref(), Some("reason"));
+  assert_eq!(reason.as_deref(), Some("close"));
   Ok(())
 }

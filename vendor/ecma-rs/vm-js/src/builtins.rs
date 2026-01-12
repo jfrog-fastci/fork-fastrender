@@ -2369,8 +2369,9 @@ pub fn array_constructor_from(
         // IteratorClose on abrupt completion, matching other iterator-consuming builtins.
         if !iterator_record.done {
           // Per ECMA-262 `IteratorClose`:
-          // - If the original completion is a throw completion, any *throw completion* produced
-          //   while getting/calling `iterator.return` is suppressed (original error preserved).
+          // - Errors thrown while getting/calling `iterator.return` override the incoming
+          //   completion (even when the incoming completion is a throw completion).
+          // - For throw completions, the return-result type check is skipped.
           // - vm-js also has non-catchable VM failures (termination, OOM, etc) which must never be
           //   replaced by a catchable iterator-closing error.
           let original_is_throw = err.is_throw_completion();
@@ -3164,7 +3165,7 @@ fn typed_array_constructor_construct_impl(
             scope.heap_mut().remove_root(root);
           }
           if let Err(close_err) = close_res {
-            if original_is_throw && !close_err.is_throw_completion() {
+            if original_is_throw {
               return Err(close_err);
             }
           }
@@ -20695,9 +20696,10 @@ pub fn map_constructor_construct(
     Ok(()) => Ok(Value::Object(map)),
     Err(err) => {
       if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
+        // Per ECMA-262 `IteratorClose`, errors produced while getting/calling `iterator.return`
+        // override the incoming completion (even when the incoming completion is a throw
+        // completion). vm-js also has non-catchable VM failures (termination, OOM, etc) which must
+        // never be replaced by a catchable iterator-closing error.
         let original_is_throw = err.is_throw_completion();
         let pending_root = err
           .thrown_value()
@@ -20715,9 +20717,7 @@ pub fn map_constructor_construct(
           scope.heap_mut().remove_root(root);
         }
         if let Err(close_err) = close_res {
-          // Only propagate close errors for non-catchable failures; otherwise preserve the original
-          // throw completion.
-          if original_is_throw && !close_err.is_throw_completion() {
+          if original_is_throw {
             return Err(close_err);
           }
         }
@@ -20809,9 +20809,10 @@ pub fn set_constructor_construct(
     Ok(()) => Ok(Value::Object(set)),
     Err(err) => {
       if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
+        // Per ECMA-262 `IteratorClose`, errors produced while getting/calling `iterator.return`
+        // override the incoming completion (even when the incoming completion is a throw
+        // completion). vm-js also has non-catchable VM failures (termination, OOM, etc) which must
+        // never be replaced by a catchable iterator-closing error.
         let original_is_throw = err.is_throw_completion();
         let pending_root = err
           .thrown_value()
@@ -20829,9 +20830,7 @@ pub fn set_constructor_construct(
           scope.heap_mut().remove_root(root);
         }
         if let Err(close_err) = close_res {
-          // Only propagate close errors for non-catchable failures; otherwise preserve the original
-          // throw completion.
-          if original_is_throw && !close_err.is_throw_completion() {
+          if original_is_throw {
             return Err(close_err);
           }
         }
@@ -21715,9 +21714,10 @@ pub fn weak_map_constructor_construct(
     Ok(()) => Ok(Value::Object(map)),
     Err(err) => {
       if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
+        // Per ECMA-262 `IteratorClose`, errors produced while getting/calling `iterator.return`
+        // override the incoming completion (even when the incoming completion is a throw
+        // completion). vm-js also has non-catchable VM failures (termination, OOM, etc) which must
+        // never be replaced by a catchable iterator-closing error.
         let original_is_throw = err.is_throw_completion();
         let pending_root = err
           .thrown_value()
@@ -21735,9 +21735,7 @@ pub fn weak_map_constructor_construct(
           scope.heap_mut().remove_root(root);
         }
         if let Err(close_err) = close_res {
-          // Only propagate close errors for non-catchable failures; otherwise preserve the original
-          // throw completion.
-          if original_is_throw && !close_err.is_throw_completion() {
+          if original_is_throw {
             return Err(close_err);
           }
         }
@@ -21821,9 +21819,10 @@ pub fn weak_set_constructor_construct(
     Ok(()) => Ok(Value::Object(set)),
     Err(err) => {
       if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
+        // Per ECMA-262 `IteratorClose`, errors produced while getting/calling `iterator.return`
+        // override the incoming completion (even when the incoming completion is a throw
+        // completion). vm-js also has non-catchable VM failures (termination, OOM, etc) which must
+        // never be replaced by a catchable iterator-closing error.
         let original_is_throw = err.is_throw_completion();
         let pending_root = err
           .thrown_value()
@@ -21841,9 +21840,7 @@ pub fn weak_set_constructor_construct(
           scope.heap_mut().remove_root(root);
         }
         if let Err(close_err) = close_res {
-          // Only propagate close errors for non-catchable failures; otherwise preserve the original
-          // throw completion.
-          if original_is_throw && !close_err.is_throw_completion() {
+          if original_is_throw {
             return Err(close_err);
           }
         }
