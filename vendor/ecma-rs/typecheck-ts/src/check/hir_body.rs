@@ -4471,6 +4471,8 @@ impl<'a> Checker<'a> {
       file: self.file,
       range: loc_to_range(self.file, call.loc),
     };
+    let overload_error_range =
+      call.stx.arguments.first().map(|arg| loc_to_range(self.file, arg.stx.value.loc));
 
     let mut ty = if call_optional && callee_base == prim.never {
       self.record_call_signature(call.loc, None);
@@ -4632,7 +4634,15 @@ impl<'a> Checker<'a> {
 
       if !reported_assignability {
         for diag in &resolution.diagnostics {
-          self.diagnostics.push(diag.clone());
+          let mut diag = diag.clone();
+          if diag.code.as_str() == codes::NO_OVERLOAD.as_str()
+            && diag.message == "no overload matches this call"
+          {
+            if let Some(range) = overload_error_range {
+              diag.primary = Span { file: self.file, range };
+            }
+          }
+          self.diagnostics.push(diag);
         }
       }
       if resolution.diagnostics.is_empty() {
@@ -4997,6 +5007,8 @@ impl<'a> Checker<'a> {
       file: self.file,
       range: loc_to_range(self.file, call.loc),
     };
+    let overload_error_range =
+      call.stx.arguments.first().map(|arg| loc_to_range(self.file, arg.stx.value.loc));
     let mut resolution = resolve_construct(
       &self.store,
       &self.relate,
@@ -5155,7 +5167,15 @@ impl<'a> Checker<'a> {
 
     if !reported_assignability {
       for diag in &resolution.diagnostics {
-        self.diagnostics.push(diag.clone());
+        let mut diag = diag.clone();
+        if diag.code.as_str() == codes::NO_OVERLOAD.as_str()
+          && diag.message == "no overload matches this call"
+        {
+          if let Some(range) = overload_error_range {
+            diag.primary = Span { file: self.file, range };
+          }
+        }
+        self.diagnostics.push(diag);
       }
     }
     if resolution.diagnostics.is_empty() {
@@ -5414,6 +5434,8 @@ impl<'a> Checker<'a> {
       file: self.file,
       range: loc_to_range(self.file, span_loc),
     };
+    let overload_error_range =
+      arg_exprs.first().map(|arg| loc_to_range(self.file, arg.stx.value.loc));
     let mut resolution = resolve_construct(
       &self.store,
       &self.relate,
@@ -5570,7 +5592,15 @@ impl<'a> Checker<'a> {
 
     if !reported_assignability {
       for diag in &resolution.diagnostics {
-        self.diagnostics.push(diag.clone());
+        let mut diag = diag.clone();
+        if diag.code.as_str() == codes::NO_OVERLOAD.as_str()
+          && diag.message == "no overload matches this call"
+        {
+          if let Some(range) = overload_error_range {
+            diag.primary = Span { file: self.file, range };
+          }
+        }
+        self.diagnostics.push(diag);
       }
     }
     if resolution.diagnostics.is_empty() {

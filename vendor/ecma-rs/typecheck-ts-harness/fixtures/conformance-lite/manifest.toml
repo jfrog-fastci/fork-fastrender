@@ -30,11 +30,6 @@ status = "xfail"
 reason = "Flow narrowing for typeof checks is not implemented yet."
 
 [[expectations]]
-id = "mismatch/overload_no_match.ts"
-status = "xfail"
-reason = "Overload resolution diagnostics differ from tsc (code/span)."
-
-[[expectations]]
 id = "match/literal_widening.ts"
 status = "xfail"
 reason = "Literal widening for `let` initializers does not match tsc yet."
