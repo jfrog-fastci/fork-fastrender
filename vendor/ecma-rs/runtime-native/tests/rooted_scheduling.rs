@@ -301,20 +301,40 @@ impl Drop for ParallelJoinGuard {
 fn parallel_spawn_rooted_roots_and_relocates_task_context() {
   let _rt = TestRuntimeGuard::new();
 
+  // Worker thread startup and scheduling can legitimately take longer on debug/test builds (which
+  // are slower, and often run under heavy contention on CI hosts). Keep release builds strict, but
+  // avoid flaky timeouts in debug builds.
+  const TIMEOUT: Duration = if cfg!(debug_assertions) {
+    Duration::from_secs(30)
+  } else {
+    Duration::from_secs(2)
+  };
+
   // Ensure the global worker pool is initialized.
   extern "C" fn noop(_data: *mut u8) {}
   let warmup = runtime_native::rt_parallel_spawn(noop, core::ptr::null_mut());
   runtime_native::rt_parallel_join(&warmup as *const TaskId, 1);
 
-  // Match the runtime's worker-count selection logic.
+  // Match the runtime's worker-count selection logic (`parallel::Scheduler::new`):
+  // - honor the `ECMA_RS_RUNTIME_NATIVE_THREADS` env var
+  // - accept `RT_NUM_THREADS` as a legacy alias
+  // - clamp debug builds to a reasonable maximum to keep CI stable on large machines
   let workers = std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS")
     .ok()
+    .or_else(|| std::env::var("RT_NUM_THREADS").ok())
     .and_then(|v| v.parse::<usize>().ok())
     .filter(|&n| n > 0)
-    .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+    .unwrap_or_else(|| {
+      let default = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+      if cfg!(debug_assertions) {
+        default.min(32)
+      } else {
+        default
+      }
+    });
 
   // Ensure worker threads are registered before we try to saturate them with blocking tasks.
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   while runtime_native::threading::thread_counts().worker < workers {
     assert!(Instant::now() < deadline, "worker threads did not register in time");
     std::thread::yield_now();
@@ -331,7 +351,7 @@ fn parallel_spawn_rooted_roots_and_relocates_task_context() {
     tasks.push(runtime_native::rt_parallel_spawn(blocking_task, ctx as *const BlockCtx as *mut u8));
   }
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   while ctx.started.load(Ordering::Acquire) < workers {
     assert!(Instant::now() < deadline, "worker threads did not start blocking tasks in time");
     std::thread::yield_now();
@@ -364,7 +384,7 @@ fn parallel_spawn_rooted_roots_and_relocates_task_context() {
     ctx.release_cv.notify_all();
   }
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   loop {
     let ptr = runtime_native::rt_weak_get(weak);
     assert!(!ptr.is_null());
@@ -378,7 +398,7 @@ fn parallel_spawn_rooted_roots_and_relocates_task_context() {
   }
 
   // Once the task completes, its root must be released even if the TaskId is not joined yet.
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + TIMEOUT;
   loop {
     collect_major(&mut heap);
     if runtime_native::rt_weak_get(weak).is_null() {
