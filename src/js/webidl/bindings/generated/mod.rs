@@ -1649,6 +1649,47 @@ pub mod window {
       .object_get_own_property(global, &key)?
       .is_some()
     {
+      let existing_ctor = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = existing_ctor {
+        let proto_obj = if let Ok(slots) = rt.scope.heap().get_function_native_slots(ctor_obj) {
+          if !matches!(slots.get(1), Some(Value::Number(n)) if *n == 4200005633u64 as f64) {
+            None
+          } else {
+            match slots.get(0).copied().unwrap_or(Value::Undefined) {
+              Value::Object(obj) => Some(obj),
+              _ => None,
+            }
+          }
+        } else {
+          None
+        };
+        if let Some(proto_obj) = proto_obj {
+          let parent_proto = {
+            let ctor_key = rt.property_key("EventTarget")?;
+            let ctor_value = rt
+              .scope
+              .heap()
+              .object_get_own_data_property_value(global, &ctor_key)?
+              .unwrap_or(Value::Undefined);
+            if let Value::Object(ctor_obj) = ctor_value {
+              let proto_key = rt.property_key("prototype")?;
+              match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+                Value::Object(obj) => Some(obj),
+                _ => None,
+              }
+            } else {
+              None
+            }
+          };
+          if let Some(parent_proto) = parent_proto {
+            rt.set_prototype(proto_obj, Some(parent_proto))?;
+          }
+        }
+      }
       return Ok(());
     }
 
@@ -1677,7 +1718,10 @@ pub mod window {
       rt.set_prototype(proto_node, Some(parent_proto))?;
     }
 
-    let slots = [Value::Object(proto_node)];
+    let slots = [
+      Value::Object(proto_node),
+      Value::Number(4200005633u64 as f64),
+    ];
     let ctor_node = rt.alloc_native_function_with_slots(
       node_call_without_new,
       Some(node_construct),

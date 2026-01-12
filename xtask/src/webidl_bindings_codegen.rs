@@ -2326,8 +2326,19 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
   let mut interface_installers: Vec<String> = Vec::new();
 
-  for iface in selected.values() {
+  for (iface_index, iface) in selected.values().enumerate() {
     let global_iface = is_global_iface(&iface.name);
+    let proto_chain_parent = if config.prototype_chains {
+      iface.inherits.as_deref().filter(|parent| {
+        selected.contains_key(*parent) && !is_global_iface(parent)
+      })
+    } else {
+      None
+    };
+    // Marker used to detect constructors installed by this generated module so we can patch
+    // prototype chains without clobbering legacy globals.
+    let proto_chain_marker: Option<u64> =
+      proto_chain_parent.map(|_| 0xFA57_0000u64 + iface_index as u64);
     let install_name = if global_iface {
       format!(
         "install_{}_ops_bindings_vm_js",
@@ -2354,10 +2365,23 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
     // interface operations (e.g. `Window.setTimeout`) we need to check each operation independently
     // because a realm may already have some (handwritten) globals installed.
     if !global_iface {
-      out.push_str(&format!(
-        "  let key = rt.property_key({name_lit})?;\n  if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {{\n    return Ok(());\n  }}\n\n",
-        name_lit = rust_string_literal(&iface.name),
-      ));
+      if let (Some(parent), Some(marker)) = (proto_chain_parent, proto_chain_marker) {
+        // For interfaces with prototype chains we may need to patch the prototype on subsequent
+        // runs (e.g. install Node before EventTarget, then rerun Node after EventTarget is
+        // installed). Only patch when we can prove the existing constructor was installed by this
+        // generated module.
+        out.push_str(&format!(
+          "  let key = rt.property_key({name_lit})?;\n  if rt\n    .scope\n    .heap()\n    .object_get_own_property(global, &key)?\n    .is_some()\n  {{\n    let existing_ctor = rt\n      .scope\n      .heap()\n      .object_get_own_data_property_value(global, &key)?\n      .unwrap_or(Value::Undefined);\n    if let Value::Object(ctor_obj) = existing_ctor {{\n      let proto_obj = if let Ok(slots) = rt.scope.heap().get_function_native_slots(ctor_obj) {{\n        if !matches!(slots.get(1), Some(Value::Number(n)) if *n == {marker}u64 as f64) {{\n          None\n        }} else {{\n          match slots.get(0).copied().unwrap_or(Value::Undefined) {{\n            Value::Object(obj) => Some(obj),\n            _ => None,\n          }}\n        }}\n      }} else {{\n        None\n      }};\n      if let Some(proto_obj) = proto_obj {{\n        let parent_proto = {{\n          let ctor_key = rt.property_key({parent_lit})?;\n          let ctor_value = rt\n            .scope\n            .heap()\n            .object_get_own_data_property_value(global, &ctor_key)?\n            .unwrap_or(Value::Undefined);\n          if let Value::Object(ctor_obj) = ctor_value {{\n            let proto_key = rt.property_key(\"prototype\")?;\n            match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {{\n              Value::Object(obj) => Some(obj),\n              _ => None,\n            }}\n          }} else {{\n            None\n          }}\n        }};\n        if let Some(parent_proto) = parent_proto {{\n          rt.set_prototype(proto_obj, Some(parent_proto))?;\n        }}\n      }}\n    }}\n    return Ok(());\n  }}\n\n",
+          name_lit = rust_string_literal(&iface.name),
+          parent_lit = rust_string_literal(parent),
+          marker = marker,
+        ));
+      } else {
+        out.push_str(&format!(
+          "  let key = rt.property_key({name_lit})?;\n  if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {{\n    return Ok(());\n  }}\n\n",
+          name_lit = rust_string_literal(&iface.name),
+        ));
+      }
     }
 
     out.push_str("  let global_var_attrs = DataPropertyAttributes::new(true, false, true);\n");
@@ -2471,8 +2495,18 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
       .min()
       .unwrap_or(0);
 
+    let slots_line = match proto_chain_marker {
+      Some(marker) => format!(
+        "  let slots = [Value::Object({proto_var}), Value::Number({marker}u64 as f64)];\n",
+        proto_var = proto_var,
+        marker = marker
+      ),
+      None => format!("  let slots = [Value::Object({proto_var})];\n", proto_var = proto_var),
+    };
+
+    out.push_str(&slots_line);
     out.push_str(&format!(
-      "  let slots = [Value::Object({proto_var})];\n  let ctor_{snake} = rt.alloc_native_function_with_slots({ctor_call_fn}, {construct_expr}, {name_lit}, {length}, &slots)?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(ctor_{snake}), global_var_attrs)?;\n  rt.define_data_property_str(ctor_{snake}, \"prototype\", Value::Object({proto_var}), ctor_link_attrs)?;\n  rt.define_data_property_str({proto_var}, \"constructor\", Value::Object(ctor_{snake}), ctor_link_attrs)?;\n",
+      "  let ctor_{snake} = rt.alloc_native_function_with_slots({ctor_call_fn}, {construct_expr}, {name_lit}, {length}, &slots)?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(ctor_{snake}), global_var_attrs)?;\n  rt.define_data_property_str(ctor_{snake}, \"prototype\", Value::Object({proto_var}), ctor_link_attrs)?;\n  rt.define_data_property_str({proto_var}, \"constructor\", Value::Object(ctor_{snake}), ctor_link_attrs)?;\n",
       snake = to_snake_ident(&iface.name),
       ctor_call_fn = ctor_call_fn,
       construct_expr = construct_expr,

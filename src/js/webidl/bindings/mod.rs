@@ -4,6 +4,13 @@
 //!   [`webidl_vm_js::WebIdlBindingsHost`] + [`webidl_vm_js::host_from_hooks`]).
 //! - [`generated_legacy`] contains legacy `webidl-js-runtime` bindings (kept temporarily for
 //!   migration and for unit tests that exercise the old bindings/runtime surface).
+//! - The `vm-js` backend emits **per-interface installers** (e.g. [`install_url_bindings_vm_js`]) so
+//!   embedders can incrementally adopt generated bindings without clobbering legacy DOM globals.
+//!   Installers are **non-clobbering**: if the target global already exists on `globalThis`, the
+//!   generated installer returns `Ok(())` and leaves the existing binding in place. For interfaces
+//!   with prototype inheritance, re-running the installer may **patch the prototype chain** of a
+//!   previously-generated constructor (detected via an internal marker) without replacing the
+//!   global.
 //!
 //! Alongside the generated scaffolding we keep a small set of handwritten helpers (e.g.
 //! `DOMException`) that provide spec-shaped behaviour needed by early bindings/tests.
