@@ -11,6 +11,7 @@
 use crate::ui::bookmarks::BookmarkStore;
 use crate::ui::global_history::{GlobalHistoryEntry, GlobalHistoryStore};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 const BOOKMARKS_ENV_PATH: &str = "FASTR_BROWSER_BOOKMARKS_PATH";
@@ -78,7 +79,15 @@ impl PersistedGlobalHistoryStore {
 }
 
 fn profile_path(env_key: &str, file_name: &str) -> PathBuf {
-  if let Some(raw) = std::env::var_os(env_key) {
+  profile_path_from_lookup(env_key, file_name, |k| std::env::var_os(k))
+}
+
+fn profile_path_from_lookup(
+  env_key: &str,
+  file_name: &str,
+  mut get: impl FnMut(&str) -> Option<OsString>,
+) -> PathBuf {
+  if let Some(raw) = get(env_key) {
     if !raw.is_empty() {
       return PathBuf::from(raw);
     }
@@ -283,54 +292,31 @@ fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  struct EnvVarGuard {
-    bookmarks_prev: Option<std::ffi::OsString>,
-    history_prev: Option<std::ffi::OsString>,
-  }
-
-  impl EnvVarGuard {
-    fn new() -> Self {
-      Self {
-        bookmarks_prev: std::env::var_os(BOOKMARKS_ENV_PATH),
-        history_prev: std::env::var_os(HISTORY_ENV_PATH),
-      }
-    }
-  }
-
-  impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-      match &self.bookmarks_prev {
-        Some(v) => std::env::set_var(BOOKMARKS_ENV_PATH, v),
-        None => std::env::remove_var(BOOKMARKS_ENV_PATH),
-      }
-      match &self.history_prev {
-        Some(v) => std::env::set_var(HISTORY_ENV_PATH, v),
-        None => std::env::remove_var(HISTORY_ENV_PATH),
-      }
-    }
-  }
+  use std::collections::HashMap;
+  use std::ffi::OsString;
 
   #[test]
   fn bookmarks_path_env_override_wins() {
-    let _lock = crate::testing::global_test_lock();
-    let _guard = EnvVarGuard::new();
-
-    std::env::set_var(BOOKMARKS_ENV_PATH, "/tmp/fastr_bookmarks_override.json");
+    let mut env = HashMap::new();
+    env.insert(
+      BOOKMARKS_ENV_PATH,
+      OsString::from("/tmp/fastr_bookmarks_override.json"),
+    );
     assert_eq!(
-      bookmarks_path(),
+      profile_path_from_lookup(BOOKMARKS_ENV_PATH, BOOKMARKS_FILE_NAME, |k| env.get(k).cloned()),
       PathBuf::from("/tmp/fastr_bookmarks_override.json")
     );
   }
 
   #[test]
   fn history_path_env_override_wins() {
-    let _lock = crate::testing::global_test_lock();
-    let _guard = EnvVarGuard::new();
-
-    std::env::set_var(HISTORY_ENV_PATH, "/tmp/fastr_history_override.json");
+    let mut env = HashMap::new();
+    env.insert(
+      HISTORY_ENV_PATH,
+      OsString::from("/tmp/fastr_history_override.json"),
+    );
     assert_eq!(
-      history_path(),
+      profile_path_from_lookup(HISTORY_ENV_PATH, HISTORY_FILE_NAME, |k| env.get(k).cloned()),
       PathBuf::from("/tmp/fastr_history_override.json")
     );
   }
