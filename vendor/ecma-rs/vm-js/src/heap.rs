@@ -5121,6 +5121,7 @@ impl<'a> Scope<'a> {
     let obj = HeapObject::Object(JsObject::new(None));
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
   }
+
   /// Allocates an empty `WeakSet` object on the heap.
   pub fn alloc_weak_set(&mut self) -> Result<GcObject, VmError> {
     self.alloc_weak_set_with_prototype(None)
@@ -5182,7 +5183,6 @@ impl<'a> Scope<'a> {
     };
     Ok(GcObject(self.heap.alloc_unchecked(HeapObject::Object(obj), new_bytes)?))
   }
-
   /// Allocates an ordinary object with the provided `[[Prototype]]` and own properties.
   pub fn alloc_object_with_properties(
     &mut self,
