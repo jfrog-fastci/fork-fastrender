@@ -10,6 +10,7 @@ use parse_js::ast::type_expr::TypeExpr;
 use parse_js::loc::Loc;
 use parse_js::operator::OperatorName;
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
 use super::builtins::{recognize_builtin, BuiltinCall};
 use super::CodegenError;
@@ -46,6 +47,34 @@ fn line_col_for_offset(line_starts: &[u32], offset: u32) -> (u32, u32) {
   let line = (idx as u32).saturating_add(1);
   let col = offset.saturating_sub(line_start).saturating_add(1);
   (line, col)
+}
+
+fn split_file_key(file_key: &str) -> (String, Option<String>) {
+  let last_sep = file_key.rfind(|c| c == '/' || c == '\\');
+  let Some(last_sep) = last_sep else {
+    return (file_key.to_string(), None);
+  };
+
+  if last_sep + 1 >= file_key.len() {
+    return (file_key.to_string(), None);
+  }
+
+  let filename = file_key[(last_sep + 1)..].to_string();
+  let mut directory = file_key[..last_sep].to_string();
+  if directory.is_empty() {
+    directory = file_key[..=last_sep].to_string();
+  }
+
+  (filename, Some(directory))
+}
+
+fn remap_prefix(path: &Path, map: &[(PathBuf, PathBuf)]) -> PathBuf {
+  for (from, to) in map {
+    if let Ok(rest) = path.strip_prefix(from) {
+      return to.join(rest);
+    }
+  }
+  path.to_path_buf()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -114,21 +143,22 @@ impl DebugInfo {
     id
   }
 
-  fn ensure_file(&mut self, filename: &str, source: &str) -> u32 {
-    if let Some(info) = self.files.get(filename) {
+  fn ensure_file(&mut self, file_key: &str, di_filename: &str, di_directory: &str, source: &str) -> u32 {
+    if let Some(info) = self.files.get(file_key) {
       return info.di_file;
     }
 
     let di_file = self.alloc();
-    let escaped = llvm_escape_metadata_string(filename);
+    let escaped_filename = llvm_escape_metadata_string(di_filename);
+    let escaped_directory = llvm_escape_metadata_string(di_directory);
     self.defs.push(format!(
-      "!{di_file} = !DIFile(filename: \"{escaped}\", directory: \"\")"
+      "!{di_file} = !DIFile(filename: \"{escaped_filename}\", directory: \"{escaped_directory}\")"
     ));
 
     let line_starts = compute_line_starts(source);
     let len = source.len().min(u32::MAX as usize) as u32;
     self.files.insert(
-      filename.to_string(),
+      file_key.to_string(),
       DebugFile {
         di_file,
         line_starts,
@@ -154,8 +184,8 @@ impl DebugInfo {
     cu
   }
 
-  fn set_main_file(&mut self, filename: &str, source: &str) {
-    let file_id = self.ensure_file(filename, source);
+  fn set_main_file(&mut self, file_key: &str, di_filename: &str, di_directory: &str, source: &str) {
+    let file_id = self.ensure_file(file_key, di_filename, di_directory, source);
     self.ensure_compile_unit(file_id);
   }
 
@@ -375,6 +405,26 @@ impl Codegen {
     }
   }
 
+  fn debug_file_key_fields(&self, file_key: &str) -> (String, String, String) {
+    let remapped = remap_prefix(Path::new(file_key), &self.opts.debug_path_prefix_map)
+      .to_string_lossy()
+      .into_owned();
+
+    if remapped == SYNTHETIC_INPUT_FILE {
+      return (remapped.clone(), remapped, String::new());
+    }
+
+    let (filename, parent) = split_file_key(&remapped);
+    let directory = match parent {
+      Some(dir) => dir,
+      None => std::env::current_dir()
+        .map(|cwd| remap_prefix(&cwd, &self.opts.debug_path_prefix_map))
+        .map(|cwd| cwd.to_string_lossy().into_owned())
+        .unwrap_or_default(),
+    };
+    (remapped, filename, directory)
+  }
+
   fn tmp(&mut self) -> String {
     let name = format!("%t{}", self.tmp_counter);
     self.tmp_counter += 1;
@@ -417,19 +467,23 @@ impl Codegen {
   }
 
   fn set_debug_main_file(&mut self, filename: &str, source: &str) {
-    let Some(dbg) = self.dbg.as_mut() else {
+    if self.dbg.is_none() {
       return;
     };
-    dbg.set_main_file(filename, source);
-    self.dbg_current_file = Some(filename.to_string());
+    let (key, di_filename, di_directory) = self.debug_file_key_fields(filename);
+    let dbg = self.dbg.as_mut().expect("checked dbg above");
+    dbg.set_main_file(&key, &di_filename, &di_directory, source);
+    self.dbg_current_file = Some(key);
   }
 
   fn set_debug_current_file(&mut self, filename: &str, source: &str) {
-    let Some(dbg) = self.dbg.as_mut() else {
+    if self.dbg.is_none() {
       return;
     };
-    dbg.ensure_file(filename, source);
-    self.dbg_current_file = Some(filename.to_string());
+    let (key, di_filename, di_directory) = self.debug_file_key_fields(filename);
+    let dbg = self.dbg.as_mut().expect("checked dbg above");
+    dbg.ensure_file(&key, &di_filename, &di_directory, source);
+    self.dbg_current_file = Some(key);
   }
 
   fn dbg_current_file_id(&self) -> Option<u32> {
@@ -1937,7 +1991,10 @@ pub(super) fn emit_llvm_module(
 
   let mut out = String::new();
   out.push_str("; ModuleID = 'native-js'\n");
-  out.push_str("source_filename = \"native-js\"\n\n");
+  out.push_str(&format!(
+    "source_filename = \"{}\"\n\n",
+    llvm_escape_metadata_string(SYNTHETIC_INPUT_FILE)
+  ));
 
   for def in &cg.strings.defs {
     out.push_str(def);
@@ -2271,16 +2328,19 @@ impl Codegen {
 
 pub(crate) struct LlvmModuleBuilder {
   cg: Codegen,
+  source_filename: String,
 }
 
 impl LlvmModuleBuilder {
   pub(crate) fn new(opts: CompileOptions) -> Self {
     Self {
       cg: Codegen::new(opts),
+      source_filename: "native-js".to_string(),
     }
   }
 
   pub(crate) fn set_entry_file(&mut self, filename: &str, source: &str) {
+    self.source_filename = self.cg.debug_file_key_fields(filename).0;
     self.cg.set_debug_main_file(filename, source);
   }
 
@@ -2420,7 +2480,10 @@ impl LlvmModuleBuilder {
   pub(crate) fn finish(self) -> String {
     let mut out = String::new();
     out.push_str("; ModuleID = 'native-js'\n");
-    out.push_str("source_filename = \"native-js\"\n\n");
+    out.push_str(&format!(
+      "source_filename = \"{}\"\n\n",
+      llvm_escape_metadata_string(&self.source_filename)
+    ));
 
     for def in &self.cg.strings.defs {
       out.push_str(def);

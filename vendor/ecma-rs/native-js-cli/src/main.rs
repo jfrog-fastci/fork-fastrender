@@ -17,6 +17,29 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use typecheck_ts::Program;
 
+#[derive(Clone, Debug)]
+struct DebugPrefixMap {
+  from: PathBuf,
+  to: PathBuf,
+}
+
+impl std::str::FromStr for DebugPrefixMap {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    let (from, to) = s
+      .split_once('=')
+      .ok_or_else(|| format!("invalid --debug-prefix-map value `{s}` (expected FROM=TO)"))?;
+    if from.is_empty() {
+      return Err("invalid --debug-prefix-map: FROM must not be empty".to_string());
+    }
+    Ok(Self {
+      from: PathBuf::from(from),
+      to: PathBuf::from(to),
+    })
+  }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version)]
 struct Cli {
@@ -63,6 +86,12 @@ struct Cli {
   /// Emit DWARF debug info and keep intermediate build artifacts.
   #[arg(long, global = true)]
   debug: bool,
+
+  /// Remap path prefixes embedded in emitted DWARF debug info.
+  ///
+  /// Repeatable. Format: `FROM=TO` (similar to `clang -fdebug-prefix-map` and `rustc --remap-path-prefix`).
+  #[arg(long, value_name = "FROM=TO", global = true)]
+  debug_prefix_map: Vec<DebugPrefixMap>,
 
   /// Which compilation pipeline to use.
   ///
@@ -234,6 +263,11 @@ fn run(cli: &Cli) -> i32 {
 
         let mut opts = CompileOptions::default();
         opts.builtins = !cli.no_builtins;
+        opts.debug_path_prefix_map = cli
+          .debug_prefix_map
+          .iter()
+          .map(|m| (m.from.clone(), m.to.clone()))
+          .collect();
         // The `project` pipeline is intended for quick iteration and can emit LLVM IR that fails
         // strict validation (it keeps compiling even with type errors). Keep compilation fast by
         // disabling LLVM optimizations.
@@ -295,6 +329,11 @@ fn run(cli: &Cli) -> i32 {
 
         let mut opts = CompileOptions::default();
         opts.builtins = !cli.no_builtins;
+        opts.debug_path_prefix_map = cli
+          .debug_prefix_map
+          .iter()
+          .map(|m| (m.from.clone(), m.to.clone()))
+          .collect();
         opts.opt_level = OptLevel::O0;
         opts.emit = EmitKind::Executable;
         opts.pie = cli.pie;
@@ -494,12 +533,18 @@ fn run(cli: &Cli) -> i32 {
 
           let mut opts = CompileOptions::default();
           opts.builtins = !cli.no_builtins;
+          opts.debug_path_prefix_map = cli
+            .debug_prefix_map
+            .iter()
+            .map(|m| (m.from.clone(), m.to.clone()))
+            .collect();
           // The `project` pipeline is intended for quick iteration and can emit LLVM IR that fails
           // strict validation (it keeps compiling even with type errors). Keep compilation fast by
           // disabling LLVM optimizations.
           opts.opt_level = OptLevel::O0;
           opts.emit = native_kind;
           opts.pie = cli.pie;
+          opts.debug = cli.debug;
 
           if let Err(err) = compile_llvm_ir_to_artifact(&ir, opts, Some(out_path)) {
             let diagnostics = diag::diagnostics_from_native_js_error(&err, FileId(0));
@@ -601,9 +646,15 @@ fn run(cli: &Cli) -> i32 {
 
           let mut opts = CompileOptions::default();
           opts.builtins = !cli.no_builtins;
+          opts.debug_path_prefix_map = cli
+            .debug_prefix_map
+            .iter()
+            .map(|m| (m.from.clone(), m.to.clone()))
+            .collect();
           opts.emit = native_kind;
           opts.output = Some(out_path);
           opts.pie = cli.pie;
+          opts.debug = cli.debug;
 
           if !wrote_extra_ir
             && !emits.contains(&emit::EmitKindArg::LlvmIr)
@@ -689,6 +740,11 @@ fn run(cli: &Cli) -> i32 {
 
             let mut opts = CompileOptions::default();
             opts.builtins = !cli.no_builtins;
+            opts.debug_path_prefix_map = cli
+              .debug_prefix_map
+              .iter()
+              .map(|m| (m.from.clone(), m.to.clone()))
+              .collect();
             opts.opt_level = OptLevel::O0;
             opts.emit = EmitKind::Executable;
             opts.pie = cli.pie;
@@ -782,6 +838,11 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> Result<String, CliError> {
   let mut opts = CompileOptions::default();
   opts.builtins = !cli.no_builtins;
   opts.debug = cli.debug;
+  opts.debug_path_prefix_map = cli
+    .debug_prefix_map
+    .iter()
+    .map(|m| (m.from.clone(), m.to.clone()))
+    .collect();
 
   fn looks_like_module_source(source: &str) -> bool {
     fn starts_with_kw(line: &str, kw: &str) -> bool {
@@ -899,6 +960,11 @@ fn compile_file_checked(
 
   let mut opts = CompileOptions::default();
   opts.builtins = !cli.no_builtins;
+  opts.debug_path_prefix_map = cli
+    .debug_prefix_map
+    .iter()
+    .map(|m| (m.from.clone(), m.to.clone()))
+    .collect();
   opts.emit = emit;
   opts.output = output;
   opts.pie = cli.pie;
