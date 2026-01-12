@@ -463,6 +463,49 @@ fn build_with_target_triple_succeeds() {
 }
 
 #[test]
+fn release_conflicts_with_debug() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--release")
+    .arg("--debug")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicate::str::contains("--release"))
+    .stderr(predicate::str::contains("--debug"))
+    .stderr(predicate::str::contains("cannot").or(predicate::str::contains("conflict")));
+}
+
+#[test]
+fn release_allows_overriding_opt_level() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--release")
+    .arg("--opt")
+    .arg("1")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+}
+
+#[test]
 fn invalid_target_triple_is_rejected_by_cli() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");

@@ -33,7 +33,9 @@ pub struct Cli {
   pub no_color: bool,
 
   /// Build with full optimizations (defaults to `--opt-level 3` unless overridden).
-  #[arg(long, global = true)]
+  ///
+  /// Conflicts with `--debug` (use one build profile preset at a time).
+  #[arg(long, global = true, conflicts_with = "debug")]
   pub release: bool,
 
   /// Build with debug settings (defaults to `--opt-level 0` unless overridden).

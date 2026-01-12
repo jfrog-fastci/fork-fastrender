@@ -468,13 +468,15 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   - `bench`: benchmark JSON (`command = "bench"`)
   - `addr2line`: symbolization JSON (`command = "addr2line"`)
   - not supported with `run` (it would mix with program stdout)
-- `--release`: defaults to `--opt-level 3` (unless overridden).
+- `--release`: Phase-7-style "release profile" preset (defaults to `--opt-level 3` unless overridden).
+  - conflicts with `--debug`
 - `--debug`: defaults to `--opt-level 0` (unless overridden) and enables `CompilerOptions.debug`.
   - emits DWARF debug info in the generated executable (line tables / function names)
   - keeps intermediate build artifacts where possible (e.g. `build` writes adjacent `.o`/`.ll`)
   - for `run`/`bench`, keeps the temporary build directory (and prints its path to stderr in
     non-`--json` modes).
-- `--opt-level=0|1|2|3` (alias: `--opt`): set the LLVM target machine optimization level.
+- `--opt-level=0|1|2|3` (alias: `--opt`): set the LLVM target machine optimization level (overrides
+  `--release`/`--debug` defaults).
 - `--target <triple>`: set the compilation target triple (parsed via `target_lexicon::Triple`).
 - `build|emit --emit <KIND>`: emit one or more artifacts (`llvm`, `bc`, `obj`, `asm`, `exe`, `hir`).
 - `build|emit --out-dir <DIR>`: directory for outputs when emitting multiple artifacts (required for
