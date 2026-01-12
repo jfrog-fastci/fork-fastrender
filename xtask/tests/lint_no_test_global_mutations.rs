@@ -11,16 +11,44 @@ fn repo_root() -> PathBuf {
     .to_path_buf()
 }
 
-fn is_within_tests_bin(entry: &DirEntry, tests_root: &Path) -> bool {
+fn should_skip_tests_entry(entry: &DirEntry, tests_root: &Path) -> bool {
   let path = entry.path();
   let rel = match path.strip_prefix(tests_root) {
     Ok(rel) => rel,
     Err(_) => return false,
   };
-  matches!(
-    rel.components().next(),
-    Some(std::path::Component::Normal(seg)) if seg == OsStr::new("bin")
-  )
+  let mut components = rel.components();
+  let Some(std::path::Component::Normal(first)) = components.next() else {
+    return false;
+  };
+
+  // `tests/bin/**` contains harness/subprocess tests and is allowed to set process state at startup.
+  if first == OsStr::new("bin") {
+    return true;
+  }
+
+  // Large fixture directories under `tests/` can contain hundreds of thousands of non-Rust files.
+  // The lint only cares about `.rs` sources, so skip these to keep `cargo test -p xtask` fast and
+  // deterministic.
+  if matches!(
+    first.to_string_lossy().as_ref(),
+    "pages" | "fonts" | "fuzz_corpus" | "wpt_dom"
+  ) {
+    return true;
+  }
+
+  // `tests/wpt/tests/**` and `tests/wpt/expected/**` are HTML/image fixtures (not Rust sources).
+  if first == OsStr::new("wpt") {
+    if matches!(
+      components.next(),
+      Some(std::path::Component::Normal(seg))
+        if seg == OsStr::new("tests") || seg == OsStr::new("expected")
+    ) {
+      return true;
+    }
+  }
+
+  false
 }
 
 fn is_allowlisted_source(path: &Path, repo_root: &Path) -> bool {
@@ -98,7 +126,7 @@ fn lint_no_test_global_mutations() {
 
   for entry in WalkDir::new(&tests_root)
     .into_iter()
-    .filter_entry(|entry| !is_within_tests_bin(entry, &tests_root))
+    .filter_entry(|entry| !should_skip_tests_entry(entry, &tests_root))
   {
     let entry = entry.unwrap_or_else(|err| panic!("walkdir failed under tests/: {err}"));
     if !entry.file_type().is_file() {
