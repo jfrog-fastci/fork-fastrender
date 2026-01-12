@@ -40,6 +40,10 @@ fn list_crate_dirs(crates_dir: &Path) -> BTreeSet<String> {
       continue;
     }
 
+    if !entry.path().join("Cargo.toml").exists() {
+      continue;
+    }
+
     dirs.insert(name.to_owned());
   }
 
