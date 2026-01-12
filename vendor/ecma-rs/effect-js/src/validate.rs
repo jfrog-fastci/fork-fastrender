@@ -338,6 +338,7 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
               base_effects |= EffectSet::WRITES_GLOBAL
             }
             "may_throw" | "throws" | "maythrow" => base_effects |= EffectSet::MAY_THROW,
+            "unknown_call" | "unknowncall" => base_effects |= EffectSet::UNKNOWN_CALL,
             "unknown" => base_effects |= EffectSet::UNKNOWN,
             // Informational-only tags (no effect flags).
             "async"
@@ -560,6 +561,20 @@ mod tests {
       )],
     )]);
     validate(&db).expect("informational dependsOn* tokens are accepted");
+  }
+
+  #[test]
+  fn effects_base_accepts_unknown_call_token() {
+    let db = ApiDatabase::from_entries([api(
+      "x",
+      EffectTemplate::Unknown,
+      PurityTemplate::Impure,
+      &[(
+        "effects.base",
+        JsonValue::Array(vec![JsonValue::String("unknown_call".to_string())]),
+      )],
+    )]);
+    validate(&db).expect("unknown_call effects.base token is accepted");
   }
 
   #[test]

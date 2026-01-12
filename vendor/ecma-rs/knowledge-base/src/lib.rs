@@ -1190,6 +1190,10 @@ fn normalize_effects(
             base_writes_global = true
           }
           "may_throw" | "throws" | "maythrow" => base_may_throw = true,
+          "unknown_call" | "unknowncall" => {
+            base_unknown = true;
+            base_may_throw = true;
+          }
           "unknown" => base_unknown = true,
           // `async` is tracked by the top-level `async` API field, not the effect flags.
           _ => {}
@@ -1783,6 +1787,24 @@ purity: Impure
     let api = parsed.first().unwrap();
     assert!(api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
     assert!(api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
+  fn effects_base_tokens_accept_unknown_call_token() {
+    let yaml = r#"
+name: x
+effects:
+  template: pure
+  base: [unknown_call]
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert_eq!(api.effects, EffectTemplate::Unknown);
+    assert!(api.effect_summary.flags.contains(EffectSet::UNKNOWN));
+    assert!(!api.effect_summary.flags.contains(EffectSet::ALLOCATES));
     assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
   }
 
