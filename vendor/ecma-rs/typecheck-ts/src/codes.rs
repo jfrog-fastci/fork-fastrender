@@ -999,7 +999,7 @@ pub const JSX_SPREAD_CHILD_MUST_BE_ARRAY: Code = Code::new(
   &[],
 );
 
-/// TS18053: JSX tag expression type does not satisfy `JSX.ElementType`.
+/// TS2786: JSX tag type is not a valid JSX element type.
 ///
 /// TypeScript reports this diagnostic when a `JSX.ElementType` alias is present
 /// and a JSX opening tag's *expression type* is not assignable to it. Intrinsic
@@ -1010,7 +1010,7 @@ pub const JSX_SPREAD_CHILD_MUST_BE_ARRAY: Code = Code::new(
 /// - Labels: primary only.
 /// - Notes: none.
 pub const JSX_INVALID_ELEMENT_TYPE: Code = Code::new(
-  "TS18053",
+  "TS2786",
   "invalid JSX element type",
   "JSX opening tag name",
   &["primary: JSX element tag name"],

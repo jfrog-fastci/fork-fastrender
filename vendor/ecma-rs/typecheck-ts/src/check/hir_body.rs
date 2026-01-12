@@ -6353,7 +6353,13 @@ impl<'a> Checker<'a> {
           };
           if children_prop_name.as_deref() == Some(key_string.as_str()) {
             explicit_children_attr = true;
-            explicit_children_attr_loc = Some(name.loc);
+            let end = match value {
+              None => name.loc.1,
+              Some(JsxAttrVal::Text(text)) => text.loc.1,
+              Some(JsxAttrVal::Expression(expr)) => expr.loc.1.saturating_add(1),
+              Some(JsxAttrVal::Element(elem)) => elem.loc.1,
+            };
+            explicit_children_attr_loc = Some(Loc(name.loc.0, end));
           }
           // JSX attributes with hyphens (e.g. `data-test`) are permitted even when the props type
           // doesn't include a corresponding string-literal key. `tsc` excludes these keys from
