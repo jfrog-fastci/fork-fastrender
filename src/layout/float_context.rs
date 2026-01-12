@@ -904,10 +904,38 @@ impl FloatContext {
     )
   }
 
-  fn ensure_range_cache_coverage(&self, cache: &mut FloatRangeCache, target_y: f32) {
+  fn ensure_range_cache_coverage(&self, cache: &mut FloatRangeCache, start_y: f32, target_y: f32) {
+    if start_y.is_nan() || target_y.is_nan() {
+      return;
+    }
+
+    let start_y = if start_y.is_finite() { start_y } else { 0.0 };
+    let desired_y = if target_y.is_finite() {
+      target_y.max(start_y)
+    } else {
+      start_y
+    };
+
+    // If the caller queries an earlier Y than the cache was built for, rebuild from scratch at the
+    // requested start. This avoids needing to support backwards sweep/caching while still keeping
+    // the common monotonic-use pattern fast.
+    if cache
+      .segments
+      .first()
+      .is_some_and(|seg| start_y < seg.start_y)
+    {
+      cache.segments.clear();
+      cache.sweep_state = FloatSweepState::new(cache.float_count, &self.events);
+    }
+
+    // Prime the sweep to `start_y` on the first use (or after a rebuild).
+    if cache.segments.is_empty() {
+      self.advance_sweep_to(start_y, &mut cache.sweep_state);
+    }
+
     // Range scanning is guarded by the layout deadline, so cache construction must also be.
     let mut counter = 0usize;
-    while cache.sweep_state.current_y < target_y && cache.sweep_state.current_y.is_finite() {
+    while cache.segments.last().is_none_or(|seg| seg.end_y < desired_y) {
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut counter, 256, RenderStage::Layout)
       {
@@ -915,35 +943,28 @@ impl FloatContext {
         break;
       }
 
-      let start_y = cache.sweep_state.current_y;
-      let end_y = self.next_float_boundary_after_internal(&cache.sweep_state, start_y);
+      let segment_start = cache.sweep_state.current_y;
+      let segment_end = self.next_float_boundary_after_internal(&cache.sweep_state, segment_start);
       let (left_edge, right_edge) = self.edges_at_in_containing_block_with_state(
         &mut cache.sweep_state,
-        start_y,
+        segment_start,
         f32::NEG_INFINITY,
         f32::INFINITY,
       );
       cache.segments.push(FloatRangeSegment {
-        start_y,
-        end_y,
+        start_y: segment_start,
+        end_y: segment_end,
         left_edge,
         right_edge,
       });
 
+      if !segment_end.is_finite() || segment_end <= segment_start {
+        break;
+      }
+
       // Advance to the next boundary so the active set is correct for the next segment. This
       // mirrors the range scan loop which advances after consuming a segment.
-      self.advance_sweep_to(end_y, &mut cache.sweep_state);
-    }
-
-    // Guarantee at least one segment so callers can always binary-search by Y. This is important
-    // when there are no floats or cache construction aborts early due to timeout.
-    if cache.segments.is_empty() {
-      cache.segments.push(FloatRangeSegment {
-        start_y: f32::NEG_INFINITY,
-        end_y: f32::INFINITY,
-        left_edge: f32::NEG_INFINITY,
-        right_edge: f32::INFINITY,
-      });
+      self.advance_sweep_to(segment_end, &mut cache.sweep_state);
     }
   }
 
@@ -995,12 +1016,7 @@ impl FloatContext {
     // for each query.
     let mut cache = self.range_cache.borrow_mut();
     cache.ensure_current(self.float_map.len(), &self.events);
-    if end.is_finite() {
-      self.ensure_range_cache_coverage(&mut cache, end);
-    } else {
-      // Unbounded range: build at least the segment that contains `start`.
-      self.ensure_range_cache_coverage(&mut cache, start);
-    }
+    self.ensure_range_cache_coverage(&mut cache, start, end);
 
     let start_idx = cache.segment_index(start);
     let mut best_left = containing_left;
