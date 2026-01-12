@@ -38,8 +38,8 @@ pub use structurer::{structure_cfg, BreakTarget, ControlTree, LoopLabel};
 pub use top_level::{build_top_level, foreign_var_decl, prepend_foreign_decls};
 
 use self::il::{
-  lower_arg, lower_array_store_inst, lower_bin_expr, lower_call_inst, lower_prop_assign_inst, node,
-  FnEmitter, VarInit, VarNamer,
+  lower_arg, lower_array_store_inst, lower_bin_expr, lower_prop_assign_inst, node, FnEmitter,
+  VarInit, VarNamer,
 };
 #[cfg(feature = "semantic-ops")]
 use self::il::lower_known_api_call_inst;

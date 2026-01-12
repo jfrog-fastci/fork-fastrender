@@ -2746,13 +2746,14 @@ impl<'p> HirSourceToInst<'p> {
             Ok(Arg::Var(tmp))
           } else {
             let array_tmp = self.c_temp.bump();
-            self.out.push(self.call_or_invoke(
-              Some(array_tmp),
-              Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
-              Arg::Const(Const::Undefined),
-              args,
-              Vec::new(),
-            ));
+            // Even under an active exception handler, build the `[...promises]` array using the
+            // first-class `ArrayLit` IL inst (rather than the legacy marker-builtin call form).
+            //
+            // Note: `ArrayLit` does not currently model exception edges. This is fine here because
+            // the literal has no spreads and cannot invoke user code (aside from OOM).
+            self
+              .out
+              .push(Inst::array_lit(array_tmp, args, Vec::new()));
 
             let tmp = self.c_temp.bump();
             self.push_value_inst(
