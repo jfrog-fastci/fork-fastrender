@@ -38,6 +38,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 
+const RUNTIME_NATIVE_STATICLIB_FILENAME: &str = "libruntime_native.a";
+
 /// Symbol exported by the final ELF that points at the first byte of stackmaps.
 pub const LLVM_STACKMAPS_START_SYM: &str = "__start_llvm_stackmaps";
 /// Symbol exported by the final ELF that points one byte past the end of stackmaps.
@@ -197,6 +199,53 @@ fn find_llvm_objcopy() -> Option<&'static str> {
   None
 }
 
+/// Best-effort discovery of the `runtime-native` `staticlib` artifact (`libruntime_native.a`).
+///
+/// Discovery strategy:
+/// 1) If `NATIVE_JS_RUNTIME_NATIVE_A` is set, return its value verbatim.
+/// 2) Otherwise, try to locate `libruntime_native.a` next to `current_exe()` (Cargo layouts):
+///    - `current_exe().parent()/libruntime_native.a`
+///    - `current_exe().parent()/deps/libruntime_native.a`
+/// 3) Otherwise, fall back to `CARGO_MANIFEST_DIR/target/{debug,release}/deps/libruntime_native.a`.
+pub fn find_runtime_native_staticlib() -> Option<PathBuf> {
+  // Explicit override.
+  if let Some(p) = std::env::var_os("NATIVE_JS_RUNTIME_NATIVE_A") {
+    return Some(PathBuf::from(p));
+  }
+
+  // Cargo layouts:
+  // - `cargo test`: test binaries live in `target/**/deps/`, and the staticlib artifact is
+  //   co-located there.
+  // - `cargo run`: binaries live in `target/**/`, and dependencies live under `target/**/deps/`.
+  if let Ok(exe) = std::env::current_exe() {
+    if let Some(dir) = exe.parent() {
+      let adjacent = dir.join(RUNTIME_NATIVE_STATICLIB_FILENAME);
+      if adjacent.is_file() {
+        return Some(adjacent);
+      }
+      let deps = dir.join("deps").join(RUNTIME_NATIVE_STATICLIB_FILENAME);
+      if deps.is_file() {
+        return Some(deps);
+      }
+    }
+  }
+
+  // Best-effort fallback for repo-local builds where `target/` sits next to this crate.
+  let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  for profile in ["debug", "release"] {
+    let p = manifest_dir
+      .join("target")
+      .join(profile)
+      .join("deps")
+      .join(RUNTIME_NATIVE_STATICLIB_FILENAME);
+    if p.is_file() {
+      return Some(p);
+    }
+  }
+
+  None
+}
+
 /// Link one or more object files into an ELF executable.
 ///
 /// The resulting binary will export [`LLVM_STACKMAPS_START_SYM`] and [`LLVM_STACKMAPS_STOP_SYM`]
@@ -205,10 +254,11 @@ pub fn link_elf_executable(output_path: &Path, object_files: &[PathBuf]) -> anyh
   link_elf_executable_with_options(output_path, object_files, LinkOpts::default())
 }
 
-pub fn link_elf_executable_with_options(
+pub fn link_elf_executable_with_options_and_static_libs(
   output_path: &Path,
   object_files: &[PathBuf],
   opts: LinkOpts,
+  extra_static_libs: &[PathBuf],
 ) -> anyhow::Result<()> {
   let clang = find_clang().context("unable to locate clang (expected `clang-18` or `clang`)")?;
   let out_dir = output_path
@@ -229,7 +279,8 @@ pub fn link_elf_executable_with_options(
   // - polluting the output directory with build artifacts
   // - collisions when multiple linkers run concurrently and happen to share an output directory
   //   (e.g. temp file outputs in `/tmp`).
-  let script_dir = tempfile::tempdir().context("failed to create tempdir for stackmaps linker script")?;
+  let script_dir =
+    tempfile::tempdir().context("failed to create tempdir for stackmaps linker script")?;
   let script_path = script_dir.path().join("llvm_stackmaps.ld");
   write_stackmaps_linker_script(&script_path, opts)?;
 
@@ -289,8 +340,8 @@ pub fn link_elf_executable_with_options(
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      let lld = lld_fuse_arg()
-        .context("unable to locate lld (expected `ld.lld-18` or `ld.lld` in PATH)")?;
+      let lld =
+        lld_fuse_arg().context("unable to locate lld (expected `ld.lld-18` or `ld.lld` in PATH)")?;
       cmd.arg(format!("-fuse-ld={lld}"));
     }
   }
@@ -313,6 +364,16 @@ pub fn link_elf_executable_with_options(
     cmd.arg(obj);
   }
 
+  for lib in extra_static_libs {
+    cmd.arg(lib);
+  }
+
+  // `runtime-native` is a Rust `staticlib`, so we need to explicitly provide the system libraries
+  // rustc would normally inject when it is the final linker driver.
+  if cfg!(target_os = "linux") && !extra_static_libs.is_empty() {
+    cmd.args(["-lpthread", "-ldl", "-lm", "-lrt"]);
+  }
+
   let status = cmd
     .status()
     .with_context(|| format!("failed to spawn {clang} for linking"))?;
@@ -328,6 +389,14 @@ pub fn link_elf_executable_with_options(
   }
 
   Ok(())
+}
+
+pub fn link_elf_executable_with_options(
+  output_path: &Path,
+  object_files: &[PathBuf],
+  opts: LinkOpts,
+) -> anyhow::Result<()> {
+  link_elf_executable_with_options_and_static_libs(output_path, object_files, opts, &[])
 }
 
 /// Link one or more **in-memory** object buffers into an ELF executable.

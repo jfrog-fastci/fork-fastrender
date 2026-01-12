@@ -96,6 +96,9 @@ pub enum NativeJsError {
   #[error("required tool not found in PATH: {0}")]
   ToolNotFound(&'static str),
 
+  #[error("{message}")]
+  RuntimeNativeNotFound { message: String },
+
   #[error("LLVM error: {0}")]
   Llvm(String),
 }

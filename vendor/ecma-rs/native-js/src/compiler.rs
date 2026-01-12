@@ -122,6 +122,8 @@ pub fn compile_llvm_ir_to_artifact(
           let obj =
             emit::emit_object_with_statepoints(&module, target).map_err(|e| NativeJsError::Llvm(e.to_string()))?;
 
+          let runtime_native_a = require_runtime_native_staticlib()?;
+
           let mut tmp: Option<TempDir> = None;
           let obj_path = if opts.debug {
             path_with_suffix(&out_path, ".o")
@@ -139,7 +141,7 @@ pub fn compile_llvm_ir_to_artifact(
           }
 
           let _ = std::fs::remove_file(&out_path);
-          link::link_elf_executable_with_options(
+          link::link_elf_executable_with_options_and_static_libs(
             &out_path,
             &[obj_path.clone()],
             link::LinkOpts {
@@ -147,6 +149,7 @@ pub fn compile_llvm_ir_to_artifact(
               debug: opts.debug,
               ..Default::default()
             },
+            std::slice::from_ref(&runtime_native_a),
           )
           .map_err(|err| NativeJsError::Internal(err.to_string()))?;
 
@@ -273,6 +276,41 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
   let mut os = path.as_os_str().to_owned();
   os.push(suffix);
   PathBuf::from(os)
+}
+
+fn require_runtime_native_staticlib() -> Result<PathBuf, NativeJsError> {
+  let Some(p) = link::find_runtime_native_staticlib() else {
+    return Err(NativeJsError::RuntimeNativeNotFound {
+      message:
+        "unable to locate runtime-native static library `libruntime_native.a` required for native executable linking; \
+set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override discovery"
+          .to_string(),
+    });
+  };
+
+  if p.is_file() {
+    return Ok(p);
+  }
+
+  // `find_runtime_native_staticlib` treats `NATIVE_JS_RUNTIME_NATIVE_A` as an explicit override;
+  // if set, a missing file is almost certainly a misconfiguration and warrants a dedicated error.
+  if std::env::var_os("NATIVE_JS_RUNTIME_NATIVE_A").is_some() {
+    return Err(NativeJsError::RuntimeNativeNotFound {
+      message: format!(
+        "NATIVE_JS_RUNTIME_NATIVE_A was set to {}, but that file does not exist; \
+set it to the path of `libruntime_native.a`",
+        p.display()
+      ),
+    });
+  }
+
+  Err(NativeJsError::RuntimeNativeNotFound {
+    message: format!(
+      "unable to locate runtime-native static library at {}; \
+set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override discovery",
+      p.display()
+    ),
+  })
 }
 
 pub struct CompileResult {
@@ -823,6 +861,8 @@ impl<'a> Compiler<'a> {
           });
         }
 
+        let runtime_native_a = require_runtime_native_staticlib()?;
+
         let exe_path = self.output_path("")?;
         let _ = std::fs::remove_file(&exe_path);
 
@@ -849,7 +889,7 @@ impl<'a> Compiler<'a> {
           write_file(&ll_path, ir.as_bytes())?;
         }
 
-        link::link_elf_executable_with_options(
+        link::link_elf_executable_with_options_and_static_libs(
           &exe_path,
           &[obj_path.clone()],
           link::LinkOpts {
@@ -857,6 +897,7 @@ impl<'a> Compiler<'a> {
             debug: self.opts.debug,
             ..Default::default()
           },
+          std::slice::from_ref(&runtime_native_a),
         )
         .map_err(|err| NativeJsError::Internal(err.to_string()))?;
         drop(tmp_obj);
