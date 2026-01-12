@@ -3527,3 +3527,96 @@ fn mapped_type_preserves_symbol_indexer() {
   assert_eq!(shape.indexers[0].value_type, primitives.boolean);
   assert!(shape.indexers[0].readonly);
 }
+
+#[test]
+fn keyof_array_includes_length_and_number() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let array_ty = store.intern_type(TypeKind::Array {
+    ty: primitives.string,
+    readonly: false,
+  });
+  let keyof_array = store.intern_type(TypeKind::KeyOf(array_ty));
+  let result = store.evaluate(keyof_array);
+
+  let length_key = store.intern_type(TypeKind::StringLiteral(store.intern_name("length")));
+  let TypeKind::Union(keys) = store.type_kind(result) else {
+    panic!("expected union, got {:?}", store.type_kind(result));
+  };
+
+  assert!(keys.contains(&primitives.number));
+  assert!(keys.contains(&length_key));
+}
+
+#[test]
+fn keyof_tuple_includes_length_numeric_keys_and_canonical_string_indices() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tuple_ty = store.intern_type(TypeKind::Tuple(vec![
+    TupleElem {
+      ty: primitives.string,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+  ]));
+  let keyof_tuple = store.intern_type(TypeKind::KeyOf(tuple_ty));
+  let result = store.evaluate(keyof_tuple);
+
+  let length_key = store.intern_type(TypeKind::StringLiteral(store.intern_name("length")));
+  let idx_0_num = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(0.0)));
+  let idx_1_num = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0)));
+  let idx_0_str = store.intern_type(TypeKind::StringLiteral(store.intern_name("0")));
+  let idx_1_str = store.intern_type(TypeKind::StringLiteral(store.intern_name("1")));
+
+  let TypeKind::Union(keys) = store.type_kind(result) else {
+    panic!("expected union, got {:?}", store.type_kind(result));
+  };
+
+  assert!(keys.contains(&length_key));
+  assert!(keys.contains(&idx_0_num));
+  assert!(keys.contains(&idx_1_num));
+  assert!(keys.contains(&idx_0_str));
+  assert!(keys.contains(&idx_1_str));
+}
+
+#[test]
+fn keyof_tuple_deterministic_across_stores() {
+  fn compute(store: Arc<TypeStore>) -> (Arc<TypeStore>, TypeId) {
+    let primitives = store.primitive_ids();
+    let tuple_ty = store.intern_type(TypeKind::Tuple(vec![
+      TupleElem {
+        ty: primitives.string,
+        optional: false,
+        rest: false,
+        readonly: false,
+      },
+      TupleElem {
+        ty: primitives.number,
+        optional: false,
+        rest: false,
+        readonly: false,
+      },
+    ]));
+    let keyof_tuple = store.intern_type(TypeKind::KeyOf(tuple_ty));
+    let result = store.evaluate(keyof_tuple);
+    (store, result)
+  }
+
+  let (store_a, result_a) = compute(TypeStore::new());
+  let (store_b, result_b) = compute(TypeStore::new());
+
+  assert_eq!(result_a, result_b);
+  assert_eq!(
+    store_a.display(result_a).to_string(),
+    store_b.display(result_b).to_string()
+  );
+}

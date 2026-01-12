@@ -2136,8 +2136,20 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       }
       TypeKind::Tuple(elems) => {
         let mut keys = Vec::new();
+        // In TypeScript, arrays and tuples always have a `length` property.
+        // Our indexed-access evaluator already special-cases `length`, so include it
+        // in `keyof`/mapped-key enumeration as well.
+        let length = self.store.intern_name("length");
+        keys.push(Key::Literal(PropKey::String(length)));
         for (idx, elem) in elems.iter().enumerate() {
           keys.push(Key::Literal(PropKey::Number(idx as i64)));
+          // TypeScript treats numeric properties and their canonical string forms as
+          // equivalent for lookup (e.g. `0` and `"0"`). Include the canonical
+          // string form so `keyof` works for common utilities that operate on
+          // string-indexed tuple keys.
+          keys.push(Key::Literal(PropKey::String(
+            self.store.intern_name(idx.to_string()),
+          )));
           if elem.rest {
             keys.push(Key::Number);
             break;
@@ -2145,7 +2157,13 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         }
         KeySet::known(keys, &self.store)
       }
-      TypeKind::Array { .. } => KeySet::known(vec![Key::Number], &self.store),
+      TypeKind::Array { .. } => {
+        let length = self.store.intern_name("length");
+        KeySet::known(
+          vec![Key::Literal(PropKey::String(length)), Key::Number],
+          &self.store,
+        )
+      }
       TypeKind::TemplateLiteral(tpl) => {
         match self.compute_template_strings(&tpl, subst, depth + 1) {
           TemplateStringComputation::Finite(strings) => KeySet::known(
