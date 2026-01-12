@@ -630,6 +630,15 @@ pub(super) fn tab_strip_ui(
   let pinned_count = app.tabs.iter().take_while(|t| t.pinned).count();
   let unpinned_count = tab_count - pinned_count;
   let active_id = app.active_tab_id();
+  let last_active_id_key = ui.make_persistent_id("tab_strip_last_active");
+  let last_active_id = ui
+    .ctx()
+    .data(|d| d.get_temp::<Option<TabId>>(last_active_id_key))
+    .unwrap_or(None);
+  let active_changed = active_id != last_active_id;
+  ui
+    .ctx()
+    .data_mut(|d| d.insert_temp(last_active_id_key, active_id));
 
   let pinned_content_width = if pinned_count == 0 {
     0.0
@@ -747,6 +756,12 @@ pub(super) fn tab_strip_ui(
               if is_active {
                 active_tab_rect = Some(tab_rect);
                 active_tab_is_pinned = false;
+              }
+              // Keep the active tab visible when switching tabs via keyboard, tab search, or other
+              // non-pointer interactions. Avoid fighting user scrolling: only scroll when the
+              // active tab actually changed.
+              if is_active && active_changed {
+                tab_response.scroll_to_me(Some(egui::Align::Center));
               }
               #[cfg(test)]
               tab_rects_for_test.push(tab_rect);

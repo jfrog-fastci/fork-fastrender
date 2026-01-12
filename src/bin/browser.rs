@@ -8217,52 +8217,76 @@ impl App {
           }
         }
 
-        if matches!(loading_ui.kind, fastrender::ui::loading_overlay::PageLoadingUiKind::Overlay) {
-          let painter = ui.painter();
-          let scrim = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 44);
-          painter.rect_filled(response.rect, egui::Rounding::same(0.0), scrim);
+        {
+          let overlay_id = egui::Id::new(("fastr_page_loading_overlay", active_tab.0));
+          let motion = fastrender::ui::motion::UiMotion::from_ctx(&ctx);
+          let overlay_t = motion.animate_bool(
+            &ctx,
+            overlay_id.with("visible"),
+            matches!(
+              loading_ui.kind,
+              fastrender::ui::loading_overlay::PageLoadingUiKind::Overlay
+            ),
+            motion.durations.progress_fade,
+          );
+          let overlay_opacity = overlay_t.clamp(0.0, 1.0);
 
-          if let Some(progress) = tab_progress {
-            let bar_h = 2.0;
-            let progress = if progress.is_finite() {
-              progress.clamp(0.0, 1.0).max(0.02)
-            } else {
-              0.02
-            };
-            let x1 = response.rect.left() + response.rect.width() * progress;
-            let bar_rect = egui::Rect::from_min_max(
-              egui::pos2(response.rect.left(), response.rect.top()),
-              egui::pos2(x1, response.rect.top() + bar_h),
+          if overlay_opacity > 0.0 {
+            let painter = ui.painter();
+            let scrim = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 44);
+            painter.rect_filled(
+              response.rect,
+              egui::Rounding::same(0.0),
+              Self::with_alpha(scrim, overlay_opacity),
             );
-            if bar_rect.width() > 0.0 {
-              let accent = ui.visuals().selection.stroke.color;
-              let accent =
-                egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 220);
-              painter.rect_filled(bar_rect, egui::Rounding::same(1.0), accent);
-            }
-          }
 
-          let center = response.rect.center();
-          let overlay_padding = self.theme.sizing.padding;
-          let spinner_size = 18.0;
-          let overlay_size = spinner_size + overlay_padding * 2.0;
-          egui::Area::new(egui::Id::new(("fastr_page_loading_overlay", active_tab.0)))
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(
-              center.x - overlay_size * 0.5,
-              center.y - overlay_size * 0.5,
-            ))
-            .show(&ctx, |ui| {
-              let fill = ui.visuals().window_fill;
-              let fill = egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 220);
-              egui::Frame::none()
-                .fill(fill)
-                .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
-                .inner_margin(egui::Margin::same(overlay_padding))
-                .show(ui, |ui| {
-                  let _ = fastrender::ui::spinner(ui, spinner_size);
-                });
-            });
+            if let Some(progress) = tab_progress {
+              let bar_h = 2.0;
+              let progress = if progress.is_finite() {
+                progress.clamp(0.0, 1.0).max(0.02)
+              } else {
+                0.02
+              };
+              let x1 = response.rect.left() + response.rect.width() * progress;
+              let bar_rect = egui::Rect::from_min_max(
+                egui::pos2(response.rect.left(), response.rect.top()),
+                egui::pos2(x1, response.rect.top() + bar_h),
+              );
+              if bar_rect.width() > 0.0 {
+                let accent = ui.visuals().selection.stroke.color;
+                let accent =
+                  egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 220);
+                painter.rect_filled(
+                  bar_rect,
+                  egui::Rounding::same(1.0),
+                  Self::with_alpha(accent, overlay_opacity),
+                );
+              }
+            }
+
+            let center = response.rect.center();
+            let overlay_padding = self.theme.sizing.padding;
+            let spinner_size = 18.0;
+            let overlay_size = spinner_size + overlay_padding * 2.0;
+            egui::Area::new(overlay_id)
+              .order(egui::Order::Foreground)
+              .fixed_pos(egui::pos2(
+                center.x - overlay_size * 0.5,
+                center.y - overlay_size * 0.5,
+              ))
+              .show(&ctx, |ui| {
+                let fill = ui.visuals().window_fill;
+                let fill =
+                  egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 220);
+                egui::Frame::none()
+                  .fill(Self::with_alpha(fill, overlay_opacity))
+                  .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
+                  .inner_margin(egui::Margin::same(overlay_padding))
+                  .show(ui, |ui| {
+                    let _ = fastrender::ui::spinner(ui, spinner_size);
+                  });
+              });
+          }
         }
 
         if !wheel_events.is_empty()
