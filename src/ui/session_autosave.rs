@@ -274,6 +274,24 @@ mod tests {
   use super::*;
 
   #[test]
+  fn startup_creates_minimal_session_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    assert!(!path.exists());
+
+    let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session.version, 2);
+    assert!(!session.did_exit_cleanly);
+    assert_eq!(session.windows.len(), 1);
+    assert_eq!(session.windows[0].tabs.len(), 1);
+    assert_eq!(session.windows[0].tabs[0].url, about_pages::ABOUT_NEWTAB);
+    assert_eq!(session.windows[0].active_tab_index, 0);
+  }
+
+  #[test]
   fn debounce_coalesces_to_single_write() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
@@ -342,5 +360,24 @@ mod tests {
     autosave.shutdown(Duration::from_secs(2)).unwrap();
     let session = load_session(&path).unwrap().unwrap();
     assert!(session.did_exit_cleanly, "clean shutdown should mark session as clean");
+  }
+
+  #[test]
+  fn drop_does_not_mark_session_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    {
+      let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
+      autosave.request_save(BrowserSession::single("about:blank".to_string()));
+      autosave.flush(Duration::from_secs(2)).unwrap();
+      // Drop without calling `shutdown()`: should *not* mark the session as clean.
+    }
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert!(
+      !session.did_exit_cleanly,
+      "dropping SessionAutosave should not mark the session as clean"
+    );
   }
 }
