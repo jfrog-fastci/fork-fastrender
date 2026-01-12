@@ -1,7 +1,7 @@
 use runtime_native::stackmaps::{Location, StackMap, StackMapRecord};
 use runtime_native::statepoints::{
   eval_location, RegFile, RootSlot, StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP,
-  LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP,
+  AARCH64_DWARF_REG_FP, LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP,
 };
 use runtime_native::test_util::TestRuntimeGuard;
 
@@ -15,7 +15,7 @@ impl RegFile for FakeRegs {
   }
 }
 
-fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
+fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16, fp_reg: u16) {
   let sm = StackMap::parse(bytes).unwrap();
   assert!(
     !sm.records.is_empty(),
@@ -41,7 +41,8 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
     // Decode statepoint header + base/derived pairs.
     let sp = StatepointRecord::new(rec).unwrap();
 
-    // Remaining entries: SP-relative Indirect locations (LLVM 18 observed output).
+    // Remaining entries: Indirect locations (typically SP-relative, but LLVM may also emit
+    // FP-relative spill slots depending on code shape/opts).
     for (pair_idx, pair) in sp.gc_pairs().iter().enumerate() {
       for (loc_idx, loc) in [(0, &pair.base), (1, &pair.derived)] {
         match loc {
@@ -54,9 +55,9 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
               *size, 8,
               "expected 8-byte pointer slots, got size={size} at pair {pair_idx} loc {loc_idx} (record #{rec_idx})"
             );
-            assert_eq!(
-              *dwarf_reg, sp_reg,
-              "expected SP dwarf_reg={sp_reg}, got dwarf_reg={dwarf_reg} at pair {pair_idx} loc {loc_idx} (record #{rec_idx})"
+            assert!(
+              *dwarf_reg == sp_reg || *dwarf_reg == fp_reg,
+              "expected SP/FP dwarf_reg in [{sp_reg}, {fp_reg}], got dwarf_reg={dwarf_reg} at pair {pair_idx} loc {loc_idx} (record #{rec_idx})"
             );
           }
           _ => panic!(
@@ -72,22 +73,23 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
     );
   }
 
-  // Evaluate one location with a fake regfile (SP=0x1000).
+  // Evaluate one location with a fake regfile (SP=0x1000, FP=0x2000).
   let rec = &sm.records[0];
   let sp = StatepointRecord::new(rec).unwrap();
   let first_base = &sp.gc_pairs().first().unwrap().base;
-  let offset = match first_base {
-    Location::Indirect { offset, .. } => *offset,
+  let (dwarf_reg, offset) = match first_base {
+    Location::Indirect { dwarf_reg, offset, .. } => (*dwarf_reg, *offset),
     _ => unreachable!("fixtures should only use Indirect locations"),
   };
 
   let regs = FakeRegs {
-    regs: [(sp_reg, 0x1000)].into_iter().collect(),
+    regs: [(sp_reg, 0x1000), (fp_reg, 0x2000)].into_iter().collect(),
   };
   let slot = eval_location(first_base, &regs).unwrap();
   match slot {
     RootSlot::StackAddr(addr) => {
-      let expected = (0x1000i128 + offset as i128) as u64;
+      let base = if dwarf_reg == sp_reg { 0x1000i128 } else { 0x2000i128 };
+      let expected = (base + offset as i128) as u64;
       assert_eq!(addr as usize as u64, expected);
     }
     other => panic!("expected Stack slot for Indirect location, got {other:?}"),
@@ -100,6 +102,7 @@ fn statepoint_x86_64_layout() {
   assert_statepoint_fixture(
     include_bytes!("fixtures/bin/statepoint_x86_64.bin"),
     X86_64_DWARF_REG_SP,
+    X86_64_DWARF_REG_FP,
   );
 }
 
@@ -109,6 +112,7 @@ fn statepoint_aarch64_layout() {
   assert_statepoint_fixture(
     include_bytes!("fixtures/bin/statepoint_aarch64.bin"),
     AARCH64_DWARF_REG_SP,
+    AARCH64_DWARF_REG_FP,
   );
 }
 
