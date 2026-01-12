@@ -127,12 +127,10 @@ type U = { a: number } | { b: boolean };
   let members = program.union_members_interned(union_ref);
   assert_eq!(members.len(), 2, "expected two union members");
   assert!(
-    matches!(store.type_kind(members[0]), TypeKind::Object(_)),
-    "expected object union member"
-  );
-  assert!(
-    matches!(store.type_kind(members[1]), TypeKind::Object(_)),
-    "expected object union member"
+    members
+      .iter()
+      .all(|ty| matches!(store.type_kind(*ty), TypeKind::Object(_))),
+    "expected object union members"
   );
   assert_eq!(
     store.type_cmp(members[0], members[1]),
@@ -142,6 +140,7 @@ type U = { a: number } | { b: boolean };
 
   let layout_id = program.layout_of_interned(union_ref);
   let layout = store.layout(layout_id);
+
   // Native AOT layout optimization: pointer-only unions of GC-managed pointers
   // are represented as a single pointer word. Because the member pointer kinds
   // differ (`{a}` vs `{b}` have different object shapes), the union becomes an
@@ -169,6 +168,23 @@ type U = number | boolean;
   let union_ref = program.type_of_def_interned(union_def);
   let members = program.union_members_interned(union_ref);
   assert_eq!(members.len(), 2, "expected two union members");
+  assert!(
+    members
+      .iter()
+      .any(|ty| matches!(store.type_kind(*ty), TypeKind::Boolean | TypeKind::BooleanLiteral(_))),
+    "expected boolean union member"
+  );
+  assert!(
+    members
+      .iter()
+      .any(|ty| matches!(store.type_kind(*ty), TypeKind::Number | TypeKind::NumberLiteral(_))),
+    "expected number union member"
+  );
+  assert_eq!(
+    store.type_cmp(members[0], members[1]),
+    Ordering::Less,
+    "union_members_interned should return members in TypeStore canonical order"
+  );
 
   let layout_id = program.layout_of_interned(union_ref);
   let layout = store.layout(layout_id);
@@ -199,9 +215,87 @@ type U = number | boolean;
     assert_eq!(variant.payload_offset, 0);
     assert_eq!(variant.layout, store.layout_of(variant.ty));
     match (store.type_kind(variant.ty), store.layout(variant.layout)) {
-      (TypeKind::Boolean, Layout::Scalar { abi: AbiScalar::Bool }) => {}
-      (TypeKind::Number, Layout::Scalar { abi: AbiScalar::F64 }) => {}
+      (TypeKind::Boolean | TypeKind::BooleanLiteral(_), Layout::Scalar { abi: AbiScalar::Bool }) => {}
+      (TypeKind::Number | TypeKind::NumberLiteral(_), Layout::Scalar { abi: AbiScalar::F64 }) => {}
       (ty, layout) => panic!("unexpected tagged-union variant: ty={ty:?} layout={layout:?}"),
+    }
+  }
+}
+
+#[test]
+fn tagged_union_layout_for_object_and_number_union_contains_ptr_and_scalar_variants() {
+  let mut host = aot_host();
+  let file = FileKey::new("main.ts");
+  host.insert(
+    file.clone(),
+    r#"
+type U = { a: number } | number;
+"#,
+  );
+
+  let program = Program::new(host, vec![file.clone()]);
+  let file_id = program.file_id(&file).expect("file id");
+  let union_def = def_in_file(&program, file_id, "U");
+
+  let store = program.interned_type_store();
+  let union_ref = program.type_of_def_interned(union_def);
+  let members = program.union_members_interned(union_ref);
+  assert_eq!(members.len(), 2, "expected two union members");
+  assert!(
+    members
+      .iter()
+      .any(|ty| matches!(store.type_kind(*ty), TypeKind::Object(_))),
+    "expected object union member"
+  );
+  assert!(
+    members
+      .iter()
+      .any(|ty| matches!(store.type_kind(*ty), TypeKind::Number | TypeKind::NumberLiteral(_))),
+    "expected number union member"
+  );
+  assert_eq!(
+    store.type_cmp(members[0], members[1]),
+    Ordering::Less,
+    "union_members_interned should return members in TypeStore canonical order"
+  );
+
+  let layout_id = program.layout_of_interned(union_ref);
+  let layout = store.layout(layout_id);
+  let Layout::TaggedUnion {
+    tag,
+    payload_offset,
+    variants,
+    size,
+    align,
+  } = layout
+  else {
+    panic!("expected tagged union layout, got {layout:?}");
+  };
+
+  assert_eq!(tag.abi, AbiScalar::U8);
+  assert_eq!(tag.offset, 0);
+  assert_eq!(payload_offset, 8);
+  assert_eq!(size, 16);
+  assert_eq!(align, 8);
+  assert_eq!(variants.len(), 2);
+
+  for (idx, variant) in variants.iter().enumerate() {
+    assert_eq!(variant.ty, members[idx]);
+    assert_eq!(variant.discriminant, idx as u32);
+    assert_eq!(variant.payload_offset, 0);
+    assert_eq!(variant.layout, store.layout_of(variant.ty));
+
+    match store.type_kind(variant.ty) {
+      TypeKind::Object(_) => assert!(matches!(
+        store.layout(variant.layout),
+        Layout::Ptr {
+          to: PtrKind::GcObject { .. }
+        }
+      )),
+      TypeKind::Number | TypeKind::NumberLiteral(_) => {
+        assert_eq!(store.layout(variant.layout), Layout::Scalar { abi: AbiScalar::F64 });
+      }
+      other => panic!("unexpected union variant type: {other:?}"),
     }
   }
 }
