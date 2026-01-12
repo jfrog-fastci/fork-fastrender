@@ -24,7 +24,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tungstenite::protocol::{CloseFrame, Message};
 use tungstenite::{client::IntoClientRequest, connect};
-use vm_js::iterator;
+use vm_js::iterator::{self, CloseCompletionKind};
 use vm_js::{
   GcObject, GcString, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
   Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
@@ -405,24 +405,33 @@ fn parse_protocols(
       })();
 
       if let Err(err) = collect_result {
-        let _ = iterator::iterator_close(
-          vm,
-          host,
-          hooks,
-          scope,
-          &record,
-          iterator::CloseCompletionKind::Throw,
-        );
+        if !record.done {
+          // `iterator_close` can allocate / run user code (and thus GC). If we're returning a thrown
+          // value, root it so the handle stays valid until we bubble it up.
+          let original_is_throw = err.is_throw_completion();
+          let pending_root = err
+            .thrown_value()
+            .map(|v| scope.heap_mut().add_root(v))
+            .transpose()?;
+          let close_res =
+            iterator::iterator_close(vm, host, hooks, scope, &record, CloseCompletionKind::Throw);
+          if let Some(root) = pending_root {
+            scope.heap_mut().remove_root(root);
+          }
+          // IteratorClose errors override non-throw completions, but must never suppress fatal VM
+          // errors (termination/OOM). `CloseCompletionKind::Throw` already suppresses throw
+          // completions from `return`; if we still get an error here, treat it as fatal.
+          if let Err(close_err) = close_res {
+            if original_is_throw {
+              return Err(close_err);
+            }
+          }
+        }
         return Err(err);
       }
-      let _ = iterator::iterator_close(
-        vm,
-        host,
-        hooks,
-        scope,
-        &record,
-        iterator::CloseCompletionKind::NonThrow,
-      );
+      if !record.done {
+        iterator::iterator_close(vm, host, hooks, scope, &record, CloseCompletionKind::NonThrow)?;
+      }
       Ok(out)
     }
     other => {
