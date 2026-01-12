@@ -12115,6 +12115,90 @@ mod tests {
   }
 
   #[test]
+  fn empty_cells_hide_row_does_not_collapse_with_empty_in_flow_element() {
+    // CSS 2.1 §17.6.1 explicitly treats "in-flow content (including empty elements)" as visible
+    // content for empty-cells emptiness detection.
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![inner]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with empty in-flow element");
+
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "empty in-flow elements should prevent empty-cells row collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_row_collapses_when_cell_visibility_hidden() {
+    // CSS 2.1 §17.6.1: cells with `visibility: hidden` are considered to have no visible content.
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+    cell_style.visibility = Visibility::Hidden;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let text = BoxNode::new_text(Arc::new(text_style), "x".to_string());
+
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![text]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with hidden cell");
+
+    assert!(
+      fragment.bounds.height() < 0.5,
+      "visibility:hidden cells should allow empty-cells row collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
   fn empty_cells_hide_rowspan_content_prevents_spanned_rows_collapse() {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
