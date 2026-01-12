@@ -205,13 +205,13 @@ fn static_callee_path(lower: &hir_js::LowerResult, body: &Body, expr_id: ExprId)
       let prop = match &mem.property {
         ObjectKey::Ident(prop) => lower.names.resolve(*prop)?.to_string(),
         ObjectKey::String(s) => s.clone(),
-        ObjectKey::Number(n) => n.clone(),
+        ObjectKey::Number(n) => crate::js_string::number_literal_to_js_string(n),
         ObjectKey::Computed(expr) => {
           let expr = strip_transparent_wrappers(body, *expr);
           let expr = body.exprs.get(expr.0 as usize)?;
           match &expr.kind {
             ExprKind::Literal(hir_js::Literal::String(lit)) => lit.lossy.clone(),
-            ExprKind::Literal(hir_js::Literal::Number(n)) => n.clone(),
+            ExprKind::Literal(hir_js::Literal::Number(n)) => crate::js_string::number_literal_to_js_string(n),
             ExprKind::Literal(hir_js::Literal::BigInt(n)) => n.clone(),
             _ => return None,
           }

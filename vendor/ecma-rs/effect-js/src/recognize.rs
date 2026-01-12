@@ -42,13 +42,13 @@ fn expr_fingerprint(lowered: &LowerResult, body: BodyId, expr: ExprId) -> Option
       let key = match &member.property {
         hir_js::ObjectKey::Ident(id) => MemberKey::String(lowered.names.resolve(*id)?.to_string()),
         hir_js::ObjectKey::String(s) => MemberKey::String(s.clone()),
-        hir_js::ObjectKey::Number(n) => MemberKey::Number(n.clone()),
+        hir_js::ObjectKey::Number(n) => MemberKey::Number(crate::js_string::number_literal_to_js_string(n)),
         hir_js::ObjectKey::Computed(expr) => {
           let expr = strip_transparent_wrappers(body_ref, *expr);
           let expr = body_ref.exprs.get(expr.0 as usize)?;
           match &expr.kind {
             ExprKind::Literal(hir_js::Literal::String(lit)) => MemberKey::String(lit.lossy.clone()),
-            ExprKind::Literal(hir_js::Literal::Number(n)) => MemberKey::Number(n.clone()),
+            ExprKind::Literal(hir_js::Literal::Number(n)) => MemberKey::Number(crate::js_string::number_literal_to_js_string(n)),
             ExprKind::Literal(hir_js::Literal::BigInt(n)) => MemberKey::Number(n.clone()),
             _ => return None,
           }
@@ -112,13 +112,13 @@ fn static_object_key_name(
   match key {
     hir_js::ObjectKey::Ident(id) => lowered.names.resolve(*id).map(|s| s.to_string()),
     hir_js::ObjectKey::String(s) => Some(s.clone()),
-    hir_js::ObjectKey::Number(n) => Some(n.clone()),
+    hir_js::ObjectKey::Number(n) => Some(crate::js_string::number_literal_to_js_string(n)),
     hir_js::ObjectKey::Computed(expr) => {
       let expr = strip_transparent_wrappers(body, *expr);
       let expr = body.exprs.get(expr.0 as usize)?;
       match &expr.kind {
         ExprKind::Literal(hir_js::Literal::String(lit)) => Some(lit.lossy.clone()),
-        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(n.clone()),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
         ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
         _ => None,
       }

@@ -643,13 +643,13 @@ fn object_key_to_static_string(lower: &LowerResult, body: &Body, key: &ObjectKey
   match key {
     ObjectKey::Ident(id) => lower.names.resolve(*id).map(|s| s.to_string()),
     ObjectKey::String(s) => Some(s.clone()),
-    ObjectKey::Number(n) => Some(n.clone()),
+    ObjectKey::Number(n) => Some(crate::js_string::number_literal_to_js_string(n)),
     ObjectKey::Computed(expr) => {
       let expr = strip_transparent_wrappers(body, *expr);
       let expr = body.exprs.get(expr.0 as usize)?;
       match &expr.kind {
         ExprKind::Literal(Literal::String(lit)) => Some(lit.lossy.clone()),
-        ExprKind::Literal(Literal::Number(n)) => Some(n.clone()),
+        ExprKind::Literal(Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
         ExprKind::Literal(Literal::BigInt(n)) => Some(n.clone()),
         _ => None,
       }

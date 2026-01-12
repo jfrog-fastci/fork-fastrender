@@ -406,7 +406,7 @@ fn object_key_to_string(body: &Body, key: &ObjectKey, names: &NameInterner) -> O
   match key {
     ObjectKey::Ident(id) => Some(names.resolve(*id)?.to_string()),
     ObjectKey::String(s) => Some(s.clone()),
-    ObjectKey::Number(n) => Some(n.clone()),
+    ObjectKey::Number(n) => Some(crate::js_string::number_literal_to_js_string(n)),
     ObjectKey::Computed(expr) => {
       // Allow bracket access when the key is a literal (e.g. `obj["prop"]`).
       // Non-literal keys remain unresolved.
@@ -414,7 +414,7 @@ fn object_key_to_string(body: &Body, key: &ObjectKey, names: &NameInterner) -> O
       let expr = body.exprs.get(expr.0 as usize)?;
       match &expr.kind {
         ExprKind::Literal(Literal::String(lit)) => Some(lit.lossy.clone()),
-        ExprKind::Literal(Literal::Number(n)) => Some(n.clone()),
+        ExprKind::Literal(Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
         ExprKind::Literal(Literal::BigInt(n)) => Some(n.clone()),
         _ => None,
       }

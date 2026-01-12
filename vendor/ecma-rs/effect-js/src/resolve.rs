@@ -17,18 +17,18 @@ fn static_object_key_name<'a>(
   lowered: &'a LowerResult,
   body: &'a Body,
   key: &'a ObjectKey,
-) -> Option<&'a str> {
+) -> Option<String> {
   match key {
-    ObjectKey::Ident(name) => ident_name(lowered, *name),
-    ObjectKey::String(s) => Some(s.as_str()),
-    ObjectKey::Number(n) => Some(n.as_str()),
+    ObjectKey::Ident(name) => ident_name(lowered, *name).map(|s| s.to_string()),
+    ObjectKey::String(s) => Some(s.clone()),
+    ObjectKey::Number(n) => Some(crate::js_string::number_literal_to_js_string(n)),
     ObjectKey::Computed(expr) => {
       let expr = strip_transparent_wrappers(body, *expr);
       let expr = body.exprs.get(expr.0 as usize)?;
       match &expr.kind {
-        ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.as_str()),
-        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(n.as_str()),
-        ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.as_str()),
+        ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.clone()),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
+        ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
         _ => None,
       }
     }
@@ -55,7 +55,7 @@ impl<'a> ApiCallResolver<'a> {
         }
         let mut segs = self.callee_segments(body, member.object)?;
         let body_ref = self.lowered.body(body)?;
-        let prop = static_object_key_name(self.lowered, body_ref, &member.property)?.to_string();
+        let prop = static_object_key_name(self.lowered, body_ref, &member.property)?;
         segs.push(prop);
         Some(segs)
       }
@@ -174,7 +174,7 @@ impl<'a> ApiCallResolver<'a> {
 
     let prop = static_object_key_name(self.lowered, body_ref, &member.property)?;
 
-    match prop {
+    match prop.as_str() {
       "map" => self.kb.id_of("Array.prototype.map"),
       "filter" => self.kb.id_of("Array.prototype.filter"),
       "reduce" => self.kb.id_of("Array.prototype.reduce"),
@@ -386,7 +386,7 @@ fn receiver_is_array_method_receiver(
     return false;
   };
 
-  match prop {
+  match prop.as_str() {
     "map" | "filter" | "flatMap" => receiver_is_array_method_receiver(lowered, body, member.object, types),
     _ => false,
   }
@@ -669,7 +669,7 @@ pub fn resolve_member(
 
   let prop = static_object_key_name(lowered, body_ref, &member.property)?;
 
-  let api = match prop {
+  let api = match prop.as_str() {
     "length" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
       "Array.prototype.length"
     }
@@ -795,5 +795,38 @@ mod tests {
       resolve_api_call_untyped(&db, &lowered, body_id, call_expr),
       Some(json_parse_id)
     );
+  }
+
+  #[test]
+  fn computed_number_property_keys_use_js_number_to_string() {
+    let lowered = hir_js::lower_from_source_with_kind(FileKind::Js, "obj[1e21];").unwrap();
+    let (body_id, member_expr) = first_stmt_expr(&lowered);
+    let body = lowered.body(body_id).expect("body");
+    let expr = body.exprs.get(member_expr.0 as usize).expect("expr");
+    let ExprKind::Member(member) = &expr.kind else {
+      panic!("expected member expr");
+    };
+    let key = static_object_key_name(&lowered, body, &member.property).expect("key");
+    assert_eq!(key, "1e+21");
+
+    let lowered = hir_js::lower_from_source_with_kind(FileKind::Js, "obj[1e-7];").unwrap();
+    let (body_id, member_expr) = first_stmt_expr(&lowered);
+    let body = lowered.body(body_id).expect("body");
+    let expr = body.exprs.get(member_expr.0 as usize).expect("expr");
+    let ExprKind::Member(member) = &expr.kind else {
+      panic!("expected member expr");
+    };
+    let key = static_object_key_name(&lowered, body, &member.property).expect("key");
+    assert_eq!(key, "1e-7");
+
+    let lowered = hir_js::lower_from_source_with_kind(FileKind::Js, "obj[1e400];").unwrap();
+    let (body_id, member_expr) = first_stmt_expr(&lowered);
+    let body = lowered.body(body_id).expect("body");
+    let expr = body.exprs.get(member_expr.0 as usize).expect("expr");
+    let ExprKind::Member(member) = &expr.kind else {
+      panic!("expected member expr");
+    };
+    let key = static_object_key_name(&lowered, body, &member.property).expect("key");
+    assert_eq!(key, "Infinity");
   }
 }
