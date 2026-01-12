@@ -181,7 +181,7 @@ fn symbol_coercions_throw_typeerror() {
 }
 
 #[test]
-fn vm_js_string_pad_start_end() {
+fn string_pad_start_end() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
