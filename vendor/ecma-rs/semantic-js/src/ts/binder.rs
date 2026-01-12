@@ -855,8 +855,9 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     ambient_modules: &[AmbientModule],
     deps: &mut Vec<FileId>,
   ) {
-    // Ambient module declarations implicitly export their top-level declarations. However, an
-    // export assignment (`export = Foo`) defines the module's exports explicitly.
+    // Ambient module declarations and module augmentations implicitly export
+    // their top-level declarations. However, `export =` assignments define the
+    // module's exports explicitly and therefore disable implicit named exports.
     let implicit_export = implicit_export
       && !exports
         .iter()
@@ -868,13 +869,6 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     let mut has_non_assignment_exports = false;
     let mut export_assignment_span: Option<Span> = None;
     let mut import_def_ids = HashMap::new();
-    // TypeScript ambient module declarations implicitly export their top-level
-    // declarations. However, TS2395 (export/local merge mismatch) is based on
-    // whether a declaration is explicitly exported, not whether it is reachable
-    // from a module's exports. Preserve the original `Decl::exported` flag for
-    // ambient modules so merge diagnostics still match `tsc`, while still
-    // synthesizing export specs so the declaration is available to importers.
-    let implicit_export_marks_decl_as_exported = implicit_export && !matches!(owner, SymbolOwner::AmbientModule(_));
 
     for decl in decls {
       if matches!(decl.kind, DeclKind::ImportBinding) {
@@ -883,17 +877,10 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           .or_insert(decl.def_id);
         continue;
       }
-      let exported = decl.exported.clone();
-      let implicit_named = implicit_export && !decl.is_global && matches!(exported, Exported::No);
-      let exported_for_decl = if implicit_export_marks_decl_as_exported && implicit_named {
+      let exported = if implicit_export && !decl.is_global && matches!(decl.exported, Exported::No) {
         Exported::Named
       } else {
-        exported.clone()
-      };
-      let exported_for_exports = if implicit_named {
-        Exported::Named
-      } else {
-        exported.clone()
+        decl.exported.clone()
       };
       let namespaces = decl.kind.namespaces();
       let order = decl.span.start;
@@ -904,7 +891,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         namespaces,
         decl.is_ambient,
         decl.is_global,
-        exported_for_decl.clone(),
+        exported.clone(),
         decl.span,
         decl.name_span,
         order,
@@ -938,7 +925,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           &SymbolOwner::Global,
         );
       }
-      match exported_for_exports {
+      match exported {
         Exported::No => {}
         Exported::Named => {
           has_exports = true;
