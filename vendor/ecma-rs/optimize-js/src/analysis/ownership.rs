@@ -53,7 +53,7 @@ fn inst_defines_value(inst: &Inst) -> Option<u32> {
  
 fn is_allocation_inst(inst: &Inst) -> bool {
   match inst.t {
-    InstTyp::Call => {
+    InstTyp::Call | InstTyp::Invoke => {
       if inst.tgts.is_empty() {
         return false;
       }
@@ -76,11 +76,18 @@ fn is_allocation_inst(inst: &Inst) -> bool {
 }
  
 fn call_return_kind(inst: &Inst, call_summaries: Option<&[FnSummary]>) -> ReturnKind {
-  if inst.t != InstTyp::Call {
+  if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
     return ReturnKind::Unknown;
   }
-
-  let (_tgt, callee, _this, _args, spreads) = inst.as_call();
+ 
+  let (_tgt, callee, _this, _args, spreads) = match inst.t {
+    InstTyp::Call => inst.as_call(),
+    InstTyp::Invoke => {
+      let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+      (tgt, callee, this, args, spreads)
+    }
+    _ => unreachable!(),
+  };
 
   let kind = match (call_summaries, callee) {
     (Some(summaries), Arg::Fn(id)) => summaries
@@ -177,11 +184,10 @@ fn collect_alloc_vars(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTreeS
     for inst in block.iter() {
       if let Some(tgt) = inst_defines_value(inst) {
         if is_allocation_inst(inst)
-          || (inst.t == InstTyp::Call
-            && matches!(
-              call_return_kind(inst, call_summaries),
-              ReturnKind::FreshAlloc
-            ))
+          || matches!(
+            call_return_kind(inst, call_summaries),
+            ReturnKind::FreshAlloc
+          )
         {
           allocs.insert(tgt);
         }
@@ -220,15 +226,21 @@ fn collect_borrowed_defs(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTr
           // treat their results as borrowed (non-owned) values.
           borrowed.insert(tgt);
         }
-        InstTyp::Call => {
+        InstTyp::Call | InstTyp::Invoke => {
           if is_allocation_inst(inst) {
             continue;
           }
-
           match call_return_kind(inst, call_summaries) {
             ReturnKind::FreshAlloc | ReturnKind::Const => {}
             ReturnKind::AliasParam(i) => {
-              let (_tgt, _callee, _this, args, _spreads) = inst.as_call();
+              let (_tgt, _callee, _this, args, _spreads) = match inst.t {
+                InstTyp::Call => inst.as_call(),
+                InstTyp::Invoke => {
+                  let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+                  (tgt, callee, this, args, spreads)
+                }
+                _ => unreachable!(),
+              };
               if !matches!(args.get(i), Some(Arg::Var(_))) {
                 borrowed.insert(tgt);
               }
@@ -362,7 +374,7 @@ fn is_consume_site(inst: &Inst, arg_idx: usize) -> bool {
   match inst.t {
     InstTyp::VarAssign => arg_idx == 0,
     InstTyp::PropAssign => arg_idx == 2,
-    InstTyp::Call => arg_idx >= 1, // this + call args; callee is always borrowed
+    InstTyp::Call | InstTyp::Invoke => arg_idx >= 1, // this + call args; callee is always borrowed
     #[cfg(feature = "semantic-ops")]
     InstTyp::KnownApiCall { .. } => true,
     #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]

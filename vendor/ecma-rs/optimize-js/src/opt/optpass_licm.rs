@@ -214,10 +214,15 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
     InstTyp::Call => {
       inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
     }
+    // `Invoke` is a terminator with an exception edge; it cannot be hoisted safely. (If an invoke
+    // is proven non-throwing, `optpass_exception_prune` can rewrite it into a `Call`, which LICM
+    // can then consider.)
+    InstTyp::Invoke => false,
     #[cfg(feature = "semantic-ops")]
     InstTyp::KnownApiCall { .. } => {
       inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
     }
+    InstTyp::Catch => false,
     InstTyp::Assume => false,
     #[cfg(feature = "native-async-ops")]
     InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => false,

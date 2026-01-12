@@ -81,6 +81,7 @@ use hir_js::PatId;
 use opt::optpass_async_elide::optpass_async_elide;
 use opt::optpass_cfg_prune::optpass_cfg_prune;
 use opt::optpass_dvn::optpass_dvn;
+use opt::optpass_exception_prune::optpass_exception_prune;
 use opt::optpass_impossible_branches::optpass_impossible_branches;
 use opt::optpass_inline::optpass_inline;
 use opt::optpass_licm::optpass_licm;
@@ -758,6 +759,10 @@ pub(crate) fn build_program_function_with_options(
       dbg_checkpoint(&format!("opt{}_redundant_assigns", i), &cfg);
       iteration_result.merge(optpass_nullcheck_elim(&mut cfg));
       dbg_checkpoint(&format!("opt{}_nullcheck_elim", i), &cfg);
+      let exception_prune_result = optpass_exception_prune(&mut cfg);
+      dom_cache.maybe_invalidate(&exception_prune_result);
+      iteration_result.merge(exception_prune_result);
+      dbg_checkpoint(&format!("opt{}_exception_prune", i), &cfg);
       let impossible_result = optpass_impossible_branches(&mut cfg);
       dom_cache.maybe_invalidate(&impossible_result);
       iteration_result.merge(impossible_result);

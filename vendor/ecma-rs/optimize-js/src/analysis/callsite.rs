@@ -92,8 +92,16 @@ pub fn analyze_callsites(cfg: &Cfg) -> CallSiteMap {
   for label in cfg.graph.labels_sorted() {
     for (inst_idx, inst) in cfg.bblocks.get(label).iter().enumerate() {
       match inst.t {
-        InstTyp::Call => {
-          let (_tgt, callee, this_arg, _args, _spreads) = inst.as_call();
+        InstTyp::Call | InstTyp::Invoke => {
+          let (_tgt, callee, this_arg, _args, _spreads) = match inst.t {
+            InstTyp::Call => inst.as_call(),
+            InstTyp::Invoke => {
+              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+              (tgt, callee, this, args, spreads)
+            }
+            _ => unreachable!(),
+          };
+
           let callee = match callee {
             Arg::Builtin(path) => CallSiteCallee::DirectBuiltin(path.clone()),
             Arg::Fn(id) => CallSiteCallee::DirectFn(*id),

@@ -250,8 +250,15 @@ fn build_var_defs(
         .map(VarDef::Fn)
         .unwrap_or(VarDef::Unknown),
       InstTyp::Phi => VarDef::Phi(inst.args.clone()),
-      InstTyp::Call => {
-        let (tgt, callee, _this, args, spreads) = inst.as_call();
+      InstTyp::Call | InstTyp::Invoke => {
+        let (tgt, callee, _this, args, spreads) = match inst.t {
+          InstTyp::Call => inst.as_call(),
+          InstTyp::Invoke => {
+            let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+            (tgt, callee, this, args, spreads)
+          }
+          _ => unreachable!(),
+        };
         if tgt.is_none() {
           continue;
         }
@@ -409,8 +416,15 @@ fn summarize_function(
 
   for inst in collect_insts(cfg) {
     match inst.t {
-      InstTyp::Call => {
-        let (_tgt, callee, _this, args, spreads) = inst.as_call();
+      InstTyp::Call | InstTyp::Invoke => {
+        let (_tgt, callee, _this, args, spreads) = match inst.t {
+          InstTyp::Call => inst.as_call(),
+          InstTyp::Invoke => {
+            let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+            (tgt, callee, this, args, spreads)
+          }
+          _ => unreachable!(),
+        };
         let direct = matches!(callee, Arg::Fn(id) if *id < callee_summaries.len()) && spreads.is_empty();
 
         for (idx, arg) in args.iter().enumerate() {
@@ -489,6 +503,10 @@ fn summarize_function(
         }
       }
       InstTyp::Throw => {
+        if !inst.labels.is_empty() {
+          // Exception caught within the current body.
+          continue;
+        }
         let value = inst.as_throw();
         let origin = resolve_arg_origin(
           value,

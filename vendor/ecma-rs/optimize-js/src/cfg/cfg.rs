@@ -265,8 +265,26 @@ impl Cfg {
             graph.connect(&parent, label);
           }
         }
-        Some(InstTyp::Return) | Some(InstTyp::Throw) => {
-          // Terminators with no outgoing edges.
+        Some(InstTyp::Invoke) => {
+          let labels = &mut bblocks.get_mut(&parent).unwrap().last_mut().unwrap().labels;
+          assert_eq!(labels.len(), 2, "Invoke must have exactly two successor labels");
+          // Like CondGoto, we use DUMMY_LABEL for the normal continuation to represent fallthrough.
+          if labels[0] == DUMMY_LABEL {
+            labels[0] = bblock_order[i + 1];
+          }
+          graph.connect(&parent, &labels[0]);
+          graph.connect(&parent, &labels[1]);
+        }
+        Some(InstTyp::Return) => {
+          // Terminator with no outgoing edges.
+        }
+        Some(InstTyp::Throw) => {
+          // `throw` normally has no outgoing edges, but when it carries a single label it is
+          // treated as an exceptional edge to a handler within the current body.
+          let labels = bblocks[&parent].last().expect("checked by match").labels.clone();
+          if let Some(handler) = labels.get(0).copied() {
+            graph.connect(&parent, &handler);
+          }
         }
         _ => {
           if i == bblocks.len() - 1 {

@@ -23,8 +23,8 @@ pub enum EscapeState {
   ArgEscape(usize),
   /// Escapes by being returned from the current function.
   ///
-  /// This includes values returned via [`InstTyp::Return`] or thrown via [`InstTyp::Throw`]. We do
-  /// not model `try`/`catch` explicitly in the CFG, so both are treated as escaping to the caller.
+  /// This includes values returned via [`InstTyp::Return`] or thrown via [`InstTyp::Throw`] that is
+  /// not caught within the current body.
   ReturnEscape,
   /// Escapes to global/outer scope storage (e.g. `ForeignStore`/`UnknownStore`).
   GlobalEscape,
@@ -321,8 +321,18 @@ fn collect_local_alloc_flow_facts(
     };
     for inst in block.iter() {
       match inst.t {
-        InstTyp::Call => {
-          let (tgt, callee, _this, args, spreads) = inst.as_call();
+        InstTyp::Call | InstTyp::Invoke => {
+          let (tgt, callee, _this, args, spreads) = match inst.t {
+            InstTyp::Call => {
+              let (tgt, callee, this, args, spreads) = inst.as_call();
+              (tgt, callee, this, args, spreads)
+            }
+            InstTyp::Invoke => {
+              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+              (tgt, callee, this, args, spreads)
+            }
+            _ => unreachable!(),
+          };
           let Some(tgt) = tgt else {
             continue;
           };
@@ -396,6 +406,28 @@ fn collect_local_alloc_flow_facts(
             continue;
           };
           facts.external_defs.insert(tgt);
+        }
+        InstTyp::Catch => {
+          let tgt = inst.as_catch();
+          // The caught exception value may originate outside the function (e.g. a thrown value from
+          // a callee), so treat it as external by default.
+          facts.external_defs.insert(tgt);
+          // Model explicit `throw` statements that transfer control to this handler as an
+          // assignment into the catch variable so local allocations thrown within the same
+          // function remain tracked.
+          for parent in cfg.graph.parents_sorted(label) {
+            let Some(term) = cfg.bblocks.get(parent).last() else {
+              continue;
+            };
+            if term.t != InstTyp::Throw {
+              continue;
+            }
+            if term.labels.get(0).copied() == Some(label) {
+              if let Some(arg) = term.args.get(0) {
+                facts.var_assigns.push((tgt, arg.clone()));
+              }
+            }
+          }
         }
         InstTyp::VarAssign => {
           let (tgt, arg) = inst.as_var_assign();
@@ -547,10 +579,17 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
         continue;
       };
       for inst in block.iter() {
-        if inst.t != InstTyp::Call {
+        if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
           continue;
         }
-        let (tgt, callee, _this, args, spreads) = inst.as_call();
+        let (tgt, callee, _this, args, spreads) = match inst.t {
+          InstTyp::Call => inst.as_call(),
+          InstTyp::Invoke => {
+            let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+            (tgt, callee, this, args, spreads)
+          }
+          _ => unreachable!(),
+        };
         let Some(id) = resolve_fn_id(callee, callee_defs, &mut Vec::new()) else {
           continue;
         };
@@ -786,9 +825,22 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
     };
     for inst in block.iter() {
       match inst.t {
-        InstTyp::Return | InstTyp::Throw => {
+        InstTyp::Return => {
           // Returned/thrown values escape the current function but can still be treated as
           // ownership-transfer sites rather than forcing them to be globally shared.
+          let Some(arg) = inst.args.get(0) else {
+            continue;
+          };
+          for alloc in allocs_for_arg(&var_allocs, arg) {
+            join_escape(&mut alloc_states, alloc, EscapeState::ReturnEscape);
+          }
+        }
+        InstTyp::Throw => {
+          // Only treat the thrown value as escaping to the caller when the exception is not caught
+          // within the current body.
+          if !inst.labels.is_empty() {
+            continue;
+          }
           let Some(arg) = inst.args.get(0) else {
             continue;
           };
@@ -801,8 +853,15 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
             join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
           }
         }
-        InstTyp::Call => {
-          let (_tgt, callee, this, args, spreads) = inst.as_call();
+        InstTyp::Call | InstTyp::Invoke => {
+          let (_tgt, callee, this, args, spreads) = match inst.t {
+            InstTyp::Call => inst.as_call(),
+            InstTyp::Invoke => {
+              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+              (tgt, callee, this, args, spreads)
+            }
+            _ => unreachable!(),
+          };
           if marker_call_is_safe(callee) {
             continue;
           }

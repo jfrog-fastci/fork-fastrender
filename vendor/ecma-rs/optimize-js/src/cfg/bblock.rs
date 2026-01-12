@@ -22,7 +22,7 @@ pub fn convert_insts_to_bblocks(
         bblock_order.push(label);
         bblock = bblocks.entry(label).or_default();
       }
-      InstTyp::_Goto | InstTyp::CondGoto | InstTyp::Return | InstTyp::Throw => {
+      InstTyp::_Goto | InstTyp::CondGoto | InstTyp::Return | InstTyp::Throw | InstTyp::Invoke => {
         bblock.push(inst);
         let l = c_label.bump();
         bblock_order.push(l);

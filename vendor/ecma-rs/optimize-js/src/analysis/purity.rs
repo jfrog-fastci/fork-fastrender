@@ -279,11 +279,18 @@ pub fn annotate_cfg_purity(
   let value_types = ValueTypeSummaries::new(cfg);
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
-      if inst.t != InstTyp::Call {
+      if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
         continue;
       }
 
-      let (_, callee, _, args, _) = inst.as_call();
+      let (_, callee, _, args, _) = match inst.t {
+        InstTyp::Call => inst.as_call(),
+        InstTyp::Invoke => {
+          let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+          (tgt, callee, this, args, spreads)
+        }
+        _ => unreachable!(),
+      };
       inst.meta.callee_purity = match callee {
         Arg::Builtin(path) => builtin_call_purity(path, args, &value_types),
         _ => callee_purity_resolved(callee, purities, &defs),

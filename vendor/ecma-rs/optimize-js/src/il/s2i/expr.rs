@@ -133,8 +133,8 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          Inst::call(
-            tmp,
+          self.call_or_invoke(
+            Some(tmp),
             Arg::Builtin(Self::INTERNAL_REGEX_CALLEE.to_string()),
             Arg::Const(Const::Undefined),
             vec![Arg::Const(Const::Str(v.clone()))],
@@ -667,8 +667,8 @@ impl<'p> HirSourceToInst<'p> {
       };
       self.push_value_inst(
         expr_id,
-        Inst::call(
-          res_tmp_var,
+        self.call_or_invoke(
+          Some(res_tmp_var),
           Arg::Builtin(callee.to_string()),
           Arg::Const(Const::Undefined),
           vec![left, right],
@@ -1028,8 +1028,8 @@ impl<'p> HirSourceToInst<'p> {
 
       fn emit_throw_type_error(compiler: &mut HirSourceToInst<'_>) {
         let err_var = compiler.c_temp.bump();
-        compiler.out.push(Inst::call(
-          err_var,
+        compiler.out.push(compiler.call_or_invoke(
+          Some(err_var),
           Arg::Builtin("TypeError".to_string()),
           Arg::Const(Const::Undefined),
           vec![Arg::Const(Const::Str(
@@ -1037,7 +1037,9 @@ impl<'p> HirSourceToInst<'p> {
           ))],
           Vec::new(),
         ));
-        compiler.out.push(Inst::throw(Arg::Var(err_var)));
+        compiler
+          .out
+          .push(compiler.throw_or_throw_to(Arg::Var(err_var)));
       }
 
       // `++`/`--` perform `ToNumeric` on the operand:
@@ -1131,8 +1133,8 @@ impl<'p> HirSourceToInst<'p> {
       ));
 
       // If `@@toPrimitive` exists, call it as `exotic.call(raw, "number")`.
-      compiler.out.push(Inst::call(
-        prim_var,
+      compiler.out.push(compiler.call_or_invoke(
+        Some(prim_var),
         Arg::Var(exotic_tmp),
         Arg::Var(raw_var),
         vec![Arg::Const(Const::Str("number".to_string()))],
@@ -1176,8 +1178,8 @@ impl<'p> HirSourceToInst<'p> {
         after_value_of_call_label,
       ));
       compiler.out.push(Inst::label(value_of_call_label));
-      compiler.out.push(Inst::call(
-        value_of_res_tmp,
+      compiler.out.push(compiler.call_or_invoke(
+        Some(value_of_res_tmp),
         Arg::Var(value_of_tmp),
         Arg::Var(raw_var),
         Vec::new(),
@@ -1267,8 +1269,8 @@ impl<'p> HirSourceToInst<'p> {
       ));
 
       let to_string_res_tmp = compiler.c_temp.bump();
-      compiler.out.push(Inst::call(
-        to_string_res_tmp,
+      compiler.out.push(compiler.call_or_invoke(
+        Some(to_string_res_tmp),
         Arg::Var(to_string_tmp),
         Arg::Var(raw_var),
         Vec::new(),
@@ -1636,8 +1638,8 @@ impl<'p> HirSourceToInst<'p> {
             let tmp = self.c_temp.bump();
             self.push_value_inst(
               expr_id,
-              Inst::call(
-                tmp,
+              self.call_or_invoke(
+                Some(tmp),
                 Arg::Builtin(Self::INTERNAL_DELETE_CALLEE.to_string()),
                 Arg::Const(Const::Undefined),
                 vec![object_arg, prop_arg],
@@ -1740,8 +1742,8 @@ impl<'p> HirSourceToInst<'p> {
 
       self.push_value_inst(
         expr_id,
-        Inst::call(
-          res_tmp_var,
+        self.call_or_invoke(
+          Some(res_tmp_var),
           Arg::Builtin(Self::INTERNAL_NEW_CALLEE.to_string()),
           ctor_arg,
           args,
@@ -1875,7 +1877,7 @@ impl<'p> HirSourceToInst<'p> {
     }
     self.push_value_inst(
       expr_id,
-      Inst::call(res_tmp_var, callee_arg, this_arg, args, spreads),
+      self.call_or_invoke(Some(res_tmp_var), callee_arg, this_arg, args, spreads),
     );
 
     if let Some(cond) = assumed_cond {
@@ -1928,8 +1930,8 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          Inst::call(
-            tmp,
+          self.call_or_invoke(
+            Some(tmp),
             Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
             Arg::Const(Const::Undefined),
             args,
@@ -1996,8 +1998,8 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          Inst::call(
-            tmp,
+          self.call_or_invoke(
+            Some(tmp),
             Arg::Builtin(Self::INTERNAL_OBJECT_CALLEE.to_string()),
             Arg::Const(Const::Undefined),
             args,
@@ -2024,8 +2026,8 @@ impl<'p> HirSourceToInst<'p> {
         {
           self.push_value_inst(
             expr_id,
-            Inst::call(
-              tmp,
+            self.call_or_invoke(
+              Some(tmp),
               Arg::Builtin(Self::INTERNAL_TEMPLATE_CALLEE.to_string()),
               Arg::Const(Const::Undefined),
               args,
@@ -2046,8 +2048,8 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          Inst::call(
-            tmp,
+          self.call_or_invoke(
+            Some(tmp),
             Arg::Builtin(Self::INTERNAL_TAGGED_TEMPLATE_CALLEE.to_string()),
             Arg::Const(Const::Undefined),
             args,
@@ -2068,8 +2070,8 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          Inst::call(
-            tmp,
+          self.call_or_invoke(
+            Some(tmp),
             Arg::Builtin("import".to_string()),
             Arg::Const(Const::Undefined),
             args,
@@ -2082,17 +2084,34 @@ impl<'p> HirSourceToInst<'p> {
         let arg = self.compile_expr(*expr)?;
         #[cfg(feature = "native-async-ops")]
         {
-          let tmp = self.c_temp.bump();
-          self.push_value_inst(expr_id, Inst::await_(tmp, arg, false));
-          Ok(Arg::Var(tmp))
+          // `InstTyp::Await` currently has no exception edge, so when an exception handler is
+          // active we lower to the call form so it can be represented as an `Invoke`.
+          if self.current_exception_handler().is_none() {
+            let tmp = self.c_temp.bump();
+            self.push_value_inst(expr_id, Inst::await_(tmp, arg, false));
+            Ok(Arg::Var(tmp))
+          } else {
+            let tmp = self.c_temp.bump();
+            self.push_value_inst(
+              expr_id,
+              self.call_or_invoke(
+                Some(tmp),
+                Arg::Builtin("__optimize_js_await".to_string()),
+                Arg::Const(Const::Undefined),
+                vec![arg],
+                Vec::new(),
+              ),
+            );
+            Ok(Arg::Var(tmp))
+          }
         }
         #[cfg(not(feature = "native-async-ops"))]
         {
           let tmp = self.c_temp.bump();
           self.push_value_inst(
             expr_id,
-            Inst::call(
-              tmp,
+            self.call_or_invoke(
+              Some(tmp),
               Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
               Arg::Const(Const::Undefined),
               vec![arg],
@@ -2112,9 +2131,24 @@ impl<'p> HirSourceToInst<'p> {
           *known_resolved || (self.in_function && matches!(&arg, Arg::Const(_)));
         #[cfg(feature = "native-async-ops")]
         {
-          let tmp = self.c_temp.bump();
-          self.push_value_inst(expr_id, Inst::await_(tmp, arg, known_resolved));
-          Ok(Arg::Var(tmp))
+          if self.current_exception_handler().is_none() {
+            let tmp = self.c_temp.bump();
+            self.push_value_inst(expr_id, Inst::await_(tmp, arg, known_resolved));
+            Ok(Arg::Var(tmp))
+          } else {
+            let tmp = self.c_temp.bump();
+            self.push_value_inst(
+              expr_id,
+              self.call_or_invoke(
+                Some(tmp),
+                Arg::Builtin("__optimize_js_await".to_string()),
+                Arg::Const(Const::Undefined),
+                vec![arg],
+                Vec::new(),
+              ),
+            );
+            Ok(Arg::Var(tmp))
+          }
         }
         #[cfg(not(feature = "native-async-ops"))]
         {
@@ -2122,8 +2156,8 @@ impl<'p> HirSourceToInst<'p> {
           let tmp = self.c_temp.bump();
           self.push_value_inst(
             expr_id,
-            Inst::call(
-              tmp,
+            self.call_or_invoke(
+              Some(tmp),
               Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
               Arg::Const(Const::Undefined),
               vec![arg],
@@ -2137,63 +2171,55 @@ impl<'p> HirSourceToInst<'p> {
       ExprKind::ArrayMap { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
         #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
-        {
-          let tmp = self.c_temp.bump();
+        if self.current_exception_handler().is_none() {
           self.push_value_inst(
             expr_id,
             Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Map {
               callback: callback_arg,
             }]),
           );
-          Ok(Arg::Var(tmp))
+          return Ok(Arg::Var(tmp));
         }
-        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
-        {
-          let tmp = self.c_temp.bump();
-          self.push_value_inst(
-            expr_id,
-            Inst::call(
-              tmp,
-              Arg::Builtin("Array.prototype.map".to_string()),
-              this_arg,
-              vec![callback_arg],
-              Vec::new(),
-            ),
-          );
-          Ok(Arg::Var(tmp))
-        }
+        self.push_value_inst(
+          expr_id,
+          self.call_or_invoke(
+            Some(tmp),
+            Arg::Builtin("Array.prototype.map".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
+        Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayFilter { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
         #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
-        {
-          let tmp = self.c_temp.bump();
+        if self.current_exception_handler().is_none() {
           self.push_value_inst(
             expr_id,
             Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Filter {
               callback: callback_arg,
             }]),
           );
-          Ok(Arg::Var(tmp))
+          return Ok(Arg::Var(tmp));
         }
-        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
-        {
-          let tmp = self.c_temp.bump();
-          self.push_value_inst(
-            expr_id,
-            Inst::call(
-              tmp,
-              Arg::Builtin("Array.prototype.filter".to_string()),
-              this_arg,
-              vec![callback_arg],
-              Vec::new(),
-            ),
-          );
-          Ok(Arg::Var(tmp))
-        }
+        self.push_value_inst(
+          expr_id,
+          self.call_or_invoke(
+            Some(tmp),
+            Arg::Builtin("Array.prototype.filter".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
+        Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayReduce {
@@ -2203,13 +2229,14 @@ impl<'p> HirSourceToInst<'p> {
       } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
+        let init_arg = match init {
+          Some(init) => Some(self.compile_expr(*init)?),
+          None => None,
+        };
+        let tmp = self.c_temp.bump();
+
         #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
-        {
-          let init_arg = match init {
-            Some(init) => Some(self.compile_expr(*init)?),
-            None => None,
-          };
-          let tmp = self.c_temp.bump();
+        if self.current_exception_handler().is_none() {
           self.push_value_inst(
             expr_id,
             Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Reduce {
@@ -2217,126 +2244,111 @@ impl<'p> HirSourceToInst<'p> {
               init: init_arg,
             }]),
           );
-          Ok(Arg::Var(tmp))
+          return Ok(Arg::Var(tmp));
         }
-        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
-        {
-          let mut args = vec![callback_arg];
-          if let Some(init) = init {
-            args.push(self.compile_expr(*init)?);
-          }
-          let tmp = self.c_temp.bump();
-          self.push_value_inst(
-            expr_id,
-            Inst::call(
-              tmp,
-              Arg::Builtin("Array.prototype.reduce".to_string()),
-              this_arg,
-              args,
-              Vec::new(),
-            ),
-          );
-          Ok(Arg::Var(tmp))
+
+        let mut args = vec![callback_arg];
+        if let Some(init_arg) = init_arg {
+          args.push(init_arg);
         }
+        self.push_value_inst(
+          expr_id,
+          self.call_or_invoke(
+            Some(tmp),
+            Arg::Builtin("Array.prototype.reduce".to_string()),
+            this_arg,
+            args,
+            Vec::new(),
+          ),
+        );
+        Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayFind { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
         #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
-        {
-          let tmp = self.c_temp.bump();
+        if self.current_exception_handler().is_none() {
           self.push_value_inst(
             expr_id,
             Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Find {
               callback: callback_arg,
             }]),
           );
-          Ok(Arg::Var(tmp))
+          return Ok(Arg::Var(tmp));
         }
-        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
-        {
-          let tmp = self.c_temp.bump();
-          self.push_value_inst(
-            expr_id,
-            Inst::call(
-              tmp,
-              Arg::Builtin("Array.prototype.find".to_string()),
-              this_arg,
-              vec![callback_arg],
-              Vec::new(),
-            ),
-          );
-          Ok(Arg::Var(tmp))
-        }
+        self.push_value_inst(
+          expr_id,
+          self.call_or_invoke(
+            Some(tmp),
+            Arg::Builtin("Array.prototype.find".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
+        Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayEvery { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
         #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
-        {
-          let tmp = self.c_temp.bump();
+        if self.current_exception_handler().is_none() {
           self.push_value_inst(
             expr_id,
             Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Every {
               callback: callback_arg,
             }]),
           );
-          Ok(Arg::Var(tmp))
+          return Ok(Arg::Var(tmp));
         }
-        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
-        {
-          let tmp = self.c_temp.bump();
-          self.push_value_inst(
-            expr_id,
-            Inst::call(
-              tmp,
-              Arg::Builtin("Array.prototype.every".to_string()),
-              this_arg,
-              vec![callback_arg],
-              Vec::new(),
-            ),
-          );
-          Ok(Arg::Var(tmp))
-        }
+        self.push_value_inst(
+          expr_id,
+          self.call_or_invoke(
+            Some(tmp),
+            Arg::Builtin("Array.prototype.every".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
+        Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArraySome { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
         #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
-        {
-          let tmp = self.c_temp.bump();
+        if self.current_exception_handler().is_none() {
           self.push_value_inst(
             expr_id,
             Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Some {
               callback: callback_arg,
             }]),
           );
-          Ok(Arg::Var(tmp))
+          return Ok(Arg::Var(tmp));
         }
-        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
-        {
-          let tmp = self.c_temp.bump();
-          self.push_value_inst(
-            expr_id,
-            Inst::call(
-              tmp,
-              Arg::Builtin("Array.prototype.some".to_string()),
-              this_arg,
-              vec![callback_arg],
-              Vec::new(),
-            ),
-          );
-          Ok(Arg::Var(tmp))
-        }
+        self.push_value_inst(
+          expr_id,
+          self.call_or_invoke(
+            Some(tmp),
+            Arg::Builtin("Array.prototype.some".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
+        Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayChain { array, ops } => {
+        let base_array = self.compile_expr(*array)?;
         #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
-        {
-          let base_array = self.compile_expr(*array)?;
+        if self.current_exception_handler().is_none() {
           let mut compiled_ops = Vec::with_capacity(ops.len());
           for op in ops {
             match op {
@@ -2366,58 +2378,56 @@ impl<'p> HirSourceToInst<'p> {
           }
           let tmp = self.c_temp.bump();
           self.push_value_inst(expr_id, Inst::array_chain(tmp, base_array, compiled_ops));
-          Ok(Arg::Var(tmp))
+          return Ok(Arg::Var(tmp));
         }
-        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
-        {
-          let mut current = self.compile_expr(*array)?;
-          for (pos, op) in ops.iter().enumerate() {
-            let (builtin, args) = match op {
-              HirArrayChainOp::Map(callback) => (
-                "Array.prototype.map",
-                vec![self.compile_expr(*callback)?],
-              ),
-              HirArrayChainOp::Filter(callback) => (
-                "Array.prototype.filter",
-                vec![self.compile_expr(*callback)?],
-              ),
-              HirArrayChainOp::Find(callback) => (
-                "Array.prototype.find",
-                vec![self.compile_expr(*callback)?],
-              ),
-              HirArrayChainOp::Every(callback) => (
-                "Array.prototype.every",
-                vec![self.compile_expr(*callback)?],
-              ),
-              HirArrayChainOp::Some(callback) => (
-                "Array.prototype.some",
-                vec![self.compile_expr(*callback)?],
-              ),
-              HirArrayChainOp::Reduce(callback, init) => {
-                let mut args = vec![self.compile_expr(*callback)?];
-                if let Some(init) = init {
-                  args.push(self.compile_expr(*init)?);
-                }
-                ("Array.prototype.reduce", args)
+
+        let mut current = base_array;
+        for (pos, op) in ops.iter().enumerate() {
+          let (builtin, args) = match op {
+            HirArrayChainOp::Map(callback) => (
+              "Array.prototype.map",
+              vec![self.compile_expr(*callback)?],
+            ),
+            HirArrayChainOp::Filter(callback) => (
+              "Array.prototype.filter",
+              vec![self.compile_expr(*callback)?],
+            ),
+            HirArrayChainOp::Find(callback) => (
+              "Array.prototype.find",
+              vec![self.compile_expr(*callback)?],
+            ),
+            HirArrayChainOp::Every(callback) => (
+              "Array.prototype.every",
+              vec![self.compile_expr(*callback)?],
+            ),
+            HirArrayChainOp::Some(callback) => (
+              "Array.prototype.some",
+              vec![self.compile_expr(*callback)?],
+            ),
+            HirArrayChainOp::Reduce(callback, init) => {
+              let mut args = vec![self.compile_expr(*callback)?];
+              if let Some(init) = init {
+                args.push(self.compile_expr(*init)?);
               }
-            };
-            let tmp = self.c_temp.bump();
-            let inst = Inst::call(
-              tmp,
-              Arg::Builtin(builtin.to_string()),
-              current,
-              args,
-              Vec::new(),
-            );
-            if pos == ops.len().saturating_sub(1) {
-              self.push_value_inst(expr_id, inst);
-            } else {
-              self.out.push(inst);
+              ("Array.prototype.reduce", args)
             }
-            current = Arg::Var(tmp);
+          };
+          let tmp = self.c_temp.bump();
+          let inst = self.call_or_invoke(
+            Some(tmp),
+            Arg::Builtin(builtin.to_string()),
+            current,
+            args,
+            Vec::new(),
+          );
+          if pos == ops.len().saturating_sub(1) {
+            self.push_value_inst(expr_id, inst);
+          } else {
+            self.out.push(inst);
           }
-          Ok(current)
+          current = Arg::Var(tmp);
         }
+        Ok(current)
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
@@ -2427,20 +2437,54 @@ impl<'p> HirSourceToInst<'p> {
         }
         #[cfg(feature = "native-async-ops")]
         {
-          let tmp = self.c_temp.bump();
-          let inst = match &expr.kind {
-            ExprKind::PromiseAll { .. } => Inst::promise_all(tmp, args),
-            ExprKind::PromiseRace { .. } => Inst::promise_race(tmp, args),
-            _ => unreachable!(),
-          };
-          self.push_value_inst(expr_id, inst);
-          Ok(Arg::Var(tmp))
+          // `InstTyp::{PromiseAll,PromiseRace}` currently have no exception edge, so when an
+          // exception handler is active we lower to the call form so it can be represented as an
+          // `Invoke`.
+          if self.current_exception_handler().is_none() {
+            let tmp = self.c_temp.bump();
+            let inst = match &expr.kind {
+              ExprKind::PromiseAll { .. } => Inst::promise_all(tmp, args),
+              ExprKind::PromiseRace { .. } => Inst::promise_race(tmp, args),
+              _ => unreachable!(),
+            };
+            self.push_value_inst(expr_id, inst);
+            Ok(Arg::Var(tmp))
+          } else {
+            let array_tmp = self.c_temp.bump();
+            self.out.push(self.call_or_invoke(
+              Some(array_tmp),
+              Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
+              Arg::Const(Const::Undefined),
+              args,
+              Vec::new(),
+            ));
+
+            let tmp = self.c_temp.bump();
+            self.push_value_inst(
+              expr_id,
+              self.call_or_invoke(
+                Some(tmp),
+                Arg::Builtin(
+                  match &expr.kind {
+                    ExprKind::PromiseAll { .. } => "Promise.all",
+                    ExprKind::PromiseRace { .. } => "Promise.race",
+                    _ => unreachable!(),
+                  }
+                  .to_string(),
+                ),
+                Arg::Const(Const::Undefined),
+                vec![Arg::Var(array_tmp)],
+                Vec::new(),
+              ),
+            );
+            Ok(Arg::Var(tmp))
+          }
         }
         #[cfg(not(feature = "native-async-ops"))]
         {
           let array_tmp = self.c_temp.bump();
-          self.out.push(Inst::call(
-            array_tmp,
+          self.out.push(self.call_or_invoke(
+            Some(array_tmp),
             Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
             Arg::Const(Const::Undefined),
             args,
@@ -2450,14 +2494,16 @@ impl<'p> HirSourceToInst<'p> {
           let tmp = self.c_temp.bump();
           self.push_value_inst(
             expr_id,
-            Inst::call(
-              tmp,
-              Arg::Builtin(match &expr.kind {
-                ExprKind::PromiseAll { .. } => "Promise.all",
-                ExprKind::PromiseRace { .. } => "Promise.race",
-                _ => unreachable!(),
-              }
-              .to_string()),
+            self.call_or_invoke(
+              Some(tmp),
+              Arg::Builtin(
+                match &expr.kind {
+                  ExprKind::PromiseAll { .. } => "Promise.all",
+                  ExprKind::PromiseRace { .. } => "Promise.race",
+                  _ => unreachable!(),
+                }
+                .to_string(),
+              ),
               Arg::Const(Const::Undefined),
               vec![Arg::Var(array_tmp)],
               Vec::new(),

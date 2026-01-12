@@ -1,4 +1,4 @@
-use super::{HirSourceToInst, LabeledTarget, VarType, DUMMY_LABEL};
+use super::{FinallyContext, HirSourceToInst, JumpTarget, LabeledTarget, VarType, DUMMY_LABEL};
 use crate::il::inst::{Arg, BinOp, Const, Inst};
 use crate::symbol::semantics::SymbolId;
 use crate::unsupported_syntax_range;
@@ -6,12 +6,17 @@ use crate::util::counter::Counter;
 use crate::OptimizeResult;
 use crate::ProgramCompiler;
 use crate::TextRange;
+use hir_js::hir::CatchClause;
 use hir_js::{
   Body, BodyId, BodyKind, DefKind, ExprId, ExprKind, ForHead, ForInit, NameId, ObjectKey, PatId,
   PatKind, StmtId, StmtKind, VarDecl, VarDeclKind, VarDeclarator,
 };
 use parse_js::loc::Loc;
 use parse_js::num::JsNumber;
+
+const COMPLETION_NORMAL: u32 = 0;
+const COMPLETION_RETURN: u32 = 1;
+const COMPLETION_THROW: u32 = 2;
 
 pub fn key_arg(compiler: &mut HirSourceToInst<'_>, key: &ObjectKey) -> OptimizeResult<Arg> {
   Ok(match key {
@@ -84,6 +89,283 @@ fn root_statements(body: &Body) -> Vec<StmtId> {
 }
 
 impl<'p> HirSourceToInst<'p> {
+  fn completion_code_arg(code: u32) -> Arg {
+    Arg::Const(Const::Num(JsNumber(code as f64)))
+  }
+
+  fn current_finally_depth(&self) -> usize {
+    self.finally_stack.len()
+  }
+
+  fn jump_target(&self, label: u32) -> JumpTarget {
+    JumpTarget {
+      label,
+      finally_depth: self.current_finally_depth(),
+    }
+  }
+
+  fn emit_completion_to_finally(&mut self, code: u32, value: Option<Arg>) {
+    let ctx = self
+      .finally_stack
+      .last()
+      .expect("emit_completion_to_finally with empty finally_stack");
+    if let Some(value) = value {
+      self
+        .out
+        .push(Inst::var_assign(ctx.completion_value, value));
+    }
+    self.out.push(Inst::var_assign(
+      ctx.completion_kind,
+      Self::completion_code_arg(code),
+    ));
+    self.out.push(Inst::goto(ctx.finally_label));
+  }
+
+  fn emit_goto(&mut self, target: JumpTarget) {
+    if self.finally_stack.len() > target.finally_depth {
+      let code = {
+        let ctx = self
+          .finally_stack
+          .last_mut()
+          .expect("checked by if condition");
+        ctx.jump_code_for(target)
+      };
+      self.emit_completion_to_finally(code, None);
+    } else {
+      self.out.push(Inst::goto(target.label));
+    }
+  }
+
+  fn emit_return(&mut self, value: Option<Arg>) {
+    if self.finally_stack.is_empty() {
+      self.out.push(Inst::ret(value));
+      return;
+    }
+    let value = value.unwrap_or(Arg::Const(Const::Undefined));
+    self.emit_completion_to_finally(COMPLETION_RETURN, Some(value));
+  }
+
+  fn emit_throw(&mut self, value: Arg) {
+    self.out.push(self.throw_or_throw_to(value));
+  }
+
+  fn compile_try_stmt(
+    &mut self,
+    span: TextRange,
+    block: StmtId,
+    catch: Option<&CatchClause>,
+    finally_block: Option<StmtId>,
+  ) -> OptimizeResult<()> {
+    let file = self.program.lower.hir.file;
+
+    if catch.is_none() && finally_block.is_none() {
+      return Err(unsupported_syntax_range(
+        file,
+        span,
+        "try statement must have catch or finally",
+      ));
+    }
+
+    let after_try_label = self.c_label.bump();
+
+    // When a finally block is present, we lower all non-exception abrupt
+    // completions (return/break/continue) through a completion record and funnel
+    // them through `finally_label`.
+    let (finally_label, landingpad_label, completion_kind, completion_value) =
+      if finally_block.is_some() {
+        (
+          Some(self.c_label.bump()),
+          Some(self.c_label.bump()),
+          Some(self.c_temp.bump()),
+          Some(self.c_temp.bump()),
+        )
+      } else {
+        (None, None, None, None)
+      };
+
+    let catch_label = catch.map(|_| self.c_label.bump());
+
+    if let Some(finally_label) = finally_label {
+      let completion_kind = completion_kind.expect("set with finally_label");
+      let completion_value = completion_value.expect("set with finally_label");
+      self.finally_stack.push(FinallyContext::new(
+        finally_label,
+        after_try_label,
+        completion_kind,
+        completion_value,
+      ));
+    }
+
+    // Compile the try block with an active exception handler when needed.
+    let try_handler = catch_label.or(landingpad_label);
+    if let Some(handler) = try_handler {
+      self.exception_stack.push(handler);
+    }
+    self.compile_stmt(block)?;
+    if try_handler.is_some() {
+      self.exception_stack.pop();
+    }
+
+    // Normal completion of the try block.
+    if let Some(finally_label) = finally_label {
+      let ctx = self
+        .finally_stack
+        .last()
+        .expect("pushed above when finally_label is Some");
+      self.out.push(Inst::var_assign(
+        ctx.completion_kind,
+        Self::completion_code_arg(COMPLETION_NORMAL),
+      ));
+      self.out.push(Inst::goto(finally_label));
+    } else {
+      self.out.push(Inst::goto(after_try_label));
+    }
+
+    // Catch handler (if present).
+    if let Some(catch) = catch {
+      let catch_label = catch_label.expect("catch_label set when catch is Some");
+      self.out.push(Inst::label(catch_label));
+      let catch_val = self.c_temp.bump();
+      self.out.push(Inst::catch(catch_val));
+
+      // Catch clauses do not catch exceptions thrown inside themselves; restore
+      // the outer handler. When a finally block exists, exceptions in catch
+      // must still execute finally, so use the landingpad as the handler.
+      let catch_handler = landingpad_label;
+      if let Some(handler) = catch_handler {
+        self.exception_stack.push(handler);
+      }
+
+      if let Some(param) = catch.param {
+        self.compile_destructuring(param, Arg::Var(catch_val))?;
+      }
+      self.compile_stmt(catch.body)?;
+      if catch_handler.is_some() {
+        self.exception_stack.pop();
+      }
+
+      // Normal completion of catch.
+      if let Some(finally_label) = finally_label {
+        let ctx = self
+          .finally_stack
+          .last()
+          .expect("pushed above when finally_label is Some");
+        self.out.push(Inst::var_assign(
+          ctx.completion_kind,
+          Self::completion_code_arg(COMPLETION_NORMAL),
+        ));
+        self.out.push(Inst::goto(finally_label));
+      } else {
+        self.out.push(Inst::goto(after_try_label));
+      }
+    }
+
+    // Landingpad to capture exceptions and funnel through finally.
+    if let Some(landingpad_label) = landingpad_label {
+      let finally_label = finally_label.expect("landingpad_label implies finally_label");
+      let completion_kind = completion_kind.expect("landingpad_label implies completion_kind");
+      let completion_value = completion_value.expect("landingpad_label implies completion_value");
+
+      self.out.push(Inst::label(landingpad_label));
+      let exc = self.c_temp.bump();
+      self.out.push(Inst::catch(exc));
+      self
+        .out
+        .push(Inst::var_assign(completion_value, Arg::Var(exc)));
+      self.out.push(Inst::var_assign(
+        completion_kind,
+        Self::completion_code_arg(COMPLETION_THROW),
+      ));
+      self.out.push(Inst::goto(finally_label));
+    }
+
+    if let Some(finally_stmt) = finally_block {
+      let finally_label = finally_label.expect("finally_block implies finally_label");
+      let ctx = self
+        .finally_stack
+        .pop()
+        .expect("pushed above when finally_block is Some");
+      self.out.push(Inst::label(finally_label));
+
+      // Compile the finally body outside the current finally context so control
+      // flow statements inside it do not re-enter the same finally block.
+      self.compile_stmt(finally_stmt)?;
+
+      // If the finally block completes normally, dispatch the pending completion.
+      let kind_var = ctx.completion_kind;
+      let value_var = ctx.completion_value;
+
+      // return?
+      let is_return_tmp = self.c_temp.bump();
+      self.out.push(Inst::bin(
+        is_return_tmp,
+        Arg::Var(kind_var),
+        BinOp::StrictEq,
+        Self::completion_code_arg(COMPLETION_RETURN),
+      ));
+      let return_label = self.c_label.bump();
+      self
+        .out
+        .push(Inst::cond_goto(Arg::Var(is_return_tmp), return_label, DUMMY_LABEL));
+
+      // throw?
+      let is_throw_tmp = self.c_temp.bump();
+      self.out.push(Inst::bin(
+        is_throw_tmp,
+        Arg::Var(kind_var),
+        BinOp::StrictEq,
+        Self::completion_code_arg(COMPLETION_THROW),
+      ));
+      let throw_label = self.c_label.bump();
+      self
+        .out
+        .push(Inst::cond_goto(Arg::Var(is_throw_tmp), throw_label, DUMMY_LABEL));
+
+      // jump cases (break/continue).
+      let mut jump_labels = Vec::with_capacity(ctx.jump_targets.len());
+      for (code, _target) in ctx.jump_targets.iter().copied() {
+        let is_jump_tmp = self.c_temp.bump();
+        self.out.push(Inst::bin(
+          is_jump_tmp,
+          Arg::Var(kind_var),
+          BinOp::StrictEq,
+          Self::completion_code_arg(code),
+        ));
+        let jump_label = self.c_label.bump();
+        jump_labels.push(jump_label);
+        self.out.push(Inst::cond_goto(
+          Arg::Var(is_jump_tmp),
+          jump_label,
+          DUMMY_LABEL,
+        ));
+      }
+
+      // Default: normal completion.
+      self.out.push(Inst::goto(ctx.after_label));
+
+      // Action blocks.
+      self.out.push(Inst::label(return_label));
+      self.emit_return(Some(Arg::Var(value_var)));
+
+      self.out.push(Inst::label(throw_label));
+      self.emit_throw(Arg::Var(value_var));
+
+      for ((_, target), action_label) in ctx.jump_targets.iter().copied().zip(jump_labels) {
+        self.out.push(Inst::label(action_label));
+        self.emit_goto(target);
+      }
+    } else if finally_label.is_some() {
+      // Defensive: finally_label implies finally_block.
+      self
+        .finally_stack
+        .pop()
+        .expect("pushed above when finally_label is Some");
+    }
+
+    self.out.push(Inst::label(after_try_label));
+    Ok(())
+  }
+
   fn collect_pat_binding_symbols(&self, pat: PatId, out: &mut Vec<SymbolId>) {
     match &self.body.pats[pat.0 as usize].kind {
       PatKind::Ident(_) => {
@@ -442,8 +724,8 @@ impl<'p> HirSourceToInst<'p> {
       self.push_value_inst(right, Inst::var_assign(obj_tmp_var, obj_arg));
 
       let keys_tmp_var = self.c_temp.bump();
-      self.out.push(Inst::call(
-        keys_tmp_var,
+      self.out.push(self.call_or_invoke(
+        Some(keys_tmp_var),
         Arg::Builtin("Object.keys".to_string()),
         Arg::Const(Const::Undefined),
         vec![Arg::Var(obj_tmp_var)],
@@ -468,8 +750,8 @@ impl<'p> HirSourceToInst<'p> {
     ));
 
     let iterator_tmp_var = self.c_temp.bump();
-    self.out.push(Inst::call(
-      iterator_tmp_var,
+    self.out.push(self.call_or_invoke(
+      Some(iterator_tmp_var),
       Arg::Var(iterator_method_tmp_var),
       Arg::Var(iterable_tmp_var),
       Vec::new(),
@@ -488,8 +770,8 @@ impl<'p> HirSourceToInst<'p> {
       Arg::Const(Const::Str("next".to_string())),
     ));
     let next_result_tmp_var = self.c_temp.bump();
-    self.out.push(Inst::call(
-      next_result_tmp_var,
+    self.out.push(self.call_or_invoke(
+      Some(next_result_tmp_var),
       Arg::Var(next_method_tmp_var),
       Arg::Var(iterator_tmp_var),
       Vec::new(),
@@ -500,14 +782,26 @@ impl<'p> HirSourceToInst<'p> {
       let awaited_tmp_var = self.c_temp.bump();
       #[cfg(feature = "native-async-ops")]
       {
-        self
-          .out
-          .push(Inst::await_(awaited_tmp_var, Arg::Var(next_result_tmp_var), false));
+        // `InstTyp::Await` currently has no exception edge, so when an exception handler is
+        // active we lower to the call form so it can be represented as an `Invoke`.
+        if self.current_exception_handler().is_none() {
+          self
+            .out
+            .push(Inst::await_(awaited_tmp_var, Arg::Var(next_result_tmp_var), false));
+        } else {
+          self.out.push(self.call_or_invoke(
+            Some(awaited_tmp_var),
+            Arg::Builtin("__optimize_js_await".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![Arg::Var(next_result_tmp_var)],
+            Vec::new(),
+          ));
+        }
       }
       #[cfg(not(feature = "native-async-ops"))]
       {
-        self.out.push(Inst::call(
-          awaited_tmp_var,
+        self.out.push(self.call_or_invoke(
+          Some(awaited_tmp_var),
           Arg::Builtin("__optimize_js_await".to_string()),
           Arg::Const(Const::Undefined),
           vec![Arg::Var(next_result_tmp_var)],
@@ -541,13 +835,13 @@ impl<'p> HirSourceToInst<'p> {
     ));
     self.compile_for_head(span, left, Arg::Var(value_tmp_var))?;
 
-    self.break_stack.push(after_loop_label);
-    self.continue_stack.push(loop_entry_label);
+    self.break_stack.push(self.jump_target(after_loop_label));
+    self.continue_stack.push(self.jump_target(loop_entry_label));
     if let Some(label) = label {
       self.label_stack.push(LabeledTarget {
         label,
-        break_target: after_loop_label,
-        continue_target: Some(loop_entry_label),
+        break_target: self.jump_target(after_loop_label),
+        continue_target: Some(self.jump_target(loop_entry_label)),
       });
     }
     let res = self.compile_stmt(body);
@@ -591,13 +885,14 @@ impl<'p> HirSourceToInst<'p> {
         .out
         .push(Inst::cond_goto(cond_arg, DUMMY_LABEL, after_loop_label));
     };
-    self.break_stack.push(after_loop_label);
-    self.continue_stack.push(loop_continue_label);
+    self.break_stack.push(self.jump_target(after_loop_label));
+    self.continue_stack
+      .push(self.jump_target(loop_continue_label));
     if let Some(label) = label {
       self.label_stack.push(LabeledTarget {
         label,
-        break_target: after_loop_label,
-        continue_target: Some(loop_continue_label),
+        break_target: self.jump_target(after_loop_label),
+        continue_target: Some(self.jump_target(loop_continue_label)),
       });
     }
     let res = self.compile_stmt(body);
@@ -681,7 +976,7 @@ impl<'p> HirSourceToInst<'p> {
     }
 
     let after_switch_label = self.c_label.bump();
-    self.break_stack.push(after_switch_label);
+    self.break_stack.push(self.jump_target(after_switch_label));
 
     let mut case_labels = Vec::with_capacity(cases.len());
     let mut default_label = None;
@@ -752,13 +1047,14 @@ impl<'p> HirSourceToInst<'p> {
     let loop_continue_label = self.c_label.bump();
     let after_loop_label = self.c_label.bump();
     self.out.push(Inst::label(loop_entry_label));
-    self.break_stack.push(after_loop_label);
-    self.continue_stack.push(loop_continue_label);
+    self.break_stack.push(self.jump_target(after_loop_label));
+    self.continue_stack
+      .push(self.jump_target(loop_continue_label));
     if let Some(label) = label {
       self.label_stack.push(LabeledTarget {
         label,
-        break_target: after_loop_label,
-        continue_target: Some(loop_continue_label),
+        break_target: self.jump_target(after_loop_label),
+        continue_target: Some(self.jump_target(loop_continue_label)),
       });
     }
     let res = self.compile_stmt(body);
@@ -793,13 +1089,13 @@ impl<'p> HirSourceToInst<'p> {
     self
       .out
       .push(Inst::cond_goto(test_arg, DUMMY_LABEL, after_loop_label));
-    self.break_stack.push(after_loop_label);
-    self.continue_stack.push(before_test_label);
+    self.break_stack.push(self.jump_target(after_loop_label));
+    self.continue_stack.push(self.jump_target(before_test_label));
     if let Some(label) = label {
       self.label_stack.push(LabeledTarget {
         label,
-        break_target: after_loop_label,
-        continue_target: Some(before_test_label),
+        break_target: self.jump_target(after_loop_label),
+        continue_target: Some(self.jump_target(before_test_label)),
       });
     }
     let res = self.compile_stmt(body);
@@ -845,7 +1141,7 @@ impl<'p> HirSourceToInst<'p> {
             unsupported_syntax_range(file, stmt.span, "break statement outside loop")
           })?
         };
-        self.out.push(Inst::goto(target));
+        self.emit_goto(target);
         Ok(())
       }
       StmtKind::Continue(label) => {
@@ -874,7 +1170,7 @@ impl<'p> HirSourceToInst<'p> {
             unsupported_syntax_range(file, stmt.span, "continue statement outside loop")
           })?
         };
-        self.out.push(Inst::goto(target));
+        self.emit_goto(target);
         Ok(())
       }
       StmtKind::Labeled { label, body } => {
@@ -909,7 +1205,7 @@ impl<'p> HirSourceToInst<'p> {
             let after_label = self.c_label.bump();
             self.label_stack.push(LabeledTarget {
               label: *label,
-              break_target: after_label,
+              break_target: self.jump_target(after_label),
               continue_target: None,
             });
             let res = self.compile_stmt(*body);
@@ -932,12 +1228,12 @@ impl<'p> HirSourceToInst<'p> {
           Some(expr) => Some(self.compile_expr(*expr)?),
           None => None,
         };
-        self.out.push(Inst::ret(value));
+        self.emit_return(value);
         Ok(())
       }
       StmtKind::Throw(value) => {
         let value = self.compile_expr(*value)?;
-        self.out.push(Inst::throw(value));
+        self.emit_throw(value);
         Ok(())
       }
       StmtKind::Expr(expr) => {
@@ -966,6 +1262,11 @@ impl<'p> HirSourceToInst<'p> {
         discriminant,
         cases,
       } => self.compile_switch_stmt(span, *discriminant, cases),
+      StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } => self.compile_try_stmt(stmt.span, *block, catch.as_ref(), *finally_block),
       StmtKind::Var(decl) => self.compile_var_decl(decl),
       StmtKind::While { test, body } => self.compile_while_stmt(*test, *body, span, None),
       StmtKind::DoWhile { test, body } => self.compile_do_while_stmt(*test, *body, span, None),
@@ -976,11 +1277,6 @@ impl<'p> HirSourceToInst<'p> {
         file,
         stmt.span,
         "with statements introduce dynamic scope and are not supported",
-      )),
-      other => Err(unsupported_syntax_range(
-        file,
-        stmt.span,
-        format!("unsupported statement {other:?}"),
       )),
     }
   }

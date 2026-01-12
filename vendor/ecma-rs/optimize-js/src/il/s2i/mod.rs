@@ -39,9 +39,19 @@ pub struct HirSourceToInst<'p> {
   pub c_temp: Counter,
   pub c_label: Counter,
   pub symbol_to_temp: HashMap<SymbolId, u32>,
-  pub break_stack: Vec<u32>,
-  pub continue_stack: Vec<u32>,
+  pub break_stack: Vec<JumpTarget>,
+  pub continue_stack: Vec<JumpTarget>,
   pub label_stack: Vec<LabeledTarget>,
+  /// Stack of active exception handlers (nearest first).
+  ///
+  /// When non-empty, call-like operations are lowered as [`InstTyp::Invoke`] so
+  /// control can transfer to the handler on exception.
+  pub exception_stack: Vec<u32>,
+  /// Stack of active `finally` contexts (nearest first).
+  ///
+  /// `return`/`break`/`continue` inside a `try`/`finally` are lowered using a
+  /// completion record and funnel through the innermost finally block.
+  pub finally_stack: Vec<FinallyContext>,
   pub in_function: bool,
   #[cfg(feature = "typed")]
   pub native_layout_cache: HashMap<crate::types::TypeId, types_ts_interned::LayoutId>,
@@ -56,10 +66,55 @@ pub struct HirSourceToInst<'p> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct JumpTarget {
+  pub label: u32,
+  pub finally_depth: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct LabeledTarget {
   pub label: NameId,
-  pub break_target: u32,
-  pub continue_target: Option<u32>,
+  pub break_target: JumpTarget,
+  pub continue_target: Option<JumpTarget>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinallyContext {
+  pub finally_label: u32,
+  pub after_label: u32,
+  pub completion_kind: u32,
+  pub completion_value: u32,
+  next_jump_code: u32,
+  jump_code_by_target: HashMap<u32, u32>,
+  /// (completion_kind_code, target)
+  pub jump_targets: Vec<(u32, JumpTarget)>,
+}
+
+impl FinallyContext {
+  pub fn new(finally_label: u32, after_label: u32, completion_kind: u32, completion_value: u32) -> Self {
+    Self {
+      finally_label,
+      after_label,
+      completion_kind,
+      completion_value,
+      // 0 = normal, 1 = return, 2 = throw (via landingpad)
+      next_jump_code: 3,
+      jump_code_by_target: HashMap::new(),
+      jump_targets: Vec::new(),
+    }
+  }
+
+  pub fn jump_code_for(&mut self, target: JumpTarget) -> u32 {
+    *self
+      .jump_code_by_target
+      .entry(target.label)
+      .or_insert_with(|| {
+        let code = self.next_jump_code;
+        self.next_jump_code += 1;
+        self.jump_targets.push((code, target));
+        code
+      })
+  }
 }
 
 impl<'p> HirSourceToInst<'p> {
@@ -77,11 +132,38 @@ impl<'p> HirSourceToInst<'p> {
       break_stack: Vec::new(),
       continue_stack: Vec::new(),
       label_stack: Vec::new(),
+      exception_stack: Vec::new(),
+      finally_stack: Vec::new(),
       in_function: body.kind == hir_js::BodyKind::Function,
       #[cfg(feature = "typed")]
       native_layout_cache: HashMap::new(),
       #[cfg(feature = "typed")]
       var_layouts: HashMap::new(),
+    }
+  }
+
+  pub fn current_exception_handler(&self) -> Option<u32> {
+    self.exception_stack.last().copied()
+  }
+
+  pub fn call_or_invoke(
+    &self,
+    tgt: Option<u32>,
+    callee: Arg,
+    this: Arg,
+    args: Vec<Arg>,
+    spreads: Vec<usize>,
+  ) -> Inst {
+    match self.current_exception_handler() {
+      Some(handler) => Inst::invoke(tgt, callee, this, args, spreads, DUMMY_LABEL, handler),
+      None => Inst::call(tgt, callee, this, args, spreads),
+    }
+  }
+
+  pub fn throw_or_throw_to(&self, value: Arg) -> Inst {
+    match self.current_exception_handler() {
+      Some(handler) => Inst::throw_to(handler, value),
+      None => Inst::throw(value),
     }
   }
 

@@ -150,14 +150,32 @@ fn scalar_replace_preserves_literal_initializer_eval_order() {
   let func = &mut program.functions[0];
   let cfg = &mut func.body;
 
-  assert_eq!(count_object_allocs(cfg), 1, "expected allocation before replacement");
-
   let before_calls = collect_non_internal_call_arg0_nums(cfg);
   assert_eq!(
     before_calls,
     vec![1.0, 2.0, 3.0],
     "expected initializer calls to be in source order before scalar replacement"
   );
+
+  let allocs_before = count_object_allocs(cfg);
+  if allocs_before == 0 {
+    // `optimize-js` may already run scalar replacement during compilation (SSA metadata pipeline).
+    // In that case, validate the evaluation order on the already-rewritten CFG and assert the pass
+    // is idempotent.
+    let result = optpass_scalar_replace(cfg);
+    assert!(
+      !result.changed,
+      "expected scalar replacement to be a no-op when object allocation is already eliminated"
+    );
+    let after_calls = collect_non_internal_call_arg0_nums(cfg);
+    assert_eq!(
+      after_calls,
+      vec![1.0, 2.0, 3.0],
+      "expected initializer call order to be preserved after scalar replacement"
+    );
+    return;
+  }
+  assert_eq!(allocs_before, 1, "expected allocation before replacement");
 
   let result = optpass_scalar_replace(cfg);
   assert!(result.changed, "expected scalar replacement to change cfg");

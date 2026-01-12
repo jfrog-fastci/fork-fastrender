@@ -674,6 +674,9 @@ impl<'a> FunctionDecompiler<'a> {
           il::lower_array_chain_inst(self, self, inst, init).expect("array chain inst should lower");
         Ok(Some(stmt))
       }
+      InstTyp::Invoke | InstTyp::Catch => Err(il::DecompileError::Unsupported(
+        "exception-aware control flow not supported in decompiler output".into(),
+      )),
       InstTyp::PropAssign => {
         self.ensure_supported_args(inst.args.iter())?;
         Ok(lower_prop_assign_inst(self, self, inst))
@@ -695,6 +698,11 @@ impl<'a> FunctionDecompiler<'a> {
       }
       InstTyp::Throw => {
         self.ensure_supported_args(inst.args.iter())?;
+        if !inst.labels.is_empty() {
+          return Err(il::DecompileError::Unsupported(
+            "throw with handler not supported in decompiler output".into(),
+          ));
+        }
         Ok(il::lower_throw_inst(self, self, inst))
       }
       InstTyp::Phi => Err(il::DecompileError::Unsupported(

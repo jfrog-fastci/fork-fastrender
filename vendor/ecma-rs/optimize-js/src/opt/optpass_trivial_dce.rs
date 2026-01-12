@@ -77,6 +77,11 @@ pub fn optpass_trivial_dce(cfg: &mut Cfg) -> PassResult {
             // clear any result-only metadata (type/ownership/etc).
             bblock[i].meta.clear_result_var_metadata();
           }
+        } else if bblock[i].t == InstTyp::Invoke {
+          // Invoke is a terminator and encodes control flow, so it cannot be removed here without
+          // rewiring the CFG. We can still drop the unused assignment target.
+          bblock[i].tgts.clear();
+          bblock[i].meta.clear_result_var_metadata();
         } else {
           bblock.remove(i);
         }

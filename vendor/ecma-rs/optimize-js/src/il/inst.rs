@@ -245,6 +245,22 @@ pub enum InstTyp {
   /// Throw from the current body (function or top-level). `args[0]` is the thrown value.
   Throw,
   Call,       // tgts.at(0)? = args[0](this=args[1], ...args[2..])
+  /// Call with an exception edge ("invoke").
+  ///
+  /// Semantics:
+  /// - Like [`InstTyp::Call`], but is a terminator that has two successor labels:
+  ///   - `labels[0]` = normal continuation
+  ///   - `labels[1]` = exception continuation
+  /// - On the normal edge, `tgts.get(0)` (when present) receives the return value.
+  /// - On the exception edge, control transfers to `labels[1]` and the thrown
+  ///   value is made available to a [`InstTyp::Catch`] at the start of the handler.
+  Invoke,
+  /// Materialize the thrown value at the start of a catch/landingpad block.
+  ///
+  /// `tgts[0]` receives the thrown value for the edge that transferred control to
+  /// this block (from an [`InstTyp::Invoke`] or a [`InstTyp::Throw`] with an
+  /// exception label).
+  Catch,
   #[cfg(feature = "semantic-ops")]
   /// Call to a statically-known API (identified by a stable [`hir_js::ApiId`]).
   ///
@@ -567,6 +583,19 @@ impl Inst {
     }
   }
 
+  /// Throw and transfer control to an exception handler within the current body.
+  ///
+  /// This is used to model `throw` statements when they are caught by a `catch`
+  /// clause or need to unwind through `finally` blocks inside the same function.
+  pub fn throw_to(handler: u32, value: Arg) -> Self {
+    Self {
+      t: InstTyp::Throw,
+      args: vec![value],
+      labels: vec![handler],
+      ..Default::default()
+    }
+  }
+
   pub fn call(
     tgt: impl Into<Option<u32>>,
     callee: Arg,
@@ -581,6 +610,35 @@ impl Inst {
       tgts: tgt.into().into_iter().collect(),
       args: [callee, this].into_iter().chain(args).collect(),
       spreads,
+      ..Default::default()
+    }
+  }
+
+  pub fn invoke(
+    tgt: impl Into<Option<u32>>,
+    callee: Arg,
+    this: Arg,
+    args: Vec<Arg>,
+    spreads: Vec<usize>,
+    normal: u32,
+    exception: u32,
+  ) -> Self {
+    let total_args_len = args.len() + 2;
+    assert!(spreads.iter().all(|&i| i >= 2 && i < total_args_len));
+    Self {
+      t: InstTyp::Invoke,
+      tgts: tgt.into().into_iter().collect(),
+      args: [callee, this].into_iter().chain(args).collect(),
+      spreads,
+      labels: vec![normal, exception],
+      ..Default::default()
+    }
+  }
+
+  pub fn catch(tgt: u32) -> Self {
+    Self {
+      t: InstTyp::Catch,
+      tgts: vec![tgt],
       ..Default::default()
     }
   }
@@ -798,6 +856,24 @@ impl Inst {
       &self.args[2..],
       &self.spreads,
     )
+  }
+
+  pub fn as_invoke(&self) -> (Option<u32>, &Arg, &Arg, &[Arg], &[usize], u32, u32) {
+    assert_eq!(self.t, InstTyp::Invoke);
+    (
+      self.tgts.get(0).copied(),
+      &self.args[0],
+      &self.args[1],
+      &self.args[2..],
+      &self.spreads,
+      self.labels[0],
+      self.labels[1],
+    )
+  }
+
+  pub fn as_catch(&self) -> u32 {
+    assert_eq!(self.t, InstTyp::Catch);
+    self.tgts[0]
   }
 
   #[cfg(feature = "semantic-ops")]

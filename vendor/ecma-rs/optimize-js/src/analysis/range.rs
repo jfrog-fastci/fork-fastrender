@@ -1123,6 +1123,12 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
           self.set_var(state, tgt, IntRange::Unknown);
         }
       }
+      InstTyp::Invoke => {
+        let (tgt, _callee, _this, _args, _spreads, _normal, _exception) = inst.as_invoke();
+        if let Some(tgt) = tgt {
+          self.set_var(state, tgt, IntRange::Unknown);
+        }
+      }
       #[cfg(feature = "semantic-ops")]
       InstTyp::KnownApiCall { .. } => {
         let (tgt, _api, _args) = inst.as_known_api_call();
@@ -1146,6 +1152,10 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
         if let Some(tgt) = tgt {
           self.set_var(state, tgt, IntRange::Unknown);
         }
+      }
+      InstTyp::Catch => {
+        let tgt = inst.as_catch();
+        self.set_var(state, tgt, IntRange::Unknown);
       }
       InstTyp::ForeignLoad => {
         let (tgt, _foreign) = inst.as_foreign_load();

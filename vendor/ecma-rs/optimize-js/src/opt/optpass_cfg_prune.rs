@@ -78,6 +78,22 @@ fn maybe_reroot_entry(result: &mut PassResult, cfg: &mut Cfg) -> bool {
   true
 }
 
+fn patch_terminator_label(cfg: &mut Cfg, parent: u32, old: u32, new: u32) {
+  let Some(inst) = cfg.bblocks.get_mut(parent).last_mut() else {
+    return;
+  };
+  match inst.t {
+    InstTyp::CondGoto | InstTyp::Invoke | InstTyp::Throw => {
+      for l in inst.labels.iter_mut() {
+        if *l == old {
+          *l = new;
+        }
+      }
+    }
+    _ => {}
+  }
+}
+
 pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
   let mut result = PassResult::default();
   // Iterate until convergence, instead of waiting for another optimisation pass.
@@ -104,6 +120,19 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
 
       // Self-loops are not safe to prune; they have an effect (e.g. busy loop).
       if children.contains(&cur) {
+        continue;
+      }
+
+      // Don't merge blocks into a parent that ends with a terminator instruction
+      // that semantically transfers control to this block (e.g. `throw_to`).
+      if parents.len() == 1
+        && is_only_child_of_all_parents
+        && cfg
+          .bblocks
+          .get(parents[0])
+          .last()
+          .is_some_and(|inst| matches!(inst.t, InstTyp::Throw | InstTyp::Invoke))
+      {
         continue;
       }
 
@@ -153,6 +182,8 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
             continue;
           };
           p_bblock.push(inst);
+        } else if let Ok(child) = children.iter().copied().exactly_one() {
+          patch_terminator_label(cfg, parent, cur, child);
         }
       }
       // Update phi nodes in children.
@@ -221,6 +252,7 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
           for parent in cfg.graph.parents_sorted(label) {
             cfg.graph.disconnect(parent, label);
             cfg.graph.connect(parent, merged_leaf);
+            patch_terminator_label(cfg, parent, label, merged_leaf);
           }
           if cfg.bblocks.maybe_get(label).is_some() {
             cfg.pop(label);

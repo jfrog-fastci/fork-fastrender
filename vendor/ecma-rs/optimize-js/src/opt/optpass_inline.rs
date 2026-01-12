@@ -603,7 +603,8 @@ fn should_inline(
     return false;
   };
 
-  let called_once = call_counts.get(callee).copied().unwrap_or(0) == 1;
+  let call_count = call_counts.get(callee).copied().unwrap_or(0);
+  let called_once = call_count == 1;
   // Called-once functions are good inlining candidates because removing the call can unlock further
   // optimisations (escape analysis, scalar replacement, etc.). Still, we need a deterministic size
   // limit to avoid pathological code growth (e.g. large IIFEs).

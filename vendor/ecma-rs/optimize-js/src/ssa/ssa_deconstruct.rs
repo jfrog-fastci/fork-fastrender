@@ -74,15 +74,18 @@ pub fn deconstruct_ssa(cfg: &mut Cfg, c_label: &mut Counter) {
   for b in new_bblocks {
     // Detach parent from child.
     cfg.graph.disconnect(b.parent, b.child);
-    // Update any CondGoto inst in parent.
+    // Update any terminator inst in parent that encodes the edge we're rewriting.
     if let Some(parent_goto) = cfg.bblocks.get_mut(b.parent).last_mut() {
-      if parent_goto.t == InstTyp::CondGoto {
-        for l in parent_goto.labels.iter_mut() {
-          if *l == b.child {
-            *l = b.label;
-          };
+      match parent_goto.t {
+        InstTyp::CondGoto | InstTyp::Invoke | InstTyp::Throw => {
+          for l in parent_goto.labels.iter_mut() {
+            if *l == b.child {
+              *l = b.label;
+            };
+          }
         }
-      };
+        _ => {}
+      }
     };
     // Attach new bblock.
     cfg.graph.connect(b.parent, b.label);

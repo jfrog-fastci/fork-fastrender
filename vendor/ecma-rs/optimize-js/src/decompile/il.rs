@@ -1601,6 +1601,11 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             stmts.push(expr_stmt(expr));
           }
         }
+        InstTyp::Invoke | InstTyp::Catch => {
+          return Err(DecompileError::Unsupported(
+            "exception-aware control flow not supported".to_string(),
+          ));
+        }
         InstTyp::PropAssign => {
           let (obj, prop, value) = inst.as_prop_assign();
           let object_expr = expr_from_arg(obj, &env);
@@ -1636,6 +1641,11 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
           return Ok(stmts);
         }
         InstTyp::Throw => {
+          if !inst.labels.is_empty() {
+            return Err(DecompileError::Unsupported(
+              "throw with handler not supported".to_string(),
+            ));
+          }
           let value = match inst.args.as_slice() {
             [arg] => arg,
             _ => {
@@ -1736,6 +1746,15 @@ pub enum LoweredInst {
     tgt: Option<u32>,
     promises: Vec<LoweredArg>,
   },
+  Invoke {
+    tgt: Option<u32>,
+    callee: LoweredArg,
+    this_: LoweredArg,
+    args: Vec<LoweredArg>,
+    spreads: Vec<usize>,
+    normal_label: u32,
+    exception_label: u32,
+  },
   CondGoto {
     cond: LoweredArg,
     t_label: u32,
@@ -1768,8 +1787,15 @@ pub enum LoweredInst {
     prop: LoweredArg,
     value: LoweredArg,
   },
+  Catch {
+    tgt: u32,
+  },
   Throw {
     value: LoweredArg,
+  },
+  ThrowTo {
+    value: LoweredArg,
+    handler: u32,
   },
   Un {
     tgt: u32,
@@ -1938,14 +1964,30 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
         spreads: Vec::new(),
       }
     }
-    InstTyp::Throw => LoweredInst::Throw {
-      value: {
-        let [value] = inst.args.as_slice() else {
-          panic!("throw expects exactly 1 arg");
-        };
-        lowered_arg(value)
-      },
+    InstTyp::Invoke => LoweredInst::Invoke {
+      tgt: inst.tgts.get(0).copied(),
+      callee: lowered_arg(&inst.args[0]),
+      this_: lowered_arg(&inst.args[1]),
+      args: inst.args[2..].iter().map(lowered_arg).collect(),
+      spreads: inst.spreads.clone(),
+      normal_label: inst.labels[0],
+      exception_label: inst.labels[1],
     },
+    InstTyp::Catch => LoweredInst::Catch { tgt: inst.tgts[0] },
+    InstTyp::Throw => {
+      let [value] = inst.args.as_slice() else {
+        panic!("throw expects exactly 1 arg");
+      };
+      let value = lowered_arg(value);
+      match inst.labels.as_slice() {
+        [] => LoweredInst::Throw { value },
+        [handler] => LoweredInst::ThrowTo {
+          value,
+          handler: *handler,
+        },
+        _ => panic!("throw expects 0 or 1 handler labels"),
+      }
+    }
     InstTyp::ForeignLoad => LoweredInst::IdentLoad {
       tgt: inst.tgts[0],
       name: bindings
