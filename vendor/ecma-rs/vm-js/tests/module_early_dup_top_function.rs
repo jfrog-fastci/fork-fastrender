@@ -23,6 +23,7 @@ fn assert_module_syntax_error(source: &str) {
 // - language/module-code/early-dup-export-id.js
 // - language/module-code/early-dup-export-decl.js
 // - language/module-code/early-dup-export-dflt-id.js
+// - language/module-code/early-dup-export-id-as.js
 // - language/module-code/early-dup-export-as-star-as.js
 // - language/module-code/early-dup-export-star-as-dflt.js
 // - language/module-code/early-export-global.js
@@ -197,6 +198,17 @@ fn rejects_duplicate_exported_name_between_default_and_export_star_as_default() 
       var x;
       export default x;
       export * as default from "./m.js";
+    "#,
+  );
+}
+
+#[test]
+fn rejects_duplicate_exported_names_via_alias() {
+  assert_module_syntax_error(
+    r#"
+      var x, y;
+      export { x as z };
+      export { y as z };
     "#,
   );
 }
