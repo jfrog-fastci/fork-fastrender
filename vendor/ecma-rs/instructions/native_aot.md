@@ -3137,10 +3137,17 @@ Source Maps:
   - Step through original source
 
 Debug Builds:
-  - Minimal optimization for debuggability
+  - Minimal optimization for debuggability (CLI `--debug` defaults to `-O0` unless overridden)
+  - LLVM function attrs:
+    - `optnone` + `noinline` on TS-generated functions so stepping is predictable
+    - `"frame-pointer"="all"` + `"disable-tail-calls"="true"` so the runtime can walk stacks reliably
+  - Linker:
+    - avoid size-driven flags like `--gc-sections` (debug builds are size-insensitive and we want stable section retention)
   - Bounds checks retained
   - Null checks retained
   - Assertions for type assumptions
+  - LLVM 18 note: the GC/statepoint pipeline is sensitive to `llvm.dbg.*` intrinsics; we currently strip
+    those no-op calls before running `rewrite-statepoints-for-gc` so we can still emit DWARF line tables.
 ```
 
 ---
