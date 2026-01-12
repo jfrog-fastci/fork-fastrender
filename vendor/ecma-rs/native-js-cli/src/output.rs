@@ -1,7 +1,7 @@
 use diagnostics::render::{render_diagnostic_with_options, RenderOptions, SourceProvider};
 use diagnostics::{Diagnostic, FileId, Severity};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{IsTerminal, Write};
 use typecheck_ts::Program;
 
@@ -24,12 +24,56 @@ pub fn render_options(color: bool, no_color: bool) -> RenderOptions {
 }
 
 #[derive(Serialize)]
+struct JsonFileEntry {
+  id: FileId,
+  path: String,
+}
+
+#[derive(Serialize)]
 struct JsonDiagnosticsOutput {
   schema_version: u32,
+  files: Vec<JsonFileEntry>,
   diagnostics: Vec<Diagnostic>,
 }
 
-pub fn emit_json_diagnostics(mut diagnostics: Vec<Diagnostic>) -> std::io::Result<bool> {
+fn collect_json_files(program: Option<&Program>, diagnostics: &[Diagnostic]) -> Vec<JsonFileEntry> {
+  fn insert_file(map: &mut BTreeMap<FileId, String>, program: Option<&Program>, file: FileId) {
+    if map.contains_key(&file) {
+      return;
+    }
+
+    let path = program
+      .and_then(|program| program.file_key(file))
+      .map(|key| key.to_string())
+      .unwrap_or_else(|| "<unknown file>".to_string());
+    map.insert(file, path);
+  }
+
+  let mut map: BTreeMap<FileId, String> = BTreeMap::new();
+
+  if let Some(program) = program {
+    for file in program.files() {
+      insert_file(&mut map, Some(program), file);
+    }
+  }
+
+  for diagnostic in diagnostics {
+    insert_file(&mut map, program, diagnostic.primary.file);
+    for label in &diagnostic.labels {
+      insert_file(&mut map, program, label.span.file);
+    }
+  }
+
+  map
+    .into_iter()
+    .map(|(id, path)| JsonFileEntry { id, path })
+    .collect()
+}
+
+pub fn emit_json_diagnostics(
+  program: Option<&Program>,
+  mut diagnostics: Vec<Diagnostic>,
+) -> std::io::Result<bool> {
   diagnostics::sort_diagnostics(&mut diagnostics);
   let has_errors = diagnostics
     .iter()
@@ -37,6 +81,7 @@ pub fn emit_json_diagnostics(mut diagnostics: Vec<Diagnostic>) -> std::io::Resul
 
   let payload = JsonDiagnosticsOutput {
     schema_version: JSON_SCHEMA_VERSION,
+    files: collect_json_files(program, &diagnostics),
     diagnostics,
   };
   let stdout = std::io::stdout();
@@ -54,7 +99,7 @@ pub fn emit_diagnostics(
   render: RenderOptions,
 ) -> std::io::Result<bool> {
   if json {
-    return emit_json_diagnostics(diagnostics);
+    return emit_json_diagnostics(Some(program), diagnostics);
   }
 
   diagnostics::sort_diagnostics(&mut diagnostics);

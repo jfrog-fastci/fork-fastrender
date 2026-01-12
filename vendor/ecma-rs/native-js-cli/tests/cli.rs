@@ -1,8 +1,10 @@
 use assert_cmd::Command;
+use diagnostics::paths::normalize_fs_path;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
 use std::io::Read;
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::process::{Command as StdCommand, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -104,6 +106,28 @@ fn run_with_timeout(cmd: &mut StdCommand, timeout: Duration) -> std::io::Result<
   })
 }
 
+fn json_files_map(value: &Value) -> HashMap<u32, String> {
+  let files = value
+    .get("files")
+    .and_then(|value| value.as_array())
+    .expect("expected files array");
+  files
+    .iter()
+    .map(|entry| {
+      let id = entry
+        .get("id")
+        .and_then(|value| value.as_u64())
+        .expect("expected file id") as u32;
+      let path = entry
+        .get("path")
+        .and_then(|value| value.as_str())
+        .expect("expected file path")
+        .to_string();
+      (id, path)
+    })
+    .collect()
+}
+
 #[test]
 fn check_succeeds_on_simple_program() {
   let tmp = TempDir::new().unwrap();
@@ -163,6 +187,13 @@ fn json_check_success_contains_schema_version_and_diagnostics_array() {
   let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
   assert_eq!(value["schema_version"], 1);
   assert_eq!(value["diagnostics"].as_array().unwrap().len(), 0);
+
+  let files = json_files_map(&value);
+  let expected_entry = normalize_fs_path(&entry);
+  assert!(
+    files.values().any(|path| path == &expected_entry),
+    "expected JSON files to include entry path {expected_entry:?}, got: {files:?}"
+  );
 }
 
 #[test]
@@ -202,6 +233,15 @@ fn json_check_error_contains_diagnostics_array() {
     !diagnostics.is_empty(),
     "expected diagnostics to be non-empty, got: {diagnostics:?}"
   );
+
+  let files = json_files_map(&value);
+  let first_file_id = diagnostics[0]["primary"]["file"]
+    .as_u64()
+    .expect("expected diagnostic.primary.file") as u32;
+  assert!(
+    files.contains_key(&first_file_id),
+    "expected files mapping to include diagnostic file id {first_file_id}, got: {files:?}"
+  );
 }
 
 #[test]
@@ -234,6 +274,15 @@ fn json_check_missing_entry_emits_host_error_diagnostic() {
     .expect("expected diagnostics array");
   assert_eq!(diagnostics.len(), 1);
   assert_eq!(diagnostics[0]["code"], "HOST0001");
+
+  let files = json_files_map(&value);
+  let file_id = diagnostics[0]["primary"]["file"]
+    .as_u64()
+    .expect("expected diagnostic.primary.file") as u32;
+  assert!(
+    files.contains_key(&file_id),
+    "expected files mapping to include diagnostic file id {file_id}, got: {files:?}"
+  );
 }
 
 #[test]

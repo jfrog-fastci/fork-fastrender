@@ -441,9 +441,7 @@ fn exit_code_for_diagnostics(diagnostics: &[Diagnostic]) -> ExitCode {
 fn exit_internal_without_program(json: bool, message: String) -> ExitCode {
   if json {
     let diagnostic = host_error(None, message.clone());
-    if output::emit_json_diagnostics(vec![diagnostic]).is_err() {
-      eprintln!("{message}");
-    }
+    let _ = output::emit_json_diagnostics(None, vec![diagnostic]);
     ExitCode::from(2)
   } else {
     eprintln!("{message}");
