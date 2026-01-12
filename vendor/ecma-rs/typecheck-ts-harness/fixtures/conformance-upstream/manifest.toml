@@ -12,6 +12,8 @@
 # Notes:
 #   - Paths are normalized to forward slashes and are relative to the suite root.
 #   - `skip` entries are reserved for cases that currently crash/hang the Rust checker.
+#   - For file size, most single-case `pass`/`xfail` entries omit `reason`/`tracking_issue`.
+#     Prefer attaching metadata to grouped globs and to `skip` entries.
 
 # --- Skipped cases (must not be executed) ---
 [[expectations]]
