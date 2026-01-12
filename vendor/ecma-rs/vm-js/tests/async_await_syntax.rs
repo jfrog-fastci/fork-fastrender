@@ -610,6 +610,84 @@ fn await_in_for_of_loop_body() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_for_of_break_closes_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let log = "";
+        const iterable = {};
+        iterable[Symbol.iterator] = function () {
+          return {
+            i: 0,
+            next() {
+              this.i++;
+              if (this.i === 1) return { value: "a", done: false };
+              return { value: "b", done: false };
+            },
+            return() {
+              log += "R";
+              return {};
+            },
+          };
+        };
+        for (const x of iterable) {
+          log += x;
+          await 0;
+          break;
+        }
+        return log;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "aR");
+  Ok(())
+}
+
+#[test]
+fn await_in_for_of_iterator_close_throw_overrides_break() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        const iterable = {};
+        iterable[Symbol.iterator] = function () {
+          return {
+            next() { return { value: "a", done: false }; },
+            return() { throw "close"; }
+          };
+        };
+        for (const x of iterable) {
+          await 0;
+          break;
+        }
+        return "bad";
+      }
+      f().then(function () { out = "fulfilled"; }, function (e) { out = e; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "close");
+  Ok(())
+}
+
+#[test]
 fn await_in_switch_case_body() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
