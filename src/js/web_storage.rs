@@ -13,6 +13,7 @@
 use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Conservative per-origin quota for storage areas.
@@ -48,6 +49,17 @@ pub type StorageOriginKey = Option<String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionNamespaceId(pub u64);
+
+static NEXT_SESSION_STORAGE_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocate a fresh session storage namespace id for a new top-level browsing context (tab).
+///
+/// This is a process-global allocator. The default Web Storage hub is thread-local, so uniqueness
+/// across threads is not strictly required, but keeping namespace ids globally unique is helpful for
+/// debugging and avoids accidental collisions if IDs are ever shared across threads.
+pub fn alloc_session_storage_namespace_id() -> u64 {
+  NEXT_SESSION_STORAGE_NAMESPACE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// RAII guard for tracking a window/browsing-context lifetime within a session storage namespace.
 ///
@@ -458,6 +470,14 @@ pub fn get_session_area(session: SessionNamespaceId, origin: Option<&str>) -> Ar
 /// place so JS observers see the namespace become empty.
 pub fn drop_session_namespace(namespace_id: u64) {
   with_default_hub_mut(|hub| hub.clear_session_namespace_data(SessionNamespaceId(namespace_id)));
+}
+
+/// Clear all session storage state for the provided session namespace.
+///
+/// This is used by browser/tab embeddings to ensure `sessionStorage` does not leak across dropped
+/// tabs. It only affects the thread-local default hub.
+pub fn clear_session(session_storage_namespace: u64) {
+  drop_session_namespace(session_storage_namespace);
 }
 
 /// Reset the thread-local default Web Storage hub.

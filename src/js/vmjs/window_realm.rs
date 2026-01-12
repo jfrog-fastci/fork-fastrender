@@ -107,11 +107,11 @@ pub struct WindowRealmConfig {
   pub document_url: String,
   /// Identifier of the session storage namespace that this realm's `sessionStorage` should bind to.
   ///
-  /// Realms created via [`WindowRealmConfig::new`] allocate a fresh namespace by default (isolated
-  /// `sessionStorage`), but embedders can override this via
-  /// [`WindowRealmConfig::with_session_storage_namespace`] to persist session storage across
-  /// navigations within the same top-level browsing context.
-  pub session_storage_namespace: u64,
+  /// When set, `sessionStorage` is backed by the thread-local Web Storage hub and shared across
+  /// realms that use the same namespace (e.g. navigations within a single browser tab).
+  ///
+  /// When unset, `sessionStorage` is **ephemeral** and scoped to this `WindowRealm` instance.
+  pub session_storage_namespace_id: Option<u64>,
   /// Media context used for `window.devicePixelRatio`, viewport geometry, and `matchMedia()`.
   ///
   /// This should generally match the renderer's layout/styling media context for the document so
@@ -146,14 +146,9 @@ pub struct WindowRealmConfig {
 }
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
-static NEXT_SESSION_STORAGE_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 
 fn alloc_window_id() -> u64 {
   NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-fn alloc_session_storage_namespace() -> u64 {
-  NEXT_SESSION_STORAGE_NAMESPACE.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Navigation request emitted by `window.location` APIs (`href`, `assign`, `replace`).
@@ -170,7 +165,7 @@ impl WindowRealmConfig {
   pub fn new(document_url: impl Into<String>) -> Self {
     Self {
       document_url: document_url.into(),
-      session_storage_namespace: alloc_session_storage_namespace(),
+      session_storage_namespace_id: None,
       media: MediaContext::screen(800.0, 600.0),
       current_script_state: None,
       console_sink: None,
@@ -189,8 +184,8 @@ impl WindowRealmConfig {
     self
   }
 
-  pub fn with_session_storage_namespace(mut self, id: u64) -> Self {
-    self.session_storage_namespace = id;
+  pub fn with_session_storage_namespace_id(mut self, id: u64) -> Self {
+    self.session_storage_namespace_id = Some(id);
     self
   }
 
@@ -281,8 +276,6 @@ struct SessionHistory {
 
 pub(crate) struct WindowRealmUserData {
   pub(crate) window_id: u64,
-  pub(crate) session_storage_namespace: u64,
-  _session_storage_guard: web_storage::StorageListenerGuard,
   pub(crate) local_storage_area: Arc<Mutex<web_storage::StorageArea>>,
   pub(crate) session_storage_area: Arc<Mutex<web_storage::StorageArea>>,
   document_url: String,
@@ -369,7 +362,6 @@ impl std::fmt::Debug for WindowRealmUserData {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("WindowRealmUserData")
       .field("window_id", &self.window_id)
-      .field("session_storage_namespace", &self.session_storage_namespace)
       .field("document_url", &self.document_url)
       .field("base_url", &self.base_url)
       .field("session_history_len", &self.session_history.entries.len())
@@ -392,7 +384,7 @@ impl WindowRealmUserData {
   pub(crate) fn new(
     document_url: String,
     module_loader: ModuleLoaderHandle,
-    session_storage_namespace: u64,
+    session_storage_namespace_id: Option<u64>,
     crypto_rng_seed: Option<u64>,
     web_storage_quota_utf16_bytes: usize,
   ) -> Self {
@@ -402,15 +394,17 @@ impl WindowRealmUserData {
     let window_id = alloc_window_id();
     let storage_origin_key = web_storage::origin_key_from_document_url(&document_url);
     let local_storage_area = web_storage::get_local_area(storage_origin_key.as_deref());
-    // Register this window with the thread-local storage hub so `sessionStorage` persists for this
-    // session namespace across realms (e.g. navigations in the same tab).
-    let session_storage_guard = web_storage::with_default_hub_mut(|hub| {
-      hub.register_window(web_storage::SessionNamespaceId(session_storage_namespace))
-    });
-    let session_storage_area = web_storage::get_session_area(
-      web_storage::SessionNamespaceId(session_storage_namespace),
-      storage_origin_key.as_deref(),
-    );
+    let session_storage_area = match session_storage_namespace_id {
+      Some(id) => web_storage::get_session_area(
+        web_storage::SessionNamespaceId(id),
+        storage_origin_key.as_deref(),
+      ),
+      // When the caller does not provide an explicit namespace, `sessionStorage` is ephemeral (per
+      // realm) and must not be stored in the shared hub.
+      None => Arc::new(Mutex::new(web_storage::StorageArea::new_with_quota(
+        web_storage_quota_utf16_bytes,
+      ))),
+    };
     local_storage_area
       .lock()
       .set_quota_bytes(web_storage_quota_utf16_bytes);
@@ -419,8 +413,6 @@ impl WindowRealmUserData {
       .set_quota_bytes(web_storage_quota_utf16_bytes);
     Self {
       window_id,
-      session_storage_namespace,
-      _session_storage_guard: session_storage_guard,
       local_storage_area,
       session_storage_area,
       base_url: Some(document_url.clone()),
@@ -511,7 +503,7 @@ impl WindowRealm {
     runtime.vm.set_user_data(WindowRealmUserData::new(
       config.document_url.clone(),
       Rc::clone(&module_loader),
-      config.session_storage_namespace,
+      config.session_storage_namespace_id,
       config.crypto_rng_seed,
       config.web_storage_quota_utf16_bytes,
     ));
@@ -34704,16 +34696,9 @@ mod tests {
   }
 
   #[test]
-  fn window_id_and_session_storage_namespace_are_unique() -> Result<(), VmError> {
-    let config_a = WindowRealmConfig::new("about:blank");
-    let config_b = WindowRealmConfig::new("about:blank");
-    assert_ne!(
-      config_a.session_storage_namespace,
-      config_b.session_storage_namespace
-    );
-
-    let realm_a = new_realm(config_a)?;
-    let realm_b = new_realm(config_b)?;
+  fn window_id_is_unique() -> Result<(), VmError> {
+    let realm_a = new_realm(WindowRealmConfig::new("about:blank"))?;
+    let realm_b = new_realm(WindowRealmConfig::new("about:blank"))?;
     assert_ne!(realm_a.window_id(), realm_b.window_id());
     Ok(())
   }
@@ -35375,19 +35360,20 @@ mod tests {
 
     // Simulate a tab lifetime by registering a session storage namespace and keeping the guard
     // alive across a "navigation" (dropping one realm and constructing another).
-    let config_a = WindowRealmConfig::new("https://storage-session.test/a");
-    let session_namespace = config_a.session_storage_namespace;
+    let session_namespace = 1u64;
     let tab_guard = crate::js::web_storage::with_default_hub_mut(|hub| {
       hub.register_window(crate::js::web_storage::SessionNamespaceId(session_namespace))
     });
 
+    let config_a = WindowRealmConfig::new("https://storage-session.test/a")
+      .with_session_storage_namespace_id(session_namespace);
     let mut realm_a = new_realm(config_a)?;
     realm_a.exec_script("sessionStorage.setItem('k', 'v')")?;
     drop(realm_a);
 
     let mut realm_b = new_realm(
       WindowRealmConfig::new("https://storage-session.test/b")
-        .with_session_storage_namespace(session_namespace),
+        .with_session_storage_namespace_id(session_namespace),
     )?;
     let v = realm_b.exec_script("sessionStorage.getItem('k')")?;
     assert_eq!(get_string(realm_b.heap(), v), "v");
@@ -35405,12 +35391,13 @@ mod tests {
   fn window_session_storage_is_cleared_when_namespace_dropped() -> Result<(), VmError> {
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
 
-    let config_a = WindowRealmConfig::new("https://storage-session-drop.test/a");
-    let session_namespace = config_a.session_storage_namespace;
+    let session_namespace = 2u64;
     let tab_guard = crate::js::web_storage::with_default_hub_mut(|hub| {
       hub.register_window(crate::js::web_storage::SessionNamespaceId(session_namespace))
     });
 
+    let config_a = WindowRealmConfig::new("https://storage-session-drop.test/a")
+      .with_session_storage_namespace_id(session_namespace);
     let mut realm_a = new_realm(config_a)?;
     realm_a.exec_script("sessionStorage.setItem('k', 'v')")?;
 
@@ -35421,7 +35408,7 @@ mod tests {
 
     let mut realm_b = new_realm(
       WindowRealmConfig::new("https://storage-session-drop.test/b")
-        .with_session_storage_namespace(session_namespace),
+        .with_session_storage_namespace_id(session_namespace),
     )?;
     assert_eq!(realm_b.exec_script("sessionStorage.getItem('k')")?, Value::Null);
 

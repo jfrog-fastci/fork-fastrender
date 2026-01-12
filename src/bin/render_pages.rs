@@ -2173,7 +2173,7 @@ fn truncate_text(text: &str, limit: usize) -> String {
 mod tests {
   use super::{
     build_base_fetcher, build_worker_command, default_rayon_threads_per_worker,
-    maybe_set_worker_rayon_threads, pageset_stem, BaseFetcher, CachedEntry, Cli,
+    maybe_set_worker_rayon_threads_with_parent_env, pageset_stem, BaseFetcher, CachedEntry, Cli,
     DiskCacheStalePolicyArg, WORKER_RAYON_THREADS_ENV,
   };
   use clap::Parser;
