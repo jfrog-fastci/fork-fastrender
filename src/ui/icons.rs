@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use crate::ui::motion::UiMotion;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 
@@ -67,6 +68,29 @@ const MAX_ICON_SIDE_PX: u32 = 256;
 /// We only have a handful of icons and a small set of sizes (typically one per DPI scale), but
 /// using an LRU keeps memory bounded if callers request many different sizes.
 const ICON_CACHE_CAPACITY: usize = 128;
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+  a + (b - a) * t
+}
+
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+  lerp(a as f32, b as f32, t).round().clamp(0.0, 255.0) as u8
+}
+
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+  let [ar, ag, ab, aa] = a.to_array();
+  let [br, bg, bb, ba] = b.to_array();
+  egui::Color32::from_rgba_unmultiplied(
+    lerp_u8(ar, br, t),
+    lerp_u8(ag, bg, t),
+    lerp_u8(ab, bb, t),
+    lerp_u8(aa, ba, t),
+  )
+}
+
+fn lerp_stroke(a: egui::Stroke, b: egui::Stroke, t: f32) -> egui::Stroke {
+  egui::Stroke::new(lerp(a.width, b.width, t), lerp_color(a.color, b.color, t))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CacheKey {
@@ -301,20 +325,57 @@ impl egui::Widget for IconButton {
       egui::Sense::click(),
     );
 
-    let visuals = ui.style().interact(&response);
-    let rect = rect.expand(visuals.expansion);
+    // Micro-interaction: fade between inactive/hovered button visuals.
+    //
+    // Egui's default widget visuals snap immediately between states. For the browser chrome we use
+    // subtle animations so the toolbar feels responsive and premium, with reduced-motion support.
+    let motion = UiMotion::from_env();
+    let hover_t = motion.animate_bool(
+      ui.ctx(),
+      response.id.with("hover"),
+      ui.is_enabled() && response.hovered(),
+      motion.durations.hover_fade,
+    );
+
+    let widgets = &ui.visuals().widgets;
+    let inactive = if ui.is_enabled() {
+      &widgets.inactive
+    } else {
+      &widgets.noninteractive
+    };
+    let hovered = if ui.is_enabled() {
+      &widgets.hovered
+    } else {
+      inactive
+    };
+    let active = &widgets.active;
+
+    let mut bg_fill = lerp_color(inactive.bg_fill, hovered.bg_fill, hover_t);
+    let mut bg_stroke = lerp_stroke(inactive.bg_stroke, hovered.bg_stroke, hover_t);
+    let mut fg_color = lerp_color(inactive.fg_stroke.color, hovered.fg_stroke.color, hover_t);
+    let mut expansion = lerp(inactive.expansion, hovered.expansion, hover_t);
+    let rounding = inactive.rounding;
+
+    if ui.is_enabled() && response.is_pointer_button_down_on() {
+      bg_fill = active.bg_fill;
+      bg_stroke = active.bg_stroke;
+      fg_color = active.fg_stroke.color;
+      expansion = active.expansion;
+    }
+
+    let rect = rect.expand(expansion);
 
     if ui.is_rect_visible(rect) {
       ui.painter().rect(
         rect,
-        visuals.rounding,
-        visuals.bg_fill,
-        visuals.bg_stroke,
+        rounding,
+        bg_fill,
+        bg_stroke,
       );
 
       // Use egui's canonical icon size and center it within the button rect.
       let icon_side = ui.spacing().icon_width;
-      paint_icon(ui, rect, self.icon, icon_side, visuals.fg_stroke.color);
+      paint_icon(ui, rect, self.icon, icon_side, fg_color);
     }
 
     response = response.on_hover_text(self.tooltip);
@@ -324,8 +385,8 @@ impl egui::Widget for IconButton {
 
 /// A toolbar-friendly icon button.
 ///
-/// The icon is tinted using `ui.style().interact(&response).fg_stroke.color`, so it automatically
-/// tracks the active theme (including hovered/disabled states).
+/// This uses egui widget visuals so it matches the active theme (including disabled states), while
+/// animating the hover transition when motion is enabled.
 pub fn icon_button(
   ui: &mut egui::Ui,
   icon: BrowserIcon,
