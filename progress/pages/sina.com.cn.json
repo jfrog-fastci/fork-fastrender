@@ -15,7 +15,7 @@
     "layout": 80.9910125961945,
     "paint": 41.99533986469344
   },
-  "notes": "",
+  "notes": "Visually good: major structure/layout matches Chrome. Remaining pixel diffs are dominated by text rasterization differences vs Chrome (especially CJK glyph hinting/positioning), plus minor image decode/color rounding (e.g. the top banner JPEG) and a handful of empty/broken image placeholders. Cascade remains the main performance hotspot due to the large DOM/CSS.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 101914,
