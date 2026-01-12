@@ -3900,7 +3900,22 @@ fn collect_stmt<'a>(
         ctx,
       );
     }
-    _ => {
+    AstStmt::Block(_)
+    | AstStmt::Break(_)
+    | AstStmt::Continue(_)
+    | AstStmt::Debugger(_)
+    | AstStmt::DoWhile(_)
+    | AstStmt::Empty(_)
+    | AstStmt::Expr(_)
+    | AstStmt::ForTriple(_)
+    | AstStmt::If(_)
+    | AstStmt::Label(_)
+    | AstStmt::Return(_)
+    | AstStmt::Switch(_)
+    | AstStmt::Throw(_)
+    | AstStmt::Try(_)
+    | AstStmt::While(_)
+    | AstStmt::With(_) => {
       walk_stmt_children(
         stmt,
         descriptors,
