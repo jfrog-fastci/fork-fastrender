@@ -56,12 +56,17 @@ pub struct SessionNamespaceId(pub u64);
 #[derive(Debug)]
 pub struct StorageListenerGuard {
   session: Option<SessionNamespaceId>,
+  // The default hub is thread-local; dropping this guard on a different thread would manipulate a
+  // different hub instance. Make the guard `!Send`/`!Sync` to keep the lifetime bookkeeping
+  // thread-affine.
+  _not_send_or_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl StorageListenerGuard {
   fn new(session: SessionNamespaceId) -> Self {
     Self {
       session: Some(session),
+      _not_send_or_sync: std::marker::PhantomData,
     }
   }
 
