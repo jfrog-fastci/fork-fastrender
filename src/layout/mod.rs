@@ -51,6 +51,7 @@
 pub mod axis;
 // Shared layout utilities
 pub mod utils;
+pub mod determinism;
 
 // Shared helpers for resolving intrinsic sizing keywords (min-content/max-content/fit-content) in
 // Taffy adapters.
