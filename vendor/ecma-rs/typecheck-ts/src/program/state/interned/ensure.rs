@@ -156,13 +156,18 @@ impl ProgramState {
         if let Some(name) = lowered.names.resolve(def.name) {
           let name = name.to_string();
           let parent = def.parent;
-          let namespaces = hir_namespaces(def.path.kind);
-          let preferred = match def.path.kind {
-            HirDefKind::Class
-            | HirDefKind::Enum
-            | HirDefKind::Interface
-            | HirDefKind::TypeAlias => [
-              sem_ts::Namespace::TYPE,
+           let namespaces = hir_namespaces(def.path.kind);
+           let preferred = match def.path.kind {
+             HirDefKind::ImportBinding => [
+               sem_ts::Namespace::TYPE,
+               sem_ts::Namespace::VALUE,
+               sem_ts::Namespace::NAMESPACE,
+             ],
+             HirDefKind::Class
+             | HirDefKind::Enum
+             | HirDefKind::Interface
+             | HirDefKind::TypeAlias => [
+               sem_ts::Namespace::TYPE,
               sem_ts::Namespace::VALUE,
               sem_ts::Namespace::NAMESPACE,
             ],

@@ -187,6 +187,21 @@ pub enum TypeKind {
     index: TypeId,
   },
   KeyOf(TypeId),
+  /// Wrapper type used by the checker to model "all members of `ty` except
+  /// construct signatures".
+  ///
+  /// This is primarily used for static-side class inheritance: `class Derived
+  /// extends Base {}` should inherit `Base`'s static members, but `Base`'s
+  /// constructor signatures must not be treated as overloads for `new Derived()`
+  /// when `Derived` declares its own constructor(s).
+  OmitConstructSignatures(TypeId),
+  /// Wrapper type that exposes the construct signatures of `base`, but with
+  /// their return type rewritten to `ret`.
+  ///
+  /// This is used for derived classes that do not declare any constructors: the
+  /// constructor parameter list(s) are inherited from the base class, but the
+  /// constructed instance type is the derived class.
+  InheritConstructSignatures { base: TypeId, ret: TypeId },
   /// The TypeScript `{}` type literal with no members.
   ///
   /// Semantics:
@@ -239,6 +254,8 @@ impl TypeKind {
       TypeKind::KeyOf(_) => 31,
       TypeKind::EmptyObject => 32,
       TypeKind::Intrinsic { .. } => 33,
+      TypeKind::OmitConstructSignatures(_) => 34,
+      TypeKind::InheritConstructSignatures { .. } => 35,
     }
   }
 }

@@ -503,17 +503,28 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       self.store.intersection(instance_parts)
     };
 
+    // Prefer a named instance type (`Ref` to the class def) for constructor
+    // return types so `new C()` is typed as `C` (not the expanded structural
+    // instance shape). This matches TypeScript more closely and avoids
+    // accidentally returning the base type when constructor overloads are
+    // inherited.
+    let instance_ref = self.store.intern_type(TypeKind::Ref {
+      def: owner,
+      args: Vec::new(),
+    });
+
     let mut ctor_sig_ids: Vec<types_ts_interned::SignatureId> = Vec::new();
     for sig in ctor_signatures.iter() {
       let mut lowered = self.lower_signature(sig, names);
-      lowered.ret = instance;
+      lowered.ret = instance_ref;
       lowered.this_param = None;
       ctor_sig_ids.push(self.store.intern_signature(lowered));
     }
-    if ctor_sig_ids.is_empty() {
+    let inherit_base_ctors = ctor_sig_ids.is_empty() && base_value_ty.is_some();
+    if ctor_sig_ids.is_empty() && !inherit_base_ctors {
       let sig = Signature {
         params: Vec::new(),
-        ret: instance,
+        ret: instance_ref,
         type_params: Vec::new(),
         this_param: None,
       };
@@ -526,9 +537,24 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       .intern_type(TypeKind::Object(self.store.intern_object(ObjectType {
         shape: self.store.intern_shape(static_shape),
       })));
-    let value = match base_value_ty {
-      Some(base) => self.store.intersection(vec![value_obj, base]),
-      None => value_obj,
+    let mut value_parts = vec![value_obj];
+    if let Some(base) = base_value_ty {
+      value_parts.push(
+        self
+          .store
+          .intern_type(TypeKind::OmitConstructSignatures(base)),
+      );
+      if inherit_base_ctors {
+        value_parts.push(self.store.intern_type(TypeKind::InheritConstructSignatures {
+          base,
+          ret: instance_ref,
+        }));
+      }
+    }
+    let value = if value_parts.len() == 1 {
+      value_parts[0]
+    } else {
+      self.store.intersection(value_parts)
     };
 
     (instance, value)
@@ -1160,6 +1186,13 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
         self.collect_variance_usage(index, OUT | IN, usage, visited);
       }
       TypeKind::KeyOf(inner) => self.collect_variance_usage(inner, OUT | IN, usage, visited),
+      TypeKind::OmitConstructSignatures(inner) => {
+        self.collect_variance_usage(inner, position, usage, visited)
+      }
+      TypeKind::InheritConstructSignatures { base, ret } => {
+        self.collect_variance_usage(base, position, usage, visited);
+        self.collect_variance_usage(ret, position, usage, visited);
+      }
       TypeKind::EmptyObject
       | TypeKind::Any
       | TypeKind::Unknown
@@ -1700,6 +1733,34 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
     if ns == Namespace::TYPE {
       if let Some(sem) = self.semantics {
         if let Some(symbol) = sem.resolve_in_module(file, name, Namespace::TYPE) {
+          // `semantic-js` models import bindings as declarations that can
+          // participate in all three namespaces. When we are resolving a name
+          // in the TYPE namespace, prefer following the import edge to the
+          // target symbol so references like `extends Base` (and type positions
+          // like `Base<T>`) bind to the *type-side* class/interface definition
+          // rather than the local import binding (which is primarily a value).
+          //
+          // This is particularly important for classes/enums, where we
+          // synthesize a dedicated value-side `DefId` for the constructor. If
+          // we resolve the import binding directly, we lose the link from the
+          // base type-side def to its value-side def and break static/ctor
+          // inheritance across modules.
+          if let SymbolOrigin::Import { from, imported } =
+            &sem.symbols().symbol(symbol).origin
+          {
+            if imported != "*" {
+              if let ModuleRef::File(from_file) = from {
+                if let Some(target_symbol) = sem.resolve_export(*from_file, imported, Namespace::TYPE)
+                {
+                  if let Some(def) =
+                    self.def_for_symbol_in_namespace(sem, target_symbol, Namespace::TYPE)
+                  {
+                    return Some(def);
+                  }
+                }
+              }
+            }
+          }
           if let Some(def) = self.def_for_symbol_in_namespace(sem, symbol, Namespace::TYPE) {
             return Some(def);
           }

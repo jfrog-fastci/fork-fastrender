@@ -1903,6 +1903,16 @@ impl TypeStore {
         a_k.cmp(&b_k).then_with(|| self.type_cmp(a_t, b_t))
       }
       (
+        TypeKind::OmitConstructSignatures(a),
+        TypeKind::OmitConstructSignatures(b),
+      ) => self.type_cmp(a, b),
+      (
+        TypeKind::InheritConstructSignatures { base: a_base, ret: a_ret },
+        TypeKind::InheritConstructSignatures { base: b_base, ret: b_ret },
+      ) => self
+        .type_cmp(a_base, b_base)
+        .then_with(|| self.type_cmp(a_ret, b_ret)),
+      (
         TypeKind::IndexedAccess {
           obj: a_o,
           index: a_i,

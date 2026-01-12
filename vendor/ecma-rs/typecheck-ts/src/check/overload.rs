@@ -725,6 +725,9 @@ fn collect_signatures(
       let shape = store.shape(store.object(obj).shape);
       out.extend(shape.call_signatures);
     }
+    TypeKind::OmitConstructSignatures(inner) => {
+      collect_signatures(store, inner, out, seen, expander);
+    }
     TypeKind::Union(members) | TypeKind::Intersection(members) => {
       for member in members {
         collect_signatures(store, member, out, seen, expander);
@@ -1209,6 +1212,31 @@ fn collect_construct_signatures(
     TypeKind::Object(obj) => {
       let shape = store.shape(store.object(obj).shape);
       out.extend(shape.construct_signatures);
+    }
+    TypeKind::OmitConstructSignatures(_) => {
+      // Intentionally skip inner construct signatures.
+    }
+    TypeKind::InheritConstructSignatures { base, ret } => {
+      let mut base_sigs = Vec::new();
+      collect_construct_signatures(store, base, &mut base_sigs, seen, expander);
+      base_sigs.sort();
+      for sig_id in base_sigs {
+        let sig = store.signature(sig_id);
+        out.push(store.intern_signature(Signature {
+          params: sig.params.clone(),
+          ret,
+          type_params: sig.type_params.clone(),
+          this_param: sig.this_param,
+        }));
+      }
+      if out.is_empty() {
+        out.push(store.intern_signature(Signature {
+          params: Vec::new(),
+          ret,
+          type_params: Vec::new(),
+          this_param: None,
+        }));
+      }
     }
     TypeKind::Union(members) | TypeKind::Intersection(members) => {
       for member in members {

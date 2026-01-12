@@ -433,6 +433,18 @@ impl<'a> TypeDisplay<'a> {
           write!(f, ")")
         }
       }
+      TypeKind::OmitConstructSignatures(inner) => {
+        write!(f, "OmitConstructSignatures<")?;
+        self.fmt_type(inner, f)?;
+        write!(f, ">")
+      }
+      TypeKind::InheritConstructSignatures { base, ret } => {
+        write!(f, "InheritConstructSignatures<")?;
+        self.fmt_type(base, f)?;
+        write!(f, ", ")?;
+        self.fmt_type(ret, f)?;
+        write!(f, ">")
+      }
     }
   }
 

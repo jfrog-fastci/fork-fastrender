@@ -11,6 +11,10 @@ pub(in super::super) fn lookup_interned_property_type(
   }
   let ty = store.canon(ty);
   match store.type_kind(ty) {
+    tti::TypeKind::OmitConstructSignatures(inner) => {
+      lookup_interned_property_type(store, expander, inner, name)
+    }
+    tti::TypeKind::InheritConstructSignatures { .. } => None,
     tti::TypeKind::Union(members) | tti::TypeKind::Intersection(members) => {
       let mut collected = Vec::new();
       for member in members.iter().copied() {

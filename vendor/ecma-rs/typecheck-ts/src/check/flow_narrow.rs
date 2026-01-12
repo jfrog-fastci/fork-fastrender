@@ -406,7 +406,9 @@ pub fn truthy_falsy_types(ty: TypeId, store: &TypeStore) -> (TypeId, TypeId) {
     TypeKind::Object(_)
     | TypeKind::Array { .. }
     | TypeKind::Tuple(_)
-    | TypeKind::Callable { .. } => (ty, primitives.never),
+    | TypeKind::Callable { .. }
+    | TypeKind::OmitConstructSignatures(_)
+    | TypeKind::InheritConstructSignatures { .. } => (ty, primitives.never),
     TypeKind::Intrinsic {
       kind: IntrinsicKind::NoInfer,
       ty: operand,

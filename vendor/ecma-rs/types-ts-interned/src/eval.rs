@@ -886,6 +886,19 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         self.evaluate_indexed_access(obj, index, subst, depth + 1)
       }
       TypeKind::KeyOf(inner) => self.evaluate_keyof(inner, subst, depth + 1),
+      TypeKind::OmitConstructSignatures(inner) => {
+        let inner = self.evaluate_with_subst(inner, subst, depth + 1);
+        self
+          .store
+          .intern_type(TypeKind::OmitConstructSignatures(inner))
+      }
+      TypeKind::InheritConstructSignatures { base, ret } => {
+        let base = self.evaluate_with_subst(base, subst, depth + 1);
+        let ret = self.evaluate_with_subst(ret, subst, depth + 1);
+        self
+          .store
+          .intern_type(TypeKind::InheritConstructSignatures { base, ret })
+      }
       other => self.store.intern_type(other),
     };
     self.eval_in_progress.remove(&key);

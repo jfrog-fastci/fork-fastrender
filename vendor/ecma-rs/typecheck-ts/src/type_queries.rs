@@ -301,6 +301,38 @@ impl<'a, E: TypeExpander> QueryCtx<'a, E> {
           ..Default::default()
         }
       }
+      TypeKind::OmitConstructSignatures(inner) => {
+        let mut shape = self.shape_for(inner);
+        shape.construct_sigs.clear();
+        shape
+      }
+      TypeKind::InheritConstructSignatures { base, ret } => {
+        let base_shape = self.shape_for(base);
+        let mut construct_sigs = Vec::new();
+        for sig_id in base_shape.construct_sigs {
+          let sig = self.store.signature(sig_id);
+          let derived = Signature {
+            params: sig.params.clone(),
+            ret,
+            type_params: sig.type_params.clone(),
+            this_param: sig.this_param,
+          };
+          construct_sigs.push(self.store.intern_signature(derived));
+        }
+        if construct_sigs.is_empty() {
+          construct_sigs.push(self.store.intern_signature(Signature {
+            params: Vec::new(),
+            ret,
+            type_params: Vec::new(),
+            this_param: None,
+          }));
+        }
+        sort_signatures(&mut construct_sigs, &self.store);
+        ShapeInfo {
+          construct_sigs,
+          ..Default::default()
+        }
+      }
       TypeKind::Array { ty, readonly } => {
         let length_key = PropKey::String(self.store.intern_name_ref("length"));
         let prim = self.store.primitive_ids();
@@ -460,6 +492,8 @@ fn summarize_kind(store: &TypeStore, ty: TypeId) -> TypeKindSummary {
       IntrinsicKind::NoInfer => summarize_kind(store, ty),
       _ => TypeKindSummary::String,
     },
+    TypeKind::OmitConstructSignatures(inner) => summarize_kind(store, inner),
+    TypeKind::InheritConstructSignatures { .. } => TypeKindSummary::Object,
   }
 }
 

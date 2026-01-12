@@ -19,6 +19,20 @@ impl ProgramState {
       }
     }
 
+    // For TypeScript classes/enums we synthesize a dedicated value-side `DefId`
+    // (constructor/`typeof`) to avoid conflating the instance and static sides.
+    //
+    // When resolving imported symbols, however, we still need the *type-side*
+    // definition in the TYPE namespace so `extends Base` and `Base<T>` refer to
+    // the instance/type shape, not the constructor value.
+    //
+    // Build a reverse lookup so we can remap imported value defs back to their
+    // corresponding type defs when populating TYPE namespace entries.
+    let mut type_def_by_value_def: HashMap<DefId, DefId> = HashMap::new();
+    for (type_def, value_def) in self.value_defs.iter() {
+      type_def_by_value_def.insert(*value_def, *type_def);
+    }
+
     let mut def_entries: Vec<(DefId, DefData)> = Vec::with_capacity(self.def_data.len());
     for (idx, (id, data)) in self.def_data.iter().enumerate() {
       if (idx % 2048) == 0 {
@@ -56,7 +70,11 @@ impl ProgramState {
             .get(&import.original)
             .and_then(|entry| entry.def)
           {
-            mapped_def = target;
+            mapped_def = if ns == sem_ts::Namespace::TYPE {
+              type_def_by_value_def.get(&target).copied().unwrap_or(target)
+            } else {
+              target
+            };
           }
         }
         match def_by_name.entry(key) {

@@ -7886,6 +7886,8 @@ impl<'a> Checker<'a> {
     let prim = self.store.primitive_ids();
     let obj = self.expand_callable_type(obj);
     match self.store.type_kind(obj) {
+      TypeKind::OmitConstructSignatures(inner) => self.member_type_opt(inner, prop),
+      TypeKind::InheritConstructSignatures { .. } => None,
       // `expand_callable_type` above follows any resolvable references with a local
       // cycle guard and expands type parameters through their constraints. If we
       // still have a `Ref`, treat it as unknown to avoid infinitely recursing on
@@ -8264,6 +8266,8 @@ impl<'a> Checker<'a> {
         return inner(checker, ty, prop, seen);
       }
       match checker.store.type_kind(ty) {
+        TypeKind::OmitConstructSignatures(inner_ty) => inner(checker, inner_ty, prop, seen),
+        TypeKind::InheritConstructSignatures { .. } => false,
         TypeKind::TypeParam(param) => checker
           .type_param_constraint(param)
           .is_some_and(|constraint| inner(checker, constraint, prop, seen)),
@@ -8371,6 +8375,8 @@ impl<'a> Checker<'a> {
     }
 
     match self.store.type_kind(obj) {
+      TypeKind::OmitConstructSignatures(inner) => self.member_type_for_index_key(inner, key_ty),
+      TypeKind::InheritConstructSignatures { .. } => prim.unknown,
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
