@@ -12,10 +12,9 @@ fn taffy_template_cache_evictions_are_reported_in_diagnostics() {
     ("FASTR_TAFFY_CACHE_LIMIT".to_string(), "1".to_string()),
   ])));
 
-  with_runtime_toggles(Arc::clone(&toggles), || {
-    let config = FastRenderConfig::default()
-      .with_font_sources(FontConfig::bundled_only())
-      .with_runtime_toggles(toggles.as_ref().clone());
+  with_runtime_toggles(toggles.clone(), || {
+    let mut config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+    config.runtime_toggles = Arc::clone(&toggles);
     let mut renderer = FastRender::with_config(config).expect("renderer");
 
     let options = RenderOptions::default()
