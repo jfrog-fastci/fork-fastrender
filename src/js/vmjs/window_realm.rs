@@ -4166,6 +4166,7 @@ fn history_state_change_native(
     let mut scope = scope.reborrow();
     scope.push_root(Value::Object(history_obj))?;
     scope.push_root(cloned_state_value)?;
+
     let state_key = alloc_key(&mut scope, "state")?;
     scope.define_property(
       history_obj,
