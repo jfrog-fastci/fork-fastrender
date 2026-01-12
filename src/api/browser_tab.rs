@@ -13617,6 +13617,58 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn importmap_warnings_surface_as_console_warn_diagnostics_and_map_is_applied() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    // Map a bare specifier to a self-contained `data:` module to avoid network dependencies.
+    let mapped = "data:text/javascript,export%20default%20123%3B";
+
+    // Include an unknown top-level key to intentionally trigger an import map warning.
+    let html = format!(
+      r#"<!doctype html><body>
+        <script type="importmap">{{"imports":{{"react":"{mapped}"}}, "unexpected": 1}}</script>
+        <script type="module">
+          import x from "react";
+          document.body.setAttribute("data-importmap", String(x));
+        </script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::new().with_diagnostics_level(crate::api::DiagnosticsLevel::Basic),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom
+        .get_attribute(body, "data-importmap")
+        .expect("get_attribute should succeed"),
+      Some("123")
+    );
+
+    let diagnostics = tab
+      .diagnostics_snapshot()
+      .expect("expected diagnostics to be enabled");
+    assert!(
+      diagnostics.console_messages.iter().any(|m| {
+        m.level == crate::api::ConsoleMessageLevel::Warn
+          && m.message.contains("importmap:")
+          && m.message.contains("unknown top-level key")
+          && m.message.contains("\"unexpected\"")
+      }),
+      "expected an import map warning to surface as a console warning; got: {diagnostics:?}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn importmap_parse_failure_emits_console_error_diagnostic() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;
@@ -13743,6 +13795,61 @@ html, body { margin: 0; padding: 0; }
         .expect("get_attribute should succeed"),
       None,
       "expected invalid import maps to not be registered/applied to later module scripts"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_malformed_integrity_section_emits_console_error_diagnostic() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    // Valid JSON but invalid import map shape: `"integrity"` must be an object.
+    let html = r#"<!doctype html><body>
+      <script type="importmap">{"imports":{"react":"data:text/javascript,export%20default%20123%3B"},"integrity":1}</script>
+      <script type="module">
+        document.body.setAttribute("data-module-ok", "1");
+      </script>
+      <script type="module">
+        import x from "react";
+        document.body.setAttribute("data-module-bare", String(x));
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      RenderOptions::new().with_diagnostics_level(crate::api::DiagnosticsLevel::Basic),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-module-ok")
+        .expect("get_attribute should succeed"),
+      Some("1"),
+      "expected later module scripts to continue running after an import map registration error"
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-module-bare")
+        .expect("get_attribute should succeed"),
+      None,
+      "expected malformed import maps to not be registered/applied to later module scripts"
+    );
+
+    let diagnostics = tab
+      .diagnostics_snapshot()
+      .expect("expected diagnostics to be enabled");
+    assert!(
+      diagnostics.console_messages.iter().any(|m| {
+        m.level == crate::api::ConsoleMessageLevel::Error
+          && m.message.contains("importmap:")
+          && m.message.contains("TypeError")
+          && m.message.contains("\"integrity\"")
+      }),
+      "expected an import map integrity type error to surface as a console error; got: {diagnostics:?}"
     );
     Ok(())
   }

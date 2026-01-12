@@ -11904,20 +11904,6 @@ fn dom_implementation_create_document_type_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
-fn dom_parser_constructor_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Err(VmError::TypeError(
-    "DOMParser constructor cannot be invoked without 'new'",
-  ))
-}
-
 fn dom_parser_constructor_construct_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,

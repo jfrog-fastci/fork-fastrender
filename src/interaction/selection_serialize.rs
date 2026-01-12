@@ -461,7 +461,7 @@ pub fn serialize_document_selection(
 }
 
 #[cfg(test)]
-mod tests {
+  mod tests {
   use super::*;
   use crate::style::display::FormattingContextType;
   use crate::style::types::TextCombineUpright;

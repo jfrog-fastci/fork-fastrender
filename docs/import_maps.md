@@ -199,6 +199,8 @@ Rust type: `ImportMapError`:
 * `ImportMapError::Json` — input is not valid JSON syntax.
 * `ImportMapError::TypeError(String)` — input violates fatal type constraints from the spec (e.g.
   `"imports"` exists but is not a JSON object).
+* `ImportMapError::LimitExceeded(String)` — deterministic resource-safety limits were exceeded while
+  parsing or merging (see `ImportMapLimits`).
 
 Type alias: `ModuleResolutionError` is currently an alias for `ImportMapError` (it exists so callers
 can name resolution-specific errors distinctly, even though the underlying cases are the same today).
@@ -569,6 +571,45 @@ instead of the script element.
 
 Note: `<script type="importmap" src="...">` is not supported by the HTML Standard today; browsers
 fire a `<script>` element `"error"` event for this case, and FastRender matches that behavior.
+
+---
+
+## How FastRender surfaces warnings/errors (BrowserTab + `vm-js`)
+
+When processing inline `<script type="importmap">` via `api::BrowserTab` (using the production
+`VmJsBrowserTabExecutor`):
+
+### Warnings
+
+* `ImportMapWarningKind` values are surfaced as **`console.warn(...)`**.
+* In diagnostics, these appear under `RenderDiagnostics.console_messages` with
+  `level = "warn"`.
+* Messages are prefixed with `importmap:`, and are intentionally stable (tests rely on them).
+
+### Errors
+
+* `ImportMapError` values (invalid JSON, fatal type errors, deterministic limit exceedance) are
+  surfaced as **`console.error(...)`**.
+* In diagnostics, these appear under `RenderDiagnostics.console_messages` with
+  `level = "error"`.
+* Error strings are formatted as:
+  * `SyntaxError: ...` for invalid JSON (`ImportMapError::Json`)
+  * `TypeError: ...` for spec-mapped type errors (`ImportMapError::TypeError`)
+  * `TypeError: import map limit exceeded: ...` for deterministic limits (`ImportMapError::LimitExceeded`)
+
+#### Current deviation from HTML
+
+FastRender also records import map registration failures into `RenderDiagnostics.js_exceptions` for
+parity with other uncaught runtime errors. In browsers, import map failures are reported to the
+developer console / global error reporting but are not JavaScript exceptions.
+
+### After an error
+
+FastRender matches HTML’s “don’t break the parser” semantics:
+
+* Import map errors **do not abort HTML parsing** and **do not prevent later scripts from running**.
+* If registration fails, the active import map state is **left unchanged** (no partial merge); any
+  previously registered import maps remain in effect for subsequent module resolution.
 
 ---
 

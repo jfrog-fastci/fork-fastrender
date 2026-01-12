@@ -1,8 +1,9 @@
+use crate::api::{ConsoleMessage, ConsoleMessageLevel};
 use crate::dom2;
 use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::import_maps::{
-  ImportMapError, ImportMapState, ImportMapWarning, ModuleResolutionError,
+  ImportMapError, ImportMapState, ImportMapWarning, ImportMapWarningKind, ModuleResolutionError,
 };
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::vm_error_format;
@@ -147,10 +148,49 @@ const OBSERVER_SHIMS_JS: &str = r#"
         this._scheduled = false;
       };
 
-      g.ResizeObserver = ResizeObserver;
+       g.ResizeObserver = ResizeObserver;
+     }
+   })();
+ "#;
+
+// Import map warning/error formatting intentionally matches the strings used by
+// `VmJsBrowserTabExecutor` so tests and embeddings can treat both hosts consistently.
+fn format_import_map_warning(kind: &ImportMapWarningKind) -> String {
+  let message = match kind {
+    ImportMapWarningKind::UnknownTopLevelKey { key } => format!("unknown top-level key {key:?}"),
+    ImportMapWarningKind::EmptySpecifierKey => "empty specifier key".to_string(),
+    ImportMapWarningKind::AddressNotString { specifier_key } => {
+      format!("address for specifier key {specifier_key:?} was not a string")
     }
-  })();
-"#;
+    ImportMapWarningKind::AddressInvalid { specifier_key, address } => {
+      format!("invalid address {address:?} for specifier key {specifier_key:?}")
+    }
+    ImportMapWarningKind::TrailingSlashMismatch { specifier_key, address } => {
+      format!("trailing-slash mismatch for {specifier_key:?} -> {address:?}")
+    }
+    ImportMapWarningKind::ScopePrefixNotParseable { prefix } => {
+      format!("scope prefix {prefix:?} was not parseable")
+    }
+    ImportMapWarningKind::IntegrityKeyFailedToResolve { key } => {
+      format!("integrity key {key:?} failed to resolve to a URL-like specifier")
+    }
+    ImportMapWarningKind::IntegrityValueNotString { key } => {
+      format!("integrity value for {key:?} was not a string")
+    }
+  };
+
+  format!("importmap: {message}")
+}
+
+fn format_import_map_error(err: &ImportMapError) -> String {
+  match err {
+    ImportMapError::Json(err) => format!("SyntaxError: {err}"),
+    ImportMapError::TypeError(message) => format!("TypeError: {message}"),
+    ImportMapError::LimitExceeded(message) => {
+      format!("TypeError: import map limit exceeded: {message}")
+    }
+  }
+}
 
 /// Host-owned "window" state for executing scripts against a single DOM document.
 ///
@@ -471,6 +511,7 @@ pub struct WindowHostState {
   import_map_state: ImportMapState,
   import_map_warnings: Vec<ImportMapWarning>,
   import_map_errors: Vec<ImportMapError>,
+  import_map_console_messages: Vec<ConsoleMessage>,
   /// Host-owned document state used as the `vm-js` [`vm_js::VmHost`] context.
   document: DocumentHostState,
   window: WindowRealm,
@@ -651,6 +692,7 @@ impl WindowHostState {
       import_map_state: ImportMapState::new_empty(),
       import_map_warnings: Vec::new(),
       import_map_errors: Vec::new(),
+      import_map_console_messages: Vec::new(),
       document,
       window,
       fetcher: host_fetcher,
@@ -772,6 +814,10 @@ impl WindowHostState {
     std::mem::take(&mut self.import_map_errors)
   }
 
+  pub fn take_import_map_console_messages(&mut self) -> Vec<ConsoleMessage> {
+    std::mem::take(&mut self.import_map_console_messages)
+  }
+
   pub fn register_import_map_string(
     &mut self,
     json: &str,
@@ -813,6 +859,14 @@ impl WindowHostState {
     let limits = self.js_execution_options.import_map_limits;
     let mut result =
       crate::js::import_maps::create_import_map_parse_result_with_limits(input, base_url, &limits);
+
+    // Surface import map warnings as `console.warn(...)`-like messages.
+    for warning in &result.warnings {
+      self.import_map_console_messages.push(ConsoleMessage {
+        level: ConsoleMessageLevel::Warn,
+        message: format_import_map_warning(&warning.kind),
+      });
+    }
     self.import_map_warnings.append(&mut result.warnings);
 
     if let Err(err) = crate::js::import_maps::register_import_map_with_limits(
@@ -820,8 +874,12 @@ impl WindowHostState {
       result,
       &limits,
     ) {
-      // For now, keep the host API stable and let higher-level HTML plumbing decide how to surface
-      // import map errors (console, `window.onerror`, etc.).
+      let message = format_import_map_error(&err);
+      // Surface import map errors as `console.error(...)`-like messages.
+      self.import_map_console_messages.push(ConsoleMessage {
+        level: ConsoleMessageLevel::Error,
+        message: format!("importmap: {message}"),
+      });
       self.import_map_errors.push(err);
     } else {
       self.sync_import_map_state_to_module_loader();

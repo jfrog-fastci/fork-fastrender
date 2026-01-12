@@ -1777,7 +1777,7 @@ fn ensure_promise_fulfilled(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::api::{BrowserTab, FastRender, RenderDiagnostics, RenderOptions};
+  use crate::api::{BrowserTab, DiagnosticsLevel, FastRender, RenderDiagnostics, RenderOptions};
   use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
   use crate::js::ImportMapLimits;
   use crate::resource::{FetchRequest, FetchedResource};
@@ -2227,6 +2227,237 @@ mod tests {
 
     let realm = executor.realm.as_mut().expect("realm initialized");
     assert_eq!(get_global_prop(realm, "result"), Value::Number(7.0));
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_invalid_json_emits_console_error_and_allows_following_scripts() -> Result<()> {
+    let html = "<!doctype html><html><head>\
+      <script type=\"importmap\">{</script>\
+      <script>document.documentElement.setAttribute('data-after','ok');</script>\
+      </head><body></body></html>";
+
+    let mut render_options = RenderOptions::default();
+    render_options.diagnostics_level = DiagnosticsLevel::Basic;
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      render_options,
+      VmJsBrowserTabExecutor::new(),
+      js_options,
+    )?;
+
+    // Import map errors must not prevent later classic scripts from running.
+    let dom = tab.dom();
+    let document_element = dom.document_element().expect("document element");
+    assert_eq!(
+      dom
+        .get_attribute(document_element, "data-after")
+        .expect("get data-after"),
+      Some("ok")
+    );
+
+    let diagnostics = tab.diagnostics_snapshot().expect("diagnostics enabled");
+    assert!(
+      diagnostics.console_messages.iter().any(|msg| {
+        msg.level == ConsoleMessageLevel::Error
+          && msg.message.contains("importmap:")
+          && msg.message.contains("SyntaxError")
+      }),
+      "expected an importmap SyntaxError console message, got: {:?}",
+      diagnostics.console_messages
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_integrity_type_error_emits_console_error_and_does_not_modify_state() -> Result<()> {
+    let base_url = "https://example.com/doc.html";
+
+    let renderer = FastRender::builder()
+      .dom_scripting_enabled(true)
+      .font_sources(FontConfig::bundled_only())
+      .build()?;
+
+    let mut render_options = RenderOptions::default();
+    render_options.diagnostics_level = DiagnosticsLevel::Basic;
+    let mut document =
+      BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", render_options)?;
+
+    let diagnostics = SharedRenderDiagnostics::new();
+    document
+      .renderer_mut()
+      .set_diagnostics_sink(Some(Arc::clone(&diagnostics.inner)));
+
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    executor.reset_for_navigation(Some(base_url), &mut document, &current_script, options)?;
+
+    let import_map_spec = import_map_spec(base_url);
+
+    // Seed a valid import map entry.
+    executor.execute_import_map_script(
+      r#"{ "imports": { "dep": "/a.js" } }"#,
+      &import_map_spec,
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
+    {
+      let realm = executor.realm.as_mut().expect("realm initialized");
+      let module_loader = realm.module_loader_handle();
+      let mut loader = module_loader.borrow_mut();
+      let state = loader.import_map_state_mut();
+      let dep = state
+        .import_map
+        .imports
+        .get("dep")
+        .and_then(|u| u.as_ref())
+        .map(|u| u.as_str().to_string());
+      assert_eq!(dep.as_deref(), Some("https://example.com/a.js"));
+    }
+
+    // Second import map has an invalid `"integrity"` top-level value. This should:
+    // - surface an error,
+    // - and leave the previously registered map unchanged.
+    executor.execute_import_map_script(
+      r#"{ "imports": { "dep": "/b.js" }, "integrity": [] }"#,
+      &import_map_spec,
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
+    {
+      let realm = executor.realm.as_mut().expect("realm initialized");
+      let module_loader = realm.module_loader_handle();
+      let mut loader = module_loader.borrow_mut();
+      let state = loader.import_map_state_mut();
+      let dep = state
+        .import_map
+        .imports
+        .get("dep")
+        .and_then(|u| u.as_ref())
+        .map(|u| u.as_str().to_string());
+      assert_eq!(
+        dep.as_deref(),
+        Some("https://example.com/a.js"),
+        "expected invalid import map registration to leave state unchanged"
+      );
+    }
+
+    let snapshot = diagnostics.into_inner();
+    assert!(
+      snapshot.console_messages.iter().any(|msg| {
+        msg.level == ConsoleMessageLevel::Error
+          && msg.message.contains("importmap:")
+          && msg.message.contains("integrity")
+      }),
+      "expected an importmap integrity console error, got: {:?}",
+      snapshot.console_messages
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_warning_is_reported_and_imports_affect_module_resolution() -> Result<()> {
+    let dep_url = "https://example.com/dep.js";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        "export const value = 7;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher::new(map));
+
+    let renderer = FastRender::builder()
+      .dom_scripting_enabled(true)
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
+      .build()?;
+
+    let mut render_options = RenderOptions::default();
+    render_options.diagnostics_level = DiagnosticsLevel::Basic;
+    let mut document =
+      BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", render_options)?;
+
+    let diagnostics = SharedRenderDiagnostics::new();
+    document
+      .renderer_mut()
+      .set_diagnostics_sink(Some(Arc::clone(&diagnostics.inner)));
+
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      options,
+    )?;
+
+    // Register a valid import map that also produces a warning (unknown top-level key).
+    let import_map_text = r#"{ "imports": { "dep": "/dep.js" }, "unknown": 1 }"#;
+    executor.execute_import_map_script(
+      import_map_text,
+      &import_map_spec("https://example.com/doc.html"),
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
+
+    let module_text = "import { value } from 'dep'; globalThis.result = value;";
+    let module_spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: module_text.to_string(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: crate::js::ScriptType::Module,
+    };
+    let status = executor.execute_module_script(
+      HtmlScriptId::from_u64(3),
+      module_text,
+      &module_spec,
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
+    assert_eq!(status, ModuleScriptExecutionStatus::Completed);
+
+    let realm = executor.realm.as_mut().expect("realm initialized");
+    assert_eq!(get_global_prop(realm, "result"), Value::Number(7.0));
+
+    let snapshot = diagnostics.into_inner();
+    assert!(
+      snapshot.console_messages.iter().any(|msg| {
+        msg.level == ConsoleMessageLevel::Warn
+          && msg.message == "importmap: unknown top-level key \"unknown\""
+      }),
+      "expected an importmap warning console message, got: {:?}",
+      snapshot.console_messages
+    );
     Ok(())
   }
 
