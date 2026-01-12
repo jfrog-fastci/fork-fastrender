@@ -37350,4 +37350,123 @@ mod tests {
     realm.teardown();
     Ok(())
   }
+
+  #[test]
+  fn xml_serializer_is_multi_document_aware() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host_ctx = DocumentHostState::from_renderer_dom(&renderer_dom);
+
+    // Register a second, realm-owned `dom2::Document` that is not the host-backed `window.document`,
+    // and create wrappers for both the document node and a child element so JS can pass them to
+    // `XMLSerializer`.
+    {
+      let realm_id = realm.realm_id;
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+      let global = realm_ref.global_object();
+      scope.push_root(Value::Object(global))?;
+
+      let doc2_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(doc2_obj))?;
+
+      let mut dom2 = dom2::Document::new(QuirksMode::NoQuirks);
+      let node2_id = dom2.create_element("x", "");
+      dom2.append_child(dom2.root(), node2_id).unwrap();
+
+      let mut dom2_box = Box::new(dom2);
+      let dom2_ptr = NonNull::from(dom2_box.as_mut());
+
+      let doc2_id = gc_object_id(doc2_obj);
+
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm missing WindowRealmUserData",
+        ));
+      };
+      let Some(platform) = data.dom_platform.as_mut() else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm missing DomPlatform for owned document test",
+        ));
+      };
+
+      scope.heap_mut().object_set_prototype(
+        doc2_obj,
+        Some(platform.prototype_for(DomInterface::Document)),
+      )?;
+      platform.register_wrapper(
+        scope.heap(),
+        doc2_obj,
+        DomNodeKey::new(doc2_id, NodeId::from_index(0)),
+        DomInterface::Document,
+      );
+
+      // Brand the owned Document wrapper like other node wrappers so `XMLSerializer` can treat it as
+      // a `Node`.
+      let node_id_key = alloc_key(&mut scope, NODE_ID_KEY)?;
+      scope.define_property(doc2_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+      let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        doc2_obj,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(doc2_obj),
+            writable: false,
+          },
+        },
+      )?;
+
+      data.owned_dom2_documents.insert(doc2_id, dom2_box);
+
+      // Create a JS wrapper for the owned element node and expose both it and its document as
+      // globals so the subsequent JS snippet can serialize them.
+      //
+      // SAFETY: `dom2_ptr` points at the boxed `dom2::Document` we just stored in `owned_dom2_documents`.
+      let node2_obj =
+        match get_or_create_node_wrapper(&mut vm, &mut scope, doc2_obj, Some(unsafe { dom2_ptr.as_ref() }), node2_id)? {
+          Value::Object(obj) => obj,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "expected get_or_create_node_wrapper to return an object",
+            ))
+          }
+        };
+      scope.push_root(Value::Object(node2_obj))?;
+
+      let doc2_key = alloc_key(&mut scope, "__doc2")?;
+      scope.define_property(global, doc2_key, data_desc(Value::Object(doc2_obj)))?;
+      let node2_key = alloc_key(&mut scope, "__node2")?;
+      scope.define_property(global, node2_key, data_desc(Value::Object(node2_obj)))?;
+    }
+
+    let serialized_node = exec_script_with_dom_host(
+      &mut realm,
+      &mut host_ctx,
+      "new XMLSerializer().serializeToString(globalThis.__node2)",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), serialized_node),
+      "<x xmlns=\"http://www.w3.org/1999/xhtml\"/>"
+    );
+
+    let serialized_doc = exec_script_with_dom_host(
+      &mut realm,
+      &mut host_ctx,
+      "new XMLSerializer().serializeToString(globalThis.__doc2)",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), serialized_doc),
+      "<x xmlns=\"http://www.w3.org/1999/xhtml\"/>"
+    );
+
+    realm.teardown();
+    Ok(())
+  }
 }
