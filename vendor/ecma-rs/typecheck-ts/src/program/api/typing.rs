@@ -47,6 +47,9 @@ impl Program {
         let mut state = self.lock_state();
         state.ensure_interned_types(&self.host, &self.roots)?;
         if let Some(res) = state.body_results.get(&body).cloned() {
+          if !state.snapshot_loaded {
+            state.typecheck_db.set_body_result(body, Arc::clone(&res));
+          }
           return Ok(res);
         }
         state.body_check_context()
@@ -55,6 +58,9 @@ impl Program {
       let res = db::queries::body_check::check_body(&db, body);
       let mut state = self.lock_state();
       state.body_results.insert(body, Arc::clone(&res));
+      if !state.snapshot_loaded {
+        state.typecheck_db.set_body_result(body, Arc::clone(&res));
+      }
       Ok(res)
     })
   }

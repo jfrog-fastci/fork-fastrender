@@ -19,8 +19,22 @@ impl Program {
   fn collect_program_diagnostics(&self) -> Result<Arc<[Diagnostic]>, FatalError> {
     self.catch_fatal(|| {
       self.ensure_not_cancelled()?;
-      let mut state = self.lock_state();
-      state.program_diagnostics(&self.host, &self.roots)
+      let work = {
+        let mut state = self.lock_state();
+        state.prepare_program_diagnostics(&self.host, &self.roots)?
+      };
+
+      match work {
+        super::super::diagnostics::ProgramDiagnosticsWork::Cached(diagnostics) => Ok(diagnostics),
+        super::super::diagnostics::ProgramDiagnosticsWork::Check(plan) => {
+          let (cache_stats, results) = super::super::diagnostics::check_bodies_for_program(
+            plan.shared_context,
+            plan.body_ids,
+          );
+          let mut state = self.lock_state();
+          state.finish_program_diagnostics(cache_stats, results)
+        }
+      }
     })
   }
 

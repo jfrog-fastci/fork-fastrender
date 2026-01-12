@@ -214,8 +214,21 @@ impl Program {
       .collect();
     namespace_types.sort_by_key(|(def, _)| def.0);
 
-    let diagnostics = match state.program_diagnostics(&self.host, &self.roots) {
-      Ok(diags) => diags.to_vec(),
+    let diagnostics = match state.prepare_program_diagnostics(&self.host, &self.roots) {
+      Ok(super::diagnostics::ProgramDiagnosticsWork::Cached(diags)) => diags.to_vec(),
+      Ok(super::diagnostics::ProgramDiagnosticsWork::Check(plan)) => {
+        let (cache_stats, results) = super::diagnostics::check_bodies_for_program(
+          plan.shared_context,
+          plan.body_ids,
+        );
+        match state.finish_program_diagnostics(cache_stats, results) {
+          Ok(diags) => diags.to_vec(),
+          Err(fatal) => {
+            state.diagnostics.push(fatal_to_diagnostic(fatal));
+            state.diagnostics.clone()
+          }
+        }
+      }
       Err(fatal) => {
         state.diagnostics.push(fatal_to_diagnostic(fatal));
         state.diagnostics.clone()
