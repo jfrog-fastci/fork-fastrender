@@ -576,12 +576,13 @@ fn array_destructuring_assignment_closes_iterator_on_lhs_abrupt() {
   let value = rt
     .exec_script(
       r#"
+      var nextCount = 0;
       var returnCount = 0;
       var iterable = {};
       iterable[Symbol.iterator] = function() {
         var i = 0;
         return {
-          next() { return { value: i++, done: false }; },
+          next() { nextCount++; return { value: i++, done: false }; },
           return() { returnCount++; return {}; },
         };
       };
@@ -590,7 +591,7 @@ fn array_destructuring_assignment_closes_iterator_on_lhs_abrupt() {
       try {
         ([target[boom()]] = iterable);
       } catch (e) {}
-      returnCount === 1
+      returnCount === 1 && nextCount === 0
       "#,
     )
     .unwrap();
@@ -603,11 +604,12 @@ fn array_destructuring_assignment_rest_lhs_abrupt_closes_iterator() {
   let value = rt
     .exec_script(
       r#"
+      var nextCount = 0;
       var returnCount = 0;
       var iterable = {};
       iterable[Symbol.iterator] = function() {
         return {
-          next() { return { done: false }; },
+          next() { nextCount++; return { done: false }; },
           return() { returnCount++; return {}; },
         };
       };
@@ -615,7 +617,72 @@ fn array_destructuring_assignment_rest_lhs_abrupt_closes_iterator() {
       try {
         0, [...{}[throwlhs()]] = iterable;
       } catch (e) {}
-      returnCount === 1
+      returnCount === 1 && nextCount === 0
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_assignment_property_reference_evaluation_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+
+      function source() {
+        log.push("source");
+        var iterator = {
+          next: function() {
+            log.push("iterator-step");
+            return {
+              get done() {
+                log.push("iterator-done");
+                return true;
+              },
+              get value() {
+                // This getter should not be called when `done` is true.
+                log.push("iterator-value");
+                return 0;
+              },
+            };
+          },
+        };
+        var src = {};
+        src[Symbol.iterator] = function() {
+          log.push("iterator");
+          return iterator;
+        };
+        return src;
+      }
+
+      function target() {
+        log.push("target");
+        return {
+          set q(v) {
+            log.push("set");
+          },
+        };
+      }
+
+      function targetKey() {
+        log.push("target-key");
+        return {
+          toString: function() {
+            log.push("target-key-tostring");
+            return "q";
+          },
+        };
+      }
+
+      // Spec (test262): `DestructuringAssignmentTarget` evaluation happens before `IteratorStep`,
+      // but computed-key conversion (`ToPropertyKey`, via `toString`) is delayed until `PutValue`.
+      ([target()[targetKey()]] = source());
+
+      log.join(",") ===
+        "source,iterator,target,target-key,iterator-step,iterator-done,target-key-tostring,set"
       "#,
     )
     .unwrap();

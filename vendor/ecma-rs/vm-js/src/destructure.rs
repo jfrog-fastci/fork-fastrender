@@ -450,46 +450,191 @@ fn bind_array_pattern(
       return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
     }
 
+    // Keep temporary roots local to each element to avoid unbounded root-stack growth for large
+    // patterns.
+    let mut elem_scope = scope.reborrow();
+
     let Some(elem) = elem else {
       // Elision: still advance the iterator but do not read `value`.
       //
       // Spec: `IteratorBindingInitialization` uses `IteratorStep` for elisions, *not*
       // `IteratorStepValue`. This avoids observable access to the iterator result's `value`
       // property (e.g. a throwing getter) when the element is skipped.
-      if let Err(err) = crate::iterator::iterator_step(vm, host, hooks, scope, &mut iterator_record) {
-        return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+      if let Err(err) =
+        crate::iterator::iterator_step(vm, host, hooks, &mut elem_scope, &mut iterator_record)
+      {
+        return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
       }
       continue;
     };
+
+    // --- Assignment target evaluation order (ECMA-262 `IteratorDestructuringAssignmentEvaluation`) ---
+    //
+    // For destructuring *assignment* (not binding), the spec evaluates property-reference targets
+    // (base + key expression) before calling `IteratorStep`/`IteratorStepValue`. This ensures that
+    // an abrupt completion in the LHS (for example a throwing computed property key) does not
+    // advance the iterator.
+    //
+    // Additionally, for computed member targets (`obj[expr]`), the `ToPropertyKey` conversion is
+    // delayed until `PutValue`, after the iterator step/default evaluation. This matches test262:
+    // `language/expressions/assignment/destructuring/iterator-destructuring-property-reference-target-evaluation-order.js`.
+    enum ElementAssignmentTarget<'a> {
+      Member { base: Value, key: &'a str },
+      ComputedMember { base: Value, key_value: Value },
+    }
+
+    let mut assignment_target: Option<ElementAssignmentTarget<'_>> = None;
+    if matches!(kind, BindingKind::Assignment) {
+      if let Pat::AssignTarget(target) = &*elem.target.stx {
+        let target_ref = (|| -> Result<Option<ElementAssignmentTarget<'_>>, VmError> {
+          match &*target.stx {
+            Expr::Member(member) => {
+              if member.stx.optional_chaining {
+                return Err(VmError::Unimplemented("optional chaining assignment target"));
+              }
+
+              let base = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                &mut elem_scope,
+                &member.stx.left,
+              )?;
+              let base = elem_scope.push_root(base)?;
+              Ok(Some(ElementAssignmentTarget::Member {
+                base,
+                key: &member.stx.right,
+              }))
+            }
+            Expr::ComputedMember(member) => {
+              if member.stx.optional_chaining {
+                return Err(VmError::Unimplemented("optional chaining assignment target"));
+              }
+
+              let base = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                &mut elem_scope,
+                &member.stx.object,
+              )?;
+              let base = elem_scope.push_root(base)?;
+              let key_value = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                &mut elem_scope,
+                &member.stx.member,
+              )?;
+              let key_value = elem_scope.push_root(key_value)?;
+              Ok(Some(ElementAssignmentTarget::ComputedMember { base, key_value }))
+            }
+            _ => Ok(None),
+          }
+        })();
+        match target_ref {
+          Ok(v) => assignment_target = v,
+          Err(err) => {
+            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+          }
+        }
+      }
+    }
 
     let mut item = match crate::iterator::iterator_step_value(
       vm,
       host,
       hooks,
-      scope,
+      &mut elem_scope,
       &mut iterator_record,
     ) {
       Ok(Some(v)) => v,
       Ok(None) => Value::Undefined,
-      Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+      Err(err) => {
+        return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+      }
     };
 
     if matches!(item, Value::Undefined) {
       if let Some(default_expr) = &elem.default_value {
-        item = match eval_expr(vm, host, hooks, env, strict, this, scope, default_expr) {
+        item = match eval_expr(vm, host, hooks, env, strict, this, &mut elem_scope, default_expr) {
           Ok(v) => v,
           Err(err) => {
-            return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err)
+            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
           }
         };
       }
     }
 
-    if let Err(err) = bind_pattern(
+    if let Some(target) = assignment_target {
+      // Root the element value across any allocations while constructing the property key and
+      // performing the assignment. Iterator values may be freshly-allocated objects that are only
+      // reachable from this local binding.
+      let item = match elem_scope.push_root(item) {
+        Ok(v) => v,
+        Err(err) => {
+          return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+        }
+      };
+
+      let res = match target {
+        ElementAssignmentTarget::Member { base, key } => {
+          let key_s = match elem_scope.alloc_string(key) {
+            Ok(s) => s,
+            Err(err) => {
+              return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+            }
+          };
+          if let Err(err) = elem_scope.push_root(Value::String(key_s)) {
+            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+          }
+          let key = PropertyKey::from_string(key_s);
+          assign_to_property_key(vm, host, hooks, &mut elem_scope, base, key, item, strict)
+        }
+        ElementAssignmentTarget::ComputedMember { base, key_value } => {
+          let key = match elem_scope.to_property_key(vm, host, hooks, key_value) {
+            Ok(key) => key,
+            Err(VmError::TypeError(msg)) => {
+              let err = match throw_type_error(vm, &mut elem_scope, msg) {
+                Ok(e) => e,
+                Err(e) => e,
+              };
+              return iterator_close_on_err(
+                vm,
+                host,
+                hooks,
+                &mut elem_scope,
+                &iterator_record,
+                err,
+              );
+            }
+            Err(err) => {
+              return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+            }
+          };
+          if let Err(err) = root_property_key(&mut elem_scope, key) {
+            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+          }
+          assign_to_property_key(vm, host, hooks, &mut elem_scope, base, key, item, strict)
+        }
+      };
+      if let Err(err) = res {
+        return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+      }
+    } else if let Err(err) = bind_pattern(
       vm,
       host,
       hooks,
-      scope,
+      &mut elem_scope,
       env,
       &elem.target.stx,
       item,
@@ -497,7 +642,7 @@ fn bind_array_pattern(
       strict,
       this,
     ) {
-      return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+      return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
     }
   }
 
