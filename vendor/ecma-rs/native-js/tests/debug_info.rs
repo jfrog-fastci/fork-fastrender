@@ -354,10 +354,8 @@ export function main(): number {
   let mut opts = CompilerOptions::default();
   opts.emit = EmitKind::Object;
   opts.debug = true;
-  // `native-js` treats `debug=true` + `opt_level=default()` as an implied debug build and forces
-  // `O0` unless the caller explicitly requests a non-default optimization level. Pick `O1` so we
-  // still exercise the "optimized debug info" path (`llvm.dbg.value`) without paying the full cost
-  // of higher optimization levels in tests.
+  // Pick `O1` so we still exercise the "optimized debug info" path (`llvm.dbg.value`) without
+  // paying the full cost of higher optimization levels in tests.
   opts.opt_level = OptLevel::O1;
   opts.output = Some(obj_path.clone());
   opts.emit_ir = Some(ir_path.clone());

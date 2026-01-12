@@ -27,10 +27,8 @@ export function main(): number {
   let mut opts = CompilerOptions::default();
   opts.emit = EmitKind::LlvmIr;
   opts.debug = true;
-  // `native-js` treats `debug=true` + `opt_level=default()` as an implied debug build and forces
-  // `O0` (see `compiler::effective_opt_level`) unless the caller explicitly requests a non-default
-  // optimization level. Pick `O1` so we exercise the optimized debug info path (`llvm.dbg.value`)
-  // without paying the full cost of higher optimization levels in tests.
+  // Pick `O1` so we exercise the optimized debug info path (`llvm.dbg.value`) without paying the
+  // full cost of higher optimization levels in tests.
   opts.opt_level = OptLevel::O1;
 
   let artifact = compile_program(&program, entry, &opts).expect("compile_program");
