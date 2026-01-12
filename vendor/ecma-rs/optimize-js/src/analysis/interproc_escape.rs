@@ -162,6 +162,10 @@ fn collect_local_summary_facts(cfg: &Cfg) -> LocalSummaryFacts {
           let (tgt, _obj, _op, _prop) = inst.as_bin();
           facts.external_defs.insert(tgt);
         }
+        InstTyp::FieldLoad => {
+          let (tgt, _obj, _field) = inst.as_field_load();
+          facts.external_defs.insert(tgt);
+        }
         InstTyp::Call => {
           let (tgt, callee, _this, args, spreads) = inst.as_call();
           let Some(tgt) = tgt else {
@@ -456,8 +460,18 @@ fn compute_cfg_escape_summary(
             summary.param_escape[idx] = summary.param_escape[idx].join(EscapeState::GlobalEscape);
           }
         }
-        InstTyp::PropAssign => {
-          let (obj, _prop, val) = inst.as_prop_assign();
+        InstTyp::PropAssign | InstTyp::FieldStore => {
+          let (obj, val) = match inst.t {
+            InstTyp::PropAssign => {
+              let (obj, _prop, val) = inst.as_prop_assign();
+              (obj, val)
+            }
+            InstTyp::FieldStore => {
+              let (obj, _field, val) = inst.as_field_store();
+              (obj, val)
+            }
+            _ => unreachable!(),
+          };
           let value_params = params_for_arg(&var_params, val);
           if value_params.is_empty() {
             continue;

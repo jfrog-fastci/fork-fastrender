@@ -738,6 +738,10 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
         let (tgt, _unknown) = inst.as_unknown_load();
         self.set_value_result(inst, state, tgt, NullabilityMask::TOP);
       }
+      InstTyp::FieldLoad => {
+        let (tgt, _obj, _field) = inst.as_field_load();
+        self.set_value_result(inst, state, tgt, NullabilityMask::TOP);
+      }
       InstTyp::Phi => {
         let Some(&tgt) = inst.tgts.get(0) else {
           return;

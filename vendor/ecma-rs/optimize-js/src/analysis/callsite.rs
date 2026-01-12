@@ -1,7 +1,5 @@
 use crate::cfg::cfg::Cfg;
-use crate::il::inst::{Arg, BinOp, InstTyp};
-#[cfg(feature = "semantic-ops")]
-use crate::il::inst::Const;
+use crate::il::inst::{Arg, BinOp, Const, FieldRef, InstTyp};
 use ahash::HashMap;
 use ahash::HashMapExt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,7 +23,7 @@ pub struct CallSiteInfo {
 pub type CallSiteMap = BTreeMap<(u32 /*label*/, usize /*inst_idx*/), CallSiteInfo>;
 
 pub fn analyze_callsites(cfg: &Cfg) -> CallSiteMap {
-  // Track variables that are known to come from a `GetProp` binop.
+  // Track variables that are known to come from a `GetProp` binop or `FieldLoad`.
   //
   // Note: this analysis is intended to run on SSA-ish IL. In fully deconstructed SSA, the
   // same variable may be assigned in multiple predecessor blocks; this analysis deliberately
@@ -43,6 +41,16 @@ pub fn analyze_callsites(cfg: &Cfg) -> CallSiteMap {
           let tgt = inst.tgts[0];
           let obj = inst.args[0].clone();
           let prop = inst.args[1].clone();
+          getprop_origin.insert(tgt, (obj, prop));
+        }
+        InstTyp::FieldLoad if inst.tgts.len() == 1 => {
+          let tgt = inst.tgts[0];
+          let obj = inst.args[0].clone();
+          let prop = match &inst.field {
+            FieldRef::Prop(key) | FieldRef::Internal(key) => Arg::Const(Const::Str(key.clone())),
+            FieldRef::TupleIndex(i) => Arg::Const(Const::Str(i.to_string())),
+            FieldRef::_Dummy => Arg::Const(Const::Str("_dummy".to_string())),
+          };
           getprop_origin.insert(tgt, (obj, prop));
         }
         InstTyp::VarAssign if inst.tgts.len() == 1 => {

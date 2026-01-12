@@ -17,7 +17,8 @@ use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::decl::{FuncDecl, PatDecl, VarDecl, VarDeclMode, VarDeclarator};
 use parse_js::ast::stmt::{
-  BlockStmt, BreakStmt, ContinueStmt, ExprStmt, IfStmt, LabelStmt, Stmt, WhileStmt,
+  BlockStmt, BreakStmt, ContinueStmt, ExprStmt, IfStmt, LabelStmt, Stmt, SwitchBranch, SwitchStmt,
+  WhileStmt,
 };
 use parse_js::ast::stx::TopLevel;
 use parse_js::loc::Loc;
@@ -485,6 +486,7 @@ impl<'a> FunctionDecompiler<'a> {
     blocks: &[structurer::StateBlock],
   ) -> il::DecompileResult<Vec<Node<Stmt>>> {
     let state_name = self.mangler.borrow_mut().fresh("state");
+    let dispatch_label = self.mangler.borrow_mut().fresh("dispatch");
 
     let state_decl = node(Stmt::VarDecl(node(VarDecl {
       export: false,
@@ -504,12 +506,13 @@ impl<'a> FunctionDecompiler<'a> {
     let mut sorted_blocks = blocks.to_vec();
     sorted_blocks.sort_by_key(|b| b.label);
 
-    let mut branches = Vec::with_capacity(sorted_blocks.len());
+    let mut branches = Vec::with_capacity(sorted_blocks.len() + 1);
     for block in sorted_blocks {
       let mut body = self.lower_insts(&block.insts)?;
       match block.term {
         structurer::Terminator::Goto(label) => {
           body.push(self.assign_named(&state_name, num_expr(label)));
+          body.push(continue_stmt(Some(dispatch_label.clone())));
         }
         structurer::Terminator::CondGoto { cond, t, f } => {
           let cond_expr = self.lower_arg(&cond)?;
@@ -520,6 +523,7 @@ impl<'a> FunctionDecompiler<'a> {
             consequent: block_stmt(then_body),
             alternate: Some(block_stmt(else_body)),
           }))));
+          body.push(continue_stmt(Some(dispatch_label.clone())));
         }
         structurer::Terminator::Stop => {
           // A Stop terminator means there are no outgoing CFG edges. In the state-machine fallback,
@@ -532,35 +536,35 @@ impl<'a> FunctionDecompiler<'a> {
             )
           });
           if !ends_in_exit_stmt {
-            body.push(break_stmt(None));
+            body.push(break_stmt(Some(dispatch_label.clone())));
           }
         }
       }
-      let test = node(Expr::Binary(node(BinaryExpr {
-        operator: OperatorName::StrictEquality,
-        left: identifier(state_name.clone()),
-        right: num_expr(block.label),
-      })));
-      branches.push((test, body));
+      // Wrap each state's body in a block so any `let` declarations remain scoped to the case and
+      // do not introduce cross-case TDZ issues when the output is recompiled.
+      branches.push(node(SwitchBranch {
+        case: Some(num_expr(block.label)),
+        body: vec![block_stmt(body)],
+      }));
     }
 
-    let mut chain: Option<Node<Stmt>> = Some(block_stmt(vec![break_stmt(None)]));
-    for (test, body) in branches.into_iter().rev() {
-      let cons = block_stmt(body);
-      let stmt = node(Stmt::If(node(IfStmt {
-        test,
-        consequent: cons,
-        alternate: chain,
-      })));
-      chain = Some(stmt);
-    }
+    // Default case: break out of the dispatch loop if the state is unknown.
+    branches.push(node(SwitchBranch {
+      case: None,
+      body: vec![block_stmt(vec![break_stmt(Some(dispatch_label.clone()))])],
+    }));
+
+    let switch_stmt = node(Stmt::Switch(node(SwitchStmt {
+      test: identifier(state_name.clone()),
+      branches,
+    })));
 
     let while_stmt = node(Stmt::While(node(WhileStmt {
       condition: bool_expr(true),
-      body: chain.expect("state machine should have at least one branch"),
+      body: switch_stmt,
     })));
 
-    Ok(vec![state_decl, while_stmt])
+    Ok(vec![state_decl, label_stmt(dispatch_label, while_stmt)])
   }
 
   fn lower_inst(
@@ -580,7 +584,11 @@ impl<'a> FunctionDecompiler<'a> {
         let init = self.target_init_for(tgt);
         Ok(Some(self.binding_stmt(tgt, expr, init)))
       }
-      InstTyp::Un | InstTyp::ForeignLoad | InstTyp::UnknownLoad | InstTyp::StringConcat => {
+      InstTyp::Un
+      | InstTyp::ForeignLoad
+      | InstTyp::UnknownLoad
+      | InstTyp::StringConcat
+      | InstTyp::FieldLoad => {
         self.ensure_supported_args(inst.args.iter())?;
         let Some(value) = il::lower_value_inst(self, self, inst) else {
           return Ok(None);
@@ -680,6 +688,10 @@ impl<'a> FunctionDecompiler<'a> {
       InstTyp::PropAssign => {
         self.ensure_supported_args(inst.args.iter())?;
         Ok(lower_prop_assign_inst(self, self, inst))
+      }
+      InstTyp::FieldStore => {
+        self.ensure_supported_args(inst.args.iter())?;
+        Ok(il::lower_field_store_inst(self, self, inst))
       }
       InstTyp::ForeignStore => {
         self.ensure_supported_args(inst.args.iter())?;

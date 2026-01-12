@@ -8,9 +8,9 @@ use std::fmt::Formatter;
 use std::fmt::{self};
 
 pub use crate::il::meta::{
-  ArgUseMode, ArrayElemRepr, AwaitBehavior, EffectLocation, EffectSet, InPlaceHint, InstMeta,
-  Nullability, NullabilityNarrowing, NumericRepr, OwnershipState, ParallelPlan, ParallelReason,
-  Purity, StringEncoding, TypeInfo, VectorizeHint, VectorizeNoReason,
+  ArgUseMode, ArrayElemRepr, AwaitBehavior, EffectLocation, EffectSet, FieldAccessMeta, InPlaceHint,
+  InstMeta, Nullability, NullabilityNarrowing, NumericRepr, OwnershipState, ParallelPlan,
+  ParallelReason, Purity, StringEncoding, TypeInfo, VectorizeHint, VectorizeNoReason,
 };
 pub use crate::types::ValueTypeSummary;
 
@@ -60,6 +60,22 @@ pub enum Arg {
   Const(Const),
   Fn(usize), // The value is a function index. Functions are immutable so are similar to Const rather than an inst to load it.
   Var(u32),
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum FieldRef {
+  Prop(String),
+  TupleIndex(u32),
+  /// Internal field used by compiler/runtime codegen.
+  Internal(String),
+  _Dummy,
+}
+
+impl Default for FieldRef {
+  fn default() -> Self {
+    Self::_Dummy
+  }
 }
 
 impl Arg {
@@ -226,6 +242,8 @@ pub enum InstTyp {
   /// When `tgts` is non-empty, `tgts[0] = args[0]` (i.e. the checked value is forwarded).
   /// When `tgts` is empty, this is a check-only instruction.
   NullCheck,
+  FieldLoad,  // tgts[0] = load_field(args[0], field)
+  FieldStore, // store_field(args[0], field, args[1])
   PropAssign, // args[0][args[1]] = args[2]
   /// Branch-local assertion/assumption used for analysis-driven optimizations.
   ///
@@ -323,6 +341,11 @@ fn is_dummy_symbol(sym: &SymbolId) -> bool {
   sym.raw_id() == u32::MAX as u64
 }
 
+#[cfg(feature = "serde")]
+fn is_dummy_fieldref(field: &FieldRef) -> bool {
+  matches!(field, FieldRef::_Dummy)
+}
+
 fn dummy_symbol() -> SymbolId {
   SymbolId(u32::MAX as u64)
 }
@@ -366,6 +389,11 @@ pub struct Inst {
     serde(default, skip_serializing_if = "String::is_empty")
   )]
   pub unknown: String,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "is_dummy_fieldref")
+  )]
+  pub field: FieldRef,
 }
 
 impl PartialEq for Inst {
@@ -389,6 +417,7 @@ impl PartialEq for Inst {
       && self.un_op == other.un_op
       && self.foreign == other.foreign
       && self.unknown == other.unknown
+      && self.field == other.field
   }
 }
 
@@ -413,6 +442,9 @@ impl Debug for Inst {
       .field("un_op", &self.un_op)
       .field("foreign", &self.foreign)
       .field("unknown", &self.unknown);
+    if !matches!(self.field, FieldRef::_Dummy) {
+      s.field("field", &self.field);
+    }
     s.finish()
   }
 }
@@ -455,6 +487,7 @@ impl Default for Inst {
       un_op: UnOp::_Dummy,
       foreign: dummy_symbol(),
       unknown: Default::default(),
+      field: FieldRef::_Dummy,
     }
   }
 }
@@ -530,6 +563,25 @@ impl Inst {
       t: InstTyp::NullCheck,
       tgts: tgt.into().into_iter().collect(),
       args: vec![value],
+      ..Default::default()
+    }
+  }
+
+  pub fn field_load(tgt: u32, obj: Arg, field: FieldRef) -> Self {
+    Self {
+      t: InstTyp::FieldLoad,
+      tgts: vec![tgt],
+      args: vec![obj],
+      field,
+      ..Default::default()
+    }
+  }
+
+  pub fn field_store(obj: Arg, field: FieldRef, val: Arg) -> Self {
+    Self {
+      t: InstTyp::FieldStore,
+      args: vec![obj, val],
+      field,
       ..Default::default()
     }
   }
@@ -820,6 +872,16 @@ impl Inst {
   pub fn as_var_assign(&self) -> (u32, &Arg) {
     assert_eq!(self.t, InstTyp::VarAssign);
     (self.tgts[0], &self.args[0])
+  }
+
+  pub fn as_field_load(&self) -> (u32, &Arg, &FieldRef) {
+    assert_eq!(self.t, InstTyp::FieldLoad);
+    (self.tgts[0], &self.args[0], &self.field)
+  }
+
+  pub fn as_field_store(&self) -> (&Arg, &FieldRef, &Arg) {
+    assert_eq!(self.t, InstTyp::FieldStore);
+    (&self.args[0], &self.field, &self.args[1])
   }
 
   pub fn as_prop_assign(&self) -> (&Arg, &Arg, &Arg) {

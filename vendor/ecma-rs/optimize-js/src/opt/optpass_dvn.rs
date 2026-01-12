@@ -6,6 +6,7 @@ use crate::eval::consteval::maybe_eval_const_builtin_val;
 use crate::il::inst::Arg;
 use crate::il::inst::BinOp;
 use crate::il::inst::Const;
+use crate::il::inst::FieldRef;
 use crate::il::inst::Inst;
 use crate::il::inst::InstTyp;
 use crate::il::inst::UnOp;
@@ -235,6 +236,17 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
           (op, Arg::Const(l), Arg::Const(r)) => maybe_eval_const_bin_expr(op, l, r).map(Arg::Const),
           (BinOp::GetProp, Arg::Builtin(o), Arg::Const(Const::Str(p)))
             if is_valid_member_ident(&p) =>
+          {
+            Some(Arg::Builtin(format!("{o}.{p}")))
+          }
+          _ => None,
+        }
+      }
+      InstTyp::FieldLoad => {
+        let (_tgt, obj, field) = new_inst.as_field_load();
+        match (obj, field) {
+          (Arg::Builtin(o), FieldRef::Prop(p) | FieldRef::Internal(p))
+            if is_valid_member_ident(p) =>
           {
             Some(Arg::Builtin(format!("{o}.{p}")))
           }

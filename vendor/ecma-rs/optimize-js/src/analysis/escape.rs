@@ -449,8 +449,16 @@ fn collect_local_alloc_flow_facts(
           let (obj, _prop, val) = inst.as_prop_assign();
           facts.prop_assigns.push((obj.clone(), val.clone()));
         }
+        InstTyp::FieldStore => {
+          let (obj, _field, val) = inst.as_field_store();
+          facts.prop_assigns.push((obj.clone(), val.clone()));
+        }
         InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
           let (tgt, obj, _op, _prop) = inst.as_bin();
+          facts.getprops.push((tgt, obj.clone()));
+        }
+        InstTyp::FieldLoad => {
+          let (tgt, obj, _field) = inst.as_field_load();
           facts.getprops.push((tgt, obj.clone()));
         }
         _ => {}
@@ -544,7 +552,7 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
 
   // Infer which local allocations may flow through each SSA variable.
   //
-  // This is field-insensitive: `GetProp` may read any allocation ever stored into the receiver.
+  // This is field-insensitive: `GetProp`/`FieldLoad` may read any allocation ever stored into the receiver.
   // This is necessary because alias analysis currently returns `Top` for `GetProp`, which would
   // otherwise let escapes slip through (e.g. store allocation into a local object, read it back,
   // then pass the loaded value to an unknown call).
@@ -780,7 +788,7 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
       }
     }
 
-    // Property loads: `tgt = obj[prop]` may read any allocation stored into the receiver.
+    // Property loads: `tgt = obj[prop]` / `FieldLoad` may read any allocation stored into the receiver.
     for (tgt, obj) in facts.getprops.iter() {
       let container_allocs = allocs_for_arg(&var_allocs, obj);
       let mut loaded = BTreeSet::new();

@@ -211,6 +211,7 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
     // Treat concatenation as allocating (matching the old `__optimize_js_template`
     // call lowering) and avoid hoisting it.
     InstTyp::StringConcat => false,
+    InstTyp::FieldLoad | InstTyp::FieldStore => false,
     InstTyp::Call => {
       inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
     }

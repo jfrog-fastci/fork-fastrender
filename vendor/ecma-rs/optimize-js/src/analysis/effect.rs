@@ -747,10 +747,18 @@ fn inst_local_effect_with_value_types(
       // lowerings).
       effects.summary.flags |= EffectFlags::ALLOCATES;
     }
+    InstTyp::FieldLoad => {
+      effects.reads.insert(EffectLocation::Heap);
+      effects.summary.throws = ThrowBehavior::Maybe;
+    }
     InstTyp::Throw => {
       effects.summary.throws = ThrowBehavior::Always;
     }
     InstTyp::PropAssign => {
+      effects.writes.insert(EffectLocation::Heap);
+      effects.summary.throws = ThrowBehavior::Maybe;
+    }
+    InstTyp::FieldStore => {
       effects.writes.insert(EffectLocation::Heap);
       effects.summary.throws = ThrowBehavior::Maybe;
     }

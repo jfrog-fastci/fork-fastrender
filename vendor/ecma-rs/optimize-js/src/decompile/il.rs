@@ -1,5 +1,5 @@
 use super::foreign::ForeignBindings;
-use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
+use crate::il::inst::{Arg, BinOp, Const, FieldRef, Inst, InstTyp, UnOp};
 #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 use crate::il::inst::ArrayChainOp;
 use crate::symbol::semantics::SymbolId;
@@ -210,6 +210,24 @@ pub fn lower_get_prop<V: VarNamer, F: FnEmitter>(
   }
 }
 
+fn arg_for_field_ref(field: &FieldRef) -> Arg {
+  match field {
+    FieldRef::Prop(key) | FieldRef::Internal(key) => Arg::Const(Const::Str(key.clone())),
+    FieldRef::TupleIndex(i) => Arg::Const(Const::Num(JsNumber(*i as f64))),
+    FieldRef::_Dummy => Arg::Const(Const::Str("_dummy".to_string())),
+  }
+}
+
+pub fn lower_field_access<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  object: &Arg,
+  field: &FieldRef,
+) -> Node<Expr> {
+  let prop = arg_for_field_ref(field);
+  lower_get_prop(var_namer, fn_emitter, object, &prop)
+}
+
 pub fn lower_bin_expr<V: VarNamer, F: FnEmitter>(
   var_namer: &V,
   fn_emitter: &F,
@@ -240,6 +258,10 @@ pub fn lower_value_inst<V: VarNamer, F: FnEmitter>(
     InstTyp::Un => {
       let (_, op, arg) = inst.as_un();
       Some(lower_un_expr(var_namer, fn_emitter, op, arg))
+    }
+    InstTyp::FieldLoad => {
+      let (_tgt, obj, field) = inst.as_field_load();
+      Some(lower_field_access(var_namer, fn_emitter, obj, field))
     }
     InstTyp::ForeignLoad => Some(identifier(var_namer.name_foreign(inst.foreign))),
     InstTyp::UnknownLoad => Some(identifier(var_namer.name_unknown(&inst.unknown))),
@@ -366,6 +388,34 @@ pub fn lower_prop_assign_inst<V: VarNamer, F: FnEmitter>(
   }
   let (obj, prop, value) = inst.as_prop_assign();
   Some(lower_prop_assign(var_namer, fn_emitter, obj, prop, value))
+}
+
+pub fn lower_field_store<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  obj: &Arg,
+  field: &FieldRef,
+  value: &Arg,
+) -> Node<Stmt> {
+  node(Stmt::Expr(node(ExprStmt {
+    expr: node(Expr::Binary(node(BinaryExpr {
+      operator: OperatorName::Assignment,
+      left: lower_field_access(var_namer, fn_emitter, obj, field),
+      right: lower_arg(var_namer, fn_emitter, value),
+    }))),
+  })))
+}
+
+pub fn lower_field_store_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+) -> Option<Node<Stmt>> {
+  if inst.t != InstTyp::FieldStore {
+    return None;
+  }
+  let (obj, field, value) = inst.as_field_store();
+  Some(lower_field_store(var_namer, fn_emitter, obj, field, value))
 }
 
 pub fn lower_foreign_store_inst<V: VarNamer, F: FnEmitter>(
@@ -1011,6 +1061,7 @@ pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
   match inst.t {
     InstTyp::VarAssign => lower_var_assign_inst(var_namer, fn_emitter, inst, init),
     InstTyp::PropAssign => lower_prop_assign_inst(var_namer, fn_emitter, inst),
+    InstTyp::FieldStore => lower_field_store_inst(var_namer, fn_emitter, inst),
     InstTyp::ForeignStore => lower_foreign_store_inst(var_namer, fn_emitter, inst),
     InstTyp::UnknownStore => lower_unknown_store_inst(var_namer, fn_emitter, inst),
     InstTyp::Call => lower_call_inst(var_namer, fn_emitter, inst, None, None, None, init),
@@ -1079,6 +1130,7 @@ enum FlatExpr {
 #[derive(Clone)]
 enum ValueOrigin {
   GetProp { object: Arg, prop: Arg },
+  FieldLoad { object: Arg, field: FieldRef },
   Other,
 }
 
@@ -1269,6 +1321,10 @@ fn handle_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<
     Some(ValueOrigin::GetProp { object, prop }) if this_arg == &object => {
       (member_from_prop(&this_expr, &prop, env), args_exprs)
     }
+    Some(ValueOrigin::FieldLoad { object, field }) if this_arg == &object => {
+      let prop = arg_for_field_ref(&field);
+      (member_from_prop(&this_expr, &prop, env), args_exprs)
+    }
     _ => {
       let mut call_args = Vec::with_capacity(args_exprs.len() + 1);
       call_args.push(FlatCallArg {
@@ -1447,6 +1503,22 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             );
           }
         }
+        InstTyp::FieldLoad => {
+          let (tgt, obj, field) = inst.as_field_load();
+          let object_expr = expr_from_arg(obj, &env);
+          let prop = arg_for_field_ref(field);
+          let expr = member_from_prop(&object_expr, &prop, &env);
+          env.insert(
+            tgt,
+            VarValue {
+              expr,
+              origin: ValueOrigin::FieldLoad {
+                object: obj.clone(),
+                field: field.clone(),
+              },
+            },
+          );
+        }
         InstTyp::Un => {
           let (tgt, op, arg) = inst.as_un();
           env.insert(
@@ -1610,6 +1682,14 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
           let (obj, prop, value) = inst.as_prop_assign();
           let object_expr = expr_from_arg(obj, &env);
           let left = member_from_prop(&object_expr, prop, &env);
+          let right = expr_from_arg(value, &env);
+          stmts.push(assignment_stmt(left, right));
+        }
+        InstTyp::FieldStore => {
+          let (obj, field, value) = inst.as_field_store();
+          let object_expr = expr_from_arg(obj, &env);
+          let prop = arg_for_field_ref(field);
+          let left = member_from_prop(&object_expr, &prop, &env);
           let right = expr_from_arg(value, &env);
           stmts.push(assignment_stmt(left, right));
         }
@@ -1868,11 +1948,28 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       tgt: inst.tgts.get(0).copied(),
       value: lowered_arg(&inst.args[0]),
     },
+    InstTyp::FieldLoad => {
+      let prop = arg_for_field_ref(&inst.field);
+      LoweredInst::Bin {
+        tgt: inst.tgts[0],
+        left: lowered_arg(&inst.args[0]),
+        op: BinOp::GetProp,
+        right: lowered_arg(&prop),
+      }
+    }
     InstTyp::PropAssign => LoweredInst::PropAssign {
       obj: lowered_arg(&inst.args[0]),
       prop: lowered_arg(&inst.args[1]),
       value: lowered_arg(&inst.args[2]),
     },
+    InstTyp::FieldStore => {
+      let prop = arg_for_field_ref(&inst.field);
+      LoweredInst::PropAssign {
+        obj: lowered_arg(&inst.args[0]),
+        prop: lowered_arg(&prop),
+        value: lowered_arg(&inst.args[1]),
+      }
+    }
     InstTyp::CondGoto => LoweredInst::CondGoto {
       cond: lowered_arg(&inst.args[0]),
       t_label: inst.labels[0],

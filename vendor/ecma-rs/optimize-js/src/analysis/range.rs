@@ -1165,10 +1165,15 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
         let (tgt, _unknown) = inst.as_unknown_load();
         self.set_var(state, tgt, IntRange::Unknown);
       }
+      InstTyp::FieldLoad => {
+        let (tgt, _obj, _field) = inst.as_field_load();
+        self.set_var(state, tgt, IntRange::Unknown);
+      }
       // Phi nodes are handled in `meet_block` using predecessor-specific values.
       InstTyp::Phi => {}
       // Non-defining instructions.
       InstTyp::PropAssign
+      | InstTyp::FieldStore
       | InstTyp::Assume
       | InstTyp::CondGoto
       | InstTyp::Return

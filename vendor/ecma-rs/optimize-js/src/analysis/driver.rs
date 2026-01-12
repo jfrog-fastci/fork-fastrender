@@ -270,6 +270,7 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
       let value = inst.meta.value.clone();
       #[cfg(feature = "native-async-ops")]
       let await_known_resolved = inst.meta.await_known_resolved;
+      let field_access = inst.meta.field_access.clone();
       inst.meta = InstMeta::default();
       inst.meta.type_id = type_id;
       #[cfg(feature = "typed")]
@@ -288,6 +289,7 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
       {
         inst.meta.await_known_resolved = await_known_resolved;
       }
+      inst.meta.field_access = field_access;
     }
   }
 }

@@ -2140,7 +2140,6 @@ pub mod body_check {
         &bindings,
         resolver.clone(),
         ctx.value_defs.as_ref(),
-        Some(&ctx.def_spans),
         Some(&expander),
         Some(&ctx.interned_type_param_decls),
         contextual_fn_ty,

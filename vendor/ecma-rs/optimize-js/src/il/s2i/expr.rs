@@ -1,6 +1,8 @@
 use super::stmt::key_arg;
 use super::{Chain, HirSourceToInst, VarType, DUMMY_LABEL};
-use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp, ValueTypeSummary};
+use crate::il::inst::{
+  Arg, BinOp, Const, FieldAccessMeta, FieldRef, Inst, InstTyp, UnOp, ValueTypeSummary,
+};
 #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 use crate::il::inst::ArrayChainOpData;
 use crate::symbol::semantics::SymbolId;
@@ -16,6 +18,9 @@ use num_bigint::BigInt;
 use parse_js::loc::Loc;
 use parse_js::num::JsNumber;
 use std::sync::atomic::Ordering;
+
+#[cfg(feature = "typed")]
+use types_ts_interned::{FieldKey, Layout, PtrKind, PropKey};
 
 pub struct CompiledMemberExpr {
   pub left: Arg,
@@ -144,6 +149,107 @@ impl<'p> HirSourceToInst<'p> {
         Arg::Var(tmp)
       }
     })
+  }
+
+  #[cfg(feature = "typed")]
+  fn const_member_key(&self, key: &hir_js::ObjectKey) -> Option<String> {
+    use hir_js::ObjectKey;
+    match key {
+      ObjectKey::Ident(name) => Some(self.name_for(*name)),
+      ObjectKey::String(value) => Some(value.clone()),
+      ObjectKey::Number(value) => Some(value.clone()),
+      ObjectKey::Computed(expr) => match &self.body.exprs[expr.0 as usize].kind {
+        ExprKind::Literal(lit) => match lit {
+          hir_js::Literal::String(value) => Some(value.lossy.clone()),
+          hir_js::Literal::Number(value) => Some(value.clone()),
+          _ => None,
+        },
+        _ => None,
+      },
+    }
+  }
+
+  #[cfg(feature = "typed")]
+  fn layout_contains_gc_ptr(store: &types_ts_interned::TypeStore, layout: types_ts_interned::LayoutId) -> bool {
+    match store.layout(layout) {
+      Layout::Scalar { .. } => false,
+      Layout::Ptr { to } => matches!(
+        to,
+        PtrKind::GcObject { .. } | PtrKind::GcArray { .. } | PtrKind::GcString
+      ),
+      Layout::Struct { fields, .. } => fields
+        .iter()
+        .any(|field| Self::layout_contains_gc_ptr(store, field.layout)),
+      Layout::TaggedUnion { variants, .. } => variants
+        .iter()
+        .any(|variant| Self::layout_contains_gc_ptr(store, variant.layout)),
+    }
+  }
+
+  #[cfg(feature = "typed")]
+  fn try_resolve_field_access(
+    &self,
+    receiver_expr: ExprId,
+    key: &hir_js::ObjectKey,
+  ) -> Option<(FieldRef, FieldAccessMeta)> {
+    let program = self.program.types.program.as_ref()?;
+    let store = program.interned_type_store();
+    let receiver_ty = self.expr_type_id(receiver_expr)?;
+
+    let receiver_layout = store.layout_of(receiver_ty);
+    let receiver_payload_layout = match store.layout(receiver_layout) {
+      Layout::Ptr {
+        to: PtrKind::GcObject { layout },
+      } => layout,
+      // Arrays are handled separately in the strict-native pipeline; keep the existing
+      // GetProp/PropAssign lowering as a fallback here.
+      Layout::Ptr {
+        to: PtrKind::GcArray { .. },
+      } => return None,
+      // Tuples/value structs lower directly as struct layouts.
+      Layout::Struct { .. } => receiver_layout,
+      // Tagged unions (and other layouts) require additional lowering/guarding
+      // logic; keep the dynamic form for now.
+      _ => return None,
+    };
+
+    let Layout::Struct { fields, .. } = store.layout(receiver_payload_layout) else {
+      return None;
+    };
+
+    let key = self.const_member_key(key)?;
+    let key_as_u32 = key.parse::<u32>().ok();
+    let key_as_i64 = key.parse::<i64>().ok();
+
+    let field = fields.iter().find(|field| match &field.key {
+      FieldKey::TupleIndex(i) => key_as_u32 == Some(*i),
+      FieldKey::Prop(prop) => match prop {
+        PropKey::String(name) => store.name(*name) == key.as_str(),
+        PropKey::Number(n) => key_as_i64 == Some(*n),
+        PropKey::Symbol(_) => false,
+      },
+      FieldKey::Internal(name) => name == &key,
+    })?;
+
+    let field_ref = match &field.key {
+      FieldKey::TupleIndex(i) => FieldRef::TupleIndex(*i),
+      FieldKey::Prop(prop) => match prop {
+        PropKey::String(name) => FieldRef::Prop(store.name(*name)),
+        PropKey::Number(n) => FieldRef::Prop(n.to_string()),
+        // Symbol keys are not representable as constant string keys.
+        PropKey::Symbol(_) => return None,
+      },
+      FieldKey::Internal(name) => FieldRef::Internal(name.clone()),
+    };
+
+    let meta = FieldAccessMeta {
+      receiver_payload_layout,
+      field_layout: field.layout,
+      offset: field.offset,
+      requires_write_barrier: Self::layout_contains_gc_ptr(store.as_ref(), field.layout),
+    };
+
+    Some((field_ref, meta))
   }
 
   pub fn compile_func(
@@ -388,7 +494,17 @@ impl<'p> HirSourceToInst<'p> {
       PatKind::AssignTarget(target_expr_id) => {
         let target_expr = &self.body.exprs[target_expr_id.0 as usize];
         let dummy_val = Arg::Const(Const::Num(JsNumber(0xdeadbeefu32 as f64)));
-        let mut assign_inst = match target_expr.kind {
+        #[derive(Clone)]
+        enum AssignTargetStore {
+          Prop { obj: Arg, prop: Arg },
+          Field {
+            obj: Arg,
+            field: FieldRef,
+            meta: FieldAccessMeta,
+          },
+        }
+
+        let store = match target_expr.kind {
           ExprKind::Member(ref member) => {
             if member.optional {
               return Err(unsupported_syntax(
@@ -397,9 +513,17 @@ impl<'p> HirSourceToInst<'p> {
                 "optional chaining in assignment target",
               ));
             }
-            let left_arg = self.compile_expr(member.object)?;
-            let member_arg = key_arg(self, &member.property)?;
-            Inst::prop_assign(left_arg, member_arg, dummy_val)
+            let obj = self.compile_expr(member.object)?;
+            #[cfg(feature = "typed")]
+            let field_access = self.try_resolve_field_access(member.object, &member.property);
+            #[cfg(not(feature = "typed"))]
+            let field_access: Option<(FieldRef, FieldAccessMeta)> = None;
+            if let Some((field, meta)) = field_access {
+              AssignTargetStore::Field { obj, field, meta }
+            } else {
+              let prop = key_arg(self, &member.property)?;
+              AssignTargetStore::Prop { obj, prop }
+            }
           }
           _ => {
             return Err(unsupported_syntax(
@@ -407,6 +531,17 @@ impl<'p> HirSourceToInst<'p> {
               span,
               "unsupported assignment target",
             ))
+          }
+        };
+
+        let mut assign_inst = match &store {
+          AssignTargetStore::Prop { obj, prop } => {
+            Inst::prop_assign(obj.clone(), prop.clone(), dummy_val.clone())
+          }
+          AssignTargetStore::Field { obj, field, meta } => {
+            let mut inst = Inst::field_store(obj.clone(), field.clone(), dummy_val.clone());
+            inst.meta.field_access = Some(meta.clone());
+            inst
           }
         };
         let value_tmp_var = self.c_temp.bump();
@@ -423,14 +558,22 @@ impl<'p> HirSourceToInst<'p> {
             Ok(Arg::Var(value_tmp_var))
           }
           AssignOp::LogicalAndAssign | AssignOp::LogicalOrAssign | AssignOp::NullishAssign => {
-            let (obj, prop, _) = assign_inst.as_prop_assign();
             let left_tmp_var = self.c_temp.bump();
-            self.out.push(Inst::bin(
-              left_tmp_var,
-              obj.clone(),
-              BinOp::GetProp,
-              prop.clone(),
-            ));
+            match &store {
+              AssignTargetStore::Prop { obj, prop } => {
+                self.out.push(Inst::bin(
+                  left_tmp_var,
+                  obj.clone(),
+                  BinOp::GetProp,
+                  prop.clone(),
+                ));
+              }
+              AssignTargetStore::Field { obj, field, meta } => {
+                let mut inst = Inst::field_load(left_tmp_var, obj.clone(), field.clone());
+                inst.meta.field_access = Some(meta.clone());
+                self.out.push(inst);
+              }
+            }
             self.push_value_inst(
               assign_expr_id,
               Inst::var_assign(value_tmp_var, Arg::Var(left_tmp_var)),
@@ -501,14 +644,22 @@ impl<'p> HirSourceToInst<'p> {
                 ))
               }
             };
-            let (obj, prop, _) = assign_inst.as_prop_assign();
             let left_tmp_var = self.c_temp.bump();
-            self.out.push(Inst::bin(
-              left_tmp_var,
-              obj.clone(),
-              BinOp::GetProp,
-              prop.clone(),
-            ));
+            match &store {
+              AssignTargetStore::Prop { obj, prop } => {
+                self.out.push(Inst::bin(
+                  left_tmp_var,
+                  obj.clone(),
+                  BinOp::GetProp,
+                  prop.clone(),
+                ));
+              }
+              AssignTargetStore::Field { obj, field, meta } => {
+                let mut inst = Inst::field_load(left_tmp_var, obj.clone(), field.clone());
+                inst.meta.field_access = Some(meta.clone());
+                self.out.push(inst);
+              }
+            }
             let rhs_inst = Inst::bin(value_tmp_var, Arg::Var(left_tmp_var), op, value_arg);
             self.push_value_inst(assign_expr_id, rhs_inst);
             *assign_inst.args.last_mut().unwrap() = Arg::Var(value_tmp_var);
@@ -934,6 +1085,11 @@ impl<'p> HirSourceToInst<'p> {
       Foreign { foreign: SymbolId },
       Unknown { name: String },
       Member { obj: Arg, prop: Arg },
+      Field {
+        obj: Arg,
+        field: FieldRef,
+        meta: FieldAccessMeta,
+      },
     }
 
     fn emit_store(
@@ -963,6 +1119,11 @@ impl<'p> HirSourceToInst<'p> {
             prop.clone(),
             Arg::Var(new_var),
           ));
+        }
+        UpdateStore::Field { obj, field, meta } => {
+          let mut inst = Inst::field_store(obj.clone(), field.clone(), Arg::Var(new_var));
+          inst.meta.field_access = Some(meta.clone());
+          compiler.out.push(inst);
         }
       }
     }
@@ -1497,14 +1658,29 @@ impl<'p> HirSourceToInst<'p> {
           ));
         }
         let obj_arg = self.compile_expr(member.object)?;
-        let prop_arg = key_arg(self, &member.property)?;
+        #[cfg(feature = "typed")]
+        let field_access = self.try_resolve_field_access(member.object, &member.property);
+        #[cfg(not(feature = "typed"))]
+        let field_access: Option<(FieldRef, FieldAccessMeta)> = None;
+        let prop_arg = if field_access.is_none() {
+          Some(key_arg(self, &member.property)?)
+        } else {
+          None
+        };
 
         // Load the existing property value once.
         let old_var = self.c_temp.bump();
-        self.push_value_inst(
-          argument,
-          Inst::bin(old_var, obj_arg.clone(), BinOp::GetProp, prop_arg.clone()),
-        );
+        if let Some((field, meta)) = field_access.as_ref() {
+          let mut inst = Inst::field_load(old_var, obj_arg.clone(), field.clone());
+          inst.meta.field_access = Some(meta.clone());
+          self.push_value_inst(argument, inst);
+        } else {
+          let prop_arg = prop_arg.as_ref().expect("expected property arg for member update");
+          self.push_value_inst(
+            argument,
+            Inst::bin(old_var, obj_arg.clone(), BinOp::GetProp, prop_arg.clone()),
+          );
+        }
 
         match numeric_mode {
           ValueTypeSummary::NUMBER | ValueTypeSummary::BIGINT => {
@@ -1519,9 +1695,16 @@ impl<'p> HirSourceToInst<'p> {
                 expr_id,
                 Inst::bin(new_var, Arg::Var(old_var), rhs, rhs_one),
               );
-              self
-                .out
-                .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
+              if let Some((field, meta)) = field_access.as_ref() {
+                let mut inst = Inst::field_store(obj_arg, field.clone(), Arg::Var(new_var));
+                inst.meta.field_access = Some(meta.clone());
+                self.out.push(inst);
+              } else {
+                let prop_arg = prop_arg.expect("expected property arg for member update");
+                self
+                  .out
+                  .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
+              }
               Ok(Arg::Var(new_var))
             } else {
               let tmp_var = self.c_temp.bump();
@@ -1531,16 +1714,31 @@ impl<'p> HirSourceToInst<'p> {
                 expr_id,
                 Inst::bin(new_var, Arg::Var(old_var), rhs, rhs_one),
               );
-              self
-                .out
-                .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
+              if let Some((field, meta)) = field_access.as_ref() {
+                let mut inst = Inst::field_store(obj_arg, field.clone(), Arg::Var(new_var));
+                inst.meta.field_access = Some(meta.clone());
+                self.out.push(inst);
+              } else {
+                let prop_arg = prop_arg.expect("expected property arg for member update");
+                self
+                  .out
+                  .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
+              }
               Ok(Arg::Var(tmp_var))
             }
           }
           _ => {
-            let store = UpdateStore::Member {
-              obj: obj_arg,
-              prop: prop_arg,
+            let store = if let Some((field, meta)) = field_access {
+              UpdateStore::Field {
+                obj: obj_arg,
+                field,
+                meta,
+              }
+            } else {
+              UpdateStore::Member {
+                obj: obj_arg,
+                prop: prop_arg.expect("expected property arg for member update"),
+              }
             };
             compile_dynamic_update(
               self,
@@ -1625,7 +1823,7 @@ impl<'p> HirSourceToInst<'p> {
       UnaryOp::Delete => {
         let arg_expr = &self.body.exprs[argument.0 as usize];
         match &arg_expr.kind {
-          ExprKind::Member(member) => {
+      ExprKind::Member(member) => {
             if member.optional {
               return Err(unsupported_syntax(
                 self.program.lower.hir.file,
@@ -1684,11 +1882,21 @@ impl<'p> HirSourceToInst<'p> {
       }
     }
     let res_tmp_var = self.c_temp.bump();
-    let right_arg = key_arg(self, &member.property)?;
-    self.push_value_inst(
-      expr_id,
-      Inst::bin(res_tmp_var, left_arg.clone(), BinOp::GetProp, right_arg),
-    );
+    #[cfg(feature = "typed")]
+    let field_access = self.try_resolve_field_access(member.object, &member.property);
+    #[cfg(not(feature = "typed"))]
+    let field_access: Option<(FieldRef, FieldAccessMeta)> = None;
+    if let Some((field, meta)) = field_access {
+      let mut inst = Inst::field_load(res_tmp_var, left_arg.clone(), field);
+      inst.meta.field_access = Some(meta);
+      self.push_value_inst(expr_id, inst);
+    } else {
+      let right_arg = key_arg(self, &member.property)?;
+      self.push_value_inst(
+        expr_id,
+        Inst::bin(res_tmp_var, left_arg.clone(), BinOp::GetProp, right_arg),
+      );
+    }
     self.complete_chain_setup(expr_id, did_chain_setup, res_tmp_var, chain);
     Ok(CompiledMemberExpr {
       res: Arg::Var(res_tmp_var),

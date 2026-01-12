@@ -1,21 +1,28 @@
 #![cfg(feature = "typed")]
 
 use optimize_js::cfg::cfg::Cfg;
-use optimize_js::il::inst::{Arg, BinOp, Const, InstTyp};
+use optimize_js::il::inst::{Arg, BinOp, Const, FieldRef, InstTyp};
 use optimize_js::TopLevelMode;
 
 fn cfg_contains_getprop(cfg: &Cfg, prop: &str) -> Option<Arg> {
   for (_, bb) in cfg.bblocks.all() {
     for inst in bb {
-      if inst.t != InstTyp::Bin {
-        continue;
-      }
-      let (_tgt, left, op, right) = inst.as_bin();
-      if op != BinOp::GetProp {
-        continue;
-      }
-      if matches!(right, Arg::Const(Const::Str(s)) if s == prop) {
-        return Some(left.clone());
+      match inst.t {
+        InstTyp::Bin => {
+          let (_tgt, left, op, right) = inst.as_bin();
+          if op != BinOp::GetProp {
+            continue;
+          }
+          if matches!(right, Arg::Const(Const::Str(s)) if s == prop) {
+            return Some(left.clone());
+          }
+        }
+        InstTyp::FieldLoad => {
+          if matches!(&inst.field, FieldRef::Prop(name) if name == prop) {
+            return Some(inst.args[0].clone());
+          }
+        }
+        _ => {}
       }
     }
   }
@@ -47,7 +54,7 @@ fn function_cfg_with_getprop<'a>(
       return (cfg, receiver);
     }
   }
-  panic!("missing function containing GetProp({prop})");
+  panic!("missing function containing field access({prop})");
 }
 
 #[test]

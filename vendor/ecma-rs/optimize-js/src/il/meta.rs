@@ -16,6 +16,12 @@ use hir_js::ExprId;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
+#[cfg(feature = "typed")]
+pub use types_ts_interned::LayoutId;
+
+#[cfg(not(feature = "typed"))]
+pub type LayoutId = ();
+
 #[cfg(feature = "serde")]
 fn serialize_type_id<S>(value: &Option<TypeId>, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -380,6 +386,25 @@ impl TypeInfo {
   }
 }
 
+/// Layout-driven metadata for a field access instruction.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct FieldAccessMeta {
+  /// The *payload* layout of the receiver, i.e. the struct layout that contains
+  /// the accessed field.
+  ///
+  /// For `GcObject` pointers, this is the layout *inside* the object header.
+  pub receiver_payload_layout: LayoutId,
+  /// Layout of the field being accessed.
+  pub field_layout: LayoutId,
+  /// Byte offset of the field within the receiver payload (not including any GC
+  /// header).
+  pub offset: u32,
+  /// Whether a store to this field may require a write barrier.
+  pub requires_write_barrier: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum OwnershipState {
@@ -617,6 +642,11 @@ pub struct InstMeta {
   pub result_type: TypeInfo,
   #[cfg_attr(
     feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub field_access: Option<FieldAccessMeta>,
+  #[cfg_attr(
+    feature = "serde",
     serde(
       default,
       skip_serializing_if = "Option::is_none",
@@ -850,6 +880,7 @@ impl InstMeta {
   pub fn is_default(&self) -> bool {
     let base = self.effects.is_default()
       && self.result_type.is_default()
+      && self.field_access.is_none()
       && self.type_id.is_none()
       && {
         #[cfg(feature = "typed")]
