@@ -10036,6 +10036,115 @@ mod tests {
   }
 
   #[test]
+  fn script_onload_property_fires_after_external_script_microtasks() -> Result<()> {
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+    tab.register_script_source(
+      "a.js",
+      r#"
+        globalThis.__log = "";
+        globalThis.__script = document.currentScript;
+        globalThis.__onload_this_ok = false;
+        globalThis.__onload_event_type = "";
+        globalThis.__script.onload = function (e) {
+          globalThis.__log += "onload;";
+          globalThis.__onload_this_ok = (this === globalThis.__script);
+          globalThis.__onload_event_type = e.type;
+        };
+        globalThis.__log += "script;";
+        Promise.resolve().then(() => { globalThis.__log += "microtask;"; });
+      "#,
+    );
+
+    tab.navigate_to_html(r#"<!doctype html><script src="a.js"></script>"#, RenderOptions::default())?;
+    assert!(matches!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    ));
+
+    let realm = tab
+      .host
+      .executor
+      .window_realm_mut()
+      .expect("expected vm-js WindowRealm");
+    let log_value = realm
+      .exec_script("globalThis.__log")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    let log = value_to_string(realm, log_value);
+    assert_eq!(log, "script;microtask;onload;");
+
+    let this_ok = realm
+      .exec_script("globalThis.__onload_this_ok")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert!(
+      matches!(this_ok, Value::Bool(true)),
+      "expected onload handler to run with this=script element"
+    );
+
+    let event_type_value = realm
+      .exec_script("globalThis.__onload_event_type")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    let event_type = value_to_string(realm, event_type_value);
+    assert_eq!(event_type, "load");
+    Ok(())
+  }
+
+  #[test]
+  fn script_onerror_property_fires_for_missing_async_external_script() -> Result<()> {
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+
+    tab.navigate_to_html(
+      r#"<!doctype html><html><head>
+        <script async id="bad" src="missing.js"></script>
+        <script>
+          globalThis.__log = "";
+          globalThis.__onerror_this_ok = false;
+          globalThis.__onerror_event_type = "";
+          const s = document.getElementById("bad");
+          globalThis.__script = s;
+          s.onerror = function (e) {
+            globalThis.__log += "onerror;";
+            globalThis.__onerror_this_ok = (this === globalThis.__script);
+            globalThis.__onerror_event_type = e.type;
+          };
+          globalThis.__log += "inline;";
+          Promise.resolve().then(() => { globalThis.__log += "microtask;"; });
+        </script>
+      </head><body></body></html>"#,
+      RenderOptions::default(),
+    )?;
+    assert!(matches!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    ));
+
+    let realm = tab
+      .host
+      .executor
+      .window_realm_mut()
+      .expect("expected vm-js WindowRealm");
+    let log_value = realm
+      .exec_script("globalThis.__log")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    let log = value_to_string(realm, log_value);
+    assert_eq!(log, "inline;microtask;onerror;");
+
+    let this_ok = realm
+      .exec_script("globalThis.__onerror_this_ok")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert!(
+      matches!(this_ok, Value::Bool(true)),
+      "expected onerror handler to run with this=script element"
+    );
+
+    let event_type_value = realm
+      .exec_script("globalThis.__onerror_event_type")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    let event_type = value_to_string(realm, event_type_value);
+    assert_eq!(event_type, "error");
+    Ok(())
+  }
+
+  #[test]
   fn js_document_write_inserts_html_before_following_markup_and_affects_render() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let executor = WindowRealmExecutor::new(Rc::clone(&log))?;

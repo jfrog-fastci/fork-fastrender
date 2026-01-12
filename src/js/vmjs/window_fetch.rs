@@ -14299,17 +14299,17 @@ mod tests {
         r#"
             globalThis.__u1 = URL.createObjectURL(new Blob(['hi'], { type: 'text/plain' }));
             globalThis.__u2 = URL.createObjectURL(new Blob(['bye']));
-            globalThis.__p1 = fetch(globalThis.__u1).then((r) => {
-              globalThis.__ct = r.headers.get('content-type');
-              return r.text();
-            });
-          "#,
-      );
-      if let Some(err) = hooks.finish(window.heap_mut()) {
-        return Err(err);
-      }
-      result.map_err(|e| crate::error::Error::Other(e.to_string()))?;
-    }
+             globalThis.__p1 = fetch(globalThis.__u1).then((r) => {
+               globalThis.__ct = r.headers.get('content-type');
+               return r.text();
+             });
+           "#,
+       );
+       if let Some(err) = hooks.finish(window.heap_mut()) {
+         return Err(err);
+       }
+       result.map_err(|e| crate::error::Error::Other(e.to_string()))?;
+     }
 
     assert_eq!(
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
@@ -14351,17 +14351,17 @@ mod tests {
         host_ctx,
         &mut hooks,
         r#"
-            URL.revokeObjectURL(globalThis.__u1);
-            globalThis.__p2 = fetch(globalThis.__u1);
-            // Avoid leaking the second URL in the process-global registry.
-            URL.revokeObjectURL(globalThis.__u2);
-          "#,
-      );
-      if let Some(err) = hooks.finish(window.heap_mut()) {
-        return Err(err);
-      }
-      result.map_err(|e| crate::error::Error::Other(e.to_string()))?;
-    }
+             URL.revokeObjectURL(globalThis.__u1);
+             globalThis.__p2 = fetch(globalThis.__u1);
+             // Avoid leaking the second URL in the process-global registry.
+             URL.revokeObjectURL(globalThis.__u2);
+           "#,
+       );
+       if let Some(err) = hooks.finish(window.heap_mut()) {
+         return Err(err);
+       }
+       result.map_err(|e| crate::error::Error::Other(e.to_string()))?;
+     }
 
     assert_eq!(
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,

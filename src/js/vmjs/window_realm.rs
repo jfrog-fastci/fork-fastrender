@@ -16518,8 +16518,26 @@ fn alloc_mutation_records_array(
 
 /// Allocates an `IntersectionObserverEntry`-shaped object with `DOMRectReadOnly` fields.
 ///
-/// This helper is currently used by the `DOMRectReadOnly` unit tests while the full observer
-/// delivery pipeline is still being wired up.
+/// FastRender currently models observer entries as plain objects; tests and future observer
+/// implementations rely on the rect fields being real `DOMRectReadOnly` instances rather than
+/// plain `{x,y,width,height}` objects.
+pub(crate) fn alloc_intersection_observer_entry_object(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  root_bounds: Option<(f64, f64, f64, f64)>,
+  bounding_client_rect: (f64, f64, f64, f64),
+  intersection_rect: (f64, f64, f64, f64),
+) -> Result<GcObject, VmError> {
+  alloc_intersection_observer_entry_object_with_dom_rects(
+    scope,
+    global,
+    root_bounds,
+    bounding_client_rect,
+    intersection_rect,
+  )
+}
+
+/// Backwards-compatible aliases used by older tests / call sites.
 #[allow(dead_code)]
 pub(crate) fn alloc_intersection_observer_entry_dom_rect_object(
   scope: &mut Scope<'_>,
@@ -16528,7 +16546,7 @@ pub(crate) fn alloc_intersection_observer_entry_dom_rect_object(
   bounding_client_rect: (f64, f64, f64, f64),
   intersection_rect: (f64, f64, f64, f64),
 ) -> Result<GcObject, VmError> {
-  alloc_intersection_observer_entry_dom_rects_object(
+  alloc_intersection_observer_entry_object(
     scope,
     global,
     root_bounds,
@@ -16545,7 +16563,7 @@ pub(crate) fn alloc_intersection_observer_entry_dom_rects_object(
   bounding_client_rect: (f64, f64, f64, f64),
   intersection_rect: (f64, f64, f64, f64),
 ) -> Result<GcObject, VmError> {
-  alloc_intersection_observer_entry_object_with_dom_rects(
+  alloc_intersection_observer_entry_object(
     scope,
     global,
     root_bounds,
@@ -16951,7 +16969,6 @@ fn mutation_observer_notify_native(
     if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
       continue;
     }
-
     let records_array = {
       // SAFETY: `dom_ptr_for_wrappers` is only used to create wrappers. The reference must not live
       // across the callback invocation (callbacks can mutate the DOM), so keep it scoped to this
