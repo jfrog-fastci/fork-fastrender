@@ -32,7 +32,7 @@ fn async_spread_does_not_close_iterator_when_next_throws() -> Result<(), VmError
       var out = false;
 
       async function g() {
-        await Promise.resolve();
+        await 0;
         try {
           f(...iter, await 0);
         } catch (e) {}

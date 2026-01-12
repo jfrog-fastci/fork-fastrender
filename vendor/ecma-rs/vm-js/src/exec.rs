@@ -7288,12 +7288,12 @@ impl<'a> Evaluator<'a> {
             &mut *self.hooks,
             &mut call_scope,
             &mut iter,
-          ) {
-            Ok(v) => v,
-            // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
-            // while stepping the iterator (`next`/`done`/`value`).
-            Err(err) => return Err(err),
-          };
+           ) {
+             Ok(v) => v,
+             // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
+             // while stepping the iterator (`next`/`done`/`value`).
+             Err(err) => return Err(err),
+           };
 
           let Some(value) = next_value else {
             break;

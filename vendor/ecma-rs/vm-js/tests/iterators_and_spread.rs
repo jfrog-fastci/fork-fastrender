@@ -330,6 +330,33 @@ fn call_spread_does_not_close_iterator_on_throw() {
 }
 
 #[test]
+fn array_spread_does_not_close_iterator_on_throw_immediately() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var closed = false;
+        var iterable = {
+          [Symbol.iterator]: function () {
+            return {
+              next: function () { throw "boom"; },
+              return: function () {
+                closed = true;
+                return { done: true };
+              },
+            };
+          },
+        };
+
+        try { [...iterable]; } catch (e) {}
+        closed
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(false));
+}
+
+#[test]
 fn for_of_over_array_iterator() {
   let mut rt = new_runtime();
   let value = rt
