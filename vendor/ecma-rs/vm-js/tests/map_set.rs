@@ -1,5 +1,6 @@
 use vm_js::{
-  GcObject, Heap, HeapLimits, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmOptions,
+  Budget, GcObject, Heap, HeapLimits, JsRuntime, PropertyKey, PropertyKind, Realm, Scope,
+  TerminationReason, Value, Vm, VmError, VmOptions,
 };
 
 struct TestRt {
@@ -66,11 +67,7 @@ fn call_size_getter(
   Ok(n as usize)
 }
 
-fn iterator_next(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  iter: Value,
-) -> Result<(Value, bool), VmError> {
+fn iterator_next(vm: &mut Vm, scope: &mut Scope<'_>, iter: Value) -> Result<(Value, bool), VmError> {
   let Value::Object(iter_obj) = iter else {
     return Err(VmError::Unimplemented("iterator is not an object"));
   };
@@ -102,6 +99,19 @@ fn object_to_string(
     ));
   };
   Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+}
+
+fn new_runtime() -> Result<JsRuntime, VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+  JsRuntime::new(vm, heap)
+}
+
+fn assert_out_of_fuel(err: VmError) {
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected VmError::Termination(OutOfFuel), got {other:?}"),
+  }
 }
 
 #[test]
@@ -328,5 +338,285 @@ fn map_and_set_iteration_order_and_to_string_tag() -> Result<(), VmError> {
     "[object Set Iterator]"
   );
 
+  Ok(())
+}
+
+#[test]
+fn map_insertion_order_is_preserved() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+      var m = new Map();
+      m.set("a", 1);
+      m.set("b", 2);
+      m.set("c", 3);
+
+      // Delete then re-add moves the key to the end.
+      m.delete("b");
+      m.set("b", 4);
+
+      // Updating an existing key does not change iteration order.
+      m.set("a", 9);
+
+      var out = "";
+      for (var e of m) out += e[0];
+
+      out === "acb" && m.get("a") === 9 && m.get("b") === 4 && m.size === 3
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn set_insertion_order_is_preserved() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+      var s = new Set();
+      s.add("a");
+      s.add("b");
+      s.add("c");
+
+      // Delete then re-add moves the value to the end.
+      s.delete("b");
+      s.add("b");
+
+      // Re-adding an existing value does not change order.
+      s.add("a");
+
+      var out = "";
+      for (var v of s) out += v;
+
+      out === "acb" && s.size === 3
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn iterator_shape_and_well_known_iterator_wiring() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+      var ok = true;
+
+      ok = ok && (Map.prototype[Symbol.iterator] === Map.prototype.entries);
+      ok = ok && (Set.prototype[Symbol.iterator] === Set.prototype.values);
+      ok = ok && (Set.prototype.keys === Set.prototype.values);
+      ok = ok && (Set.prototype.keys.name === "values");
+
+      var m = new Map([["a", 1]]);
+      var it1 = m.keys();
+      ok = ok && (it1[Symbol.iterator]() === it1);
+      ok = ok && (it1.next().value === "a");
+
+      var mEntry = m.entries().next().value;
+      ok = ok && (mEntry.length === 2) && (mEntry[0] === "a") && (mEntry[1] === 1);
+
+      var s = new Set([1]);
+      var it2 = s.values();
+      ok = ok && (it2[Symbol.iterator]() === it2);
+      ok = ok && (it2.next().value === 1);
+
+      var sEntry = s.entries().next().value;
+      ok = ok && (sEntry.length === 2) && (sEntry[0] === 1) && (sEntry[1] === 1);
+
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn map_iteration_observes_mutations() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+      var ok = true;
+
+      // Add during iteration is visited.
+      var m1 = new Map();
+      m1.set("a", 1);
+      m1.set("b", 2);
+      var out1 = "";
+      for (var e of m1) {
+        out1 += e[0];
+        if (e[0] === "a") m1.set("c", 3);
+      }
+      ok = ok && (out1 === "abc");
+
+      // Delete during iteration is skipped.
+      var m2 = new Map();
+      m2.set("a", 1);
+      m2.set("b", 2);
+      m2.set("c", 3);
+      var out2 = "";
+      for (var e of m2) {
+        out2 += e[0];
+        if (e[0] === "a") m2.delete("b");
+      }
+      ok = ok && (out2 === "ac");
+
+      // Clear during iteration ends the traversal.
+      var m3 = new Map();
+      m3.set("a", 1);
+      m3.set("b", 2);
+      m3.set("c", 3);
+      var out3 = "";
+      for (var e of m3) {
+        out3 += e[0];
+        m3.clear();
+      }
+      ok = ok && (out3 === "a");
+
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn set_iteration_observes_mutations() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+      var ok = true;
+
+      // Add during iteration is visited.
+      var s1 = new Set([1, 2]);
+      var out1 = "";
+      for (var v of s1) {
+        out1 += v;
+        if (v === 1) s1.add(3);
+      }
+      ok = ok && (out1 === "123");
+
+      // Delete during iteration is skipped.
+      var s2 = new Set([1, 2, 3]);
+      var out2 = "";
+      for (var v of s2) {
+        out2 += v;
+        if (v === 1) s2.delete(2);
+      }
+      ok = ok && (out2 === "13");
+
+      // Clear during iteration ends the traversal.
+      var s3 = new Set([1, 2, 3]);
+      var out3 = "";
+      for (var v of s3) {
+        out3 += v;
+        s3.clear();
+      }
+      ok = ok && (out3 === "1");
+
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn map_iterator_next_is_budgeted_over_deleted_entries() -> Result<(), VmError> {
+  // Use a Rust-side loop rather than `exec_script` so this test remains fast even if Map operations
+  // are implemented with linear scans.
+  //
+  // Note: keep `N` >= `tick::DEFAULT_TICK_EVERY` (currently 1024) so an iterator that only ticks
+  // periodically (and not on the first iteration) would still be forced to tick while scanning.
+  const N: usize = 1024;
+
+  let mut rt = TestRt::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024))?;
+  let intr = *rt.realm.intrinsics();
+  let mut scope = rt.heap.scope();
+
+  let map_ctor = Value::Object(intr.map());
+  let map = rt.vm.construct_without_host(&mut scope, map_ctor, &[], map_ctor)?;
+  let Value::Object(map_obj) = map else {
+    return Err(VmError::Unimplemented("Map constructor did not return object"));
+  };
+
+  let set_fn = get_data_property(&mut scope, map_obj, "set")?.unwrap();
+  let delete_fn = get_data_property(&mut scope, map_obj, "delete")?.unwrap();
+  let keys_fn = get_data_property(&mut scope, map_obj, "keys")?.unwrap();
+
+  for i in 0..N {
+    let n = Value::Number(i as f64);
+    rt.vm.call_without_host(&mut scope, set_fn, map, &[n, n])?;
+  }
+  for i in 0..N {
+    rt.vm
+      .call_without_host(&mut scope, delete_fn, map, &[Value::Number(i as f64)])?;
+  }
+
+  let iter = rt.vm.call_without_host(&mut scope, keys_fn, map, &[])?;
+  let Value::Object(iter_obj) = iter else {
+    return Err(VmError::Unimplemented("expected Map keys iterator to be object"));
+  };
+  let next_fn = get_data_property(&mut scope, iter_obj, "next")?.unwrap();
+
+  // The call itself ticks once. With a fuel budget of 1, the iterator must tick internally while
+  // scanning deleted entries or it would incorrectly complete without termination.
+  rt.vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt
+    .vm
+    .call_without_host(&mut scope, next_fn, iter, &[])
+    .unwrap_err();
+  assert_out_of_fuel(err);
+  Ok(())
+}
+
+#[test]
+fn set_iterator_next_is_budgeted_over_deleted_entries() -> Result<(), VmError> {
+  const N: usize = 1024;
+
+  let mut rt = TestRt::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024))?;
+  let intr = *rt.realm.intrinsics();
+  let mut scope = rt.heap.scope();
+
+  let set_ctor = Value::Object(intr.set());
+  let set = rt.vm.construct_without_host(&mut scope, set_ctor, &[], set_ctor)?;
+  let Value::Object(set_obj) = set else {
+    return Err(VmError::Unimplemented("Set constructor did not return object"));
+  };
+
+  let add_fn = get_data_property(&mut scope, set_obj, "add")?.unwrap();
+  let delete_fn = get_data_property(&mut scope, set_obj, "delete")?.unwrap();
+  let values_fn = get_data_property(&mut scope, set_obj, "values")?.unwrap();
+
+  for i in 0..N {
+    rt.vm
+      .call_without_host(&mut scope, add_fn, set, &[Value::Number(i as f64)])?;
+  }
+  for i in 0..N {
+    rt.vm
+      .call_without_host(&mut scope, delete_fn, set, &[Value::Number(i as f64)])?;
+  }
+
+  let iter = rt.vm.call_without_host(&mut scope, values_fn, set, &[])?;
+  let Value::Object(iter_obj) = iter else {
+    return Err(VmError::Unimplemented("expected Set values iterator to be object"));
+  };
+  let next_fn = get_data_property(&mut scope, iter_obj, "next")?.unwrap();
+
+  rt.vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt
+    .vm
+    .call_without_host(&mut scope, next_fn, iter, &[])
+    .unwrap_err();
+  assert_out_of_fuel(err);
   Ok(())
 }
