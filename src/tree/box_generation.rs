@@ -7599,7 +7599,7 @@ fn create_replaced_box_from_styled(
   let width_attr = styled.node.get_attribute_ref("width");
   let height_attr = styled.node.get_attribute_ref("height");
 
-  let (mut intrinsic_size, mut aspect_ratio, no_intrinsic_ratio) = match &replaced_type {
+  let (mut intrinsic_size, mut aspect_ratio, mut no_intrinsic_ratio) = match &replaced_type {
     ReplacedType::Svg { .. } => {
       let view_box_attr = styled.node.get_attribute_ref("viewBox");
       let preserve_aspect_ratio_attr = styled.node.get_attribute_ref("preserveAspectRatio");
@@ -7654,17 +7654,32 @@ fn create_replaced_box_from_styled(
 
   if intrinsic_size.is_none() && aspect_ratio.is_none() {
     match &replaced_type {
-      ReplacedType::Canvas
-      | ReplacedType::Video { .. }
+      // Canvas elements have intrinsic dimensions and therefore an intrinsic ratio derived from
+      // their default 300x150 size.
+      ReplacedType::Canvas => {
+        intrinsic_size = Some(Size::new(300.0, 150.0));
+        aspect_ratio = Some(2.0);
+      }
+      // Many other replaced elements have a default UA size but *no intrinsic ratio*. The
+      // fallback size should not force the used height to scale when only a width is specified
+      // (or vice versa).
+      //
+      // This matches web behavior for elements like `<video>` (without metadata),
+      // `<iframe>`, `<embed>`, and `<object>`, which default to a 300×150 rectangle but do not
+      // preserve a 2:1 aspect ratio unless an explicit `aspect-ratio` property (or actual
+      // intrinsic data) is available.
+      ReplacedType::Video { .. }
       | ReplacedType::Iframe { .. }
       | ReplacedType::Embed { .. }
       | ReplacedType::Object { .. } => {
         intrinsic_size = Some(Size::new(300.0, 150.0));
-        aspect_ratio = Some(2.0);
+        aspect_ratio = None;
+        no_intrinsic_ratio = true;
       }
       ReplacedType::Audio { .. } => {
         intrinsic_size = Some(Size::new(300.0, 32.0));
-        aspect_ratio = Some(300.0 / 32.0);
+        aspect_ratio = None;
+        no_intrinsic_ratio = true;
       }
       _ => {}
     }

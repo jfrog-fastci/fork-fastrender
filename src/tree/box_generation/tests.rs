@@ -966,6 +966,14 @@ fn audio_generates_replaced_box_with_fallback_size() {
     Some(Size::new(300.0, 32.0)),
     "audio should get default UA size when none provided"
   );
+  assert!(
+    audio.no_intrinsic_ratio,
+    "default UA audio size must not imply an intrinsic aspect ratio"
+  );
+  assert_eq!(
+    audio.aspect_ratio, None,
+    "audio intrinsic ratio should be absent unless explicitly provided"
+  );
 }
 
 #[test]
@@ -2706,11 +2714,29 @@ fn replaced_media_defaults_to_300_by_150() {
           Some(Size::new(300.0, 150.0)),
           "{tag} should default to 300x150"
         );
-        assert_eq!(
-          replaced.aspect_ratio,
-          Some(2.0),
-          "{tag} should default to 2:1 ratio"
-        );
+        match tag {
+          "canvas" => {
+            assert_eq!(
+              replaced.aspect_ratio,
+              Some(2.0),
+              "canvas should default to 2:1 ratio"
+            );
+            assert!(
+              !replaced.no_intrinsic_ratio,
+              "canvas should have an intrinsic aspect ratio"
+            );
+          }
+          _ => {
+            assert_eq!(
+              replaced.aspect_ratio, None,
+              "{tag} default UA size must not imply an intrinsic aspect ratio"
+            );
+            assert!(
+              replaced.no_intrinsic_ratio,
+              "{tag} should not have an intrinsic aspect ratio by default"
+            );
+          }
+        }
       }
       other => panic!("expected replaced box for {tag}, got {:?}", other),
     }

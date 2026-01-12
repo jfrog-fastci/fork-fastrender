@@ -14,7 +14,7 @@
     "layout": 162.26933765625,
     "paint": 29.048214765625
   },
-  "notes": "",
+  "notes": "Remaining pixel diffs are dominated by (1) large downscaled photo thumbnails (resampling/mipmapping differences vs Chrome) and (2) <video> elements without poster/controls not painting any video surface yet (transparent/white).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 326456,
