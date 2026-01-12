@@ -12181,6 +12181,7 @@ fn dom_parser_parse_from_string_native(
     },
   )?;
 
+  // Detached documents have no associated window.
   let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
   scope.push_root(Value::String(about_blank_s))?;
 
@@ -25923,7 +25924,6 @@ pub(crate) fn dom_ptr_for_document_id_read(
       return Some(NonNull::from(dom.as_ref()));
     }
   }
-
   dom_from_vm_host(host).map(NonNull::from)
 }
 
@@ -25939,7 +25939,6 @@ fn dom_ptr_for_document_id_mut(
       return Some(NonNull::from(dom.as_mut()));
     }
   }
-
   dom_from_vm_host_mut(host).map(NonNull::from)
 }
 
@@ -37236,30 +37235,27 @@ fn init_window_globals(
     .as_ref()
     .map(|platform| platform.prototype_for(DomInterface::HTMLElement));
   if let Some(element_proto) = element_proto {
-    let key = alloc_key(&mut scope, "getBoundingClientRect")?;
-    scope.define_property(
-      element_proto,
-      key,
-      data_desc(Value::Object(element_get_bounding_client_rect_func)),
-    )?;
-    let key = alloc_key(&mut scope, "getAttribute")?;
-    scope.define_property(
-      element_proto,
-      key,
-      data_desc(Value::Object(get_attribute_func)),
-    )?;
-    let key = alloc_key(&mut scope, "setAttribute")?;
-    scope.define_property(
-      element_proto,
-      key,
-      data_desc(Value::Object(set_attribute_func)),
-    )?;
-    let key = alloc_key(&mut scope, "removeAttribute")?;
-    scope.define_property(
-      element_proto,
-      key,
-      data_desc(Value::Object(remove_attribute_func)),
-    )?;
+    let mut define_method_if_missing =
+      |name: &str, func: GcObject| -> Result<(), VmError> {
+        let key = alloc_key(&mut scope, name)?;
+        if scope
+          .heap()
+          .object_get_own_property(element_proto, &key)?
+          .is_none()
+        {
+          scope.define_property(element_proto, key, data_desc(Value::Object(func)))?;
+        }
+        Ok(())
+      };
+
+    define_method_if_missing("querySelector", element_query_selector_func)?;
+    define_method_if_missing("querySelectorAll", element_query_selector_all_func)?;
+    define_method_if_missing("matches", element_matches_func)?;
+    define_method_if_missing("closest", element_closest_func)?;
+    define_method_if_missing("getBoundingClientRect", element_get_bounding_client_rect_func)?;
+    define_method_if_missing("getAttribute", get_attribute_func)?;
+    define_method_if_missing("setAttribute", set_attribute_func)?;
+    define_method_if_missing("removeAttribute", remove_attribute_func)?;
   }
 
   // HTMLElement global attributes (`title`/`lang`/`dir`/`hidden`) must be defined on
@@ -44516,14 +44512,18 @@ mod tests {
   }
 
   #[test]
-  fn element_get_bounding_client_rect_is_available_on_element_prototype() -> Result<(), VmError> {
+  fn element_prototype_exposes_query_selector_and_bounding_client_rect() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
     let ok = exec_script_with_dom_host(
       &mut realm,
       &mut host,
-      "typeof Element.prototype.getBoundingClientRect === 'function'",
+      "typeof Element.prototype.querySelector === 'function' &&\n\
+       typeof Element.prototype.querySelectorAll === 'function' &&\n\
+       typeof Element.prototype.matches === 'function' &&\n\
+       typeof Element.prototype.closest === 'function' &&\n\
+       typeof Element.prototype.getBoundingClientRect === 'function'",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
