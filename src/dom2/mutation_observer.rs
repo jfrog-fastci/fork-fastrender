@@ -319,6 +319,18 @@ impl Document {
     if mapping.is_empty() {
       return;
     }
+    // Remap any transient sources stored on registered observers. These NodeIds are not held by the
+    // agent state, but are still part of mutation observer behavior (e.g. when pruning transient
+    // registrations sourced from a particular observed node).
+    for node in &mut self.nodes {
+      for reg in &mut node.registered_observers {
+        if let Some(source) = reg.transient_source {
+          if let Some(&new_source) = mapping.get(&source) {
+            reg.transient_source = Some(new_source);
+          }
+        }
+      }
+    }
     self.mutation_observer_agent.borrow_mut().remap_node_ids(mapping);
   }
 
@@ -353,7 +365,6 @@ impl Document {
       new_list.push(reg);
     }
   }
-
   pub fn mutation_observer_observe(
     &mut self,
     observer: MutationObserverId,
