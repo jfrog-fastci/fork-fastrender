@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use selectors::context::QuirksMode;
 
 use super::{Document, NodeId, NodeKind};
