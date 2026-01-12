@@ -1722,15 +1722,6 @@ impl<'a> Scope<'a> {
     hooks: &mut dyn VmHostHooks,
     obj: GcObject,
   ) -> Result<Vec<PropertyKey>, VmError> {
-    // Root the input so a Proxy trap can allocate freely.
-    let mut scope = self.reborrow();
-    scope.push_root(Value::Object(obj))?;
- 
-    // Allocate the trap key once (rather than once per proxy hop).
-    let trap_key_s = scope.alloc_string("ownKeys")?;
-    scope.push_root(Value::String(trap_key_s))?;
-    let trap_key = PropertyKey::from_string(trap_key_s);
- 
     // Follow Proxy chains iteratively to avoid recursion.
     let mut current = obj;
     let mut steps = 0usize;
@@ -1740,8 +1731,11 @@ impl<'a> Scope<'a> {
       }
       steps = steps.saturating_add(1);
  
-      let Some(proxy) = scope.heap().get_proxy_data(current)? else {
-        return scope.ordinary_own_property_keys_with_tick(current, || vm.tick());
+      let Some(proxy) = self.heap().get_proxy_data(current)? else {
+        // Important: use `self` here (rather than a temporary scope) so any newly-allocated index
+        // key strings for String objects / typed arrays are rooted in the caller scope and remain
+        // valid across GC while the returned key list is in use.
+        return self.ordinary_own_property_keys_with_tick(current, || vm.tick());
       };
  
       vm.tick()?;
@@ -1752,9 +1746,17 @@ impl<'a> Scope<'a> {
         ));
       };
  
-      // Root target/handler for the duration of trap lookup + invocation.
-      let mut trap_scope = scope.reborrow();
-      trap_scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+      // Root proxy/target/handler for the duration of trap lookup + invocation.
+      let mut trap_scope = self.reborrow();
+      trap_scope.push_roots(&[
+        Value::Object(current),
+        Value::Object(target),
+        Value::Object(handler),
+      ])?;
+ 
+      let trap_key_s = trap_scope.alloc_string("ownKeys")?;
+      trap_scope.push_root(Value::String(trap_key_s))?;
+      let trap_key = PropertyKey::from_string(trap_key_s);
  
       let trap = vm.get_method_with_host_and_hooks(
         host,
@@ -1784,7 +1786,6 @@ impl<'a> Scope<'a> {
       let Value::Object(trap_result_obj) = trap_result else {
         return Err(VmError::TypeError("Proxy ownKeys trap returned non-object"));
       };
- 
       trap_scope.push_root(Value::Object(trap_result_obj))?;
  
       // Convert the trap result into a list of keys.
@@ -1798,11 +1799,13 @@ impl<'a> Scope<'a> {
         Value::Object(trap_result_obj),
       )?;
  
+      // Validate and materialize the returned keys *before* dropping `trap_scope`, so keys remain
+      // reachable from the rooted trap result array.
       let mut out: Vec<PropertyKey> = Vec::new();
       out
         .try_reserve_exact(values.len())
         .map_err(|_| VmError::OutOfMemory)?;
-      for (i, v) in values.into_iter().enumerate() {
+      for (i, v) in values.iter().copied().enumerate() {
         if i != 0 && i % 1024 == 0 {
           vm.tick()?;
         }
@@ -1814,6 +1817,26 @@ impl<'a> Scope<'a> {
               "Proxy ownKeys trap returned non-string/non-symbol",
             ))
           }
+        }
+      }
+ 
+      // Root the returned key values in the caller scope so they remain valid across GC while the
+      // returned `Vec<PropertyKey>` is in use.
+      //
+      // This is necessary for Proxy `ownKeys` trap results: the returned keys are not necessarily
+      // reachable from any other heap object once the trap returns (unlike ordinary object keys,
+      // which are reachable from the object itself).
+      drop(trap_scope);
+      const KEY_ROOT_CHUNK: usize = 1024;
+      let mut start = 0usize;
+      while start < values.len() {
+        let end = values.len().min(start.saturating_add(KEY_ROOT_CHUNK));
+        let chunk = &values[start..end];
+        let remaining = &values[end..];
+        self.push_roots_with_extra_roots(chunk, remaining, &[])?;
+        start = end;
+        if start < values.len() {
+          vm.tick()?;
         }
       }
  

@@ -163,6 +163,53 @@ fn object_destructuring_rest_uses_proxy_own_keys_trap() -> Result<(), VmError> {
 }
 
 #[test]
+fn proxy_own_keys_trap_keys_are_rooted_across_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.exec_script(
+    r#"
+      var target = {};
+      var handler = {
+        ownKeys: function (_t) {
+          // Return freshly-allocated keys that are not stored anywhere else.
+          return [Symbol(), Symbol(), Symbol()];
+        },
+      };
+    "#,
+  )?;
+
+  let target = match rt.exec_script("target")? {
+    Value::Object(o) => o,
+    other => panic!("expected target object, got {other:?}"),
+  };
+  let handler = match rt.exec_script("handler")? {
+    Value::Object(o) => o,
+    other => panic!("expected handler object, got {other:?}"),
+  };
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut scope = heap.scope();
+  scope.push_root(Value::Object(target))?;
+  scope.push_root(Value::Object(handler))?;
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+
+  let mut host = ();
+  let mut hooks = std::mem::take(vm.microtask_queue_mut());
+  let keys = scope.object_own_property_keys_with_host_and_hooks(vm, &mut host, &mut hooks, proxy)?;
+  *vm.microtask_queue_mut() = hooks;
+
+  // Without rooting, these symbol keys would be collected and become invalid handles.
+  scope.heap_mut().collect_garbage();
+  for key in keys {
+    let PropertyKey::Symbol(sym) = key else {
+      panic!("expected Symbol key, got {key:?}");
+    };
+    scope.heap().get_symbol_id(sym)?;
+  }
+
+  Ok(())
+}
+
+#[test]
 fn object_destructuring_rest_object_has_object_prototype() {
   let mut rt = new_runtime();
   let value = rt
