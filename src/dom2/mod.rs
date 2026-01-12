@@ -2454,6 +2454,7 @@ mod mutation_observer_remap_tests;
 mod mutation_observer_transient_tests;
 #[cfg(test)]
 mod mutation_observer_shared_agent_tests;
+#[cfg(test)]
 mod forms_tests;
 #[cfg(test)]
 mod query_tests;

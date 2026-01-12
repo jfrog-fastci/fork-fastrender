@@ -6,7 +6,6 @@ use crate::ui::{BookmarkNode, BookmarkStore};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
