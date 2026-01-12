@@ -945,6 +945,22 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       }
     });
 
+    // `null` and `undefined` are disjoint; their intersection is always `never`.
+    // Keep this independent of `strictNullChecks` (the values are still
+    // distinct even when assignability is loosened).
+    let mut has_null = false;
+    let mut has_undefined = false;
+    for member in &base_members {
+      match self.store.type_kind(*member) {
+        TypeKind::Null => has_null = true,
+        TypeKind::Undefined => has_undefined = true,
+        _ => {}
+      }
+    }
+    if has_null && has_undefined {
+      return primitives.never;
+    }
+
     // With `strictNullChecks: false`, `{}` acts as the top type, so intersecting
     // with it is a no-op.
     if !options.strict_null_checks {

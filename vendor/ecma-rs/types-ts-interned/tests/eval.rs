@@ -4450,6 +4450,27 @@ fn intersection_with_empty_object_removes_nullish() {
 }
 
 #[test]
+fn null_and_undefined_intersection_is_never() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let intersection = store.intern_type(TypeKind::Intersection(vec![primitives.null, primitives.undefined]));
+  assert_eq!(store.evaluate(intersection), primitives.never);
+}
+
+#[test]
+fn null_and_undefined_intersection_is_never_without_strict_null_checks() {
+  let store = TypeStore::with_options(TypeOptions {
+    strict_null_checks: false,
+    ..TypeOptions::default()
+  });
+  let primitives = store.primitive_ids();
+
+  let intersection = store.intern_type(TypeKind::Intersection(vec![primitives.null, primitives.undefined]));
+  assert_eq!(store.evaluate(intersection), primitives.never);
+}
+
+#[test]
 fn intersection_of_empty_object_union_with_empty_object_is_empty_object() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
