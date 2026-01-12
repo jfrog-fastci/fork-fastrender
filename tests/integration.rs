@@ -13,6 +13,7 @@ mod interaction;
 mod js;
 mod interaction;
 mod resource;
+mod wpt;
 
 // Keep the reference image comparison helpers available for fixture-style tests.
 #[allow(dead_code)]
