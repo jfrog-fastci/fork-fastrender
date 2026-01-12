@@ -138,6 +138,7 @@ fn annotate_program_writes_arg_use_modes_and_in_place_hint() {
     CompileCfgOptions {
       keep_ssa: false,
       run_opt_passes: false,
+      ..CompileCfgOptions::default()
     },
   )
   .expect("compile source");

@@ -38,6 +38,7 @@ fn promise_all_singleton_simplified() {
   let cfg_options = CompileCfgOptions {
     keep_ssa: true,
     run_opt_passes: false,
+    ..Default::default()
   };
   let mut program =
     optimize_js::compile_source_typed_cfg_options(src, TopLevelMode::Module, false, cfg_options)

@@ -33,6 +33,7 @@ fn call_summary_propagates_param_origin_through_phi() {
     CompileCfgOptions {
       keep_ssa: false,
       run_opt_passes: false,
+      ..CompileCfgOptions::default()
     },
   )
   .expect("compile");
@@ -91,6 +92,7 @@ fn call_summary_marks_param_escape_through_phi_arg() {
     CompileCfgOptions {
       keep_ssa: false,
       run_opt_passes: false,
+      ..CompileCfgOptions::default()
     },
   )
   .expect("compile");

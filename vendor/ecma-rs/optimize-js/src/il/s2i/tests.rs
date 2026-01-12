@@ -23,6 +23,7 @@ fn compile_ssa_no_opt(source: &str) -> Program {
     CompileCfgOptions {
       keep_ssa: true,
       run_opt_passes: false,
+      ..CompileCfgOptions::default()
     },
   )
   .expect("compile input")
@@ -369,6 +370,7 @@ fn typed_postfix_update_updates_original_local_symbol() {
     CompileCfgOptions {
       keep_ssa: true,
       run_opt_passes: false,
+      ..CompileCfgOptions::default()
     },
   )
   .expect("typed compile input");
@@ -457,6 +459,7 @@ fn typed_native_layout_uses_layout_of_interned_for_ref_types() {
     CompileCfgOptions {
       keep_ssa: true,
       run_opt_passes: false,
+      ..Default::default()
     },
   )
   .expect("compile typed input");

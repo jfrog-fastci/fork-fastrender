@@ -79,6 +79,7 @@ use hir_js::PatId;
 use opt::optpass_cfg_prune::optpass_cfg_prune;
 use opt::optpass_dvn::optpass_dvn;
 use opt::optpass_impossible_branches::optpass_impossible_branches;
+use opt::optpass_inline::optpass_inline;
 use opt::optpass_redundant_assigns::optpass_redundant_assigns;
 use opt::optpass_trivial_dce::optpass_trivial_dce;
 use opt::PassResult;
@@ -129,6 +130,32 @@ pub struct CompileCfgOptions {
   /// This is enabled by default. Turning it off can be useful for experimenting
   /// with downstream backends/analyses on the unoptimised SSA graph.
   pub run_opt_passes: bool,
+  /// Options controlling interprocedural inlining on SSA CFGs.
+  pub inline: InlineOptions,
+}
+
+/// Options controlling the SSA inliner (`optpass_inline`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InlineOptions {
+  /// Enable interprocedural inlining.
+  pub enabled: bool,
+  /// Inline functions with instruction counts <= this threshold, even when they
+  /// have multiple callsites.
+  pub threshold: usize,
+  /// Maximum inlining depth (measured in nested inlined call frames).
+  ///
+  /// `0` disables inlining. `1` only inlines calls in the original body.
+  pub max_depth: usize,
+}
+
+impl Default for InlineOptions {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      threshold: 10,
+      max_depth: 8,
+    }
+  }
 }
 
 impl Default for CompileCfgOptions {
@@ -136,6 +163,7 @@ impl Default for CompileCfgOptions {
     Self {
       keep_ssa: false,
       run_opt_passes: true,
+      inline: InlineOptions::default(),
     }
   }
 }
@@ -1267,6 +1295,11 @@ impl Program {
       top_level_mode,
       symbols,
     };
+
+    // Optional interprocedural inlining pass on SSA CFGs.
+    if cfg_options.inline.enabled && cfg_options.run_opt_passes {
+      optpass_inline(&mut program, cfg_options.inline, cfg_options.keep_ssa);
+    }
 
     // Annotate `ssa_body` CFGs with interprocedural escape/ownership metadata. This lets downstream
     // consumers (e.g. native backends) rely on `ProgramFunction::analyzed_cfg()` without separately

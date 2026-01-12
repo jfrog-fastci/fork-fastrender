@@ -45,6 +45,7 @@ pub fn compile_file_native_ready(
   let cfg_options = CompileCfgOptions {
     keep_ssa: true,
     run_opt_passes: opts.run_opt_passes,
+    ..Default::default()
   };
 
   let source = program.file_text(file).ok_or_else(|| {

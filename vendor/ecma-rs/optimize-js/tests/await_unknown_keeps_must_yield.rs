@@ -17,6 +17,7 @@ fn await_unknown_keeps_must_yield() {
   let cfg_options = CompileCfgOptions {
     keep_ssa: true,
     run_opt_passes: false,
+    ..Default::default()
   };
   let mut program =
     optimize_js::compile_source_typed_cfg_options(src, TopLevelMode::Module, false, cfg_options)
