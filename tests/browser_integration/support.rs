@@ -209,6 +209,26 @@ pub fn deterministic_factory() -> fastrender::api::FastRenderFactory {
   .expect("build deterministic factory")
 }
 
+#[test]
+fn browser_integration_mod_rs_has_no_init_array_env_ctor() {
+  const MOD_RS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/browser_integration/mod.rs"
+  ));
+  for forbidden in [
+    "init_array::init_array",
+    "#[used",
+    "RUST_TEST_THREADS",
+    "FASTR_USE_BUNDLED_FONTS",
+    "std::env::set_var",
+  ] {
+    assert!(
+      !MOD_RS.contains(forbidden),
+      "tests/browser_integration/mod.rs must not contain {forbidden:?}"
+    );
+  }
+}
+
 /// Spawn the production browser worker thread for integration tests.
 ///
 /// Returns the raw channel endpoints and join handle for convenience.
