@@ -14,7 +14,7 @@ optimize-js-fallback = ["dep:optimize-js"]
 typecheck-strict-native = ["dep:typecheck-ts"]
 # Enable running TS fixtures through `native-js` and comparing their stdout to the
 # `vm-js` oracle.
-native-js-runner = ["dep:native-js"]
+native-js-runner = ["dep:native-js", "dep:wait-timeout"]
 
 [dependencies]
 diagnostics = { workspace = true }
@@ -27,7 +27,7 @@ typecheck-ts = { workspace = true, optional = true }
 
 optimize-js = { workspace = true, optional = true }
 native-js = { workspace = true, optional = true }
+wait-timeout = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-wait-timeout = { workspace = true }

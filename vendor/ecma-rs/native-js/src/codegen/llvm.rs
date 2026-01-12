@@ -583,6 +583,15 @@ impl Codegen {
           ))),
         }
       }
+      // `export { ... }` without a `from` clause is a runtime no-op. Allow it so callers can add
+      // `export {};` as a module marker without requiring project compilation.
+      Stmt::ExportList(export) => {
+        if export.stx.from.is_some() {
+          Err(CodegenError::UnsupportedStmt)
+        } else {
+          Ok(())
+        }
+      }
       // Top-level function declarations are compiled separately (hoisted). We don't model nested
       // function declarations in the minimal emitter.
       Stmt::FunctionDecl(_) => Ok(()),
@@ -1206,14 +1215,21 @@ pub(super) fn emit_llvm_module(
   // pipeline.
   for stmt in &ast.stx.body {
     match stmt.stx.as_ref() {
-      Stmt::Import(_)
-      | Stmt::ExportList(_)
-      | Stmt::ExportDefaultExpr(_)
+      Stmt::Import(_) | Stmt::ImportTypeDecl(_) | Stmt::ImportEqualsDecl(_) => {
+        return Err(CodegenError::UnsupportedStmt);
+      }
+      // `export { ... }` (no `from`) is a runtime no-op. The minimal single-module emitter can
+      // safely ignore it, which also lets callers add `export {};` as a deterministic module
+      // marker for otherwise-script sources.
+      Stmt::ExportList(export) => {
+        if export.stx.from.is_some() {
+          return Err(CodegenError::UnsupportedStmt);
+        }
+      }
+      Stmt::ExportDefaultExpr(_)
       | Stmt::ExportAssignmentDecl(_)
       | Stmt::ExportAsNamespaceDecl(_)
-      | Stmt::ExportTypeDecl(_)
-      | Stmt::ImportTypeDecl(_)
-      | Stmt::ImportEqualsDecl(_) => return Err(CodegenError::UnsupportedStmt),
+      | Stmt::ExportTypeDecl(_) => return Err(CodegenError::UnsupportedStmt),
       _ => {}
     }
   }

@@ -1404,6 +1404,236 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
   attach_stdio(outcome, stdout, String::new())
 }
 
+/// A [`NativeRunner`] implementation backed by the `native-js` AOT compiler.
+///
+/// ## Script-vs-module wrapper
+///
+/// `native-js`'s `compile_typescript_to_llvm_ir` parses sources as ES modules (`SourceType::Module`).
+/// Many fixtures (and small snippets) are authored as scripts without any top-level `import`/`export`
+/// declarations. To keep the runner deterministic and avoid module-detection mismatches, the runner
+/// appends `export {};` to inputs that do not already contain any top-level import/export markers.
+///
+/// `export {};` is a runtime no-op but forces TypeScript to treat a file as a module.
+#[cfg(feature = "native-js-runner")]
+#[derive(Debug, Clone)]
+pub struct NativeJsRunner {
+  pub timeout: std::time::Duration,
+  pub opt_level: native_js::OptLevel,
+  pub debug: bool,
+}
+
+#[cfg(feature = "native-js-runner")]
+impl NativeJsRunner {
+  pub fn new() -> Self {
+    Self {
+      timeout: std::time::Duration::from_secs(3),
+      opt_level: native_js::OptLevel::O0,
+      debug: false,
+    }
+  }
+
+  fn is_module_source(ts: &str) -> Option<bool> {
+    use parse_js::ast::stmt::Stmt;
+
+    let opts = ParseOptions {
+      dialect: Dialect::Ts,
+      source_type: SourceType::Module,
+    };
+    let ast = parse_with_options(ts, opts).ok()?;
+
+    for stmt in &ast.stx.body {
+      match stmt.stx.as_ref() {
+        Stmt::Import(_)
+        | Stmt::ExportList(_)
+        | Stmt::ExportDefaultExpr(_)
+        | Stmt::ExportAssignmentDecl(_)
+        | Stmt::ExportAsNamespaceDecl(_)
+        | Stmt::ImportTypeDecl(_)
+        | Stmt::ExportTypeDecl(_)
+        | Stmt::ImportEqualsDecl(_) => return Some(true),
+        Stmt::FunctionDecl(func) => {
+          if func.stx.export || func.stx.export_default {
+            return Some(true);
+          }
+        }
+        Stmt::ClassDecl(class) => {
+          if class.stx.export || class.stx.export_default {
+            return Some(true);
+          }
+        }
+        Stmt::VarDecl(var) => {
+          if var.stx.export {
+            return Some(true);
+          }
+        }
+        _ => {}
+      }
+    }
+
+    Some(false)
+  }
+
+  fn wrap_script_as_module(ts: &str) -> String {
+    match Self::is_module_source(ts) {
+      // Preserve the original source if it already has an import/export marker.
+      Some(true) => return ts.to_string(),
+      // If parsing fails, don't rewrite it (keeps syntax errors stable).
+      None => return ts.to_string(),
+      Some(false) => {}
+    };
+
+    let mut out = ts.to_string();
+    if !out.ends_with('\n') {
+      out.push('\n');
+    }
+    out.push_str("export {};\n");
+    out
+  }
+
+  fn path_with_suffix(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut os = path.as_os_str().to_owned();
+    os.push(suffix);
+    std::path::PathBuf::from(os)
+  }
+
+  fn format_excerpt(bytes: &[u8]) -> String {
+    const MAX_LEN: usize = 8 * 1024;
+    let s = String::from_utf8_lossy(bytes);
+    let mut out = s.into_owned();
+    if out.len() > MAX_LEN {
+      out.truncate(MAX_LEN);
+      out.push_str("\n<output truncated>");
+    }
+    out
+  }
+}
+
+#[cfg(feature = "native-js-runner")]
+impl Default for NativeJsRunner {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+#[cfg(feature = "native-js-runner")]
+impl NativeRunner for NativeJsRunner {
+  fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic> {
+    use std::io::Read;
+    use std::process::Command;
+    use std::process::Stdio;
+    use wait_timeout::ChildExt;
+
+    let ts = Self::wrap_script_as_module(ts);
+
+    let mut opts = native_js::CompileOptions::default();
+    opts.emit = native_js::EmitKind::Executable;
+    opts.builtins = true;
+    opts.opt_level = self.opt_level;
+    opts.debug = self.debug;
+
+    let output = native_js::compiler::compile_typescript_to_artifact(&ts, opts, None).map_err(|err| {
+      match err {
+        native_js::NativeJsError::Parse(parse_err) => parse_err.to_diagnostic(FileId(0)),
+        other => {
+          if let Some(diags) = other.diagnostics() {
+            diagnostics_to_one(diags.to_vec())
+          } else {
+            harness_error(format!("native-js compilation failed: {other}"))
+          }
+        }
+      }
+    })?;
+
+    let exe_path = output.path.clone();
+    let llvm_ir_path = self
+      .debug
+      .then(|| Self::path_with_suffix(&exe_path, ".ll"))
+      .filter(|p| p.is_file());
+
+    let mut child = Command::new(&exe_path)
+      .stdin(Stdio::null())
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped())
+      .spawn()
+      .map_err(|err| harness_error(format!("failed to spawn {}: {err}", exe_path.display())))?;
+
+    let status = match child
+      .wait_timeout(self.timeout)
+      .map_err(|err| harness_error(format!("failed to wait for native executable: {err}")))?
+    {
+      Some(status) => status,
+      None => {
+        let _ = child.kill();
+        let _ = child.wait();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        if let Some(mut out) = child.stdout.take() {
+          let _ = out.read_to_end(&mut stdout);
+        }
+        if let Some(mut err) = child.stderr.take() {
+          let _ = err.read_to_end(&mut stderr);
+        }
+
+        let mut msg = format!(
+          "native executable timed out after {:?}: {}",
+          self.timeout,
+          exe_path.display()
+        );
+        if let Some(ll) = llvm_ir_path.as_ref() {
+          msg.push_str(&format!("\nllvm ir: {}", ll.display()));
+        }
+        if !stdout.is_empty() {
+          msg.push_str("\nstdout:\n");
+          msg.push_str(&Self::format_excerpt(&stdout));
+        }
+        if !stderr.is_empty() {
+          msg.push_str("\nstderr:\n");
+          msg.push_str(&Self::format_excerpt(&stderr));
+        }
+        return Err(harness_error(msg));
+      }
+    };
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    child
+      .stdout
+      .take()
+      .expect("stdout piped")
+      .read_to_end(&mut stdout)
+      .map_err(|err| harness_error(format!("failed to read stdout: {err}")))?;
+    child
+      .stderr
+      .take()
+      .expect("stderr piped")
+      .read_to_end(&mut stderr)
+      .map_err(|err| harness_error(format!("failed to read stderr: {err}")))?;
+
+    if !status.success() {
+      let mut msg = format!(
+        "native executable exited with status {status}: {}",
+        exe_path.display()
+      );
+      if let Some(ll) = llvm_ir_path.as_ref() {
+        msg.push_str(&format!("\nllvm ir: {}", ll.display()));
+      }
+      if !stdout.is_empty() {
+        msg.push_str("\nstdout:\n");
+        msg.push_str(&Self::format_excerpt(&stdout));
+      }
+      if !stderr.is_empty() {
+        msg.push_str("\nstderr:\n");
+        msg.push_str(&Self::format_excerpt(&stderr));
+      }
+      return Err(harness_error(msg));
+    }
+
+    let stdout = String::from_utf8(stdout)
+      .map_err(|err| harness_error(format!("native stdout was not valid UTF-8: {err}")))?;
+    Ok(stdout.trim_end().to_string())
+  }
+}
+
 /// Run a TypeScript fixture and return the deterministic observation string.
 ///
 /// Protocol:
