@@ -81,6 +81,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_thread_attach(",
     "rt_thread_detach(",
     "rt_keep_alive_gc_ref(",
+    "rt_register_shape_table(",
+    "rt_register_shape_table_append(",
     "rt_parallel_spawn_rooted(",
     "rt_parallel_spawn_rooted_h(",
     "rt_parallel_for_rooted(",

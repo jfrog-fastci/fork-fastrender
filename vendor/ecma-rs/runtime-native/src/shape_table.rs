@@ -1,102 +1,72 @@
 use crate::abi::{RtShapeDescriptor, RtShapeId};
-use crate::gc::{ObjHeader, TypeDescriptor};
 use crate::ffi::abort_on_panic;
+use crate::gc::{ObjHeader, TypeDescriptor};
+use crate::sync::GcAwareMutex;
 use crate::trap;
+use arc_swap::ArcSwap;
+use once_cell::sync::Lazy;
 use std::mem;
-use std::sync::OnceLock;
+use std::sync::Arc;
 
-struct ShapeTable {
-  rt_descs: Box<[RtShapeDescriptor]>,
-  type_descs: Box<[TypeDescriptor]>,
+#[derive(Clone, Copy)]
+struct ShapeEntry {
+  rt_desc: &'static RtShapeDescriptor,
+  type_desc: &'static TypeDescriptor,
 }
 
-impl ShapeTable {
-  #[inline]
-  fn len(&self) -> usize {
-    self.rt_descs.len()
-  }
+#[derive(Clone, Default)]
+struct ShapeRegistryTables {
+  shapes: Vec<ShapeEntry>,
+}
 
-  #[inline]
-  fn idx(&self, id: RtShapeId) -> usize {
-    if id.0 == 0 {
-      panic!("RtShapeId(0) is reserved/invalid");
+struct ShapeRegistry {
+  tables: ArcSwap<ShapeRegistryTables>,
+  /// Serialize registration updates. Readers use `tables` lock-free.
+  write_lock: GcAwareMutex<()>,
+}
+
+impl ShapeRegistry {
+  fn new() -> Self {
+    Self {
+      tables: ArcSwap::from_pointee(ShapeRegistryTables::default()),
+      write_lock: GcAwareMutex::new(()),
     }
-    let idx = (id.0 - 1) as usize;
-    if idx >= self.len() {
-      panic!(
-        "RtShapeId({}) out of bounds: shape table has {} shapes",
-        id.0,
-        self.len()
-      );
-    }
-    idx
-  }
-
-  #[inline]
-  fn rt_desc(&self, id: RtShapeId) -> &RtShapeDescriptor {
-    &self.rt_descs[self.idx(id)]
-  }
-
-  #[inline]
-  fn type_desc(&self, id: RtShapeId) -> &TypeDescriptor {
-    &self.type_descs[self.idx(id)]
   }
 }
 
-static SHAPE_TABLE: OnceLock<ShapeTable> = OnceLock::new();
+static SHAPES: Lazy<ShapeRegistry> = Lazy::new(ShapeRegistry::new);
 
-/// Register the global shape table used by [`RtShapeId`].
+/// Register a global shape table (legacy single-module API).
 ///
 /// Intended to be called once during program initialization by compiler-emitted code.
+///
+/// New embeddings that load multiple native modules (dlopen/JIT) should prefer
+/// [`rt_register_shape_table_append`] instead.
 ///
 /// # Safety
 /// - `ptr` must point to an array of `len` [`RtShapeDescriptor`] values that is valid to read for
 ///   the duration of this call.
-/// - The `ptr_offsets` arrays referenced by each descriptor must remain valid and immutable for the
-///   duration of the process (codegen should emit them as static data).
+/// - If any descriptor has `ptr_offsets_len != 0`, its `ptr_offsets` must be a valid pointer to
+///   `ptr_offsets_len` `u32` entries for the duration of this call.
+///
+/// Note: the runtime copies the pointer-offset arrays into runtime-owned memory, so the
+/// caller-provided arrays do not need to outlive this call.
 #[no_mangle]
 pub unsafe extern "C" fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize) {
   abort_on_panic(|| register_shape_table(ptr, len));
 }
 
 pub(crate) unsafe fn register_shape_table(ptr: *const RtShapeDescriptor, len: usize) {
-  if ptr.is_null() {
-    panic!("rt_register_shape_table: null table pointer");
-  }
-  if len == 0 {
-    panic!("rt_register_shape_table: len must be > 0");
-  }
-  if len > (u32::MAX as usize) {
-    panic!("rt_register_shape_table: len too large for RtShapeId");
-  }
-
-  let table = std::slice::from_raw_parts(ptr, len);
-  validate_shape_table(table);
-
-  let mut rt_descs = Vec::with_capacity(len);
-  let mut type_descs = Vec::with_capacity(len);
-  for desc in table {
-    rt_descs.push(*desc);
-    let align = (desc.align as usize).max(crate::gc::OBJ_ALIGN);
-    type_descs.push(unsafe {
-      TypeDescriptor::from_raw_parts(desc.size as usize, align, desc.ptr_offsets, desc.ptr_offsets_len)
-    });
-  }
-
-  if SHAPE_TABLE
-    .set(ShapeTable {
-      rt_descs: rt_descs.into_boxed_slice(),
-      type_descs: type_descs.into_boxed_slice(),
-    })
-    .is_err()
-  {
-    panic!("rt_register_shape_table: shape table already registered");
-  }
+  let base = register_shape_table_impl(ptr, len, RegisterMode::Single);
+  debug_assert_eq!(
+    base.0, 1,
+    "legacy rt_register_shape_table must assign base id 1"
+  );
 }
 
 #[inline]
 pub fn shape_count() -> usize {
-  SHAPE_TABLE.get().map(|t| t.len()).unwrap_or(0)
+  SHAPES.tables.load().shapes.len()
 }
 
 /// Lookup the registered [`RtShapeDescriptor`] for `id`.
@@ -104,10 +74,22 @@ pub fn shape_count() -> usize {
 /// Panics if the table is not registered or the id is invalid/out-of-bounds.
 #[inline]
 pub fn lookup_rt_descriptor(id: RtShapeId) -> &'static RtShapeDescriptor {
-  SHAPE_TABLE
-    .get()
-    .unwrap_or_else(|| panic!("shape table not registered (call rt_register_shape_table first)"))
-    .rt_desc(id)
+  if !id.is_valid() {
+    panic!("RtShapeId(0) is reserved/invalid");
+  }
+  let tables = SHAPES.tables.load();
+  if tables.shapes.is_empty() {
+    panic!("shape table not registered (call rt_register_shape_table first)");
+  }
+  let idx = (id.0 - 1) as usize;
+  if idx >= tables.shapes.len() {
+    panic!(
+      "RtShapeId({}) out of bounds: shape table has {} shapes",
+      id.0,
+      tables.shapes.len()
+    );
+  }
+  tables.shapes[idx].rt_desc
 }
 
 /// Lookup the internal GC [`TypeDescriptor`] for `id`.
@@ -115,10 +97,22 @@ pub fn lookup_rt_descriptor(id: RtShapeId) -> &'static RtShapeDescriptor {
 /// Panics if the table is not registered or the id is invalid/out-of-bounds.
 #[inline]
 pub fn lookup_type_descriptor(id: RtShapeId) -> &'static TypeDescriptor {
-  SHAPE_TABLE
-    .get()
-    .unwrap_or_else(|| panic!("shape table not registered (call rt_register_shape_table first)"))
-    .type_desc(id)
+  if !id.is_valid() {
+    panic!("RtShapeId(0) is reserved/invalid");
+  }
+  let tables = SHAPES.tables.load();
+  if tables.shapes.is_empty() {
+    panic!("shape table not registered (call rt_register_shape_table first)");
+  }
+  let idx = (id.0 - 1) as usize;
+  if idx >= tables.shapes.len() {
+    panic!(
+      "RtShapeId({}) out of bounds: shape table has {} shapes",
+      id.0,
+      tables.shapes.len()
+    );
+  }
+  tables.shapes[idx].type_desc
 }
 
 /// Validate an allocation request for `shape` and return the registered descriptors.
@@ -137,20 +131,21 @@ pub(crate) fn validate_alloc_request(
     trap::rt_trap_invalid_arg("shape id 0 is reserved/invalid");
   }
 
-  let Some(table) = SHAPE_TABLE.get() else {
+  let tables = SHAPES.tables.load();
+  if tables.shapes.is_empty() {
     trap::rt_trap_invalid_arg("shape table not registered (call rt_register_shape_table first)");
-  };
+  }
 
   let idx = (shape.0 - 1) as usize;
-  if idx >= table.len() {
+  if idx >= tables.shapes.len() {
     trap::rt_trap_invalid_arg_fmt(format_args!(
       "RtShapeId({}) out of bounds: shape table has {} shapes",
       shape.0,
-      table.len()
+      tables.shapes.len()
     ));
   }
 
-  let rt_desc = &table.rt_descs[idx];
+  let rt_desc = tables.shapes[idx].rt_desc;
   let expected = rt_desc.size as usize;
   if size != expected {
     trap::rt_trap_invalid_arg_fmt(format_args!(
@@ -161,15 +156,118 @@ pub(crate) fn validate_alloc_request(
     ));
   }
 
-  let type_desc = &table.type_descs[idx];
+  let type_desc = tables.shapes[idx].type_desc;
   (rt_desc, type_desc)
+}
+
+/// Register a shape table by appending it to the process-global shape-id space.
+///
+/// Returns the **base id** assigned to the first descriptor in this table (1-indexed). A module's
+/// local shape index `i` (0-based) maps to global `RtShapeId(base + i)`.
+///
+/// This is intended for multi-module programs (dlopen/JIT/plugin architectures).
+///
+/// # Safety
+/// - `ptr` must point to an array of `len` [`RtShapeDescriptor`] values that is valid to read for
+///   the duration of this call.
+/// - If any descriptor has `ptr_offsets_len != 0`, its `ptr_offsets` must be a valid pointer to
+///   `ptr_offsets_len` `u32` entries for the duration of this call.
+///
+/// Note: the runtime copies the pointer-offset arrays into runtime-owned memory, so the
+/// caller-provided arrays do not need to outlive this call.
+#[no_mangle]
+pub unsafe extern "C" fn rt_register_shape_table_append(
+  ptr: *const RtShapeDescriptor,
+  len: usize,
+) -> RtShapeId {
+  abort_on_panic(|| register_shape_table_impl(ptr, len, RegisterMode::Append))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegisterMode {
+  /// Legacy single-assignment `rt_register_shape_table` (must be first).
+  Single,
+  /// Multi-module append (`rt_register_shape_table_append`).
+  Append,
+}
+
+unsafe fn register_shape_table_impl(ptr: *const RtShapeDescriptor, len: usize, mode: RegisterMode) -> RtShapeId {
+  let func = match mode {
+    RegisterMode::Single => "rt_register_shape_table",
+    RegisterMode::Append => "rt_register_shape_table_append",
+  };
+
+  if ptr.is_null() {
+    panic!("{func}: null table pointer");
+  }
+  if len == 0 {
+    panic!("{func}: len must be > 0");
+  }
+
+  let table = std::slice::from_raw_parts(ptr, len);
+  validate_shape_table(table);
+
+  let _guard = SHAPES.write_lock.lock();
+  let current = SHAPES.tables.load_full();
+
+  if mode == RegisterMode::Single && !current.shapes.is_empty() {
+    panic!("rt_register_shape_table: shape table already registered");
+  }
+
+  let cur_len = current.shapes.len();
+  let total_len = cur_len
+    .checked_add(len)
+    .unwrap_or_else(|| panic!("{func}: shape table size overflow"));
+  if total_len > (u32::MAX as usize) {
+    panic!("{func}: shape table too large for RtShapeId");
+  }
+
+  let base_u32 = u32::try_from(cur_len).expect("shape id space exhausted");
+  let base_id = RtShapeId(base_u32 + 1);
+
+  // Copy-on-write snapshot update: keep lookups lock-free by publishing a new `Arc` each append.
+  let mut next = (*current).clone();
+  next.shapes.reserve(len);
+
+  // This is used to canonicalize "no pointer fields" slices so registrations don't retain foreign
+  // module memory unnecessarily.
+  static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+  for desc in table {
+    // Copy the pointer-offset array into runtime-owned memory so the registration is safe even if
+    // the caller's module/JIT memory is later unmapped.
+    let (ptr_offsets, ptr_offsets_len) = if desc.ptr_offsets_len == 0 {
+      (EMPTY_PTR_OFFSETS.as_ptr(), 0)
+    } else {
+      debug_assert!(!desc.ptr_offsets.is_null());
+      // SAFETY: validated above (`validate_shape_table`).
+      let offsets = unsafe { std::slice::from_raw_parts(desc.ptr_offsets, desc.ptr_offsets_len as usize) };
+      let owned: Box<[u32]> = offsets.to_vec().into_boxed_slice();
+      let leaked: &'static [u32] = Box::leak(owned);
+      (leaked.as_ptr(), leaked.len() as u32)
+    };
+
+    let mut rt_desc = *desc;
+    rt_desc.ptr_offsets = ptr_offsets;
+    rt_desc.ptr_offsets_len = ptr_offsets_len;
+    let rt_desc: &'static RtShapeDescriptor = Box::leak(Box::new(rt_desc));
+
+    let align = (desc.align as usize).max(crate::gc::OBJ_ALIGN);
+    let type_desc = unsafe { TypeDescriptor::from_raw_parts(desc.size as usize, align, ptr_offsets, ptr_offsets_len) };
+    let type_desc: &'static TypeDescriptor = Box::leak(Box::new(type_desc));
+
+    next.shapes.push(ShapeEntry { rt_desc, type_desc });
+  }
+
+  SHAPES.tables.store(Arc::new(next));
+  base_id
 }
 
 // --- Shared test shape table ---------------------------------------------------------------------
 //
-// `RtShapeId` tables are process-global and single-assignment. Unit tests within this crate run in a
+// `RtShapeId` tables are process-global and append-only. Unit tests within this crate run in a
 // single process and can execute in parallel, so any test that needs `rt_alloc` must agree on a
-// single registered table.
+// stable base table.
 //
 // Keep this table minimal and append-only so existing shape-id assumptions remain stable.
 #[cfg(test)]
@@ -265,7 +363,7 @@ pub(crate) fn ensure_test_shape_table_registered() {
 
   static ONCE: Once = Once::new();
   ONCE.call_once(|| unsafe {
-    if SHAPE_TABLE.get().is_some() {
+    if shape_count() != 0 {
       return;
     }
     register_shape_table(TEST_SHAPE_TABLE.as_ptr(), TEST_SHAPE_TABLE.len());
@@ -282,10 +380,13 @@ pub extern "C" fn rt_debug_shape_count() -> usize {
 #[no_mangle]
 pub extern "C" fn rt_debug_shape_descriptor(id: RtShapeId) -> *const RtShapeDescriptor {
   abort_on_panic(|| {
-    if let Some(t) = SHAPE_TABLE.get() {
-      if id.0 != 0 && (id.0 as usize) <= t.len() {
-        return std::ptr::from_ref(t.rt_desc(id));
-      }
+    if !id.is_valid() {
+      return std::ptr::null();
+    }
+    let tables = SHAPES.tables.load();
+    let idx = (id.0 - 1) as usize;
+    if idx < tables.shapes.len() {
+      return tables.shapes[idx].rt_desc as *const RtShapeDescriptor;
     }
     std::ptr::null()
   })
@@ -298,7 +399,7 @@ pub extern "C" fn rt_debug_validate_heap() {
   // helpful invariant we can validate today is that the shape table is present and internally
   // consistent (which registration already checks).
   abort_on_panic(|| {
-    if SHAPE_TABLE.get().is_none() {
+    if shape_count() == 0 {
       panic!("rt_debug_validate_heap: shape table not registered");
     }
     // Ensure the global heap has been initialized so debug tooling (like `rt_gc_get_young_range`)

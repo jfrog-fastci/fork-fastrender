@@ -346,6 +346,12 @@ uint8_t* rt_array_data(uint8_t* obj);
 // allocations that participate in GC tracing.
 void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);
 
+// Register a shape table by appending it to the process-global shape-id space.
+//
+// Returns the base id assigned to the first descriptor in this table (1-indexed).
+// A module's local shape index `i` (0-based) maps to global `RtShapeId(base + i)`.
+RtShapeId rt_register_shape_table_append(const RtShapeDescriptor* table, size_t len);
+
 // -----------------------------------------------------------------------------
 // GC heap configuration (process-global heap)
 // -----------------------------------------------------------------------------
