@@ -118,10 +118,10 @@ merged into ecma-rs (or deleted if legacy):
 
 | Current location | Target location |
 |-----------------|-----------------|
-| `crates/webidl-ir/` | `vendor/ecma-rs/webidl/` (merge) |
-| `crates/webidl-bindings-core/` | `vendor/ecma-rs/webidl/` (merge) |
-| `crates/webidl-vm-js/` | `vendor/ecma-rs/webidl-vm-js/` (merge) |
-| `crates/webidl-js-runtime/` | `vendor/ecma-rs/webidl-runtime/` (new crate) |
+| `webidl-ir` (legacy crate) | `vendor/ecma-rs/webidl/` (merge) |
+| `webidl-bindings-core` (legacy crate) | `vendor/ecma-rs/webidl/` (merge) |
+| `webidl-vm-js` (legacy crate) | `vendor/ecma-rs/webidl-vm-js/` (merge) |
+| `webidl-js-runtime` (legacy crate) | `vendor/ecma-rs/webidl-runtime/` (new crate) |
 | `crates/js-dom-bindings/` | Delete (legacy QuickJS-era bindings; verify unused) |
 | `crates/js-dom-bindings-quickjs/` | Delete (legacy QuickJS-era bindings; verify unused) |
 | `crates/js-wpt-dom-runner/` | Keep as FastRender-specific tool crate (NOT JS/WebIDL infra) |
