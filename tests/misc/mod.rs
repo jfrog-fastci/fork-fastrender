@@ -22,7 +22,6 @@ mod dl_default_margins;
 mod docs_conformance_presence;
 mod docs_presence;
 mod dom2_closest;
-mod ecma_rs_workspace_exclude_guard;
 mod embed_object_html_renders_document;
 mod error_format_snapshot;
 mod external_stylesheet_integration;
