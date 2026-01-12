@@ -1,4 +1,4 @@
-//! Guard that rejects `#[path = "..."]` shims anywhere under `tests/`.
+//! Guard that rejects `#[path = <path>]` shims anywhere under `tests/`.
 //!
 //! The test architecture cleanup project consolidates integration tests into a small number of
 //! binaries. `#[path]` shims in `tests/` are a common footgun: they usually exist only to create a
@@ -65,4 +65,3 @@ fn no_path_shims_in_tests_tree() {
     offenders.join("\n")
   );
 }
-
