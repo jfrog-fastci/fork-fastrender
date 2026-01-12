@@ -148,6 +148,10 @@ mod quickjs_fetch_harness;
 #[path = "legacy/quickjs_url.rs"]
 mod quickjs_url_harness;
 
+#[cfg(all(test, feature = "quickjs"))]
+#[path = "legacy/quickjs/fetch.rs"]
+mod quickjs_fetch_bindings;
+
 // --- WebIDL runtime + bindings integration (`src/js/webidl/*`) ---
 
 #[path = "webidl/bindings/mod.rs"]
@@ -172,9 +176,6 @@ pub mod webidl_runtime_vmjs;
 #[cfg(feature = "quickjs")]
 #[path = "legacy/quickjs_dom.rs"]
 pub mod quickjs_dom;
-#[cfg(feature = "quickjs")]
-#[path = "legacy/quickjs/fetch.rs"]
-pub(crate) mod quickjs_fetch;
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;

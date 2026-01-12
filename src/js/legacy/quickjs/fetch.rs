@@ -288,8 +288,7 @@ impl<'js> JsRequest<'js> {
   }
 
   fn to_core_request(&self, ctx: Ctx<'js>) -> JsResult<crate::resource::web_fetch::Request> {
-    let mut req =
-      crate::resource::web_fetch::Request::new(self.method.clone(), self.url.clone());
+    let mut req = crate::resource::web_fetch::Request::new(self.method.clone(), self.url.clone());
     req.credentials = self.credentials;
     req.redirect = self.redirect;
     req.referrer = self.referrer.clone();
@@ -682,13 +681,15 @@ pub fn install_fetch_bindings<'js>(
 mod tests {
   use super::{install_fetch_bindings, QuickjsFetchEnv};
 
+  use std::collections::HashMap;
+  use std::sync::{Arc, Mutex};
+
+  use rquickjs::{Context, Runtime};
+
   use crate::resource::{
     origin_from_url, FetchCredentialsMode, FetchDestination, FetchedResource, HttpRequest,
     ReferrerPolicy, ResourceFetcher,
   };
-  use rquickjs::{Context, Runtime};
-  use std::collections::HashMap;
-  use std::sync::{Arc, Mutex};
 
   #[derive(Debug, Clone, PartialEq, Eq)]
   struct CapturedHttpRequest {
