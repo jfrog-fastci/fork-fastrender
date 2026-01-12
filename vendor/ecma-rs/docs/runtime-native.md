@@ -1060,6 +1060,32 @@ Entry points:
       lifetime of the registration (edge-triggered reactor contract).
     - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
 
+### 6.6 Parallel work returning promises (`rt_parallel_spawn_promise*`)
+CPU-bound parallel work should not block the async/event-loop thread. Instead, worker threads publish
+their result into a promise payload buffer and then settle the promise to wake awaiting coroutines.
+
+There are two parallel→promise spawn APIs depending on whether the payload must be GC-traced:
+
+- `rt_parallel_spawn_promise{,_rooted,_rooted_h}(task, data, layout: PromiseLayout) -> PromiseRef`
+  - Allocates an **out-of-line payload buffer** described by `PromiseLayout`.
+  - The payload is treated as raw bytes and is **not traced by the GC** (it must not contain GC
+    pointers).
+- `rt_parallel_spawn_promise_with_shape{,_rooted,_rooted_h}(task, data, promise_size, promise_align, promise_shape: RtShapeId) -> PromiseRef`
+  - Allocates the promise as a **GC-managed object** with an **inline payload** immediately after the
+    `PromiseHeader` prefix.
+  - The runtime traces + updates any GC pointers in the payload using `promise_shape` (registered in
+    the global shape table).
+
+In both cases, the worker writes the payload via `rt_promise_payload_ptr(promise)`:
+
+- For `rt_parallel_spawn_promise*`, it returns the out-of-line payload buffer.
+- For GC-managed promises (including `*_with_shape*`), it returns the inline payload pointer
+  (`promise + sizeof(PromiseHeader)`).
+
+Lifetime caveat: for GC-managed promises the returned payload pointer is an interior pointer into a
+movable GC object. Do not stash it across safepoints; keep the promise itself rooted/alive and reload
+the pointer after any `MayGC` call.
+
 ---
 
 ## 7. Async runtime
@@ -1090,7 +1116,7 @@ one turn:
 ```c
 // Drive the event loop for one turn.
 // Returns true iff there is still pending work after the turn (including outstanding external work
-// like an in-flight `rt_parallel_spawn_promise`); false when fully idle.
+// like an in-flight `rt_parallel_spawn_promise{,_with_shape}`); false when fully idle.
 bool rt_async_poll(void);
 ```
 

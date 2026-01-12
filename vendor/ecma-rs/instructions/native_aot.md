@@ -3860,6 +3860,12 @@ pub struct PromiseHeader {
 #[repr(transparent)]
 pub struct PromiseRef(pub *mut PromiseHeader);
 
+/// Payload layout for promises returned from `rt_parallel_spawn_promise{,_rooted,_rooted_h}`.
+///
+/// The runtime allocates an **out-of-line** payload buffer described by this layout. The buffer is
+/// treated as raw bytes and is **not traced by the GC**. If the payload contains GC pointers, use
+/// `rt_parallel_spawn_promise_with_shape{,_rooted,_rooted_h}` instead (inline payload in a GC-managed
+/// promise traced via the shape table).
 #[repr(C)]
 pub struct PromiseLayout {
   pub size: usize,
@@ -4006,7 +4012,23 @@ pub fn rt_parallel_for_rooted(
   data: GcPtr,
 );
 
-// Detached parallel work returning a promise with an out-of-line payload buffer.
+pub fn rt_parallel_for_rooted_h(
+  start: usize,
+  end: usize,
+  body: extern "C" fn(usize, *mut u8),
+  data: GcHandle,
+);
+
+// Detached parallel work returning a promise (bridge from the parallel worker pool into async/await).
+//
+// Payload storage strategies:
+// - `rt_parallel_spawn_promise{,_rooted,_rooted_h}` allocates an **out-of-line** payload buffer
+//   described by `PromiseLayout`. The payload is raw bytes and is **not traced by the GC** (it must
+//   not contain GC pointers).
+// - `rt_parallel_spawn_promise_with_shape{,_rooted,_rooted_h}` allocates a **GC-managed** promise
+//   object with an **inline** payload immediately after `PromiseHeader`. The runtime traces and
+//   updates the payload's GC pointers according to `RtShapeId` (use this when the payload contains GC
+//   pointers).
 pub fn rt_parallel_spawn_promise(
   task: extern "C" fn(*mut u8, PromiseRef),
   data: *mut u8,
@@ -4023,6 +4045,41 @@ pub fn rt_parallel_spawn_promise_rooted_h(
   promise_layout: PromiseLayout,
 ) -> PromiseRef;
 
+pub fn rt_parallel_spawn_promise_with_shape(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+  promise_size: usize,
+  promise_align: usize,
+  promise_shape: RtShapeId,
+) -> PromiseRef;
+pub fn rt_parallel_spawn_promise_with_shape_rooted(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: GcPtr,
+  promise_size: usize,
+  promise_align: usize,
+  promise_shape: RtShapeId,
+) -> PromiseRef;
+pub fn rt_parallel_spawn_promise_with_shape_rooted_h(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: GcHandle,
+  promise_size: usize,
+  promise_align: usize,
+  promise_shape: RtShapeId,
+) -> PromiseRef;
+
+// Return a writable pointer to the promise payload storage.
+//
+// - For promises created by `rt_parallel_spawn_promise{,_rooted,_rooted_h}`, this returns the
+//   runtime-allocated **out-of-line** payload buffer.
+// - For GC-managed promises (native async ABI, including `rt_parallel_spawn_promise_with_shape`),
+//   this returns the **inline** payload pointer at:
+//     (promise as *mut u8) + sizeof(PromiseHeader)
+//
+// Lifetime caveat: for GC-managed promises this is an interior pointer into a movable GC object. It
+// is only valid until the next GC/safepoint unless the promise itself is kept rooted, and the
+// pointer is reloaded after any `MayGC` call.
+pub fn rt_promise_payload_ptr(promise: PromiseRef) -> *mut u8;
+
 // Async
 // NOTE: GC is moving/compacting (Immix + opportunistic copying).
 // The async runtime must store something stable in OS/userdata (epoll/kqueue) and
@@ -4036,7 +4093,7 @@ pub fn rt_async_spawn(coro: CoroutineId /* = u64 */) -> PromiseRef;
 pub fn rt_async_spawn_deferred(coro: CoroutineId /* = u64 */) -> PromiseRef;
 // Drive the async runtime for one event-loop turn.
 // Returns true iff there is still pending work after the turn (including outstanding external work
-// like an in-flight `rt_parallel_spawn_promise`); false when fully idle.
+// like an in-flight `rt_parallel_spawn_promise{,_with_shape}`); false when fully idle.
 pub fn rt_async_poll() -> bool;
 // Drain only the microtask queue (non-blocking microtask checkpoint).
 pub fn rt_drain_microtasks() -> bool;

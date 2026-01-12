@@ -665,6 +665,10 @@ PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(
 // For `rt_parallel_spawn_promise` promises, this returns the out-of-line payload buffer.
 // For GC-managed promises (native async ABI, including `rt_parallel_spawn_promise_with_shape`), this
 // returns the inline payload pointer immediately after `PromiseHeader`.
+//
+// Note: for GC-managed promises, this is an interior pointer into a movable GC allocation. It is
+// only valid until the next GC/safepoint; do not cache it across `MayGC` calls. Keep the promise
+// itself live/rooted and reload the payload pointer after any safepoint.
 uint8_t* rt_promise_payload_ptr(PromiseRef promise);
 
 // Settle the promise (exactly once).
