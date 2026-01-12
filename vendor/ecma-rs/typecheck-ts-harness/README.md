@@ -581,16 +581,17 @@ CI also runs a small slice of the *upstream* TypeScript conformance suite (from
 the `parse-js/tests/TypeScript` submodule) and shards it by stable hash so the
 distribution stays consistent as upstream adds/removes tests.
 
-Current CI configuration:
+FastRender CI configuration (see `<repo-root>/.github/workflows/typecheck_ts_conformance_upstream.yml`):
 
-- root: `parse-js/tests/TypeScript/tests/cases/conformance` (default)
-- filter: `es2020/**` (15 tests, includes `// @filename:` multi-file cases)
-- shards: 8 (`--shard-strategy hash`)
-- timeout: 20s per case
-- workers: `--jobs 2`
-- expectations: `typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml`
+- root: `parse-js/tests/TypeScript/tests/cases/conformance` (default; full upstream suite)
+- shards: 16 (`--shard-strategy hash`)
+  - PR/push: runs a small shard set (default: `0/16`)
+  - schedule/manual: runs the full set (`0..15/16`)
+- timeout: 10s per case
+- workers: `--jobs 4`
+- expectations: `typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml` (gates only new mismatches)
 
-To reproduce shard `0/8` locally:
+To reproduce shard `0/16` locally:
 
 ```bash
 # Bring in the upstream suite and Node deps (once)
@@ -600,15 +601,14 @@ cd typecheck-ts-harness && npm ci
 # Run a single shard and emit a JSON report (matches CI)
 cd ..
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
-  --filter "es2020/**" \
   --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
   --fail-on new \
-  --shard 0/8 \
+  --shard 0/16 \
   --shard-strategy hash \
-  --timeout-secs 20 \
-  --jobs 2 \
+  --timeout-secs 10 \
+  --jobs 4 \
   --json \
-  > upstream-es2020-shard0.json
+  > upstream-conformance-shard0.json
 ```
 
 Triage workflow:
@@ -616,20 +616,19 @@ Triage workflow:
 ```bash
 # Keep the JSON report even if the run would fail (useful for local iteration).
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
-  --filter "es2020/**" \
   --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
   --fail-on none \
-  --shard 0/8 \
+  --shard 0/16 \
   --shard-strategy hash \
-  --timeout-secs 20 \
-  --jobs 2 \
+  --timeout-secs 10 \
+  --jobs 4 \
   --json \
-  > upstream-es2020-shard0.json
+  > upstream-conformance-shard0.json
 
 # Compare against a previous report and print suggested manifest entries.
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage \
-  --input upstream-es2020-shard0.json \
-  --baseline previous-upstream-es2020-shard0.json
+  --input upstream-conformance-shard0.json \
+  --baseline previous-upstream-conformance-shard0.json
 ```
 
 - `triage` prints suggested `[[expectations]]` entries for common mismatch
