@@ -568,7 +568,13 @@ fn looks_like_statepoint_record(rec: &StackMapRecord) -> bool {
     if locs.len() < 3 {
         return false;
     }
-    locs[0].as_u64().is_some() && locs[1].as_u64().is_some() && locs[2].as_u64().is_some()
+    // Use a layout-based heuristic rather than looking at the constant *values*. Even if a constant
+    // value is malformed (e.g. negative for a `Location::Constant`), we still want to attempt
+    // decoding and report a diagnostic.
+    use crate::Location::{Constant, ConstantIndex};
+    matches!(locs[0], Constant { .. } | ConstantIndex { .. })
+        && matches!(locs[1], Constant { .. } | ConstantIndex { .. })
+        && matches!(locs[2], Constant { .. } | ConstantIndex { .. })
 }
 
 fn write_json_string(out: &mut String, s: &str) {
