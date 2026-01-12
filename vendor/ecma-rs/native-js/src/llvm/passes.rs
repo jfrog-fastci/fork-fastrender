@@ -144,7 +144,7 @@ pub fn ensure_gc_safepoint_poll_decl(module: &Module<'_>) -> Result<(), PassErro
   Ok(())
 }
 
-fn reject_callbr_in_gc_functions(module: &Module<'_>) -> Result<(), PassError> {
+fn reject_rs4gc_unsupported_calls_in_gc_functions(module: &Module<'_>) -> Result<(), PassError> {
   unsafe {
     let mut func = LLVMGetFirstFunction(module.as_mut_ptr());
     while !func.is_null() {
@@ -216,7 +216,7 @@ pub fn rewrite_statepoints_for_gc(
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
   super::debug_lint_module_gc_pointer_discipline(module)?;
-  reject_callbr_in_gc_functions(module)?;
+  reject_rs4gc_unsupported_calls_in_gc_functions(module)?;
 
   let pipeline = if cfg!(debug_assertions) {
     "rewrite-statepoints-for-gc,verify<safepoint-ir>"
@@ -261,7 +261,7 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
   super::debug_lint_module_gc_pointer_discipline(module)?;
-  reject_callbr_in_gc_functions(module)?;
+  reject_rs4gc_unsupported_calls_in_gc_functions(module)?;
 
   ensure_gc_safepoint_poll_decl(module)?;
 
