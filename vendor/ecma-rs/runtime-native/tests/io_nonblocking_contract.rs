@@ -16,6 +16,7 @@ use runtime_native::rt_io_register;
 use runtime_native::rt_io_register_handle;
 use runtime_native::rt_io_register_handle_with_drop;
 use runtime_native::rt_io_register_rooted;
+use runtime_native::rt_io_register_rooted_h;
 use runtime_native::rt_io_register_with_drop;
 use runtime_native::rt_io_unregister;
 use runtime_native::rt_io_update;
@@ -51,6 +52,14 @@ static ROOTED_CB_PTR: AtomicUsize = AtomicUsize::new(0);
 extern "C" fn record_rooted_ptr(_events: u32, data: *mut u8) {
   ROOTED_CB_PTR.store(data as usize, Ordering::SeqCst);
   ROOTED_CB_FIRED.store(true, Ordering::SeqCst);
+}
+
+static ROOTED_H_CB_FIRED: AtomicBool = AtomicBool::new(false);
+static ROOTED_H_CB_PTR: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn record_rooted_h_ptr(_events: u32, data: *mut u8) {
+  ROOTED_H_CB_PTR.store(data as usize, Ordering::SeqCst);
+  ROOTED_H_CB_FIRED.store(true, Ordering::SeqCst);
 }
 
 fn pipe_blocking() -> io::Result<(OwnedFd, OwnedFd)> {
@@ -1228,6 +1237,49 @@ fn rt_async_cancel_all_releases_rooted_io_watchers() {
 }
 
 #[test]
+fn rt_async_cancel_all_releases_rooted_h_io_watchers() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let mut slot = obj;
+  let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
+  assert_ne!(id, 0, "expected rt_io_register_rooted_h to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  rt_async_cancel_all();
+
+  // The watcher id should now be invalid.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after rt_async_cancel_all"
+  );
+
+  // Once canceled, the rooted context must be released and the object should become collectable.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rt_async_cancel_all cleared rooted_h I/O watchers (root leak?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after cancellation");
+}
+
+#[test]
 fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
   let _rt = TestRuntimeGuard::new();
 
@@ -1256,6 +1308,44 @@ fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
     assert!(
       Instant::now() < deadline,
       "GC object stayed alive after rooted I/O watcher registration failed (root leak?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_rooted_h_failure_does_not_leak_gc_root() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let (rfd, _wfd) = pipe_blocking().unwrap();
+  let mut slot = obj;
+  let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
+  assert_eq!(id, 0, "expected rt_io_register_rooted_h to fail for blocking fd");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_FD_NOT_NONBLOCKING,
+    "expected failure to be diagnosable as nonblocking contract violation"
+  );
+
+  // If the rooted wrapper leaked its GC root on the failure path, the object would remain alive
+  // indefinitely. It should become collectable once we run a major collection.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rooted_h I/O watcher registration failed (root leak?)"
     );
     std::thread::yield_now();
   }
@@ -1316,6 +1406,58 @@ fn rt_io_register_rooted_keeps_gc_object_alive_until_unregistered() {
 }
 
 #[test]
+fn rt_io_register_rooted_h_keeps_gc_object_alive_until_unregistered() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let mut slot = obj;
+  let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
+  assert_ne!(id, 0, "expected rooted_h registration to succeed");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "successful rooted_h registration should clear the last error"
+  );
+
+  // With the watcher still registered, the rooted context must keep the object alive across GC.
+  collect_major(&mut heap);
+  assert!(
+    !runtime_native::rt_weak_get(weak).is_null(),
+    "object should remain alive while rooted_h watcher is registered"
+  );
+
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed"
+  );
+  runtime_native::rt_async_run_until_idle();
+
+  // Once unregistered, the rooted context must be released.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after rooted_h watcher was unregistered (root not released?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
 fn rt_io_register_rooted_releases_gc_root_on_reset_runtime_state() {
   let _rt = TestRuntimeGuard::new();
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
@@ -1348,6 +1490,56 @@ fn rt_io_register_rooted_releases_gc_root_on_reset_runtime_state() {
     assert!(
       Instant::now() < deadline,
       "object stayed alive after runtime teardown (root not released?)"
+    );
+    std::thread::yield_now();
+  }
+
+  // The watcher id should now be invalid.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after runtime teardown"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after teardown");
+}
+
+#[test]
+fn rt_io_register_rooted_h_releases_gc_root_on_reset_runtime_state() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let mut slot = obj;
+  let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
+  assert_ne!(id, 0, "expected rooted_h registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  // With the watcher still registered, the rooted context must keep the object alive across GC.
+  collect_major(&mut heap);
+  assert!(
+    !runtime_native::rt_weak_get(weak).is_null(),
+    "object should remain alive while rooted_h watcher is registered"
+  );
+
+  // Simulate runtime teardown without explicitly unregistering.
+  reset_runtime_state();
+
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after runtime teardown (rooted_h root not released?)"
     );
     std::thread::yield_now();
   }
@@ -1417,6 +1609,69 @@ fn rt_io_register_rooted_callback_receives_relocated_ptr_after_gc() {
     ROOTED_CB_PTR.load(Ordering::SeqCst),
     after_gc as usize,
     "rooted callback must receive the current relocated pointer value"
+  );
+
+  rt_io_unregister(id);
+  runtime_native::rt_async_run_until_idle();
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_io_register_rooted_h_callback_receives_relocated_ptr_after_gc() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, wfd) = pipe_nonblocking().unwrap();
+
+  ROOTED_H_CB_FIRED.store(false, Ordering::SeqCst);
+  ROOTED_H_CB_PTR.store(0, Ordering::SeqCst);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let mut slot = obj;
+  let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, record_rooted_h_ptr, &mut slot) };
+  assert_ne!(id, 0, "expected rooted_h registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  // Force a major GC to promote/move the object so the rooted watcher must resolve the current
+  // pointer value via the persistent handle table.
+  collect_major(&mut heap);
+  let after_gc = runtime_native::rt_weak_get(weak);
+  assert!(!after_gc.is_null());
+  assert_ne!(
+    after_gc as usize,
+    obj as usize,
+    "expected major GC to move/promote the object"
+  );
+
+  // Ensure `rt_async_poll_legacy` will not block forever if the readiness edge is lost.
+  let timed_out = Box::new(AtomicBool::new(false));
+  let timed_out_ptr: *mut AtomicBool = Box::into_raw(timed_out);
+  let timer_id = runtime_native::async_rt::global().schedule_timer(
+    Instant::now() + Duration::from_secs(1),
+    runtime_native::async_rt::Task::new(set_timeout_flag, timed_out_ptr.cast::<u8>()),
+  );
+
+  write_byte(wfd.as_raw_fd());
+  while !ROOTED_H_CB_FIRED.load(Ordering::SeqCst) {
+    let _ = rt_async_poll();
+    if unsafe { &*timed_out_ptr }.load(Ordering::SeqCst) {
+      panic!("timed out waiting for rooted_h I/O watcher callback");
+    }
+  }
+
+  let _ = runtime_native::async_rt::global().cancel_timer(timer_id);
+  unsafe {
+    drop(Box::from_raw(timed_out_ptr));
+  }
+
+  assert_eq!(
+    ROOTED_H_CB_PTR.load(Ordering::SeqCst),
+    after_gc as usize,
+    "rooted_h callback must receive the current relocated pointer value"
   );
 
   rt_io_unregister(id);
