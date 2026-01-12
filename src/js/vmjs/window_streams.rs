@@ -404,7 +404,7 @@ fn realm_id_for_binding_call(vm: &Vm, heap: &Heap, callee: GcObject) -> Result<R
 }
 
 fn with_realm_state_mut<R>(
-  vm: &mut Vm,
+  vm: &Vm,
   scope: &Scope<'_>,
   callee: GcObject,
   f: impl FnOnce(&mut StreamRealmState, &Heap) -> Result<R, VmError>,
@@ -5524,6 +5524,7 @@ mod tests {
     let init_calls_for_stream = Arc::clone(&init_calls);
 
     {
+      // Keep the heap borrow scoped so we can call back into `realm.exec_script` afterwards.
       let (vm, realm_obj, heap) = realm.vm_realm_and_heap_mut();
       let global = realm_obj.global_object();
       let mut scope = heap.scope();
