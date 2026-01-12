@@ -907,16 +907,47 @@ impl Heap {
       .ok_or(VmError::InvariantViolation("ArrayBuffer backing store missing"))
   }
 
+  /// Detaches an `ArrayBuffer` and returns its backing store.
+  ///
+  /// This models transfer-list semantics: after detachment, the `ArrayBuffer` remains live but has
+  /// no backing store (`[[ArrayBufferData]]` is `null`), and `byteLength` becomes `0`.
+  pub fn detach_array_buffer_take_data(
+    &mut self,
+    obj: GcObject,
+  ) -> Result<Option<Box<[u8]>>, VmError> {
+    let buf = self.get_array_buffer_mut(obj)?;
+    let data = buf.data.take();
+    if let Some(data) = &data {
+      self.sub_external_bytes(data.len());
+    }
+    Ok(data)
+  }
+
   pub(crate) fn uint8_array_length(&self, obj: GcObject) -> Result<usize, VmError> {
-    Ok(self.get_uint8_array(obj)?.length)
+    let view = self.get_uint8_array(obj)?;
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    if buf.data.is_none() {
+      return Ok(0);
+    }
+    Ok(view.length)
   }
 
   pub(crate) fn uint8_array_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
-    Ok(self.get_uint8_array(obj)?.byte_length())
+    let view = self.get_uint8_array(obj)?;
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    if buf.data.is_none() {
+      return Ok(0);
+    }
+    Ok(view.byte_length())
   }
 
   pub(crate) fn uint8_array_byte_offset(&self, obj: GcObject) -> Result<usize, VmError> {
-    Ok(self.get_uint8_array(obj)?.byte_offset)
+    let view = self.get_uint8_array(obj)?;
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    if buf.data.is_none() {
+      return Ok(0);
+    }
+    Ok(view.byte_offset)
   }
 
   pub(crate) fn uint8_array_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {
@@ -1515,6 +1546,14 @@ impl Heap {
     if let PropertyKey::String(s) = key {
       if let Some(index) = self.string_to_array_index(*s) {
         if let HeapObject::Uint8Array(view) = self.get_heap_object(obj.0)? {
+          // If the backing buffer is detached, integer-indexed properties are treated as absent.
+          if self
+            .get_array_buffer(view.viewed_array_buffer)?
+            .data
+            .is_none()
+          {
+            return Ok(None);
+          }
           let idx = index as usize;
           if idx < view.length {
             let byte = self.uint8_array_get(view, idx)?;
@@ -2363,14 +2402,12 @@ impl Heap {
       .checked_add(index)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
-    let buf_len = self
-      .get_array_buffer(buffer)?
-      .data
-      .as_deref()
-      .ok_or(VmError::InvariantViolation(
-        "Uint8Array view references missing ArrayBuffer backing store",
-      ))?
-      .len();
+    let buf = self.get_array_buffer(buffer)?;
+    let Some(data) = buf.data.as_deref() else {
+      // Detached buffer: writes are ignored (ECMA-262 TypedArraySetElement).
+      return Ok(());
+    };
+    let buf_len = data.len();
     if abs >= buf_len {
       return Err(VmError::InvariantViolation(
         "Uint8Array view references out-of-bounds ArrayBuffer data",
@@ -2378,9 +2415,10 @@ impl Heap {
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    let data = buf.data.as_deref_mut().ok_or(VmError::InvariantViolation(
-      "Uint8Array view references missing ArrayBuffer backing store",
-    ))?;
+    let Some(data) = buf.data.as_deref_mut() else {
+      // Detached buffer (should be impossible because we just observed `Some(_)` above).
+      return Ok(());
+    };
     data[abs] = value;
     Ok(())
   }
@@ -4398,7 +4436,13 @@ impl<'a> Scope<'a> {
     let mut scope = self.reborrow();
     scope.push_root(Value::Object(viewed_array_buffer))?;
 
-    let buf_len = scope.heap.get_array_buffer(viewed_array_buffer)?.byte_length();
+    let buf = scope.heap.get_array_buffer(viewed_array_buffer)?;
+    let Some(data) = buf.data.as_deref() else {
+      return Err(VmError::TypeError(
+        "Uint8Array view over detached ArrayBuffer",
+      ));
+    };
+    let buf_len = data.len();
     let end = byte_offset.checked_add(length).ok_or(VmError::OutOfMemory)?;
     if end > buf_len {
       return Err(VmError::TypeError("Uint8Array view out of bounds"));
@@ -5351,11 +5395,8 @@ impl JsArrayBuffer {
   }
 
   fn byte_length(&self) -> usize {
-    let Some(data) = self.data.as_deref() else {
-      debug_assert!(false, "ArrayBuffer backing store missing");
-      return 0;
-    };
-    data.len()
+    // If `data` is missing, the buffer has been detached (transfer-list semantics).
+    self.data.as_deref().map(|d| d.len()).unwrap_or(0)
   }
 
   #[allow(dead_code)]
@@ -5368,13 +5409,11 @@ impl JsArrayBuffer {
   }
 
   fn finalize(&mut self) -> usize {
+    // If the buffer has already been detached, it has no backing store to free.
     let Some(data) = self.data.take() else {
-      debug_assert!(false, "ArrayBuffer finalized twice");
       return 0;
     };
-    let len = data.len();
-    drop(data);
-    len
+    data.len()
   }
 }
 
