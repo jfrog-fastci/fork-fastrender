@@ -552,6 +552,8 @@ impl Document {
       root: NodeId(0),
       ready_state: DocumentReadyState::Loading,
       events: web_events::EventListenerRegistry::new(),
+      // DOMParser "text/xml"/"application/xml"/... flavors return a Document without a browsing
+      // context, so it does not have a Window event parent by default.
       has_window_event_parent: false,
       // DOMParser "text/xml"/"application/xml"/... flavors return a Document with scripting disabled.
       scripting_enabled: false,
