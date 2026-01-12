@@ -176,6 +176,7 @@ type U = { a: number } | { b: boolean };
   }
 }
 
+
 #[test]
 fn layout_of_interned_for_callable_is_gc_object_with_closure_header() {
   let mut host = aot_host();

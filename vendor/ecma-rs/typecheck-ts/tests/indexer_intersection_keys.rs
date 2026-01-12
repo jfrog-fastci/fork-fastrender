@@ -16,7 +16,12 @@ fn computed_member_rejects_symbol_for_string_like_intersection_indexer() {
   let program = Program::new(host, vec![file.clone()]);
   let file_id = program.file_id(&file).expect("file id");
 
-  // Ensure the declared index signature preserved the intersection key type.
+  // Ensure the declared index signature key type is "string-like" (i.e. it does
+  // not accept `symbol`).
+  //
+  // Note: `types-ts-interned` canonicalization may simplify
+  // `(string | symbol) & string` to just `string`. Accept either form here; the
+  // important invariant is that `symbol` is rejected at the access site below.
   let obj_offset = source
     .find("obj[sym]")
     .expect("obj use site")
@@ -28,9 +33,9 @@ fn computed_member_rejects_symbol_for_string_like_intersection_indexer() {
   assert!(
     matches!(
       program.interned_type_kind(indexers[0].key_type),
-      TypeKind::Intersection(_)
+      TypeKind::String | TypeKind::Intersection(_)
     ),
-    "expected an intersection key type, got {:?}",
+    "expected a string-like key type, got {:?}",
     program.interned_type_kind(indexers[0].key_type)
   );
 
