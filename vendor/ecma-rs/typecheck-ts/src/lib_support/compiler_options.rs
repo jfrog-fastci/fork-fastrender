@@ -631,6 +631,7 @@ fn referenced_lib_option_names(text: &str) -> Vec<LibName> {
   out
 }
 
+#[cfg(any(test, not(feature = "bundled-libs")))]
 fn lib_name(name: &'static str) -> LibName {
   LibName(Arc::from(name))
 }
