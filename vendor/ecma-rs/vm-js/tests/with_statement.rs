@@ -63,6 +63,27 @@ fn with_statement_respects_unscopables() -> Result<(), VmError> {
 }
 
 #[test]
+fn with_statement_unscopables_blocks_delete_identifier() -> Result<(), VmError> {
+  let mut agent = new_gc_stress_agent();
+  let value = agent.run_script(
+    "with_unscopables_delete.js",
+    r#"
+      let o = { x: 1 };
+      o[Symbol.unscopables] = { x: true };
+      let x = 2;
+      var r;
+      with (o) { r = delete x; }
+      String(r) + "|" + o.x + "|" + x
+    "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+  let out = agent.value_to_error_string(value);
+  assert_eq!(out, "false|1|2");
+  Ok(())
+}
+
+#[test]
 fn with_statement_delete_identifier_deletes_property() -> Result<(), VmError> {
   let mut agent = new_agent();
   let value = agent.run_script(
@@ -72,6 +93,57 @@ fn with_statement_delete_identifier_deletes_property() -> Result<(), VmError> {
     None,
   )?;
   assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn with_statement_proxy_unscopables_blocks_delete_identifier() -> Result<(), VmError> {
+  let mut agent = new_gc_stress_agent();
+  let value = agent.run_script(
+    "with_proxy_unscopables_delete.js",
+    r#"
+       var log = [];
+       var target = { x: 1 };
+       target[Symbol.unscopables] = { x: true };
+       var p = new Proxy(target, {
+         has(t, k) { log.push("has:" + String(k)); return (k in t); },
+         get(t, k, r) { log.push("get:" + String(k) + ":" + (r === p)); return t[k]; },
+         deleteProperty(t, k) { log.push("del:" + String(k)); return delete t[k]; },
+       });
+       let x = 2;
+       var r;
+       with (p) { r = delete x; }
+       String(r) + "|" + log.join(",") + "|" + target.x + "|" + x
+     "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+
+  let out = agent.value_to_error_string(value);
+  assert!(
+    out.starts_with("false|"),
+    "expected delete to target the outer binding (unscopables block), got {out}"
+  );
+  assert!(
+    out.ends_with("|1|2"),
+    "expected with binding object's property to remain and outer binding to be unchanged, got {out}"
+  );
+  assert!(
+    out.contains("has:x"),
+    "expected Proxy has trap to be observed, got {out}"
+  );
+  assert!(
+    out.contains("Symbol.unscopables"),
+    "expected @@unscopables Get to be observable, got {out}"
+  );
+  assert!(
+    out.contains("Symbol.unscopables):true"),
+    "expected @@unscopables Get receiver to be the binding object, got {out}"
+  );
+  assert!(
+    !out.contains("del:x"),
+    "expected Proxy deleteProperty trap to NOT run when unscopables blocks identifier resolution, got {out}"
+  );
   Ok(())
 }
 
