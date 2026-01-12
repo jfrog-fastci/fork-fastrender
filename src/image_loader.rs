@@ -1544,10 +1544,15 @@ struct SvgUseInlineElement {
 struct SvgUseInlineSprite {
   content: String,
   by_id: HashMap<String, SvgUseInlineElement>,
+  root: Option<SvgUseInlineElement>,
 }
 
-/// Best-effort preprocessor that expands external `<use href="sprite.svg#id">` references by
-/// fetching the referenced SVG and inlining the matched `id` element.
+/// Best-effort preprocessor that expands external SVG `<use>` references by fetching the
+/// referenced SVG and inlining the referenced element.
+///
+/// This supports common sprite patterns (`<use href="sprite.svg#id">`) as well as SVG2 external
+/// `<use>` without a fragment (`<use href="icon.svg">`), which references the external document's
+/// root element.
 ///
 /// This is intentionally narrow: it exists because `usvg`/`resvg` do not fetch HTTP(S) external
 /// `<use>` targets by default, which causes common SVG sprite patterns to silently disappear.
@@ -1623,16 +1628,25 @@ fn inline_svg_use_references<'a>(
       continue;
     };
 
-    let Some((href_url_part, fragment)) = href.split_once('#') else {
-      continue;
-    };
-    let href_url_part = trim_ascii_whitespace(href_url_part);
-    let fragment = trim_ascii_whitespace(fragment);
+    let (href_url_part, fragment) = match href.split_once('#') {
+      Some((href_url_part, fragment)) => {
+        let href_url_part = trim_ascii_whitespace(href_url_part);
+        let fragment = trim_ascii_whitespace(fragment);
 
-    // Internal-only references (`#id`) are handled by usvg; we only patch external sprite uses.
-    if href_url_part.is_empty() || href_url_part.starts_with('#') || fragment.is_empty() {
-      continue;
-    }
+        // Internal-only references (`#id`) are handled by usvg; we only patch external sprite uses.
+        if href_url_part.is_empty() || href_url_part.starts_with('#') || fragment.is_empty() {
+          continue;
+        }
+        (href_url_part, Some(fragment))
+      }
+      None => {
+        let href_url_part = trim_ascii_whitespace(href);
+        if href_url_part.is_empty() || href_url_part.starts_with('#') {
+          continue;
+        }
+        (href_url_part, None)
+      }
+    };
 
     // Resolve the URL without the fragment for fetching.
     let xml_base_chain = svg_xml_base_chain_for_node(node);
@@ -1771,6 +1785,33 @@ fn inline_svg_use_references<'a>(
         Ok(Err(_)) | Err(_) => continue,
       };
 
+      let root = Some({
+        let root_node = sprite_doc.root_element();
+        let tag_name = root_node.tag_name().name().to_string();
+        let range = root_node.range();
+        let mut inner_start: Option<usize> = None;
+        let mut inner_end: Option<usize> = None;
+        for child in root_node.children() {
+          let r = child.range();
+          inner_start = Some(inner_start.map_or(r.start, |s| s.min(r.start)));
+          inner_end = Some(inner_end.map_or(r.end, |e| e.max(r.end)));
+        }
+        let inner_range = match (inner_start, inner_end) {
+          (Some(s), Some(e)) if s <= e => Some(s..e),
+          _ => None,
+        };
+
+        SvgUseInlineElement {
+          tag_name,
+          range,
+          inner_range,
+          view_box: root_node.attribute("viewBox").map(|v| v.to_string()),
+          preserve_aspect_ratio: root_node
+            .attribute("preserveAspectRatio")
+            .map(|v| v.to_string()),
+        }
+      });
+
       let mut by_id = HashMap::new();
       for sprite_node in sprite_doc.descendants().filter(|n| n.is_element()) {
         check_root_periodic(
@@ -1819,6 +1860,7 @@ fn inline_svg_use_references<'a>(
       let sprite = SvgUseInlineSprite {
         content: sprite_text,
         by_id,
+        root,
       };
       sprite_cache.insert(resolved_url.clone(), sprite);
     }
@@ -1827,7 +1869,11 @@ fn inline_svg_use_references<'a>(
       continue;
     };
 
-    let Some(element) = sprite.by_id.get(fragment) else {
+    let element = match fragment {
+      Some(fragment) => sprite.by_id.get(fragment),
+      None => sprite.root.as_ref(),
+    };
+    let Some(element) = element else {
       continue;
     };
 
@@ -14598,6 +14644,45 @@ mod tests {
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn inline_svg_use_external_without_fragment_renders() {
+    let icon_url = "https://example.test/icon.svg";
+    let main_url = "https://example.test/main.svg";
+
+    let icon_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#;
+    let mut icon_res = FetchedResource::new(
+      icon_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    icon_res.status = Some(200);
+    icon_res.final_url = Some(icon_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(icon_url.to_string(), icon_res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    let main_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="{icon_url}"/></svg>"#
+    );
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(&main_svg, 1, 1, main_url, 1.0)
+      .expect("rendered pixmap");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
+    );
+
+    let requests = fetcher.requests();
+    assert_eq!(
+      requests.len(),
+      1,
+      "expected exactly one fetch request for the external SVG, got: {requests:?}"
+    );
+    assert_eq!(requests[0].0, icon_url);
+    assert_eq!(requests[0].1, FetchDestination::Image);
   }
 
   #[test]
