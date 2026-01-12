@@ -152,7 +152,10 @@ Implemented COLRv1 features include:
   keep `currentColor` paints opaque), so changing CSS opacity does not require
   re-rasterizing color glyphs. Concretely: cached color glyph rasters strip the
   alpha channel from the text color and multiply by the combined alpha (`color.a *
-  opacity`) only when drawing (see `tests/misc/color_glyph_opacity.rs`).
+  opacity`) only when drawing (see the `color_glyph_opacity` regression tests; run
+  via `bash scripts/cargo_agent.sh test -p fastrender --lib color_glyph_opacity` or
+  `bash scripts/cargo_agent.sh test -p fastrender --test integration color_glyph_opacity`,
+  and use `-- --list | rg color_glyph_opacity` to locate the exact test names).
 - `Canvas` passes stacking-context transforms, clips, opacity, and blend modes down
   to `TextRasterizer` so both outline and color-glyph rendering participate in
   those effects.

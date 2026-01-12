@@ -74,22 +74,34 @@ When `appearance:none` is computed, the control stops using the native form-cont
 
 ## Regression coverage
 
-- Box-generation unit tests:
-  - `src/tree/box_generation.rs::appearance_none_form_controls_generate_fallback_children`
-  - `src/tree/box_generation.rs::appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
-  - `src/tree/box_generation.rs::webkit_appearance_none_disables_form_control_replacement`
-  - `src/tree/box_generation.rs::moz_appearance_none_disables_form_control_replacement`
-- Box/tree integration tests:
-  - `tests/tree/form_controls_appearance_none_fallback.rs`
-    - `button_appearance_none_preserves_dom_children`
-    - `range_appearance_none_generates_slider_track_and_thumb_boxes`
-    - `file_input_appearance_none_generates_file_selector_button_box`
-- Paint tests (currently under `tests/paint/`; may migrate into `src/paint/` as unit tests):
-  - `tests/paint/form_control_appearance_none_affordances.rs`: `appearance_none_suppresses_number_spinner_glyphs` / `appearance_none_suppresses_date_dropdown_glyph` assert `appearance:none` suppresses number/date affordance glyphs.
-  - `tests/paint/range_track_pseudo_element.rs`: `range_track_pseudo_element_paints_under_appearance_none` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
-  - `tests/paint/range_pseudo_opacity.rs`: `range_slider_track_and_thumb_pseudo_opacity_is_applied` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
-  - `tests/paint/file_selector_button_pseudo_element.rs`: `file_selector_button_pseudo_element_paints_under_appearance_none` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
-  - `tests/misc/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
+- Box-generation unit tests (run with `--lib`):
+  - `appearance_none_form_controls_generate_fallback_children`
+  - `appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
+  - `webkit_appearance_none_disables_form_control_replacement`
+  - `moz_appearance_none_disables_form_control_replacement`
+  - `button_appearance_none_preserves_dom_children`
+  - `range_appearance_none_generates_slider_track_and_thumb_boxes`
+  - `file_input_appearance_none_generates_file_selector_button_box`
+- Integration tests (run with `--test integration`) cover end-to-end behavior (box tree + paint) and are discoverable via filters like:
+  - `form_controls_appearance_none_fallback` (fallback children, slider/file pseudos)
+  - `form_control_appearance_none_affordances` (spinner/dropdown affordance suppression)
+  - `form_control_placeholder_opacity` (`::placeholder` opacity in both paint backends)
+  - `range_track_pseudo_element` / `range_pseudo_opacity` (slider pseudos)
+  - `file_selector_button_pseudo_element` (`::file-selector-button` painting)
+
+To locate the exact test names (tests may migrate between unit and integration suites), list tests and filter by name:
+
+```bash
+bash scripts/cargo_agent.sh test -p fastrender --lib -- --list | rg 'appearance_none|form_controls'
+bash scripts/cargo_agent.sh test -p fastrender --test integration -- --list | rg 'appearance_none|form_control|slider|placeholder|file_selector'
+```
+
+Then run a specific regression via a filter:
+
+```bash
+bash scripts/cargo_agent.sh test -p fastrender --lib appearance_none_form_controls_generate_fallback_children
+bash scripts/cargo_agent.sh test -p fastrender --test integration form_control_placeholder_opacity
+```
 - Offline page fixtures:
   - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including vendor slider pseudos like `::-webkit-slider-thumb` / `::-moz-range-thumb`).
 
