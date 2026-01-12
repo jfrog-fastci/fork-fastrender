@@ -20837,38 +20837,53 @@ pub(crate) fn abort_signal_listener_cleanup_native(
     .events_mut()
     .remove_event_listener(target_id, &type_name, listener_id, capture);
   if removed {
-    let (roots_owner_obj, target_for_owner) = match target_id {
-      web_events::EventTargetId::Opaque(id) => (
-        dom.events().opaque_target_object(scope.heap(), id).unwrap_or(document_obj),
-        Some(target_id),
-      ),
-      _ => (document_obj, None),
-    };
-    remove_listener_root_if_unused(scope, roots_owner_obj, dom.events(), listener_id, target_for_owner)?;
-  }
-
-  // Best-effort cleanup: delete the target's `{ signal }` mapping entry, if it still matches this
-  // abort algorithm's signal.
-  let target_obj: Option<GcObject> = match target_id {
-    web_events::EventTargetId::Window => Some(window_obj),
-    web_events::EventTargetId::Document => Some(document_obj),
-    web_events::EventTargetId::Node(node_id) => {
-      get_or_create_node_wrapper(vm, scope, document_obj, Some(&*dom), node_id)
-        .ok()
-        .and_then(|v| match v {
-          Value::Object(obj) => Some(obj),
-          _ => None,
-        })
+    // DOM-backed targets root callbacks on the realm's `document` object, so use a global listener
+    // registry check when cleaning up.
+    //
+    // Opaque targets (`new EventTarget()`, `AbortSignal`) root callbacks on the target object
+    // itself, so the cleanup must be scoped to that particular target.
+    match target_id {
+      web_events::EventTargetId::Opaque(id) => {
+        if let Some(target_obj) = dom.events().opaque_target_object(scope.heap(), id) {
+          // Root the object while allocating property keys (string allocation can trigger GC).
+          scope.push_root(Value::Object(target_obj))?;
+          remove_listener_root_if_unused(
+            scope,
+            target_obj,
+            dom.events(),
+            listener_id,
+            Some(target_id),
+          )?;
+        }
+      }
+      _ => {
+        remove_listener_root_if_unused(scope, document_obj, dom.events(), listener_id, None)?;
+      }
     }
-    web_events::EventTargetId::Opaque(id) => dom.events().opaque_target_object(scope.heap(), id),
-  };
 
-  if let (Some(target_obj), Some(expected_signal_id)) = (target_obj, signal_id) {
-    if let Some(entry) =
-      signal_listener_map_get_entry(scope, target_obj, &type_name, listener_id, capture)?
-    {
-      if entry.signal_id == expected_signal_id {
-        let _ = scope.ordinary_delete(entry.map_obj, entry.entry_key)?;
+    // Best-effort cleanup: delete the target's `{ signal }` mapping entry, if it still matches this
+    // abort algorithm's signal.
+    let target_obj: Option<GcObject> = match target_id {
+      web_events::EventTargetId::Window => Some(window_obj),
+      web_events::EventTargetId::Document => Some(document_obj),
+      web_events::EventTargetId::Node(node_id) => {
+        get_or_create_node_wrapper(vm, scope, document_obj, Some(&*dom), node_id)
+          .ok()
+          .and_then(|v| match v {
+            Value::Object(obj) => Some(obj),
+            _ => None,
+          })
+      }
+      web_events::EventTargetId::Opaque(id) => dom.events().opaque_target_object(scope.heap(), id),
+    };
+
+    if let (Some(target_obj), Some(expected_signal_id)) = (target_obj, signal_id) {
+      if let Some(entry) =
+        signal_listener_map_get_entry(scope, target_obj, &type_name, listener_id, capture)?
+      {
+        if entry.signal_id == expected_signal_id {
+          let _ = scope.ordinary_delete(entry.map_obj, entry.entry_key)?;
+        }
       }
     }
   }
@@ -21321,12 +21336,23 @@ pub(crate) fn event_target_remove_event_listener_dom2(
       .events_mut()
       .remove_event_listener(resolved.target_id, &type_name, listener_id, capture);
   if removed {
-    remove_listener_root_if_unused(scope, listener_roots_owner, dom.events(), listener_id, None)?;
+    let target_for_owner = match resolved.target_id {
+      web_events::EventTargetId::Opaque(_) => Some(resolved.target_id),
+      _ => None,
+    };
+    remove_listener_root_if_unused(
+      scope,
+      listener_roots_owner,
+      dom.events(),
+      listener_id,
+      target_for_owner,
+    )?;
   }
 
   // If this listener was registered with `{ signal }`, ensure we also remove the corresponding
   // abort algorithm from the signal so it doesn't leak until the signal is aborted.
-  if let Some(entry) = signal_listener_map_get_entry(scope, target_obj, &type_name, listener_id, capture)? {
+  if let Some(entry) = signal_listener_map_get_entry(scope, target_obj, &type_name, listener_id, capture)?
+  {
     if let Some(signal_obj) = dom.events().opaque_target_object(scope.heap(), entry.signal_id) {
       if is_branded_abort_signal(scope, signal_obj)? {
         abort_signal_remove_abort_algorithm(scope, signal_obj, entry.abort_func)?;
@@ -39907,6 +39933,119 @@ mod tests {
     )?;
 
     assert_eq!(removed, Value::Number(0.0));
+    Ok(())
+  }
+
+  #[test]
+  fn opaque_event_target_listener_roots_are_cleaned_per_target() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    realm.exec_script(
+      "globalThis.a = new EventTarget();\n\
+       globalThis.b = new EventTarget();\n\
+       globalThis.cb = function cb() {};\n\
+       a.addEventListener('x', cb);\n\
+       b.addEventListener('x', cb);\n\
+       a.removeEventListener('x', cb);\n",
+    )?;
+
+    {
+      let realm_id = realm.realm_id;
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+
+      let global = realm_ref.global_object();
+      let a_obj = match get_prop(&mut vm, &mut scope, global, "a")? {
+        Value::Object(obj) => obj,
+        other => panic!("expected globalThis.a object, got {other:?}"),
+      };
+      let b_obj = match get_prop(&mut vm, &mut scope, global, "b")? {
+        Value::Object(obj) => obj,
+        other => panic!("expected globalThis.b object, got {other:?}"),
+      };
+      let cb_obj = match get_prop(&mut vm, &mut scope, global, "cb")? {
+        Value::Object(obj) => obj,
+        other => panic!("expected globalThis.cb object, got {other:?}"),
+      };
+
+      let listener_id = web_events::ListenerId::from_gc_object(cb_obj);
+      let listener_key = listener_id_property_key(&mut scope, listener_id)?;
+
+      let roots_a = match get_prop(&mut vm, &mut scope, a_obj, EVENT_LISTENER_ROOTS_KEY)? {
+        Value::Object(obj) => obj,
+        other => panic!(
+          "expected globalThis.a.__fastrender_event_listener_roots object, got {other:?}"
+        ),
+      };
+      let roots_b = match get_prop(&mut vm, &mut scope, b_obj, EVENT_LISTENER_ROOTS_KEY)? {
+        Value::Object(obj) => obj,
+        other => panic!(
+          "expected globalThis.b.__fastrender_event_listener_roots object, got {other:?}"
+        ),
+      };
+
+      assert_eq!(
+        scope
+          .heap()
+          .object_get_own_data_property_value(roots_a, &listener_key)?,
+        None,
+        "removed opaque listener should not keep a per-target callback root"
+      );
+      assert!(
+        matches!(
+          scope
+            .heap()
+            .object_get_own_data_property_value(roots_b, &listener_key)?,
+          Some(Value::Object(obj)) if obj == cb_obj
+        ),
+        "listener registered on a different opaque target should keep its callback root"
+      );
+    }
+
+    realm.exec_script("globalThis.b.removeEventListener('x', globalThis.cb);")?;
+
+    {
+      let realm_id = realm.realm_id;
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+
+      let global = realm_ref.global_object();
+      let b_obj = match get_prop(&mut vm, &mut scope, global, "b")? {
+        Value::Object(obj) => obj,
+        other => panic!("expected globalThis.b object, got {other:?}"),
+      };
+      let cb_obj = match get_prop(&mut vm, &mut scope, global, "cb")? {
+        Value::Object(obj) => obj,
+        other => panic!("expected globalThis.cb object, got {other:?}"),
+      };
+
+      let listener_id = web_events::ListenerId::from_gc_object(cb_obj);
+      let listener_key = listener_id_property_key(&mut scope, listener_id)?;
+
+      let roots_b = match get_prop(&mut vm, &mut scope, b_obj, EVENT_LISTENER_ROOTS_KEY)? {
+        Value::Object(obj) => obj,
+        other => panic!(
+          "expected globalThis.b.__fastrender_event_listener_roots object, got {other:?}"
+        ),
+      };
+
+      assert_eq!(
+        scope
+          .heap()
+          .object_get_own_data_property_value(roots_b, &listener_key)?,
+        None,
+        "removing the last opaque listener should drop the per-target callback root"
+      );
+    }
+
     Ok(())
   }
 
