@@ -286,6 +286,7 @@ pub(crate) struct WindowRealmUserData {
   location_obj: Option<GcObject>,
   console_counts: HashMap<String, u64>,
   console_timers: HashMap<String, Duration>,
+  console_group_depth: u8,
 }
 
 impl std::fmt::Debug for WindowRealmUserData {
@@ -356,6 +357,7 @@ impl WindowRealmUserData {
       location_obj: None,
       console_counts: HashMap::new(),
       console_timers: HashMap::new(),
+      console_group_depth: 0,
     }
   }
 
@@ -1767,6 +1769,8 @@ const CONSOLE_THIS_SLOT: usize = 1;
 const CONSOLE_SINK_KEY_SLOT: usize = 2;
 const CONSOLE_SINK_ID_KEY: &str = "__fastrender_console_sink_id";
 const MAX_CONSOLE_TIME_LOG_ARGS: usize = 32;
+const MAX_CONSOLE_GROUP_DEPTH: u8 = 32;
+const MAX_CONSOLE_TRACE_BYTES: usize = 8 * 1024;
 
 const MAX_CONSOLE_LABEL_BYTES: usize = 256;
 const MAX_CONSOLE_DISTINCT_LABELS: usize = 1024;
@@ -2217,8 +2221,92 @@ fn console_call_native(
   Ok(Value::Undefined)
 }
 
-fn console_noop_native(
-  _vm: &mut Vm,
+fn console_truncate_trace_message(mut msg: String) -> String {
+  if msg.len() <= MAX_CONSOLE_TRACE_BYTES {
+    return msg;
+  }
+  if MAX_CONSOLE_TRACE_BYTES == 0 {
+    msg.clear();
+    return msg;
+  }
+  if MAX_CONSOLE_TRACE_BYTES <= 3 {
+    let mut end = MAX_CONSOLE_TRACE_BYTES;
+    while end > 0 && !msg.is_char_boundary(end) {
+      end -= 1;
+    }
+    msg.truncate(end);
+    return msg;
+  }
+  let max_prefix = MAX_CONSOLE_TRACE_BYTES - 3;
+  let mut end = max_prefix;
+  while end > 0 && !msg.is_char_boundary(end) {
+    end -= 1;
+  }
+  msg.truncate(end);
+  msg.push_str("...");
+  msg
+}
+
+fn console_trace_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(sink) = console_sink_from_callee_and_this(scope, callee, this)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let formatted = crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), args);
+  let mut message = if formatted.is_empty() {
+    "Trace".to_string()
+  } else {
+    formatted
+  };
+
+  let stack = crate::js::vm_error_format::format_stack_trace_limited(&vm.capture_stack());
+  if !stack.is_empty() {
+    message.push('\n');
+    message.push_str(&stack);
+  }
+
+  let message = console_truncate_trace_message(message);
+  let msg_s = scope.alloc_string(&message)?;
+  scope.push_root(Value::String(msg_s))?;
+  let msg = [Value::String(msg_s)];
+  sink(ConsoleMessageLevel::Log, scope.heap_mut(), &msg);
+  Ok(Value::Undefined)
+}
+
+fn console_group_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sink = console_sink_from_callee_and_this(scope, callee, this)?;
+  if let Some(sink) = sink {
+    sink(ConsoleMessageLevel::Log, scope.heap_mut(), args);
+  }
+
+  if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    user_data.console_group_depth = user_data
+      .console_group_depth
+      .saturating_add(1)
+      .min(MAX_CONSOLE_GROUP_DEPTH);
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn console_group_end_native(
+  vm: &mut Vm,
   _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -2226,6 +2314,24 @@ fn console_noop_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    user_data.console_group_depth = user_data.console_group_depth.saturating_sub(1);
+  }
+  Ok(Value::Undefined)
+}
+
+fn console_clear_native(
+  vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    user_data.console_group_depth = 0;
+  }
   Ok(Value::Undefined)
 }
 
@@ -24755,7 +24861,10 @@ fn init_window_globals(
   let console_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(console_obj))?;
   let console_call_id = vm.register_native_call(console_call_native)?;
-  let console_noop_call_id = vm.register_native_call(console_noop_native)?;
+  let console_trace_call_id = vm.register_native_call(console_trace_native)?;
+  let console_group_call_id = vm.register_native_call(console_group_native)?;
+  let console_group_end_call_id = vm.register_native_call(console_group_end_native)?;
+  let console_clear_call_id = vm.register_native_call(console_clear_native)?;
   let console_assert_call_id = vm.register_native_call(console_assert_native)?;
   let console_count_call_id = vm.register_native_call(console_count_native)?;
   let console_count_reset_call_id = vm.register_native_call(console_count_reset_native)?;
@@ -24788,18 +24897,6 @@ fn init_window_globals(
       scope.push_root(Value::String(name_s))?;
       let func =
         scope.alloc_native_function_with_slots(console_call_id, None, name_s, 0, &slots)?;
-      scope
-        .heap_mut()
-        .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
-      scope.push_root(Value::Object(func))?;
-      Ok(Value::Object(func))
-    };
-
-  let define_console_noop_method =
-    |scope: &mut Scope<'_>, name: &str| -> Result<Value, VmError> {
-      let name_s = scope.alloc_string(name)?;
-      scope.push_root(Value::String(name_s))?;
-      let func = scope.alloc_native_function(console_noop_call_id, None, name_s, 0)?;
       scope
         .heap_mut()
         .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
@@ -24852,12 +24949,13 @@ fn init_window_globals(
   let warn_func = define_console_method(&mut scope, "warn", ConsoleMessageLevel::Warn)?;
   let error_func = define_console_method(&mut scope, "error", ConsoleMessageLevel::Error)?;
   let debug_func = define_console_method(&mut scope, "debug", ConsoleMessageLevel::Debug)?;
-  let trace_func = define_console_method(&mut scope, "trace", ConsoleMessageLevel::Debug)?;
-  let group_func = define_console_method(&mut scope, "group", ConsoleMessageLevel::Log)?;
+  let trace_func = define_console_standard_method(&mut scope, console_trace_call_id, "trace", 0)?;
+  let group_func = define_console_standard_method(&mut scope, console_group_call_id, "group", 0)?;
   let group_collapsed_func =
-    define_console_method(&mut scope, "groupCollapsed", ConsoleMessageLevel::Log)?;
-  let group_end_func = define_console_noop_method(&mut scope, "groupEnd")?;
-  let clear_func = define_console_noop_method(&mut scope, "clear")?;
+    define_console_standard_method(&mut scope, console_group_call_id, "groupCollapsed", 0)?;
+  let group_end_func =
+    define_console_standard_method(&mut scope, console_group_end_call_id, "groupEnd", 0)?;
+  let clear_func = define_console_standard_method(&mut scope, console_clear_call_id, "clear", 0)?;
   let assert_func = define_console_standard_method(&mut scope, console_assert_call_id, "assert", 0)?;
   let count_func = define_console_standard_method(&mut scope, console_count_call_id, "count", 0)?;
   let count_reset_func =
@@ -29287,7 +29385,7 @@ mod tests {
       ("warn", ConsoleMessageLevel::Warn, Value::Number(3.0)),
       ("error", ConsoleMessageLevel::Error, Value::Number(4.0)),
       ("debug", ConsoleMessageLevel::Debug, Value::Number(5.0)),
-      ("trace", ConsoleMessageLevel::Debug, Value::Number(6.0)),
+      ("trace", ConsoleMessageLevel::Log, Value::Number(6.0)),
       ("group", ConsoleMessageLevel::Log, Value::Number(7.0)),
       (
         "groupCollapsed",
@@ -29319,8 +29417,11 @@ mod tests {
       assert_eq!(call_result, Value::Undefined);
     }
 
+    let calls = captured.lock().clone();
+    assert_eq!(calls.len(), 8);
+
     assert_eq!(
-      &*captured.lock(),
+      &calls[..5],
       &[
         CapturedConsoleCall {
           level: ConsoleMessageLevel::Log,
@@ -29342,10 +29443,22 @@ mod tests {
           level: ConsoleMessageLevel::Debug,
           args: vec![CapturedConsoleArg::Number(5.0)]
         },
-        CapturedConsoleCall {
-          level: ConsoleMessageLevel::Debug,
-          args: vec![CapturedConsoleArg::Number(6.0)]
-        },
+      ]
+    );
+
+    assert_eq!(calls[5].level, ConsoleMessageLevel::Log);
+    assert_eq!(calls[5].args.len(), 1);
+    let CapturedConsoleArg::String(trace_msg) = &calls[5].args[0] else {
+      panic!("expected console.trace to pass a string to the sink");
+    };
+    assert!(
+      trace_msg.contains('6'),
+      "expected trace output to include formatted arguments, got {trace_msg:?}"
+    );
+
+    assert_eq!(
+      &calls[6..],
+      &[
         CapturedConsoleCall {
           level: ConsoleMessageLevel::Log,
           args: vec![CapturedConsoleArg::Number(7.0)]
@@ -29378,6 +29491,41 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn console_trace_includes_stack_trace() -> Result<(), VmError> {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
+    let url = "https://example.com/path";
+    let (sink, captured) = capturing_console_sink();
+    let mut config = WindowRealmConfig::new(url);
+    config.console_sink = Some(sink);
+    let mut realm = new_realm(config)?;
+
+    captured.lock().clear();
+    assert_eq!(
+      realm.exec_script("function f() { console.trace('x'); } f();")?,
+      Value::Undefined
+    );
+
+    let calls = captured.lock().clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].level, ConsoleMessageLevel::Log);
+    assert_eq!(calls[0].args.len(), 1);
+    let CapturedConsoleArg::String(msg) = &calls[0].args[0] else {
+      panic!("expected trace output to be a string, got {:?}", calls[0].args);
+    };
+    assert!(
+      msg.contains("x"),
+      "expected trace output to include formatted arguments, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at <inline>:"),
+      "expected trace output to include stack trace, got {msg:?}"
+    );
     Ok(())
   }
 
