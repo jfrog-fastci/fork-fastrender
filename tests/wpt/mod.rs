@@ -13,10 +13,6 @@ mod validate_manifest;
 #[cfg(test)]
 mod offline_invariants;
 
-fn init_rayon_for_wpt_tests() {
-  crate::common::init_rayon_for_tests(1);
-}
-
 pub(crate) fn create_test_renderer() -> fastrender::FastRender {
   crate::common::init_rayon_for_tests(1);
   let config = fastrender::FastRenderConfig::default()
@@ -103,9 +99,6 @@ fn wpt_local_suite_passes() {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod offline_invariants;
 
 #[cfg(test)]
 mod integration_tests {
