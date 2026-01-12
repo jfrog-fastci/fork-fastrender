@@ -463,9 +463,9 @@ pub fn serialize_document_selection(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style::display::FormattingContextType;
   use crate::style::types::TextCombineUpright;
   use crate::style::ComputedStyle;
-  use crate::tree::box_tree::FormattingContextType;
   use crate::tree::fragment_tree::{TextEmphasisOffset, TextSourceRange};
   use crate::Rect;
   use std::sync::Arc;
@@ -498,7 +498,7 @@ mod tests {
       FragmentContent::Text {
         text: Arc::from("12"),
         box_id: Some(text1_id),
-        source_range: Some(TextSourceRange::new(0..2)),
+        source_range: TextSourceRange::new(0..2),
         baseline_offset: 0.0,
         shaped: None,
         is_marker: false,

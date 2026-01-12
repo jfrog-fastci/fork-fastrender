@@ -13217,7 +13217,6 @@ impl Painter {
     if device_rect.width() <= 0.0 || device_rect.height() <= 0.0 {
       return;
     }
-
     let Some(sk_rect) = SkiaRect::from_xywh(
       device_rect.x(),
       device_rect.y(),
@@ -13226,7 +13225,6 @@ impl Painter {
     ) else {
       return;
     };
-
     let mut paint = Paint::default();
     paint.set_color(tiny_skia::Color::from_rgba8(
       color.r,
