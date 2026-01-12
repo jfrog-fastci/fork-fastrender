@@ -1,11 +1,10 @@
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine as _;
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{FastRender, FastRenderConfig};
 use image::codecs::png::PngEncoder;
 use image::ExtendedColorType;
 use image::ImageEncoder;
-use std::collections::HashMap;
+
+use super::util::create_stacking_context_bounds_renderer_legacy;
 
 fn solid_color_png(r: u8, g: u8, b: u8, a: u8) -> String {
   let mut buf = Vec::new();
@@ -16,7 +15,7 @@ fn solid_color_png(r: u8, g: u8, b: u8, a: u8) -> String {
 }
 
 #[test]
-fn img_srcset_decode_failure_does_not_fallback_to_src_legacy() {
+fn img_srcset_decode_failure_does_not_fallback_to_src() {
   let src = solid_color_png(0, 255, 0, 255);
   let broken = "data:text/plain,not-an-image";
   let html = format!(
@@ -29,20 +28,13 @@ fn img_srcset_decode_failure_does_not_fallback_to_src_legacy() {
     "#
   );
 
-  let config = FastRenderConfig::default().with_runtime_toggles(RuntimeToggles::from_map(
-    HashMap::from([(
-      "FASTR_PAINT_BACKEND".to_string(),
-      "legacy".to_string(),
-    )]),
-  ));
-  let mut renderer = FastRender::with_config(config).expect("renderer");
+  let mut renderer = create_stacking_context_bounds_renderer_legacy();
   let pixmap = renderer.render_html(&html, 30, 30).expect("render html");
 
-  let px = pixmap.pixel(15, 15).expect("inside pixel");
+  let px = pixmap.pixel(10, 10).expect("inside pixel");
   assert_eq!(
     (px.red(), px.green(), px.blue()),
     (255, 0, 0),
-    "should not fall back to the `src` image when the selected `srcset` candidate fails to decode"
+    "legacy paint backend should not fall back to the `src` image when the selected `srcset` candidate fails to decode"
   );
 }
-

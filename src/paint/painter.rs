@@ -1088,10 +1088,16 @@ impl Painter {
       .box_id()
       .and_then(|id| self.scroll_state.elements.get(&id).copied())
       .unwrap_or(Point::ZERO);
-    if !matches!(style.overflow_x, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+    if !matches!(
+      style.overflow_x,
+      Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+    ) {
       offset.x = 0.0;
     }
-    if !matches!(style.overflow_y, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+    if !matches!(
+      style.overflow_y,
+      Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+    ) {
       offset.y = 0.0;
     }
     offset
