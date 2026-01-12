@@ -16598,6 +16598,13 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
             scope.define_property(event_obj, current_target_key, data_desc(Value::Null))?;
             let event_phase_key = alloc_key(scope, "eventPhase")?;
             scope.define_property(event_obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+            // Per WHATWG DOM, the stop-propagation flags are cleared at the end of dispatch, so
+            // `cancelBubble` / stop-immediate-propagation must not "stick" on the JS Event object
+            // after `dispatchEvent` returns.
+            let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+            scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+            let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+            scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
             let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
             scope.define_property(
               event_obj,
@@ -16743,7 +16750,29 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         let Some(realm) = unsafe { &mut *self.invoker.realm }.as_mut() else {
           return;
         };
-        realm.heap_mut().remove_root(self.root_id);
+
+        // Clear per-dispatch state on the JS `Event` object (matching WHATWG DOM's end-of-dispatch
+        // cleanup). This is observable if the listener stores the event object and inspects it after
+        // the host-driven dispatch call returns.
+        let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+        {
+          let mut scope = heap.scope();
+          let _ = scope.push_root(Value::Object(self.event_obj));
+          if let Ok(key) = alloc_key(&mut scope, "currentTarget") {
+            let _ = scope.define_property(self.event_obj, key, data_desc(Value::Null));
+          }
+          if let Ok(key) = alloc_key(&mut scope, "eventPhase") {
+            let _ = scope.define_property(self.event_obj, key, data_desc(Value::Number(0.0)));
+          }
+          if let Ok(key) = alloc_key(&mut scope, "cancelBubble") {
+            let _ = scope.define_property(self.event_obj, key, data_desc(Value::Bool(false)));
+          }
+          if let Ok(key) = alloc_key(&mut scope, EVENT_IMMEDIATE_STOP_KEY) {
+            let _ = scope.define_property(self.event_obj, key, data_desc(Value::Bool(false)));
+          }
+        }
+
+        heap.remove_root(self.root_id);
       }
     }
 
@@ -34801,6 +34830,64 @@ mod tests {
   }
 
   #[test]
+  fn webidl_dispatch_event_clears_cancel_bubble_after_dispatch() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Remove the handcrafted EventTarget binding so the WebIDL-generated installer defines it.
+    realm.exec_script("delete globalThis.EventTarget;")?;
+    {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm_ref)?;
+    }
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const et = new EventTarget();\n\
+        const ev = new Event('x', { bubbles: true });\n\
+        let during = false;\n\
+        et.addEventListener('x', e => { e.stopPropagation(); during = e.cancelBubble; });\n\
+        et.dispatchEvent(ev);\n\
+        return during === true && ev.cancelBubble === false;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dispatch_event_clears_stop_immediate_propagation_after_dispatch() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Remove the handcrafted EventTarget binding so the WebIDL-generated installer defines it.
+    realm.exec_script("delete globalThis.EventTarget;")?;
+    {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm_ref)?;
+    }
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const et = new EventTarget();\n\
+        const ev = new Event('x', { bubbles: true });\n\
+        let during_cancel = false;\n\
+        let during_immediate = false;\n\
+        et.addEventListener('x', e => {\n\
+          e.stopImmediatePropagation();\n\
+          during_cancel = e.cancelBubble;\n\
+          during_immediate = e.__fastrender_event_stop_immediate;\n\
+        });\n\
+        et.dispatchEvent(ev);\n\
+        return during_cancel === true &&\n\
+          during_immediate === true &&\n\
+          ev.cancelBubble === false &&\n\
+          ev.__fastrender_event_stop_immediate === false;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn window_realm_microtask_checkpoint_supports_webidl_event_target() -> Result<(), VmError> {
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
@@ -36581,6 +36668,172 @@ mod tests {
       Value::Bool(false)
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn host_dispatched_event_clears_cancel_bubble_after_dispatch() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm_slot = Some(realm);
+
+    exec_script_with_dom_host(
+      realm_slot.as_mut().expect("expected realm"),
+      &mut host,
+      "globalThis.__during = null;\n\
+       globalThis.__captured = null;\n\
+       document.addEventListener('x', (e) => {\n\
+         e.stopPropagation();\n\
+         globalThis.__during = e.cancelBubble;\n\
+         globalThis.__captured = e;\n\
+       });",
+    )?;
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+        unreachable!(
+          "DummyHost is only used as a type parameter for WindowRealmDomEventListenerInvoker"
+        );
+      }
+    }
+
+    let mut vm_host_ctx = ();
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
+    let mut invoker = WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+      &mut realm_slot,
+      &mut vm_host_slot,
+      &mut webidl_bindings_host_slot,
+    );
+
+    let mut event = web_events::Event::new(
+      "x",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    let event_for_event_obj = web_events::Event::new(
+      "x",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    invoker
+      .with_dispatch_event_object(&event_for_event_obj, |invoker| {
+        web_events::dispatch_event(
+          web_events::EventTargetId::Document,
+          &mut event,
+          host.dom(),
+          host.dom().events(),
+          invoker,
+        )
+      })
+      .expect("dispatch_event should succeed");
+
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    let ok = realm.exec_script(
+      "(() => {\n\
+        if (__captured === null) return false;\n\
+        return __during === true &&\n\
+          __captured.cancelBubble === false &&\n\
+          __captured.currentTarget === null &&\n\
+          __captured.eventPhase === 0;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn host_dispatched_event_clears_stop_immediate_propagation_after_dispatch() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm_slot = Some(realm);
+
+    exec_script_with_dom_host(
+      realm_slot.as_mut().expect("expected realm"),
+      &mut host,
+      "globalThis.__during_cancel = null;\n\
+       globalThis.__during_immediate = null;\n\
+       globalThis.__captured = null;\n\
+       document.addEventListener('x', (e) => {\n\
+         e.stopImmediatePropagation();\n\
+         globalThis.__during_cancel = e.cancelBubble;\n\
+         globalThis.__during_immediate = e.__fastrender_event_stop_immediate;\n\
+         globalThis.__captured = e;\n\
+       });",
+    )?;
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+        unreachable!(
+          "DummyHost is only used as a type parameter for WindowRealmDomEventListenerInvoker"
+        );
+      }
+    }
+
+    let mut vm_host_ctx = ();
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
+    let mut invoker = WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+      &mut realm_slot,
+      &mut vm_host_slot,
+      &mut webidl_bindings_host_slot,
+    );
+
+    let mut event = web_events::Event::new(
+      "x",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    let event_for_event_obj = web_events::Event::new(
+      "x",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    invoker
+      .with_dispatch_event_object(&event_for_event_obj, |invoker| {
+        web_events::dispatch_event(
+          web_events::EventTargetId::Document,
+          &mut event,
+          host.dom(),
+          host.dom().events(),
+          invoker,
+        )
+      })
+      .expect("dispatch_event should succeed");
+
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    let ok = realm.exec_script(
+      "(() => {\n\
+        if (__captured === null) return false;\n\
+        return __during_cancel === true &&\n\
+          __during_immediate === true &&\n\
+          __captured.cancelBubble === false &&\n\
+          __captured.__fastrender_event_stop_immediate === false;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
