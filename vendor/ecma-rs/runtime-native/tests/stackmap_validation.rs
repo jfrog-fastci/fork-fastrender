@@ -81,9 +81,9 @@ fn llc_to_obj(opt_bc_path: &std::path::Path, obj_path: &std::path::Path, opt: &s
   );
 }
 
-fn dump_stackmaps(obj_path: &std::path::Path, out_path: &std::path::Path) -> Vec<u8> {
+fn dump_stackmaps(objcopy: &str, obj_path: &std::path::Path, out_path: &std::path::Path) -> Vec<u8> {
   run(
-    Command::new("llvm-objcopy-18")
+    Command::new(objcopy)
       .arg("--dump-section")
       .arg(format!(".llvm_stackmaps={}", out_path.display()))
       .arg(obj_path),
@@ -195,9 +195,13 @@ fn stackmap_conformance_matrix() {
     eprintln!("skipping stackmap_conformance_matrix: lld not found in PATH (need ld.lld-18 or ld.lld)");
     return;
   };
+  let Some(objcopy) = find_cmd(&["llvm-objcopy-18", "llvm-objcopy", "objcopy"]) else {
+    eprintln!("skipping stackmap_conformance_matrix: objcopy not found in PATH (need llvm-objcopy-18/llvm-objcopy/objcopy)");
+    return;
+  };
 
   // Keep this test optional in minimal environments (mirrors other runtime-native LLVM tests).
-  let required = ["llvm-as-18", "opt-18", "llc-18", "llvm-objcopy-18"];
+  let required = ["llvm-as-18", "opt-18", "llc-18"];
   if !required.iter().all(|c| has_cmd(c)) {
     eprintln!("skipping stackmap_conformance_matrix: LLVM 18 tools not found in PATH");
     return;
@@ -224,14 +228,14 @@ fn stackmap_conformance_matrix() {
     let simple_obj = dir.path().join(format!("simple{opt}.o"));
     llc_to_obj(&simple_opt_bc, &simple_obj, opt);
     let simple_stackmaps_bin = dir.path().join(format!("simple{opt}.llvm_stackmaps.bin"));
-    let bytes = dump_stackmaps(&simple_obj, &simple_stackmaps_bin);
+    let bytes = dump_stackmaps(objcopy, &simple_obj, &simple_stackmaps_bin);
     let index = StackMaps::parse(&bytes).expect("parse stackmaps (simple)");
     validate_stackmaps(&index).expect("validate stackmaps (simple)");
 
     let derived_obj = dir.path().join(format!("derived{opt}.o"));
     llc_to_obj(&derived_opt_bc, &derived_obj, opt);
     let derived_stackmaps_bin = dir.path().join(format!("derived{opt}.llvm_stackmaps.bin"));
-    let bytes = dump_stackmaps(&derived_obj, &derived_stackmaps_bin);
+    let bytes = dump_stackmaps(objcopy, &derived_obj, &derived_stackmaps_bin);
     let index = StackMaps::parse(&bytes).expect("parse stackmaps (derived)");
     validate_stackmaps(&index).expect("validate stackmaps (derived)");
     assert_has_distinct_base_derived_pair(&index);
@@ -255,7 +259,7 @@ fn stackmap_conformance_matrix() {
       .arg(&derived_obj),
   );
   let merged_stackmaps_bin = dir.path().join("merged.llvm_stackmaps.bin");
-  let bytes = dump_stackmaps(&merged_obj, &merged_stackmaps_bin);
+  let bytes = dump_stackmaps(objcopy, &merged_obj, &merged_stackmaps_bin);
   let merged = StackMaps::parse(&bytes).expect("parse merged stackmaps");
   assert_eq!(merged.raws().len(), 2, "expected two concatenated stackmap blobs");
   validate_stackmaps(&merged).expect("validate merged stackmaps");

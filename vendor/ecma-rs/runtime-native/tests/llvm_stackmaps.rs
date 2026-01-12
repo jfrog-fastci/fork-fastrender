@@ -15,6 +15,15 @@ fn have_tool(name: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+fn find_objcopy() -> Option<&'static str> {
+  for cand in ["llvm-objcopy-18", "llvm-objcopy", "objcopy"] {
+    if have_tool(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn run(cmd: &mut Command) {
   let status = cmd.status().expect("failed to spawn command");
   assert!(status.success(), "command failed: {cmd:?}");
@@ -22,10 +31,14 @@ fn run(cmd: &mut Command) {
 
 #[test]
 fn parses_llvm18_statepoint_stackmaps_and_finds_reloc_pair_offsets() {
-  if !(have_tool("llvm-as-18") && have_tool("opt-18") && have_tool("llc-18") && have_tool("llvm-objcopy-18")) {
+  if !(have_tool("llvm-as-18") && have_tool("opt-18") && have_tool("llc-18")) {
     eprintln!("skipping: required LLVM 18 tools not found in PATH");
     return;
   }
+  let Some(objcopy) = find_objcopy() else {
+    eprintln!("skipping: objcopy not found in PATH (need llvm-objcopy-18/llvm-objcopy/objcopy)");
+    return;
+  };
 
   let dir = tempdir().unwrap();
   let ll = dir.path().join("test.ll");
@@ -88,7 +101,7 @@ fn parses_llvm18_statepoint_stackmaps_and_finds_reloc_pair_offsets() {
   );
 
   run(
-    Command::new("llvm-objcopy-18")
+    Command::new(objcopy)
       .arg(format!("--dump-section"))
       .arg(format!(".llvm_stackmaps={}", stackmaps_bin.display()))
       .arg(&obj),
