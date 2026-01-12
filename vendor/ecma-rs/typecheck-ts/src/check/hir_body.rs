@@ -4380,6 +4380,7 @@ impl<'a> Checker<'a> {
     let mut candidate_sigs = all_candidate_sigs.clone();
     let has_spread = arg_exprs.iter().any(|arg| arg.stx.spread);
     let mut callee_for_resolution = callee_ty;
+
     let sigs_for_context = {
       let base_for_context = if has_spread {
         let sigs_without_excess_props: Vec<_> = all_candidate_sigs
@@ -4576,6 +4577,7 @@ impl<'a> Checker<'a> {
         next_param_index = next_param_index.saturating_add(1);
       }
     }
+
     let span = Span {
       file: self.file,
       range: loc_to_range(self.file, call.loc),
@@ -4593,6 +4595,8 @@ impl<'a> Checker<'a> {
       self.ref_expander,
     );
 
+    // Refine inline function arguments with the chosen signature to improve
+    // generic inference and avoid spurious `NO_OVERLOAD` errors.
     if let Some(sig_id) = resolution.signature.or(resolution.contextual_signature) {
       let sig = self.store.signature(sig_id);
       let mut refined = false;
