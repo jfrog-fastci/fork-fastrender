@@ -699,7 +699,11 @@ impl TypeLowerer {
           &codes::UNRESOLVED_TYPE_REFERENCE,
           format!("unresolved type '{}'", name),
         );
-        self.store.primitive_ids().unknown
+        // Match TypeScript's "error type" behaviour: unresolved type references
+        // are still treated as usable types (effectively `any`) so we don't
+        // cascade additional diagnostics (for example, failing assignability
+        // checks) after the primary unresolved-type diagnostic.
+        self.store.primitive_ids().any
       }
       TypeEntityName::Qualified(_) => {
         let Some(path) = entity_name_segments(&reference.stx.name) else {
@@ -708,7 +712,7 @@ impl TypeLowerer {
             &codes::UNSUPPORTED_QUALIFIED_NAME,
             "unsupported qualified type reference",
           );
-          return self.store.primitive_ids().unknown;
+          return self.store.primitive_ids().any;
         };
         if let Some(resolved) = self.resolve_to_ref(&path, type_args, false) {
           return resolved;
@@ -718,7 +722,7 @@ impl TypeLowerer {
           &codes::UNSUPPORTED_QUALIFIED_NAME,
           format!("unresolved qualified type '{}'", path.join(".")),
         );
-        self.store.primitive_ids().unknown
+        self.store.primitive_ids().any
       }
       TypeEntityName::Import(_) => {
         self.push_diag(
@@ -726,7 +730,7 @@ impl TypeLowerer {
           &codes::UNRESOLVED_TYPE_REFERENCE,
           "import expressions in type references are not supported",
         );
-        self.store.primitive_ids().unknown
+        self.store.primitive_ids().any
       }
     }
   }

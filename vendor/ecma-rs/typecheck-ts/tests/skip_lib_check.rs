@@ -212,3 +212,61 @@ fn skip_lib_check_suppresses_dts_triple_slash_reference_lib_diagnostics() {
     "expected triple-slash reference lib diagnostics from .d.ts to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
   );
 }
+
+#[test]
+fn skip_lib_check_does_not_cascade_unresolved_dts_types_into_ts_diagnostics() {
+  // When a `.d.ts` file contains an unresolved type reference, TypeScript emits
+  // the diagnostic at the declaration site but still treats the declaration as
+  // usable (the error type behaves like `any`). This avoids spurious follow-on
+  // type errors in `.ts` sources that consume the declaration.
+  //
+  // With `skipLibCheck=true`, the `.d.ts` diagnostic itself is suppressed, so
+  // the entire program should type-check without errors.
+  let lib_key = FileKey::new("broken.d.ts");
+  let entry_key = FileKey::new("entry.ts");
+  let lib_source = "declare const value: MissingType;";
+  let entry_source = "const n: number = value;";
+
+  let build_program = |skip_lib_check: bool| {
+    let mut options = CompilerOptions::default();
+    options.no_default_lib = true;
+    options.skip_lib_check = skip_lib_check;
+    let mut host = MemoryHost::with_options(options);
+    host.add_lib(common::core_globals_lib());
+    host.add_lib(LibFile {
+      key: lib_key.clone(),
+      name: Arc::from("broken.d.ts"),
+      kind: FileKind::Dts,
+      text: Arc::from(lib_source),
+    });
+    host.insert(entry_key.clone(), entry_source);
+    Program::new(host, vec![entry_key.clone()])
+  };
+
+  let program = build_program(false);
+  let lib_id = program
+    .file_id(&lib_key)
+    .expect("broken .d.ts file should be loaded");
+  let entry_id = program
+    .file_id(&entry_key)
+    .expect("entry file should be loaded");
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.iter().any(|diag| diag.primary.file == lib_id
+      && diag.code.as_str() == codes::UNRESOLVED_TYPE_REFERENCE.as_str()),
+    "expected unresolved type reference diagnostic from .d.ts when skip_lib_check is disabled, got {diagnostics:?}"
+  );
+  assert!(
+    !diagnostics
+      .iter()
+      .any(|diag| diag.primary.file == entry_id && diag.code.as_str() == codes::TYPE_MISMATCH.as_str()),
+    "expected unresolved .d.ts types not to cascade into TS2322 in entry.ts, got {diagnostics:?}"
+  );
+
+  let program = build_program(true);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "expected unresolved .d.ts diagnostics to be suppressed and not cascade when skip_lib_check is enabled, got {diagnostics:?}"
+  );
+}
