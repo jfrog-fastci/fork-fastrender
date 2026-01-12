@@ -557,6 +557,15 @@ Contract:
 - Readiness notifications are **edge-triggered**. Consumers must drain reads/writes until the
   operation returns `EAGAIN`/`WouldBlock`; otherwise the reactor may not deliver another edge.
 - `rt_io_register*` returns 0 on failure; errors are not returned over the stable C ABI.
+-
+  Handle-based variants (`rt_io_register_handle*`) use persistent-handle userdata:
+
+  - The runtime consumes `data` and treats it as a strong GC root while the watcher is registered.
+  - The runtime frees the handle exactly once when the watcher is unregistered (or if registration
+    fails).
+  - For `rt_io_register_handle_with_drop`, `drop_data` is invoked exactly once when the watcher is
+    torn down (including on registration failure), and runs before the handle is freed.
+  - If `data` is stale (freed), readiness callbacks are treated as no-ops.
 
 - `rt_io_register(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8) -> IoWatcherId`
 - `rt_io_register_with_drop(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8)) -> IoWatcherId`
