@@ -237,6 +237,7 @@ fn build_var_defs(
     };
 
     let def = match inst.t {
+      InstTyp::ArrayLit | InstTyp::ObjectLit | InstTyp::RegexLit | InstTyp::TemplateLit => VarDef::FreshAlloc,
       InstTyp::VarAssign => match &inst.args[0] {
         Arg::Var(src) => VarDef::Alias(*src),
         Arg::Const(_) => VarDef::Const,

@@ -969,10 +969,22 @@ mod tests {
     );
 
     assert!(
-      any_inst(&program, |inst| inst.t == InstTyp::Call
-        && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name.starts_with("__optimize_js_"))
-        && inst.meta.ownership != OwnershipState::Unknown),
-      "expected at least one allocation call to have non-Unknown InstMeta.ownership"
+      any_inst(&program, |inst| {
+        // Old IL used `InstTyp::Call` to internal `__optimize_js_*` marker builtins.
+        // New IL represents these as dedicated instruction variants.
+        let is_allocation_site = matches!(
+          inst.t,
+          InstTyp::ArrayLit
+            | InstTyp::ObjectLit
+            | InstTyp::RegexLit
+            | InstTyp::TemplateLit
+            | InstTyp::New
+        ) || (inst.t == InstTyp::Call
+          && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name.starts_with("__optimize_js_")));
+
+        is_allocation_site && inst.meta.ownership != OwnershipState::Unknown
+      }),
+      "expected at least one allocation site to have non-Unknown InstMeta.ownership"
     );
 
     assert!(

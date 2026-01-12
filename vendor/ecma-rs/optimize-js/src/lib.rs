@@ -921,30 +921,49 @@ fn annotate_program_ssa_metadata(program: &mut Program, cfg_options: CompileCfgO
 
     for (_, block) in cfg.bblocks.all_mut() {
       for inst in block.iter_mut() {
-        if inst.t != InstTyp::Call {
-          continue;
-        }
         if inst.meta.result_escape != Some(EscapeState::NoEscape) {
           continue;
         }
-        let (tgt, callee, _this, _args, _spreads) = inst.as_call();
-        if tgt.is_none() {
-          continue;
-        }
-        if matches!(
-          callee,
-          Arg::Builtin(name)
+        // Only allocation-like instructions are stack-alloc candidates.
+        match inst.t {
+          InstTyp::ArrayLit
+          | InstTyp::ObjectLit
+          | InstTyp::RegexLit
+          | InstTyp::TemplateLit
+          | InstTyp::TaggedTemplateLit
+          | InstTyp::New => {
+            if inst.tgts.get(0).is_some() {
+              inst.meta.stack_alloc_candidate = true;
+            }
+          }
+          // Typed builds may lower template literals as `StringConcat` with a marker flag.
+          InstTyp::StringConcat if inst.meta.string_concat_is_template => {
+            if inst.tgts.get(0).is_some() {
+              inst.meta.stack_alloc_candidate = true;
+            }
+          }
+          InstTyp::Call => {
+            let (tgt, callee, _this, _args, _spreads) = inst.as_call();
+            if tgt.is_none() {
+              continue;
+            }
             if matches!(
-              name.as_str(),
-              "__optimize_js_object"
-                | "__optimize_js_array"
-                | "__optimize_js_regex"
-                | "__optimize_js_template"
-                | "__optimize_js_tagged_template"
-                | "__optimize_js_new"
-            )
-        ) {
-          inst.meta.stack_alloc_candidate = true;
+              callee,
+              Arg::Builtin(name)
+                if matches!(
+                  name.as_str(),
+                  "__optimize_js_object"
+                    | "__optimize_js_array"
+                    | "__optimize_js_regex"
+                    | "__optimize_js_template"
+                    | "__optimize_js_tagged_template"
+                    | "__optimize_js_new"
+                )
+            ) {
+              inst.meta.stack_alloc_candidate = true;
+            }
+          }
+          _ => {}
         }
       }
     }

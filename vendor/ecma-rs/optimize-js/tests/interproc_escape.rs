@@ -42,13 +42,7 @@ fn passing_alloc_to_helper_returning_param_does_not_force_global_escape() {
   // caller() { const o = {}; helper(o); }
   let caller = func(
     cfg_single_block(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      ),
+      Inst::object_lit(0, Vec::new()),
       Inst::call(
         None::<u32>,
         Arg::Fn(0),
@@ -88,13 +82,7 @@ fn returning_helper_call_result_marks_alloc_as_return_escape() {
   // caller() { const o = {}; return helper(o); }
   let caller = func(
     cfg_single_block(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      ),
+      Inst::object_lit(0, Vec::new()),
       Inst::call(
         1,
         Arg::Fn(0),
@@ -134,13 +122,7 @@ fn calling_helper_that_throws_param_marks_alloc_as_return_escape() {
   // caller() { const o = {}; helper(o); }
   let caller = func(
     cfg_single_block(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      ),
+      Inst::object_lit(0, Vec::new()),
       Inst::call(
         None::<u32>,
         Arg::Fn(0),
@@ -195,13 +177,7 @@ fn wrapper_call_chain_propagates_thrown_param() {
   // caller() { const o = {}; wrapper(o); }
   let caller = func(
     cfg_single_block(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      ),
+      Inst::object_lit(0, Vec::new()),
       Inst::call(
         None::<u32>,
         Arg::Fn(1),
@@ -253,20 +229,8 @@ fn storing_into_local_receiver_arg_propagates_receiver_escape() {
   // caller() { const x = {}; const y = {}; return helper(x, y); }
   let caller = func(
     cfg_single_block(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      ),
-      Inst::call(
-        1,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      ),
+      Inst::object_lit(0, Vec::new()),
+      Inst::object_lit(1, Vec::new()),
       Inst::call(
         2,
         Arg::Fn(0),
@@ -317,13 +281,7 @@ fn helper_storing_param_to_global_forces_global_escape() {
   // caller() { const o = {}; helper(o); }
   let caller = func(
     cfg_single_block(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      ),
+      Inst::object_lit(0, Vec::new()),
       Inst::call(
         None::<u32>,
         Arg::Fn(0),
@@ -360,13 +318,7 @@ fn summaries_are_deterministic() {
   let helper = func(cfg_single_block(vec![Inst::ret(Some(Arg::Var(0)))]), vec![0]);
   let caller = func(
     cfg_single_block(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      ),
+      Inst::object_lit(0, Vec::new()),
       Inst::call(
         1,
         Arg::Fn(0),

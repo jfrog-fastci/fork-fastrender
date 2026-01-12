@@ -540,18 +540,22 @@ fn expr_eq(left: &Node<Expr>, right: &Node<Expr>) -> bool {
   }
 }
 
-fn call_args(args: Vec<Node<Expr>>, spreads: &[usize]) -> Vec<Node<CallArg>> {
+fn call_args_with_base(args: Vec<Node<Expr>>, spreads: &[usize], base: usize) -> Vec<Node<CallArg>> {
   args
     .into_iter()
     .enumerate()
     .map(|(i, expr)| {
-      let spread = spreads.contains(&(i + 2));
+      let spread = spreads.contains(&(i + base));
       node(CallArg {
         spread,
         value: expr,
       })
     })
     .collect()
+}
+
+fn call_args(args: Vec<Node<Expr>>, spreads: &[usize]) -> Vec<Node<CallArg>> {
+  call_args_with_base(args, spreads, 2)
 }
 
 pub fn lower_call_inst<V: VarNamer, F: FnEmitter>(
@@ -972,6 +976,206 @@ pub fn lower_known_api_call_inst<V: VarNamer, F: FnEmitter>(
   }
 }
 
+fn lower_intrinsic_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+  target_init: VarInit,
+) -> Option<Node<Stmt>> {
+  const INTERNAL_ARRAY_HOLE: &str = "__optimize_js_array_hole";
+  const INTERNAL_OBJECT_PROP_MARKER: &str = "__optimize_js_object_prop";
+  const INTERNAL_OBJECT_COMPUTED_MARKER: &str = "__optimize_js_object_prop_computed";
+  const INTERNAL_OBJECT_SPREAD_MARKER: &str = "__optimize_js_object_spread";
+
+  let mk_stmt = |tgt: Option<u32>, expr: Node<Expr>| match tgt {
+    Some(tgt) => var_binding(var_namer, tgt, expr, target_init),
+    None => node(Stmt::Expr(node(ExprStmt { expr }))),
+  };
+
+  match inst.t {
+    InstTyp::ArrayLit => {
+      let (tgt, args, spreads) = inst.as_array_lit();
+      let mut elements = Vec::with_capacity(args.len());
+      for (idx, arg) in args.iter().enumerate() {
+        let is_spread = spreads.contains(&idx);
+        if is_spread {
+          elements.push(LitArrElem::Rest(lower_arg(var_namer, fn_emitter, arg)));
+        } else if matches!(arg, Arg::Builtin(path) if path == INTERNAL_ARRAY_HOLE) {
+          elements.push(LitArrElem::Empty);
+        } else {
+          elements.push(LitArrElem::Single(lower_arg(var_namer, fn_emitter, arg)));
+        }
+      }
+      let expr = node(Expr::LitArr(node(LitArrExpr { elements })));
+      Some(mk_stmt(tgt, expr))
+    }
+    InstTyp::ObjectLit => {
+      let (tgt, args) = inst.as_object_lit();
+      assert!(
+        args.len() % 3 == 0,
+        "object literal inst must have arg count divisible by 3"
+      );
+      let mut members = Vec::with_capacity(args.len() / 3);
+      for chunk in args.chunks(3) {
+        let marker = &chunk[0];
+        let key_or_value = &chunk[1];
+        let value = &chunk[2];
+
+        let Arg::Builtin(marker) = marker else {
+          panic!("object literal expects builtin markers, got {marker:?}");
+        };
+        match marker.as_str() {
+          INTERNAL_OBJECT_PROP_MARKER => {
+            let Arg::Const(Const::Str(key)) = key_or_value else {
+              panic!("object literal prop marker expects string key, got {key_or_value:?}");
+            };
+            let tt = if is_valid_identifier(key) {
+              TT::Identifier
+            } else {
+              TT::LiteralString
+            };
+            let key = ClassOrObjKey::Direct(node(ClassOrObjMemberDirectKey {
+              key: key.clone(),
+              tt,
+            }));
+            let val = ClassOrObjVal::Prop(Some(lower_arg(var_namer, fn_emitter, value)));
+            members.push(node(ObjMember {
+              typ: ObjMemberType::Valued { key, val },
+            }));
+          }
+          INTERNAL_OBJECT_COMPUTED_MARKER => {
+            let key = ClassOrObjKey::Computed(lower_arg(var_namer, fn_emitter, key_or_value));
+            let val = ClassOrObjVal::Prop(Some(lower_arg(var_namer, fn_emitter, value)));
+            members.push(node(ObjMember {
+              typ: ObjMemberType::Valued { key, val },
+            }));
+          }
+          INTERNAL_OBJECT_SPREAD_MARKER => {
+            members.push(node(ObjMember {
+              typ: ObjMemberType::Rest {
+                val: lower_arg(var_namer, fn_emitter, key_or_value),
+              },
+            }));
+          }
+          other => panic!("unknown object literal marker {other:?}"),
+        }
+      }
+
+      let expr = node(Expr::LitObj(node(LitObjExpr { members })));
+      Some(mk_stmt(tgt, expr))
+    }
+    InstTyp::TemplateLit => {
+      let (tgt, args) = inst.as_template_lit();
+      assert!(
+        args.len() % 2 == 1,
+        "template literal inst must have odd arg count"
+      );
+      let mut parts = Vec::with_capacity(args.len());
+      for (idx, arg) in args.iter().enumerate() {
+        if idx % 2 == 0 {
+          let Arg::Const(Const::Str(segment)) = arg else {
+            panic!("template literal expects string segments, got {arg:?}");
+          };
+          parts.push(LitTemplatePart::String(segment.clone()));
+        } else {
+          parts.push(LitTemplatePart::Substitution(lower_arg(
+            var_namer, fn_emitter, arg,
+          )));
+        }
+      }
+      let expr = node(Expr::LitTemplate(node(LitTemplateExpr { parts })));
+      Some(mk_stmt(tgt, expr))
+    }
+    InstTyp::TaggedTemplateLit => {
+      let (tgt, args) = inst.as_tagged_template_lit();
+      assert!(
+        args.len() >= 2 && args.len() % 2 == 0,
+        "tagged template inst must have even arg count >= 2"
+      );
+      let tag_expr = lower_arg(var_namer, fn_emitter, &args[0]);
+
+      let mut parts = Vec::with_capacity(args.len() - 1);
+      for (idx, arg) in args[1..].iter().enumerate() {
+        if idx % 2 == 0 {
+          let Arg::Const(Const::Str(segment)) = arg else {
+            panic!("tagged template expects string segments, got {arg:?}");
+          };
+          parts.push(LitTemplatePart::String(segment.clone()));
+        } else {
+          parts.push(LitTemplatePart::Substitution(lower_arg(
+            var_namer, fn_emitter, arg,
+          )));
+        }
+      }
+
+      let expr = node(Expr::TaggedTemplate(node(TaggedTemplateExpr {
+        function: tag_expr,
+        parts,
+      })));
+      Some(mk_stmt(tgt, expr))
+    }
+    InstTyp::RegexLit => {
+      let (tgt, regex_arg) = inst.as_regex_lit();
+      let Arg::Const(Const::Str(regex)) = regex_arg else {
+        panic!("regex literal inst expects string payload, got {regex_arg:?}");
+      };
+      let expr = node(Expr::LitRegex(node(LitRegexExpr {
+        value: regex.clone(),
+      })));
+      Some(mk_stmt(tgt, expr))
+    }
+    InstTyp::New => {
+      let (tgt, ctor, args, spreads) = inst.as_new_expr();
+      let ctor_expr = lower_arg(var_namer, fn_emitter, ctor);
+      let args_exprs = args
+        .iter()
+        .map(|a| lower_arg(var_namer, fn_emitter, a))
+        .collect();
+      let call_expr = node(Expr::Call(node(CallExpr {
+        optional_chaining: false,
+        callee: ctor_expr,
+        // `InstTyp::New` stores the constructor at args[0], so call args start at index 1.
+        arguments: call_args_with_base(args_exprs, spreads, 1),
+      })));
+      let expr = node(Expr::Unary(node(UnaryExpr {
+        operator: OperatorName::New,
+        argument: call_expr,
+      })));
+      Some(mk_stmt(tgt, expr))
+    }
+    InstTyp::Delete => {
+      let (tgt, obj, prop) = inst.as_delete();
+      let member = lower_get_prop(var_namer, fn_emitter, obj, prop);
+      let expr = node(Expr::Unary(node(UnaryExpr {
+        operator: OperatorName::Delete,
+        argument: member,
+      })));
+      Some(mk_stmt(tgt, expr))
+    }
+    InstTyp::In | InstTyp::Instanceof => {
+      let (tgt, left, right) = if inst.t == InstTyp::In {
+        let (tgt, left, right) = inst.as_in_op();
+        (tgt, left, right)
+      } else {
+        let (tgt, left, right) = inst.as_instanceof_op();
+        (tgt, left, right)
+      };
+      let op = if inst.t == InstTyp::In {
+        OperatorName::In
+      } else {
+        OperatorName::Instanceof
+      };
+      let expr = node(Expr::Binary(node(BinaryExpr {
+        operator: op,
+        left: lower_arg(var_namer, fn_emitter, left),
+        right: lower_arg(var_namer, fn_emitter, right),
+      })));
+      Some(mk_stmt(tgt, expr))
+    }
+    _ => None,
+  }
+}
+
 pub fn lower_return_inst<V: VarNamer, F: FnEmitter>(
   var_namer: &V,
   fn_emitter: &F,
@@ -1128,6 +1332,15 @@ pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
     InstTyp::FieldStore => lower_field_store_inst(var_namer, fn_emitter, inst),
     InstTyp::ForeignStore => lower_foreign_store_inst(var_namer, fn_emitter, inst),
     InstTyp::UnknownStore => lower_unknown_store_inst(var_namer, fn_emitter, inst),
+    InstTyp::ArrayLit
+    | InstTyp::ObjectLit
+    | InstTyp::RegexLit
+    | InstTyp::TemplateLit
+    | InstTyp::TaggedTemplateLit
+    | InstTyp::New
+    | InstTyp::Delete
+    | InstTyp::In
+    | InstTyp::Instanceof => lower_intrinsic_inst(var_namer, fn_emitter, inst, init),
     InstTyp::Call => lower_call_inst(var_namer, fn_emitter, inst, None, None, None, init),
     #[cfg(feature = "semantic-ops")]
     InstTyp::KnownApiCall { .. } => lower_known_api_call_inst(var_namer, fn_emitter, inst, init),
@@ -1352,6 +1565,28 @@ fn assignment_stmt(lhs: FlatExpr, rhs: FlatExpr) -> Node<Stmt> {
   })))
 }
 
+struct TempNamer;
+
+impl VarNamer for TempNamer {
+  fn name_var(&self, var: u32) -> String {
+    temp_name(var)
+  }
+
+  fn name_foreign(&self, symbol: SymbolId) -> String {
+    format!("f{}", symbol.raw_id())
+  }
+
+  fn name_unknown(&self, name: &str) -> String {
+    name.to_string()
+  }
+}
+
+impl FnEmitter for TempNamer {
+  fn emit_function(&self, id: usize) -> Node<Expr> {
+    identifier(format!("fn{id}"))
+  }
+}
+
 fn handle_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<u32>) {
   let (tgt, callee, this_arg, args, spreads) = inst.as_call();
   let callee_expr = expr_from_arg(callee, env);
@@ -1489,6 +1724,7 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
     ));
   }
 
+  let namer = TempNamer;
   let mut env = BTreeMap::<u32, VarValue>::new();
   let mut stmts = Vec::new();
   let mut visited = BTreeSet::<u32>::new();
@@ -1658,6 +1894,30 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
               origin: ValueOrigin::Other,
             },
           );
+        }
+        InstTyp::ArrayLit
+        | InstTyp::ObjectLit
+        | InstTyp::RegexLit
+        | InstTyp::TemplateLit
+        | InstTyp::TaggedTemplateLit
+        | InstTyp::New
+        | InstTyp::Delete
+        | InstTyp::In
+        | InstTyp::Instanceof => {
+          let stmt = lower_intrinsic_inst(&namer, &namer, inst, VarInit::Assign).ok_or_else(|| {
+            DecompileError::Unsupported(format!("cannot lower intrinsic inst {:?}", inst.t))
+          })?;
+          stmts.push(stmt);
+
+          if let Some(&tgt) = inst.tgts.get(0) {
+            env.insert(
+              tgt,
+              VarValue {
+                expr: FlatExpr::Identifier(temp_name(tgt)),
+                origin: ValueOrigin::Other,
+              },
+            );
+          }
         }
         InstTyp::Call => {
           let (call_expr, tgt) = handle_call(inst, &env);
@@ -1963,6 +2223,48 @@ pub enum LoweredInst {
     normal_label: u32,
     exception_label: u32,
   },
+  ArrayLit {
+    tgt: Option<u32>,
+    args: Vec<LoweredArg>,
+    spreads: Vec<usize>,
+  },
+  ObjectLit {
+    tgt: Option<u32>,
+    args: Vec<LoweredArg>,
+  },
+  RegexLit {
+    tgt: Option<u32>,
+    regex: LoweredArg,
+  },
+  TemplateLit {
+    tgt: Option<u32>,
+    args: Vec<LoweredArg>,
+  },
+  TaggedTemplateLit {
+    tgt: Option<u32>,
+    args: Vec<LoweredArg>,
+  },
+  New {
+    tgt: Option<u32>,
+    ctor: LoweredArg,
+    args: Vec<LoweredArg>,
+    spreads: Vec<usize>,
+  },
+  Delete {
+    tgt: Option<u32>,
+    obj: LoweredArg,
+    prop: LoweredArg,
+  },
+  In {
+    tgt: Option<u32>,
+    left: LoweredArg,
+    right: LoweredArg,
+  },
+  Instanceof {
+    tgt: Option<u32>,
+    left: LoweredArg,
+    right: LoweredArg,
+  },
   CondGoto {
     cond: LoweredArg,
     t_label: u32,
@@ -2225,6 +2527,48 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       spreads: inst.spreads.clone(),
       normal_label: inst.labels[0],
       exception_label: inst.labels[1],
+    },
+    InstTyp::ArrayLit => LoweredInst::ArrayLit {
+      tgt: inst.tgts.get(0).copied(),
+      args: inst.args.iter().map(lowered_arg).collect(),
+      spreads: inst.spreads.clone(),
+    },
+    InstTyp::ObjectLit => LoweredInst::ObjectLit {
+      tgt: inst.tgts.get(0).copied(),
+      args: inst.args.iter().map(lowered_arg).collect(),
+    },
+    InstTyp::RegexLit => LoweredInst::RegexLit {
+      tgt: inst.tgts.get(0).copied(),
+      regex: lowered_arg(&inst.args[0]),
+    },
+    InstTyp::TemplateLit => LoweredInst::TemplateLit {
+      tgt: inst.tgts.get(0).copied(),
+      args: inst.args.iter().map(lowered_arg).collect(),
+    },
+    InstTyp::TaggedTemplateLit => LoweredInst::TaggedTemplateLit {
+      tgt: inst.tgts.get(0).copied(),
+      args: inst.args.iter().map(lowered_arg).collect(),
+    },
+    InstTyp::New => LoweredInst::New {
+      tgt: inst.tgts.get(0).copied(),
+      ctor: lowered_arg(&inst.args[0]),
+      args: inst.args[1..].iter().map(lowered_arg).collect(),
+      spreads: inst.spreads.clone(),
+    },
+    InstTyp::Delete => LoweredInst::Delete {
+      tgt: inst.tgts.get(0).copied(),
+      obj: lowered_arg(&inst.args[0]),
+      prop: lowered_arg(&inst.args[1]),
+    },
+    InstTyp::In => LoweredInst::In {
+      tgt: inst.tgts.get(0).copied(),
+      left: lowered_arg(&inst.args[0]),
+      right: lowered_arg(&inst.args[1]),
+    },
+    InstTyp::Instanceof => LoweredInst::Instanceof {
+      tgt: inst.tgts.get(0).copied(),
+      left: lowered_arg(&inst.args[0]),
+      right: lowered_arg(&inst.args[1]),
     },
     InstTyp::Catch => LoweredInst::Catch { tgt: inst.tgts[0] },
     InstTyp::Throw => {

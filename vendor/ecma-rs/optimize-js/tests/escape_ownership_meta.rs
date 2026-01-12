@@ -5,7 +5,7 @@ use common::compile_source;
 use optimize_js::analysis::escape::EscapeState;
 use optimize_js::analysis::ownership::UseMode;
 use optimize_js::analysis::annotate_program;
-use optimize_js::il::inst::{Arg, InstTyp};
+use optimize_js::il::inst::InstTyp;
 use optimize_js::TopLevelMode;
 
 #[test]
@@ -33,12 +33,10 @@ fn escape_and_ownership_metadata_is_attached() {
   labels.sort_unstable();
   for label in labels {
     for inst in cfg.bblocks.get(label) {
-      if inst.t == InstTyp::Call {
-        let (tgt, callee, _this, _args, _spreads) = inst.as_call();
-        if matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object") {
-          assert!(tgt.is_some(), "object literal call should produce a value");
-          alloc_escape = Some(inst.meta.result_escape);
-        }
+      if inst.t == InstTyp::ObjectLit {
+        let (tgt, _args) = inst.as_object_lit();
+        assert!(tgt.is_some(), "object literal inst should produce a value");
+        alloc_escape = Some(inst.meta.result_escape);
       }
 
       if inst.t == InstTyp::Return {

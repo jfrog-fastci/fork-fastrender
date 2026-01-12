@@ -28,20 +28,10 @@ pub struct CompiledMemberExpr {
 }
 
 impl<'p> HirSourceToInst<'p> {
-  const INTERNAL_IN_CALLEE: &'static str = "__optimize_js_in";
-  const INTERNAL_INSTANCEOF_CALLEE: &'static str = "__optimize_js_instanceof";
-  const INTERNAL_DELETE_CALLEE: &'static str = "__optimize_js_delete";
-  const INTERNAL_NEW_CALLEE: &'static str = "__optimize_js_new";
-  const INTERNAL_REGEX_CALLEE: &'static str = "__optimize_js_regex";
-  const INTERNAL_ARRAY_CALLEE: &'static str = "__optimize_js_array";
   const INTERNAL_ARRAY_HOLE: &'static str = "__optimize_js_array_hole";
-  const INTERNAL_OBJECT_CALLEE: &'static str = "__optimize_js_object";
   const INTERNAL_OBJECT_PROP_MARKER: &'static str = "__optimize_js_object_prop";
   const INTERNAL_OBJECT_COMPUTED_MARKER: &'static str = "__optimize_js_object_prop_computed";
   const INTERNAL_OBJECT_SPREAD_MARKER: &'static str = "__optimize_js_object_spread";
-  #[cfg(not(feature = "typed"))]
-  const INTERNAL_TEMPLATE_CALLEE: &'static str = "__optimize_js_template";
-  const INTERNAL_TAGGED_TEMPLATE_CALLEE: &'static str = "__optimize_js_tagged_template";
   #[cfg(not(feature = "native-async-ops"))]
   const INTERNAL_AWAIT_CALLEE: &'static str = "__optimize_js_await";
 
@@ -138,13 +128,7 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          self.call_or_invoke(
-            Some(tmp),
-            Arg::Builtin(Self::INTERNAL_REGEX_CALLEE.to_string()),
-            Arg::Const(Const::Undefined),
-            vec![Arg::Const(Const::Str(v.clone()))],
-            Vec::new(),
-          ),
+          Inst::regex_lit(tmp, v.clone()),
         );
         Arg::Var(tmp)
       }
@@ -931,20 +915,13 @@ impl<'p> HirSourceToInst<'p> {
       let left = self.compile_expr(left)?;
       let right = self.compile_expr(right)?;
       let res_tmp_var = self.c_temp.bump();
-      let callee = match operator {
-        BinaryOp::In => Self::INTERNAL_IN_CALLEE,
-        BinaryOp::Instanceof => Self::INTERNAL_INSTANCEOF_CALLEE,
-        _ => unreachable!(),
-      };
       self.push_value_inst(
         expr_id,
-        self.call_or_invoke(
-          Some(res_tmp_var),
-          Arg::Builtin(callee.to_string()),
-          Arg::Const(Const::Undefined),
-          vec![left, right],
-          Vec::new(),
-        ),
+        match operator {
+          BinaryOp::In => Inst::in_op(res_tmp_var, left, right),
+          BinaryOp::Instanceof => Inst::instanceof_op(res_tmp_var, left, right),
+          _ => unreachable!(),
+        },
       );
       return Ok(Arg::Var(res_tmp_var));
     }
@@ -1956,13 +1933,7 @@ impl<'p> HirSourceToInst<'p> {
             let tmp = self.c_temp.bump();
             self.push_value_inst(
               expr_id,
-              self.call_or_invoke(
-                Some(tmp),
-                Arg::Builtin(Self::INTERNAL_DELETE_CALLEE.to_string()),
-                Arg::Const(Const::Undefined),
-                vec![object_arg, prop_arg],
-                Vec::new(),
-              ),
+              Inst::delete(tmp, object_arg, prop_arg),
             );
             Ok(Arg::Var(tmp))
           }
@@ -2091,19 +2062,15 @@ impl<'p> HirSourceToInst<'p> {
         let arg_idx = args.len();
         args.push(arg);
         if a.spread {
-          spreads.push(arg_idx + 2);
+          // `InstTyp::New` stores the constructor at `args[0]`, so call arguments
+          // start at index 1.
+          spreads.push(arg_idx + 1);
         }
       }
 
       self.push_value_inst(
         expr_id,
-        self.call_or_invoke(
-          Some(res_tmp_var),
-          Arg::Builtin(Self::INTERNAL_NEW_CALLEE.to_string()),
-          ctor_arg,
-          args,
-          spreads,
-        ),
+        Inst::new_expr(res_tmp_var, ctor_arg, args, spreads),
       );
 
       self.complete_chain_setup(expr_id, did_chain_setup, res_tmp_var, chain);
@@ -2275,7 +2242,7 @@ impl<'p> HirSourceToInst<'p> {
               let arg = self.compile_expr(*expr)?;
               let idx = args.len();
               args.push(arg);
-              spreads.push(idx + 2);
+              spreads.push(idx);
             }
             hir_js::ArrayElement::Empty => {
               args.push(Arg::Builtin(Self::INTERNAL_ARRAY_HOLE.to_string()));
@@ -2285,13 +2252,7 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          self.call_or_invoke(
-            Some(tmp),
-            Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
-            Arg::Const(Const::Undefined),
-            args,
-            spreads,
-          ),
+          Inst::array_lit(tmp, args, spreads),
         );
         Ok(Arg::Var(tmp))
       }
@@ -2353,13 +2314,7 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          self.call_or_invoke(
-            Some(tmp),
-            Arg::Builtin(Self::INTERNAL_OBJECT_CALLEE.to_string()),
-            Arg::Const(Const::Undefined),
-            args,
-            Vec::new(),
-          ),
+          Inst::object_lit(tmp, args),
         );
         Ok(Arg::Var(tmp))
       }
@@ -2379,16 +2334,7 @@ impl<'p> HirSourceToInst<'p> {
         }
         #[cfg(not(feature = "typed"))]
         {
-          self.push_value_inst(
-            expr_id,
-            self.call_or_invoke(
-              Some(tmp),
-              Arg::Builtin(Self::INTERNAL_TEMPLATE_CALLEE.to_string()),
-              Arg::Const(Const::Undefined),
-              args,
-              Vec::new(),
-            ),
-          );
+          self.push_value_inst(expr_id, Inst::template_lit(tmp, args));
         }
         Ok(Arg::Var(tmp))
       }
@@ -2403,13 +2349,7 @@ impl<'p> HirSourceToInst<'p> {
         let tmp = self.c_temp.bump();
         self.push_value_inst(
           expr_id,
-          self.call_or_invoke(
-            Some(tmp),
-            Arg::Builtin(Self::INTERNAL_TAGGED_TEMPLATE_CALLEE.to_string()),
-            Arg::Const(Const::Undefined),
-            args,
-            Vec::new(),
-          ),
+          Inst::tagged_template_lit(tmp, args),
         );
         Ok(Arg::Var(tmp))
       }
@@ -2838,13 +2778,9 @@ impl<'p> HirSourceToInst<'p> {
         #[cfg(not(feature = "native-async-ops"))]
         {
           let array_tmp = self.c_temp.bump();
-          self.out.push(self.call_or_invoke(
-            Some(array_tmp),
-            Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
-            Arg::Const(Const::Undefined),
-            args,
-            Vec::new(),
-          ));
+          self
+            .out
+            .push(Inst::array_lit(array_tmp, args, Vec::new()));
 
           let tmp = self.c_temp.bump();
           self.push_value_inst(

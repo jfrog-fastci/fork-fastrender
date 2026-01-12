@@ -166,8 +166,27 @@ fn collect_local_summary_facts(cfg: &Cfg) -> LocalSummaryFacts {
           let (tgt, _obj, _field) = inst.as_field_load();
           facts.external_defs.insert(tgt);
         }
-        InstTyp::Call => {
-          let (tgt, callee, _this, args, spreads) = inst.as_call();
+        InstTyp::New
+        | InstTyp::Delete
+        | InstTyp::In
+        | InstTyp::Instanceof
+        | InstTyp::TaggedTemplateLit => {
+          if let Some(tgt) = inst.tgts.get(0).copied() {
+            facts.external_defs.insert(tgt);
+          }
+        }
+        InstTyp::Call | InstTyp::Invoke => {
+          let (tgt, callee, _this, args, spreads) = match inst.t {
+            InstTyp::Call => {
+              let (tgt, callee, this, args, spreads) = inst.as_call();
+              (tgt, callee, this, args, spreads)
+            }
+            InstTyp::Invoke => {
+              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+              (tgt, callee, this, args, spreads)
+            }
+            _ => unreachable!(),
+          };
           let Some(tgt) = tgt else {
             continue;
           };
@@ -484,8 +503,18 @@ fn compute_cfg_escape_summary(
             summary.param_escape[idx] = summary.param_escape[idx].join(obj_ext);
           }
         }
-        InstTyp::Call => {
-          let (_tgt, callee, this, args, spreads) = inst.as_call();
+        InstTyp::Call | InstTyp::Invoke => {
+          let (_tgt, callee, this, args, spreads) = match inst.t {
+            InstTyp::Call => {
+              let (tgt, callee, this, args, spreads) = inst.as_call();
+              (tgt, callee, this, args, spreads)
+            }
+            InstTyp::Invoke => {
+              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+              (tgt, callee, this, args, spreads)
+            }
+            _ => unreachable!(),
+          };
           if marker_call_is_safe(callee) {
             continue;
           }
@@ -609,6 +638,19 @@ fn compute_cfg_escape_summary(
           // Async semantic ops may retain references to their inputs (e.g. awaiting thenables or
           // Promise.all attaching handlers), so conservatively treat any parameter passed as
           // escaping.
+          for arg in inst.args.iter() {
+            for idx in params_for_arg(&var_params, arg) {
+              summary.param_escape[idx] =
+                summary.param_escape[idx].join(EscapeState::GlobalEscape);
+            }
+          }
+        }
+        InstTyp::New
+        | InstTyp::Delete
+        | InstTyp::In
+        | InstTyp::Instanceof
+        | InstTyp::TaggedTemplateLit => {
+          // Conservatively treat these operations as unknown/impure calls for parameter-escape purposes.
           for arg in inst.args.iter() {
             for idx in params_for_arg(&var_params, arg) {
               summary.param_escape[idx] =

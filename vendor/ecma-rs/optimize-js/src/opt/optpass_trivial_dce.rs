@@ -7,7 +7,10 @@ use ahash::HashSet;
 use ahash::HashSetExt;
 
 fn is_call_like(inst: &crate::il::inst::Inst) -> bool {
-  if inst.t == InstTyp::Call {
+  if matches!(
+    inst.t,
+    InstTyp::Call | InstTyp::New | InstTyp::Delete | InstTyp::In | InstTyp::Instanceof | InstTyp::TaggedTemplateLit
+  ) {
     return true;
   }
   #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
@@ -113,10 +116,9 @@ mod tests {
 
   #[test]
   fn impure_call_with_unused_target_keeps_call_but_drops_target() {
-    let mut cfg = cfg_single_block(vec![Inst::call(
+    let mut cfg = cfg_single_block(vec![Inst::new_expr(
       0,
-      Arg::Builtin("__optimize_js_new".to_string()),
-      Arg::Const(Const::Undefined),
+      Arg::Builtin("Foo".to_string()),
       Vec::new(),
       Vec::new(),
     )]);
@@ -124,7 +126,7 @@ mod tests {
     assert!(result.changed);
     let insts = cfg.bblocks.get(0);
     assert_eq!(insts.len(), 1);
-    assert_eq!(insts[0].t, InstTyp::Call);
+    assert_eq!(insts[0].t, InstTyp::New);
     assert!(insts[0].tgts.is_empty(), "expected target to be cleared");
   }
 

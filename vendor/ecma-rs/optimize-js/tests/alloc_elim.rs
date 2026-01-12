@@ -3,7 +3,7 @@ mod common;
 
 use common::compile_source;
 use optimize_js::cfg::cfg::Cfg;
-use optimize_js::il::inst::{Arg, InstTyp};
+use optimize_js::il::inst::InstTyp;
 use optimize_js::TopLevelMode;
 
 fn count_object_allocs(cfg: &Cfg) -> usize {
@@ -11,10 +11,7 @@ fn count_object_allocs(cfg: &Cfg) -> usize {
     .bblocks
     .all()
     .flat_map(|(_, block)| block.iter())
-    .filter(|inst| {
-      inst.t == InstTyp::Call
-        && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object")
-    })
+    .filter(|inst| inst.t == InstTyp::ObjectLit)
     .count()
 }
 
@@ -23,10 +20,7 @@ fn find_first_object_alloc(cfg: &Cfg) -> Option<&optimize_js::il::inst::Inst> {
     .bblocks
     .all()
     .flat_map(|(_, block)| block.iter())
-    .find(|inst| {
-      inst.t == InstTyp::Call
-        && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object")
-    })
+    .find(|inst| inst.t == InstTyp::ObjectLit)
 }
 
 #[test]

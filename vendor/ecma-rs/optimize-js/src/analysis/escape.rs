@@ -247,7 +247,7 @@ fn collect_param_vars(cfg: &Cfg) -> BTreeSet<u32> {
   uses.into_iter().filter(|v| !defs.contains(v)).collect()
 }
 
-fn array_alloc_init_values(args: &[Arg], spreads: &[usize]) -> Vec<Arg> {
+fn array_alloc_init_values(args: &[Arg], spreads: &[usize], spread_index_base: usize) -> Vec<Arg> {
   let mut out = Vec::new();
   for (idx, arg) in args.iter().enumerate() {
     if matches!(arg, Arg::Builtin(path) if path == "__optimize_js_array_hole") {
@@ -257,7 +257,7 @@ fn array_alloc_init_values(args: &[Arg], spreads: &[usize]) -> Vec<Arg> {
     // over-approximates reachability, but ensures that values reachable from the spread source are
     // also considered reachable from the new container (e.g. `[...a]` may copy references stored
     // inside `a`).
-    let _is_spread = spreads.contains(&(idx + 2));
+    let _is_spread = spreads.contains(&(idx + spread_index_base));
     out.push(arg.clone());
   }
   out
@@ -321,6 +321,38 @@ fn collect_local_alloc_flow_facts(
     };
     for inst in block.iter() {
       match inst.t {
+        InstTyp::ArrayLit => {
+          let Some(tgt) = inst.tgts.get(0).copied() else {
+            continue;
+          };
+          facts.alloc_vars.insert(tgt);
+          let init = array_alloc_init_values(&inst.args, &inst.spreads, 0);
+          if !init.is_empty() {
+            facts.alloc_inits.push((tgt, init));
+          }
+        }
+        InstTyp::ObjectLit => {
+          let Some(tgt) = inst.tgts.get(0).copied() else {
+            continue;
+          };
+          facts.alloc_vars.insert(tgt);
+          let init = object_alloc_init_values(&inst.args);
+          if !init.is_empty() {
+            facts.alloc_inits.push((tgt, init));
+          }
+        }
+        InstTyp::RegexLit | InstTyp::TemplateLit | InstTyp::New => {
+          let Some(tgt) = inst.tgts.get(0).copied() else {
+            continue;
+          };
+          facts.alloc_vars.insert(tgt);
+        }
+        InstTyp::TaggedTemplateLit | InstTyp::Delete | InstTyp::In | InstTyp::Instanceof => {
+          let Some(tgt) = inst.tgts.get(0).copied() else {
+            continue;
+          };
+          facts.external_defs.insert(tgt);
+        }
         InstTyp::Call | InstTyp::Invoke => {
           let (tgt, callee, _this, args, spreads) = match inst.t {
             InstTyp::Call => {
@@ -346,7 +378,7 @@ fn collect_local_alloc_flow_facts(
                 }
               }
               MarkerCall::Array => {
-                let init = array_alloc_init_values(args, spreads);
+                let init = array_alloc_init_values(args, spreads, 2);
                 if !init.is_empty() {
                   facts.alloc_inits.push((tgt, init));
                 }
@@ -859,6 +891,18 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
         InstTyp::ForeignStore | InstTyp::UnknownStore => {
           for alloc in allocs_for_arg(&var_allocs, &inst.args[0]) {
             join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
+          }
+        }
+        InstTyp::New
+        | InstTyp::Delete
+        | InstTyp::In
+        | InstTyp::Instanceof
+        | InstTyp::TaggedTemplateLit => {
+          // Conservatively treat these operations as unknown/impure calls for escape purposes.
+          for arg in inst.args.iter() {
+            for alloc in allocs_for_arg(&var_allocs, arg) {
+              join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
+            }
           }
         }
         InstTyp::Call | InstTyp::Invoke => {

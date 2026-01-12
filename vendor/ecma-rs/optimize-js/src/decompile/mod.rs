@@ -559,11 +559,14 @@ impl<'a> FunctionDecompiler<'a> {
       branches,
     })));
 
+    // Wrap the `switch` in a block so the output is always `while (true) { switch (...) { ... } }`.
+    //
+    // This avoids emitting the more unusual `while (true) switch (...) { ... }` form, which is
+    // valid JS but can stress downstream parsers/runtimes.
     let while_stmt = node(Stmt::While(node(WhileStmt {
       condition: bool_expr(true),
-      body: switch_stmt,
+      body: block_stmt(vec![switch_stmt]),
     })));
-
     Ok(vec![state_decl, label_stmt(dispatch_label, while_stmt)])
   }
 
@@ -621,14 +624,25 @@ impl<'a> FunctionDecompiler<'a> {
         let init = self.target_init_for(tgt);
         Ok(Some(self.binding_stmt(tgt, expr, init)))
       }
-      InstTyp::Call => {
+      InstTyp::Call
+      | InstTyp::ArrayLit
+      | InstTyp::ObjectLit
+      | InstTyp::RegexLit
+      | InstTyp::TemplateLit
+      | InstTyp::TaggedTemplateLit
+      | InstTyp::New
+      | InstTyp::Delete
+      | InstTyp::In
+      | InstTyp::Instanceof => {
         self.ensure_supported_args(inst.args.iter())?;
-        let (tgt, _, _, _, _) = inst.as_call();
-        let init = tgt
+        let init = inst
+          .tgts
+          .get(0)
+          .copied()
           .map(|t| self.target_init_for(t))
           .unwrap_or(VarInit::Assign);
-        let stmt = lower_call_inst(self, self, inst, None, None, None, init)
-          .expect("call inst should lower");
+        let stmt = il::lower_effect_inst(self, self, inst, init)
+          .expect("effect inst should lower");
         Ok(Some(stmt))
       }
       #[cfg(feature = "semantic-ops")]

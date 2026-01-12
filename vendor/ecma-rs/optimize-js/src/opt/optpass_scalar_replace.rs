@@ -40,25 +40,40 @@ fn next_temp_id(cfg: &Cfg) -> u32 {
 }
  
 fn is_alloc_marker_call(inst: &Inst) -> bool {
-  if inst.t != InstTyp::Call {
-    return false;
+  match inst.t {
+    // New first-class IL inst types.
+    InstTyp::ArrayLit
+    | InstTyp::ObjectLit
+    | InstTyp::RegexLit
+    | InstTyp::TemplateLit
+    | InstTyp::TaggedTemplateLit
+    | InstTyp::New => inst.tgts.get(0).is_some(),
+    // Typed builds may lower template literals as `StringConcat` with a marker flag.
+    InstTyp::StringConcat if inst.meta.string_concat_is_template => inst.tgts.get(0).is_some(),
+    // Legacy marker-call form.
+    InstTyp::Call => {
+      let (tgt, callee, _this, _args, _spreads) = inst.as_call();
+      if tgt.is_none() {
+        return false;
+      }
+      matches!(callee, Arg::Builtin(name) if ALLOC_MARKER_BUILTINS.contains(name.as_str()))
+    }
+    _ => false,
   }
-  let (tgt, callee, _this, _args, _spreads) = inst.as_call();
-  if tgt.is_none() {
-    return false;
-  }
-  matches!(callee, Arg::Builtin(name) if ALLOC_MARKER_BUILTINS.contains(name.as_str()))
 }
- 
+
 fn is_object_literal_alloc(inst: &Inst) -> bool {
-  if inst.t != InstTyp::Call {
-    return false;
+  match inst.t {
+    InstTyp::ObjectLit => inst.tgts.get(0).is_some(),
+    InstTyp::Call => {
+      let (tgt, callee, _this, _args, spreads) = inst.as_call();
+      if tgt.is_none() || !spreads.is_empty() {
+        return false;
+      }
+      matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object")
+    }
+    _ => false,
   }
-  let (tgt, callee, _this, _args, spreads) = inst.as_call();
-  if tgt.is_none() || !spreads.is_empty() {
-    return false;
-  }
-  matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object")
 }
  
 fn collect_object_allocs(cfg: &Cfg) -> Vec<(u32, usize, u32)> {
@@ -107,11 +122,23 @@ fn build_alias_set(cfg: &Cfg, alloc_var: u32) -> HashSet<u32> {
 }
  
 fn parse_object_literal_initializers(inst: &Inst) -> Option<Vec<(String, Arg)>> {
-  if !is_object_literal_alloc(inst) {
-    return None;
-  }
-
-  let (_tgt, _callee, _this, args, _spreads) = inst.as_call();
+  let args = match inst.t {
+    InstTyp::ObjectLit => {
+      let (tgt, args) = inst.as_object_lit();
+      if tgt.is_none() {
+        return None;
+      }
+      args
+    }
+    InstTyp::Call => {
+      if !is_object_literal_alloc(inst) {
+        return None;
+      }
+      let (_tgt, _callee, _this, args, _spreads) = inst.as_call();
+      args
+    }
+    _ => return None,
+  };
   // `__optimize_js_object` encodes each property as a triple:
   //   marker, key, value
   // where marker is one of:

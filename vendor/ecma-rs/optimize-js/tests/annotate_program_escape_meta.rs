@@ -1,7 +1,7 @@
 use optimize_js::analysis::annotate_program;
 use optimize_js::analysis::escape::EscapeState;
 use optimize_js::compile_source;
-use optimize_js::il::inst::{Arg, InstTyp};
+use optimize_js::il::inst::InstTyp;
 use optimize_js::TopLevelMode;
 
 fn find_object_alloc<'a>(
@@ -12,8 +12,7 @@ fn find_object_alloc<'a>(
     .all()
     .flat_map(|(_, block)| block.iter())
     .find(|inst| {
-      inst.t == InstTyp::Call
-        && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object")
+      inst.t == InstTyp::ObjectLit
     })
 }
 

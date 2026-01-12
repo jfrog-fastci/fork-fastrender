@@ -202,6 +202,15 @@ fn is_internal_alloc_builder(callee: &Arg) -> bool {
 
 fn points_to_of_inst(loc: InstLoc, inst: &Inst, result: &AliasResult) -> PointsToSet {
   match inst.t {
+    InstTyp::ArrayLit | InstTyp::ObjectLit | InstTyp::RegexLit => {
+      if inst.tgts.is_empty() {
+        return PointsToSet::empty();
+      }
+      PointsToSet::singleton(AbstractLoc::Alloc {
+        block: loc.label,
+        inst_idx: loc.idx as u32,
+      })
+    }
     InstTyp::VarAssign => {
       let (_, arg) = inst.as_var_assign();
       points_to_of_arg(result, arg)
@@ -320,7 +329,7 @@ pub fn calculate_alias(cfg: &Cfg) -> AliasResult {
 mod tests {
   use super::*;
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-  use crate::il::inst::{Const, Inst};
+  use crate::il::inst::Inst;
 
   fn cfg_with_blocks(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
     let labels: Vec<u32> = blocks.iter().map(|(label, _)| *label).collect();
@@ -351,20 +360,8 @@ mod tests {
       &[(
         0,
         vec![
-          Inst::call(
-            0,
-            Arg::Builtin("__optimize_js_array".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          ),
-          Inst::call(
-            1,
-            Arg::Builtin("__optimize_js_array".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          ),
+          Inst::array_lit(0, vec![], vec![]),
+          Inst::array_lit(1, vec![], vec![]),
         ],
       )],
       &[],
@@ -396,13 +393,7 @@ mod tests {
       &[(
         0,
         vec![
-          Inst::call(
-            0,
-            Arg::Builtin("__optimize_js_object".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          ),
+          Inst::object_lit(0, vec![]),
           Inst::var_assign(1, Arg::Var(0)),
         ],
       )],
@@ -426,23 +417,11 @@ mod tests {
         (0, vec![]),
         (
           1,
-          vec![Inst::call(
-            0,
-            Arg::Builtin("__optimize_js_array".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          )],
+          vec![Inst::array_lit(0, vec![], vec![])],
         ),
         (
           2,
-          vec![Inst::call(
-            1,
-            Arg::Builtin("__optimize_js_array".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          )],
+          vec![Inst::array_lit(1, vec![], vec![])],
         ),
         (3, vec![phi]),
       ],

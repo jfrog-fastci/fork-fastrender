@@ -723,6 +723,32 @@ fn inst_local_effect_with_value_types(
       effects.reads.insert(EffectLocation::Heap);
       effects.summary.throws = ThrowBehavior::Maybe;
     }
+    InstTyp::ArrayLit | InstTyp::ObjectLit | InstTyp::RegexLit | InstTyp::TemplateLit => {
+      // Internal lowering helpers that construct literals / perform pure allocations.
+      effects.summary.flags |= EffectFlags::ALLOCATES;
+    }
+    InstTyp::TaggedTemplateLit => {
+      // Tagged templates call the tag function; we conservatively treat them as unknown.
+      effects.summary.flags |= EffectFlags::ALLOCATES;
+      effects.mark_unknown();
+    }
+    InstTyp::In => {
+      // Property existence checks read heap state and can throw on nullish RHS.
+      effects.reads.insert(EffectLocation::Heap);
+      effects.summary.throws = ThrowBehavior::Maybe;
+    }
+    InstTyp::Instanceof => {
+      // `instanceof` can consult `Symbol.hasInstance` and invoke user code.
+      effects.reads.insert(EffectLocation::Heap);
+      effects.mark_unknown();
+    }
+    InstTyp::Delete => {
+      effects.writes.insert(EffectLocation::Heap);
+      effects.mark_unknown();
+    }
+    InstTyp::New => {
+      effects.mark_unknown();
+    }
     InstTyp::Throw => {
       effects.summary.throws = ThrowBehavior::Always;
     }
@@ -1359,32 +1385,26 @@ mod tests {
   }
 
   #[test]
-  fn internal_literal_builtins_allocate_without_unknown() {
-    for builtin in [
-      "__optimize_js_array",
-      "__optimize_js_object",
-      "__optimize_js_regex",
-      "__optimize_js_template",
-    ] {
-      let call = Inst::call(
-        0,
-        Arg::Builtin(builtin.to_string()),
-        Arg::Const(Const::Undefined),
-        Vec::new(),
-        Vec::new(),
-      );
-      let eff = inst_local_effect(&call);
+  fn internal_literals_allocate_without_unknown() {
+    let insts = [
+      Inst::array_lit(0, Vec::new(), Vec::new()),
+      Inst::object_lit(0, Vec::new()),
+      Inst::regex_lit(0, "a+".to_string()),
+      Inst::template_lit(0, vec![Arg::Const(Const::Str("".to_string()))]),
+    ];
+    for inst in insts {
+      let eff = inst_local_effect(&inst);
       assert!(
         eff.summary.flags.contains(EffectFlags::ALLOCATES),
-        "{builtin} should allocate but got {eff:?}"
+        "expected allocation but got {eff:?}"
       );
       assert!(
         !eff.unknown,
-        "{builtin} should not be marked unknown but got {eff:?}"
+        "expected known allocation but got {eff:?}"
       );
       assert!(
         eff.summary.throws == ThrowBehavior::Never,
-        "{builtin} should not be marked as throwing but got {eff:?}"
+        "expected non-throwing but got {eff:?}"
       );
       assert!(eff.reads.is_empty());
       assert!(eff.writes.is_empty());
@@ -1393,14 +1413,14 @@ mod tests {
 
   #[test]
   fn tagged_template_is_unknown() {
-    let call = Inst::call(
+    let inst = Inst::tagged_template_lit(
       0,
-      Arg::Builtin("__optimize_js_tagged_template".to_string()),
-      Arg::Const(Const::Undefined),
-      Vec::new(),
-      Vec::new(),
+      vec![
+        Arg::Builtin("tag".to_string()),
+        Arg::Const(Const::Str("".to_string())),
+      ],
     );
-    let eff = inst_local_effect(&call);
+    let eff = inst_local_effect(&inst);
     assert!(eff.summary.flags.contains(EffectFlags::ALLOCATES));
     assert!(eff.unknown);
     assert_eq!(eff.summary.throws, ThrowBehavior::Maybe);

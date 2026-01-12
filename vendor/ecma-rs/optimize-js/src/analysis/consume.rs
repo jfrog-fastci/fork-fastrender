@@ -12,6 +12,15 @@ fn is_consume_site(inst: &crate::il::inst::Inst, arg_idx: usize) -> bool {
     InstTyp::Call | InstTyp::Invoke => arg_idx >= 1, // this + call args; callee is always borrowed
     #[cfg(feature = "semantic-ops")]
     InstTyp::KnownApiCall { .. } => true,
+    InstTyp::ArrayLit
+    | InstTyp::ObjectLit
+    | InstTyp::RegexLit
+    | InstTyp::TemplateLit
+    | InstTyp::TaggedTemplateLit
+    | InstTyp::New
+    | InstTyp::Delete
+    | InstTyp::In
+    | InstTyp::Instanceof => true,
     InstTyp::Return | InstTyp::Throw => arg_idx == 0,
     InstTyp::ForeignStore | InstTyp::UnknownStore => arg_idx == 0,
     _ => false,
@@ -91,7 +100,7 @@ mod tests {
   use super::*;
   use crate::analysis::ownership;
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-  use crate::il::inst::{Arg, Const, Inst};
+  use crate::il::inst::{Arg, Inst};
  
   fn cfg_with_blocks(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
     let labels: Vec<u32> = blocks.iter().map(|(label, _)| *label).collect();
@@ -125,20 +134,8 @@ mod tests {
       &[(
         0,
         vec![
-          Inst::call(
-            0,
-            Arg::Builtin("__optimize_js_object".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          ),
-          Inst::call(
-            1,
-            Arg::Builtin("__optimize_js_array".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![Arg::Var(0)],
-            vec![],
-          ),
+          Inst::object_lit(0, vec![]),
+          Inst::array_lit(1, vec![Arg::Var(0)], vec![]),
           Inst::ret(None),
         ],
       )],
@@ -147,9 +144,9 @@ mod tests {
  
     let ownership = ownership::analyze_cfg_ownership(&cfg);
     annotate_cfg_consumption(&mut cfg, &ownership);
- 
+
     let call = &cfg.bblocks.get(0)[1];
-    assert_eq!(mode_at(call, 2), ArgUseMode::Consume);
+    assert_eq!(mode_at(call, 0), ArgUseMode::Consume);
   }
  
   #[test]
@@ -158,27 +155,9 @@ mod tests {
       &[(
         0,
         vec![
-          Inst::call(
-            0,
-            Arg::Builtin("__optimize_js_object".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          ),
-          Inst::call(
-            1,
-            Arg::Builtin("__optimize_js_array".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![Arg::Var(0)],
-            vec![],
-          ),
-          Inst::call(
-            2,
-            Arg::Builtin("__optimize_js_array".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![Arg::Var(0)],
-            vec![],
-          ),
+          Inst::object_lit(0, vec![]),
+          Inst::array_lit(1, vec![Arg::Var(0)], vec![]),
+          Inst::array_lit(2, vec![Arg::Var(0)], vec![]),
           Inst::ret(None),
         ],
       )],
@@ -187,11 +166,11 @@ mod tests {
  
     let ownership = ownership::analyze_cfg_ownership(&cfg);
     annotate_cfg_consumption(&mut cfg, &ownership);
- 
+
     let call1 = &cfg.bblocks.get(0)[1];
     let call2 = &cfg.bblocks.get(0)[2];
-    assert_eq!(mode_at(call1, 2), ArgUseMode::Borrow);
-    assert_eq!(mode_at(call2, 2), ArgUseMode::Consume);
+    assert_eq!(mode_at(call1, 0), ArgUseMode::Borrow);
+    assert_eq!(mode_at(call2, 0), ArgUseMode::Consume);
   }
  
   #[test]
@@ -201,39 +180,21 @@ mod tests {
         (
           0,
           vec![
-            Inst::call(
-              0,
-              Arg::Builtin("__optimize_js_object".to_string()),
-              Arg::Const(Const::Undefined),
-              vec![],
-              vec![],
-            ),
+            Inst::object_lit(0, vec![]),
             Inst::cond_goto(Arg::Var(99), 1, 2),
           ],
         ),
         (
           1,
           vec![
-            Inst::call(
-              1,
-              Arg::Builtin("__optimize_js_array".to_string()),
-              Arg::Const(Const::Undefined),
-              vec![Arg::Var(0)],
-              vec![],
-            ),
+            Inst::array_lit(1, vec![Arg::Var(0)], vec![]),
             Inst::ret(None),
           ],
         ),
         (
           2,
           vec![
-            Inst::call(
-              2,
-              Arg::Builtin("__optimize_js_array".to_string()),
-              Arg::Const(Const::Undefined),
-              vec![Arg::Var(0)],
-              vec![],
-            ),
+            Inst::array_lit(2, vec![Arg::Var(0)], vec![]),
             Inst::ret(None),
           ],
         ),
@@ -243,11 +204,11 @@ mod tests {
  
     let ownership = ownership::analyze_cfg_ownership(&cfg);
     annotate_cfg_consumption(&mut cfg, &ownership);
- 
+
     let call_t = &cfg.bblocks.get(1)[0];
     let call_f = &cfg.bblocks.get(2)[0];
-    assert_eq!(mode_at(call_t, 2), ArgUseMode::Consume);
-    assert_eq!(mode_at(call_f, 2), ArgUseMode::Consume);
+    assert_eq!(mode_at(call_t, 0), ArgUseMode::Consume);
+    assert_eq!(mode_at(call_f, 0), ArgUseMode::Consume);
   }
  
   #[test]
@@ -256,13 +217,7 @@ mod tests {
       &[(
         0,
         vec![
-          Inst::call(
-            0,
-            Arg::Builtin("__optimize_js_object".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          ),
+          Inst::object_lit(0, vec![]),
           Inst::ret(Some(Arg::Var(0))),
         ],
       )],
@@ -282,13 +237,7 @@ mod tests {
       &[(
         0,
         vec![
-          Inst::call(
-            0,
-            Arg::Builtin("__optimize_js_object".to_string()),
-            Arg::Const(Const::Undefined),
-            vec![],
-            vec![],
-          ),
+          Inst::object_lit(0, vec![]),
           Inst::throw(Arg::Var(0)),
         ],
       )],

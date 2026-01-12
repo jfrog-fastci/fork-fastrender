@@ -29,15 +29,9 @@ fn find_top_level_object_alloc(program: &optimize_js::Program) -> u32 {
     .all()
     .flat_map(|(_, block)| block.iter())
     .find_map(|inst| {
-      if inst.t != InstTyp::Call {
-        return None;
-      }
-      let (tgt, callee, _this, _args, _spreads) = inst.as_call();
-      if matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object") {
-        tgt
-      } else {
-        None
-      }
+      (inst.t == InstTyp::ObjectLit)
+        .then(|| inst.tgts.get(0).copied())
+        .flatten()
     })
     .expect("expected object literal allocation in analyzed top-level CFG")
 }
@@ -52,15 +46,9 @@ fn find_fn_object_alloc(program: &optimize_js::Program, fn_id: usize) -> u32 {
     .all()
     .flat_map(|(_, block)| block.iter())
     .find_map(|inst| {
-      if inst.t != InstTyp::Call {
-        return None;
-      }
-      let (tgt, callee, _this, _args, _spreads) = inst.as_call();
-      if matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object") {
-        tgt
-      } else {
-        None
-      }
+      (inst.t == InstTyp::ObjectLit)
+        .then(|| inst.tgts.get(0).copied())
+        .flatten()
     })
     .expect("expected object literal allocation in analyzed function CFG")
 }

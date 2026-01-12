@@ -1117,9 +1117,17 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
         let out = Self::un_range(op, arg);
         self.set_var(state, tgt, out);
       }
-      InstTyp::Call => {
-        let (tgt, _callee, _this, _args, _spreads) = inst.as_call();
-        if let Some(tgt) = tgt {
+      InstTyp::Call
+      | InstTyp::ArrayLit
+      | InstTyp::ObjectLit
+      | InstTyp::RegexLit
+      | InstTyp::TemplateLit
+      | InstTyp::TaggedTemplateLit
+      | InstTyp::New
+      | InstTyp::Delete
+      | InstTyp::In
+      | InstTyp::Instanceof => {
+        if let Some(&tgt) = inst.tgts.get(0) {
           self.set_var(state, tgt, IntRange::Unknown);
         }
       }

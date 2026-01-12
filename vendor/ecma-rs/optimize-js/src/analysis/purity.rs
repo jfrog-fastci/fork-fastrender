@@ -279,22 +279,33 @@ pub fn annotate_cfg_purity(
   let value_types = ValueTypeSummaries::new(cfg);
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
-      if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
-        continue;
-      }
-
-      let (_, callee, _, args, _) = match inst.t {
-        InstTyp::Call => inst.as_call(),
-        InstTyp::Invoke => {
-          let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-          (tgt, callee, this, args, spreads)
+      match inst.t {
+        InstTyp::ArrayLit | InstTyp::ObjectLit | InstTyp::RegexLit | InstTyp::TemplateLit => {
+          inst.meta.callee_purity = Purity::Allocating;
         }
-        _ => unreachable!(),
-      };
-      inst.meta.callee_purity = match callee {
-        Arg::Builtin(path) => builtin_call_purity(path, args, &value_types),
-        _ => callee_purity_resolved(callee, purities, &defs),
-      };
+        InstTyp::TaggedTemplateLit
+        | InstTyp::New
+        | InstTyp::Delete
+        | InstTyp::In
+        | InstTyp::Instanceof => {
+          inst.meta.callee_purity = Purity::Impure;
+        }
+        InstTyp::Call | InstTyp::Invoke => {
+          let (_, callee, _, args, _) = match inst.t {
+            InstTyp::Call => inst.as_call(),
+            InstTyp::Invoke => {
+              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+              (tgt, callee, this, args, spreads)
+            }
+            _ => unreachable!(),
+          };
+          inst.meta.callee_purity = match callee {
+            Arg::Builtin(path) => builtin_call_purity(path, args, &value_types),
+            _ => callee_purity_resolved(callee, purities, &defs),
+          };
+        }
+        _ => {}
+      }
     }
   }
 }
@@ -422,8 +433,8 @@ mod tests {
   }
 
   #[test]
-  fn internal_array_literal_call_is_allocating() {
-    let mut cfg = cfg_with_single_call(Arg::Builtin("__optimize_js_array".to_string()));
+  fn internal_array_literal_is_allocating() {
+    let mut cfg = cfg_single_block(vec![Inst::array_lit(None::<u32>, Vec::new(), Vec::new())]);
     annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
     assert_eq!(
       cfg.bblocks.get(0)[0].meta.callee_purity,
@@ -432,8 +443,14 @@ mod tests {
   }
 
   #[test]
-  fn tagged_template_call_is_impure() {
-    let mut cfg = cfg_with_single_call(Arg::Builtin("__optimize_js_tagged_template".to_string()));
+  fn tagged_template_is_impure() {
+    let mut cfg = cfg_single_block(vec![Inst::tagged_template_lit(
+      None::<u32>,
+      vec![
+        Arg::Builtin("tag".to_string()),
+        Arg::Const(Const::Str("".to_string())),
+      ],
+    )]);
     annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
     assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Impure);
   }

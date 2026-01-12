@@ -29,10 +29,14 @@ fn template_literals_lower_to_string_concat_when_enabled() {
   let cfg = &program.top_level.body;
   let mut has_string_concat = false;
   let mut has_template_call = false;
+  let mut has_template_lit = false;
   for label in cfg_labels_sorted(cfg) {
     for inst in cfg.bblocks.get(label).iter() {
       if inst.t == InstTyp::StringConcat && inst.meta.string_concat_is_template {
         has_string_concat = true;
+      }
+      if inst.t == InstTyp::TemplateLit {
+        has_template_lit = true;
       }
       if inst.t == InstTyp::Call {
         let (_tgt, callee, _this, _args, _spreads) = inst.as_call();
@@ -53,13 +57,14 @@ fn template_literals_lower_to_string_concat_when_enabled() {
   }
   #[cfg(not(feature = "typed"))]
   {
+    assert!(has_template_lit, "expected template literal to lower to TemplateLit");
     assert!(
       !has_string_concat,
-      "expected template literal to lower via __optimize_js_template marker call"
+      "expected template literal to not lower to StringConcat in untyped mode"
     );
     assert!(
-      has_template_call,
-      "expected template literal to lower via __optimize_js_template marker call"
+      !has_template_call,
+      "legacy __optimize_js_template call should not be emitted"
     );
   }
 }

@@ -235,6 +235,18 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
     }
     // Observable reads/writes or control flow / SSA.
     InstTyp::NullCheck
+    // NOTE: Literal constructions (ArrayLit/ObjectLit/RegexLit/TemplateLit) are
+    // treated as allocating and therefore not hoisted, even if their operands
+    // are loop-invariant.
+    | InstTyp::ArrayLit
+    | InstTyp::ObjectLit
+    | InstTyp::RegexLit
+    | InstTyp::TemplateLit
+    | InstTyp::TaggedTemplateLit
+    | InstTyp::New
+    | InstTyp::Delete
+    | InstTyp::In
+    | InstTyp::Instanceof
     | InstTyp::ForeignLoad
     | InstTyp::ArrayLen
     | InstTyp::ArrayLoad

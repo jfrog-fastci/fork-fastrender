@@ -6,9 +6,16 @@ use optimize_js::{decompile::program_to_js, CompileCfgOptions, DecompileOptions,
 
 fn compile_and_emit(src: &str, mode: TopLevelMode) -> Vec<u8> {
   let program = compile_source(src, mode, false);
+  let decompile = DecompileOptions {
+    // Ensure SSA temporaries are in scope for all uses. This is especially
+    // important for the state-machine fallback, which otherwise introduces many
+    // block-scoped `let` bindings.
+    declare_registers: true,
+    ..DecompileOptions::default()
+  };
   program_to_js(
     &program,
-    &DecompileOptions::default(),
+    &decompile,
     EmitOptions::minified(),
   )
   .expect("decompile program to JS")
@@ -26,10 +33,14 @@ fn assert_roundtrip(src: &str, mode: TopLevelMode) {
   // The decompiler may fall back to emitting large state machines for complex CFGs.
   // Re-compiling those can be expensive, so keep this check bounded.
   if out_str.len() < 2048 {
-    // Validate basic compilability without running optimisation passes.
+    // Recompiling the decompiler output with all optimization passes can be extremely slow because
+    // the decompiler currently expands some semantics into state-machine form (especially in
+    // `TopLevelMode::Global`). This roundtrip test primarily validates that emitted JS is
+    // syntactically valid and can be lowered again, so disable opt passes for the recompile step to
+    // keep the suite runtime bounded.
     let options = CompileCfgOptions {
-      keep_ssa: true,
       run_opt_passes: false,
+      keep_ssa: true,
       ..CompileCfgOptions::default()
     };
     if let Err(errs) = optimize_js::compile_source_with_cfg_options(&out_str, mode, false, options) {

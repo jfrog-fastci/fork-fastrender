@@ -158,14 +158,9 @@ fn annotate_program_writes_arg_use_modes_and_in_place_hint() {
     .get(cfg.entry)
     .iter()
     .find_map(|inst| {
-      if inst.t != InstTyp::Call {
-        return None;
-      }
-      if matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object") {
-        inst.tgts.get(0).copied()
-      } else {
-        None
-      }
+      (inst.t == InstTyp::ObjectLit)
+        .then(|| inst.tgts.get(0).copied())
+        .flatten()
     })
     .expect("expected object allocation in entry block");
 
@@ -310,20 +305,8 @@ fn earlier_prop_assign_borrows_when_value_is_used_again() {
   bblocks.add(
     0,
     vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        vec![],
-        vec![],
-      ),
-      Inst::call(
-        1,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        vec![],
-        vec![],
-      ),
+      Inst::object_lit(0, vec![]),
+      Inst::object_lit(1, vec![]),
       Inst::prop_assign(
         Arg::Var(1),
         Arg::Const(Const::Str("y".to_string())),

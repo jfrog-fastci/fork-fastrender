@@ -5,7 +5,10 @@ mod common;
 
 use common::compile_source;
 use emit_js::EmitOptions;
-use optimize_js::{decompile::program_to_js, DecompileOptions, TopLevelMode};
+use optimize_js::{
+  decompile::{program_to_js, TempDeclStyle},
+  DecompileOptions, TopLevelMode,
+};
 use vm_js::{Heap, HeapLimits, JsBigInt, JsRuntime, Value, Vm, VmOptions};
 
 #[test]
@@ -21,6 +24,11 @@ fn update_expr_to_numeric_handles_object_returning_bigint() {
   // falls back to a state machine (irreducible control flow).
   let opts = DecompileOptions {
     declare_registers: true,
+    // The state-machine fallback can introduce many SSA temporaries. In global mode the decompiler
+    // defaults to `let rN = void 0` declarations to avoid mutating the global object, but that can
+    // be memory-heavy for tiny test heaps in `vm-js`. Using `var` keeps the output runnable while
+    // staying within the test heap budget.
+    temp_decl_style: TempDeclStyle::Var,
     ..DecompileOptions::default()
   };
   let bytes = program_to_js(&program, &opts, EmitOptions::minified())
@@ -28,11 +36,10 @@ fn update_expr_to_numeric_handles_object_returning_bigint() {
   let js = std::str::from_utf8(&bytes).expect("UTF-8 output");
 
   let vm = Vm::new(VmOptions::default());
-  // The decompiler may fall back to a state machine for irreducible control flow, which can be
-  // relatively allocation-heavy for `vm-js` to parse/compile. Keep a modest heap limit here so the
-  // test still guards against runaway output size, but leave enough headroom for the state-machine
-  // fallback to run.
-  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  // The state-machine fallback (used for irreducible control flow) can generate fairly large
+  // scripts for `vm-js` to parse/execute. Use a slightly larger heap budget here to keep the test
+  // focused on runtime semantics rather than code size.
+  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap).expect("create vm-js runtime");
   rt
     .exec_script(js)

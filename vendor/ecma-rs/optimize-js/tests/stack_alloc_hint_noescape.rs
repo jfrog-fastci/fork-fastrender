@@ -13,8 +13,9 @@ fn find_object_alloc<'a>(
   for label in labels {
     let block = cfg.bblocks.get(label);
     for inst in block.iter() {
-      if inst.t == InstTyp::Call
-        && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object")
+      if inst.t == InstTyp::ObjectLit
+        || (inst.t == InstTyp::Call
+          && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object"))
       {
         return Some(inst);
       }
@@ -57,6 +58,20 @@ fn noescape_allocations_get_stack_alloc_candidate_hint() {
   // on a fresh CFG clone with escape metadata re-annotated so we can assert the hint is produced.
   let mut cfg = func.body.clone();
   annotate_escape_and_ownership(&mut cfg, &func.params);
+
+  // The main compilation pipeline may already set `stack_alloc_candidate` on SSA bodies. Clear it so
+  // this test continues to validate that `optpass_scalar_replace` can (re)apply the hint and report
+  // a change.
+  for (_, block) in cfg.bblocks.all_mut() {
+    for inst in block.iter_mut() {
+      if inst.t == InstTyp::ObjectLit
+        || (inst.t == InstTyp::Call
+          && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object"))
+      {
+        inst.meta.stack_alloc_candidate = false;
+      }
+    }
+  }
 
   let result = optpass_scalar_replace(&mut cfg);
   assert!(result.changed, "expected pass to mark changes (stack alloc hint)");

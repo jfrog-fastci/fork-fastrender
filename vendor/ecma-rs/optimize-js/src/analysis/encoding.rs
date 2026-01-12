@@ -420,6 +420,12 @@ impl DataFlowAnalysis for EncodingAnalysis {
         let (tgt, parts) = inst.as_string_concat();
         self.transfer_string_concat(state, tgt, parts);
       }
+      InstTyp::TemplateLit => {
+        let Some(tgt) = inst.tgts.get(0).copied() else {
+          return;
+        };
+        self.transfer_template_call(state, tgt, &inst.args);
+      }
       InstTyp::Call => {
         let Some(tgt) = inst.tgts.get(0).copied() else {
           return;
@@ -720,12 +726,9 @@ mod tests {
     let cfg = cfg_with_blocks(
       &[(
         0,
-        vec![Inst::call(
+        vec![Inst::template_lit(
           0,
-          Arg::Builtin("__optimize_js_template".to_string()),
-          Arg::Const(Const::Undefined),
           vec![Arg::Const(Const::Str("hello".to_string()))],
-          Vec::new(),
         )],
       )],
       &[],
@@ -742,16 +745,13 @@ mod tests {
         0,
         vec![
           Inst::unknown_load(1, "x".to_string()),
-          Inst::call(
+          Inst::template_lit(
             0,
-            Arg::Builtin("__optimize_js_template".to_string()),
-            Arg::Const(Const::Undefined),
             vec![
               Arg::Const(Const::Str("a".to_string())),
               Arg::Var(1),
               Arg::Const(Const::Str("b".to_string())),
             ],
-            Vec::new(),
           ),
         ],
       )],

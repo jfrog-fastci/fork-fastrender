@@ -52,25 +52,26 @@ fn inst_defines_value(inst: &Inst) -> Option<u32> {
 }
  
 fn is_allocation_inst(inst: &Inst) -> bool {
+  if inst.tgts.is_empty() {
+    return false;
+  }
   match inst.t {
-    InstTyp::Call | InstTyp::Invoke => {
-      if inst.tgts.is_empty() {
-        return false;
-      }
-      matches!(
-        inst.args.get(0),
-        Some(Arg::Builtin(name))
-          if matches!(
-            name.as_str(),
-            "__optimize_js_array"
-              | "__optimize_js_object"
-              | "__optimize_js_regex"
-              | "__optimize_js_template"
-          )
-      )
-    }
-    // String concatenation produces a fresh string value.
-    InstTyp::StringConcat => !inst.tgts.is_empty(),
+    InstTyp::ArrayLit
+    | InstTyp::ObjectLit
+    | InstTyp::RegexLit
+    | InstTyp::TemplateLit
+    | InstTyp::StringConcat => true,
+    InstTyp::Call | InstTyp::Invoke => matches!(
+      inst.args.get(0),
+      Some(Arg::Builtin(name))
+        if matches!(
+          name.as_str(),
+          "__optimize_js_array"
+            | "__optimize_js_object"
+            | "__optimize_js_regex"
+            | "__optimize_js_template"
+        )
+    ),
     _ => false,
   }
 }
@@ -208,6 +209,10 @@ fn collect_borrowed_defs(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTr
         continue;
       };
       match inst.t {
+        InstTyp::ArrayLit | InstTyp::ObjectLit | InstTyp::RegexLit | InstTyp::TemplateLit => {}
+        InstTyp::New | InstTyp::TaggedTemplateLit | InstTyp::Delete | InstTyp::In | InstTyp::Instanceof => {
+          borrowed.insert(tgt);
+        }
         InstTyp::ForeignLoad | InstTyp::UnknownLoad => {
           borrowed.insert(tgt);
         }
@@ -386,6 +391,15 @@ fn is_consume_site(inst: &Inst, arg_idx: usize) -> bool {
       let _ = arg_idx;
       true // may invoke callbacks / retain references to operands
     }
+    InstTyp::ArrayLit
+    | InstTyp::ObjectLit
+    | InstTyp::RegexLit
+    | InstTyp::TemplateLit
+    | InstTyp::TaggedTemplateLit
+    | InstTyp::New
+    | InstTyp::Delete
+    | InstTyp::In
+    | InstTyp::Instanceof => true,
     InstTyp::Return | InstTyp::Throw => arg_idx == 0,
     InstTyp::ForeignStore | InstTyp::UnknownStore => arg_idx == 0,
     _ => false,
@@ -597,13 +611,7 @@ mod tests {
   #[test]
   fn multi_use_non_escaping_allocation_is_owned() {
     let cfg = cfg_with_block0(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        vec![],
-        vec![],
-      ),
+      Inst::object_lit(0, vec![]),
       Inst::prop_assign(
         Arg::Var(0),
         Arg::Const(Const::Str("x".to_string())),
@@ -632,13 +640,7 @@ mod tests {
   #[test]
   fn returned_allocation_is_owned() {
     let cfg = cfg_with_block0(vec![
-      Inst::call(
-        0,
-        Arg::Builtin("__optimize_js_object".to_string()),
-        Arg::Const(Const::Undefined),
-        vec![],
-        vec![],
-      ),
+      Inst::object_lit(0, vec![]),
       Inst::ret(Some(Arg::Var(0))),
     ]);
     let ownership = analyze_cfg_ownership(&cfg);
@@ -648,13 +650,7 @@ mod tests {
   #[test]
   fn foreign_store_causes_escape_shared() {
     let cfg = cfg_with_block0(vec![
-      Inst::call(
-        1,
-        Arg::Builtin("__optimize_js_array".to_string()),
-        Arg::Const(Const::Undefined),
-        vec![],
-        vec![],
-      ),
+      Inst::array_lit(1, vec![], vec![]),
       Inst::foreign_store(SymbolId(2), Arg::Var(1)),
     ]);
     let ownership = analyze_cfg_ownership(&cfg);

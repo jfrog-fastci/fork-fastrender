@@ -332,6 +332,50 @@ pub enum InstTyp {
   /// - Callback/init values referenced by [`ArrayChainOp`] indices are stored in `args`.
   /// - `tgts.at(0)?` is the final result (array for `map`/`filter`, scalar for `reduce`/`find`/`every`/`some`).
   ArrayChain,
+  /// Array literal construction.
+  ///
+  /// - `tgts[0]` (when present) is the resulting array value.
+  /// - `args` are the array elements.
+  /// - `spreads` contains indices into `args` that should be spread.
+  ///
+  /// Array holes are currently encoded using the sentinel
+  /// `Arg::Builtin("__optimize_js_array_hole")`.
+  ArrayLit,
+  /// Object literal construction.
+  ///
+  /// - `tgts[0]` (when present) is the resulting object value.
+  /// - `args` uses the existing marker encoding:
+  ///   - `Arg::Builtin("__optimize_js_object_prop")`, key, value
+  ///   - `Arg::Builtin("__optimize_js_object_prop_computed")`, key_expr, value
+  ///   - `Arg::Builtin("__optimize_js_object_spread")`, spread_expr, undefined
+  ObjectLit,
+  /// Regular expression literal construction.
+  ///
+  /// `args[0]` is the literal body/flags encoding (currently a string).
+  RegexLit,
+  /// Template literal construction (`\`a${b}c\``).
+  ///
+  /// `args` is the existing encoding: string segment, substitution, segment, ...
+  TemplateLit,
+  /// Tagged template literal (`tag\`...\``).
+  ///
+  /// `args[0]` is the tag expression; remaining args use the same encoding as
+  /// [`InstTyp::TemplateLit`].
+  TaggedTemplateLit,
+  /// `new ctor(...args)`.
+  ///
+  /// - `args[0]` is the constructor value.
+  /// - `args[1..]` are call arguments.
+  /// - `spreads` contains indices into `args` (must be >= 1) that are spread.
+  New,
+  /// `delete obj[prop]`.
+  ///
+  /// `args[0]` is the object value; `args[1]` is the property key.
+  Delete,
+  /// `left in right`.
+  In,
+  /// `left instanceof right`.
+  Instanceof,
   // A foreign variable is one in an ancestor scope, all the way up to and including the global scope.
   // We don't simply add another Target variant (e.g. Target::Foreign) as it makes analyses and optimisations more tedious. Consider that standard SSA doesn't really have a concept of nonlocal memory locations. In LLVM such vars are covered using ordinary memory location read/write instructions.
   // NOTE: It still violates SSA if we only have ForeignStore but not ForeignLoad (and instead use another enum variant for Arg). Consider: `%a0 = foreign(3); %a1 = %a0 + 42; foreign(3) = %a1; %a2 = foreign(3);` but `%a0` and `%a2` are not identical.
@@ -388,7 +432,11 @@ pub struct Inst {
   pub t: InstTyp,
   pub tgts: Vec<u32>,
   pub args: Vec<Arg>,
-  pub spreads: Vec<usize>, // Indices into `args` that are spread, for Call. Cannot have values less than 2 as the first two args are `callee` and `this`.
+  /// Indices into `args` that are spread.
+  ///
+  /// For [`InstTyp::Call`], the first two `args` entries are `callee` and
+  /// `this`, so spread indices are always >= 2.
+  pub spreads: Vec<usize>,
   pub labels: Vec<u32>,
   #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
   #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
@@ -859,6 +907,93 @@ impl Inst {
     }
   }
 
+  pub fn array_lit(tgt: impl Into<Option<u32>>, args: Vec<Arg>, spreads: Vec<usize>) -> Self {
+    let total_args_len = args.len();
+    assert!(spreads.iter().all(|&i| i < total_args_len));
+    Self {
+      t: InstTyp::ArrayLit,
+      tgts: tgt.into().into_iter().collect(),
+      args,
+      spreads,
+      ..Default::default()
+    }
+  }
+
+  pub fn object_lit(tgt: impl Into<Option<u32>>, args: Vec<Arg>) -> Self {
+    Self {
+      t: InstTyp::ObjectLit,
+      tgts: tgt.into().into_iter().collect(),
+      args,
+      ..Default::default()
+    }
+  }
+
+  pub fn regex_lit(tgt: impl Into<Option<u32>>, regex: String) -> Self {
+    Self {
+      t: InstTyp::RegexLit,
+      tgts: tgt.into().into_iter().collect(),
+      args: vec![Arg::Const(Const::Str(regex))],
+      ..Default::default()
+    }
+  }
+
+  pub fn template_lit(tgt: impl Into<Option<u32>>, args: Vec<Arg>) -> Self {
+    Self {
+      t: InstTyp::TemplateLit,
+      tgts: tgt.into().into_iter().collect(),
+      args,
+      ..Default::default()
+    }
+  }
+
+  pub fn tagged_template_lit(tgt: impl Into<Option<u32>>, args: Vec<Arg>) -> Self {
+    Self {
+      t: InstTyp::TaggedTemplateLit,
+      tgts: tgt.into().into_iter().collect(),
+      args,
+      ..Default::default()
+    }
+  }
+
+  pub fn new_expr(tgt: impl Into<Option<u32>>, ctor: Arg, args: Vec<Arg>, spreads: Vec<usize>) -> Self {
+    let total_args_len = args.len() + 1;
+    assert!(spreads.iter().all(|&i| i >= 1 && i < total_args_len));
+    Self {
+      t: InstTyp::New,
+      tgts: tgt.into().into_iter().collect(),
+      args: [ctor].into_iter().chain(args).collect(),
+      spreads,
+      ..Default::default()
+    }
+  }
+
+  pub fn delete(tgt: impl Into<Option<u32>>, obj: Arg, prop: Arg) -> Self {
+    Self {
+      t: InstTyp::Delete,
+      tgts: tgt.into().into_iter().collect(),
+      args: vec![obj, prop],
+      ..Default::default()
+    }
+  }
+
+  pub fn in_op(tgt: impl Into<Option<u32>>, left: Arg, right: Arg) -> Self {
+    Self {
+      t: InstTyp::In,
+      tgts: tgt.into().into_iter().collect(),
+      args: vec![left, right],
+      ..Default::default()
+    }
+  }
+
+  pub fn instanceof_op(tgt: impl Into<Option<u32>>, left: Arg, right: Arg) -> Self {
+    Self {
+      t: InstTyp::Instanceof,
+      tgts: tgt.into().into_iter().collect(),
+      args: vec![left, right],
+      ..Default::default()
+    }
+  }
+
   #[cfg(feature = "native-async-ops")]
   pub fn await_(tgt: impl Into<Option<u32>>, value: Arg, known_resolved: bool) -> Self {
     let mut inst = Self {
@@ -1142,6 +1277,55 @@ impl Inst {
     (self.tgts.get(0).copied(), &self.args[0])
   }
 
+  pub fn as_array_lit(&self) -> (Option<u32>, &[Arg], &[usize]) {
+    assert_eq!(self.t, InstTyp::ArrayLit);
+    (self.tgts.get(0).copied(), &self.args, &self.spreads)
+  }
+
+  pub fn as_object_lit(&self) -> (Option<u32>, &[Arg]) {
+    assert_eq!(self.t, InstTyp::ObjectLit);
+    (self.tgts.get(0).copied(), &self.args)
+  }
+
+  pub fn as_regex_lit(&self) -> (Option<u32>, &Arg) {
+    assert_eq!(self.t, InstTyp::RegexLit);
+    (self.tgts.get(0).copied(), &self.args[0])
+  }
+
+  pub fn as_template_lit(&self) -> (Option<u32>, &[Arg]) {
+    assert_eq!(self.t, InstTyp::TemplateLit);
+    (self.tgts.get(0).copied(), &self.args)
+  }
+
+  pub fn as_tagged_template_lit(&self) -> (Option<u32>, &[Arg]) {
+    assert_eq!(self.t, InstTyp::TaggedTemplateLit);
+    (self.tgts.get(0).copied(), &self.args)
+  }
+
+  pub fn as_new_expr(&self) -> (Option<u32>, &Arg, &[Arg], &[usize]) {
+    assert_eq!(self.t, InstTyp::New);
+    (
+      self.tgts.get(0).copied(),
+      &self.args[0],
+      &self.args[1..],
+      &self.spreads,
+    )
+  }
+
+  pub fn as_delete(&self) -> (Option<u32>, &Arg, &Arg) {
+    assert_eq!(self.t, InstTyp::Delete);
+    (self.tgts.get(0).copied(), &self.args[0], &self.args[1])
+  }
+
+  pub fn as_in_op(&self) -> (Option<u32>, &Arg, &Arg) {
+    assert_eq!(self.t, InstTyp::In);
+    (self.tgts.get(0).copied(), &self.args[0], &self.args[1])
+  }
+
+  pub fn as_instanceof_op(&self) -> (Option<u32>, &Arg, &Arg) {
+    assert_eq!(self.t, InstTyp::Instanceof);
+    (self.tgts.get(0).copied(), &self.args[0], &self.args[1])
+  }
   pub fn as_foreign_load(&self) -> (u32, SymbolId) {
     assert_eq!(self.t, InstTyp::ForeignLoad);
     (self.tgts[0], self.foreign)

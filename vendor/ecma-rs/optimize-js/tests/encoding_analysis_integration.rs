@@ -82,20 +82,17 @@ fn find_template_def(cfg: &Cfg, value: &str) -> (u32, u32) {
       }
       #[cfg(not(feature = "typed"))]
       {
-        if inst.t != InstTyp::Call {
+        if inst.t != InstTyp::TemplateLit {
           continue;
         }
-        let Some(&tgt) = inst.tgts.get(0) else {
+        let (tgt, parts) = inst.as_template_lit();
+        let Some(tgt) = tgt else {
           continue;
         };
-        let (_call_tgt, callee, _this, args, spreads) = inst.as_call();
-        if !matches!(callee, Arg::Builtin(path) if path == "__optimize_js_template") {
+        if parts.len() != 1 {
           continue;
         }
-        if !spreads.is_empty() || args.len() != 1 {
-          continue;
-        }
-        if matches!(&args[0], Arg::Const(Const::Str(s)) if s == value) {
+        if matches!(&parts[0], Arg::Const(Const::Str(s)) if s == value) {
           matches.push((label, tgt));
         }
       }
@@ -108,7 +105,7 @@ fn find_template_def(cfg: &Cfg, value: &str) -> (u32, u32) {
       #[cfg(feature = "typed")]
       panic!("missing StringConcat template literal for {value:?} in CFG");
       #[cfg(not(feature = "typed"))]
-      panic!("missing __optimize_js_template({value:?}) call in CFG");
+      panic!("missing TemplateLit({value:?}) instruction in CFG");
     }
     _ => panic!(
       "expected exactly one template literal definition for {value:?}, found: {matches:?}"
@@ -140,13 +137,13 @@ fn encoding_analysis_distinguishes_ascii_and_utf8() {
 
   let program = optimize_js::compile_source_with_cfg_options(
     r#"
-      let a = "hello";
-      let b = "ÿ";      // non-ASCII (U+00FF)
-      let c = "π";      // non-ASCII (U+03C0)
-      let t0 = `hello`;  // lowered as __optimize_js_template call
-      let t1 = `ÿ`;
-      let t2 = `π`;
-    "#,
+       let a = "hello";
+       let b = "ÿ";      // non-ASCII (U+00FF)
+       let c = "π";      // non-ASCII (U+03C0)
+       let t0 = `hello`;  // lowered as TemplateLit (untyped) or StringConcat (typed) inst
+       let t1 = `ÿ`;
+       let t2 = `π`;
+      "#,
     TopLevelMode::Module,
     false,
     options,
@@ -169,8 +166,8 @@ fn encoding_analysis_distinguishes_ascii_and_utf8() {
   assert_var_encoding(&result, y_label, y_var, StringEncoding::Utf8);
   assert_var_encoding(&result, pi_label, pi_var, StringEncoding::Utf8);
 
-  // Template literals lowered as either `__optimize_js_template("...")` (untyped)
-  // or `StringConcat` (typed builds).
+  // Template literals lowered as either `InstTyp::TemplateLit` (untyped) or
+  // `StringConcat` (typed builds).
   let (t0_label, t0_var) = find_template_def(cfg, "hello");
   let (t1_label, t1_var) = find_template_def(cfg, "ÿ");
   let (t2_label, t2_var) = find_template_def(cfg, "π");

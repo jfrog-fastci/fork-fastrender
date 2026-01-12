@@ -715,6 +715,12 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
         };
         self.set_value_result(inst, state, tgt, mask);
       }
+      InstTyp::ArrayLit | InstTyp::ObjectLit | InstTyp::RegexLit => {
+        let Some(&tgt) = inst.tgts.get(0) else {
+          return;
+        };
+        self.set_value_result(inst, state, tgt, NullabilityMask::OTHER);
+      }
       InstTyp::Call => {
         let (tgt, callee, _this, _args, _spreads) = inst.as_call();
         if let Some(tgt) = tgt {
