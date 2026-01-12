@@ -3825,16 +3825,16 @@ checksum = "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
 dependencies = [
  "bytes",
  "cfg_aliases 0.2.1",
-  "pin-project-lite",
-  "quinn-proto",
-  "quinn-udp",
-  "rustc-hash 2.1.1",
-  "rustls 0.23.36",
-  "socket2 0.6.1",
-  "thiserror 2.0.17",
-  "tokio",
-  "tracing",
-  "web-time 1.1.0",
+ "pin-project-lite",
+ "quinn-proto",
+ "quinn-udp",
+ "rustc-hash 2.1.1",
+ "rustls 0.23.36",
+ "socket2 0.6.1",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "web-time 1.1.0",
 ]
 
 [[package]]

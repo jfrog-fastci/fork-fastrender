@@ -420,7 +420,8 @@ fn parse_transfer_list(
     ));
   }
 
-  let len_val = vm.get_with_host_and_hooks(host, scope, hooks, transfer_obj, alloc_key(scope, "length")?)?;
+  let length_key = alloc_key(scope, "length")?;
+  let len_val = vm.get_with_host_and_hooks(host, scope, hooks, transfer_obj, length_key)?;
   let Value::Number(len_n) = len_val else {
     return Err(throw_data_clone_error(
       vm,
@@ -583,18 +584,19 @@ fn serialize_object(
     state.object_to_id.insert(obj, id);
 
     if !transferred {
+      const INVALID_BACKING_STORE_MSG: &str = "structuredClone: invalid ArrayBuffer backing store";
       // Avoid holding a borrowed slice from `heap` across `state.add_copied_bytes`, which needs a
       // mutable borrow of `scope` to allocate errors.
-      let bytes_len = {
-        let bytes = scope.heap().array_buffer_data(obj).map_err(|_| {
-          throw_data_clone_error(
+      let bytes_len = match scope.heap().array_buffer_data(obj) {
+        Ok(bytes) => bytes.len(),
+        Err(_) => {
+          return Err(throw_data_clone_error(
             vm,
             scope,
             state.global,
-            "structuredClone: invalid ArrayBuffer backing store",
-          )
-        })?;
-        bytes.len()
+            INVALID_BACKING_STORE_MSG,
+          ));
+        }
       };
       state.add_copied_bytes(vm, scope, bytes_len)?;
 
@@ -602,14 +604,17 @@ fn serialize_object(
       out
         .try_reserve_exact(bytes_len)
         .map_err(|_| VmError::OutOfMemory)?;
-      let bytes = scope.heap().array_buffer_data(obj).map_err(|_| {
-        throw_data_clone_error(
-          vm,
-          scope,
-          state.global,
-          "structuredClone: invalid ArrayBuffer backing store",
-        )
-      })?;
+      let bytes = match scope.heap().array_buffer_data(obj) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+          return Err(throw_data_clone_error(
+            vm,
+            scope,
+            state.global,
+            INVALID_BACKING_STORE_MSG,
+          ));
+        }
+      };
       out.extend_from_slice(bytes);
 
       // Populate the node payload.
