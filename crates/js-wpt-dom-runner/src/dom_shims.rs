@@ -3405,7 +3405,7 @@ mod tests {
   }
 
   #[test]
-  fn html_element_constructors_and_tag_name_mapping() {
+  fn htmlelement_and_specialized_prototypes() {
     let rt = Runtime::new().unwrap();
     let context = Context::full(&rt).unwrap();
     context.with(|ctx| {
@@ -3489,6 +3489,90 @@ mod tests {
       assert_eq!(v["ctorIllegal"]["HTMLSelectElement"], true);
       assert_eq!(v["ctorIllegal"]["HTMLFormElement"], true);
       assert_eq!(v["ctorIllegal"]["HTMLOptionElement"], true);
+    });
+  }
+
+  #[test]
+  fn form_control_properties_roundtrip() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var input = document.createElement("input");
+          input.value = "hello";
+          input.checked = true;
+          input.disabled = true;
+
+          var textarea = document.createElement("textarea");
+          textarea.value = "world";
+
+          var select = document.createElement("select");
+          var optA = document.createElement("option");
+          optA.value = "a";
+          optA.textContent = "A";
+          select.appendChild(optA);
+          var optB = document.createElement("option");
+          optB.value = "b";
+          optB.textContent = "B";
+          select.appendChild(optB);
+
+          select.selectedIndex = 1;
+          var selectSelectedIndexAfterSelectedIndex = select.selectedIndex;
+          var selectValueAfterSelectedIndex = select.value;
+
+          select.value = "a";
+          var selectSelectedIndexAfterValue = select.selectedIndex;
+          var selectValueAfterValue = select.value;
+
+          var form = document.createElement("form");
+          var formLen0 = form.elements.length;
+          form.appendChild(input);
+          var formLen1 = form.elements.length;
+          form.appendChild(textarea);
+          form.appendChild(select);
+          var formLen3 = form.elements.length;
+
+          return JSON.stringify({
+            inputValue: input.value,
+            inputChecked: input.checked,
+            inputDisabled: input.disabled,
+
+            textareaValue: textarea.value,
+            textareaTextContent: textarea.textContent,
+
+            selectSelectedIndexAfterSelectedIndex: selectSelectedIndexAfterSelectedIndex,
+            selectValueAfterSelectedIndex: selectValueAfterSelectedIndex,
+            selectSelectedIndexAfterValue: selectSelectedIndexAfterValue,
+            selectValueAfterValue: selectValueAfterValue,
+
+            formLen0: formLen0,
+            formLen1: formLen1,
+            formLen3: formLen3,
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["inputValue"], "hello");
+      assert_eq!(v["inputChecked"], true);
+      assert_eq!(v["inputDisabled"], true);
+
+      assert_eq!(v["textareaValue"], "world");
+      assert_eq!(v["textareaTextContent"], "world");
+
+      assert_eq!(v["selectSelectedIndexAfterSelectedIndex"], 1);
+      assert_eq!(v["selectValueAfterSelectedIndex"], "b");
+      assert_eq!(v["selectSelectedIndexAfterValue"], 0);
+      assert_eq!(v["selectValueAfterValue"], "a");
+
+      assert_eq!(v["formLen0"], 0);
+      assert_eq!(v["formLen1"], 1);
+      assert_eq!(v["formLen3"], 3);
     });
   }
 }

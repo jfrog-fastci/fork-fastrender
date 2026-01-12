@@ -79,6 +79,7 @@ fn run_test_id_all_backends(
     config.backend = match backend {
       BackendKind::QuickJs => BackendSelection::QuickJs,
       BackendKind::VmJs => BackendSelection::VmJs,
+      BackendKind::VmJsRendered => BackendSelection::VmJsRendered,
     };
 
     let runner = Runner::new(wpt_fs(), config);

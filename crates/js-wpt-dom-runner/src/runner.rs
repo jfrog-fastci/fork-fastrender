@@ -142,21 +142,9 @@ impl Runner {
         }
         #[cfg(not(feature = "vmjs"))]
         {
-          Err(RunError::Js(
-            format!("selected backend `{backend_kind}` is not available in this build"),
-          ))
-        }
-      }
-      BackendKind::VmJsRendered => {
-        #[cfg(feature = "vmjs")]
-        {
-          self.run_html_test_in_browser_tab(test, &html_source, timeout)
-        }
-        #[cfg(not(feature = "vmjs"))]
-        {
-          Err(RunError::Js(
-            "selected backend `vmjs-rendered` is not available in this build".to_string(),
-          ))
+          Err(RunError::Js(format!(
+            "selected backend `{backend_kind}` is not available in this build"
+          )))
         }
       }
       BackendKind::QuickJs => {
