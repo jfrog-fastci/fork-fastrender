@@ -2583,18 +2583,7 @@ impl<'a> Checker<'a> {
         self.store.union(vec![cons, alt])
       }
       AstExpr::Call(call) => self.check_call_expr(call, None),
-      AstExpr::TaggedTemplate(tagged) => {
-        self.check_expr(&tagged.stx.function);
-        for part in tagged.stx.parts.iter() {
-          match part {
-            parse_js::ast::expr::lit::LitTemplatePart::Substitution(expr) => {
-              self.check_expr(expr);
-            }
-            parse_js::ast::expr::lit::LitTemplatePart::String(_) => {}
-          }
-        }
-        self.store.primitive_ids().unknown
-      }
+      AstExpr::TaggedTemplate(tagged) => self.check_tagged_template_expr(tagged, expr.loc, None),
       AstExpr::Member(mem) => {
         let full_range = loc_to_range(self.file, mem.loc);
         self.check_property_not_used_before_initialization(
@@ -2829,6 +2818,126 @@ impl<'a> Checker<'a> {
       .get(&range)
       .and_then(|id| self.expr_types.get(id.0 as usize))
       .copied()
+  }
+
+  fn check_tagged_template_expr(
+    &mut self,
+    tagged: &Node<parse_js::ast::expr::TaggedTemplateExpr>,
+    expr_loc: Loc,
+    contextual_return: Option<TypeId>,
+  ) -> TypeId {
+    let prim = self.store.primitive_ids();
+    let callee_ty = self.check_expr(&tagged.stx.function);
+
+    let template_obj_ty = self
+      .resolve_type_ref(&["TemplateStringsArray"])
+      .unwrap_or_else(|| {
+        self.store.intern_type(TypeKind::Array {
+          ty: prim.string,
+          readonly: true,
+        })
+      });
+
+    let mut arg_types = Vec::with_capacity(1 + tagged.stx.parts.len());
+    let mut const_arg_types = Vec::with_capacity(1 + tagged.stx.parts.len());
+    arg_types.push(CallArgType::new(template_obj_ty));
+    const_arg_types.push(template_obj_ty);
+
+    let mut substitution_exprs = Vec::new();
+    for part in tagged.stx.parts.iter() {
+      match part {
+        parse_js::ast::expr::lit::LitTemplatePart::Substitution(expr) => {
+          let ty = self.check_expr(expr);
+          substitution_exprs.push(expr);
+          arg_types.push(CallArgType::new(ty));
+          const_arg_types.push(self.const_inference_type(expr));
+        }
+        parse_js::ast::expr::lit::LitTemplatePart::String(_) => {}
+      }
+    }
+
+    let callee_base = self.expand_callable_type(callee_ty);
+    let candidate_sigs =
+      callable_signatures_with_expander(self.store.as_ref(), callee_base, self.ref_expander);
+
+    let this_arg = match tagged.stx.function.stx.as_ref() {
+      AstExpr::Member(mem) => self.recorded_expr_type(mem.stx.left.loc),
+      AstExpr::ComputedMember(mem) => self.recorded_expr_type(mem.stx.object.loc),
+      _ => None,
+    };
+
+    let span = Span {
+      file: self.file,
+      range: loc_to_range(self.file, expr_loc),
+    };
+
+    let resolution = resolve_call(
+      &self.store,
+      &self.relate,
+      &self.instantiation_cache,
+      callee_base,
+      &arg_types,
+      Some(&const_arg_types),
+      this_arg,
+      contextual_return,
+      span,
+      self.ref_expander,
+    );
+
+    let mut reported_assignability = false;
+    let allow_assignable_fallback = resolution.diagnostics.len() == 1
+      && resolution.diagnostics[0].code.as_str() == codes::NO_OVERLOAD.as_str()
+      && candidate_sigs.len() == 1;
+    if allow_assignable_fallback {
+      if let Some(sig_id) = resolution
+        .contextual_signature
+        .or_else(|| candidate_sigs.first().copied())
+      {
+        let sig = self.store.signature(sig_id);
+        let before = self.diagnostics.len();
+        for (idx, expr) in substitution_exprs.iter().enumerate() {
+          let param_index = idx.saturating_add(1);
+          let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, param_index) else {
+            continue;
+          };
+          let arg_index = param_index;
+          let arg_ty = arg_types
+            .get(arg_index)
+            .map(|arg| arg.ty)
+            .unwrap_or(prim.unknown);
+          let expected = match self.store.type_kind(param_ty) {
+            TypeKind::TypeParam(id) => sig
+              .type_params
+              .iter()
+              .find(|tp| tp.id == id)
+              .and_then(|tp| tp.constraint)
+              .unwrap_or(param_ty),
+            _ => param_ty,
+          };
+          self.check_assignable_with_code(
+            expr,
+            arg_ty,
+            expected,
+            None,
+            &codes::ARGUMENT_TYPE_MISMATCH,
+          );
+        }
+        reported_assignability = self.diagnostics.len() > before;
+      }
+    }
+
+    if !reported_assignability {
+      for diag in &resolution.diagnostics {
+        self.diagnostics.push(diag.clone());
+      }
+    }
+    self.record_call_signature(expr_loc, resolution.signature.or(resolution.contextual_signature));
+
+    if resolution.diagnostics.is_empty() {
+      resolution.return_type
+    } else {
+      prim.unknown
+    }
   }
 
   fn check_call_expr(
@@ -6551,6 +6660,15 @@ impl<'a> Checker<'a> {
           _ => Some(expected),
         };
         let ty = self.check_call_expr(call, contextual_return);
+        self.record_expr_type(expr.loc, ty);
+        ty
+      }
+      AstExpr::TaggedTemplate(tagged) => {
+        let contextual_return = match self.store.type_kind(expected) {
+          TypeKind::Any | TypeKind::Unknown => None,
+          _ => Some(expected),
+        };
+        let ty = self.check_tagged_template_expr(tagged, expr.loc, contextual_return);
         self.record_expr_type(expr.loc, ty);
         ty
       }
