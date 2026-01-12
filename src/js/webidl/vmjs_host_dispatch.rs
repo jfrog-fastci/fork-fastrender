@@ -3134,45 +3134,6 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
   }
 }
 
-// `BrowserDocumentDom2` is a `VmHost` context used by the public renderer API. It does not yet own
-// the vm-js WebIDL dispatch tables (those live in `VmJsWebIdlBindingsHostDispatch`), but the host
-// dispatch layer can opportunistically delegate DOM interface operations to the active embedder
-// host when one is available.
-//
-// Implement `WebIdlBindingsHost` so that the delegation scaffolding compiles even when
-// `BrowserDocumentDom2` is the active host type. Individual DOM operations are still handled by the
-// bindings host dispatch (or remain unimplemented).
-impl WebIdlBindingsHost for BrowserDocumentDom2 {
-  fn call_operation(
-    &mut self,
-    _vm: &mut Vm,
-    _scope: &mut Scope<'_>,
-    _receiver: Option<Value>,
-    _interface: &'static str,
-    _operation: &'static str,
-    _overload: usize,
-    _args: &[Value],
-  ) -> Result<Value, VmError> {
-    Err(VmError::Unimplemented(
-      "WebIDL binding dispatch not implemented for BrowserDocumentDom2",
-    ))
-  }
-
-  fn call_constructor(
-    &mut self,
-    _vm: &mut Vm,
-    _scope: &mut Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[Value],
-    _new_target: Value,
-  ) -> Result<Value, VmError> {
-    Err(VmError::Unimplemented(
-      "WebIDL binding dispatch not implemented for BrowserDocumentDom2",
-    ))
-  }
-}
-
 #[cfg(test)]
 mod window_document_tests {
   use super::*;

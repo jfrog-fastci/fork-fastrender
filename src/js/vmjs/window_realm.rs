@@ -1,6 +1,5 @@
 use crate::api::{BrowserDocumentDom2, BrowserTabHost, ConsoleMessageLevel};
 use crate::dom2::{self, NodeId, NodeKind};
-use crate::geometry::Rect;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
@@ -12183,9 +12182,13 @@ fn document_import_node_native(
   let src_dom = unsafe { src_dom_ptr.as_ref() };
   let dst_dom = unsafe { dst_dom_ptr.as_mut() };
 
-  let imported = dst_dom
-    .import_node_from(src_dom, node_key.node_id, deep)
-    .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
+  let imported = match dst_dom.import_node_from(src_dom, node_key.node_id, deep) {
+    Ok(imported) => imported,
+    Err(err) => {
+      let exc = make_dom_exception(scope, err.code(), "")?;
+      return Err(VmError::Throw(exc));
+    }
+  };
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dst_dom), imported)
 }
@@ -24917,9 +24920,10 @@ fn text_data_set_native(
   } else {
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-    dom
-      .set_text_data(node_key.node_id, &new_value)
-      .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
+    if let Err(err) = dom.set_text_data(node_key.node_id, &new_value) {
+      let exc = make_dom_exception(scope, err.code(), "")?;
+      return Err(VmError::Throw(exc));
+    }
     None
   };
 
@@ -30350,42 +30354,6 @@ fn document_hidden_get_native(
 
   let state = document_visibility_state_from_vm_host(host);
   Ok(Value::Bool(state.hidden()))
-}
-
-fn document_doctype_get_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let Value::Object(document_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-
-  let document_key = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_document_handle(scope.heap(), Value::Object(document_obj))?;
-  let dom_ptr = dom_ptr_for_document_id_read(vm, host, document_key.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-
-  let root = dom.root();
-  let doctype_id = dom
-    .node(root)
-    .children
-    .iter()
-    .copied()
-    .find(|&child| matches!(dom.node(child).kind, NodeKind::Doctype { .. }));
-
-  let Some(doctype_id) = doctype_id else {
-    return Ok(Value::Null);
-  };
-
-  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), doctype_id)
 }
 
 fn document_base_uri_get_native(

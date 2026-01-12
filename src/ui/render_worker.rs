@@ -5640,7 +5640,7 @@ fn spawn_worker_with_factory_inner(
           while let Ok(msg) = ui_to_worker_rx.recv() {
             // Apply cancellation immediately so it can interrupt long-running downloads even while
             // the render loop is busy with prepare/paint work.
-            if let UiToWorker::CancelDownload { download_id } = &msg {
+            if let UiToWorker::CancelDownload { download_id, .. } = &msg {
               let downloads = router_downloads.lock().unwrap_or_else(|err| err.into_inner());
               if let Some(download) = downloads.get(download_id) {
                 download.cancel.store(true, Ordering::Release);
