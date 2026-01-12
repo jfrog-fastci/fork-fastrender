@@ -130,6 +130,10 @@ pub fn rt_gc_request_stop_the_world_for_tests(timeout: Duration) -> u64 {
       let epoch = crate::threading::safepoint::current_epoch();
       panic!("stop-the-world already active (epoch={epoch}, waited {timeout:?})");
     }
+    // Another thread is currently coordinating a stop-the-world pause. If this thread is registered
+    // as a mutator, cooperatively enter the safepoint so we don't block the coordinator; otherwise,
+    // just yield and retry.
+    crate::rt_gc_safepoint();
     std::thread::yield_now();
   }
 }
