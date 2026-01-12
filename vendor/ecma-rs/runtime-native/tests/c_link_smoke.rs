@@ -227,6 +227,16 @@ int main(void) {
   rt_thread_init(0);
   // Ensure strict-await configuration entrypoint is present/callable.
   rt_async_set_strict_await_yields(false);
+  // Ensure limit/error reporting helpers are present/callable.
+  rt_async_set_limits(100000, 100000);
+  char* no_error = rt_async_take_last_error();
+  if (no_error != (char*)0) {
+    rt_async_free_c_string(no_error);
+    rt_thread_deinit();
+    return 3;
+  }
+  // Should be a no-op for NULL pointers.
+  rt_async_free_c_string(no_error);
 
   // Touch the RT_THREAD TLS symbol so this smoke test also verifies that the
   // runtime provides it for native codegen.

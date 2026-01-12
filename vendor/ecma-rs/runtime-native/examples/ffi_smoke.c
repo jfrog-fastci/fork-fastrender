@@ -157,11 +157,16 @@ int main(void) {
   // The runtime expects mutator threads to register before executing compiled
   // code or participating in GC safepoints.
   rt_thread_init(0);
+  int rc = 0;
   // Ensure strict-await configuration entrypoint is present/callable.
   rt_async_set_strict_await_yields(false);
-  int rc = 0;
   pthread_t wake_thread;
   int wake_thread_started = 0;
+  // Ensure limit/error reporting helpers are present/callable.
+  rt_async_set_limits(100000, 100000);
+  char* no_error = rt_async_take_last_error();
+  if (check(no_error == NULL)) { rc = 48; goto done; }
+  rt_async_free_c_string(no_error);
   static const RtShapeDescriptor kShapes[1] = {
     {
       .size = 16,
