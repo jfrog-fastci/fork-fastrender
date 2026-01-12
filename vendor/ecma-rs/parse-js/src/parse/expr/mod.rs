@@ -80,12 +80,12 @@ impl<'a> Parser<'a> {
     .into_wrapped()
   }
 
-  /// Creates a synthetic expression that evaluates to the `undefined` *value*.
+  /// Creates a synthetic `void 0` expression that evaluates to the primitive `undefined` value.
   ///
-  /// This is distinct from [`Self::create_synthetic_undefined`], which returns an
-  /// `undefined` *identifier* for error recovery. An `undefined` identifier is
-  /// shadowable (`function* g(){ var undefined = 1; yield; }`), but `yield`
-  /// without an operand must yield the true `undefined` value.
+  /// This is used for parsing `yield` with no operand:
+  /// - `yield;` must yield `undefined` per the spec, even if `undefined` is shadowed.
+  /// - It must also not consult the lexical environment (e.g. `with ({ get undefined() { ... }})`)
+  ///   which would be observable if we lowered to an `undefined` identifier reference.
   fn create_synthetic_undefined_value(&self, loc: crate::loc::Loc) -> Node<Expr> {
     let zero = Node::new(loc, LitNumExpr { value: JsNumber(0.0) }).into_wrapped();
     Node::new(
@@ -1324,6 +1324,8 @@ impl<'a> Parser<'a> {
                     next_token.error(SyntaxErrorType::ExpectedSyntax("expression operand")),
                   );
                 }
+                // `yield;` is valid syntax and must yield the primitive `undefined` value even if
+                // an `undefined` binding is shadowed.
                 OperatorName::Yield => p.create_synthetic_undefined_value(op_tok.loc),
                 _ => {
                   // For unary operators without operand, use `undefined` identifier for error recovery
