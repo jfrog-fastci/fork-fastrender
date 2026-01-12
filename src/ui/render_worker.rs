@@ -2659,7 +2659,6 @@ impl BrowserRuntime {
     // ---------------------------------------------------------------------------
     let prev_hovered_dom_node_id = tab.last_hovered_dom_node_id;
     let prev_hovered_dom_element_id = tab.last_hovered_dom_element_id.clone();
-    let hover_changed = prev_hovered_dom_node_id != hovered_dom_node_id;
     tab.last_hovered_dom_node_id = hovered_dom_node_id;
     tab.last_hovered_dom_element_id = hovered_dom_element_id.clone();
 
@@ -2683,6 +2682,13 @@ impl BrowserRuntime {
     let current_target = hovered_dom_node_id.and_then(|preorder_id| {
       js_dom_node_for_preorder_id(js_tab, preorder_id, hovered_dom_element_id.as_deref())
     });
+    let prev_target = prev_hovered_dom_node_id.and_then(|preorder_id| {
+      js_dom_node_for_preorder_id(js_tab, preorder_id, prev_hovered_dom_element_id.as_deref())
+    });
+    // Prefer the mapped JS DOM node ids when determining hover transitions: the renderer pre-order id
+    // can shift under DOM mutations (especially when we fall back to `getElementById` for stability),
+    // but the dom2 `NodeId` for an element remains stable across insertions/removals.
+    let hover_changed = prev_target != current_target;
 
     let should_mousemove = current_target.is_some_and(|target_node_id| {
       let dom = js_tab.dom();
@@ -2712,10 +2718,6 @@ impl BrowserRuntime {
     if !hover_changed {
       return;
     }
-
-    let prev_target = prev_hovered_dom_node_id.and_then(|preorder_id| {
-      js_dom_node_for_preorder_id(js_tab, preorder_id, prev_hovered_dom_element_id.as_deref())
-    });
 
     let should_mouseout = prev_target.is_some_and(|prev_node_id| {
       let dom = js_tab.dom();
