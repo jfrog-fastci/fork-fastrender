@@ -3,19 +3,13 @@
 //! This module contains small helpers that mirror ECMA-262 abstract operations closely. These are
 //! intended to be used by built-ins so their algorithms remain spec-shaped.
 
-use crate::heap::MAX_PROTOTYPE_CHAIN;
 use crate::{
   GcObject, GcString, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError, VmHost,
   VmHostHooks,
 };
 use std::mem;
 
-/// ECMAScript `[[Get]](P, Receiver)` internal method dispatch for ordinary and Proxy exotic objects.
-///
-/// This is a minimal implementation today:
-/// - Ordinary objects delegate to `Scope::ordinary_get_with_host_and_hooks`
-/// - Proxy objects implement `Proxy.[[Get]]` with support for the `"get"` trap (when present)
-/// - Revoked proxies throw a TypeError
+/// ECMAScript `[[Get]](P, Receiver)` internal method dispatch.
 pub fn internal_get_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -25,56 +19,10 @@ pub fn internal_get_with_host_and_hooks(
   key: PropertyKey,
   receiver: Value,
 ) -> Result<Value, VmError> {
-  // Root `obj`/`receiver`/`key` across any allocations (trap lookup, trap calls).
-  let mut scope = scope.reborrow();
-  let key_root = match key {
-    PropertyKey::String(s) => Value::String(s),
-    PropertyKey::Symbol(s) => Value::Symbol(s),
-  };
-  scope.push_roots(&[Value::Object(obj), key_root, receiver])?;
-
-  // Fast path: ordinary object.
-  if !scope.heap().is_proxy_object(obj) {
-    return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, receiver);
-  }
-
-  // Proxy.[[Get]]
-  let proxy = scope
-    .heap()
-    .get_proxy_data(obj)?
-    .ok_or(VmError::invalid_handle())?;
-  let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
-    return Err(VmError::TypeError(
-      "Cannot perform 'get' on a proxy that has been revoked",
-    ));
-  };
-  // Root `target`/`handler` across trap lookup + invocation.
-  //
-  // Important: `GetMethod(handler, "get")` can invoke user code via accessors. That user code can
-  // revoke this Proxy, making `target`/`handler` unreachable from `obj`. Root them explicitly so a
-  // GC during trap lookup cannot collect them while we still need the handles.
-  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
-
-  // trap = ? GetMethod(handler, "get")
-  let get_key_s = scope.alloc_string("get")?;
-  scope.push_root(Value::String(get_key_s))?;
-  let get_key = PropertyKey::from_string(get_key_s);
-  let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), get_key)?;
-  let Some(trap) = trap else {
-    // No trap: forward to target with the original receiver.
-    return internal_get_with_host_and_hooks(vm, &mut scope, host, hooks, target, key, receiver);
-  };
-  // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
-  scope.push_root(trap)?;
-
-  // trapResult = ? Call(trap, handler, « target, P, Receiver »)
-  let trap_args = [Value::Object(target), key_root, receiver];
-  vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &trap_args)
+  scope.get_with_host_and_hooks(vm, host, hooks, obj, key, receiver)
 }
 
-/// ECMAScript `[[HasProperty]](P)` internal method dispatch for ordinary and Proxy exotic objects.
-///
-/// This is host-aware because Proxy `"has"` traps can invoke user code.
+/// ECMAScript `[[HasProperty]](P)` internal method dispatch.
 pub fn internal_has_property_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -83,8 +31,7 @@ pub fn internal_has_property_with_host_and_hooks(
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<bool, VmError> {
-  let mut tick = Vm::tick;
-  scope.has_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)
+  scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)
 }
 
 /// ECMAScript `[[Set]](P, V, Receiver)` internal method dispatch for ordinary and Proxy exotic
@@ -247,9 +194,17 @@ pub fn create_list_from_array_like_with_host_and_hooks(
       vm.tick()?;
     }
 
-    let idx_s = alloc_u64_decimal_string(scope, idx as u64)?;
-    let key = PropertyKey::from_string(idx_s);
-    let value = get_with_host_and_hooks(vm, scope, host, hooks, obj, key, Value::Object(obj))?;
+    // `Get(O, ToString(idx))`
+    let value = {
+      // Use a nested scope so per-element key roots do not accumulate.
+      let mut iter_scope = scope.reborrow();
+      iter_scope.push_root(Value::Object(obj))?;
+
+      let idx_s = alloc_u64_decimal_string(&mut iter_scope, idx as u64)?;
+      iter_scope.push_root(Value::String(idx_s))?;
+      let key = PropertyKey::from_string(idx_s);
+      iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?
+    };
 
     // Root each GC-managed element so values are kept alive across subsequent allocations and
     // potential GC. Primitive values (undefined/null/bool/number/bigint) do not need rooting.
@@ -284,76 +239,11 @@ pub fn length_of_array_like_with_host_and_hooks(
   let length_key = PropertyKey::from_string(length_key_s);
 
   let length_value =
-    get_with_host_and_hooks(vm, &mut scope, host, hooks, obj, length_key, Value::Object(obj))?;
+    scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
   vm.tick()?;
   let len = scope.to_length(vm, host, hooks, length_value)?;
   vm.tick()?;
   Ok(len)
-}
-
-/// ECMAScript `Get(O, P)` with minimal Proxy support.
-///
-/// This currently dispatches between:
-/// - ordinary objects (including accessors via `ordinary_get_with_host_and_hooks`)
-/// - Proxy objects (supports the `"get"` trap; forwards to target when missing).
-///
-/// Note: this does **not** yet implement Proxy invariants (non-configurable properties etc).
-fn get_with_host_and_hooks(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  obj: GcObject,
-  key: PropertyKey,
-  receiver: Value,
-) -> Result<Value, VmError> {
-  let key_value = match key {
-    PropertyKey::String(s) => Value::String(s),
-    PropertyKey::Symbol(s) => Value::Symbol(s),
-  };
-
-  let mut scope = scope.reborrow();
-  scope.push_roots(&[Value::Object(obj), key_value, receiver])?;
-
-  let mut current = obj;
-  for _ in 0..MAX_PROTOTYPE_CHAIN {
-    let proxy = scope.heap().get_proxy_data(current)?;
-    let Some(proxy) = proxy else {
-      // Ordinary objects: `Get` uses `receiver` as `this` for accessors.
-      return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
-    };
-
-    let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
-      return Err(VmError::TypeError(
-        "Cannot perform 'get' on a proxy that has been revoked",
-      ));
-    };
-
-    let get_key_s = scope.alloc_string("get")?;
-    scope.push_root(Value::String(get_key_s))?;
-    let get_key = PropertyKey::from_string(get_key_s);
-
-    let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), get_key)?;
-    match trap {
-      None => {
-        current = target;
-        continue;
-      }
-      Some(trap) => {
-        let trap_args = [Value::Object(target), key_value, receiver];
-        return vm.call_with_host_and_hooks(
-          host,
-          &mut scope,
-          hooks,
-          trap,
-          Value::Object(handler),
-          &trap_args,
-        );
-      }
-    }
-  }
-
-  Err(VmError::TypeError("Proxy chain too deep"))
 }
 
 /// `GetPrototypeFromConstructor(constructor, intrinsicDefaultProto)` (ECMA-262).
