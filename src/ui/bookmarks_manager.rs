@@ -90,7 +90,6 @@ pub fn bookmarks_manager_side_panel(
           close_resp.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close bookmarks manager")
           });
-          super::chrome::show_tooltip_on_focus(ui, &close_resp, "Close");
           if close_resp.clicked() {
             out.close_requested = true;
           }

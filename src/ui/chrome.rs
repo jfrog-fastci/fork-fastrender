@@ -123,7 +123,7 @@ fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, style: FocusRingSt
     .rect_stroke(response.rect.expand(style.expand), style.rounding, style.stroke);
 }
 
-pub fn show_tooltip_on_hover_or_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
+fn show_tooltip_on_hover_or_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
   if !(response.hovered() || response.has_focus()) {
     return;
   }
@@ -137,7 +137,7 @@ pub fn show_tooltip_on_hover_or_focus(ui: &egui::Ui, response: &egui::Response, 
   );
 }
 
-pub fn show_tooltip_on_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
+fn show_tooltip_on_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
   if !response.has_focus() || response.hovered() {
     return;
   }
@@ -1114,7 +1114,6 @@ pub fn chrome_ui_with_bookmarks(
         "Back (Alt+Left)"
       };
       let back_response = icon_button(ui, BrowserIcon::Back, back_tooltip, can_back);
-      show_tooltip_on_focus(ui, &back_response, back_tooltip);
       if back_response.clicked() {
         actions.push(ChromeAction::Back);
       }
@@ -1125,19 +1124,16 @@ pub fn chrome_ui_with_bookmarks(
         "Forward (Alt+Right)"
       };
       let forward_response = icon_button(ui, BrowserIcon::Forward, forward_tooltip, can_forward);
-      show_tooltip_on_focus(ui, &forward_response, forward_tooltip);
       if forward_response.clicked() {
         actions.push(ChromeAction::Forward);
       }
       if loading {
         let response = icon_button(ui, BrowserIcon::StopLoading, "Stop loading (Esc)", true);
-        show_tooltip_on_focus(ui, &response, "Stop loading (Esc)");
         if response.clicked() {
           actions.push(ChromeAction::StopLoading);
         }
       } else {
         let response = icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true);
-        show_tooltip_on_focus(ui, &response, "Reload (Ctrl/Cmd+R)");
         if response.clicked() {
           actions.push(ChromeAction::Reload);
         }
@@ -1148,7 +1144,6 @@ pub fn chrome_ui_with_bookmarks(
         "Home (Alt+Home)"
       };
       let home_response = icon_button(ui, BrowserIcon::Home, home_tooltip, true);
-      show_tooltip_on_focus(ui, &home_response, home_tooltip);
       if home_response.clicked() {
         actions.push(ChromeAction::Home);
       }
@@ -1157,7 +1152,6 @@ pub fn chrome_ui_with_bookmarks(
       // non-US keyboard layouts).
       if !is_compact {
         let response = icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true);
-        show_tooltip_on_focus(ui, &response, "Zoom out (Ctrl/Cmd+-)");
         if response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_out(tab.zoom);
@@ -1182,7 +1176,6 @@ pub fn chrome_ui_with_bookmarks(
           }
         }
         let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
-        show_tooltip_on_focus(ui, &response, "Zoom in (Ctrl/Cmd++)");
         if response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_in(tab.zoom);
@@ -1249,7 +1242,6 @@ pub fn chrome_ui_with_bookmarks(
       let menu_open_prev = menu_open;
 
       let menu_button = icon_button(ui, BrowserIcon::Menu, "Menu", true);
-      show_tooltip_on_focus(ui, &menu_button, "Menu");
       #[cfg(test)]
       store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
 

@@ -1174,8 +1174,6 @@ pub(super) fn tab_strip_ui(
   new_tab_resp.widget_info(|| {
     egui::WidgetInfo::labeled(egui::WidgetType::Button, BrowserIcon::NewTab.a11y_label())
   });
-  super::show_tooltip_on_focus(ui, &new_tab_resp, "New tab (Ctrl/Cmd+T)");
-  super::paint_focus_ring(ui, &new_tab_resp, focus_ring);
   if new_tab_resp.clicked() {
     actions.push(ChromeAction::NewTab);
   }

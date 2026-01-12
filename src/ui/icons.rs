@@ -426,6 +426,7 @@ impl egui::Widget for IconButton {
   fn ui(self, ui: &mut egui::Ui) -> egui::Response {
     let icon = self.icon;
     let side_points = ui.spacing().interact_size.y;
+    let tooltip = self.tooltip;
     let (rect, mut response) = ui.allocate_exact_size(
       egui::vec2(side_points, side_points),
       egui::Sense::click(),
@@ -495,7 +496,12 @@ impl egui::Widget for IconButton {
         .rect_stroke(focus_rect, focus_rounding, focus_stroke);
     }
 
-    response = response.on_hover_text(self.tooltip);
+    response = response.on_hover_text(tooltip.clone());
+    if response.has_focus() && !response.hovered() {
+      // Egui tooltips only show on pointer hover. Mirror the hover tooltip while keyboard-focused
+      // so icon-only controls remain discoverable for keyboard-only users.
+      egui::show_tooltip_text(ui.ctx(), response.id.with("focus_tooltip"), tooltip);
+    }
     let label = icon.a11y_label();
     response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label));
     response
