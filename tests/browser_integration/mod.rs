@@ -1,51 +1,5 @@
 //! Browser integration tests consolidated from tests/browser_*.rs
 
-// -----------------------------------------------------------------------------
-// Test process initialization
-// -----------------------------------------------------------------------------
-//
-// Many integration tests create `FastRender` instances (directly or indirectly via browser worker
-// runtimes). On minimal/agent hosts, scanning system fonts can be very slow and can cause per-test
-// timeouts and worker thread shutdown hangs.
-//
-// Prefer deterministic bundled fonts for the entire integration test process unless the caller
-// explicitly opted out by setting `FASTR_USE_BUNDLED_FONTS=0`.
-//
-// We want this to run before *any* test executes, so use a small cross-platform "init array"
-// constructor rather than relying on a particular test calling a helper first.
-#[used]
-#[cfg_attr(
-  any(target_os = "linux", target_os = "android", target_os = "freebsd"),
-  link_section = ".init_array"
-)]
-#[cfg_attr(
-  any(target_os = "macos", target_os = "ios"),
-  link_section = "__DATA,__mod_init_func"
-)]
-#[cfg_attr(target_os = "windows", link_section = ".CRT$XCU")]
-static INIT_BROWSER_INTEGRATION_ENV: extern "C" fn() = {
-  extern "C" fn init() {
-    // The browser integration tests share global resources (stage listener, runtime toggles, font
-    // caches) and can spawn multiple worker threads per test. Running them with the default
-    // `cargo test` parallelism can cause lock contention and flakes (especially in CI).
-    //
-    // Default this integration-test binary to single-threaded execution unless the caller
-    // explicitly opted into a different setting via `-- --test-threads` or `RUST_TEST_THREADS`.
-    if std::env::var_os("RUST_TEST_THREADS").is_none() {
-      std::env::set_var("RUST_TEST_THREADS", "1");
-    }
-
-    // Respect an explicit opt-out (e.g. FASTR_USE_BUNDLED_FONTS=0).
-    if let Some(raw) = std::env::var_os("FASTR_USE_BUNDLED_FONTS") {
-      if raw == "0" || raw.eq_ignore_ascii_case("false") {
-        return;
-      }
-    }
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-  }
-  init
-};
-
 mod author_css_cannot_observe_data_fastr_hover;
 mod browser_cli_gpu_flags;
 mod browser_cli_help;
@@ -158,33 +112,16 @@ mod ui_worker_zoom;
 mod worker_harness;
 mod ui_text_control_pointer_selection;
 
-// -----------------------------------------------------------------------------
-// Global integration test environment
-// -----------------------------------------------------------------------------
-
-/// Ensure browser integration tests run with deterministic bundled fonts.
-///
-/// Many UI/worker tests spawn `FastRenderFactory` instances. `FontConfig::default` prefers system
-/// fonts unless `FASTR_USE_BUNDLED_FONTS`/`CI` is set, which can make first-render latency highly
-/// dependent on the host's installed fonts and lead to flaky timeouts. We set the bundled-fonts
-/// knob once for the whole test process.
-#[cfg(feature = "browser_ui")]
-fn ensure_browser_test_env() {
-  static INIT: std::sync::Once = std::sync::Once::new();
-  INIT.call_once(|| {
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-  });
-}
-
-// Browser UI integration tests occasionally rely on process-global knobs (e.g. test render delays)
+// Browser integration tests occasionally rely on process-global knobs (e.g. test render delays)
 // and other shared state. Serialize tests with this lock to avoid cross-test interference and keep
 // CI runs deterministic under `cargo test`'s default parallelism.
-#[cfg(feature = "browser_ui")]
 pub(crate) fn stage_listener_test_lock() -> std::sync::MutexGuard<'static, ()> {
-  ensure_browser_test_env();
-  // Pre-warm bundled font metadata so the first navigation in a freshly spawned UI worker does not
-  // block on expensive font parsing while the test is waiting on UI messages.
-  support::ensure_bundled_fonts_loaded();
+  #[cfg(feature = "browser_ui")]
+  {
+    // Pre-warm bundled font metadata so the first navigation in a freshly spawned UI worker does
+    // not block on expensive font parsing while the test is waiting on UI messages.
+    support::ensure_bundled_fonts_loaded();
+  }
   static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
   LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

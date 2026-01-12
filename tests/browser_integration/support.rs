@@ -836,13 +836,4 @@ mod tests {
       other => panic!("expected UiToWorker::CreateTab, got {other:?}"),
     }
   }
-
-  #[test]
-  fn browser_integration_forces_bundled_fonts() {
-    assert_eq!(
-      std::env::var("FASTR_USE_BUNDLED_FONTS").as_deref(),
-      Ok("1"),
-      "expected browser integration test harness to set FASTR_USE_BUNDLED_FONTS=1 for deterministic fonts"
-    );
-  }
 }

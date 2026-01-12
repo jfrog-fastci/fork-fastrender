@@ -47,11 +47,13 @@ Notes:
 - Some tests are feature-gated behind `--features browser_ui` (the `browser` binary and the
   UI↔worker protocol types are `browser_ui`-only). If a test needs to spawn `browser` or drive the
   headless worker loop via `UiToWorker`/`WorkerToUi`, run with `--features browser_ui`.
-- Browser integration tests default to `RUST_TEST_THREADS=1` for determinism (the suite shares
-  global resources and spawns many worker threads). Override with `-- --test-threads N` or
-  `RUST_TEST_THREADS` if you need parallelism.
-- The harness also prefers deterministic bundled fonts by default, setting `FASTR_USE_BUNDLED_FONTS=1`
-  unless explicitly opted out (`FASTR_USE_BUNDLED_FONTS=0`).
+- Many browser integration tests share process-global state. To avoid cross-test interference while
+  still allowing the overall integration test suite to run with default libtest parallelism, tests
+  that touch shared global state should acquire `stage_listener_test_lock()` (see below).
+- Under `--features browser_ui`, `FontConfig::default()` prefers bundled fonts by default (so headless
+  environments without a reliable system font database still render deterministically). Tests that
+  need deterministic fonts outside that configuration should pass `FontConfig::bundled_only()` /
+  `support::deterministic_renderer()` explicitly instead of relying on process-global env vars.
 
 ## Headless constraints (no winit/wgpu/egui)
 

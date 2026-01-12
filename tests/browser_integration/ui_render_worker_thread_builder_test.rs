@@ -4,6 +4,7 @@ use fastrender::ui::spawn_browser_worker;
 
 #[test]
 fn browser_render_worker_thread_is_spawned_via_thread_builder() {
+  let _lock = super::stage_listener_test_lock();
   // We can't reliably trigger a stack overflow in CI, but we can at least assert that the browser
   // UI render worker thread is created via `std::thread::Builder` (naming requires it), and the
   // implementation sets a large stack size.
