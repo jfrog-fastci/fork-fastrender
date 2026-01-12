@@ -21,7 +21,7 @@ pub fn set_function_name(
   let computed = compute_function_name(&mut scope, name, prefix)?;
   scope.push_root(Value::String(computed))?;
 
-  let name_key = scope.alloc_string("name")?;
+  let name_key = scope.common_key_name()?;
   scope.define_property(
     func,
     PropertyKey::String(name_key),
@@ -54,7 +54,7 @@ pub fn set_function_length(
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(func))?;
 
-  let length_key = scope.alloc_string("length")?;
+  let length_key = scope.common_key_length()?;
   scope.define_property(
     func,
     PropertyKey::String(length_key),
@@ -96,7 +96,7 @@ pub fn make_constructor(scope: &mut Scope<'_>, func: GcObject) -> Result<GcObjec
       .object_set_prototype(prototype, Some(object_prototype))?;
   }
 
-  let constructor_key = scope.alloc_string("constructor")?;
+  let constructor_key = scope.common_key_constructor()?;
   scope.define_property(
     prototype,
     PropertyKey::String(constructor_key),
@@ -110,7 +110,7 @@ pub fn make_constructor(scope: &mut Scope<'_>, func: GcObject) -> Result<GcObjec
     },
   )?;
 
-  let prototype_key = scope.alloc_string("prototype")?;
+  let prototype_key = scope.common_key_prototype()?;
   scope.define_property(
     func,
     PropertyKey::String(prototype_key),
@@ -146,7 +146,7 @@ pub fn make_generator_function_instance_prototype(
 
   let prototype = scope.alloc_object_with_prototype(Some(generator_prototype))?;
   scope.push_root(Value::Object(prototype))?;
-  let prototype_key = scope.alloc_string("prototype")?;
+  let prototype_key = scope.common_key_prototype()?;
   scope.define_property(
     func,
     PropertyKey::String(prototype_key),

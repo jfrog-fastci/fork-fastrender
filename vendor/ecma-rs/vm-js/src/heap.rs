@@ -208,6 +208,12 @@ pub struct Heap {
   // The registry is scanned during GC (as an additional root set) to keep
   // interned symbols alive.
   symbol_registry: Vec<SymbolRegistryEntry>,
+
+  // Commonly-used property key strings (interned for memory efficiency).
+  common_key_name: Option<GcString>,
+  common_key_length: Option<GcString>,
+  common_key_constructor: Option<GcString>,
+  common_key_prototype: Option<GcString>,
 }
 
 /// RAII wrapper for a persistent GC root created by [`Heap::add_root`].
@@ -293,6 +299,10 @@ impl Heap {
       persistent_env_roots: Vec::new(),
       persistent_env_roots_free: Vec::new(),
       symbol_registry: Vec::new(),
+      common_key_name: None,
+      common_key_length: None,
+      common_key_constructor: None,
+      common_key_prototype: None,
     }
   }
 
@@ -625,6 +635,18 @@ impl Heap {
         // The registry roots both the key (string) and the interned symbol.
         tracer.trace_value(Value::String(entry.key));
         tracer.trace_value(Value::Symbol(entry.sym));
+      }
+      if let Some(s) = self.common_key_name {
+        tracer.trace_value(Value::String(s));
+      }
+      if let Some(s) = self.common_key_length {
+        tracer.trace_value(Value::String(s));
+      }
+      if let Some(s) = self.common_key_constructor {
+        tracer.trace_value(Value::String(s));
+      }
+      if let Some(s) = self.common_key_prototype {
+        tracer.trace_value(Value::String(s));
       }
 
       while let Some(id) = tracer.pop_work() {
@@ -5703,6 +5725,42 @@ impl<'a> Scope<'a> {
   /// Convenience alias for [`Scope::alloc_string_from_utf8`].
   pub fn alloc_string(&mut self, s: &str) -> Result<GcString, VmError> {
     self.alloc_string_from_utf8(s)
+  }
+
+  pub(crate) fn common_key_name(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_name {
+      return Ok(s);
+    }
+    let s = self.alloc_string("name")?;
+    self.heap.common_key_name = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_length(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_length {
+      return Ok(s);
+    }
+    let s = self.alloc_string("length")?;
+    self.heap.common_key_length = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_constructor(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_constructor {
+      return Ok(s);
+    }
+    let s = self.alloc_string("constructor")?;
+    self.heap.common_key_constructor = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_prototype(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_prototype {
+      return Ok(s);
+    }
+    let s = self.alloc_string("prototype")?;
+    self.heap.common_key_prototype = Some(s);
+    Ok(s)
   }
 
   /// Allocates a JavaScript symbol on the heap.
