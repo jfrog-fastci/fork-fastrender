@@ -853,6 +853,7 @@ impl Heap {
           | HeapObject::Proxy(_)
           | HeapObject::Promise(_)
           | HeapObject::WeakSet(_)
+          | HeapObject::Generator(_)
       )
     )
   }
@@ -1173,7 +1174,8 @@ impl Heap {
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
-        | HeapObject::WeakSet(_),
+        | HeapObject::WeakSet(_)
+        | HeapObject::Generator(_),
       ) => {
         self.slots[idx].host_slots = Some(slots);
         Ok(())
@@ -1197,7 +1199,8 @@ impl Heap {
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
-        | HeapObject::WeakSet(_),
+        | HeapObject::WeakSet(_)
+        | HeapObject::Generator(_),
       ) => Ok(self.slots[idx].host_slots),
       _ => Err(VmError::invalid_handle()),
     }
@@ -1218,7 +1221,8 @@ impl Heap {
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
-        | HeapObject::WeakSet(_),
+        | HeapObject::WeakSet(_)
+        | HeapObject::Generator(_),
       ) => {
         self.slots[idx].host_slots = None;
         Ok(())
@@ -1364,6 +1368,7 @@ impl Heap {
       HeapObject::Function(f) => Ok(&f.base),
       HeapObject::Promise(p) => Ok(&p.object.base),
       HeapObject::WeakSet(ws) => Ok(&ws.base),
+      HeapObject::Generator(g) => Ok(&g.object.base),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -1377,6 +1382,7 @@ impl Heap {
       HeapObject::Function(f) => Ok(&mut f.base),
       HeapObject::Promise(p) => Ok(&mut p.object.base),
       HeapObject::WeakSet(ws) => Ok(&mut ws.base),
+      HeapObject::Generator(g) => Ok(&mut g.object.base),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -1740,6 +1746,10 @@ impl Heap {
       WeakSet {
         entry_capacity: usize,
       },
+      Generator {
+        args_len: usize,
+        continuation_len: usize,
+      },
     }
 
     let (idx, target_kind, property_count) = {
@@ -1819,6 +1829,18 @@ impl Heap {
           },
           ws.base.properties.len(),
         ),
+        HeapObject::Generator(g) => (
+          g.object
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::Generator {
+            args_len: g.args.as_deref().map(|args| args.len()).unwrap_or(0),
+            continuation_len: g.continuation.as_deref().map(|c| c.len()).unwrap_or(0),
+          },
+          g.object.base.properties.len(),
+        ),
         _ => return Err(VmError::invalid_handle()),
       }
     };
@@ -1848,6 +1870,10 @@ impl Heap {
       TargetKind::WeakSet { entry_capacity } => {
         JsWeakSet::heap_size_bytes_for_counts(new_property_count, entry_capacity)
       }
+      TargetKind::Generator {
+        args_len,
+        continuation_len,
+      } => JsGenerator::heap_size_bytes_for_counts(new_property_count, args_len, continuation_len),
     };
 
     // Allocate the new property table fallibly so hostile inputs cannot abort the host process
@@ -1888,6 +1914,10 @@ impl Heap {
           buf.extend_from_slice(&ws.base.properties[..idx]);
           buf.extend_from_slice(&ws.base.properties[idx + 1..]);
         }
+        Some(HeapObject::Generator(g)) => {
+          buf.extend_from_slice(&g.object.base.properties[..idx]);
+          buf.extend_from_slice(&g.object.base.properties[idx + 1..]);
+        }
         _ => return Err(VmError::invalid_handle()),
       }
     }
@@ -1904,6 +1934,7 @@ impl Heap {
       HeapObject::Function(func) => func.base.properties = properties,
       HeapObject::Promise(p) => p.object.base.properties = properties,
       HeapObject::WeakSet(ws) => ws.base.properties = properties,
+      HeapObject::Generator(g) => g.object.base.properties = properties,
       _ => return Err(VmError::invalid_handle()),
     }
 
@@ -2727,6 +2758,22 @@ impl Heap {
   fn get_promise_mut(&mut self, promise: GcObject) -> Result<&mut JsPromise, VmError> {
     match self.get_heap_object_mut(promise.0)? {
       HeapObject::Promise(p) => Ok(p),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  #[allow(dead_code)]
+  pub(crate) fn get_generator(&self, obj: GcObject) -> Result<&JsGenerator, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::Generator(g) => Ok(g),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  #[allow(dead_code)]
+  pub(crate) fn get_generator_mut(&mut self, obj: GcObject) -> Result<&mut JsGenerator, VmError> {
+    match self.get_heap_object_mut(obj.0)? {
+      HeapObject::Generator(g) => Ok(g),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -3609,6 +3656,10 @@ impl Heap {
       WeakSet {
         entry_capacity: usize,
       },
+      Generator {
+        args_len: usize,
+        continuation_len: usize,
+      },
     }
 
     let (target_kind, property_count, old_bytes, existing_idx, array_len) = {
@@ -3726,6 +3777,24 @@ impl Heap {
             None,
           )
         }
+        HeapObject::Generator(g) => {
+          let existing_idx = g
+            .object
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::Generator {
+              args_len: g.args.as_deref().map(|args| args.len()).unwrap_or(0),
+              continuation_len: g.continuation.as_deref().map(|c| c.len()).unwrap_or(0),
+            },
+            g.object.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
         _ => return Err(VmError::invalid_handle()),
       }
     };
@@ -3766,6 +3835,7 @@ impl Heap {
           Some(HeapObject::Function(func)) => func.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Promise(p)) => p.object.base.properties[existing_idx].desc = desc,
           Some(HeapObject::WeakSet(ws)) => ws.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::Generator(g)) => g.object.base.properties[existing_idx].desc = desc,
           _ => return Err(VmError::invalid_handle()),
         }
       }
@@ -3793,6 +3863,10 @@ impl Heap {
           TargetKind::WeakSet { entry_capacity } => {
             JsWeakSet::heap_size_bytes_for_counts(new_property_count, entry_capacity)
           }
+          TargetKind::Generator {
+            args_len,
+            continuation_len,
+          } => JsGenerator::heap_size_bytes_for_counts(new_property_count, args_len, continuation_len),
         };
 
         // Before allocating, enforce heap limits based on the net growth of this object.
@@ -3816,6 +3890,7 @@ impl Heap {
             Some(HeapObject::Function(func)) => buf.extend_from_slice(&func.base.properties),
             Some(HeapObject::Promise(p)) => buf.extend_from_slice(&p.object.base.properties),
             Some(HeapObject::WeakSet(ws)) => buf.extend_from_slice(&ws.base.properties),
+            Some(HeapObject::Generator(g)) => buf.extend_from_slice(&g.object.base.properties),
             _ => return Err(VmError::invalid_handle()),
           }
         }
@@ -3831,6 +3906,7 @@ impl Heap {
           Some(HeapObject::Function(func)) => func.base.properties = properties,
           Some(HeapObject::Promise(p)) => p.object.base.properties = properties,
           Some(HeapObject::WeakSet(ws)) => ws.base.properties = properties,
+          Some(HeapObject::Generator(g)) => g.object.base.properties = properties,
           _ => return Err(VmError::invalid_handle()),
         }
 
@@ -4927,6 +5003,86 @@ impl<'a> Scope<'a> {
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
+  /// Allocates a new Generator object on the heap.
+  pub fn alloc_generator(
+    &mut self,
+    this_value: Value,
+    args: &[Value],
+    env: Option<GcEnv>,
+  ) -> Result<GcObject, VmError> {
+    self.alloc_generator_with_prototype(None, this_value, args, env)
+  }
+
+  /// Allocates a new Generator object on the heap with an explicit `[[Prototype]]`.
+  pub fn alloc_generator_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+    this_value: Value,
+    args: &[Value],
+    env: Option<GcEnv>,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(proto) = prototype {
+      if !scope.heap().is_valid_object(proto) {
+        return Err(VmError::invalid_handle());
+      }
+    }
+    if !scope.heap().debug_value_is_valid_or_primitive(this_value) {
+      return Err(VmError::invalid_handle());
+    }
+    for &arg in args {
+      if !scope.heap().debug_value_is_valid_or_primitive(arg) {
+        return Err(VmError::invalid_handle());
+      }
+    }
+    if let Some(env) = env {
+      if !scope.heap().is_valid_env(env) {
+        return Err(VmError::invalid_handle());
+      }
+    }
+
+    let max_roots = prototype.is_some() as usize
+      + 1usize // this
+      + args.len();
+    let mut roots: Vec<Value> = Vec::new();
+    roots
+      .try_reserve_exact(max_roots)
+      .map_err(|_| VmError::OutOfMemory)?;
+    if let Some(proto) = prototype {
+      roots.push(Value::Object(proto));
+    }
+    roots.push(this_value);
+    roots.extend_from_slice(args);
+
+    if let Some(env) = env {
+      // Treat `env` as an extra env root while growing the value root stack.
+      scope.push_roots_with_extra_roots(&roots, &[], &[env])?;
+      scope.push_env_root(env)?;
+    } else {
+      scope.push_roots(&roots)?;
+    }
+
+    let args: Option<Box<[Value]>> = if args.is_empty() {
+      None
+    } else {
+      // Allocate the args buffer fallibly so hostile inputs cannot abort the host process on OOM.
+      let mut buf: Vec<Value> = Vec::new();
+      buf
+        .try_reserve_exact(args.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      buf.extend_from_slice(args);
+      Some(buf.into_boxed_slice())
+    };
+
+    let gen = JsGenerator::new(prototype, this_value, args, env);
+    let new_bytes = gen.heap_size_bytes();
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::Generator(gen);
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
   /// Allocates a new pending Promise object on the heap.
   pub fn alloc_promise(&mut self) -> Result<GcObject, VmError> {
     self.alloc_promise_with_prototype(None)
@@ -5648,6 +5804,7 @@ enum HeapObject {
   Env(EnvRecord),
   Promise(JsPromise),
   WeakSet(JsWeakSet),
+  Generator(JsGenerator),
 }
 
 impl Trace for HeapObject {
@@ -5664,6 +5821,7 @@ impl Trace for HeapObject {
       HeapObject::Env(e) => e.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
       HeapObject::WeakSet(ws) => ws.trace(tracer),
+      HeapObject::Generator(g) => g.trace(tracer),
     }
   }
 }
@@ -5959,6 +6117,93 @@ impl Trace for JsTypedArray {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     self.base.trace(tracer);
     tracer.trace_value(Value::Object(self.viewed_array_buffer));
+  }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GeneratorState {
+  SuspendedStart,
+  SuspendedYield,
+  Executing,
+  Completed,
+}
+
+#[derive(Debug)]
+pub(crate) struct JsGenerator {
+  object: JsObject,
+  #[allow(dead_code)]
+  pub(crate) state: GeneratorState,
+  pub(crate) this_value: Value,
+  pub(crate) args: Option<Box<[Value]>>,
+  pub(crate) env: Option<GcEnv>,
+  pub(crate) continuation: Option<Box<[Value]>>,
+}
+
+impl JsGenerator {
+  fn new(
+    prototype: Option<GcObject>,
+    this_value: Value,
+    args: Option<Box<[Value]>>,
+    env: Option<GcEnv>,
+  ) -> Self {
+    Self {
+      object: JsObject::new(prototype),
+      state: GeneratorState::SuspendedStart,
+      this_value,
+      args,
+      env,
+      continuation: None,
+    }
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    let property_count = self.object.base.properties.len();
+    let args_len = self.args.as_deref().map(|args| args.len()).unwrap_or(0);
+    let continuation_len = self
+      .continuation
+      .as_deref()
+      .map(|cont| cont.len())
+      .unwrap_or(0);
+    Self::heap_size_bytes_for_counts(property_count, args_len, continuation_len)
+  }
+
+  fn heap_size_bytes_for_counts(property_count: usize, args_len: usize, continuation_len: usize) -> usize {
+    let props_bytes = ObjectBase::properties_heap_size_bytes_for_count(property_count);
+    let args_bytes = args_len.checked_mul(mem::size_of::<Value>()).unwrap_or(usize::MAX);
+    let continuation_bytes = continuation_len
+      .checked_mul(mem::size_of::<Value>())
+      .unwrap_or(usize::MAX);
+
+    // Payload bytes owned by this generator allocation.
+    //
+    // Note: `JsGenerator` headers are stored inline in the heap slot table, so this size
+    // intentionally excludes `mem::size_of::<JsGenerator>()` and only counts heap-owned payload
+    // allocations.
+    props_bytes
+      .checked_add(args_bytes)
+      .and_then(|b| b.checked_add(continuation_bytes))
+      .unwrap_or(usize::MAX)
+  }
+}
+
+impl Trace for JsGenerator {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.object.trace(tracer);
+    tracer.trace_value(self.this_value);
+    if let Some(env) = self.env {
+      tracer.trace_env(env);
+    }
+    if let Some(args) = &self.args {
+      for value in args.iter().copied() {
+        tracer.trace_value(value);
+      }
+    }
+    if let Some(cont) = &self.continuation {
+      for value in cont.iter().copied() {
+        tracer.trace_value(value);
+      }
+    }
   }
 }
 
