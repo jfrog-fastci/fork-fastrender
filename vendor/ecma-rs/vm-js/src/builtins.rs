@@ -3546,10 +3546,10 @@ pub fn data_view_prototype_byte_length_get(
     .data_view_buffer(obj)
     .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
   let byte_offset = heap
-    .data_view_byte_offset(obj)
+    .data_view_byte_offset_slot(obj)
     .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
   let byte_length = heap
-    .data_view_byte_length(obj)
+    .data_view_byte_length_slot(obj)
     .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
 
   // Per ECMAScript, `DataView.prototype.byteLength` throws if the view is out-of-bounds. Detached
@@ -3590,10 +3590,10 @@ pub fn data_view_prototype_byte_offset_get(
     .data_view_buffer(obj)
     .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
   let byte_offset = heap
-    .data_view_byte_offset(obj)
+    .data_view_byte_offset_slot(obj)
     .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
   let byte_length = heap
-    .data_view_byte_length(obj)
+    .data_view_byte_length_slot(obj)
     .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
 
   // Per ECMAScript, `DataView.prototype.byteOffset` throws if the view is out-of-bounds. Detached

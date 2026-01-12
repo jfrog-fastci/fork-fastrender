@@ -1454,7 +1454,7 @@ impl Heap {
   /// Returns the DataView `byteLength`.
   ///
   /// If the view is out of bounds for its backing buffer (including detachment), this reports `0`
-  /// (mirroring `DataView.prototype.byteLength` semantics).
+  /// for host-side convenience (similar to typed array introspection helpers).
   ///
   /// # Errors
   ///
@@ -1468,10 +1468,14 @@ impl Heap {
     Ok(view.byte_length)
   }
 
+  pub(crate) fn data_view_byte_length_slot(&self, obj: GcObject) -> Result<usize, VmError> {
+    Ok(self.require_data_view(obj)?.byte_length)
+  }
+
   /// Returns the DataView `byteOffset`.
   ///
   /// If the view is out of bounds for its backing buffer (including detachment), this reports `0`
-  /// (mirroring `DataView.prototype.byteOffset` semantics).
+  /// for host-side convenience (similar to typed array introspection helpers).
   ///
   /// # Errors
   ///
@@ -1483,6 +1487,10 @@ impl Heap {
       return Ok(0);
     }
     Ok(view.byte_offset)
+  }
+
+  pub(crate) fn data_view_byte_offset_slot(&self, obj: GcObject) -> Result<usize, VmError> {
+    Ok(self.require_data_view(obj)?.byte_offset)
   }
 
   /// Returns the DataView `buffer`.
