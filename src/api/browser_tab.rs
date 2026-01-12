@@ -666,6 +666,10 @@ impl BrowserTabHost {
     self.document.dom()
   }
 
+  pub(crate) fn document_write_state_mut(&mut self) -> &mut DocumentWriteState {
+    &mut self.document_write_state
+  }
+
   pub fn document_is_dirty(&self) -> bool {
     self.document.is_dirty()
   }
@@ -8734,6 +8738,53 @@ html, body { margin: 0; padding: 0; }
         "unexpected visual change after async script execution"
       );
     }
+    Ok(())
+  }
+
+  #[test]
+  fn js_document_write_after_parsing_emits_warning_and_is_noop() -> Result<()> {
+    let mut options = RenderOptions::default();
+    options.diagnostics_level = crate::api::DiagnosticsLevel::Basic;
+    let html = r#"<!doctype html><html><body>
+      <script>
+        setTimeout(() => {
+          document.write('<div id="postparse"></div>');
+          document.body.setAttribute("data-timeout", "1");
+        }, 0);
+      </script>
+    </body></html>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs(html, options)?;
+    assert_eq!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-timeout")
+        .expect("get_attribute should succeed"),
+      Some("1")
+    );
+    assert!(
+      dom.get_element_by_id("postparse").is_none(),
+      "expected post-parse document.write to be a deterministic no-op"
+    );
+
+    let diagnostics = tab
+      .diagnostics_snapshot()
+      .expect("diagnostics should be enabled");
+    assert!(
+      diagnostics.console_messages.iter().any(|msg| {
+        msg.level == crate::api::ConsoleMessageLevel::Warn
+          && msg.message.contains("document.write")
+          && msg.message.contains("no active streaming HTML parser")
+      }),
+      "expected a document.write post-parse warning, got console_messages={:?}",
+      diagnostics.console_messages
+    );
+
     Ok(())
   }
 

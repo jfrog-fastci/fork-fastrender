@@ -1,4 +1,4 @@
-use crate::api::{BrowserDocumentDom2, ConsoleMessageLevel};
+use crate::api::{BrowserDocumentDom2, BrowserTabHost, ConsoleMessageLevel};
 use crate::dom2::{self, NodeId, NodeKind};
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
@@ -13912,61 +13912,143 @@ fn document_text_content_set_native(
   Ok(Value::Undefined)
 }
 
-fn throw_document_write_range_error(vm: &mut Vm, scope: &mut Scope<'_>, message: &str) -> VmError {
-  if let Some(intr) = vm.intrinsics() {
-    match vm_js::new_range_error(scope, intr, message) {
-      Ok(value) => VmError::Throw(value),
-      Err(err) => err,
-    }
-  } else {
-    VmError::TypeError("RangeError")
-  }
-}
-
 fn document_write_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  document_write_impl(vm, scope, args, false)
+  document_write_impl(vm, scope, host, hooks, args, false)
 }
 
 fn document_writeln_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  document_write_impl(vm, scope, args, true)
+  document_write_impl(vm, scope, host, hooks, args, true)
 }
 
 fn document_write_impl(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   args: &[Value],
   append_newline: bool,
 ) -> Result<Value, VmError> {
-  let max_bytes_per_call = match current_document_write_state_mut() {
-    Some(state)
-      if state.parsing_active()
-        && crate::html::document_write::current_streaming_parser().is_some() =>
-    {
-      state.max_bytes_per_call()
-    }
-    _ => {
-      // Deterministic subset of HTML's ignore-destructive-writes behavior:
-      // when no streaming parser is active, treat `document.write()` as a no-op instead of
-      // implicitly calling `document.open()` and clearing the document.
-      return Ok(Value::Undefined);
-    }
+  let call_name = if append_newline {
+    "document.writeln"
+  } else {
+    "document.write"
   };
+
+  fn document_write_state_ptr_from_hooks(
+    hooks: &mut dyn VmHostHooks,
+  ) -> Option<*mut crate::js::DocumentWriteState> {
+    if let Some(state) = current_document_write_state_mut() {
+      return Some(state as *mut _);
+    }
+    let any = hooks.as_any_mut()?;
+    // `Any::downcast_mut` returns a mutable borrow of `any` that would escape through the returned
+    // pointer. Use a raw pointer to avoid borrow checker issues while trying multiple downcast
+    // targets.
+    let any_ptr: *mut dyn std::any::Any = any;
+    // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and is only used within this function.
+    unsafe {
+      let payload = (&mut *any_ptr).downcast_mut::<VmJsHostHooksPayload>()?;
+      let host = payload.embedder_state_mut::<BrowserTabHost>()?;
+      Some(host.document_write_state_mut() as *mut _)
+    }
+  }
+
+  fn shared_diagnostics_from_vm_host(host: &mut dyn VmHost) -> Option<crate::api::SharedRenderDiagnostics> {
+    host
+      .as_any_mut()
+      .downcast_mut::<BrowserDocumentDom2>()
+      .and_then(|document| document.shared_diagnostics())
+  }
+
+  fn shared_diagnostics_from_vm_host_or_hooks(
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+  ) -> Option<crate::api::SharedRenderDiagnostics> {
+    shared_diagnostics_from_vm_host(host).or_else(|| {
+      let any = hooks.as_any_mut()?;
+      let any_ptr: *mut dyn std::any::Any = any;
+      // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and is only used within this block.
+      unsafe {
+        let payload = (&mut *any_ptr).downcast_mut::<VmJsHostHooksPayload>()?;
+        let vm_host = payload.vm_host_mut()?;
+        shared_diagnostics_from_vm_host(vm_host)
+      }
+    })
+  }
+
+  fn warn_document_write(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    message: &str,
+  ) {
+    // Best-effort: warnings must never throw.
+    let console_warned = (|| -> Result<bool, VmError> {
+      let Some(window_obj) = vm.user_data::<WindowRealmUserData>().and_then(|data| data.window_obj) else {
+        return Ok(false);
+      };
+
+      let console_key = alloc_key(scope, "console")?;
+      let Some(Value::Object(console_obj)) = scope
+        .heap()
+        .object_get_own_data_property_value(window_obj, &console_key)?
+      else {
+        return Ok(false);
+      };
+
+      let sink_key = alloc_key(scope, CONSOLE_SINK_ID_KEY)?;
+      let Some(Value::Number(n)) = scope
+        .heap()
+        .object_get_own_data_property_value(console_obj, &sink_key)?
+      else {
+        return Ok(false);
+      };
+      if !n.is_finite() || n < 0.0 {
+        return Ok(false);
+      }
+      let sink_id = n as u64;
+      let sink = console_sinks().lock().get(&sink_id).cloned();
+      let Some(sink) = sink else {
+        return Ok(false);
+      };
+
+      let msg_s = scope.alloc_string(message)?;
+      scope.push_root(Value::String(msg_s))?;
+      sink(ConsoleMessageLevel::Warn, scope.heap_mut(), &[Value::String(msg_s)]);
+      Ok(true)
+    })()
+    .unwrap_or(false);
+
+    if console_warned {
+      return;
+    }
+
+    if let Some(diag) = shared_diagnostics_from_vm_host_or_hooks(host, hooks) {
+      diag.record_console_message(ConsoleMessageLevel::Warn, message.to_string());
+    }
+  }
+
+  let state_ptr = document_write_state_ptr_from_hooks(hooks);
+  let max_bytes_per_call = state_ptr
+    .map(|ptr| unsafe { (&*ptr).max_bytes_per_call() })
+    .unwrap_or_else(|| JsExecutionOptions::default().max_document_write_bytes_per_call);
 
   let mut out = String::new();
   for &arg in args {
@@ -13976,62 +14058,124 @@ fn document_write_impl(
     };
     let s = scope.heap().get_string(s_handle)?;
     if s.as_code_units().len() > max_bytes_per_call.saturating_sub(out.len()) {
-      return Err(throw_document_write_range_error(
+      warn_document_write(
         vm,
         scope,
-        &format!("document.write exceeded max bytes per call (limit={max_bytes_per_call})"),
-      ));
+        host,
+        hooks,
+        &format!(
+          "{call_name} ignored: exceeded max bytes per call (limit={max_bytes_per_call})"
+        ),
+      );
+      return Ok(Value::Undefined);
     }
     out.push_str(&s.to_utf8_lossy());
     if out.len() > max_bytes_per_call {
-      return Err(throw_document_write_range_error(
+      warn_document_write(
         vm,
         scope,
-        &format!("document.write exceeded max bytes per call (limit={max_bytes_per_call})"),
-      ));
+        host,
+        hooks,
+        &format!(
+          "{call_name} ignored: exceeded max bytes per call (limit={max_bytes_per_call})"
+        ),
+      );
+      return Ok(Value::Undefined);
     }
   }
 
   if append_newline {
     if out.len() >= max_bytes_per_call {
-      return Err(throw_document_write_range_error(
+      warn_document_write(
         vm,
         scope,
-        &format!("document.write exceeded max bytes per call (limit={max_bytes_per_call})"),
-      ));
+        host,
+        hooks,
+        &format!(
+          "{call_name} ignored: exceeded max bytes per call (limit={max_bytes_per_call})"
+        ),
+      );
+      return Ok(Value::Undefined);
     }
     out.push('\n');
   }
 
-  let Some(state) = current_document_write_state_mut() else {
-    return Ok(Value::Undefined);
-  };
+  let parsing_active = state_ptr.is_some_and(|ptr| unsafe { (&*ptr).parsing_active() });
+  let can_inject = parsing_active && crate::html::document_write::has_active_streaming_parser();
 
-  match state.try_enqueue(&out) {
-    Ok(()) => Ok(Value::Undefined),
-    Err(DocumentWriteLimitError::NotParsing) => Ok(Value::Undefined),
-    Err(DocumentWriteLimitError::TooManyCalls { limit }) => Err(throw_document_write_range_error(
+  if let Some(state_ptr) = state_ptr {
+    // SAFETY: `state_ptr` points at either:
+    // - the TLS-installed `DocumentWriteState` for this JS call boundary, or
+    // - the embedder `BrowserTabHost`'s `document_write_state` while it is mutably borrowed by the
+    //   event loop task currently running JS.
+    //
+    // Keep the `&mut DocumentWriteState` borrow scoped to this call so we don't accidentally alias
+    // it with other `hooks`/`host` accesses while emitting warnings.
+    let write_result = unsafe { (&mut *state_ptr).try_write(&out, can_inject) };
+    match write_result {
+      Ok(()) => {
+        if !can_inject {
+          warn_document_write(
+            vm,
+            scope,
+            host,
+            hooks,
+            &format!(
+              "{call_name} ignored: no active streaming HTML parser (post-parse deterministic no-op)"
+            ),
+          );
+        }
+      }
+      Err(DocumentWriteLimitError::TooManyCalls { limit }) => {
+        warn_document_write(
+          vm,
+          scope,
+          host,
+          hooks,
+          &format!("{call_name} ignored: exceeded max call count (limit={limit})"),
+        );
+      }
+      Err(DocumentWriteLimitError::PerCallBytesExceeded { len, limit }) => {
+        warn_document_write(
+          vm,
+          scope,
+          host,
+          hooks,
+          &format!("{call_name} ignored: exceeded max bytes per call (len={len}, limit={limit})"),
+        );
+      }
+      Err(DocumentWriteLimitError::TotalBytesExceeded {
+        current,
+        add,
+        limit,
+      }) => {
+        warn_document_write(
+          vm,
+          scope,
+          host,
+          hooks,
+          &format!(
+            "{call_name} ignored: exceeded max cumulative bytes (current={current}, add={add}, limit={limit})"
+          ),
+        );
+      }
+    }
+  } else {
+    // Deterministic subset of HTML's ignore-destructive-writes behavior:
+    // when no streaming parser is active, treat `document.write()` as a no-op instead of
+    // implicitly calling `document.open()` and clearing the document.
+    warn_document_write(
       vm,
       scope,
-      &format!("document.write exceeded max call count (limit={limit})"),
-    )),
-    Err(DocumentWriteLimitError::PerCallBytesExceeded { len, limit }) => Err(
-      throw_document_write_range_error(
-        vm,
-        scope,
-        &format!("document.write exceeded max bytes per call (len={len}, limit={limit})"),
+      host,
+      hooks,
+      &format!(
+        "{call_name} ignored: no active streaming HTML parser (post-parse deterministic no-op)"
       ),
-    ),
-    Err(DocumentWriteLimitError::TotalBytesExceeded { current, add, limit }) => Err(
-      throw_document_write_range_error(
-        vm,
-        scope,
-        &format!(
-          "document.write exceeded max cumulative bytes (current={current}, add={add}, limit={limit})"
-        ),
-      ),
-    ),
+    );
   }
+
+  Ok(Value::Undefined)
 }
 
 fn init_window_globals(

@@ -84,10 +84,12 @@ impl DocumentWriteState {
     self.write_calls
   }
 
-  pub fn try_enqueue(&mut self, input: &str) -> Result<(), DocumentWriteLimitError> {
-    if !self.parsing_active {
-      return Err(DocumentWriteLimitError::NotParsing);
-    }
+  /// Record a `document.write(...)` / `document.writeln(...)` call against the per-navigation
+  /// budgets and, when `enqueue` is true, append the markup to the pending buffer.
+  ///
+  /// Note: budgets are enforced regardless of whether a streaming parser is active. This keeps
+  /// post-parse no-op `document.write` calls deterministic and bounded.
+  pub fn try_write(&mut self, input: &str, enqueue: bool) -> Result<(), DocumentWriteLimitError> {
     if self.write_calls >= self.max_calls {
       return Err(DocumentWriteLimitError::TooManyCalls {
         limit: self.max_calls,
@@ -110,7 +112,9 @@ impl DocumentWriteState {
 
     self.write_calls = self.write_calls.saturating_add(1);
     self.bytes_written_total = self.bytes_written_total.saturating_add(len);
-    self.pending_html.push_str(input);
+    if enqueue && self.parsing_active {
+      self.pending_html.push_str(input);
+    }
     Ok(())
   }
 
@@ -121,19 +125,9 @@ impl DocumentWriteState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentWriteLimitError {
-  NotParsing,
-  TooManyCalls {
-    limit: usize,
-  },
-  PerCallBytesExceeded {
-    len: usize,
-    limit: usize,
-  },
-  TotalBytesExceeded {
-    current: usize,
-    add: usize,
-    limit: usize,
-  },
+  TooManyCalls { limit: usize },
+  PerCallBytesExceeded { len: usize, limit: usize },
+  TotalBytesExceeded { current: usize, add: usize, limit: usize },
 }
 
 thread_local! {

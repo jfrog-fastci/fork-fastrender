@@ -78,3 +78,12 @@ pub(crate) fn current_streaming_parser() -> Option<&'static StreamingHtmlParser>
   // call into JS. The pointer is only used during that dynamic extent.
   Some(unsafe { &*ptr })
 }
+
+/// Returns `true` when a streaming HTML parser is currently active for `document.write`.
+///
+/// FastRender uses this to implement a deterministic subset of HTML's destructive-write behavior:
+/// when no streaming parser is active, `document.write()` is treated as a no-op (rather than
+/// implicitly calling `document.open()`).
+pub(crate) fn has_active_streaming_parser() -> bool {
+  current_streaming_parser().is_some()
+}
