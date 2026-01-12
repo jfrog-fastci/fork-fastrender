@@ -208,6 +208,12 @@ impl CompilerOptions {
   /// This does **not** emit diagnostics. Use [`Self::normalize_and_validate`] to
   /// apply `tsc`-style option validation that also produces diagnostics.
   pub fn normalize(mut self) -> Self {
+    // `strict_native` is a legacy alias for `native_strict`. Treat them as fully
+    // synonymous even when only one is explicitly set by the host API.
+    let native_strict = self.native_strict || self.strict_native;
+    self.native_strict = native_strict;
+    self.strict_native = native_strict;
+
     self.module_resolution = self
       .module_resolution
       .take()
@@ -801,6 +807,10 @@ mod tests {
   fn compiler_options_normalization_is_idempotent() {
     let mut options = CompilerOptions::default();
     options.module_resolution = Some("  Node16 ".to_string());
+    // `strict_native` is a legacy alias for `native_strict`; normalization should
+    // make them consistent.
+    options.native_strict = true;
+    options.strict_native = false;
     options.types = vec![
       " react ".to_string(),
       "".to_string(),
@@ -817,6 +827,8 @@ mod tests {
     let twice = once.clone().normalize();
     assert_eq!(once, twice);
     assert_eq!(once.module_resolution.as_deref(), Some("node16"));
+    assert!(once.native_strict);
+    assert!(once.strict_native);
     assert_eq!(once.types, vec!["jest".to_string(), "react".to_string()]);
     assert_eq!(
       once.libs,
