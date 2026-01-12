@@ -720,6 +720,424 @@ id = "built-ins/Object/getOwnPropertyDescriptor/primitive-string.js"
 status = "xfail"
 reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
 
+# --- RegExp + String (regex methods) ---
+#
+# RegExp itself is still incomplete, so keep the broad `built-ins/RegExp/**` xfail, but carve out
+# the known-green surface so regressions are caught.
+[[expectations]]
+glob = "built-ins/RegExp/prototype/test/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/match/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/matchAll/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/search/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/replace/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/replaceAll/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/split/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/**"
+status = "xfail"
+reason = "vm-js: RegExp semantics are still incomplete (e.g. v/d flags, unicode sets, etc); tracked via curated test262 progress."
+
+# Remaining known failures under the above globs.
+[[expectations]]
+id = "built-ins/String/prototype/match/S15.5.4.10_A2_T10.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/S15.5.4.10_A2_T11.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/S15.5.4.10_A2_T15.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/S15.5.4.10_A2_T16.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/S15.5.4.10_A2_T8.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/S15.5.4.10_A2_T9.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/cstm-matcher-on-bigint-primitive.js"
+status = "xfail"
+reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/cstm-matcher-on-boolean-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match incorrectly calls @@match on primitive values (should not consult Symbol.match)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/cstm-matcher-on-number-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match incorrectly calls @@match on primitive values (should not consult Symbol.match)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/cstm-matcher-on-string-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match incorrectly calls @@match on primitive values (should not consult Symbol.match)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/duplicate-named-groups-properties.js"
+status = "xfail"
+reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/duplicate-named-indices-groups-properties.js"
+status = "xfail"
+reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js"
+status = "xfail"
+reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+
+[[expectations]]
+id = "built-ins/String/prototype/match/this-value-not-obj-coercible.js"
+status = "xfail"
+reason = "vm-js: String.prototype.match does not yet implement RequireObjectCoercible(this value)."
+
+[[expectations]]
+id = "built-ins/String/prototype/matchAll/cstm-matchall-on-bigint-primitive.js"
+status = "xfail"
+reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
+
+[[expectations]]
+id = "built-ins/String/prototype/matchAll/cstm-matchall-on-number-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.matchAll incorrectly calls @@matchAll on primitive values (should not consult Symbol.matchAll)."
+
+[[expectations]]
+id = "built-ins/String/prototype/matchAll/cstm-matchall-on-string-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.matchAll incorrectly calls @@matchAll on primitive values (should not consult Symbol.matchAll)."
+
+[[expectations]]
+id = "built-ins/String/prototype/matchAll/flags-undefined-throws.js"
+status = "xfail"
+reason = "vm-js: String.prototype.matchAll does not yet implement the IsRegExp/flags global checks."
+
+[[expectations]]
+id = "built-ins/String/prototype/matchAll/regexp-prototype-has-no-matchAll.js"
+status = "xfail"
+reason = "vm-js: String.prototype.matchAll throws an invariant violation instead of a TypeError when RegExp @@matchAll is missing."
+
+[[expectations]]
+id = "built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js"
+status = "xfail"
+reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+
+[[expectations]]
+id = "built-ins/String/prototype/matchAll/this-val-non-obj-coercible.js"
+status = "xfail"
+reason = "vm-js: String.prototype.matchAll does not yet implement RequireObjectCoercible(this value)."
+
+[[expectations]]
+id = "built-ins/String/prototype/search/cstm-search-on-bigint-primitive.js"
+status = "xfail"
+reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
+
+[[expectations]]
+id = "built-ins/String/prototype/search/cstm-search-on-boolean-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.search incorrectly calls @@search on primitive values (should not consult Symbol.search)."
+
+[[expectations]]
+id = "built-ins/String/prototype/search/cstm-search-on-number-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.search incorrectly calls @@search on primitive values (should not consult Symbol.search)."
+
+[[expectations]]
+id = "built-ins/String/prototype/search/cstm-search-on-string-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.search incorrectly calls @@search on primitive values (should not consult Symbol.search)."
+
+[[expectations]]
+id = "built-ins/String/prototype/search/regexp-prototype-search-v-flag.js"
+status = "xfail"
+reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+
+[[expectations]]
+id = "built-ins/String/prototype/search/regexp-prototype-search-v-u-flag.js"
+status = "xfail"
+reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+
+[[expectations]]
+id = "built-ins/String/prototype/search/this-value-not-obj-coercible.js"
+status = "xfail"
+reason = "vm-js: String.prototype.search does not yet implement RequireObjectCoercible(this value)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/S15.5.4.11_A3_T1.js"
+status = "xfail"
+reason = "vm-js: GetSubstitution `$nn` parsing is incomplete (e.g. `$11` should be treated as `$1` + `1` when capture 11 is absent)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/S15.5.4.11_A3_T2.js"
+status = "xfail"
+reason = "vm-js: GetSubstitution `$nn` parsing is incomplete (e.g. `$11` should be treated as `$1` + `1` when capture 11 is absent)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/S15.5.4.11_A3_T3.js"
+status = "xfail"
+reason = "vm-js: GetSubstitution `$nn` parsing is incomplete (e.g. `$11` should be treated as `$1` + `1` when capture 11 is absent)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/cstm-replace-on-bigint-primitive.js"
+status = "xfail"
+reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/cstm-replace-on-boolean-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replace incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/cstm-replace-on-number-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replace incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/cstm-replace-on-string-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replace incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/regexp-capture-by-index.js"
+status = "xfail"
+reason = "vm-js: GetSubstitution capture index parsing is incomplete (e.g. `$10`)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag.js"
+status = "xfail"
+reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/replaceValue-evaluation-order-regexp-object.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replace evaluation order for RegExp searchValue/replaceValue is still incorrect."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/replaceValue-evaluation-order.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replace evaluation order is still incorrect."
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/this-value-not-obj-coercible.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replace does not yet implement RequireObjectCoercible(this value)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-bigint-primitive.js"
+status = "xfail"
+reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-boolean-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-number-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-string-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x003C.js"
+status = "xfail"
+reason = "vm-js: GetSubstitution replacement pattern support for replaceAll is still incomplete."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/getSubstitution-0x0024N.js"
+status = "xfail"
+reason = "vm-js: GetSubstitution replacement pattern support for replaceAll is still incomplete."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/getSubstitution-0x0024NN.js"
+status = "xfail"
+reason = "vm-js: GetSubstitution replacement pattern support for replaceAll is still incomplete."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-flags-no-g-throws.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-flags-null-undefined-throws.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-flags-toString-abrupt.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-get-flags-abrupt.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-isRegExp-abrupt.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call-fn.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-replacer-before-tostring.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet follow spec call order (incorrect ToString side effects)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-replacer-call-abrupt.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet follow spec call order (incorrect abrupt completion propagation)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-replacer-call.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet pass the correct this/arguments to @@replace."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-replacer-method-abrupt.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet follow spec call order (incorrect abrupt completion propagation)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/searchValue-tostring-regexp.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet fully implement the RegExp searchValue path."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/this-is-null-throws.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet implement RequireObjectCoercible(this value)."
+
+[[expectations]]
+id = "built-ins/String/prototype/replaceAll/this-is-undefined-throws.js"
+status = "xfail"
+reason = "vm-js: String.prototype.replaceAll does not yet implement RequireObjectCoercible(this value)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/argument-is-new-reg-exp-and-instance-is-string-hello.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet implement RegExp separators."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/arguments-are-new-reg-exp-and-undefined-and-instance-is-string-hello.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet implement RegExp separators."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/arguments-are-new-reg-exp-and-void-0-and-instance-is-string-hello.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet implement RegExp separators."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/call-split-new-reg-exp.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet implement RegExp separators."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/cstm-split-invocation.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet implement @@split hooks on separator objects."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/cstm-split-on-bigint-primitive.js"
+status = "xfail"
+reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/cstm-split-on-boolean-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split incorrectly calls @@split on primitive values (should not consult Symbol.split)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/cstm-split-on-number-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split incorrectly calls @@split on primitive values (should not consult Symbol.split)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/cstm-split-on-string-primitive.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split incorrectly calls @@split on primitive values (should not consult Symbol.split)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/separator-regexp.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet implement RegExp separators (and regexp literal parsing is still incomplete for some patterns)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/separator-tostring-error.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet match spec ordering for ToString(separator) vs limit conversion."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/separator-undef-limit-custom.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/separator-undef-limit-zero.js"
+status = "xfail"
+reason = "vm-js does not yet implement the exponentiation operator (**)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/this-value-not-obj-coercible.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet implement RequireObjectCoercible(this value)."
+
+[[expectations]]
+id = "built-ins/String/prototype/split/this-value-tostring-error.js"
+status = "xfail"
+reason = "vm-js: String.prototype.split does not yet implement @@split hooks on separator objects."
+
 [[expectations]]
 glob = "built-ins/Object/**"
 status = "xfail"
