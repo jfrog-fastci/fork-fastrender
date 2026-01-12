@@ -1,8 +1,17 @@
-use fastrender::animation;
-use fastrender::style::types::{BasicShape, ClipPath, ShapeRadius};
-use fastrender::{BoxNode, FragmentNode, FragmentTree, RenderOptions};
+use crate::debug::runtime::RuntimeToggles;
+use crate::style::types::{BasicShape, ClipPath, ShapeRadius};
+use crate::{BoxNode, FastRender, FontConfig, FragmentNode, FragmentTree, RenderOptions, ResourcePolicy};
 
-use super::support::create_test_renderer;
+fn create_test_renderer() -> FastRender {
+  crate::testing::init_rayon_for_tests(1);
+  FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .resource_policy(ResourcePolicy::default().allow_http(false).allow_https(false))
+    // Avoid host `FASTR_*` env vars influencing deterministic unit test results.
+    .runtime_toggles(RuntimeToggles::default())
+    .build()
+    .expect("renderer")
+}
 
 fn find_box_id_by_dom_id(node: &BoxNode, id: &str) -> Option<usize> {
   if node.debug_info.as_ref().and_then(|info| info.id.as_deref()) == Some(id) {
@@ -67,7 +76,7 @@ fn transitions_interpolate_circle_keyword_radius_over_time() {
 
   let mut start = prepared.fragment_tree().clone();
   let viewport = start.viewport_size();
-  animation::apply_transitions(&mut start, 0.0, viewport);
+  super::apply_transitions(&mut start, 0.0, viewport);
   let radius_start = fragment_circle_radius_px(&start, box_id);
   assert!(
     (radius_start - 50.0).abs() < 1e-3,
@@ -76,10 +85,11 @@ fn transitions_interpolate_circle_keyword_radius_over_time() {
 
   let mut mid = prepared.fragment_tree().clone();
   let viewport = mid.viewport_size();
-  animation::apply_transitions(&mut mid, 500.0, viewport);
+  super::apply_transitions(&mut mid, 500.0, viewport);
   let radius_mid = fragment_circle_radius_px(&mid, box_id);
   assert!(
     (radius_mid - 75.0).abs() < 1e-3,
     "expected ~75px at t=500ms, got {radius_mid}"
   );
 }
+

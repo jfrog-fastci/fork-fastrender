@@ -8,6 +8,9 @@
 mod state_store;
 pub mod timing;
 
+#[cfg(test)]
+mod clip_path_shape_radius_keywords_test;
+
 pub use state_store::AnimationStateStore;
 
 use self::timing as wa_timing;

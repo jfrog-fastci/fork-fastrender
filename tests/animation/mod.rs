@@ -1,6 +1,5 @@
 mod support;
 mod additional_fragment_offsets;
-mod clip_path_shape_radius_keywords;
 mod element_scroll_timeline;
 mod running_anchor_snapshots;
 mod scroll_function_timeline;
