@@ -4293,7 +4293,6 @@ impl<'a> Scope<'a> {
     target: Option<GcObject>,
     handler: Option<GcObject>,
   ) -> Result<GcObject, VmError> {
-    // Root inputs during allocation in case `alloc_unchecked` triggers a GC.
     let mut scope = self.reborrow();
     let mut roots = [Value::Undefined, Value::Undefined];
     let mut root_count = 0;
