@@ -1302,6 +1302,31 @@ fn span_map_indexes_class_members() {
 }
 
 #[test]
+fn span_map_indexes_object_literal_methods_and_accessors() {
+  let source = r#"
+const obj = {
+  m() { return 1; },
+  get g() { return 2; },
+  set s(v) { },
+};
+"#;
+  let result = lower_from_source(source).expect("lower");
+  let span_map = &result.hir.span_map;
+
+  let assert_def_at = |needle: &str, expected_kind: DefKind, expected_name: &str| {
+    let offset = source.find(needle).expect("needle offset") as u32;
+    let def_id = span_map.def_at_offset(offset).expect("def at offset");
+    let def = result.def(def_id).expect("definition data");
+    assert_eq!(def.path.kind, expected_kind);
+    assert_eq!(result.names.resolve(def.name), Some(expected_name));
+  };
+
+  assert_def_at("m()", DefKind::Method, "m");
+  assert_def_at("g()", DefKind::Getter, "g");
+  assert_def_at("s(v)", DefKind::Setter, "s");
+}
+
+#[test]
 fn span_map_resolves_static_block_expr_to_static_block_body() {
   let source = "class C { static { foo(); } }";
   let result = lower_from_source(source).expect("lower");

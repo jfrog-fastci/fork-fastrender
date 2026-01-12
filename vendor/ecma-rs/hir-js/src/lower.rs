@@ -5206,12 +5206,13 @@ fn collect_expr<'a>(
                 ctx,
               ),
               ClassOrObjVal::Getter(getter) => {
+                let member_span = ctx.to_range(member.loc + getter.loc);
                 let (name_id, name_text) = obj_key_name(key, names);
                 let mut desc = DefDescriptor::new(
                   DefKind::Getter,
                   name_id,
                   name_text,
-                  ctx.to_range(getter.loc),
+                  member_span,
                   false,
                   ambient,
                   in_global,
@@ -5242,12 +5243,13 @@ fn collect_expr<'a>(
                 });
               }
               ClassOrObjVal::Setter(setter) => {
+                let member_span = ctx.to_range(member.loc + setter.loc);
                 let (name_id, name_text) = obj_key_name(key, names);
                 let mut desc = DefDescriptor::new(
                   DefKind::Setter,
                   name_id,
                   name_text,
-                  ctx.to_range(setter.loc),
+                  member_span,
                   false,
                   ambient,
                   in_global,
@@ -5278,12 +5280,13 @@ fn collect_expr<'a>(
                 });
               }
               ClassOrObjVal::Method(method) => {
+                let member_span = ctx.to_range(member.loc + method.loc);
                 let (name_id, name_text) = obj_key_name(key, names);
                 let mut desc = DefDescriptor::new(
                   DefKind::Method,
                   name_id,
                   name_text,
-                  ctx.to_range(method.loc),
+                  member_span,
                   false,
                   ambient,
                   in_global,
