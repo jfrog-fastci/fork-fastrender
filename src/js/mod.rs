@@ -119,6 +119,10 @@ pub mod window_url;
 #[path = "vmjs/window_xhr.rs"]
 pub mod window_xhr;
 
+#[cfg(test)]
+#[path = "vmjs/regression_tests.rs"]
+mod vmjs_regression_tests;
+
 // --- WebIDL runtime + bindings integration (`src/js/webidl/*`) ---
 
 #[path = "webidl/bindings/mod.rs"]

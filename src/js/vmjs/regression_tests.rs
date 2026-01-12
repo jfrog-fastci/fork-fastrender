@@ -1,4 +1,7 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmOptions};
+use vm_js::{
+  Heap, HeapLimits, JsRuntime, PromiseHandle, PromiseRejectionHandleAction, PromiseRejectionTracker,
+  PropertyKey, Value, Vm, VmOptions,
+};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -175,4 +178,29 @@ fn symbol_coercions_throw_typeerror() {
   // But equality just returns false (no coercion to string/number).
   let value = rt.exec_script(r#"Symbol('x') == 'x'"#).unwrap();
   assert_eq!(value, Value::Bool(false));
+}
+
+#[test]
+fn promise_rejection_tracker_api_smoke() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let promise: PromiseHandle;
+  {
+    let mut scope = heap.scope();
+    let obj = scope.alloc_object().unwrap();
+    promise = PromiseHandle::from(obj);
+  }
+
+  let mut tracker = PromiseRejectionTracker::new();
+  tracker.on_reject(&mut heap, promise);
+
+  let batch = tracker.drain_about_to_be_notified(&mut heap);
+  assert_eq!(batch.promises(), &[promise]);
+  batch.teardown(&mut heap);
+
+  tracker.after_unhandledrejection_dispatch(promise, false);
+  assert_eq!(
+    tracker.on_handle(&mut heap, promise),
+    PromiseRejectionHandleAction::QueueRejectionHandled { promise }
+  );
 }
