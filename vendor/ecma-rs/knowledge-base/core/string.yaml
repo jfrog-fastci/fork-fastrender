@@ -12,6 +12,20 @@
   properties:
     encoding.output: same_as_input
 
+- name: String.prototype.substring
+  semantics: Substring
+  signature: "(start, end?) => string"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+  properties:
+    encoding.output: same_as_input
+
 - name: String.prototype.concat
   semantics: Concat
   signature: "(...parts: string[]) => string"
@@ -156,6 +170,9 @@
     network: false
     nondeterministic: false
   purity: Pure
+  properties:
+    # Output is based on the input and count; let analysis refine if needed.
+    encoding.output: unknown
 
 - name: String.prototype.padStart
   semantics: PadStart
@@ -168,6 +185,9 @@
     network: false
     nondeterministic: false
   purity: Pure
+  properties:
+    # Output depends on the optional fill string.
+    encoding.output: unknown
 
 - name: String.prototype.padEnd
   semantics: PadEnd
@@ -180,6 +200,9 @@
     network: false
     nondeterministic: false
   purity: Pure
+  properties:
+    # Output depends on the optional fill string.
+    encoding.output: unknown
 
 - name: String.prototype.trimStart
   semantics: TrimStart
@@ -192,6 +215,8 @@
     network: false
     nondeterministic: false
   purity: Pure
+  properties:
+    encoding.output: same_as_input
 
 - name: String.prototype.trimEnd
   semantics: TrimEnd
@@ -204,6 +229,8 @@
     network: false
     nondeterministic: false
   purity: Pure
+  properties:
+    encoding.output: same_as_input
 
 - name: String.prototype.split
   semantics: Split

@@ -248,8 +248,6 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
       }
 
       match prop_name {
-        "slice" => recv_enc,
-        "toString" => recv_enc,
         "concat" => {
           let mut encoding = recv_enc;
           for arg in &call.args {
@@ -260,21 +258,13 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
           }
           encoding
         }
-        "toLowerCase" | "toUpperCase" => {
-          if recv_enc == StringEncoding::Ascii {
-            StringEncoding::Ascii
-          } else {
-            StringEncoding::Unknown
-          }
-        }
         _ => StringEncoding::Unknown,
       }
     } else if self.oracle.receiver_is_number(self.body_id, member.object) {
-      match prop_name {
-        // `Number.prototype.toString()` always returns ASCII digits/sign/exponent forms.
-        "toString" => StringEncoding::Ascii,
-        _ => StringEncoding::Unknown,
-      }
+      let api_key = format!("Number.prototype.{prop_name}");
+      self
+        .encoding_via_kb(&api_key, StringEncoding::Unknown)
+        .unwrap_or(StringEncoding::Unknown)
     } else {
       StringEncoding::Unknown
     }
@@ -621,7 +611,7 @@ mod tests {
     let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
 
     let types = TypedProgram::from_program(Arc::clone(&program), file);
-    let kb = KnowledgeBase::default();
+    let kb = crate::load_default_api_database();
     let results = analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
     let root = results.get(&root_body_id).unwrap();
 

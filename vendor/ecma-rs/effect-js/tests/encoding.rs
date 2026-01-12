@@ -190,7 +190,7 @@ fn to_lowercase_preserves_ascii() {
   let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
-  let kb = KnowledgeBase::default();
+  let kb = effect_js::load_default_api_database();
   let results = effect_js::encoding::analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
   let root = results.get(&root_body_id).unwrap();
 
@@ -223,7 +223,7 @@ fn to_lowercase_preserves_ascii_via_computed_key() {
   let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
-  let kb = KnowledgeBase::default();
+  let kb = effect_js::load_default_api_database();
   let results = effect_js::encoding::analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
   let root = results.get(&root_body_id).unwrap();
 
@@ -311,7 +311,7 @@ fn number_to_string_is_ascii() {
   });
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
-  let kb = KnowledgeBase::default();
+  let kb = effect_js::load_default_api_database();
   let results = effect_js::encoding::analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
   let root = results.get(&root_body_id).unwrap();
 
