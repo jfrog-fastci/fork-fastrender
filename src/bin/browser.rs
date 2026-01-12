@@ -3836,12 +3836,42 @@ impl App {
     self.debug_log_ui_open = open;
   }
 
+  fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
+    let [r, g, b, a] = color.to_array();
+    let a = ((a as f32) * alpha).round().clamp(0.0, 255.0) as u8;
+    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+  }
+
+  fn scaled_clip_rect(rect: egui::Rect, pivot: egui::Align2, scale: f32) -> egui::Rect {
+    if !scale.is_finite() {
+      return rect;
+    }
+    let scale = scale.clamp(0.0, 1.0);
+    let size = rect.size() * scale;
+    match pivot {
+      egui::Align2::LEFT_TOP => egui::Rect::from_min_size(rect.min, size),
+      egui::Align2::LEFT_BOTTOM => {
+        egui::Rect::from_min_size(egui::pos2(rect.min.x, rect.max.y - size.y), size)
+      }
+      _ => egui::Rect::from_center_size(rect.center(), size),
+    }
+  }
+
   fn render_context_menu(&mut self, ctx: &egui::Context) -> bool {
     use fastrender::ui::ChromeAction;
     use fastrender::ui::context_menu::{
       apply_page_context_menu_action, build_page_context_menu_entries, PageContextMenuAction,
       PageContextMenuBuildInput, PageContextMenuEntry,
     };
+    use fastrender::ui::motion::UiMotion;
+
+    let motion = UiMotion::from_env();
+    let open_t = motion.animate_bool(
+      ctx,
+      egui::Id::new("fastr_page_context_menu_open"),
+      self.open_context_menu.is_some(),
+      motion.durations.popup_open,
+    );
 
     let mut session_dirty = false;
     let (tab_id, pos_css, anchor_points, link_url, selected_idx) =
@@ -4052,10 +4082,22 @@ impl App {
       pos_css.1.to_bits(),
     ));
 
+    let open_opacity = open_t.clamp(0.0, 1.0);
+    let open_scale = motion.popup_open_scale(open_t);
+    let popup_rect_target = egui::Rect::from_min_size(
+      egui::pos2(menu_origin.x, menu_origin.y),
+      egui::vec2(menu_size.width, menu_size.height),
+    );
+    let clip_rect = Self::scaled_clip_rect(popup_rect_target, egui::Align2::LEFT_TOP, open_scale);
+
     let popup = egui::Area::new(popup_id)
       .order(egui::Order::Foreground)
       .fixed_pos(egui::pos2(menu_origin.x, menu_origin.y))
       .show(ctx, |ui| {
+        ui.set_clip_rect(clip_rect);
+        ui.visuals_mut().override_text_color =
+          Some(Self::with_alpha(ui.visuals().text_color(), open_opacity));
+
         let selection_bg_fill = ui.visuals().selection.bg_fill;
         let hovered_bg_fill = {
           // Use a subtle text-colored scrim so hover remains visible even when the theme's hovered
@@ -4070,6 +4112,9 @@ impl App {
         // Ensure the context menu matches the theme's rounded + shadowed popups.
         frame.rounding = ui.visuals().menu_rounding;
         frame.shadow.extrusion = frame.shadow.extrusion.max(12.0);
+        frame.fill = Self::with_alpha(frame.fill, open_opacity);
+        frame.stroke.color = Self::with_alpha(frame.stroke.color, open_opacity);
+        frame.shadow.color = Self::with_alpha(frame.shadow.color, open_opacity);
 
         let frame = frame.show(ui, |ui| {
           ui.set_min_width(MENU_CONTENT_WIDTH);
@@ -4093,19 +4138,35 @@ impl App {
               move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
             });
 
+            let item_id = popup_id.with(("item", idx));
+            let hover_t = motion.animate_bool(
+              ui.ctx(),
+              item_id.with("hover"),
+              response.hovered(),
+              motion.durations.hover_fade,
+            );
             let is_selected = idx == selected_idx;
-            let bg = if is_selected {
-              selected_fill
-            } else if response.hovered() {
-              hover_fill
-            } else {
-              egui::Color32::TRANSPARENT
-            };
+            let selected_t = motion.animate_bool(
+              ui.ctx(),
+              item_id.with("selected"),
+              is_selected,
+              motion.durations.hover_fade,
+            );
 
-            if bg != egui::Color32::TRANSPARENT {
-              ui
-                .painter()
-                .rect_filled(rect.shrink(1.0), item_rounding, bg);
+            let bg_rect = rect.shrink(1.0);
+            if hover_t > 0.0 {
+              ui.painter().rect_filled(
+                bg_rect,
+                item_rounding,
+                Self::with_alpha(hover_fill, hover_t * open_opacity),
+              );
+            }
+            if selected_t > 0.0 {
+              ui.painter().rect_filled(
+                bg_rect,
+                item_rounding,
+                Self::with_alpha(selected_fill, selected_t * open_opacity),
+              );
             }
 
             ui.allocate_ui_at_rect(rect, |ui| {
@@ -4120,7 +4181,7 @@ impl App {
               });
             });
 
-            if is_selected {
+            if idx == selected_idx {
               response.request_focus();
             }
 
@@ -4151,7 +4212,8 @@ impl App {
                 );
                 let y = sep_rect.center().y;
                 let inset = 8.0;
-                let separator_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+                let separator_color =
+                  Self::with_alpha(ui.visuals().widgets.noninteractive.bg_stroke.color, open_opacity);
                 ui.painter().line_segment(
                   [
                     egui::pos2(sep_rect.min.x + inset, y),
@@ -4248,7 +4310,16 @@ impl App {
 
   fn render_select_dropdown(&mut self, ctx: &egui::Context) {
     use fastrender::tree::box_tree::SelectItem;
+    use fastrender::ui::motion::UiMotion;
     use fastrender::ui::UiToWorker;
+
+    let motion = UiMotion::from_env();
+    let open_t = motion.animate_bool(
+      ctx,
+      egui::Id::new("fastr_select_dropdown_open"),
+      self.open_select_dropdown.is_some(),
+      motion.durations.popup_open,
+    );
 
     let (
       tab_id,
@@ -4344,6 +4415,25 @@ impl App {
     let inner_max_height =
       (placement.rect.height() - popup_margin.top - popup_margin.bottom).max(0.0);
 
+    let open_opacity = open_t.clamp(0.0, 1.0);
+    let open_scale = motion.popup_open_scale(open_t);
+    // Used for the scale/clip open animation (the actual popup height may be smaller than the
+    // placement max height if there are few items).
+    let content_height = 26.0 * (control.items.len() as f32);
+    let popup_height = content_height.min(inner_max_height) + popup_margin.top + popup_margin.bottom;
+    let popup_width = placement.rect.width();
+    let popup_rect_target = match placement.direction {
+      fastrender::select_dropdown::SelectDropdownPopupDirection::Down => egui::Rect::from_min_size(
+        popup_pos,
+        egui::vec2(popup_width, popup_height),
+      ),
+      fastrender::select_dropdown::SelectDropdownPopupDirection::Up => egui::Rect::from_min_size(
+        egui::pos2(popup_pos.x, popup_pos.y - popup_height),
+        egui::vec2(popup_width, popup_height),
+      ),
+    };
+    let clip_rect = Self::scaled_clip_rect(popup_rect_target, popup_pivot, open_scale);
+
     let popup = egui::Area::new(egui::Id::new((
       "fastr_select_dropdown_popup",
       tab_id.0,
@@ -4353,10 +4443,17 @@ impl App {
     .fixed_pos(popup_pos)
     .pivot(popup_pivot)
     .show(ctx, |ui| {
+      ui.set_clip_rect(clip_rect);
+      ui.visuals_mut().override_text_color =
+        Some(Self::with_alpha(ui.visuals().text_color(), open_opacity));
+
       let mut frame = egui::Frame::popup(ui.style());
       frame.inner_margin = popup_margin;
       frame.rounding = egui::Rounding::same(theme_corner_radius);
       frame.shadow.extrusion = frame.shadow.extrusion.max(12.0);
+      frame.fill = Self::with_alpha(frame.fill, open_opacity);
+      frame.stroke.color = Self::with_alpha(frame.stroke.color, open_opacity);
+      frame.shadow.color = Self::with_alpha(frame.shadow.color, open_opacity);
 
       let frame = frame.show(ui, |ui| {
         ui.set_min_width(inner_width);
@@ -4418,16 +4515,17 @@ impl App {
                     egui::vec2(ui.available_width(), 18.0),
                     egui::Sense::hover(),
                   );
+                  let label_color = if *disabled {
+                    visuals.weak_text_color()
+                  } else {
+                    visuals.text_color()
+                  };
                   ui.painter().text(
                     egui::pos2(rect.min.x + base_padding_x, rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     label,
                     small_font.clone(),
-                    if *disabled {
-                      visuals.weak_text_color()
-                    } else {
-                      visuals.text_color()
-                    },
+                    Self::with_alpha(label_color, open_opacity),
                   );
                   ui.add_space(2.0);
                 }
@@ -4467,21 +4565,42 @@ impl App {
                   }
 
                   let hovered = response.hovered();
-                  let mut bg = egui::Color32::TRANSPARENT;
-                  if *selected {
-                    bg = if hovered {
-                      selection_hover_bg
-                    } else {
-                      selection_bg
-                    };
-                  } else if hovered && !*disabled {
-                    bg = hover_bg;
-                  }
+                  let row_id = egui::Id::new(("fastr_select_dropdown_row", tab_id.0, select_node_id, idx));
+                  let hover_t = motion.animate_bool(
+                    ui.ctx(),
+                    row_id.with("hover"),
+                    hovered && !*disabled,
+                    motion.durations.hover_fade,
+                  );
+                  let selected_t = motion.animate_bool(
+                    ui.ctx(),
+                    row_id.with("selected"),
+                    *selected,
+                    motion.durations.hover_fade,
+                  );
 
                   let painter = ui.painter();
-                  if bg != egui::Color32::TRANSPARENT {
+                  if hover_t > 0.0 || selected_t > 0.0 {
                     let bg_rect = rect.shrink2(egui::vec2(row_bg_inset_x, 0.0));
-                    painter.rect_filled(bg_rect, row_rounding, bg);
+                    if hover_t > 0.0 {
+                      painter.rect_filled(
+                        bg_rect,
+                        row_rounding,
+                        Self::with_alpha(hover_bg, hover_t * open_opacity),
+                      );
+                    }
+                    if selected_t > 0.0 {
+                      let fill = if hovered {
+                        selection_hover_bg
+                      } else {
+                        selection_bg
+                      };
+                      painter.rect_filled(
+                        bg_rect,
+                        row_rounding,
+                        Self::with_alpha(fill, selected_t * open_opacity),
+                      );
+                    }
                   }
 
                   let has_focus = response.has_focus() || (*selected && !*disabled);
@@ -4496,15 +4615,16 @@ impl App {
                   } else {
                     visuals.text_color()
                   };
+                  let text_color = Self::with_alpha(text_color, open_opacity);
 
                   let mut x = rect.min.x + base_padding_x;
-                  if *selected {
+                  if selected_t > 0.0 {
                     painter.text(
                       egui::pos2(x, rect.center().y),
                       egui::Align2::LEFT_CENTER,
                       "✓",
                       body_font.clone(),
-                      selection_base,
+                      Self::with_alpha(selection_base, selected_t * open_opacity),
                     );
                   }
                   x += check_col_width;
