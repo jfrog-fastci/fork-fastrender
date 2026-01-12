@@ -1835,6 +1835,8 @@ const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
+const EVENT_BRAND_KEY: &str = "__fastrender_event";
+const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
 const STORAGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_storage_event_prototype";
@@ -6080,6 +6082,8 @@ fn event_constructor_impl(
 
   define_event_default_properties(scope, obj)?;
 
+  brand_event_object(scope, obj, BrandedEventKind::Event)?;
+
   Ok(Value::Object(obj))
 }
 
@@ -6178,6 +6182,8 @@ fn custom_event_constructor_impl(
 
   let detail_key = alloc_key(scope, "detail")?;
   scope.define_property(obj, detail_key, data_desc(detail))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::CustomEvent)?;
 
   Ok(Value::Object(obj))
 }
@@ -6332,6 +6338,8 @@ fn storage_event_constructor_native(
   let storage_area_key = alloc_key(scope, "storageArea")?;
   scope.define_property(obj, storage_area_key, read_only_data_desc(storage_area))?;
 
+  brand_event_object(scope, obj, BrandedEventKind::StorageEvent)?;
+
   Ok(Value::Object(obj))
 }
 
@@ -6433,6 +6441,8 @@ fn promise_rejection_event_constructor_impl(
     read_only_data_desc(Value::Object(promise_obj)),
   )?;
   scope.define_property(obj, reason_key, read_only_data_desc(reason))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::PromiseRejectionEvent)?;
 
   Ok(Value::Object(obj))
 }
@@ -8171,6 +8181,85 @@ fn is_branded_abort_signal(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool,
   ))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum BrandedEventKind {
+  Event = 0,
+  CustomEvent = 1,
+  PromiseRejectionEvent = 2,
+  StorageEvent = 3,
+}
+
+impl BrandedEventKind {
+  fn from_value(value: Value) -> Option<Self> {
+    match value {
+      Value::Number(n) if n.is_finite() && n >= 0.0 => match n as u8 {
+        0 => Some(Self::Event),
+        1 => Some(Self::CustomEvent),
+        2 => Some(Self::PromiseRejectionEvent),
+        3 => Some(Self::StorageEvent),
+        _ => None,
+      },
+      _ => None,
+    }
+  }
+}
+
+fn brand_event_object(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  kind: BrandedEventKind,
+) -> Result<(), VmError> {
+  let brand_key = alloc_key(scope, EVENT_BRAND_KEY)?;
+  scope.define_property(
+    obj,
+    brand_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: false,
+      },
+    },
+  )?;
+
+  let kind_key = alloc_key(scope, EVENT_KIND_KEY)?;
+  scope.define_property(
+    obj,
+    kind_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(kind as u8 as f64),
+        writable: false,
+      },
+    },
+  )?;
+  Ok(())
+}
+
+fn branded_event_kind(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<BrandedEventKind>, VmError> {
+  let brand_key = alloc_key(scope, EVENT_BRAND_KEY)?;
+  if !matches!(
+    scope.heap().object_get_own_data_property_value(obj, &brand_key)?,
+    Some(Value::Bool(true))
+  ) {
+    return Ok(None);
+  }
+  let kind_key = alloc_key(scope, EVENT_KIND_KEY)?;
+  let kind = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &kind_key)?
+    .and_then(BrandedEventKind::from_value);
+  Ok(kind)
+}
+
+fn is_branded_event(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  Ok(branded_event_kind(scope, obj)?.is_some())
+}
+
 fn abort_signal_is_aborted(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
   let aborted_key = alloc_key(scope, "aborted")?;
   Ok(matches!(
@@ -8667,14 +8756,13 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     document_obj: GcObject,
     event: &web_events::Event,
   ) -> Result<GcObject, VmError> {
-    let proto_key_name = if event.storage.is_some() {
-      STORAGE_EVENT_PROTOTYPE_KEY
+    let is_storage_event = event.storage.is_some() || event.type_ == "storage";
+    let (kind, proto_key_name) = if is_storage_event {
+      (BrandedEventKind::StorageEvent, STORAGE_EVENT_PROTOTYPE_KEY)
     } else if event.detail.is_some() {
-      CUSTOM_EVENT_PROTOTYPE_KEY
-    } else if event.type_ == "storage" {
-      STORAGE_EVENT_PROTOTYPE_KEY
+      (BrandedEventKind::CustomEvent, CUSTOM_EVENT_PROTOTYPE_KEY)
     } else {
-      EVENT_PROTOTYPE_KEY
+      (BrandedEventKind::Event, EVENT_PROTOTYPE_KEY)
     };
     let proto_key = alloc_key(scope, proto_key_name)?;
     let mut proto = scope
@@ -8688,7 +8776,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     // `StorageEvent` is installed separately from this file (see the StorageEvent constructor task).
     // To avoid making host-driven storage event dispatch depend on init ordering, lazily resolve
     // `StorageEvent.prototype` from the window global if the document doesn't have it cached yet.
-    if proto.is_none() && event.storage.is_some() {
+    if proto.is_none() && is_storage_event {
       if let Some(window_obj) = document_window_from_document(scope, document_obj)? {
         scope.push_root(Value::Object(window_obj))?;
         let ctor_key = alloc_key(scope, "StorageEvent")?;
@@ -8716,7 +8804,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     // If the realm doesn't provide `StorageEvent` yet, fall back to `Event.prototype` so host-driven
     // storage events can still be observed. (The StorageEvent constructor task wires up the real
     // prototype chain; this fallback keeps behavior usable until then.)
-    if proto.is_none() && event.storage.is_some() {
+    if proto.is_none() && is_storage_event {
       let event_proto_key = alloc_key(scope, EVENT_PROTOTYPE_KEY)?;
       proto = scope
         .heap()
@@ -8743,6 +8831,8 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     scope
       .heap_mut()
       .object_set_prototype(event_obj, Some(proto))?;
+
+    brand_event_object(scope, event_obj, kind)?;
 
     // Base event fields (immutable for the lifetime of this dispatch).
     let type_key = alloc_key(scope, "type")?;
@@ -9564,12 +9654,15 @@ fn rust_event_from_js_event(
     None => false,
   };
 
-  let detail_key = alloc_key(scope, "detail")?;
-  let detail = scope
-    .heap()
-    .object_get_own_data_property_value(event_obj, &detail_key)?;
+  let kind = branded_event_kind(scope, event_obj)?;
+  let is_custom_event = matches!(kind, Some(BrandedEventKind::CustomEvent));
 
-  let mut event = if let Some(detail) = detail {
+  let mut event = if is_custom_event {
+    let detail_key = alloc_key(scope, "detail")?;
+    let detail = scope
+      .heap()
+      .object_get_own_data_property_value(event_obj, &detail_key)?
+      .unwrap_or(Value::Null);
     web_events::Event::new_custom_event(
       type_name,
       web_events::CustomEventInit {
@@ -9973,10 +10066,16 @@ fn event_target_dispatch_event_native(
   let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(event_obj) = event_value else {
     return Err(VmError::TypeError(
-      "EventTarget.dispatchEvent: event is not an object",
+      "EventTarget.dispatchEvent: event is not an Event",
     ));
   };
   scope.push_root(Value::Object(event_obj))?;
+
+  if !is_branded_event(scope, event_obj)? {
+    return Err(VmError::TypeError(
+      "EventTarget.dispatchEvent: event is not an Event",
+    ));
+  }
 
   let mut rust_event = rust_event_from_js_event(vm, scope, vm_host, hooks, event_obj)?;
 
@@ -10389,6 +10488,13 @@ fn document_create_event_native(
       read_only_data_desc(Value::Null),
     )?;
   }
+
+  let branded_kind = match kind {
+    Kind::Event => BrandedEventKind::Event,
+    Kind::CustomEvent => BrandedEventKind::CustomEvent,
+    Kind::StorageEvent => BrandedEventKind::StorageEvent,
+  };
+  brand_event_object(scope, obj, branded_kind)?;
 
   Ok(Value::Object(obj))
 }
@@ -21789,6 +21895,99 @@ mod tests {
       realm.exec_script("typeof document.createEvent('StorageEvent').initStorageEvent === 'function'")?,
       Value::Bool(true)
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn dispatch_event_rejects_non_event_objects() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      "(() => {\n\
+        const et = new EventTarget();\n\
+        try {\n\
+          et.dispatchEvent({});\n\
+          return 'did_not_throw';\n\
+        } catch (e) {\n\
+          return e && (e.name + '|' + e.message);\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), result),
+      "TypeError|EventTarget.dispatchEvent: event is not an Event"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn rust_event_from_js_event_uses_branded_kind_instead_of_detail_property() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    realm.exec_script(
+      "globalThis.__ev = new Event('x');\n\
+       globalThis.__ev.detail = 1;\n\
+       globalThis.__ce = new CustomEvent('x', { detail: 2 });\n\
+       globalThis.__ce_undef = new CustomEvent('x');\n\
+       globalThis.__ce_undef.detail = undefined;",
+    )?;
+
+    let realm_id = realm.realm_id;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+    let global = realm_ref.global_object();
+
+    let ev_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected Event object, got {other:?}"),
+    };
+    let ce_obj = match get_prop(&mut vm, &mut scope, global, "__ce")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected CustomEvent object, got {other:?}"),
+    };
+    let ce_undef_obj = match get_prop(&mut vm, &mut scope, global, "__ce_undef")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected CustomEvent object, got {other:?}"),
+    };
+
+    let mut vm_host = ();
+    let mut hooks = NoopHostHooks::default();
+
+    let event = super::rust_event_from_js_event(
+      &mut vm,
+      &mut scope,
+      &mut vm_host,
+      &mut hooks,
+      ev_obj,
+    )?;
+    assert_eq!(event.detail, None);
+
+    let custom_event = super::rust_event_from_js_event(
+      &mut vm,
+      &mut scope,
+      &mut vm_host,
+      &mut hooks,
+      ce_obj,
+    )?;
+    assert!(matches!(
+      custom_event.detail,
+      Some(Value::Number(n)) if n == 2.0
+    ));
+
+    let custom_event_undef = super::rust_event_from_js_event(
+      &mut vm,
+      &mut scope,
+      &mut vm_host,
+      &mut hooks,
+      ce_undef_obj,
+    )?;
+    assert!(matches!(custom_event_undef.detail, Some(Value::Null)));
+
     Ok(())
   }
 
