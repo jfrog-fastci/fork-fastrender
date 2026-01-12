@@ -70,24 +70,18 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   let dir = tempfile::tempdir().expect("temp dir");
   let session_path = dir.path().join("session.json");
 
-  let expected_session = fastrender::ui::BrowserSession {
-    tabs: vec![
-      fastrender::ui::BrowserSessionTab {
-        url: "about:newtab".to_string(),
-        zoom: Some(1.5),
-      },
-      fastrender::ui::BrowserSessionTab {
-        url: "about:blank".to_string(),
-        zoom: Some(0.75),
-      },
-      fastrender::ui::BrowserSessionTab {
-        url: "about:test-scroll".to_string(),
-        zoom: Some(2.0),
-      },
+  // Provide a legacy v1 session payload and assert the browser upgrades it to the v2
+  // multi-window in-memory/session-file representation.
+  let expected_json = r#"{
+    "tabs": [
+      {"url": "about:newtab", "zoom": 1.5},
+      {"url": "about:blank", "zoom": 0.75},
+      {"url": "about:test-scroll", "zoom": 2.0}
     ],
-    active_tab_index: 2,
-  };
-  let expected_json = serde_json::to_string(&expected_session).expect("serialize expected session");
+    "active_tab_index": 2
+  }"#;
+  let expected_session = fastrender::ui::session::parse_session_json(expected_json)
+    .expect("parse expected session JSON");
 
   // First run: seed the session via the headless override hook and ensure it gets written.
   let (status, stderr, stdout) = run_browser_headless_smoke(
@@ -95,7 +89,7 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
     &session_path,
     &[(
       "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON",
-      &expected_json,
+      expected_json,
     )],
   );
   assert_browser_succeeded(status, &stderr, &stdout);
@@ -107,6 +101,17 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   let (source, session) = parse_headless_session(&stdout);
   assert_eq!(source, "override");
   assert_eq!(session, expected_session);
+  let persisted = std::fs::read_to_string(&session_path).expect("read persisted session");
+  let persisted_value: serde_json::Value =
+    serde_json::from_str(&persisted).expect("parse persisted session JSON");
+  assert_eq!(
+    persisted_value.get("version").and_then(|v| v.as_u64()),
+    Some(2)
+  );
+  assert!(persisted_value.get("windows").is_some());
+  // Legacy v1 top-level keys should never be written.
+  assert!(persisted_value.get("tabs").is_none());
+  assert!(persisted_value.get("active_tab_index").is_none());
 
   // Second run: no args → restore from the on-disk session.
   let (status, stderr, stdout) = run_browser_headless_smoke(&[], &session_path, &[]);
@@ -120,9 +125,11 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   assert_browser_succeeded(status, &stderr, &stdout);
   let (source, session) = parse_headless_session(&stdout);
   assert_eq!(source, "cli");
-  assert_eq!(session.tabs.len(), 1);
-  assert_eq!(session.active_tab_index, 0);
-  assert_eq!(session.tabs[0].url, "about:error");
+  assert_eq!(session.windows.len(), 1);
+  assert_eq!(session.active_window_index, 0);
+  assert_eq!(session.windows[0].tabs.len(), 1);
+  assert_eq!(session.windows[0].active_tab_index, 0);
+  assert_eq!(session.windows[0].tabs[0].url, "about:error");
   let session_after_cli_override = session;
 
   // Fourth run: `<url>` + `--restore` forces restoring the prior session.
@@ -139,7 +146,9 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   assert_browser_succeeded(status, &stderr, &stdout);
   let (source, session) = parse_headless_session(&stdout);
   assert_eq!(source, "default");
-  assert_eq!(session.tabs.len(), 1);
-  assert_eq!(session.active_tab_index, 0);
-  assert_eq!(session.tabs[0].url, "about:newtab");
+  assert_eq!(session.windows.len(), 1);
+  assert_eq!(session.active_window_index, 0);
+  assert_eq!(session.windows[0].tabs.len(), 1);
+  assert_eq!(session.windows[0].active_tab_index, 0);
+  assert_eq!(session.windows[0].tabs[0].url, "about:newtab");
 }
