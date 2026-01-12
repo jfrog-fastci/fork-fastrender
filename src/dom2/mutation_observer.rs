@@ -408,11 +408,14 @@ impl Document {
 
   pub fn mutation_observer_take_records(&mut self, observer: MutationObserverId) -> Vec<MutationRecord> {
     let mut agent = self.mutation_observer_agent.borrow_mut();
-    let Some(state) = agent.observers.get_mut(&observer) else {
-      return Vec::new();
+    let (records, record_count) = {
+      let Some(state) = agent.observers.get_mut(&observer) else {
+        return Vec::new();
+      };
+      let records = std::mem::take(&mut state.records);
+      let record_count = records.len();
+      (records, record_count)
     };
-    let records = std::mem::take(&mut state.records);
-    let record_count = records.len();
     agent.total_records = agent.total_records.saturating_sub(record_count);
     records
   }

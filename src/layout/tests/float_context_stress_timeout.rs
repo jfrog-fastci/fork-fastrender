@@ -70,22 +70,21 @@ fn float_context_range_queries_complete_before_deadline() {
     "expected boundary to skip non-constraining float ends and jump to the constraining float bottom"
   );
 
-  let result = with_deadline(Some(&deadline), || {
+  let (fit_y, timeout) = with_deadline(Some(&deadline), || {
     let fit_y = ctx.find_fit(150.0, 1.0, 0.0);
     let timeout = ctx.take_timeout_error();
     (fit_y, timeout)
   });
 
-  match result {
-    Ok((fit_y, None)) => assert!(
+  match timeout {
+    None => assert!(
       (fit_y - CONSTRAINING_FLOAT_HEIGHT).abs() < f32::EPSILON,
       "expected fit y to be the constraining float bottom"
     ),
-    Ok((_fit_y, Some(LayoutError::Timeout { elapsed }))) => panic!(
+    Some(LayoutError::Timeout { elapsed }) => panic!(
       "expected float boundary stepping to finish under deadline, timed out after {elapsed:?}"
     ),
-    Ok((_fit_y, Some(other))) => panic!("unexpected layout error: {other:?}"),
-    Err(err) => panic!("unexpected deadline error: {err:?}"),
+    Some(other) => panic!("unexpected layout error: {other:?}"),
   }
 }
 
