@@ -9133,3 +9133,193 @@ p { color: red; }
     );
   }
 }
+
+#[cfg(test)]
+mod vendor_prefix_aliasing_tests {
+  use super::{parse_declarations, parse_stylesheet};
+  use crate::css::types::PropertyName;
+  use crate::dom;
+  use crate::style::cascade::{apply_styles_with_media, StyledNode};
+  use crate::style::media::MediaContext;
+
+  fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
+    if let Some(name) = node.node.tag_name() {
+      if name.eq_ignore_ascii_case(tag) {
+        return Some(node);
+      }
+    }
+    for child in node.children.iter() {
+      if let Some(found) = find_first(child, tag) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  fn render_div_display(css: &str) -> String {
+    let dom = dom::parse_html(r#"<div></div>"#).unwrap();
+    let stylesheet = parse_stylesheet(css).unwrap();
+    let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+    let div = find_first(&styled, "div").expect("div");
+    div.styles.display.to_string()
+  }
+
+  #[test]
+  fn parses_vendor_prefixed_properties_as_canonical() {
+    let decls = parse_declarations("-webkit-transform: rotate(10deg);");
+    assert_eq!(decls.len(), 1);
+    match &decls[0].property {
+      PropertyName::Known(name) => assert_eq!(*name, "transform"),
+      PropertyName::Custom(_) => panic!("expected known property"),
+    }
+  }
+
+  #[test]
+  fn parses_vendor_prefixed_flex_properties_as_canonical() {
+    let decls =
+      parse_declarations("-webkit-justify-content: center; -webkit-align-items: flex-end;");
+    assert_eq!(decls.len(), 2);
+    match &decls[0].property {
+      PropertyName::Known(name) => assert_eq!(*name, "justify-content"),
+      PropertyName::Custom(_) => panic!("expected known property"),
+    }
+    match &decls[1].property {
+      PropertyName::Known(name) => assert_eq!(*name, "align-items"),
+      PropertyName::Custom(_) => panic!("expected known property"),
+    }
+  }
+
+  #[test]
+  fn supports_vendor_prefixed_transform_matches_like_unprefixed() {
+    let css_prefixed =
+      r"@supports (-webkit-transform: rotate(10deg)) { div { display: inline; } }";
+    let css_unprefixed = r"@supports (transform: rotate(10deg)) { div { display: inline; } }";
+    assert_eq!(render_div_display(css_prefixed), "inline");
+    assert_eq!(render_div_display(css_unprefixed), "inline");
+  }
+}
+
+#[cfg(test)]
+mod template_inert_style_tests {
+  use super::extract_css;
+  use crate::css::types::StyleSheet;
+  use crate::dom;
+  use crate::style::cascade::{apply_styles_with_media, StyledNode};
+  use crate::style::media::MediaContext;
+  use crate::tree::box_generation::generate_box_tree;
+  use crate::tree::box_tree::{BoxNode, BoxType, ReplacedType, SvgContent};
+  use crate::Rgba;
+
+  fn find_svg_content(node: &BoxNode) -> Option<SvgContent> {
+    if let BoxType::Replaced(replaced) = &node.box_type {
+      if let ReplacedType::Svg { content } = &replaced.replaced_type {
+        return Some(content.clone());
+      }
+    }
+    for child in node.children.iter() {
+      if let Some(found) = find_svg_content(child) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  fn find_styled_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
+    if node
+      .node
+      .get_attribute_ref("id")
+      .is_some_and(|value| value.eq_ignore_ascii_case(id))
+    {
+      return Some(node);
+    }
+
+    node
+      .children
+      .iter()
+      .find_map(|child| find_styled_by_id(child, id))
+  }
+
+  #[test]
+  fn inert_template_styles_are_not_collected_into_document_css() {
+    std::thread::Builder::new()
+      .stack_size(64 * 1024 * 1024)
+      .spawn(|| {
+        let html = r#"
+        <html>
+          <head>
+            <template><style>body { color: red; }</style></template>
+            <style>body { color: green; }</style>
+          </head>
+          <body>
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <foreignObject x="0" y="0" width="10" height="10">
+                <div xmlns="http://www.w3.org/1999/xhtml" style="width:10px;height:10px;"></div>
+              </foreignObject>
+            </svg>
+          </body>
+        </html>
+        "#;
+
+        let dom = dom::parse_html(html).expect("parse html");
+        let stylesheet = extract_css(&dom).expect("extract css");
+        let media = MediaContext::screen(10.0, 10.0);
+        let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+        let box_tree = generate_box_tree(&styled).expect("box tree");
+        let svg = find_svg_content(&box_tree.root).expect("svg content");
+        let compact_css = svg
+          .shared_css
+          .to_ascii_lowercase()
+          .split_whitespace()
+          .collect::<String>();
+
+        assert!(
+          !compact_css.is_empty(),
+          "document CSS should be embedded for foreignObject serialization"
+        );
+        assert!(
+          compact_css.contains("color:green"),
+          "non-template styles should be collected for foreignObject CSS"
+        );
+        assert!(
+          !compact_css.contains("color:red"),
+          "inert template styles should not appear in collected document CSS"
+        );
+      })
+      .unwrap()
+      .join()
+      .unwrap();
+  }
+
+  #[test]
+  fn inert_template_styles_are_not_collected_into_shadow_stylesheets() {
+    std::thread::Builder::new()
+      .stack_size(64 * 1024 * 1024)
+      .spawn(|| {
+        let html = r#"
+        <x-host>
+          <template shadowroot="open">
+            <style>
+              #target { color: rgb(0, 0, 255); }
+            </style>
+            <template>
+              <style>
+                #target { color: rgb(255, 0, 0) !important; }
+              </style>
+            </template>
+            <span id="target">Hello</span>
+          </template>
+        </x-host>
+        "#;
+
+        let dom = dom::parse_html(html).expect("parse html");
+        let stylesheet = StyleSheet::new();
+        let media = MediaContext::screen(800.0, 600.0);
+        let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+        let target = find_styled_by_id(&styled, "target").expect("shadow node");
+        assert_eq!(target.styles.color, Rgba::rgb(0, 0, 255));
+      })
+      .unwrap()
+      .join()
+      .unwrap();
+  }
+}
