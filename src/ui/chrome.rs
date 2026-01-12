@@ -1207,7 +1207,13 @@ pub fn chrome_ui_with_bookmarks(
           }
 
           if loading {
-            let _ = spinner(ui, ui.spacing().icon_width).on_hover_text(loading_text.clone());
+            let resp = spinner(ui, ui.spacing().icon_width).on_hover_text(loading_text.clone());
+            // In compact mode the spinner may be the only visible loading affordance, so expose the
+            // full loading text to screen readers (hover text is not sufficient).
+            resp.widget_info({
+              let label = loading_text.clone();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
+            });
             if !is_compact {
               let _ = ui
                 .add(

@@ -7842,7 +7842,7 @@ impl App {
                 .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
                 .inner_margin(egui::Margin::same(overlay_padding))
                 .show(ui, |ui| {
-                  ui.add(egui::Spinner::new().size(spinner_size));
+                  let _ = fastrender::ui::spinner(ui, spinner_size);
                 });
             });
         }
@@ -7939,7 +7939,7 @@ impl App {
             egui::Layout::centered_and_justified(egui::Direction::TopDown),
             |ui| {
               ui.spacing_mut().item_spacing.y = 10.0;
-              ui.add(egui::Spinner::new().size(32.0));
+              let _ = fastrender::ui::spinner(ui, 32.0);
               if let Some(headline) = loading_ui.headline {
                 ui.label(egui::RichText::new(headline).strong().size(16.0));
               }
