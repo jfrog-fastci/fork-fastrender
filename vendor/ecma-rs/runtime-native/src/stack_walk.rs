@@ -9,10 +9,10 @@ pub struct FrameView {
   pub caller_fp: usize,
   /// The caller's stack pointer value at the callsite return address.
   ///
-  /// LLVM StackMaps encode stack slots as `Indirect [SP + off]`, where `SP` is the *caller's* stack
-  /// pointer at the stackmap record PC (the instruction after the call returns, before any
-  /// post-call cleanup). When walking via frame pointers, we can recover this value directly from
-  /// the callee frame pointer:
+  /// LLVM StackMaps encode stack slots as `Indirect [SP/FP + off]`. For `Indirect [SP + off]`, `SP`
+  /// is the *caller's* stack pointer at the stackmap record PC (the instruction after the call
+  /// returns, before any post-call cleanup). When walking via frame pointers, we can recover this
+  /// callsite `SP` value directly from the callee frame pointer:
   ///
   /// `caller_sp = callee_fp + 16`
   ///
