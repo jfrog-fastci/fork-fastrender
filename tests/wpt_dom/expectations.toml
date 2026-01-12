@@ -54,6 +54,26 @@ status = "xfail"
 reason = "Multi-document DOMImplementation APIs not implemented yet"
 
 [[expectations]]
+id = "dom/domimplementation-createhtmldocument.window.js"
+status = "xfail"
+reason = "TODO(multi-document): implement Document.implementation + DOMImplementation.createHTMLDocument (DocumentId + detached document support)."
+
+[[expectations]]
+id = "dom/document-importnode.window.js"
+status = "xfail"
+reason = "TODO(multi-document): implement Document.importNode (cross-document cloning + ownerDocument reassignment)."
+
+[[expectations]]
+id = "dom/document-adoptnode.window.js"
+status = "xfail"
+reason = "TODO(multi-document): implement Document.adoptNode (cross-document adoption + subtree ownerDocument update)."
+
+[[expectations]]
+id = "dom/cross-document-appendchild-adopts.window.js"
+status = "xfail"
+reason = "TODO(multi-document): implement cross-document insertion adoption (appendChild should adopt foreign nodes)."
+
+[[expectations]]
 id = "dom/range_basics.window.js"
 status = "xfail"
 reason = "Range/AbstractRange not implemented yet (tracked by DOM Range workstream)"
