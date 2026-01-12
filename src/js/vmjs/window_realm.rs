@@ -1147,7 +1147,10 @@ impl WindowRealm {
         if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
           return Ok(Some(value));
         }
-        dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+        if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+          return Ok(Some(value));
+        }
+        computed_style_exotic_get(scope, self.any.vm_host_mut(), obj, key)
       }
 
       fn host_exotic_set(
@@ -1298,7 +1301,10 @@ impl WindowRealm {
           if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
             return Ok(Some(value));
           }
-          dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+          if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+            return Ok(Some(value));
+          }
+          computed_style_exotic_get(scope, self.any.vm_host_mut(), obj, key)
         }
 
         fn host_exotic_set(
@@ -2300,6 +2306,7 @@ const WINDOW_REALM_CONSOLE_HOST_TAG: u64 = u64::from_be_bytes(*b"CONSOLE_");
 // shims do not accidentally treat other objects as platform shims.
 const HOST_EXOTIC_DOM_TOKEN_LIST: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const HOST_EXOTIC_DOM_STRING_MAP: u64 = u64::from_be_bytes(*b"FRDOMDSM");
+const HOST_EXOTIC_COMPUTED_STYLE: u64 = u64::from_be_bytes(*b"FRCOMPUT");
 const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
@@ -3003,6 +3010,134 @@ pub(crate) fn dom_token_list_exotic_delete(
   }
 
   Ok(None)
+}
+
+fn computed_style_is_reserved_property_name(prop: &str) -> bool {
+  // `host_exotic_get` may be invoked for arbitrary property reads (including those that would
+  // normally be resolved on `Object.prototype`). Avoid breaking ordinary object semantics by
+  // letting those fall back to the normal property lookup path.
+  matches!(
+    prop,
+    "__proto__"
+      | "prototype"
+      | "constructor"
+      | "toString"
+      | "toLocaleString"
+      | "valueOf"
+      | "hasOwnProperty"
+      | "isPrototypeOf"
+      | "propertyIsEnumerable"
+      | "getPropertyValue"
+      | "setProperty"
+      | "removeProperty"
+  )
+}
+
+fn css_px_string(value: f32) -> String {
+  if !value.is_finite() {
+    return "0px".to_string();
+  }
+  // Snap near-integers so sizes like `10.000001` don't leak float noise into JS-visible values.
+  let snapped = if (value - value.round()).abs() <= 1e-3 {
+    value.round()
+  } else {
+    (value * 1000.0).round() / 1000.0
+  };
+  if (snapped - snapped.round()).abs() <= f32::EPSILON {
+    format!("{}px", snapped.round() as i64)
+  } else {
+    format!("{snapped}px")
+  }
+}
+
+pub(crate) fn computed_style_exotic_get(
+  scope: &mut Scope<'_>,
+  mut host: Option<&mut dyn VmHost>,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<Value>, VmError> {
+  // `host_exotic_get` is called for *all* objects, including VM-internal kinds like Promises and
+  // typed arrays. `Heap::object_host_slots` only supports ordinary objects/functions; for other
+  // object kinds, treat this as "no host slots" rather than failing the property access.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != HOST_EXOTIC_COMPUTED_STYLE {
+    return Ok(None);
+  }
+
+  let PropertyKey::String(prop_s) = key else {
+    return Ok(None);
+  };
+  let prop_raw = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+  if computed_style_is_reserved_property_name(&prop_raw) {
+    return Ok(None);
+  }
+
+  let node_index = match usize::try_from(slots.a) {
+    Ok(v) => v,
+    Err(_) => {
+      let empty = scope.alloc_string("")?;
+      return Ok(Some(Value::String(empty)));
+    }
+  };
+
+  let Some(document) = host
+    .as_deref_mut()
+    .and_then(|host| host.as_any_mut().downcast_mut::<BrowserDocumentDom2>())
+  else {
+    let empty = scope.alloc_string("")?;
+    return Ok(Some(Value::String(empty)));
+  };
+
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => {
+      let empty = scope.alloc_string("")?;
+      return Ok(Some(Value::String(empty)));
+    }
+  };
+
+  // Ensure style/layout caches are current, but avoid paint.
+  if document.ensure_layout_for_dom_queries().is_err() {
+    let empty = scope.alloc_string("")?;
+    return Ok(Some(Value::String(empty)));
+  }
+
+  let Some(style) = document.computed_style_for_dom_node(node_id) else {
+    let empty = scope.alloc_string("")?;
+    return Ok(Some(Value::String(empty)));
+  };
+
+  // Normalize common camelCase property names used by JS property access.
+  let lower = prop_raw.to_ascii_lowercase();
+  let normalized = match lower.as_str() {
+    "backgroundcolor" => "background-color",
+    other => other,
+  };
+
+  let value = match normalized {
+    // Prefer the used/layout size when available.
+    "width" => match document.border_box_rect_viewport(node_id) {
+      Ok(Some(rect)) => css_px_string(rect.width()),
+      _ => "0px".to_string(),
+    },
+    "height" => match document.border_box_rect_viewport(node_id) {
+      Ok(Some(rect)) => css_px_string(rect.height()),
+      _ => "0px".to_string(),
+    },
+    // `gap` is a shorthand for row/column gaps. FastRender stores a single resolved length used for
+    // the common one-value form, so expose that for now.
+    "gap" => style.grid_gap.to_css(),
+    _ => computed_style_property_value(&style, normalized).unwrap_or_default(),
+  };
+
+  Ok(Some(Value::String(scope.alloc_string(&value)?)))
 }
 
 const MAX_BASE64_INPUT_LEN: usize = 32 * 1024 * 1024;
@@ -24482,6 +24617,13 @@ fn window_get_computed_style_native(
   let computed_style = scope.alloc_object()?;
   scope.push_root(Value::Object(computed_style))?;
   scope.push_root(Value::Object(get_property_value))?;
+  scope.heap_mut().object_set_host_slots(
+    computed_style,
+    HostSlots {
+      a: node_index as u64,
+      b: HOST_EXOTIC_COMPUTED_STYLE,
+    },
+  )?;
 
   if let Value::Object(proto) = css_style_decl_proto {
     scope
@@ -34150,7 +34292,10 @@ mod tests {
       if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
         return Ok(Some(value));
       }
-      dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+      if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+        return Ok(Some(value));
+      }
+      computed_style_exotic_get(scope, self.any.vm_host_mut(), obj, key)
     }
 
     fn host_exotic_set(
@@ -39016,6 +39161,111 @@ mod tests {
       "getComputedStyle(document.getElementById('x')).getPropertyValue('color')",
     )?;
     assert_eq!(get_string(realm.heap(), color), "rgb(1, 2, 3)");
+
+    Ok(())
+  }
+
+  #[test]
+  fn get_computed_style_supports_named_properties() -> Result<(), VmError> {
+    let html = "<!doctype html>\n\
+      <style>\n\
+        #shown{display:block;}\n\
+        #hidden{display:none;}\n\
+        #invisible{visibility:hidden;}\n\
+        #sized{width:10px;height:20px;background-color:rgb(255,0,0);}\n\
+      </style>\n\
+      <div id=shown></div>\n\
+      <div id=hidden></div>\n\
+      <div id=invisible></div>\n\
+      <div id=sized></div>";
+    let renderer = crate::api::FastRender::builder()
+      .font_sources(crate::text::font_db::FontConfig::bundled_only())
+      .build()
+      .expect("renderer");
+    let mut host = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      crate::api::RenderOptions::new().with_viewport(64, 64),
+    )
+    .expect("document");
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let shown_display = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('shown')).display",
+    )?;
+    assert_eq!(get_string(realm.heap(), shown_display), "block");
+
+    let hidden_display = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('hidden')).display",
+    )?;
+    assert_eq!(get_string(realm.heap(), hidden_display), "none");
+
+    let visibility = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('invisible')).visibility",
+    )?;
+    assert_eq!(get_string(realm.heap(), visibility), "hidden");
+
+    let width = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('sized')).width",
+    )?;
+    assert_eq!(get_string(realm.heap(), width), "10px");
+
+    let height = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('sized')).height",
+    )?;
+    assert_eq!(get_string(realm.heap(), height), "20px");
+
+    let background = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('sized'), '').getPropertyValue('background-color')",
+    )?;
+    assert_eq!(get_string(realm.heap(), background), "rgb(255, 0, 0)");
+
+    let gap = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "parseInt(getComputedStyle(document.getElementById('sized')).gap, 10) || 0",
+    )?;
+    let Value::Number(gap) = gap else {
+      panic!("expected number for gap expression");
+    };
+    assert_eq!(gap, 0.0);
+
+    let unknown = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('sized')).doesNotExist",
+    )?;
+    assert_eq!(get_string(realm.heap(), unknown), "");
+
+    Ok(())
+  }
+
+  #[test]
+  fn get_computed_style_named_properties_do_not_crash_without_renderer() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let display = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('target')).display",
+    )?;
+    assert_eq!(get_string(realm.heap(), display), "");
 
     Ok(())
   }

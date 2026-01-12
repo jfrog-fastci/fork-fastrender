@@ -12,6 +12,7 @@ use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
 use crate::js::realm_module_loader::ModuleLoadOutcome;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
+  computed_style_exotic_get,
   dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, dom_token_list_exotic_delete,
   dom_token_list_exotic_get, dom_token_list_exotic_set, WindowRealmHost, WindowRealmUserData,
 };
@@ -937,6 +938,10 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     }
 
     if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+      return Ok(Some(value));
+    }
+
+    if let Some(value) = computed_style_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
       return Ok(Some(value));
     }
 
