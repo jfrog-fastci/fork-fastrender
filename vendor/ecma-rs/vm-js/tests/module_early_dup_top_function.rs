@@ -28,6 +28,12 @@ fn assert_module_syntax_error(source: &str) {
 // - language/module-code/early-dup-export-star-as-dflt.js
 // - language/module-code/early-export-global.js
 // - language/module-code/early-export-unresolvable.js
+// - language/module-code/early-dup-lables.js
+// - language/module-code/early-new-target.js
+// - language/module-code/early-strict-mode.js
+// - language/module-code/early-super.js
+// - language/module-code/early-undef-break.js
+// - language/module-code/early-undef-continue.js
 #[test]
 fn rejects_duplicate_top_level_function_decls() {
   assert_module_syntax_error(
@@ -209,6 +215,55 @@ fn rejects_duplicate_exported_names_via_alias() {
       var x, y;
       export { x as z };
       export { y as z };
+    "#,
+  );
+}
+
+#[test]
+fn rejects_duplicate_labels_in_module_item_list() {
+  assert_module_syntax_error(
+    r#"
+      label: {
+        label: 0;
+      }
+    "#,
+  );
+}
+
+#[test]
+fn rejects_new_target_in_module_item_list() {
+  assert_module_syntax_error("new.target;");
+}
+
+#[test]
+fn rejects_strict_mode_reserved_words_in_module_code() {
+  // Modules are always strict mode code.
+  assert_module_syntax_error("var public;");
+}
+
+#[test]
+fn rejects_super_in_module_item_list() {
+  assert_module_syntax_error("super;");
+}
+
+#[test]
+fn rejects_break_to_undefined_label_in_module_code() {
+  assert_module_syntax_error(
+    r#"
+      while (false) {
+        break undef;
+      }
+    "#,
+  );
+}
+
+#[test]
+fn rejects_continue_to_undefined_label_in_module_code() {
+  assert_module_syntax_error(
+    r#"
+      while (false) {
+        continue undef;
+      }
     "#,
   );
 }
