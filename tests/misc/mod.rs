@@ -80,6 +80,7 @@ mod js_vm_budget_tests;
 mod js_webidl_binding_value_array_return;
 mod js_webidl_sequence_conversion;
 mod js_webidl_window_alert;
+mod js_window_host_base_url_update;
 mod js_window_realm;
 mod logical_shorthand_parsing_test;
 mod map_hidden;
