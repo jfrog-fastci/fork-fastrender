@@ -1,104 +1,154 @@
 // META: script=/resources/testharness.js
 
 test(() => {
-  const i = document.createElement("input");
-  assert_equals(i.getAttribute("value"), null);
+  const input = document.createElement("input");
 
-  i.value = "x";
-  assert_equals(i.getAttribute("value"), null, "setting .value must not set the value attribute");
-  assert_equals(i.value, "x");
+  assert_equals(input.value, "");
 
-  i.setAttribute("value", "y");
-  assert_equals(i.getAttribute("value"), "y");
-  assert_equals(i.value, "x", "value attribute changes must not affect dirty value");
-}, "HTMLInputElement.value is internal (dirty value flag) and does not reflect to the value attribute");
+  // The `value` IDL attribute is "spec-ish": attribute mutations update `value` until the dirty
+  // value flag is set by script writes.
+  input.setAttribute("value", "a");
+  assert_equals(input.value, "a", "value reflects the content attribute before becoming dirty");
 
-test(() => {
-  const i = document.createElement("input");
-  i.setAttribute("value", "y");
-  assert_equals(i.value, "y");
-
-  i.setAttribute("value", "z");
-  assert_equals(i.value, "z", "while not dirty, value follows the content attribute");
-
-  i.removeAttribute("value");
-  assert_equals(i.value, "", "removing the value attribute resets the default value when not dirty");
-}, "HTMLInputElement.value follows the value attribute while not dirty");
-
-test(() => {
-  const i = document.createElement("input");
-  i.setAttribute("type", "checkbox");
-  assert_equals(i.getAttribute("checked"), null);
-  assert_equals(i.checked, false);
-
-  i.checked = true;
-  assert_equals(i.getAttribute("checked"), null, "setting .checked must not set the checked attribute");
-  assert_equals(i.checked, true);
-
-  i.setAttribute("checked", "");
-  assert_equals(i.getAttribute("checked"), "");
-  assert_equals(i.checked, true, "checked attribute changes must not affect dirty checkedness");
-}, "HTMLInputElement.checked is internal (dirty checkedness flag) and does not reflect to the checked attribute");
-
-test(() => {
-  const i = document.createElement("input");
-  i.setAttribute("type", "checkbox");
-
-  i.setAttribute("checked", "");
-  assert_equals(i.checked, true);
-  i.removeAttribute("checked");
-  assert_equals(i.checked, false);
-}, "HTMLInputElement.checked follows the checked attribute while not dirty (checkbox/radio only)");
-
-test(() => {
-  const ta = document.createElement("textarea");
-  ta.textContent = "default";
-  assert_equals(ta.value, "default");
-
-  ta.value = "x";
-  assert_equals(ta.value, "x");
+  input.value = "b";
+  assert_equals(input.value, "b", "setting value updates the IDL attribute");
   assert_equals(
-    ta.textContent,
-    "default",
-    "setting textarea.value must not rewrite descendant text nodes"
+    input.getAttribute("value"),
+    "a",
+    "setting the IDL value does not mutate the value content attribute"
   );
 
-  ta.textContent = "new default";
-  assert_equals(ta.value, "x", "default value changes must not affect dirty value");
-}, "HTMLTextAreaElement.value is internal (dirty value flag) and does not reflect to textContent");
+  input.setAttribute("value", "c");
+  assert_equals(
+    input.value,
+    "b",
+    "after becoming dirty, content attribute mutations do not affect the current value"
+  );
+}, "HTMLInputElement.value dirty value flag behavior");
+
+test(() => {
+  const input = document.createElement("input");
+  input.type = "checkbox";
+
+  assert_false(input.checked);
+  assert_false(input.hasAttribute("checked"));
+
+  input.checked = true;
+  assert_true(input.checked);
+  assert_false(input.hasAttribute("checked"), "checked does not reflect to the checked attribute");
+}, "HTMLInputElement.checked does not reflect to the checked attribute");
+
+test(() => {
+  const input = document.createElement("input");
+  input.type = "checkbox";
+
+  input.setAttribute("checked", "");
+  assert_true(input.checked);
+
+  input.checked = false;
+  assert_false(input.checked);
+  assert_true(
+    input.hasAttribute("checked"),
+    "setting checked does not remove the checked content attribute"
+  );
+
+  // Once the checkedness is dirty, later attribute mutations should not clobber the state.
+  input.removeAttribute("checked");
+  input.setAttribute("checked", "");
+  assert_false(input.checked);
+}, "HTMLInputElement.checked dirty checkedness flag behavior");
+
+test(() => {
+  const input = document.createElement("input");
+
+  assert_false(input.disabled);
+  assert_false(input.hasAttribute("disabled"));
+  input.disabled = true;
+  assert_true(input.disabled);
+  assert_true(input.hasAttribute("disabled"));
+  input.disabled = false;
+  assert_false(input.disabled);
+  assert_false(input.hasAttribute("disabled"));
+}, "HTMLInputElement.disabled reflects to the disabled attribute");
 
 test(() => {
   const ta = document.createElement("textarea");
-  ta.textContent = "a";
-  assert_equals(ta.value, "a");
-  ta.textContent = "b";
-  assert_equals(ta.value, "b", "while not dirty, value tracks descendant text");
-}, "HTMLTextAreaElement.value tracks descendant text while not dirty");
+  assert_equals(ta.value, "");
+  assert_equals(ta.textContent, "");
+
+  ta.textContent = "hello";
+  assert_equals(ta.value, "hello", "value reflects default textContent before becoming dirty");
+
+  ta.value = "world";
+  assert_equals(ta.value, "world");
+  assert_equals(
+    ta.textContent,
+    "hello",
+    "setting value does not mutate the element's default textContent"
+  );
+
+  ta.textContent = "changed";
+  assert_equals(ta.value, "world", "dirty value flag preserves the value against textContent changes");
+}, "HTMLTextAreaElement.value dirty value flag behavior");
+
+test(() => {
+  const sel = document.createElement("select");
+  assert_equals(sel.options.length, 0);
+  assert_equals(sel.selectedIndex, -1);
+  assert_equals(sel.value, "");
+
+  const opt0 = document.createElement("option");
+  opt0.textContent = "A";
+  sel.appendChild(opt0);
+
+  const opt1 = document.createElement("option");
+  opt1.setAttribute("value", "b");
+  opt1.textContent = "B";
+  sel.appendChild(opt1);
+
+  assert_equals(sel.options.length, 2);
+  assert_equals(sel.options[0], opt0);
+  assert_equals(sel.options[1], opt1);
+
+  assert_equals(sel.selectedIndex, 0);
+  assert_equals(sel.value, "A", "option value falls back to textContent when value attribute is missing");
+
+  sel.selectedIndex = 1;
+  assert_equals(sel.value, "b");
+
+  sel.value = "A";
+  assert_equals(sel.selectedIndex, 0);
+
+  sel.value = "b";
+  assert_equals(sel.selectedIndex, 1);
+
+  sel.value = "nope";
+  assert_equals(sel.selectedIndex, 1, "non-matching value does not change selection");
+  assert_equals(sel.value, "b", "non-matching value does not change value");
+}, "HTMLSelectElement options/selectedIndex/value basics");
 
 test(() => {
   const form = document.createElement("form");
-
-  const i = document.createElement("input");
-  i.setAttribute("value", "y");
-
-  const cb = document.createElement("input");
-  cb.setAttribute("type", "checkbox");
-  cb.setAttribute("checked", "");
-
+  const input = document.createElement("input");
+  const sel = document.createElement("select");
   const ta = document.createElement("textarea");
-  ta.textContent = "d";
 
-  form.appendChild(i);
-  form.appendChild(cb);
+  assert_equals(form.elements.length, 0);
+
+  form.appendChild(input);
+  assert_equals(form.elements.length, 1);
+  assert_equals(form.elements[0], input);
+
+  form.appendChild(sel);
+  assert_equals(form.elements.length, 2);
+  assert_equals(form.elements[1], sel);
+
   form.appendChild(ta);
+  assert_equals(form.elements.length, 3);
+  assert_equals(form.elements[2], ta);
 
-  i.value = "x";
-  cb.checked = false;
-  ta.value = "t";
-
+  assert_equals(typeof form.submit, "function");
+  assert_equals(typeof form.reset, "function");
+  form.submit();
   form.reset();
-
-  assert_equals(i.value, "y");
-  assert_equals(cb.checked, true);
-  assert_equals(ta.value, "d");
-}, "HTMLFormElement.reset restores default values and clears dirty flags");
+}, "HTMLFormElement.elements/submit/reset basic shape");

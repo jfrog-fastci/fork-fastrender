@@ -330,3 +330,15 @@ glob = "observers_layout/**"
 backend = ["vmjs", "quickjs"]
 status = "skip"
 reason = "Requires the renderer-backed backend (`vmjs-rendered`) so layout/geometry exist."
+
+[[expectations]]
+id = "dom/form_controls.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend uses lightweight JS DOM shims rather than the full WebIDL-backed HTML form control implementation used by vm-js."
+
+[[expectations]]
+id = "dom/html_element_interfaces.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend uses a minimal DOM shim and does not yet implement HTMLElement reflected attributes or full interface/prototype/brand semantics."

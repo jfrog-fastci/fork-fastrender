@@ -2551,10 +2551,20 @@ const ELEMENT_ASYNC_GET_KEY: &str = "__fastrender_element_async_get";
 const ELEMENT_ASYNC_SET_KEY: &str = "__fastrender_element_async_set";
 const ELEMENT_DEFER_GET_KEY: &str = "__fastrender_element_defer_get";
 const ELEMENT_DEFER_SET_KEY: &str = "__fastrender_element_defer_set";
+const ELEMENT_DISABLED_GET_KEY: &str = "__fastrender_element_disabled_get";
+const ELEMENT_DISABLED_SET_KEY: &str = "__fastrender_element_disabled_set";
 const ELEMENT_HEIGHT_GET_KEY: &str = "__fastrender_element_height_get";
 const ELEMENT_HEIGHT_SET_KEY: &str = "__fastrender_element_height_set";
 const ELEMENT_WIDTH_GET_KEY: &str = "__fastrender_element_width_get";
 const ELEMENT_WIDTH_SET_KEY: &str = "__fastrender_element_width_set";
+const HTML_SELECT_OPTIONS_GET_KEY: &str = "__fastrender_html_select_options_get";
+const HTML_SELECT_SELECTED_INDEX_GET_KEY: &str = "__fastrender_html_select_selected_index_get";
+const HTML_SELECT_SELECTED_INDEX_SET_KEY: &str = "__fastrender_html_select_selected_index_set";
+const HTML_SELECT_VALUE_GET_KEY: &str = "__fastrender_html_select_value_get";
+const HTML_SELECT_VALUE_SET_KEY: &str = "__fastrender_html_select_value_set";
+const HTML_SELECT_CLEARED_ATTR: &str = "__fastrender_select_cleared";
+const HTML_FORM_ELEMENTS_GET_KEY: &str = "__fastrender_html_form_elements_get";
+const HTML_FORM_SUBMIT_KEY: &str = "__fastrender_html_form_submit";
 const STYLE_GET_PROPERTY_VALUE_KEY: &str = "__fastrender_style_get_property_value";
 const STYLE_SET_PROPERTY_KEY: &str = "__fastrender_style_set_property";
 const STYLE_REMOVE_PROPERTY_KEY: &str = "__fastrender_style_remove_property";
@@ -4670,7 +4680,6 @@ fn window_scroll_by_pages_native(
   let args = [Value::Number(0.0), Value::Number(delta_y)];
   window_scroll_by_native(vm, scope, host, hooks, _callee, _this, &args)
 }
-
 fn serialized_origin_for_document_url(url: &str) -> String {
   let Ok(url) = Url::parse(url) else {
     return "null".to_string();
@@ -7356,6 +7365,54 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_WIDTH_SET_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
+  let hidden_get = {
+    let key = alloc_key(scope, ELEMENT_HIDDEN_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let hidden_set = {
+    let key = alloc_key(scope, ELEMENT_HIDDEN_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let title_get = {
+    let key = alloc_key(scope, ELEMENT_TITLE_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let title_set = {
+    let key = alloc_key(scope, ELEMENT_TITLE_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let lang_get = {
+    let key = alloc_key(scope, ELEMENT_LANG_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let lang_set = {
+    let key = alloc_key(scope, ELEMENT_LANG_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let dir_get = {
+    let key = alloc_key(scope, ELEMENT_DIR_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let dir_set = {
+    let key = alloc_key(scope, ELEMENT_DIR_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let disabled_get = {
+    let key = alloc_key(scope, ELEMENT_DISABLED_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let disabled_set = {
+    let key = alloc_key(scope, ELEMENT_DISABLED_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let form_elements_get = {
+    let key = alloc_key(scope, HTML_FORM_ELEMENTS_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let form_submit = {
+    let key = alloc_key(scope, HTML_FORM_SUBMIT_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
   let append_child = {
     let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
@@ -8259,7 +8316,8 @@ fn get_or_create_node_wrapper(
       }
     }
 
-    // Form controls (minimal): input.value/input.checked/textarea.value/form.reset.
+    // HTML form controls (minimal): input.value/input.checked/input.disabled, textarea.value,
+    // select.options/select.selectedIndex/select.value, and form.elements/form.submit/form.reset.
     if let Some(dom) = dom {
       if let dom2::NodeKind::Element {
         tag_name,
@@ -8268,6 +8326,72 @@ fn get_or_create_node_wrapper(
       } = &dom.node(node_id).kind
       {
         let is_html = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+        if is_html {
+          // `HTMLElement` global attributes (reflected).
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (hidden_get, hidden_set) {
+            let key = alloc_key(scope, "hidden")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Object(set),
+                },
+              },
+            )?;
+          }
+
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (title_get, title_set) {
+            let key = alloc_key(scope, "title")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Object(set),
+                },
+              },
+            )?;
+          }
+
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (lang_get, lang_set) {
+            let key = alloc_key(scope, "lang")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Object(set),
+                },
+              },
+            )?;
+          }
+
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (dir_get, dir_set) {
+            let key = alloc_key(scope, "dir")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Object(set),
+                },
+              },
+            )?;
+          }
+        }
         if is_html && tag_name.eq_ignore_ascii_case("input") {
           if let (Some(Value::Object(get)), Some(Value::Object(set))) =
             (input_value_get, input_value_set)
@@ -8307,6 +8431,23 @@ fn get_or_create_node_wrapper(
                 },
               )?;
             }
+          }
+
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (disabled_get, disabled_set)
+          {
+            let key = alloc_key(scope, "disabled")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Object(set),
+                },
+              },
+            )?;
           }
         }
 
@@ -8412,6 +8553,27 @@ fn get_or_create_node_wrapper(
         }
 
         if is_html && tag_name.eq_ignore_ascii_case("form") {
+          if let Some(Value::Object(get)) = form_elements_get {
+            let key = alloc_key(scope, "elements")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Undefined,
+                },
+              },
+            )?;
+          }
+
+          if let Some(Value::Object(func)) = form_submit {
+            let key = alloc_key(scope, "submit")?;
+            scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+          }
+
           if let Some(Value::Object(func)) = form_reset {
             let key = alloc_key(scope, "reset")?;
             if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
@@ -27833,6 +27995,384 @@ fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
   }
 }
 
+fn text_content_string(dom: &dom2::Document, node_id: NodeId) -> String {
+  match &dom.node(node_id).kind {
+    NodeKind::Document { .. } | NodeKind::Doctype { .. } => String::new(),
+    NodeKind::Text { content } => content.clone(),
+    NodeKind::Comment { content } => content.clone(),
+    NodeKind::ProcessingInstruction { data, .. } => data.clone(),
+    NodeKind::Element { .. }
+    | NodeKind::Slot { .. }
+    | NodeKind::DocumentFragment
+    | NodeKind::ShadowRoot { .. } => {
+      let mut out = String::new();
+
+      let mut remaining = dom.nodes_len().saturating_add(1);
+      let mut stack: Vec<NodeId> = Vec::new();
+
+      // Seed traversal with children in reverse so we pop in tree order.
+      let root_node = dom.node(node_id);
+      for &child in root_node.children.iter().rev() {
+        if child.index() >= dom.nodes_len() {
+          continue;
+        }
+        if dom.node(child).parent != Some(node_id) {
+          continue;
+        }
+        // `ShadowRoot` is not part of the light DOM tree for `textContent` semantics.
+        if matches!(&root_node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+          && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
+        {
+          continue;
+        }
+        stack.push(child);
+      }
+
+      while let Some(id) = stack.pop() {
+        if remaining == 0 {
+          break;
+        }
+        remaining -= 1;
+
+        let node = dom.node(id);
+        if let NodeKind::Text { content } = &node.kind {
+          out.push_str(content);
+        }
+
+        for &child in node.children.iter().rev() {
+          if child.index() >= dom.nodes_len() {
+            continue;
+          }
+          if dom.node(child).parent != Some(id) {
+            continue;
+          }
+          if matches!(&node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+            && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
+          {
+            continue;
+          }
+          stack.push(child);
+        }
+      }
+
+      out
+    }
+  }
+}
+
+fn option_effective_value(dom: &dom2::Document, option_id: NodeId) -> String {
+  if let Ok(Some(value)) = dom.get_attribute(option_id, "value") {
+    value.to_string()
+  } else {
+    text_content_string(dom, option_id)
+  }
+}
+
+fn select_option_ids(dom: &dom2::Document, select_id: NodeId) -> Vec<NodeId> {
+  let mut out: Vec<NodeId> = Vec::new();
+
+  let select_node = dom.node(select_id);
+  if select_node.inert_subtree {
+    return out;
+  }
+
+  out
+    .try_reserve(select_node.children.len())
+    .map_err(|_| VmError::OutOfMemory)
+    .unwrap_or(());
+
+  for &child in select_node.children.iter() {
+    if child.index() >= dom.nodes_len() {
+      continue;
+    }
+    if dom.node(child).parent != Some(select_id) {
+      continue;
+    }
+    let node = dom.node(child);
+    if let NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } = &node.kind
+    {
+      let is_html = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+      if is_html && tag_name.eq_ignore_ascii_case("option") {
+        out.push(child);
+      }
+    }
+  }
+
+  out
+}
+
+fn select_selected_index(dom: &dom2::Document, select_id: NodeId, options: &[NodeId]) -> i32 {
+  if options.is_empty() {
+    return -1;
+  }
+  if dom
+    .has_attribute(select_id, HTML_SELECT_CLEARED_ATTR)
+    .unwrap_or(false)
+  {
+    return -1;
+  }
+  for (idx, option_id) in options.iter().copied().enumerate() {
+    if dom.has_attribute(option_id, "selected").unwrap_or(false) {
+      return idx as i32;
+    }
+  }
+  0
+}
+
+fn html_select_options_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Minimal (live) `HTMLSelectElement.options`: reuse `ParentNode.children` semantics (HTMLCollection).
+  parent_node_children_get_native(vm, scope, host, hooks, callee, this, args)
+}
+
+fn html_select_selected_index_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(select_id) = dom_node_id_from_obj(scope, dom, wrapper_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let options = select_option_ids(dom, select_id);
+  Ok(Value::Number(select_selected_index(dom, select_id, &options) as f64))
+}
+
+fn html_select_selected_index_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(select_id) = dom_node_id_from_obj(scope, dom, wrapper_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let options = select_option_ids(dom, select_id);
+
+  let mut n = scope
+    .heap_mut()
+    .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  if !n.is_finite() || n.is_nan() {
+    n = 0.0;
+  }
+  let n = n.trunc();
+
+  let idx = if n < 0.0 {
+    None
+  } else if n >= options.len() as f64 {
+    None
+  } else {
+    Some(n as usize)
+  };
+
+  match idx {
+    Some(selected) => {
+      if let Err(err) = dom.set_bool_attribute(select_id, HTML_SELECT_CLEARED_ATTR, false) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      for (idx, option_id) in options.iter().copied().enumerate() {
+        let selected = idx == selected;
+        if let Err(err) = dom.set_bool_attribute(option_id, "selected", selected) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+      }
+    }
+    None => {
+      if let Err(err) = dom.set_bool_attribute(select_id, HTML_SELECT_CLEARED_ATTR, true) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      for option_id in options.iter().copied() {
+        if let Err(err) = dom.set_bool_attribute(option_id, "selected", false) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+      }
+    }
+  }
+
+  let needs_microtask = dom.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  Ok(Value::Undefined)
+}
+
+fn html_select_value_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(select_id) = dom_node_id_from_obj(scope, dom, wrapper_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let options = select_option_ids(dom, select_id);
+  let idx = select_selected_index(dom, select_id, &options);
+  if idx < 0 {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+  let option_id = match options.get(idx as usize).copied() {
+    Some(id) => id,
+    None => return Ok(Value::String(scope.alloc_string("")?)),
+  };
+
+  Ok(Value::String(scope.alloc_string(&option_effective_value(dom, option_id))?))
+}
+
+fn html_select_value_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(select_id) = dom_node_id_from_obj(scope, dom, wrapper_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let new_value = scope
+    .heap_mut()
+    .to_string(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let options = select_option_ids(dom, select_id);
+
+  let mut matched: Option<usize> = None;
+  for (idx, option_id) in options.iter().copied().enumerate() {
+    if option_effective_value(dom, option_id) == new_value {
+      matched = Some(idx);
+      break;
+    }
+  }
+
+  match matched {
+    Some(selected) => {
+      if let Err(err) = dom.set_bool_attribute(select_id, HTML_SELECT_CLEARED_ATTR, false) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      for (idx, option_id) in options.iter().copied().enumerate() {
+        let selected = idx == selected;
+        if let Err(err) = dom.set_bool_attribute(option_id, "selected", selected) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+      }
+    }
+    None => {
+      if let Err(err) = dom.set_bool_attribute(select_id, HTML_SELECT_CLEARED_ATTR, true) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      for option_id in options.iter().copied() {
+        if let Err(err) = dom.set_bool_attribute(option_id, "selected", false) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+      }
+    }
+  }
+
+  let needs_microtask = dom.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  Ok(Value::Undefined)
+}
+
+fn html_form_elements_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Minimal (live) `HTMLFormElement.elements`: reuse `ParentNode.children` semantics (HTMLCollection).
+  parent_node_children_get_native(vm, scope, host, hooks, callee, this, args)
+}
+
+fn html_form_submit_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
 fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
   vm.user_data::<WindowRealmUserData>()
     .map(|data| data.base_url.clone().unwrap_or_else(|| data.document_url.clone()))
@@ -37952,6 +38492,9 @@ fn init_window_globals(
       ELEMENT_WIDTH_GET_KEY,
       ELEMENT_WIDTH_SET_KEY,
     ),
+    ("title", "title", ELEMENT_TITLE_GET_KEY, ELEMENT_TITLE_SET_KEY),
+    ("lang", "lang", ELEMENT_LANG_GET_KEY, ELEMENT_LANG_SET_KEY),
+    ("dir", "dir", ELEMENT_DIR_GET_KEY, ELEMENT_DIR_SET_KEY),
   ] {
     let attr_s = scope.alloc_string(attr)?;
     scope.push_root(Value::String(attr_s))?;
@@ -37990,19 +38533,10 @@ fn init_window_globals(
   }
 
   for (prop, attr, get_key_name, set_key_name) in [
-    (
-      "async",
-      "async",
-      ELEMENT_ASYNC_GET_KEY,
-      ELEMENT_ASYNC_SET_KEY,
-    ),
-    (
-      "defer",
-      "defer",
-      ELEMENT_DEFER_GET_KEY,
-      ELEMENT_DEFER_SET_KEY,
-    ),
+    ("async", "async", ELEMENT_ASYNC_GET_KEY, ELEMENT_ASYNC_SET_KEY),
+    ("defer", "defer", ELEMENT_DEFER_GET_KEY, ELEMENT_DEFER_SET_KEY),
     ("hidden", "hidden", ELEMENT_HIDDEN_GET_KEY, ELEMENT_HIDDEN_SET_KEY),
+    ("disabled", "disabled", ELEMENT_DISABLED_GET_KEY, ELEMENT_DISABLED_SET_KEY),
   ] {
     let attr_s = scope.alloc_string(attr)?;
     scope.push_root(Value::String(attr_s))?;
@@ -38146,7 +38680,8 @@ fn init_window_globals(
   let form_reset_call_id = vm.register_native_call(form_reset_native)?;
   let form_reset_name = scope.alloc_string("reset")?;
   scope.push_root(Value::String(form_reset_name))?;
-  let form_reset_func = scope.alloc_native_function(form_reset_call_id, None, form_reset_name, 0)?;
+  let form_reset_func =
+    scope.alloc_native_function(form_reset_call_id, None, form_reset_name, 0)?;
   scope.heap_mut().object_set_prototype(
     form_reset_func,
     Some(realm.intrinsics().function_prototype()),
@@ -38284,6 +38819,40 @@ fn init_window_globals(
     document_obj,
     option_selected_set_key,
     data_desc(Value::Object(option_selected_set_func)),
+  )?;
+
+  let form_elements_get_call_id = vm.register_native_call(html_form_elements_get_native)?;
+  let form_elements_get_name = scope.alloc_string("get elements")?;
+  scope.push_root(Value::String(form_elements_get_name))?;
+  let form_elements_get_func =
+    scope.alloc_native_function(form_elements_get_call_id, None, form_elements_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    form_elements_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(form_elements_get_func))?;
+  let form_elements_get_key = alloc_key(&mut scope, HTML_FORM_ELEMENTS_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    form_elements_get_key,
+    data_desc(Value::Object(form_elements_get_func)),
+  )?;
+
+  let form_submit_call_id = vm.register_native_call(html_form_submit_native)?;
+  let form_submit_name = scope.alloc_string("submit")?;
+  scope.push_root(Value::String(form_submit_name))?;
+  let form_submit_func =
+    scope.alloc_native_function(form_submit_call_id, None, form_submit_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    form_submit_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(form_submit_func))?;
+  let form_submit_key = alloc_key(&mut scope, HTML_FORM_SUBMIT_KEY)?;
+  scope.define_property(
+    document_obj,
+    form_submit_key,
+    data_desc(Value::Object(form_submit_func)),
   )?;
 
   // Store shared CSSStyleDeclaration methods on `document` so wrappers can reuse them.

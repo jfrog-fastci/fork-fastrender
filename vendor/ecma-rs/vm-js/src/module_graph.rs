@@ -1546,12 +1546,9 @@ impl ModuleGraph {
           ));
         };
 
-        // Top-level await evaluation is in progress; per spec, `Evaluate()` is idempotent and must
-        // return the existing evaluation promise.
-        // Async evaluation is driven by SCC evaluation promises stored on the SCC (cycle) root's
-        // `[[TopLevelCapability]]`.
-        // Async module evaluation is per-SCC (cycle root). The spec-visible evaluation promise is
-        // cached on the SCC root's module record (the one that `ensure_scc_promise` is invoked for).
+        // Async module evaluation is in progress; per spec, `Evaluate()` is idempotent and must
+        // return the existing evaluation promise (stored on the SCC root module record via
+        // `[[TopLevelCapability]]`).
         let scc_root = record.cycle_root.unwrap_or(module);
         let root_idx = module_index(scc_root);
         let Some(roots) = self
