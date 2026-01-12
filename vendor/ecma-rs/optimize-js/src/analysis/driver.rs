@@ -553,6 +553,18 @@ pub fn analyze_program_with_parallelism(
   analyses
 }
 
+/// Parallel variant of [`analyze_program`].
+///
+/// When the crate is built with `--features parallel-analyses`, this will use Rayon to analyze
+/// functions in parallel. Otherwise it deterministically falls back to sequential analysis.
+pub fn analyze_program_parallel(program: &Program) -> ProgramAnalyses {
+  // Avoid Rayon overhead for trivial programs.
+  if program.functions.len() <= 1 {
+    return analyze_program_with_parallelism(program, AnalysisParallelism::Sequential);
+  }
+  analyze_program_with_parallelism(program, AnalysisParallelism::Parallel)
+}
+
 /// Compute all analyses for `program`, annotating per-instruction metadata.
 ///
 /// This resets all existing [`InstMeta`] on both the SSA CFG (when available, stored in
@@ -591,6 +603,18 @@ pub fn annotate_program_with_parallelism(
     parallelism,
     effect::annotate_cfg_effects,
   )
+}
+
+/// Parallel variant of [`annotate_program`].
+///
+/// When the crate is built with `--features parallel-analyses`, this will use Rayon to analyze
+/// functions in parallel. Otherwise it deterministically falls back to sequential analysis.
+pub fn annotate_program_parallel(program: &mut Program) -> ProgramAnalyses {
+  // Avoid Rayon overhead for trivial programs.
+  if program.functions.len() <= 1 {
+    return annotate_program_with_parallelism(program, AnalysisParallelism::Sequential);
+  }
+  annotate_program_with_parallelism(program, AnalysisParallelism::Parallel)
 }
 
 fn annotate_program_with_effects<F>(
