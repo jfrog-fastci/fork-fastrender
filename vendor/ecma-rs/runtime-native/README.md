@@ -356,6 +356,57 @@ splitting. The ABI shape is stable:
 The scheduler implementation is a **work-stealing pool** suitable for compiler-inserted parallel
 regions; the ABI is the contract.
 
+### GC-safe userdata (`*_rooted`, `*_rooted_h`)
+
+Parallel scheduling APIs take an opaque `data` pointer that is passed through to worker callbacks.
+
+- The **unrooted** forms (`rt_parallel_spawn`, `rt_parallel_for`, `rt_parallel_spawn_promise`) require
+  `data` to remain valid until the worker finishes. This is fine for non-GC memory (malloc/stack-owned
+  state managed by the caller), but it is unsafe for **movable GC pointers** unless the caller
+  separately pins/roots them.
+- The **rooted** forms keep a GC-managed object alive while it is queued/executing and pass the
+  relocated pointers to callbacks:
+  - `rt_parallel_spawn_rooted` / `rt_parallel_spawn_rooted_h`
+  - `rt_parallel_for_rooted`
+  - `rt_parallel_spawn_promise_rooted` / `rt_parallel_spawn_promise_rooted_h`
+
+Rooted contract:
+
+- `data` is the GC **object base pointer** (`GcPtr`): it must point at the start of the object
+  header (the same kind of pointer returned by `rt_alloc`), not an interior pointer into the payload.
+- The runtime holds a strong root for the object until the work completes (or, for
+  `rt_parallel_for_rooted`, until the call returns).
+- The callback receives the current pointer after any GC relocation.
+
+The `_h` variants take a `GcHandle` (pointer-to-slot). Under a moving GC they are preferred because
+the runtime may need to acquire locks while registering roots; by taking a handle it can reload the
+pointer after any safepoint and avoid TOCTOU races between "load pointer" and "register root".
+
+Example (GC-managed payload scheduled on the parallel pool, returning a promise for async/await):
+
+```c
+#include "runtime_native.h"
+
+static void worker_task(uint8_t* data, PromiseRef promise) {
+  // `data` is the relocated GC object base pointer.
+  uint64_t* out = (uint64_t*)rt_promise_payload_ptr(promise);
+  *out = 42;
+  rt_promise_fulfill(promise);
+}
+
+PromiseRef schedule(GcPtr obj_base) {
+  // Store the pointer in an addressable root slot and pass it as a `GcHandle`.
+  GcPtr slot = obj_base;
+
+  PromiseLayout layout = {
+    .size = sizeof(uint64_t),
+    .align = _Alignof(uint64_t),
+  };
+
+  return rt_parallel_spawn_promise_rooted_h(worker_task, &slot, layout);
+}
+```
+
 ### Scheduler design
 
 - Fixed number of worker threads (default: one per CPU, override via

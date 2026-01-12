@@ -487,7 +487,22 @@ Ownership contract:
 ### Parallel → async payload promises
 
 - `rt_parallel_spawn_promise(task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8, layout: PromiseLayout) -> PromiseRef`
+- `rt_parallel_spawn_promise_rooted(task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8, layout: PromiseLayout) -> PromiseRef`
+- `rt_parallel_spawn_promise_rooted_h(task: extern "C" fn(*mut u8, PromiseRef), data: GcHandle, layout: PromiseLayout) -> PromiseRef`
 - `rt_promise_payload_ptr(p: PromiseRef) -> *mut u8`
+
+#### Rooted vs unrooted task userdata
+
+`rt_parallel_spawn_promise` is the lowest-overhead option for passing task userdata, but it is
+**unrooted**: the caller must keep `data` valid until the worker finishes. Under a moving GC this
+means you must not pass a raw movable GC pointer as `data` unless you separately pin/root it.
+
+For GC-managed userdata, use `rt_parallel_spawn_promise_rooted{,_h}`:
+
+- The rooted variants treat `data` as a GC **object base pointer** and keep it alive across worker
+  execution, passing the relocated pointer to the task callback.
+- The `_h` variant takes a `GcHandle` (pointer-to-slot) and is preferred under a moving GC to avoid a
+  TOCTOU race between loading a pointer and registering the runtime root.
 
 ### Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates)
 
@@ -580,9 +595,26 @@ block in the reactor wait syscall until the promise settles).
 
 ```c
 // Allocate a new pending promise and execute `task(data, promise)` on the work-stealing pool.
+// Unrooted userdata: `data` must remain valid until `task` finishes.
 PromiseRef rt_parallel_spawn_promise(
   void (*task)(uint8_t* data, PromiseRef promise),
   uint8_t* data,
+  PromiseLayout layout
+);
+
+// Rooted userdata: `data` must be a GC object base pointer. The runtime keeps it alive and passes the
+// relocated pointer to `task`.
+PromiseRef rt_parallel_spawn_promise_rooted(
+  void (*task)(uint8_t* data, PromiseRef promise),
+  uint8_t* data,
+  PromiseLayout layout
+);
+
+// Handle-based rooted userdata (preferred under a moving GC): `data` is a pointer-to-slot (`GcHandle`)
+// so the runtime can reload it after any safepoint while registering roots.
+PromiseRef rt_parallel_spawn_promise_rooted_h(
+  void (*task)(uint8_t* data, PromiseRef promise),
+  GcHandle data,
   PromiseLayout layout
 );
 

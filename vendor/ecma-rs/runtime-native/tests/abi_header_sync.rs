@@ -181,6 +181,32 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
 }
 
 #[test]
+fn runtime_native_docs_mention_rooted_parallel_apis() {
+  const README: &str = include_str!("../README.md");
+  const ASYNC_ABI: &str = include_str!("../docs/async_abi.md");
+
+  for sym in [
+    "rt_parallel_spawn_rooted",
+    "rt_parallel_spawn_rooted_h",
+    "rt_parallel_for_rooted",
+    "rt_parallel_spawn_promise_rooted",
+    "rt_parallel_spawn_promise_rooted_h",
+  ] {
+    assert!(
+      README.contains(sym),
+      "`runtime-native/README.md` is missing mention of rooted parallel API: {sym}"
+    );
+  }
+
+  for sym in ["rt_parallel_spawn_promise_rooted", "rt_parallel_spawn_promise_rooted_h"] {
+    assert!(
+      ASYNC_ABI.contains(sym),
+      "`runtime-native/docs/async_abi.md` is missing mention of rooted parallel promise API: {sym}"
+    );
+  }
+}
+
+#[test]
 fn runtime_native_exports_match_expected_abi_signatures() {
   let _rt = TestRuntimeGuard::new();
   // KeepAlive is an exported C ABI symbol but not part of the Rust public API surface, so we bind
