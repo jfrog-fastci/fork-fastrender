@@ -43,7 +43,10 @@ fn effective_referrer_url<'a>(
   request: &'a Request,
   ctx: WebFetchExecutionContext<'a>,
 ) -> Option<&'a str> {
-  if request.referrer.trim().is_empty() {
+  // The empty string represents "use the execution context's default referrer". Do not treat other
+  // whitespace as empty: non-empty referrer strings must be honored verbatim so invalid inputs
+  // don't silently fall back to the context referrer.
+  if request.referrer.is_empty() {
     return ctx.referrer_url;
   }
   // `Request.referrer` is a URL string in the spec, but it can also carry the sentinel value
@@ -1952,6 +1955,26 @@ mod tests {
     };
 
     execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+  }
+
+  #[test]
+  fn whitespace_request_referrer_does_not_fall_back_to_execution_context_referrer_url() {
+    // When `Request.referrer` is non-empty (even if only whitespace), it must not implicitly fall
+    // back to the execution context's referrer URL. This prevents invalid referrer strings from
+    // silently changing the base URL used for relative request resolution.
+    let fetcher = PanicFetcher;
+    let mut request = Request::new("GET", "sub");
+    request.set_mode(RequestMode::NoCors);
+    request.referrer = " ".to_string();
+    let ctx = WebFetchExecutionContext {
+      referrer_url: Some("https://example.com/dir/page"),
+      ..WebFetchExecutionContext::default()
+    };
+    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected error");
+    assert!(
+      err.to_string().contains("invalid or missing base URL"),
+      "unexpected error: {err}"
+    );
   }
 
   #[test]
