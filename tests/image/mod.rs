@@ -1,2 +1,0 @@
-mod svg_image_href_test;
-mod svg_preserve_aspect_ratio_render_to_image;

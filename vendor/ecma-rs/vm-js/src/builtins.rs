@@ -1481,12 +1481,12 @@ pub fn reflect_set_prototype_of(
     return Ok(Value::Bool(false));
   }
 
-    match scope.object_set_prototype(target, proto) {
-      Ok(()) => Ok(Value::Bool(true)),
-      // A cycle (or hostile prototype chain) rejects the mutation.
-      Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Bool(false)),
-      Err(e) => Err(e),
-    }
+  match scope.object_set_prototype(target, proto) {
+    Ok(()) => Ok(Value::Bool(true)),
+    // A cycle (or hostile prototype chain) rejects the mutation.
+    Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Bool(false)),
+    Err(e) => Err(e),
+  }
 }
 
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
@@ -1687,7 +1687,6 @@ pub fn proxy_revocable(
 
   Ok(Value::Object(out))
 }
-
 /// Revocation function created by `Proxy.revocable`.
 pub fn proxy_revoker(
   _vm: &mut Vm,
