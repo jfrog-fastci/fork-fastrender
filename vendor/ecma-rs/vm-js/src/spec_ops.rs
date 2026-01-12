@@ -4,7 +4,10 @@
 //! intended to be used by built-ins so their algorithms remain spec-shaped.
 
 use crate::heap::MAX_PROTOTYPE_CHAIN;
-use crate::{GcObject, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{
+  GcObject, GcString, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks,
+};
 use std::mem;
 
 // https://tc39.es/ecma262/#sec-tolength
@@ -384,25 +387,11 @@ pub fn create_list_from_array_like_with_host_and_hooks(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  value: Value,
+  obj: GcObject,
 ) -> Result<Vec<Value>, VmError> {
-  // Spec: `CreateListFromArrayLike` is usually called by `Function.prototype.apply`. The spec
-  // handles `null`/`undefined` by producing an empty list.
-  if matches!(value, Value::Undefined | Value::Null) {
-    return Ok(Vec::new());
-  }
-
-  let mut scope = scope.reborrow();
-
-  // Root `value` across boxing (`ToObject`) and subsequent property lookups.
-  scope.push_root(value)?;
-
-  // `O = ToObject(value)`
-  let obj = scope.to_object(vm, host, hooks, value)?;
   scope.push_root(Value::Object(obj))?;
 
-  // `len = LengthOfArrayLike(O)`
-  let len = length_of_array_like_with_host_and_hooks(vm, &mut scope, host, hooks, obj)?;
+  let len = length_of_array_like_with_host_and_hooks(vm, scope, host, hooks, obj)?;
 
   let mut out: Vec<Value> = Vec::new();
   out.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
@@ -418,15 +407,9 @@ pub fn create_list_from_array_like_with_host_and_hooks(
       vm.tick()?;
     }
 
-    // `Get(O, ToString(idx))`
-    let value = {
-      // Use a nested scope so per-element key roots do not accumulate.
-      let mut iter_scope = scope.reborrow();
-      let idx_s = iter_scope.alloc_string(&idx.to_string())?;
-      iter_scope.push_root(Value::String(idx_s))?;
-      let key = PropertyKey::from_string(idx_s);
-      get_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key, Value::Object(obj))?
-    };
+    let idx_s = alloc_u64_decimal_string(scope, idx as u64)?;
+    let key = PropertyKey::from_string(idx_s);
+    let value = get_with_host_and_hooks(vm, scope, host, hooks, obj, key, Value::Object(obj))?;
 
     // Root each GC-managed element so values are kept alive across subsequent allocations and
     // potential GC. Primitive values (undefined/null/bool/number/bigint) do not need rooting.
@@ -456,7 +439,9 @@ fn length_of_array_like_with_host_and_hooks(
 
   let length_value =
     get_with_host_and_hooks(vm, scope, host, hooks, obj, length_key, Value::Object(obj))?;
+  vm.tick()?;
   let length_number = scope.to_number(vm, host, hooks, length_value)?;
+  vm.tick()?;
   Ok(to_length(length_number))
 }
 
@@ -946,7 +931,7 @@ pub fn create_array_from_list(
     elem_scope.push_root(Value::Object(array))?;
     elem_scope.push_root(elem)?;
 
-    let key_s = elem_scope.alloc_string(&i.to_string())?;
+    let key_s = alloc_u64_decimal_string(&mut elem_scope, i as u64)?;
     // Root the key string until it has been stored into the array's property table.
     elem_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
@@ -954,4 +939,23 @@ pub fn create_array_from_list(
   }
 
   Ok(array)
+}
+
+fn alloc_u64_decimal_string(scope: &mut Scope<'_>, mut n: u64) -> Result<GcString, VmError> {
+  let mut buf = [0u8; 20];
+  let mut i = buf.len();
+  if n == 0 {
+    i = i.saturating_sub(1);
+    buf[i] = b'0';
+  } else {
+    while n != 0 {
+      i = i.saturating_sub(1);
+      buf[i] = b'0' + (n % 10) as u8;
+      n /= 10;
+    }
+  }
+
+  let s = std::str::from_utf8(&buf[i..])
+    .map_err(|_| VmError::InvariantViolation("u64 decimal string conversion produced invalid utf-8"))?;
+  scope.alloc_string(s)
 }

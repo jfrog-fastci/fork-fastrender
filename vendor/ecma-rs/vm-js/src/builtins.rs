@@ -1160,7 +1160,7 @@ pub fn reflect_apply(
     scope,
     host,
     hooks,
-    Value::Object(arguments_obj),
+    arguments_obj,
   )?;
 
   vm.call_with_host_and_hooks(host, scope, hooks, target, this_argument, &list)
@@ -1198,7 +1198,7 @@ pub fn reflect_construct(
     scope,
     host,
     hooks,
-    Value::Object(arguments_obj),
+    arguments_obj,
   )?;
 
   vm.construct_with_host_and_hooks(host, scope, hooks, target, &list, new_target)
@@ -6869,7 +6869,7 @@ pub fn function_prototype_call_method(
   vm.call_with_host_and_hooks(host, scope, hooks, this, this_arg, rest)
 }
 
-/// `Function.prototype.apply` (minimal, supports array-like objects).
+/// `Function.prototype.apply`.
 pub fn function_prototype_apply(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -6879,19 +6879,32 @@ pub fn function_prototype_apply(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let target = require_callable(this)?;
+  if !scope.heap().is_callable(this)? {
+    return Err(VmError::TypeError(
+      "Function.prototype.apply called on non-callable",
+    ));
+  }
+
   let this_arg = args.first().copied().unwrap_or(Value::Undefined);
   let arg_array = args.get(1).copied().unwrap_or(Value::Undefined);
 
+  if matches!(arg_array, Value::Undefined | Value::Null) {
+    return vm.call_with_host_and_hooks(host, scope, hooks, this, this_arg, &[]);
+  }
+
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[this, this_arg, arg_array])?;
+
+  let arg_obj = scope.to_object(vm, host, hooks, arg_array)?;
   let list = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
-    arg_array,
+    arg_obj,
   )?;
 
-  vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(target), this_arg, &list)
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, this, this_arg, &list)
 }
 
 /// `Function.prototype.bind` (minimal, using `JsFunction` bound internal slots).

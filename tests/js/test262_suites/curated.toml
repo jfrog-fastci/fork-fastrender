@@ -152,6 +152,8 @@ include = [
   "built-ins/Symbol/**/*.js",
   "built-ins/JSON/**/*.js",
   "built-ins/Math/**/*.js",
+  "built-ins/Function/prototype/apply/**/*.js",
+  "staging/sm/Function/15.3.4.3-01.js",
 ]
 
 exclude = [

@@ -75,6 +75,42 @@ fn native_get_x(
   Ok(value)
 }
 
+fn native_args_len(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Number(args.len() as f64))
+}
+
+fn native_return_one(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Number(1.0))
+}
+
+fn native_return_two(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Number(2.0))
+}
+
 #[test]
 fn function_prototype_call_apply_bind() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -116,6 +152,108 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
       apply_builtin,
       Value::Object(add),
       &[Value::Undefined, Value::Object(arg_array)],
+    )?;
+    assert_eq!(result, Value::Number(3.0));
+
+    // apply should accept any arraylike arguments (primitives are boxed via ToObject).
+    let args_len_id = vm.register_native_call(native_args_len)?;
+    let args_len_name = scope.alloc_string("args_len")?;
+    let args_len = scope.alloc_native_function(args_len_id, None, args_len_name, 0)?;
+
+    // args_len.apply(undefined, "ab") === 2 (String object is array-like)
+    let s = scope.alloc_string("ab")?;
+    let result = vm.call_without_host(
+      &mut scope,
+      apply_builtin,
+      Value::Object(args_len),
+      &[Value::Undefined, Value::String(s)],
+    )?;
+    assert_eq!(result, Value::Number(2.0));
+
+    // args_len.apply(undefined, 1) === 0 (Number object has no length)
+    let result = vm.call_without_host(
+      &mut scope,
+      apply_builtin,
+      Value::Object(args_len),
+      &[Value::Undefined, Value::Number(1.0)],
+    )?;
+    assert_eq!(result, Value::Number(0.0));
+
+    // apply must perform ordinary Get (accessor-supported) for length and elements.
+    let args_with_accessors = scope.alloc_object()?;
+    scope.push_root(Value::Object(args_with_accessors))?;
+    let k0 = PropertyKey::from_string(scope.alloc_string("0")?);
+    let k1 = PropertyKey::from_string(scope.alloc_string("1")?);
+    let klen = PropertyKey::from_string(scope.alloc_string("length")?);
+
+    let ret_one_id = vm.register_native_call(native_return_one)?;
+    let ret_two_id = vm.register_native_call(native_return_two)?;
+    let ret_one_name = scope.alloc_string("ret_one")?;
+    let ret_two_name = scope.alloc_string("ret_two")?;
+    let ret_one = scope.alloc_native_function(ret_one_id, None, ret_one_name, 0)?;
+    let ret_two = scope.alloc_native_function(ret_two_id, None, ret_two_name, 0)?;
+
+    scope.define_property(
+      args_with_accessors,
+      klen,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(ret_two),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+    scope.define_property(
+      args_with_accessors,
+      k0,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(ret_one),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+    scope.define_property(
+      args_with_accessors,
+      k1,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(ret_two),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // add.apply(undefined, { get length(){...}, get 0(){...}, get 1(){...} }) === 3
+    let result = vm.call_without_host(
+      &mut scope,
+      apply_builtin,
+      Value::Object(add),
+      &[Value::Undefined, Value::Object(args_with_accessors)],
+    )?;
+    assert_eq!(result, Value::Number(3.0));
+
+    // apply must use ToLength(Get(length)), so length values that coerce via ToNumber should work.
+    let args_length_string = scope.alloc_object()?;
+    scope.push_root(Value::Object(args_length_string))?;
+    let k0 = PropertyKey::from_string(scope.alloc_string("0")?);
+    let k1 = PropertyKey::from_string(scope.alloc_string("1")?);
+    let klen = PropertyKey::from_string(scope.alloc_string("length")?);
+    scope.define_property(args_length_string, k0, data_desc(Value::Number(1.0)))?;
+    scope.define_property(args_length_string, k1, data_desc(Value::Number(2.0)))?;
+    let len_s = scope.alloc_string("2")?;
+    scope.define_property(args_length_string, klen, data_desc(Value::String(len_s)))?;
+    let result = vm.call_without_host(
+      &mut scope,
+      apply_builtin,
+      Value::Object(add),
+      &[Value::Undefined, Value::Object(args_length_string)],
     )?;
     assert_eq!(result, Value::Number(3.0));
 
