@@ -14401,6 +14401,107 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
         Ok(Value::Undefined)
       }
 
+      ("EventTarget", "constructor", 1) => {
+        // FastRender-only extension: allow `new EventTarget(parent)` so curated DOM tests can build
+        // a manual event propagation chain without real DOM nodes.
+        //
+        // The extra argument is an `any` in WebIDL so the generator can dispatch by argument count
+        // and forward the value without conversions.
+        let obj = Self::require_receiver_object(receiver)?;
+
+        // Brand-check for EventTarget.prototype methods.
+        let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
+        scope.define_property(
+          obj,
+          brand_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Bool(true),
+              writable: false,
+            },
+          },
+        )?;
+
+        // Resolve the parent before taking a mutable reference to the fallback DOM so we don't
+        // alias `WindowRealmUserData` (which owns the fallback document) through both safe borrows
+        // and raw pointers.
+        let (window_obj, document_obj) = Self::window_and_document_objects(vm)?;
+        let parent_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let mut parent_opaque_obj: Option<GcObject> = None;
+        let parent_target: Option<web_events::EventTargetId> = match parent_value {
+          Value::Undefined | Value::Null => None,
+          Value::Object(parent_obj) => {
+            if parent_obj == window_obj {
+              Some(web_events::EventTargetId::Window)
+            } else if parent_obj == document_obj {
+              Some(web_events::EventTargetId::Document)
+            } else if is_branded_event_target(scope, parent_obj)? {
+              parent_opaque_obj = Some(parent_obj);
+              Some(web_events::EventTargetId::Opaque(gc_object_id(parent_obj)))
+            } else {
+              return Err(VmError::TypeError(
+                "EventTarget parent must be an EventTarget",
+              ));
+            }
+          }
+          _ => {
+            return Err(VmError::TypeError(
+              "EventTarget parent must be an EventTarget",
+            ))
+          }
+        };
+        if !matches!(parent_value, Value::Undefined | Value::Null) {
+          let Value::Object(parent_obj) = parent_value else {
+            return Err(VmError::TypeError(
+              "EventTarget parent must be an EventTarget",
+            ));
+          };
+          // Keep the parent alive for as long as the child is reachable so the manual propagation
+          // chain stays stable even if the embedder does not retain a separate reference.
+          let parent_key = alloc_key(scope, EVENT_TARGET_PARENT_KEY)?;
+          scope.push_root(Value::Object(parent_obj))?;
+          scope.define_property(
+            obj,
+            parent_key,
+            PropertyDescriptor {
+              enumerable: false,
+              configurable: false,
+              kind: PropertyKind::Data {
+                value: Value::Object(parent_obj),
+                writable: false,
+              },
+            },
+          )?;
+        }
+
+        let child_id = gc_object_id(obj);
+
+        // Register the opaque target so event dispatch can map `EventTargetId::Opaque` back into a
+        // JS object wrapper.
+        let mut dom_ptr = Self::fallback_events_dom_ptr(vm)?;
+        // SAFETY: `dom_ptr` points at the realm-owned fallback document and remains valid for the
+        // lifetime of the realm.
+        let dom = unsafe { dom_ptr.as_mut() };
+        dom
+          .events_mut()
+          .register_opaque_target(child_id, vm_js::WeakGcObject::new(obj));
+
+        // Install the explicit parent link (if provided).
+        if let Some(parent_target) = parent_target {
+          dom.events().set_opaque_parent(child_id, Some(parent_target));
+          if let (web_events::EventTargetId::Opaque(id), Some(parent_obj)) = (parent_target, parent_opaque_obj) {
+            // Ensure the parent can be mapped back into JS while dispatching.
+            dom
+              .events()
+              .register_opaque_target(id, vm_js::WeakGcObject::new(parent_obj));
+          }
+        }
+
+        Ok(Value::Undefined)
+      }
+
       ("EventTarget", "addEventListener", 0) => {
         let target_obj = Self::require_receiver_object(receiver)?;
         let (resolved, mut dom_ptr, opaque_target_obj) =
@@ -30825,6 +30926,24 @@ mod tests {
       "#,
     )?;
     assert_eq!(ran, Value::Number(1.0));
+
+    // FastRender-only extension: `new EventTarget(parent)` wires an explicit parent chain for
+    // capture/bubble semantics.
+    let order = realm.exec_script(
+      r#"
+        (() => {
+          const parent = new EventTarget();
+          const child = new EventTarget(parent);
+          let log = '';
+          parent.addEventListener('x', (e) => { log += 'c' + e.eventPhase; }, { capture: true });
+          child.addEventListener('x', (e) => { log += 't' + e.eventPhase; });
+          parent.addEventListener('x', (e) => { log += 'b' + e.eventPhase; });
+          child.dispatchEvent({ type: 'x', bubbles: true });
+          return log;
+        })()
+      "#,
+    )?;
+    assert_eq!(get_string(realm.heap(), order), "c1t2b3");
 
     // Brand-check: borrowing the prototype method onto a non-EventTarget should throw.
     assert!(realm
