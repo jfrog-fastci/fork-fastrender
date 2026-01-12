@@ -1188,24 +1188,60 @@ pub fn paginate_fragment_tree(
         let mut remaining = (page_block - separator_block).max(0.0);
         let mut slices: Vec<FragmentNode> = Vec::new();
 
+        // If the page content box is too small to fit even a single fragment of footnote content
+        // (after accounting for the separator), we must still drain `pending_footnotes` to avoid
+        // emitting an infinite sequence of empty continuation pages.
+        if remaining <= EPSILON {
+          pending_footnotes.pop_front();
+        }
+
         while remaining > EPSILON {
           let Some(pending) = pending_footnotes.front_mut() else {
             break;
           };
+
+          // Guard against pathological extents / offsets: treat non-finite extents as empty and
+          // drop the pending footnote so pagination can make progress.
+          if !pending.total_extent.is_finite() || pending.total_extent <= 0.0 {
+            pending.total_extent = 0.0;
+            pending.offset = 0.0;
+            pending_footnotes.pop_front();
+            continue;
+          }
+
+          if !pending.offset.is_finite() {
+            pending.offset = 0.0;
+          }
+          pending.offset = pending.offset.max(0.0);
+          if pending.offset > pending.total_extent {
+            pending.offset = pending.total_extent;
+          }
+
           if pending.offset >= pending.total_extent - EPSILON {
             pending_footnotes.pop_front();
             continue;
           }
 
-          let next = pending.analyzer.next_boundary_with_cursor(
+          let next_candidate = pending.analyzer.next_boundary_with_cursor(
             pending.offset,
             remaining,
             pending.total_extent,
             &mut pending.opportunity_cursor,
           )?;
-          if next <= pending.offset + EPSILON {
-            break;
-          }
+          let next = match resolve_pending_footnote_slice_boundary(
+            pending.offset,
+            remaining,
+            pending.total_extent,
+            next_candidate,
+          ) {
+            PendingFootnoteSliceBoundary::Advance(next) => next,
+            PendingFootnoteSliceBoundary::Complete => {
+              // Force completion so pagination doesn't get stuck emitting footnote-only pages.
+              pending.offset = pending.total_extent;
+              pending_footnotes.pop_front();
+              continue;
+            }
+          };
 
           let root_block_size = axis.block_size(&pending.root.bounds);
           if let Some(mut slice) = clip_node(
@@ -2083,6 +2119,46 @@ struct PendingFootnote {
   opportunity_cursor: usize,
   offset: f32,
   total_extent: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PendingFootnoteSliceBoundary {
+  /// Continue slicing the pending footnote body up to the returned boundary.
+  ///
+  /// Guaranteed to be finite and advance beyond `offset` by at least `EPSILON`.
+  Advance(f32),
+  /// Give up on this footnote slice and treat the pending footnote as complete so pagination can
+  /// make forward progress.
+  Complete,
+}
+
+fn resolve_pending_footnote_slice_boundary(
+  offset: f32,
+  remaining: f32,
+  total_extent: f32,
+  candidate: f32,
+) -> PendingFootnoteSliceBoundary {
+  if !total_extent.is_finite() {
+    return PendingFootnoteSliceBoundary::Complete;
+  }
+
+  let mut next = candidate;
+  if !next.is_finite() || next <= offset + EPSILON {
+    next = (offset + remaining).min(total_extent);
+  }
+
+  if !next.is_finite() || next <= offset + EPSILON {
+    return PendingFootnoteSliceBoundary::Complete;
+  }
+
+  if next > total_extent {
+    next = total_extent;
+  }
+  if next <= offset + EPSILON {
+    return PendingFootnoteSliceBoundary::Complete;
+  }
+
+  PendingFootnoteSliceBoundary::Advance(next)
 }
 
 fn collect_footnotes_for_page(
@@ -3651,5 +3727,23 @@ mod tests {
       (end - 95.0).abs() < 0.01,
       "expected end=95 so the call moves to the next page, got {end}"
     );
+  }
+
+  #[test]
+  fn pending_footnote_boundary_falls_back_when_candidate_does_not_advance() {
+    let res = resolve_pending_footnote_slice_boundary(0.0, 10.0, 100.0, 0.0);
+    assert_eq!(res, PendingFootnoteSliceBoundary::Advance(10.0));
+  }
+
+  #[test]
+  fn pending_footnote_boundary_falls_back_when_candidate_is_nan() {
+    let res = resolve_pending_footnote_slice_boundary(0.0, 10.0, 100.0, f32::NAN);
+    assert_eq!(res, PendingFootnoteSliceBoundary::Advance(10.0));
+  }
+
+  #[test]
+  fn pending_footnote_boundary_completes_when_fallback_does_not_advance() {
+    let res = resolve_pending_footnote_slice_boundary(5.0, 10.0, 5.0, 5.0);
+    assert_eq!(res, PendingFootnoteSliceBoundary::Complete);
   }
 }
