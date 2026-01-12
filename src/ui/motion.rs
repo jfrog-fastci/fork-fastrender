@@ -8,13 +8,10 @@
 //! - unset / `0` / `false` → motion enabled (default)
 //! - any other value (e.g. `1`) → reduced motion, animations disabled
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use crate::debug::runtime::runtime_toggles;
 
 /// Environment variable that disables micro-interaction animations when set to a truthy value.
 pub const ENV_REDUCED_MOTION: &str = "FASTR_BROWSER_REDUCED_MOTION";
-
-// 0 = false, 1 = true, 2 = unknown/uninitialized.
-static REDUCED_MOTION_ENV_CACHE: AtomicU8 = AtomicU8::new(2);
 
 fn parse_env_bool(value: &str) -> bool {
   // Treat any non-empty, non-falsey string as true. This is intentionally permissive so
@@ -29,23 +26,11 @@ fn parse_env_bool(value: &str) -> bool {
     || v.eq_ignore_ascii_case("off"))
 }
 
-fn reduced_motion_from_env() -> bool {
-  std::env::var(ENV_REDUCED_MOTION)
-    .ok()
-    .map(|v| parse_env_bool(&v))
+fn reduced_motion_from_runtime_toggles() -> bool {
+  runtime_toggles()
+    .get(ENV_REDUCED_MOTION)
+    .map(parse_env_bool)
     .unwrap_or(false)
-}
-
-fn reduced_motion_cached() -> bool {
-  match REDUCED_MOTION_ENV_CACHE.load(Ordering::Relaxed) {
-    0 => false,
-    1 => true,
-    _ => {
-      let resolved = reduced_motion_from_env();
-      REDUCED_MOTION_ENV_CACHE.store(if resolved { 1 } else { 0 }, Ordering::Relaxed);
-      resolved
-    }
-  }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -81,7 +66,7 @@ pub struct UiMotion {
 impl UiMotion {
   /// Construct the motion policy from environment configuration.
   pub fn from_env() -> Self {
-    let reduced_motion = reduced_motion_cached();
+    let reduced_motion = reduced_motion_from_runtime_toggles();
     Self::new(!reduced_motion)
   }
 
@@ -123,45 +108,10 @@ impl UiMotion {
 
 #[cfg(test)]
 mod tests {
-  use super::{parse_env_bool, UiMotion, ENV_REDUCED_MOTION, REDUCED_MOTION_ENV_CACHE};
-  use std::sync::atomic::Ordering;
-  use std::sync::{Mutex, OnceLock};
-
-  static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-  fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK
-      .get_or_init(|| Mutex::new(()))
-      .lock()
-      .expect("env test lock poisoned")
-  }
-
-  fn reset_env_cache() {
-    // 2 = unknown/uninitialized (see the cache encoding in the parent module).
-    REDUCED_MOTION_ENV_CACHE.store(2, Ordering::Relaxed);
-  }
-
-  struct EnvVarGuard {
-    prev: Option<String>,
-  }
-
-  impl EnvVarGuard {
-    fn new() -> Self {
-      Self {
-        prev: std::env::var(ENV_REDUCED_MOTION).ok(),
-      }
-    }
-  }
-
-  impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-      match self.prev.as_deref() {
-        Some(value) => std::env::set_var(ENV_REDUCED_MOTION, value),
-        None => std::env::remove_var(ENV_REDUCED_MOTION),
-      }
-      reset_env_cache();
-    }
-  }
+  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
+  use super::{parse_env_bool, UiMotion, ENV_REDUCED_MOTION};
+  use std::collections::HashMap;
+  use std::sync::Arc;
 
   #[test]
   fn parse_env_bool_falsey_values() {
@@ -182,25 +132,36 @@ mod tests {
 
   #[test]
   fn ui_motion_from_env_respects_reduced_motion_env_var() {
-    let _lock = lock_env();
-    let _guard = EnvVarGuard::new();
+    with_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+      assert!(UiMotion::from_env().enabled, "motion should be enabled by default");
+    });
 
-    std::env::remove_var(ENV_REDUCED_MOTION);
-    reset_env_cache();
-    assert!(UiMotion::from_env().enabled, "motion should be enabled by default");
-
-    std::env::set_var(ENV_REDUCED_MOTION, "1");
-    reset_env_cache();
-    assert!(
-      !UiMotion::from_env().enabled,
-      "motion should be disabled when reduced motion env var is truthy"
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        ENV_REDUCED_MOTION.to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        assert!(
+          !UiMotion::from_env().enabled,
+          "motion should be disabled when reduced motion env var is truthy"
+        );
+      },
     );
 
-    std::env::set_var(ENV_REDUCED_MOTION, "0");
-    reset_env_cache();
-    assert!(
-      UiMotion::from_env().enabled,
-      "motion should be enabled when reduced motion env var is falsey"
-    );
+    for value in ["0", ""] {
+      with_runtime_toggles(
+        Arc::new(RuntimeToggles::from_map(HashMap::from([(
+          ENV_REDUCED_MOTION.to_string(),
+          value.to_string(),
+        )]))),
+        || {
+          assert!(
+            UiMotion::from_env().enabled,
+            "motion should be enabled when reduced motion env var is falsey ({value:?})"
+          );
+        },
+      );
+    }
   }
 }
