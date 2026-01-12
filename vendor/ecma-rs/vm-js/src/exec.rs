@@ -1479,23 +1479,29 @@ impl<'a> Evaluator<'a> {
       self.collect_var_names(&stmt.stx, &mut var_names)?;
     }
 
-    if self.strict {
-      // Strict mode: only top-level function declarations are var-scoped; block function
-      // declarations are instantiated at block entry.
-      for stmt in stmts {
-        self.tick()?;
-        let Stmt::FunctionDecl(decl) = &*stmt.stx else {
-          continue;
-        };
-        let Some(name) = &decl.stx.name else {
-          return Err(VmError::Unimplemented("anonymous function declaration"));
-        };
-        var_names.insert(name.stx.name.clone());
-      }
-    } else {
-      // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
-      for stmt in stmts {
-        self.collect_sloppy_function_decl_names(&stmt.stx, &mut var_names)?;
+      if self.strict {
+        // Strict mode: only top-level function declarations are var-scoped; block function
+        // declarations are instantiated at block entry.
+        for stmt in stmts {
+          self.tick()?;
+          let Stmt::FunctionDecl(decl) = &*stmt.stx else {
+            continue;
+          };
+          let Some(name) = &decl.stx.name else {
+            // `export default function() {}` is parsed as an anonymous function declaration with an
+            // engine-internal `*default*` binding created during module linking. It does not
+            // participate in var-scoped name collision checks.
+            if decl.stx.export_default {
+              continue;
+            }
+            return Err(VmError::Unimplemented("anonymous function declaration"));
+          };
+          var_names.insert(name.stx.name.clone());
+        }
+      } else {
+        // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
+        for stmt in stmts {
+          self.collect_sloppy_function_decl_names(&stmt.stx, &mut var_names)?;
       }
     }
 
@@ -1874,6 +1880,31 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     decl: &Node<FuncDecl>,
   ) -> Result<(), VmError> {
+    if decl.stx.export_default && decl.stx.name.is_none() {
+      // `export default function() {}` is represented by `parse-js` as a function declaration with
+      // `export_default = true` and `name = None`.
+      //
+      // Module linking creates an immutable `*default*` binding; module instantiation is
+      // responsible for creating the function object and initializing that binding.
+      let func_obj = self.create_function_object_for_decl(scope, decl, "default")?;
+
+      let mut init_scope = scope.reborrow();
+      init_scope.push_root(Value::Object(func_obj))?;
+      let binding_name = "*default*";
+      if !init_scope
+        .heap()
+        .env_has_binding(self.env.lexical_env, binding_name)?
+      {
+        return Err(VmError::InvariantViolation(
+          "export default function declaration missing *default* binding",
+        ));
+      }
+      init_scope
+        .heap_mut()
+        .env_initialize_binding(self.env.lexical_env, binding_name, Value::Object(func_obj))?;
+      return Ok(());
+    }
+
     let Some(name) = &decl.stx.name else {
       return Err(VmError::Unimplemented("anonymous function declaration"));
     };
