@@ -3,6 +3,7 @@ use fastrender::style::media::MediaType;
 use fastrender::style::types::{BreakBetween, BreakInside};
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
+use fastrender::LengthUnit;
 use fastrender::Rgba;
 use regex::Regex;
 
@@ -5902,9 +5903,9 @@ fn footnote_body_images_resolve_intrinsic_sizes() {
 #[test]
 fn footnote_float_generates_call_and_page_footnote_area() {
   let html = r#"
-    <html>
-      <head>
-        <style>
+     <html>
+       <head>
+         <style>
           @page { size: 200px 100px; margin: 0; }
           body { margin: 0; font-size: 10px; line-height: 10px; }
           p { margin: 0; }
@@ -5961,6 +5962,108 @@ fn footnote_float_generates_call_and_page_footnote_area() {
     "pages without footnotes should not include a footnote area"
   );
   assert!(find_text(page2, "Page2").is_some());
+}
+
+#[test]
+fn footnote_area_in_vertical_writing_mode_is_positioned_at_block_end() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          html { writing-mode: vertical-rl; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">Footnote body</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+  let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(
+    wrapper.children.len(),
+    2,
+    "page with footnote should have content + footnote area"
+  );
+
+  let content = page_content(page1);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
+
+  assert!(find_text(content, "Main").is_some());
+  assert!(
+    find_text(content, "Footnote body").is_none(),
+    "footnote body should be removed from main flow"
+  );
+  assert!(find_text(footnote_area, "Footnote body").is_some());
+
+  // In `writing-mode: vertical-rl`, the page block axis is horizontal and points in the negative
+  // direction, so block-end is at the physical left edge.
+  let epsilon = 0.1;
+  assert!(
+    (footnote_area.bounds.x() - content.bounds.x()).abs() < epsilon,
+    "expected footnote area to align with the page content box block-end (physical left) in vertical-rl (content.x={}, footnote_area.x={})",
+    content.bounds.x(),
+    footnote_area.bounds.x()
+  );
+
+  // The footnote separator may be represented as a synthetic 1px child fragment, or as a border on
+  // the footnote area itself. Either way, it must be aligned to the block-start edge (physical
+  // right edge) in `vertical-rl` and span the page inline axis.
+  if footnote_area.children.len() >= 2 {
+    let separator = footnote_area.children.first().expect("footnote separator");
+    assert!(
+      (separator.bounds.width() - 1.0).abs() < epsilon,
+      "expected separator thickness of 1px along the horizontal block axis (got {})",
+      separator.bounds.width()
+    );
+    assert!(
+      (separator.bounds.height() - footnote_area.bounds.height()).abs() < epsilon,
+      "expected separator to span the full inline axis (got {}, expected {})",
+      separator.bounds.height(),
+      footnote_area.bounds.height()
+    );
+    assert!(
+      (separator.bounds.max_x() - footnote_area.bounds.width()).abs() < epsilon,
+      "expected separator to align with the block-start edge (physical right) in vertical-rl (separator.max_x={}, footnote_area.width={})",
+      separator.bounds.max_x(),
+      footnote_area.bounds.width()
+    );
+  } else if let Some(style) = footnote_area.style.as_deref() {
+    assert_eq!(
+      style.border_right_width.unit,
+      LengthUnit::Px,
+      "expected border-right width to resolve to px (got {:?})",
+      style.border_right_width
+    );
+    assert_eq!(
+      style.border_left_width.unit,
+      LengthUnit::Px,
+      "expected border-left width to resolve to px (got {:?})",
+      style.border_left_width
+    );
+    assert!(
+      (style.border_right_width.value - 1.0).abs() < epsilon
+        && style.border_left_width.value.abs() < epsilon,
+      "expected separator border on the physical right edge in vertical-rl (right={:?}, left={:?})",
+      style.border_right_width,
+      style.border_left_width
+    );
+  } else {
+    panic!("expected footnote separator to be represented as a child fragment or a border");
+  }
 }
 
 #[test]
