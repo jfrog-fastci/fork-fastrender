@@ -1080,6 +1080,14 @@ impl FloatContext {
     self.ensure_range_cache_coverage(&mut cache, start, end);
 
     let start_idx = cache.segment_index(start);
+    if end <= start {
+      if let Some(seg) = cache.segments.get(start_idx) {
+        let left_edge = seg.left_edge.max(containing_left);
+        let right_edge = seg.right_edge.min(containing_right);
+        profile_count_range_boundary_scanned(1);
+        return (left_edge, right_edge, seg.end_y);
+      }
+    }
     let mut best_left = containing_left;
     let mut best_right = containing_right;
     let mut best_width = (best_right - best_left).max(0.0);
