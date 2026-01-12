@@ -2,7 +2,7 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -274,4 +274,3 @@ fn for_await_of_throw_suppresses_get_method_non_callable() -> Result<(), VmError
 
   Ok(())
 }
-
