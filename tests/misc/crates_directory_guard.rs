@@ -2,13 +2,9 @@
 //!
 //! See `instructions/webidl_consolidation.md`.
 //!
-//! During the WebIDL + JS runtime consolidation (**status: IN PROGRESS**), a small set of legacy
-//! WebIDL crates still exists under `crates/` and is temporarily allowlisted here:
-//! `webidl-js-runtime`, `webidl-ir`, and `webidl-bindings-core`.
-//!
-//! Long-term, shared JS/WebIDL infrastructure should live in the vendored `vendor/ecma-rs/`
-//! workspace and `crates/` should be reserved for FastRender-specific tooling. Once the migration
-//! completes, remove the legacy WebIDL entries from the allowlist below.
+//! WebIDL stack consolidation is complete: shared JS/WebIDL infrastructure should live in the
+//! vendored `vendor/ecma-rs/` workspace and `crates/` should be reserved for FastRender-specific
+//! tooling.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -18,12 +14,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Adding any new crate under `crates/` must be an explicit decision: update this allowlist and
 /// justify why it doesn't belong under `vendor/ecma-rs/`.
-const ALLOWED_CRATE_DIRS: [&str; 4] = [
-  "js-wpt-dom-runner",
-  "webidl-bindings-core",
-  "webidl-ir",
-  "webidl-js-runtime",
-];
+const ALLOWED_CRATE_DIRS: [&str; 2] = ["js-wpt-dom-runner", "webidl-js-runtime"];
 
 fn list_crate_dirs(crates_dir: &Path) -> BTreeSet<String> {
   let mut dirs = BTreeSet::new();
