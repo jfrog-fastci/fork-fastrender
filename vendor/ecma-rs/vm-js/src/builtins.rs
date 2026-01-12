@@ -788,6 +788,8 @@ pub fn object_get_own_property_descriptors(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // https://tc39.es/ecma262/#sec-object.getownpropertydescriptors
+  let mut scope = scope.reborrow();
+
   let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let obj = scope.to_object(vm, host, hooks, obj_val)?;
   scope.push_root(Value::Object(obj))?;
@@ -807,7 +809,7 @@ pub fn object_get_own_property_descriptors(
     });
   }
   scope.push_roots(&key_roots)?;
-  let is_proxy = scope.heap().get_proxy_data(obj)?.is_some();
+  let is_proxy = scope.heap().is_proxy_object(obj);
 
   let intr = require_intrinsics(vm)?;
   let out = scope.alloc_object()?;
@@ -821,24 +823,38 @@ pub fn object_get_own_property_descriptors(
       vm.tick()?;
     }
 
-    let Some(mut desc) =
-      scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
-    else {
-      continue;
-    };
-
-    if !is_proxy {
-      if let PropertyKind::Data { writable, .. } = desc.kind {
-        let value = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-        desc.kind = PropertyKind::Data { value, writable };
-      }
-    }
+    // `GetOwnPropertyDescriptor` can return `undefined` even for keys returned by a Proxy `ownKeys`
+    // trap; in that case, `Object.getOwnPropertyDescriptors` stores `undefined` for that key.
+    let desc = scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?;
 
     let mut item_scope = scope.reborrow();
     item_scope.push_root(Value::Object(out))?;
     root_property_key(&mut item_scope, key)?;
-    let desc_obj = from_property_descriptor(vm, &mut item_scope, desc)?;
-    item_scope.create_data_property_or_throw(out, key, Value::Object(desc_obj))?;
+
+    let value = if let Some(mut desc) = desc {
+      // Ensure string/typed-array exotic index properties report their actual value (which may not
+      // be stored in the property table).
+      if !is_proxy {
+        if let PropertyKind::Data { writable, .. } = desc.kind {
+          let v = item_scope.ordinary_get_with_host_and_hooks(
+            vm,
+            host,
+            hooks,
+            obj,
+            key,
+            Value::Object(obj),
+          )?;
+          desc.kind = PropertyKind::Data { value: v, writable };
+        }
+      }
+
+      let desc_obj = from_property_descriptor(vm, &mut item_scope, desc)?;
+      Value::Object(desc_obj)
+    } else {
+      Value::Undefined
+    };
+
+    item_scope.create_data_property_or_throw(out, key, value)?;
   }
 
   Ok(Value::Object(out))
@@ -984,19 +1000,44 @@ enum IntegrityLevel {
 fn set_integrity_level(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   obj: GcObject,
   level: IntegrityLevel,
-) -> Result<(), VmError> {
+) -> Result<bool, VmError> {
   // https://tc39.es/ecma262/#sec-setintegritylevel
-  scope.object_prevent_extensions(obj)?;
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
 
-  let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let ok = scope.prevent_extensions_with_host_and_hooks(vm, host, hooks, obj)?;
+  if !ok {
+    return Ok(false);
+  }
+
+  let mut tick = Vm::tick;
+  let keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
+
   for (i, key) in keys.into_iter().enumerate() {
     if i % 1024 == 0 {
       vm.tick()?;
     }
 
-    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+    let Some(desc) =
+      scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
+    else {
       continue;
     };
 
@@ -1008,33 +1049,54 @@ fn set_integrity_level(
       patch.writable = Some(false);
     }
 
-    let mut define_scope = scope.reborrow();
-    let ok = define_scope.define_own_property_with_tick(obj, key, patch, || vm.tick())?;
+    let ok = scope.define_own_property_with_host_and_hooks(vm, host, hooks, obj, key, patch)?;
     if !ok {
-      return Err(VmError::TypeError("DefineOwnProperty rejected"));
+      return Ok(false);
     }
   }
 
-  Ok(())
+  Ok(true)
 }
 
 fn test_integrity_level(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   obj: GcObject,
   level: IntegrityLevel,
 ) -> Result<bool, VmError> {
   // https://tc39.es/ecma262/#sec-testintegritylevel
-  if scope.object_is_extensible(obj)? {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  if scope.is_extensible_with_host_and_hooks(vm, host, hooks, obj)? {
     return Ok(false);
   }
 
-  let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut tick = Vm::tick;
+  let keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
+
   for (i, key) in keys.into_iter().enumerate() {
     if i % 1024 == 0 {
       vm.tick()?;
     }
-    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+    let Some(desc) =
+      scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
+    else {
       continue;
     };
     if desc.configurable {
@@ -1068,7 +1130,6 @@ pub fn object_prevent_extensions(
   };
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(obj))?;
-
   let ok = scope.prevent_extensions_with_host_and_hooks(vm, host, hooks, obj)?;
   if !ok {
     return Err(VmError::TypeError("Object.preventExtensions failed"));
@@ -1079,8 +1140,8 @@ pub fn object_prevent_extensions(
 pub fn object_seal(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1091,15 +1152,17 @@ pub fn object_seal(
     return Ok(obj_val);
   };
   scope.push_root(Value::Object(obj))?;
-  set_integrity_level(vm, scope, obj, IntegrityLevel::Sealed)?;
+  if !set_integrity_level(vm, scope, host, hooks, obj, IntegrityLevel::Sealed)? {
+    return Err(VmError::TypeError("Object.seal failed"));
+  }
   Ok(Value::Object(obj))
 }
 
 pub fn object_is_sealed(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1113,6 +1176,8 @@ pub fn object_is_sealed(
   Ok(Value::Bool(test_integrity_level(
     vm,
     scope,
+    host,
+    hooks,
     obj,
     IntegrityLevel::Sealed,
   )?))
@@ -1121,8 +1186,8 @@ pub fn object_is_sealed(
 pub fn object_freeze(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1133,15 +1198,17 @@ pub fn object_freeze(
     return Ok(obj_val);
   };
   scope.push_root(Value::Object(obj))?;
-  set_integrity_level(vm, scope, obj, IntegrityLevel::Frozen)?;
+  if !set_integrity_level(vm, scope, host, hooks, obj, IntegrityLevel::Frozen)? {
+    return Err(VmError::TypeError("Object.freeze failed"));
+  }
   Ok(Value::Object(obj))
 }
 
 pub fn object_is_frozen(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1155,6 +1222,8 @@ pub fn object_is_frozen(
   Ok(Value::Bool(test_integrity_level(
     vm,
     scope,
+    host,
+    hooks,
     obj,
     IntegrityLevel::Frozen,
   )?))

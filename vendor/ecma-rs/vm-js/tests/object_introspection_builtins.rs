@@ -62,6 +62,52 @@ fn object_is_extensible_primitives_false_objects_true() {
 }
 
 #[test]
+fn object_get_own_property_descriptors_is_proxy_aware() {
+  let mut rt = new_runtime();
+  let script = r#"
+    (() => {
+      const target = {};
+      const p = new Proxy(target, {
+        ownKeys() { return ["a", "b"]; },
+        getOwnPropertyDescriptor(_t, k) {
+          return k === "a" ? { value: 1, configurable: true } : undefined;
+        },
+      });
+      const descs = Object.getOwnPropertyDescriptors(p);
+      return descs.a.value === 1 && descs.b === undefined;
+    })()
+  "#;
+  let value = rt.exec_script(script).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_is_extensible_obeys_proxy_invariants() {
+  let mut rt = new_runtime();
+  let script = r#"
+    (() => {
+      const p = new Proxy({}, { isExtensible() { return false; } });
+      try { Object.isExtensible(p); return false; } catch (e) { return e instanceof TypeError; }
+    })()
+  "#;
+  let value = rt.exec_script(script).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_prevent_extensions_obeys_proxy_invariants() {
+  let mut rt = new_runtime();
+  let script = r#"
+    (() => {
+      const p = new Proxy({}, { preventExtensions() { return true; } });
+      try { Object.preventExtensions(p); return false; } catch (e) { return e instanceof TypeError; }
+    })()
+  "#;
+  let value = rt.exec_script(script).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_prototype_chain_has_expected_own_names() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let script = r#"
