@@ -14270,11 +14270,11 @@ mod tests {
 
     let light_ancestors: Vec<&DomNode> = vec![&select];
     assert!(matches(light, &light_ancestors, &PseudoClass::Checked));
-    assert!(matches(light, &light_ancestors, &PseudoClass::Default));
+    assert!(!matches(light, &light_ancestors, &PseudoClass::Default));
 
     let tmpl_ancestors: Vec<&DomNode> = vec![&select, template];
     assert!(!matches(tmpl, &tmpl_ancestors, &PseudoClass::Checked));
-    assert!(!matches(tmpl, &tmpl_ancestors, &PseudoClass::Default));
+    assert!(matches(tmpl, &tmpl_ancestors, &PseudoClass::Default));
   }
 
   #[test]
