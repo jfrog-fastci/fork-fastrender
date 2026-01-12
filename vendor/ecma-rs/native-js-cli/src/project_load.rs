@@ -42,23 +42,18 @@ pub fn load_program(
 
   ensure_default_es_lib(&mut compiler_options);
 
-  let (type_roots, extra_libs) = match project.as_ref() {
-    Some(cfg) => {
-      let type_roots = cfg
-        .type_roots
-        .clone()
-        .unwrap_or_else(|| type_libs::default_type_roots(&cfg.root_dir));
-      let libs = type_libs::load_type_libs(cfg, &compiler_options, &type_roots)?;
-      // The CLI loads `typeRoots`/`types` packages as host-provided libs (ambient `.d.ts` inputs),
-      // matching `tsc` more closely. Clear the compiler option so `typecheck-ts` doesn't also try
-      // to resolve them via module resolution.
-      compiler_options.types.clear();
-      (type_roots, libs)
-    }
-    None => (Vec::new(), Vec::new()),
+  let type_roots = match project.as_ref() {
+    Some(cfg) => cfg
+      .type_roots
+      .clone()
+      .unwrap_or_else(|| type_libs::default_type_roots(&cfg.root_dir)),
+    None => Vec::new(),
   };
+  if let Some(cfg) = project.as_ref() {
+    compiler_options.types = type_libs::effective_type_packages(cfg, &compiler_options, &type_roots);
+  }
 
-  let mut extra_libs = extra_libs;
+  let mut extra_libs = Vec::new();
   extra_libs.push(match mode {
     LoadMode::Project => native_js::builtins::project_builtins_lib(),
     LoadMode::Checked => native_js::builtins::checked_builtins_lib(),
