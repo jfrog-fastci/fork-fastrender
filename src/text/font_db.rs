@@ -1291,7 +1291,7 @@ impl GenericFamily {
   pub fn prefers_named_fallbacks_first(self) -> bool {
     matches!(
       self,
-      GenericFamily::Emoji | GenericFamily::Math | GenericFamily::Fangsong
+      GenericFamily::SystemUi | GenericFamily::Emoji | GenericFamily::Math | GenericFamily::Fangsong
     )
   }
 
@@ -3113,11 +3113,15 @@ mod tests {
     assert!(!GenericFamily::Serif.prefers_named_fallbacks_first());
     assert!(!GenericFamily::SansSerif.prefers_named_fallbacks_first());
     assert!(!GenericFamily::Monospace.prefers_named_fallbacks_first());
-    assert!(!GenericFamily::SystemUi.prefers_named_fallbacks_first());
     assert!(!GenericFamily::UiSansSerif.prefers_named_fallbacks_first());
     assert!(!GenericFamily::UiSerif.prefers_named_fallbacks_first());
     assert!(!GenericFamily::UiMonospace.prefers_named_fallbacks_first());
     assert!(!GenericFamily::UiRounded.prefers_named_fallbacks_first());
+
+    // `system-ui` maps to `fontdb`'s sans-serif generic, but has an explicit OS UI font fallback
+    // list that should be consulted first so it can resolve to "real" UI families like Cantarell
+    // when available.
+    assert!(GenericFamily::SystemUi.prefers_named_fallbacks_first());
 
     // Emoji/math/fangsong map to sans-serif at the `fontdb` level, so we require named fallbacks first.
     assert!(GenericFamily::Emoji.prefers_named_fallbacks_first());

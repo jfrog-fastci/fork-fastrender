@@ -7,7 +7,14 @@ use crate::text::font_loader::FontContext;
 use crate::text::pipeline::{assign_fonts, Direction, ItemizedRun, Script, ShapingPipeline};
 use crate::ComputedStyle;
 
+<<<<<<<< HEAD:src/text/tests/letter_spacing_ligatures_test.rs
 const FALLBACK_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/DejaVuSans-subset.ttf"));
+========
+const FALLBACK_FONT: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/DejaVuSans-subset.ttf"
+));
+>>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/letter_spacing_ligatures_test.rs
 
 fn features_map(run: &crate::text::pipeline::FontRun) -> HashMap<[u8; 4], u32> {
   let mut out = HashMap::new();

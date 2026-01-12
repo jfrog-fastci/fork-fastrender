@@ -4,7 +4,14 @@ use rustybuzz::Variation;
 use std::sync::Arc;
 use ttf_parser::Tag;
 
+<<<<<<<< HEAD:src/text/tests/font_variation_backend.rs
 const VAR_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/AmstelvarAlpha-VF.ttf"));
+========
+const VAR_FONT: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/AmstelvarAlpha-VF.ttf"
+));
+>>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/font_variation_backend.rs
 
 fn parse_face<'a>() -> ttf_parser::Face<'a> {
   ttf_parser::Face::parse(VAR_FONT, 0).expect("variable font fixture should parse")

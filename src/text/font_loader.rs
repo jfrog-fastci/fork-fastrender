@@ -2298,7 +2298,11 @@ impl FontContext {
         return Err(blocked);
       }
     }
-    let referrer_url = face.source_stylesheet_url.as_deref().or(base_url);
+    let referrer_url = face
+      .source_stylesheet_url
+      .as_deref()
+      .or_else(|| self.resource_context.as_ref().and_then(|ctx| ctx.document_url.as_deref()))
+      .or(base_url);
     render_control::check_active(RenderStage::Css)?;
     let resource = match self.fetcher.fetch_with_referrer_policy(
       resolved_url,

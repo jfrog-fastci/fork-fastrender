@@ -13,8 +13,10 @@ use rustybuzz::ttf_parser::Tag;
 use std::sync::Arc;
 use tiny_skia::Pixmap;
 
-const VARIABLE_FONT_BYTES: &[u8] =
-  include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/VariableTestFont-AmstelvarAlpha.ttf"));
+const VARIABLE_FONT_BYTES: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/VariableTestFont-AmstelvarAlpha.ttf"
+));
 const VARIABLE_FAMILY: &str = "AmstelvarAlpha Default";
 const FONT_SIZE: f32 = 96.0;
 const PIXMAP_SIZE: u32 = 220;

@@ -17,11 +17,34 @@ use crate::ComputedStyle;
 use rustybuzz::Language as HbLanguage;
 use ttf_parser::Tag;
 
+<<<<<<<< HEAD:src/text/tests/font_face_typography_descriptors.rs
 const FALLBACK_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/DejaVuSans-subset.ttf"));
 const EMOJI_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/FastRenderEmoji.ttf"));
 const TEST_VAR_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/TestVar.ttf"));
 const INTER_VAR_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/Inter-Variable.ttf"));
 const AMSTELVAR_ALPHA_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/AmstelvarAlpha-VF.ttf"));
+========
+const FALLBACK_FONT: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/DejaVuSans-subset.ttf"
+));
+const EMOJI_FONT: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/FastRenderEmoji.ttf"
+));
+const TEST_VAR_FONT: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/TestVar.ttf"
+));
+const INTER_VAR_FONT: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/Inter-Variable.ttf"
+));
+const AMSTELVAR_ALPHA_FONT: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/AmstelvarAlpha-VF.ttf"
+));
+>>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/font_face_typography_descriptors.rs
 
 #[derive(Clone)]
 struct FixtureFetcher {

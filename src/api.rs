@@ -10451,9 +10451,9 @@ impl FastRender {
         match self {
           StylesheetTask::Inline { css } => {
             // Inline stylesheets don't have their own URL; use the owning document URL as the
-            // referrer source for CSS subresource fetches (e.g. `@import` and web fonts). This
-            // must remain distinct from the base URL used for resolving relative `url(...)`
-            // references, which can be overridden via `<base href>`.
+            // referrer source for CSS subresource fetches (e.g. `@import`). This must remain
+            // distinct from the base URL used for resolving relative `url(...)` references, which
+            // can be overridden via `<base href>`.
             let stylesheet_referrer_url = resource_context
               .as_ref()
               .and_then(|ctx| ctx.document_url.as_deref())
@@ -10489,9 +10489,6 @@ impl FastRender {
                 return Err(err);
               }
             };
-            if let Some(url) = stylesheet_referrer_url {
-              sheet.set_font_face_source_stylesheet_url(url);
-            }
             sheet.set_font_face_source_referrer_policy(referrer_policy);
             if sheet.contains_imports() {
               let loader = CssImportFetcher::new(
@@ -10965,7 +10962,6 @@ impl FastRender {
               }
             }
           }
-
           let stylesheet_referrer_url = self.document_url().or(self.base_url.as_deref());
           let stylesheet_error_url = stylesheet_referrer_url.unwrap_or("<inline stylesheet>");
           let mut sheet = match parse_stylesheet_with_media(
@@ -10992,9 +10988,6 @@ impl FastRender {
               return Err(err);
             }
           };
-          if let Some(url) = stylesheet_referrer_url {
-            sheet.set_font_face_source_stylesheet_url(url);
-          }
           sheet.set_font_face_source_referrer_policy(document_referrer_policy);
           if sheet.contains_imports() {
             match sheet.clone().resolve_imports_owned_with_cache_with_importer_url(

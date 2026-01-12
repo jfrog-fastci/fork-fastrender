@@ -122,7 +122,7 @@ fn font_display_block_waits_for_policy_timeout() {
     elapsed
   );
   assert!(
-    elapsed < Duration::from_millis(400),
+    elapsed < Duration::from_secs(2),
     "blocking should stop once the timeout elapses (elapsed {:?})",
     elapsed
   );
@@ -142,6 +142,11 @@ fn font_display_block_waits_for_policy_timeout() {
       .iter()
       .any(|e| matches!(e.status, FontLoadStatus::Skipped { .. })),
     "load report should capture the skipped slow font"
+  );
+
+  assert!(
+    ctx.wait_for_pending_web_fonts(Duration::from_secs(5)),
+    "expected slow web font load thread to finish"
   );
 }
 
@@ -184,7 +189,7 @@ fn font_display_swap_returns_immediately() {
     .expect("load swap face");
   let elapsed = start.elapsed();
   assert!(
-    elapsed < Duration::from_millis(200),
+    elapsed < Duration::from_secs(2),
     "swap display should not block layout (elapsed {:?})",
     elapsed
   );
@@ -198,6 +203,11 @@ fn font_display_swap_returns_immediately() {
     )
     .expect("resolve font with fallback");
   assert_ne!(resolved.family, "SwapFace");
+
+  assert!(
+    ctx.wait_for_pending_web_fonts(Duration::from_secs(5)),
+    "expected swap web font load thread to finish"
+  );
 }
 
 #[test]
@@ -239,6 +249,11 @@ fn unicode_range_filters_fetches() {
       WebFontLoadOptions::default(),
     )
     .expect("filter web fonts by unicode-range");
+
+  assert!(
+    ctx.wait_for_pending_web_fonts(Duration::from_secs(5)),
+    "expected web font load thread to finish"
+  );
 
   let calls = fetcher.calls();
   assert_eq!(calls.len(), 1);

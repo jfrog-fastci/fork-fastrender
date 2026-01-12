@@ -8,7 +8,14 @@ use crate::ComputedStyle;
 use rustybuzz::{Face as HbFace, Feature, UnicodeBuffer};
 use ttf_parser::Tag;
 
+<<<<<<<< HEAD:src/text/tests/font_variant_position_synthesis_test.rs
 const NOTO_SANS_FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/NotoSans-subset.ttf"));
+========
+const NOTO_SANS_FONT: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/NotoSans-subset.ttf"
+));
+>>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/font_variant_position_synthesis_test.rs
 
 fn feature_affects_char(face: &HbFace<'_>, tag: [u8; 4], ch: char) -> bool {
   let mut utf8 = [0u8; 4];

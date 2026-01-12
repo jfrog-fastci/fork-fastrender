@@ -1,7 +1,14 @@
 use crate::text::font_db::{FontStretch, FontStyle, FontWeight, LoadedFont};
 use std::sync::Arc;
 
+<<<<<<<< HEAD:src/text/tests/css_line_metrics.rs
 const DEJAVU_SANS: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/DejaVuSans-subset.ttf"));
+========
+const DEJAVU_SANS: &[u8] = include_bytes!(concat!(
+  env!("CARGO_MANIFEST_DIR"),
+  "/tests/fixtures/fonts/DejaVuSans-subset.ttf"
+));
+>>>>>>>> 69c448c8 (test(text): move text/font regression suites into lib tests):src/text/tests/text/css_line_metrics.rs
 
 fn dejavu_sans() -> LoadedFont {
   LoadedFont {
