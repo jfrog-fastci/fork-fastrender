@@ -1,8 +1,105 @@
 //! Guardrail to ensure conformance targets are documented and enforced.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
+
+fn normalize_markdown_link_target(raw_target: &str) -> Option<String> {
+  // Support the common Markdown forms:
+  //   [text](path)
+  //   [text](path#fragment)
+  //   [text](path "title")
+  // We intentionally keep this lightweight (not a full Markdown parser).
+  let raw_target = raw_target.trim();
+  let raw_target = raw_target
+    .split_whitespace()
+    .next()
+    .unwrap_or_default()
+    .trim_matches('<')
+    .trim_matches('>');
+  let raw_target = raw_target
+    .split_once('#')
+    .map(|(path, _frag)| path)
+    .unwrap_or(raw_target);
+  let raw_target = raw_target
+    .split_once('?')
+    .map(|(path, _query)| path)
+    .unwrap_or(raw_target);
+
+  if raw_target.is_empty()
+    || raw_target.starts_with('#')
+    || raw_target.starts_with("http://")
+    || raw_target.starts_with("https://")
+    || raw_target.starts_with("mailto:")
+  {
+    return None;
+  }
+
+  Some(raw_target.to_string())
+}
+
+fn is_test_link_target(
+  target: &str,
+  docs_dir: &Path,
+  src_test_cache: &mut HashMap<PathBuf, bool>,
+) -> bool {
+  if target.starts_with("../tests/") {
+    return true;
+  }
+
+  if !target.starts_with("../src/") {
+    return false;
+  }
+
+  let resolved = docs_dir.join(target);
+  if !resolved.is_file() || resolved.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+    return false;
+  }
+
+  if let Some(cached) = src_test_cache.get(&resolved) {
+    return *cached;
+  }
+
+  let Ok(file) = std::fs::read_to_string(&resolved) else {
+    src_test_cache.insert(resolved, false);
+    return false;
+  };
+
+  let contains_tests =
+    file.contains("#[test]") || file.contains("#[tokio::test]") || file.contains("cfg(test)");
+  src_test_cache.insert(resolved, contains_tests);
+  contains_tests
+}
+
+fn column_has_code_link(column: &str, link_re: &regex::Regex) -> bool {
+  link_re.captures_iter(column).any(|cap| {
+    let raw_target = cap.get(1).expect("link target capture").as_str();
+    let Some(target) = normalize_markdown_link_target(raw_target) else {
+      return false;
+    };
+
+    target.starts_with("../src/")
+      || target.starts_with("../crates/")
+      || target.starts_with("../vendor/")
+  })
+}
+
+fn column_has_test_link(
+  column: &str,
+  link_re: &regex::Regex,
+  docs_dir: &Path,
+  src_test_cache: &mut HashMap<PathBuf, bool>,
+) -> bool {
+  link_re.captures_iter(column).any(|cap| {
+    let raw_target = cap.get(1).expect("link target capture").as_str();
+    let Some(target) = normalize_markdown_link_target(raw_target) else {
+      return false;
+    };
+
+    is_test_link_target(&target, docs_dir, src_test_cache)
+  })
+}
 
 #[test]
 fn conformance_doc_is_present_and_non_empty() {
@@ -24,6 +121,9 @@ fn conformance_doc_links_to_real_code_and_tests() {
   let root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let conformance_path = root.join("docs/conformance.md");
   let content = std::fs::read_to_string(&conformance_path).expect("read docs/conformance.md");
+  let docs_dir = conformance_path
+    .parent()
+    .expect("docs/conformance.md should have a parent directory");
 
   let link_re =
     regex::Regex::new(r"\[[^\]]*]\(([^)]+)\)").expect("regex for markdown links should compile");
@@ -32,6 +132,7 @@ fn conformance_doc_links_to_real_code_and_tests() {
   // - header exists
   // - every row has 6 columns
   // - status column uses the legend markers
+  let mut src_test_cache: HashMap<PathBuf, bool> = HashMap::new();
   let mut in_table = false;
   let mut saw_data_row = false;
   for (idx, line) in content.lines().enumerate() {
@@ -92,6 +193,17 @@ fn conformance_doc_links_to_real_code_and_tests() {
         "docs/conformance.md support matrix row must include a markdown link in the Tests column at line {} (got {tests:?})",
         idx + 1
       );
+
+      assert!(
+        column_has_code_link(implementation, &link_re),
+        "docs/conformance.md support matrix row must link to implementation code (under ../src/, ../crates/, or ../vendor/) at line {} (got {implementation:?})",
+        idx + 1
+      );
+      assert!(
+        column_has_test_link(tests, &link_re, docs_dir, &mut src_test_cache),
+        "docs/conformance.md support matrix row must link to at least one test in the Tests column at line {} (got {tests:?})",
+        idx + 1
+      );
     }
   }
   assert!(
@@ -108,42 +220,11 @@ fn conformance_doc_links_to_real_code_and_tests() {
   let mut linked: HashSet<String> = HashSet::new();
   for cap in link_re.captures_iter(&content) {
     let raw_target = cap.get(1).expect("link target capture").as_str().trim();
-
-    // Support the common Markdown forms:
-    //   [text](path)
-    //   [text](path#fragment)
-    //   [text](path "title")
-    // We intentionally keep this lightweight (not a full Markdown parser).
-    let raw_target = raw_target
-      .split_whitespace()
-      .next()
-      .unwrap_or_default()
-      .trim_matches('<')
-      .trim_matches('>');
-    let raw_target = raw_target
-      .split_once('#')
-      .map(|(path, _frag)| path)
-      .unwrap_or(raw_target);
-    let raw_target = raw_target
-      .split_once('?')
-      .map(|(path, _query)| path)
-      .unwrap_or(raw_target);
-
-    if raw_target.is_empty()
-      || raw_target.starts_with('#')
-      || raw_target.starts_with("http://")
-      || raw_target.starts_with("https://")
-      || raw_target.starts_with("mailto:")
-    {
-      continue;
+    if let Some(target) = normalize_markdown_link_target(raw_target) {
+      linked.insert(target);
     }
-
-    linked.insert(raw_target.to_string());
   }
 
-  let docs_dir = conformance_path
-    .parent()
-    .expect("docs/conformance.md should have a parent directory");
   let mut missing = Vec::<(String, PathBuf)>::new();
   for path in &linked {
     let resolved = docs_dir.join(path);
@@ -173,25 +254,9 @@ fn conformance_doc_links_to_real_code_and_tests() {
   // while allowing either:
   // - `../tests/...` integration modules (included by `tests/integration.rs`), or
   // - `../src/...` files that actually contain Rust tests.
-  let has_test_link = linked.iter().any(|target| {
-    if target.starts_with("../tests/") {
-      return true;
-    }
-    if !target.starts_with("../src/") {
-      return false;
-    }
-
-    let resolved = docs_dir.join(target);
-    if !resolved.is_file() || resolved.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-      return false;
-    }
-
-    let Ok(file) = std::fs::read_to_string(&resolved) else {
-      return false;
-    };
-
-    file.contains("#[test]") || file.contains("#[tokio::test]") || file.contains("cfg(test)")
-  });
+  let has_test_link = linked
+    .iter()
+    .any(|target| is_test_link_target(target, docs_dir, &mut src_test_cache));
 
   assert!(
     has_test_link,
