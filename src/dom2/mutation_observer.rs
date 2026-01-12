@@ -462,32 +462,32 @@ impl Document {
   }
 
   pub fn mutation_observer_take_deliveries(&mut self) -> Vec<(MutationObserverId, Vec<MutationRecord>)> {
-    let pending = {
-      let mut agent = self.mutation_observer_agent.borrow_mut();
-      agent.microtask_queued = false;
-      agent.microtask_needs_queueing = false;
-      std::mem::take(&mut agent.pending)
-    };
+    let nodes = &mut self.nodes;
+    let mut agent = self.mutation_observer_agent.borrow_mut();
+    agent.microtask_queued = false;
+    agent.microtask_needs_queueing = false;
+
+    let pending = std::mem::take(&mut agent.pending);
     let mut out: Vec<(MutationObserverId, Vec<MutationRecord>)> = Vec::new();
     for observer in pending {
-      let (node_list, records) = {
-        let mut agent = self.mutation_observer_agent.borrow_mut();
-        let (node_list, records, record_count) = {
-          let Some(state) = agent.observers.get_mut(&observer) else {
-            continue;
-          };
+      let Some((node_list, records, record_count)) = agent
+        .observers
+        .get_mut(&observer)
+        .map(|state| {
           state.in_pending = false;
-          let node_list = state.node_list.clone();
           let records = std::mem::take(&mut state.records);
           let record_count = records.len();
+          let node_list = state.node_list.clone();
           (node_list, records, record_count)
-        };
-        agent.total_records = agent.total_records.saturating_sub(record_count);
-        (node_list, records)
+        })
+      else {
+        continue;
       };
 
+      agent.total_records = agent.total_records.saturating_sub(record_count);
+
       // DOM: notify mutation observers removes all transient registered observers for `observer`.
-      self.mutation_observer_cleanup_transient_registrations(observer, &node_list);
+      Self::mutation_observer_cleanup_transient_registrations(nodes, &mut agent, observer, &node_list);
 
       if !records.is_empty() {
         out.push((observer, records));
@@ -571,7 +571,8 @@ impl Document {
   }
 
   fn mutation_observer_cleanup_transient_registrations(
-    &mut self,
+    nodes: &mut [super::Node],
+    agent: &mut MutationObserverAgent,
     observer: MutationObserverId,
     node_list: &[NodeId],
   ) {
@@ -580,7 +581,7 @@ impl Document {
     let mut keep_nodes: Vec<NodeId> = Vec::new();
 
     for &node_id in node_list {
-      let Some(node) = self.nodes.get_mut(node_id.index()) else {
+      let Some(node) = nodes.get_mut(node_id.index()) else {
         continue;
       };
 
@@ -597,7 +598,6 @@ impl Document {
       }
     }
 
-    let mut agent = self.mutation_observer_agent.borrow_mut();
     if let Some(state) = agent.observers.get_mut(&observer) {
       state.node_list = keep_nodes;
     }

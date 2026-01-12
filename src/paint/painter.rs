@@ -13308,19 +13308,9 @@ impl Painter {
     }
   }
   fn paint_missing_image_placeholder(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
-    self.paint_solid_rect_simple(content_rect, Rgba::rgb(192, 192, 192), clip_mask);
-
-    let w = content_rect.width().max(0.0);
-    let h = content_rect.height().max(0.0);
-    if w <= 0.0 || h <= 0.0 {
-      return;
-    }
-
-    // Draw a lightweight "broken image" icon in the top-left corner. Keep it simple so this helper
-    // doesn't depend on any text shaping or external assets.
+    self.paint_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192), clip_mask);
     let icon_inset = 2.0;
-    let max_icon = 24.0;
-    let icon_size = (w.min(h) - 2.0 * icon_inset).clamp(0.0, max_icon);
+    let icon_size = Self::missing_image_icon_size(content_rect);
     if icon_size <= 0.0 {
       return;
     }
@@ -13331,38 +13321,7 @@ impl Painter {
       icon_size,
       icon_size,
     );
-    let icon_device_rect = self.device_rect(icon_rect);
-
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(110, 110, 110, 255);
-    paint.anti_alias = true;
-    let stroke = tiny_skia::Stroke {
-      width: 1.0 * self.scale,
-      ..Default::default()
-    };
-
-    let x1 = icon_device_rect.x();
-    let y1 = icon_device_rect.y();
-    let x2 = icon_device_rect.x() + icon_device_rect.width();
-    let y2 = icon_device_rect.y() + icon_device_rect.height();
-
-    let mut diag1 = PathBuilder::new();
-    diag1.move_to(x1, y1);
-    diag1.line_to(x2, y2);
-    if let Some(path) = diag1.finish() {
-      self
-        .pixmap
-        .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
-    }
-
-    let mut diag2 = PathBuilder::new();
-    diag2.move_to(x1, y2);
-    diag2.line_to(x2, y1);
-    if let Some(path) = diag2.finish() {
-      self
-        .pixmap
-      .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
-    }
+    self.paint_broken_image_icon(icon_rect, clip_mask);
   }
 
   fn paint_solid_rect_crisp(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {

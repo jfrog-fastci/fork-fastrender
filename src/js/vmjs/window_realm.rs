@@ -3396,6 +3396,7 @@ fn window_scroll_to_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (x, y) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
+
   let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
     return Ok(Value::Undefined);
   };
@@ -3418,6 +3419,7 @@ fn window_scroll_by_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (dx, dy) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
+
   let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
     return Ok(Value::Undefined);
   };
