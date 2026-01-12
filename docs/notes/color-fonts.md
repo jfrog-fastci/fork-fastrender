@@ -118,11 +118,16 @@ exercised by unit tests in that module (see the `#[cfg(test)] mod tests` block; 
 example `colr_v1_table_parsing_is_cached_per_font` and
 `colr_v1_renderer_recovers_from_poisoned_cache_lock`).
 
+Golden-image coverage lives in `src/text/color_fonts/golden_tests.rs`, including:
+
 - `src/text/color_fonts/golden_tests.rs::colrv1_color_font_test`
+- `src/text/color_fonts/golden_tests.rs::colrv1_linear_gradient_test`
 - `src/text/color_fonts/golden_tests.rs::colrv1_radial_gradient_test`
 - `src/text/color_fonts/golden_tests.rs::colrv1_sweep_gradient_test` (see also `colrv1-sweep-test.ttf` /
   `colrv1-var-sweep-test.ttf` in
   [`tests/fixtures/fonts/README.md`](../../tests/fixtures/fonts/README.md))
+- `src/text/color_fonts/golden_tests.rs::colrv1_variable_outline_test`
+- `src/text/color_fonts/golden_tests.rs::colrv1_variable_transform_test`
 
 Implemented COLRv1 features include:
 
@@ -155,7 +160,7 @@ Implemented COLRv1 features include:
   treat that pixmap as an alpha mask: the mask is tinted to the `text-shadow` color
   (silhouette shadow) and then blurred/composited. Embedded COLR/SVG/bitmap colors
   are **not** preserved in the shadow (see
-  `color_glyph_shadow_matches_golden` integration test).
+  the `color_glyph_shadow_matches_golden` golden test).
   Palette overrides are still passed through to the shadow rasterization step
   (notably affecting alpha when an override introduces transparency).
 
