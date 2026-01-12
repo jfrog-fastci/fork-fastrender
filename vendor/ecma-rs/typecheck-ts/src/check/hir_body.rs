@@ -9175,6 +9175,71 @@ impl<'a> Checker<'a> {
     };
     let prim = self.store.primitive_ids();
 
+    // TypeScript performs contextual signature instantiation when a generic
+    // contextual function type is used to type a non-generic function/arrow
+    // expression:
+    //
+    //   const f: <T>(x: T) => T = x => 1;
+    //
+    // It infers concrete type arguments for the contextual signature's type
+    // parameters from the function expression, then uses the instantiated (now
+    // non-generic) signature for contextual typing.
+    let expected_sig = if !expected_sig.type_params.is_empty() && func.stx.type_parameters.is_none()
+    {
+      let saved_no_implicit_any = self.no_implicit_any;
+      // When computing the "actual" signature for inference, treat untyped
+      // parameters as `unknown` (not `any`) regardless of `--noImplicitAny`.
+      self.no_implicit_any = false;
+
+      // `function_type` may emit diagnostics while inferring the return type.
+      // Those diagnostics should not leak into the final checking pass that
+      // uses the instantiated contextual signature.
+      let saved_diag_len = self.diagnostics.len();
+      let actual_ty = self.function_type(func);
+      self.diagnostics.truncate(saved_diag_len);
+
+      self.no_implicit_any = saved_no_implicit_any;
+      match self.first_callable_signature(actual_ty) {
+        Some(mut actual_sig) => {
+          // TypeScript widens literal return types when inferring contextual type
+          // arguments (`() => 1` contributes `number`, not `1`).
+          actual_sig.ret = self.base_type(actual_sig.ret);
+
+          let inference = infer_type_arguments_from_contextual_signature(
+            &self.store,
+            &self.relate,
+            &expected_sig.type_params,
+            &expected_sig,
+            &actual_sig,
+          );
+
+          let prim = self.store.primitive_ids();
+          let inferred_anything_concrete = expected_sig.type_params.iter().any(|tp| {
+            inference
+              .substitutions
+              .get(&tp.id)
+              .is_some_and(|arg| self.store.canon(*arg) != prim.unknown)
+          });
+
+          if inference.diagnostics.is_empty() && inferred_anything_concrete {
+            let mut substituter =
+              Substituter::new(Arc::clone(&self.store), inference.substitutions);
+            let instantiated_sig_id = substituter.substitute_signature(&expected_sig);
+            let mut instantiated_sig = self.store.signature(instantiated_sig_id);
+            // This is the result of contextual instantiation; it should not retain
+            // the original type parameters.
+            instantiated_sig.type_params.clear();
+            instantiated_sig
+          } else {
+            expected_sig
+          }
+        }
+        None => expected_sig,
+      }
+    } else {
+      expected_sig
+    };
+
     let saved_expected = self.expected_return;
     let saved_async = self.in_async_function;
     let saved_returns = std::mem::take(&mut self.return_types);
@@ -10333,6 +10398,107 @@ impl<'a> Checker<'a> {
     None
   }
 
+  fn contextually_instantiate_generic_contextual_callable(
+    &mut self,
+    expr: &Node<AstExpr>,
+    src: TypeId,
+    dst: TypeId,
+  ) -> Option<TypeId> {
+    // TypeScript also permits assigning a *non-generic* function expression to
+    // a generic contextual function type by instantiating the contextual
+    // signature:
+    //
+    //   const f: <T>(x: T) => T = x => 1; // T inferred as number
+    //
+    // This is distinct from `contextually_instantiate_generic_callable`, which
+    // handles assigning a generic value to a non-generic function type.
+    //
+    // Restrict this behavior to function/arrow expressions without explicit
+    // type parameters to avoid relaxing assignability for arbitrary values.
+    let func = match expr.stx.as_ref() {
+      AstExpr::ArrowFunc(arrow) => Some(&arrow.stx.func),
+      AstExpr::Func(func) => Some(&func.stx.func),
+      _ => None,
+    }?;
+    if func.stx.type_parameters.is_some() {
+      return None;
+    }
+
+    let src = self.expand_callable_type(src);
+    let dst = self.expand_callable_type(dst);
+
+    let src_sigs = callable_signatures_with_expander(self.store.as_ref(), src, self.ref_expander);
+    if src_sigs.is_empty() {
+      return None;
+    }
+    let dst_sigs = callable_signatures_with_expander(self.store.as_ref(), dst, self.ref_expander);
+    if dst_sigs.is_empty() {
+      return None;
+    }
+
+    for dst_sig_id in dst_sigs {
+      let dst_sig = self.store.signature(dst_sig_id);
+      if dst_sig.type_params.is_empty() {
+        continue;
+      }
+
+      for src_sig_id in src_sigs.iter().copied() {
+        let src_sig = self.store.signature(src_sig_id);
+        if !src_sig.type_params.is_empty() {
+          continue;
+        }
+
+        // Mirror contextual instantiation inference behavior for return types:
+        // treat literal returns as their base primitive types.
+        let mut widened_src_sig = src_sig.clone();
+        widened_src_sig.ret = self.base_type(widened_src_sig.ret);
+
+        let inference = infer_type_arguments_from_contextual_signature(
+          &self.store,
+          &self.relate,
+          &dst_sig.type_params,
+          &dst_sig,
+          &widened_src_sig,
+        );
+        if !inference.diagnostics.is_empty() {
+          continue;
+        }
+
+        let prim = self.store.primitive_ids();
+        let inferred_anything_concrete = dst_sig.type_params.iter().any(|tp| {
+          inference
+            .substitutions
+            .get(&tp.id)
+            .is_some_and(|arg| self.store.canon(*arg) != prim.unknown)
+        });
+        if !inferred_anything_concrete {
+          continue;
+        }
+
+        let instantiated_sig_id = self.instantiation_cache.instantiate_signature(
+          &self.store,
+          dst_sig_id,
+          &dst_sig,
+          &inference.substitutions,
+        );
+        let mut instantiated_sig = self.store.signature(instantiated_sig_id);
+        instantiated_sig.type_params.clear();
+        let instantiated_sig_id = self.store.intern_signature(instantiated_sig);
+        let instantiated_callable = self.store.intern_type(TypeKind::Callable {
+          overloads: vec![instantiated_sig_id],
+        });
+
+        if self.relate.is_assignable(src, instantiated_callable)
+          && self.variance_allows_assignability(src, instantiated_callable)
+        {
+          return Some(instantiated_callable);
+        }
+      }
+    }
+
+    None
+  }
+
   fn check_assignable_with_code(
     &mut self,
     expr: &Node<AstExpr>,
@@ -10376,6 +10542,12 @@ impl<'a> Checker<'a> {
       return;
     }
     if self.contextually_instantiate_generic_callable(src, dst).is_some() {
+      return;
+    }
+    if self
+      .contextually_instantiate_generic_contextual_callable(expr, src, dst)
+      .is_some()
+    {
       return;
     }
 
