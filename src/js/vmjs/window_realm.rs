@@ -11094,8 +11094,9 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     document_obj: GcObject,
     event: &web_events::Event,
   ) -> Result<GcObject, VmError> {
-    let is_storage_event = event.storage.is_some() || event.type_ == "storage";
-    let (kind, proto_key_name) = if is_storage_event {
+    let wants_storage_event =
+      event.storage.is_some() || (event.type_ == "storage" && event.detail.is_none());
+    let (kind, proto_key_name) = if wants_storage_event {
       (BrandedEventKind::StorageEvent, STORAGE_EVENT_PROTOTYPE_KEY)
     } else if event.detail.is_some() {
       (BrandedEventKind::CustomEvent, CUSTOM_EVENT_PROTOTYPE_KEY)
@@ -11114,7 +11115,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     // `StorageEvent` is installed separately from this file (see the StorageEvent constructor task).
     // To avoid making host-driven storage event dispatch depend on init ordering, lazily resolve
     // `StorageEvent.prototype` from the window global if the document doesn't have it cached yet.
-    if proto.is_none() && is_storage_event {
+    if proto.is_none() && wants_storage_event {
       if let Some(window_obj) = document_window_from_document(scope, document_obj)? {
         scope.push_root(Value::Object(window_obj))?;
         let ctor_key = alloc_key(scope, "StorageEvent")?;
@@ -11142,7 +11143,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     // If the realm doesn't provide `StorageEvent` yet, fall back to `Event.prototype` so host-driven
     // storage events can still be observed. (The StorageEvent constructor task wires up the real
     // prototype chain; this fallback keeps behavior usable until then.)
-    if proto.is_none() && is_storage_event {
+    if proto.is_none() && wants_storage_event {
       let event_proto_key = alloc_key(scope, EVENT_PROTOTYPE_KEY)?;
       proto = scope
         .heap()
@@ -11202,8 +11203,8 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     if let Some(detail) = event.detail {
       let detail_key = alloc_key(scope, "detail")?;
       scope.define_property(event_obj, detail_key, data_desc(detail))?;
-    } else if event.type_ == "storage" {
-      // StorageEvent fields (not yet modelled in Rust `web_events::Event`).
+    } else if wants_storage_event && event.storage.is_none() {
+      // StorageEvent default fields for host-dispatched storage events without a payload.
       let key_key = alloc_key(scope, "key")?;
       scope.define_property(event_obj, key_key, read_only_data_desc(Value::Null))?;
       let old_value_key = alloc_key(scope, "oldValue")?;
@@ -11212,6 +11213,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       scope.define_property(event_obj, new_value_key, read_only_data_desc(Value::Null))?;
       let url_key = alloc_key(scope, "url")?;
       let empty = scope.alloc_string("")?;
+      scope.push_root(Value::String(empty))?;
       scope.define_property(event_obj, url_key, read_only_data_desc(Value::String(empty)))?;
       let storage_area_key = alloc_key(scope, "storageArea")?;
       scope.define_property(
@@ -11231,7 +11233,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         }
         None => Value::Null,
       };
-      scope.define_property(event_obj, key_key, data_desc(key_v))?;
+      scope.define_property(event_obj, key_key, read_only_data_desc(key_v))?;
 
       let old_value_key = alloc_key(scope, "oldValue")?;
       let old_value_v = match storage.old_value.as_deref() {
@@ -11242,7 +11244,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         }
         None => Value::Null,
       };
-      scope.define_property(event_obj, old_value_key, data_desc(old_value_v))?;
+      scope.define_property(event_obj, old_value_key, read_only_data_desc(old_value_v))?;
 
       let new_value_key = alloc_key(scope, "newValue")?;
       let new_value_v = match storage.new_value.as_deref() {
@@ -11253,12 +11255,16 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         }
         None => Value::Null,
       };
-      scope.define_property(event_obj, new_value_key, data_desc(new_value_v))?;
+      scope.define_property(event_obj, new_value_key, read_only_data_desc(new_value_v))?;
 
       let url_key = alloc_key(scope, "url")?;
       let url_s = scope.alloc_string(&storage.url)?;
       scope.push_root(Value::String(url_s))?;
-      scope.define_property(event_obj, url_key, data_desc(Value::String(url_s)))?;
+      scope.define_property(
+        event_obj,
+        url_key,
+        read_only_data_desc(Value::String(url_s)),
+      )?;
 
       let storage_area_key = alloc_key(scope, "storageArea")?;
       let storage_area_v = (|| {
@@ -11278,7 +11284,11 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
             .unwrap_or(Value::Null),
         )
       })()?;
-      scope.define_property(event_obj, storage_area_key, data_desc(storage_area_v))?;
+      scope.define_property(
+        event_obj,
+        storage_area_key,
+        read_only_data_desc(storage_area_v),
+      )?;
     }
 
     Ok(event_obj)
@@ -26094,6 +26104,106 @@ mod tests {
         }
       ])
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn host_dispatched_storage_event_recovers_missing_document_storage_event_prototype() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__has_storage_event_ctor = (typeof StorageEvent === 'function');\n\
+       globalThis.__storage_events = [];\n\
+       // Simulate a stale/missing prototype cache entry.\n\
+       delete document['__fastrender_storage_event_prototype'];\n\
+       addEventListener('storage', (e) => {\n\
+         __storage_events.push({\n\
+           key: e.key,\n\
+           oldValue: e.oldValue,\n\
+           newValue: e.newValue,\n\
+           url: e.url,\n\
+           storageAreaIsNull: (e.storageArea === null),\n\
+           isInstance: __has_storage_event_ctor ? (e instanceof StorageEvent) : null,\n\
+         });\n\
+       });",
+    )?;
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+      }
+    }
+
+    let mut realm_slot = Some(realm);
+    let mut vm_host_ctx = ();
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
+    let mut invoker = WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+      &mut realm_slot,
+      &mut vm_host_slot,
+      &mut webidl_bindings_host_slot,
+    );
+
+    let mut ev = web_events::Event::new(
+      "storage",
+      web_events::EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    // No storage payload: this should still produce a JS StorageEvent with default (null/"") fields.
+    web_events::dispatch_event(
+      web_events::EventTargetId::Window,
+      &mut ev,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("dispatch_event should succeed");
+
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    let has_ctor = match realm.exec_script("__has_storage_event_ctor")? {
+      Value::Bool(v) => v,
+      other => panic!("expected boolean, got {other:?}"),
+    };
+    let expected_is_instance = if has_ctor {
+      serde_json::Value::Bool(true)
+    } else {
+      serde_json::Value::Null
+    };
+
+    let got_v = realm.exec_script("JSON.stringify(__storage_events)")?;
+    let got = get_string(realm.heap(), got_v);
+    let got: serde_json::Value = serde_json::from_str(&got).expect("expected valid JSON");
+
+    assert_eq!(
+      got,
+      serde_json::json!([
+        {
+          "key": null,
+          "oldValue": null,
+          "newValue": null,
+          "url": "",
+          "storageAreaIsNull": true,
+          "isInstance": expected_is_instance,
+        }
+      ])
+    );
+
+    // If StorageEvent exists, host dispatch should have repaired the document prototype cache.
+    if has_ctor {
+      assert_eq!(
+        realm.exec_script("typeof document['__fastrender_storage_event_prototype'] === 'object'")?,
+        Value::Bool(true)
+      );
+    }
 
     Ok(())
   }
