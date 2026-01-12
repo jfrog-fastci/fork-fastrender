@@ -235,6 +235,34 @@ fn dataview_constructor_coerces_offset_before_throwing_on_detached_arraybuffer()
 }
 
 #[test]
+fn dataview_constructor_coerces_length_before_throwing_on_detached_arraybuffer_when_detached_during_toindex(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("detachArrayBuffer", detach_array_buffer, 1)?;
+
+  let value = rt.exec_script(
+    r#"
+    var ab = new ArrayBuffer(8);
+    var calledOffset = false;
+    var calledLength = false;
+    var threw = false;
+    try {
+      new DataView(
+        ab,
+        { valueOf(){ calledOffset = true; return 0; } },
+        { valueOf(){ calledLength = true; detachArrayBuffer(ab); return 0; } }
+      );
+    } catch (e) {
+      threw = e.name === "TypeError";
+    }
+    calledOffset && calledLength && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn dataview_constructor_toindex_errors_precede_detached_check() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

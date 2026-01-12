@@ -3756,6 +3756,16 @@ pub fn data_view_constructor_construct(
   } else {
     to_index_from_value(vm, scope, host, hooks, byte_length_val)?
   };
+  // `ToIndex(byteLength)` can invoke user code; the backing ArrayBuffer may become detached during
+  // this conversion (e.g. via `structuredClone` transfer semantics). Per ECMAScript, DataView
+  // construction must throw if the buffer is detached after argument coercion.
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("DataView constructor expects an ArrayBuffer"))?
+  {
+    return Err(VmError::TypeError("DataView constructor on detached ArrayBuffer"));
+  }
   let end = byte_offset
     .checked_add(byte_length)
     .ok_or(VmError::RangeError("DataView view out of bounds"))?;
