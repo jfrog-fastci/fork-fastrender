@@ -275,6 +275,7 @@ mod tests {
   use crate::ProgramFunction;
   use crate::TopLevelMode;
   use effect_model::{EffectFlags, ThrowBehavior};
+  use parse_js::num::JsNumber as JN;
 
   fn cfg_with_single_call(callee: Arg) -> Cfg {
     let mut graph = CfgGraph::default();
@@ -352,6 +353,32 @@ mod tests {
       Arg::Builtin("Math.abs".to_string()),
       Arg::Const(Const::Undefined),
       vec![Arg::Const(Const::BigInt(num_bigint::BigInt::from(1)))],
+      Vec::new(),
+    )]);
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
+    assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Impure);
+  }
+
+  #[test]
+  fn math_pow_builtin_call_is_pure() {
+    let mut cfg = cfg_single_block(vec![Inst::call(
+      None::<u32>,
+      Arg::Builtin("Math.pow".to_string()),
+      Arg::Const(Const::Undefined),
+      vec![Arg::Const(Const::Num(JN(2.0))), Arg::Const(Const::Num(JN(3.0)))],
+      Vec::new(),
+    )]);
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
+    assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Pure);
+  }
+
+  #[test]
+  fn math_pow_builtin_call_is_not_pure_when_any_arg_is_bigint() {
+    let mut cfg = cfg_single_block(vec![Inst::call(
+      None::<u32>,
+      Arg::Builtin("Math.pow".to_string()),
+      Arg::Const(Const::Undefined),
+      vec![Arg::Const(Const::Num(JN(2.0))), Arg::Const(Const::BigInt(num_bigint::BigInt::from(3)))],
       Vec::new(),
     )]);
     annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
