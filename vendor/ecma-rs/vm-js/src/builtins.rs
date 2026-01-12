@@ -1601,6 +1601,15 @@ pub fn array_buffer_prototype_slice(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("ArrayBuffer.prototype.slice called on non-object"));
   };
+  let detached = scope
+    .heap()
+    .array_buffer_is_detached(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.slice called on incompatible receiver"))?;
+  if detached {
+    return Err(VmError::TypeError(
+      "ArrayBuffer.prototype.slice called on detached ArrayBuffer",
+    ));
+  }
   let len = scope
     .heap()
     .array_buffer_byte_length(obj)
