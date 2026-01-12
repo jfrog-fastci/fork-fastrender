@@ -8558,6 +8558,7 @@ impl<'a> JsonParser<'a> {
   fn parse_string(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<crate::GcString, VmError> {
     self.expect(vm, scope, Self::QUOTE)?;
     let mut out: Vec<u16> = Vec::new();
+    let max_bytes = scope.heap().limits().max_bytes;
 
     loop {
       let u = self.bump(vm, scope)?;
@@ -8566,14 +8567,54 @@ impl<'a> JsonParser<'a> {
         Self::BACKSLASH => {
           let esc = self.bump(vm, scope)?;
           match esc {
-            u if u == b'"' as u16 => vec_try_push(&mut out, b'"' as u16)?,
-            u if u == b'\\' as u16 => vec_try_push(&mut out, b'\\' as u16)?,
-            u if u == b'/' as u16 => vec_try_push(&mut out, b'/' as u16)?,
-            u if u == b'b' as u16 => vec_try_push(&mut out, 0x08)?,
-            u if u == b'f' as u16 => vec_try_push(&mut out, 0x0C)?,
-            u if u == b'n' as u16 => vec_try_push(&mut out, 0x0A)?,
-            u if u == b'r' as u16 => vec_try_push(&mut out, 0x0D)?,
-            u if u == b't' as u16 => vec_try_push(&mut out, 0x09)?,
+            u if u == b'"' as u16 => {
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
+              vec_try_push(&mut out, b'"' as u16)?
+            }
+            u if u == b'\\' as u16 => {
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
+              vec_try_push(&mut out, b'\\' as u16)?
+            }
+            u if u == b'/' as u16 => {
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
+              vec_try_push(&mut out, b'/' as u16)?
+            }
+            u if u == b'b' as u16 => {
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
+              vec_try_push(&mut out, 0x08)?
+            }
+            u if u == b'f' as u16 => {
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
+              vec_try_push(&mut out, 0x0C)?
+            }
+            u if u == b'n' as u16 => {
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
+              vec_try_push(&mut out, 0x0A)?
+            }
+            u if u == b'r' as u16 => {
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
+              vec_try_push(&mut out, 0x0D)?
+            }
+            u if u == b't' as u16 => {
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
+              vec_try_push(&mut out, 0x09)?
+            }
             u if u == b'u' as u16 => {
               let mut code: u16 = 0;
               for _ in 0..4 {
@@ -8583,13 +8624,21 @@ impl<'a> JsonParser<'a> {
                 };
                 code = (code << 4) | d;
               }
+              if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+                return Err(VmError::OutOfMemory);
+              }
               vec_try_push(&mut out, code)?;
             }
             _ => return Err(json_syntax_error(vm, scope)),
           }
         }
         0x0000..=0x001F => return Err(json_syntax_error(vm, scope)),
-        other => vec_try_push(&mut out, other)?,
+        other => {
+          if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+            return Err(VmError::OutOfMemory);
+          }
+          vec_try_push(&mut out, other)?
+        }
       }
     }
 
@@ -8644,15 +8693,22 @@ impl<'a> JsonParser<'a> {
     }
 
     let end = self.pos;
-    let mut s = String::with_capacity(end.saturating_sub(start));
-    for &u in &self.units[start..end] {
+    let slice = &self.units[start..end];
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for (i, &u) in slice.iter().enumerate() {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
       // Valid JSON numbers are ASCII-only.
       if u > 0x7F {
         return Err(json_syntax_error(vm, scope));
       }
-      s.push((u as u8) as char);
+      bytes.push(u as u8);
     }
-
+    let s = std::str::from_utf8(&bytes).map_err(|_| json_syntax_error(vm, scope))?;
     s.parse::<f64>().map_err(|_| json_syntax_error(vm, scope))
   }
 
@@ -8837,7 +8893,8 @@ pub fn json_parse(
           length_key,
           Value::Object(obj),
         )?;
-        let len = to_length(len_value);
+        scope.push_root(len_value)?;
+        let len = scope.to_length(vm, host, hooks, len_value)?;
 
         for i in 0..len {
           if i % 1024 == 0 {
@@ -8923,96 +8980,686 @@ pub fn json_parse(
   internalize_json_property(vm, &mut scope, host, hooks, root, empty, reviver)
 }
 
-/// `JSON.stringify` (minimal).
+/// `JSON.stringify` (ECMA-262).
 pub fn json_stringify(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  const QUOTE: u16 = b'"' as u16;
-  const BACKSLASH: u16 = b'\\' as u16;
+  let mut scope = scope.reborrow();
+  let intr = require_intrinsics(vm)?;
 
-  fn push_u16_ascii(buf: &mut Vec<u16>, s: &[u8]) -> Result<(), VmError> {
-    for &b in s {
-      vec_try_push(buf, b as u16)?;
-    }
-    Ok(())
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let replacer = args.get(1).copied().unwrap_or(Value::Undefined);
+  let space = args.get(2).copied().unwrap_or(Value::Undefined);
+
+  // Root inputs across allocations/GC while we build the internal state.
+  scope.push_roots(&[value, replacer, space])?;
+
+  // --- Internal helper types ---
+  struct JsonStringBuilder {
+    buf: Vec<u16>,
+    max_bytes: usize,
   }
 
-  fn push_hex_escape(buf: &mut Vec<u16>, unit: u16) -> Result<(), VmError> {
-    vec_try_push(buf, b'\\' as u16)?;
-    vec_try_push(buf, b'u' as u16)?;
-    let mut n = unit;
-    let mut digits = [0u16; 4];
-    for d in digits.iter_mut().rev() {
-      let nibble = (n & 0xF) as u8;
-      let c = match nibble {
-        0..=9 => b'0' + nibble,
-        10..=15 => b'a' + (nibble - 10),
-        _ => b'0',
-      };
-      *d = c as u16;
-      n >>= 4;
-    }
-    vec_try_extend_from_slice(buf, &digits)?;
-    Ok(())
-  }
-
-  let value = args.first().copied().unwrap_or(Value::Undefined);
-
-  let out = match value {
-    Value::Undefined => return Ok(Value::Undefined),
-    Value::Null => return Ok(Value::String(scope.alloc_string("null")?)),
-    Value::Bool(true) => return Ok(Value::String(scope.alloc_string("true")?)),
-    Value::Bool(false) => return Ok(Value::String(scope.alloc_string("false")?)),
-    Value::Number(n) => {
-      if n.is_nan() || n.is_infinite() {
-        return Ok(Value::String(scope.alloc_string("null")?));
+  impl JsonStringBuilder {
+    fn new(max_bytes: usize) -> Self {
+      Self {
+        buf: Vec::new(),
+        max_bytes,
       }
-      let s = n.to_string();
-      return Ok(Value::String(scope.alloc_string(&s)?));
     }
-    Value::BigInt(_) => return Err(VmError::TypeError("Do not know how to serialize a BigInt")),
-    Value::String(s) => s,
-    Value::Symbol(_) | Value::Object(_) => return Ok(Value::Undefined),
+
+    #[inline]
+    fn check_grow(&self, additional_units: usize) -> Result<(), VmError> {
+      let new_len = self
+        .buf
+        .len()
+        .checked_add(additional_units)
+        .ok_or(VmError::OutOfMemory)?;
+      if JsString::heap_size_bytes_for_len(new_len) > self.max_bytes {
+        return Err(VmError::OutOfMemory);
+      }
+      Ok(())
+    }
+
+    fn push_unit(&mut self, unit: u16) -> Result<(), VmError> {
+      self.check_grow(1)?;
+      vec_try_push(&mut self.buf, unit)
+    }
+
+    fn push_ascii(&mut self, s: &[u8]) -> Result<(), VmError> {
+      self.check_grow(s.len())?;
+      for &b in s {
+        vec_try_push(&mut self.buf, b as u16)?;
+      }
+      Ok(())
+    }
+
+    fn push_units(&mut self, units: &[u16]) -> Result<(), VmError> {
+      self.check_grow(units.len())?;
+      vec_try_extend_from_slice(&mut self.buf, units)
+    }
+
+    fn push_hex_escape(&mut self, unit: u16) -> Result<(), VmError> {
+      self.check_grow(6)?;
+      self.push_ascii(b"\\u")?;
+      let mut n = unit;
+      let mut digits = [0u16; 4];
+      for d in digits.iter_mut().rev() {
+        let nibble = (n & 0xF) as u8;
+        let c = match nibble {
+          0..=9 => b'0' + nibble,
+          10..=15 => b'a' + (nibble - 10),
+          _ => b'0',
+        };
+        *d = c as u16;
+        n >>= 4;
+      }
+      self.push_units(&digits)
+    }
+  }
+
+  #[derive(Clone, Copy)]
+  struct WrapperMarkerKeys {
+    number: PropertyKey,
+    string: PropertyKey,
+    boolean: PropertyKey,
+  }
+
+  struct JsonStringifyState {
+    replacer_function: Option<Value>,
+    property_list: Option<Vec<crate::GcString>>,
+    stack: Vec<GcObject>,
+    indent: Vec<u16>,
+    gap: Vec<u16>,
+    to_json_key: PropertyKey,
+    length_key: PropertyKey,
+    wrapper_markers: WrapperMarkerKeys,
+  }
+
+  fn unbox_primitive_wrapper(
+    scope: &mut Scope<'_>,
+    obj: GcObject,
+    markers: WrapperMarkerKeys,
+  ) -> Result<Option<Value>, VmError> {
+    if let Some(v) = scope
+      .heap()
+      .object_get_own_data_property_value(obj, &markers.number)?
+    {
+      if matches!(v, Value::Number(_)) {
+        return Ok(Some(v));
+      }
+    }
+    if let Some(v) = scope
+      .heap()
+      .object_get_own_data_property_value(obj, &markers.string)?
+    {
+      if matches!(v, Value::String(_)) {
+        return Ok(Some(v));
+      }
+    }
+    if let Some(v) = scope
+      .heap()
+      .object_get_own_data_property_value(obj, &markers.boolean)?
+    {
+      if matches!(v, Value::Bool(_)) {
+        return Ok(Some(v));
+      }
+    }
+    Ok(None)
+  }
+
+  fn quote_json_string(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    out: &mut JsonStringBuilder,
+    s: crate::GcString,
+  ) -> Result<(), VmError> {
+    const QUOTE: u16 = b'"' as u16;
+    const BACKSLASH: u16 = b'\\' as u16;
+
+    out.push_unit(QUOTE)?;
+
+    let units = scope.heap().get_string(s)?.as_code_units();
+    let mut i: usize = 0;
+    while i < units.len() {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
+      let unit = units[i];
+      match unit {
+        QUOTE => out.push_ascii(b"\\\"")?,
+        BACKSLASH => out.push_ascii(b"\\\\")?,
+        0x08 => out.push_ascii(b"\\b")?,
+        0x0C => out.push_ascii(b"\\f")?,
+        0x0A => out.push_ascii(b"\\n")?,
+        0x0D => out.push_ascii(b"\\r")?,
+        0x09 => out.push_ascii(b"\\t")?,
+        0x0000..=0x001F | 0x2028 | 0x2029 => out.push_hex_escape(unit)?,
+        0xD800..=0xDBFF => {
+          // Paired surrogate: emit both code units as-is. Lone surrogate: escape.
+          if let Some(&next) = units.get(i + 1) {
+            if (0xDC00..=0xDFFF).contains(&next) {
+              out.push_unit(unit)?;
+              out.push_unit(next)?;
+              i += 2;
+              continue;
+            }
+          }
+          out.push_hex_escape(unit)?;
+        }
+        0xDC00..=0xDFFF => out.push_hex_escape(unit)?,
+        other => out.push_unit(other)?,
+      }
+      i += 1;
+    }
+
+    out.push_unit(QUOTE)
+  }
+
+  fn prepare_json_value_for_property(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    state: &JsonStringifyState,
+    holder: GcObject,
+    key: crate::GcString,
+  ) -> Result<Option<Value>, VmError> {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(holder))?;
+    scope.push_root(Value::String(key))?;
+    if let Some(replacer_fn) = state.replacer_function {
+      scope.push_root(replacer_fn)?;
+    }
+
+    let mut value = scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      holder,
+      PropertyKey::from_string(key),
+      Value::Object(holder),
+    )?;
+    scope.push_root(value)?;
+
+    // 1. If value is an Object, call `toJSON` if present.
+    if let Value::Object(obj) = value {
+      scope.push_root(Value::Object(obj))?;
+      let to_json = scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        obj,
+        state.to_json_key,
+        Value::Object(obj),
+      )?;
+      scope.push_root(to_json)?;
+      if !matches!(to_json, Value::Undefined | Value::Null) && scope.heap().is_callable(to_json)? {
+        let args = [Value::String(key)];
+        value = vm.call_with_host_and_hooks(host, &mut scope, hooks, to_json, Value::Object(obj), &args)?;
+        scope.push_root(value)?;
+      }
+    }
+
+    // 2. Apply the replacer function if present.
+    if let Some(replacer_fn) = state.replacer_function {
+      let args = [Value::String(key), value];
+      value = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        replacer_fn,
+        Value::Object(holder),
+        &args,
+      )?;
+      scope.push_root(value)?;
+    }
+
+    // 3. Unbox wrapper objects (String/Number/Boolean).
+    if let Value::Object(obj) = value {
+      if let Some(prim) = unbox_primitive_wrapper(&mut scope, obj, state.wrapper_markers)? {
+        value = prim;
+        scope.push_root(value)?;
+      }
+    }
+
+    // 4. BigInt values throw.
+    if matches!(value, Value::BigInt(_)) {
+      return Err(VmError::TypeError("Do not know how to serialize a BigInt"));
+    }
+
+    // 5. Omit `undefined`, Symbols, and callable objects.
+    match value {
+      Value::Undefined | Value::Symbol(_) => Ok(None),
+      Value::Object(_) if scope.heap().is_callable(value)? => Ok(None),
+      other => Ok(Some(other)),
+    }
+  }
+
+  fn check_cycle(vm: &mut Vm, stack: &[GcObject], obj: GcObject) -> Result<(), VmError> {
+    for (i, o) in stack.iter().enumerate() {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
+      if *o == obj {
+        return Err(VmError::TypeError("Converting circular structure to JSON"));
+      }
+    }
+    Ok(())
+  }
+
+  fn serialize_json_value(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    state: &mut JsonStringifyState,
+    out: &mut JsonStringBuilder,
+    value: Value,
+  ) -> Result<(), VmError> {
+    match value {
+      Value::Null => out.push_ascii(b"null"),
+      Value::Bool(true) => out.push_ascii(b"true"),
+      Value::Bool(false) => out.push_ascii(b"false"),
+      Value::Number(n) => {
+        if !n.is_finite() {
+          return out.push_ascii(b"null");
+        }
+        let s = scope.heap_mut().to_string(Value::Number(n))?;
+        let units = scope.heap().get_string(s)?.as_code_units();
+        out.push_units(units)
+      }
+      Value::String(s) => quote_json_string(vm, scope, out, s),
+      Value::Object(obj) => {
+        if scope.heap().object_is_array(obj)? {
+          serialize_json_array(vm, scope, host, hooks, state, out, obj)
+        } else {
+          serialize_json_object(vm, scope, host, hooks, state, out, obj)
+        }
+      }
+      Value::BigInt(_) => Err(VmError::TypeError("Do not know how to serialize a BigInt")),
+      // These should have been filtered by `prepare_json_value_for_property` for object properties.
+      // Arrays normalize them to `null` by passing `Value::Null` down instead.
+      Value::Undefined | Value::Symbol(_) => out.push_ascii(b"null"),
+    }
+  }
+
+  fn serialize_json_array(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    state: &mut JsonStringifyState,
+    out: &mut JsonStringBuilder,
+    obj: GcObject,
+  ) -> Result<(), VmError> {
+    check_cycle(vm, &state.stack, obj)?;
+    vec_try_push(&mut state.stack, obj)?;
+    scope.push_root(Value::Object(obj))?;
+
+    let stepback_len = state.indent.len();
+    vec_try_extend_from_slice(&mut state.indent, &state.gap)?;
+
+    // len = ToLength(Get(array, "length"))
+    let len_value = scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      state.length_key,
+      Value::Object(obj),
+    )?;
+    scope.push_root(len_value)?;
+    let len = scope.to_length(vm, host, hooks, len_value)?;
+
+    if len == 0 {
+      state.stack.pop();
+      state.indent.truncate(stepback_len);
+      return out.push_ascii(b"[]");
+    }
+
+    out.push_unit(b'[' as u16)?;
+
+    if state.gap.is_empty() {
+      for i in 0..len {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        if i > 0 {
+          out.push_unit(b',' as u16)?;
+        }
+        let key_s = scope.alloc_string(&i.to_string())?;
+        scope.push_root(Value::String(key_s))?;
+        let element = prepare_json_value_for_property(vm, scope, host, hooks, state, obj, key_s)?
+          .unwrap_or(Value::Null);
+        serialize_json_value(vm, scope, host, hooks, state, out, element)?;
+      }
+      out.push_unit(b']' as u16)?;
+    } else {
+      out.push_unit(b'\n' as u16)?;
+      out.push_units(&state.indent)?;
+      for i in 0..len {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        if i > 0 {
+          out.push_ascii(b",\n")?;
+          out.push_units(&state.indent)?;
+        }
+        let key_s = scope.alloc_string(&i.to_string())?;
+        scope.push_root(Value::String(key_s))?;
+        let element = prepare_json_value_for_property(vm, scope, host, hooks, state, obj, key_s)?
+          .unwrap_or(Value::Null);
+        serialize_json_value(vm, scope, host, hooks, state, out, element)?;
+      }
+      out.push_unit(b'\n' as u16)?;
+      out.push_units(&state.indent[..stepback_len])?;
+      out.push_unit(b']' as u16)?;
+    }
+
+    state.stack.pop();
+    state.indent.truncate(stepback_len);
+    Ok(())
+  }
+
+  fn serialize_json_object(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    state: &mut JsonStringifyState,
+    out: &mut JsonStringBuilder,
+    obj: GcObject,
+  ) -> Result<(), VmError> {
+    check_cycle(vm, &state.stack, obj)?;
+    vec_try_push(&mut state.stack, obj)?;
+    scope.push_root(Value::Object(obj))?;
+
+    let stepback_len = state.indent.len();
+    vec_try_extend_from_slice(&mut state.indent, &state.gap)?;
+
+    // Determine key list.
+    //
+    // We use an owned key list to avoid borrowing `state.property_list` across recursive
+    // `serialize_json_value` calls (which need `&mut state`).
+    let k_list: Vec<crate::GcString> = if let Some(list) = &state.property_list {
+      let mut out_keys: Vec<crate::GcString> = Vec::new();
+      out_keys
+        .try_reserve_exact(list.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for (i, &s) in list.iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        out_keys.push(s);
+      }
+      out_keys
+    } else {
+      let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+      let mut out_keys: Vec<crate::GcString> = Vec::new();
+      out_keys
+        .try_reserve_exact(keys.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for (i, k) in keys.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let PropertyKey::String(s) = k else {
+          continue;
+        };
+        let Some(desc) = scope.ordinary_get_own_property(obj, k)? else {
+          continue;
+        };
+        if desc.enumerable {
+          scope.push_root(Value::String(s))?;
+          out_keys.push(s);
+        }
+      }
+      out_keys
+    };
+
+    out.push_unit(b'{' as u16)?;
+
+    if state.gap.is_empty() {
+      let mut wrote_any = false;
+      for (i, p) in k_list.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let Some(prop_value) = prepare_json_value_for_property(vm, scope, host, hooks, state, obj, p)? else {
+          continue;
+        };
+        if wrote_any {
+          out.push_unit(b',' as u16)?;
+        }
+        wrote_any = true;
+        quote_json_string(vm, scope, out, p)?;
+        out.push_unit(b':' as u16)?;
+        serialize_json_value(vm, scope, host, hooks, state, out, prop_value)?;
+      }
+      out.push_unit(b'}' as u16)?;
+    } else {
+      let mut wrote_any = false;
+      for (i, p) in k_list.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let Some(prop_value) = prepare_json_value_for_property(vm, scope, host, hooks, state, obj, p)? else {
+          continue;
+        };
+        if !wrote_any {
+          out.push_unit(b'\n' as u16)?;
+          out.push_units(&state.indent)?;
+        } else {
+          out.push_ascii(b",\n")?;
+          out.push_units(&state.indent)?;
+        }
+        wrote_any = true;
+        quote_json_string(vm, scope, out, p)?;
+        out.push_ascii(b": ")?;
+        serialize_json_value(vm, scope, host, hooks, state, out, prop_value)?;
+      }
+      if wrote_any {
+        out.push_unit(b'\n' as u16)?;
+        out.push_units(&state.indent[..stepback_len])?;
+      }
+      out.push_unit(b'}' as u16)?;
+    }
+
+    state.stack.pop();
+    state.indent.truncate(stepback_len);
+    Ok(())
+  }
+
+  // --- Initialize wrapper marker keys for primitive wrapper detection ---
+  fn marker_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
+    let marker = scope.alloc_string(name)?;
+    scope.push_root(Value::String(marker))?;
+    let sym = scope.heap_mut().symbol_for(marker)?;
+    Ok(PropertyKey::from_symbol(sym))
+  }
+
+  let wrapper_markers = WrapperMarkerKeys {
+    number: marker_key(&mut scope, "vm-js.internal.NumberData")?,
+    string: marker_key(&mut scope, "vm-js.internal.StringData")?,
+    boolean: marker_key(&mut scope, "vm-js.internal.BooleanData")?,
+  };
+
+  // --- Replacer function / property list ---
+  let mut replacer_function: Option<Value> = None;
+  let mut property_list: Option<Vec<crate::GcString>> = None;
+
+  if scope.heap().is_callable(replacer)? {
+    replacer_function = Some(replacer);
+  } else if let Value::Object(replacer_obj) = replacer {
+    if scope.heap().object_is_array(replacer_obj)? {
+      // propertyList from replacer array.
+      let length_key_s = scope.alloc_string("length")?;
+      scope.push_root(Value::String(length_key_s))?;
+      let length_key = PropertyKey::from_string(length_key_s);
+      let len_value = scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        replacer_obj,
+        length_key,
+        Value::Object(replacer_obj),
+      )?;
+      scope.push_root(len_value)?;
+      let len = scope.to_length(vm, host, hooks, len_value)?;
+
+      let mut list: Vec<crate::GcString> = Vec::new();
+      list
+        .try_reserve_exact(len.min(1024))
+        .map_err(|_| VmError::OutOfMemory)?;
+
+      for i in 0..len {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let idx_s = scope.alloc_string(&i.to_string())?;
+        scope.push_root(Value::String(idx_s))?;
+        let v = scope.ordinary_get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          replacer_obj,
+          PropertyKey::from_string(idx_s),
+          Value::Object(replacer_obj),
+        )?;
+        scope.push_root(v)?;
+
+        let item_string: Option<crate::GcString> = match v {
+          Value::String(s) => Some(s),
+          Value::Number(n) => Some(scope.heap_mut().to_string(Value::Number(n))?),
+          Value::Object(o) => match unbox_primitive_wrapper(&mut scope, o, wrapper_markers)? {
+            Some(Value::String(s)) => Some(s),
+            Some(Value::Number(n)) => Some(scope.heap_mut().to_string(Value::Number(n))?),
+            _ => None,
+          },
+          _ => None,
+        };
+
+        let Some(s) = item_string else { continue };
+        scope.push_root(Value::String(s))?;
+
+        // Deduplicate by string contents.
+        let s_units = scope.heap().get_string(s)?.as_code_units();
+        let mut exists = false;
+        for (j, existing) in list.iter().copied().enumerate() {
+          if j % 1024 == 0 {
+            vm.tick()?;
+          }
+          if scope.heap().get_string(existing)?.as_code_units() == s_units {
+            exists = true;
+            break;
+          }
+        }
+        if !exists {
+          vec_try_push(&mut list, s)?;
+        }
+      }
+
+      property_list = Some(list);
+    }
+  }
+
+  // --- Space / gap ---
+  let mut space_value = space;
+  if let Value::Object(o) = space_value {
+    if let Some(prim) = unbox_primitive_wrapper(&mut scope, o, wrapper_markers)? {
+      space_value = prim;
+    }
+  }
+
+  let mut gap: Vec<u16> = Vec::new();
+  match space_value {
+    Value::Number(n) => {
+      // `ToIntegerOrInfinity` rounds toward zero.
+      let int = if n.is_nan() || n == 0.0 {
+        0.0
+      } else if !n.is_finite() {
+        n
+      } else {
+        n.trunc()
+      };
+      let count = if int.is_finite() {
+        int.clamp(0.0, 10.0) as usize
+      } else {
+        10usize
+      };
+      if count > 0 {
+        gap.try_reserve_exact(count).map_err(|_| VmError::OutOfMemory)?;
+        for _ in 0..count {
+          vec_try_push(&mut gap, 0x20)?;
+        }
+      }
+    }
+    Value::String(s) => {
+      let units = scope.heap().get_string(s)?.as_code_units();
+      let count = units.len().min(10);
+      gap
+        .try_reserve_exact(count)
+        .map_err(|_| VmError::OutOfMemory)?;
+      for (i, &u) in units.iter().take(count).enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        gap.push(u);
+      }
+    }
+    _ => {}
+  }
+
+  // --- Common property keys ---
+  let to_json_s = scope.alloc_string("toJSON")?;
+  scope.push_root(Value::String(to_json_s))?;
+  let to_json_key = PropertyKey::from_string(to_json_s);
+
+  let length_s = scope.alloc_string("length")?;
+  scope.push_root(Value::String(length_s))?;
+  let length_key = PropertyKey::from_string(length_s);
+
+  // --- Wrapper object for root ({"": value}) ---
+  let wrapper = scope.alloc_object()?;
+  scope.push_root(Value::Object(wrapper))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(wrapper, Some(intr.object_prototype()))?;
+  let empty_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(empty_s))?;
+  scope.define_property(
+    wrapper,
+    PropertyKey::from_string(empty_s),
+    data_desc(value, true, true, true),
+  )?;
+
+  let mut state = JsonStringifyState {
+    replacer_function,
+    property_list,
+    stack: Vec::new(),
+    indent: Vec::new(),
+    gap,
+    to_json_key,
+    length_key,
+    wrapper_markers,
   };
 
   let max_bytes = scope.heap().limits().max_bytes;
-  let units = scope.heap().get_string(out)?.as_code_units();
+  let mut out = JsonStringBuilder::new(max_bytes);
 
-  let mut buf: Vec<u16> = Vec::new();
-  vec_try_push(&mut buf, QUOTE)?;
+  let Some(root_value) = prepare_json_value_for_property(vm, &mut scope, host, hooks, &state, wrapper, empty_s)? else {
+    return Ok(Value::Undefined);
+  };
+  // Root value across serialization, since it can invoke user code (getters, toJSON, replacer).
+  scope.push_root(root_value)?;
+  serialize_json_value(vm, &mut scope, host, hooks, &mut state, &mut out, root_value)?;
 
-  for (i, &unit) in units.iter().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    if JsString::heap_size_bytes_for_len(buf.len().saturating_add(6)) > max_bytes {
-      return Err(VmError::OutOfMemory);
-    }
-
-    match unit {
-      QUOTE => push_u16_ascii(&mut buf, b"\\\"")?,
-      BACKSLASH => push_u16_ascii(&mut buf, b"\\\\")?,
-      0x08 => push_u16_ascii(&mut buf, b"\\b")?,
-      0x0C => push_u16_ascii(&mut buf, b"\\f")?,
-      0x0A => push_u16_ascii(&mut buf, b"\\n")?,
-      0x0D => push_u16_ascii(&mut buf, b"\\r")?,
-      0x09 => push_u16_ascii(&mut buf, b"\\t")?,
-      0x0000..=0x001F => push_hex_escape(&mut buf, unit)?,
-      0xD800..=0xDFFF => push_hex_escape(&mut buf, unit)?,
-      other => vec_try_push(&mut buf, other)?,
-    }
-  }
-
-  vec_try_push(&mut buf, QUOTE)?;
-  if JsString::heap_size_bytes_for_len(buf.len()) > max_bytes {
-    return Err(VmError::OutOfMemory);
-  }
-  let out = scope.alloc_string_from_u16_vec(buf)?;
-  Ok(Value::String(out))
+  Ok(Value::String(scope.alloc_string_from_u16_vec(out.buf)?))
 }

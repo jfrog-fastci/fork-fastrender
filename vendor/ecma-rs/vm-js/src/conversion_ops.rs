@@ -281,4 +281,52 @@ impl<'a> Scope<'a> {
       }
     }
   }
+
+  /// ECMAScript `ToLength(argument)`.
+  ///
+  /// Spec: <https://tc39.es/ecma262/#sec-tolength>
+  ///
+  /// This operation performs `ToIntegerOrInfinity(ToNumber(argument))` and clamps the result to the
+  /// range `0..=2^53-1`.
+  pub fn to_length(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<usize, VmError> {
+    // Root `value` across ToNumber, which can allocate and trigger GC (via `ToPrimitive`).
+    let mut scope = self.reborrow();
+    scope.push_root(value)?;
+    let n = scope.to_number(vm, host, hooks, value)?;
+
+    // `ToIntegerOrInfinity` rounds toward zero.
+    let int = if n.is_nan() || n == 0.0 {
+      0.0
+    } else if !n.is_finite() {
+      n
+    } else {
+      n.trunc()
+    };
+
+    if int.is_sign_negative() || int == 0.0 {
+      return Ok(0);
+    }
+
+    // `ToLength` clamps to `2^53 - 1` (MAX_SAFE_INTEGER).
+    const MAX_SAFE_INTEGER: f64 = 9007199254740991.0;
+    let clamped = if int.is_finite() {
+      int.min(MAX_SAFE_INTEGER)
+    } else {
+      MAX_SAFE_INTEGER
+    };
+
+    // `clamped` is an integral IEEE-754 value in range. It fits in `usize` on 64-bit targets;
+    // clamp defensively for smaller targets.
+    if clamped >= (usize::MAX as f64) {
+      Ok(usize::MAX)
+    } else {
+      Ok(clamped as usize)
+    }
+  }
 }

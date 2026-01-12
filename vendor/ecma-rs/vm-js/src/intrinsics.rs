@@ -2199,7 +2199,7 @@ impl Intrinsics {
       let stringify_s = scope.alloc_string("stringify")?;
       scope.push_root(Value::String(stringify_s))?;
       let key = PropertyKey::from_string(stringify_s);
-      let func = scope.alloc_native_function(json_stringify, None, stringify_s, 1)?;
+      let func = scope.alloc_native_function(json_stringify, None, stringify_s, 3)?;
       scope.push_root(Value::Object(func))?;
       scope
         .heap_mut()
