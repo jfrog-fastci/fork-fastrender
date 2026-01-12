@@ -76,6 +76,6 @@ fn grid_shorthand_auto_flow_detection_triggers_on_keyword_outside_strings() {
   assert!(styles.grid_template_rows.is_empty());
   assert!(styles.grid_template_columns.is_empty());
 
-  assert_eq!(styles.grid_auto_rows, vec![GridTrack::Fr(1.0)]);
-  assert_eq!(styles.grid_auto_columns, vec![GridTrack::Fr(2.0)]);
+  assert_eq!(styles.grid_auto_rows, vec![GridTrack::Fr(1.0)].into());
+  assert_eq!(styles.grid_auto_columns, vec![GridTrack::Fr(2.0)].into());
 }

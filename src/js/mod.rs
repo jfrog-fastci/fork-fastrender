@@ -136,6 +136,8 @@ pub mod window_xhr;
 #[path = "vmjs/window_structured_clone.rs"]
 pub mod window_structured_clone;
 
+#[path = "vmjs/window_message_channel.rs"]
+pub mod window_message_channel;
 #[cfg(test)]
 #[path = "vmjs/regression_tests.rs"]
 mod vmjs_regression_tests;

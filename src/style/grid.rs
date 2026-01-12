@@ -17,9 +17,6 @@ use cssparser::Token;
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
-#[cfg(test)]
-mod tests;
-
 fn is_css_ascii_whitespace(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
 }

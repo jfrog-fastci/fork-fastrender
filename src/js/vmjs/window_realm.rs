@@ -553,6 +553,7 @@ impl WindowRealm {
         crate::js::window_file::teardown_window_file_bindings_for_realm(realm_id);
         crate::js::window_file_reader::teardown_window_file_reader_bindings_for_realm(realm_id);
         crate::js::window_form_data::teardown_window_form_data_bindings_for_realm(realm_id);
+        crate::js::window_message_channel::teardown_window_message_channel_bindings_for_realm(realm_id);
         crate::js::window_broadcast_channel::teardown_window_broadcast_channel_bindings_for_realm(realm_id);
         return Err(err);
       }
@@ -717,6 +718,7 @@ impl WindowRealm {
     crate::js::window_file_reader::teardown_window_file_reader_bindings_for_realm(realm_id);
     crate::js::window_form_data::teardown_window_form_data_bindings_for_realm(realm_id);
     crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, &mut self.runtime.heap);
+    crate::js::window_message_channel::teardown_window_message_channel_bindings_for_realm(realm_id);
     crate::js::window_broadcast_channel::teardown_window_broadcast_channel_bindings_for_realm(realm_id);
   }
 
@@ -37528,6 +37530,7 @@ fn init_window_globals(
   crate::js::window_file::install_window_file_bindings(vm, realm, heap)?;
   crate::js::window_form_data::install_window_form_data_bindings(vm, realm, heap)?;
   crate::js::window_xml_serializer::install_window_xml_serializer_bindings(vm, realm, heap)?;
+  crate::js::window_message_channel::install_window_message_channel_bindings(vm, realm, heap)?;
   crate::js::window_broadcast_channel::install_window_broadcast_channel_bindings(vm, realm, heap)?;
   crate::js::window_worker::install_window_worker_bindings(vm, realm, heap)?;
 
@@ -41341,7 +41344,6 @@ mod tests {
       client_y: 34.0,
       button: 0,
       buttons: 1,
-      detail: 1,
       ctrl_key: true,
       shift_key: false,
       alt_key: true,

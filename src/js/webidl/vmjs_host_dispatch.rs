@@ -3372,6 +3372,22 @@ mod tests {
     }
   }
 
+  impl crate::js::DomHost for DummyWindowRealmHost {
+    fn with_dom<R, F>(&self, _f: F) -> R
+    where
+      F: FnOnce(&crate::dom2::Document) -> R,
+    {
+      unreachable!("DummyWindowRealmHost does not provide a DOM")
+    }
+
+    fn mutate_dom<R, F>(&mut self, _f: F) -> R
+    where
+      F: FnOnce(&mut crate::dom2::Document) -> (R, bool),
+    {
+      unreachable!("DummyWindowRealmHost does not provide a DOM")
+    }
+  }
+
   fn call_dom_operation_native(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -3618,10 +3634,13 @@ mod tests {
 #[cfg(test)]
 mod element_dispatch_tests {
   use super::*;
+  use crate::dom2;
   use crate::js::dom_platform::DomInterface;
   use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
+  use crate::js::{WindowHostState, WindowRealm, WindowRealmConfig};
   use selectors::context::QuirksMode;
   use std::any::Any;
+  use webidl_vm_js::host_from_hooks;
 
   #[derive(Default)]
   struct TestHooks {
@@ -3648,7 +3667,7 @@ mod element_dispatch_tests {
     vm.set_user_data(WindowRealmUserData::new(
       document_url,
       std::rc::Rc::clone(&module_loader),
-      1,
+      Some(1),
       None,
       5 * 1024 * 1024,
     ));

@@ -8,7 +8,7 @@ use vm_js::{
   Heap, HeapLimits, JsRuntime as VmJsScriptRuntime, PropertyKey, PropertyKind, Value, Vm, VmError,
   VmOptions,
 };
-use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
+use webidl_js_runtime::JsRuntime as _;
 
 #[derive(Default)]
 struct NoHooks;
@@ -34,9 +34,9 @@ impl ConstructorHost {
   ) -> Result<Value, VmError> {
     let global = rt.global_object()?;
     let ctor_key = rt.property_key(name)?;
-    let ctor = rt.get(self, global, ctor_key)?;
+    let ctor = WebIdlBindingsRuntime::get(rt, self, global, ctor_key)?;
     let proto_key = rt.property_key("prototype")?;
-    rt.get(self, ctor, proto_key)
+    WebIdlBindingsRuntime::get(rt, self, ctor, proto_key)
   }
 }
 
@@ -63,7 +63,10 @@ impl<'a> WebHostBindings<VmJsWebIdlBindingsCx<'a, ConstructorHost>> for Construc
         rt.set_prototype(obj, Some(proto))?;
         Ok(BindingValue::Object(obj))
       }
-      _ => Err(rt.throw_type_error("unimplemented host operation")),
+      _ => Err(WebIdlBindingsRuntime::throw_type_error(
+        rt,
+        "unimplemented host operation",
+      )),
     }
   }
 }
@@ -183,7 +186,8 @@ impl WebHostBindings<VmJsRuntime> for DummyHost {
     _overload: usize,
     _args: Vec<BindingValue<Value>>,
   ) -> Result<BindingValue<Value>, VmError> {
-    Err(rt.throw_type_error(
+    Err(<VmJsRuntime as WebIdlBindingsRuntime<DummyHost>>::throw_type_error(
+      rt,
       "unexpected host call while inspecting bindings descriptors",
     ))
   }
@@ -207,7 +211,10 @@ fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
   let global =
     <VmJsRuntime as WebIdlBindingsRuntime<DummyHost>>::global_object(&mut rt)?;
   let Value::Object(global_obj) = global else {
-    return Err(rt.throw_type_error("expected global_object to be an object"));
+    return Err(<VmJsRuntime as WebIdlBindingsRuntime<DummyHost>>::throw_type_error(
+      &mut rt,
+      "expected global_object to be an object",
+    ));
   };
 
   // global.URLSearchParams
@@ -311,7 +318,11 @@ fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
     !length_desc.enumerable,
     "expected append.length to be non-enumerable"
   );
-  let length = rt.get(Value::Object(append_func_obj), length_key)?;
+  let length = webidl_js_runtime::JsRuntime::get(
+    &mut rt,
+    Value::Object(append_func_obj),
+    length_key,
+  )?;
   assert_eq!(length, Value::Number(2.0), "append.length");
 
   let name_key: PropertyKey = rt.property_key_from_str("name")?;
@@ -323,7 +334,7 @@ fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
     !name_desc.enumerable,
     "expected append.name to be non-enumerable"
   );
-  let name = rt.get(Value::Object(append_func_obj), name_key)?;
+  let name = webidl_js_runtime::JsRuntime::get(&mut rt, Value::Object(append_func_obj), name_key)?;
   assert_eq!(
     string_value_to_utf8_lossy(&rt, name),
     "append",
@@ -332,4 +343,3 @@ fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
 
   Ok(())
 }
-

@@ -1532,13 +1532,10 @@ impl ModuleGraph {
           .and_then(|m| m.top_level_capability.as_ref())
         else {
           return Err(VmError::InvariantViolation(
-            "module is evaluating-async but has no stored evaluation promise capability",
+            "module is evaluating-async but does not have top-level await",
           ));
-        };
-        let promise = roots
-          .capability(scope.heap())
-          .ok_or_else(VmError::invalid_handle)?
-          .promise;
+        }
+        let promise = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?.promise;
 
         // Keep the module graph pointer installed until the in-progress evaluation completes.
         graph_guard.disarm();
