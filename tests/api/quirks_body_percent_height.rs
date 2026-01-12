@@ -82,4 +82,3 @@ fn quirks_percent_height_enables_flex_vertical_centering() {
     assert_eq!(rgba_at(&pixmap, 0, 0), (255, 255, 255, 255));
   });
 }
-

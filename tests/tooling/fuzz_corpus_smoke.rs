@@ -11,7 +11,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-
 const VIEWPORT: u32 = 256;
 const DPR: f32 = 1.0;
 const STYLESHEET_LIMIT: usize = 16;
@@ -28,7 +27,7 @@ const REQUIRED_CORPUS_FILES: &[&str] = &[
   "complex_selectors.css",
   "svg_filters.svg",
 ];
- 
+
 fn corpus_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz_corpus")
 }
@@ -43,10 +42,10 @@ fn build_renderer() -> FastRender {
     .with_max_response_bytes(256 * 1024)
     // Redirects only matter for HTTP(S), which is disabled above.
     .with_max_redirects(1);
- 
+
   // Don't let runtime behavior drift based on the host environment.
   let runtime_toggles = RuntimeToggles::from_map(HashMap::new());
- 
+
   let mut config = FastRenderConfig::new()
     .with_default_viewport(VIEWPORT, VIEWPORT)
     .with_device_pixel_ratio(DPR)
@@ -61,10 +60,10 @@ fn build_renderer() -> FastRender {
   config.fit_canvas_to_content = false;
   // Don't cache fetched resources across corpus cases (keeps memory bounded + deterministic).
   config.resource_cache = None;
- 
+
   FastRender::with_config(config).expect("failed to construct FastRender for fuzz corpus smoke test")
 }
- 
+
 fn base_render_options(timeout: Duration) -> RenderOptions {
   RenderOptions::new()
     .with_viewport(VIEWPORT, VIEWPORT)
@@ -77,7 +76,7 @@ fn base_render_options(timeout: Duration) -> RenderOptions {
     .with_paint_parallelism(PaintParallelism::disabled())
     .with_layout_parallelism(LayoutParallelism::disabled())
 }
- 
+
 fn run_html_case(renderer: &mut FastRender, file_name: &str, html: &str, timeout: Duration) {
   let options = base_render_options(timeout);
   match renderer.render_html_with_options(html, options) {
@@ -92,11 +91,11 @@ fn run_html_case(renderer: &mut FastRender, file_name: &str, html: &str, timeout
     }
   }
 }
- 
+
 fn run_css_case(file_name: &str, css: &str) {
   let deadline = RenderDeadline::new(Some(CSS_PARSE_TIMEOUT), None);
   let _deadline_guard = DeadlineGuard::install(Some(&deadline));
- 
+
   match parse_stylesheet_with_errors(css) {
     Ok(_result) => {}
     Err(err) => {
@@ -109,7 +108,7 @@ fn run_css_case(file_name: &str, css: &str) {
     }
   }
 }
- 
+
 fn run_svg_case(renderer: &mut FastRender, file_name: &str, svg_content: &[u8]) {
   let encoded = BASE64_STANDARD.encode(svg_content);
   // Drive SVG parsing through the normal HTML render pipeline by rendering an `<img>` whose source
@@ -131,7 +130,7 @@ fn run_svg_case(renderer: &mut FastRender, file_name: &str, svg_content: &[u8]) 
  
   run_html_case(renderer, file_name, &html, HTML_RENDER_TIMEOUT);
 }
- 
+
 fn should_skip_stress_html(file_name: &str) -> bool {
   if file_name != "render_pipeline_stress.html" {
     return false;
@@ -164,9 +163,9 @@ fn fuzz_corpus_smoke_test() {
       path.display()
     );
   }
- 
+
   let mut renderer = build_renderer();
- 
+
   let mut entries = fs::read_dir(&corpus_dir)
     .unwrap_or_else(|e| panic!("failed to read corpus dir {}: {e}", corpus_dir.display()))
     .filter_map(|entry| entry.ok())
@@ -174,11 +173,11 @@ fn fuzz_corpus_smoke_test() {
     .filter(|path| path.is_file())
     .collect::<Vec<_>>();
   entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
- 
+
   for path in entries {
     let file_name = corpus_file_name(&path);
     let ext = path.extension().and_then(|ext| ext.to_str());
- 
+
     match ext {
       Some("css") => {
         let css = fs::read_to_string(&path)
@@ -192,7 +191,7 @@ fn fuzz_corpus_smoke_test() {
           );
           continue;
         }
- 
+
         let html = fs::read_to_string(&path)
           .unwrap_or_else(|e| panic!("failed to read HTML corpus file {}: {e}", path.display()));
         let timeout = if file_name == "render_pipeline_stress.html" {
