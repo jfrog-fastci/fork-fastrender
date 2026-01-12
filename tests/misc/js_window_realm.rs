@@ -1873,6 +1873,58 @@ globalThis.__kind = ev.__fastrender_event_kind;
 }
 
 #[test]
+fn mouse_event_is_branded_as_mouse_event_kind() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__kind = null;
+globalThis.__detail_before = null;
+globalThis.__detail_after = null;
+globalThis.__detail_in_listener = null;
+globalThis.__dispatch_ret = false;
+
+document.body.addEventListener('x', (e) => {
+  globalThis.__detail_in_listener = e.detail;
+});
+
+const ev = new MouseEvent('x', { detail: 3 });
+globalThis.__kind = ev.__fastrender_event_kind;
+globalThis.__detail_before = ev.detail;
+globalThis.__dispatch_ret = document.body.dispatchEvent(ev);
+globalThis.__detail_after = ev.detail;
+"#,
+  )?;
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let (kind, detail_before, detail_after, detail_in_listener, dispatch_ret) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    (
+      get_data_prop(&mut scope, global, "__kind"),
+      get_data_prop(&mut scope, global, "__detail_before"),
+      get_data_prop(&mut scope, global, "__detail_after"),
+      get_data_prop(&mut scope, global, "__detail_in_listener"),
+      get_data_prop(&mut scope, global, "__dispatch_ret"),
+    )
+  };
+
+  // `BrandedEventKind::MouseEvent` must map to 7 (stable for downstream decoding).
+  assert_eq!(kind, Value::Number(7.0));
+  assert_eq!(detail_before, Value::Number(3.0));
+  assert_eq!(detail_after, Value::Number(3.0));
+  assert_eq!(detail_in_listener, Value::Number(3.0));
+  assert_eq!(dispatch_ret, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn event_composed_path_includes_dom_ancestors() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
