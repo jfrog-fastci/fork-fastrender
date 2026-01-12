@@ -4,6 +4,7 @@ use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp, ParallelPlan, ParallelReason, Purity};
 use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
+use effect_model::ThrowBehavior;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -196,8 +197,14 @@ fn promise_components_plan(
     if eff.unknown {
       return Err(ParallelReason::PromiseUnknownEffects);
     }
+    if !matches!(eff.summary.throws, ThrowBehavior::Never) {
+      return Err(ParallelReason::PromiseMayThrow);
+    }
     if eff.writes.contains(&EffectLocation::Heap) {
       return Err(ParallelReason::PromiseWritesHeap);
+    }
+    if eff.writes.iter().any(|loc| matches!(loc, EffectLocation::Unknown(_))) {
+      return Err(ParallelReason::PromiseWritesUnknown);
     }
   }
 
@@ -205,13 +212,19 @@ fn promise_components_plan(
   let mut seen_reads = BTreeSet::<EffectLocation>::new();
   let mut seen_writes = BTreeSet::<EffectLocation>::new();
   for eff in &effects_per_arg {
-    if eff.reads.iter().any(|loc| seen_writes.contains(loc)) {
+    if eff
+      .reads
+      .iter()
+      .any(|loc| seen_writes.iter().any(|w| loc.may_alias(w)))
+    {
       return Err(ParallelReason::PromiseConflictingAccess);
     }
     if eff
       .writes
       .iter()
-      .any(|loc| seen_reads.contains(loc) || seen_writes.contains(loc))
+      .any(|loc| {
+        seen_reads.iter().any(|r| loc.may_alias(r)) || seen_writes.iter().any(|w| loc.may_alias(w))
+      })
     {
       return Err(ParallelReason::PromiseConflictingAccess);
     }
