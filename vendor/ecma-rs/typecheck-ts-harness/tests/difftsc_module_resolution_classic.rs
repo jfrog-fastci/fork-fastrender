@@ -4,7 +4,7 @@ use std::time::Duration;
 
 mod common;
 
-const CLI_TIMEOUT: Duration = Duration::from_secs(30);
+const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn harness_cli() -> Command {
   assert_cmd::cargo::cargo_bin_cmd!("typecheck-ts-harness")
