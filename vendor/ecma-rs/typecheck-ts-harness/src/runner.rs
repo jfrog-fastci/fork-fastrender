@@ -3609,6 +3609,7 @@ reason = "exercise XPASS hygiene"
       update_snapshots: false,
       timeout: Duration::from_secs(5),
       trace: false,
+      trace_resolution: false,
       profile: false,
       profile_out: crate::DEFAULT_PROFILE_OUT.into(),
       extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
@@ -3620,6 +3621,7 @@ reason = "exercise XPASS hygiene"
       jobs: 1,
       manifest: Some(manifest_path),
       fail_on: FailOn::New,
+      fail_on_unknown_directives: false,
     };
 
     let report = run_conformance(opts.clone()).expect("run_conformance");
