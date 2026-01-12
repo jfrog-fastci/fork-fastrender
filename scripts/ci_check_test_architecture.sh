@@ -86,25 +86,67 @@ if [[ -f tests/allocation_failure.rs ]]; then
 fi
 
 if [[ "${have_rg}" -eq 1 ]]; then
-  harness_fn_matches="$(rg -n '^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\b' "${harness_files[@]}" || true)"
-  harness_test_matches="$(rg -n '^\s*#\[\s*test\s*\]' "${harness_files[@]}" || true)"
+  harness_test_matches="$(rg -n '^\s*#\[\s*(tokio::)?test\s*\]' "${harness_files[@]}" || true)"
 else
-  harness_fn_matches="$(grep -nE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]' "${harness_files[@]}" || true)"
-  harness_test_matches="$(grep -nE '^[[:space:]]*#\\[[[:space:]]*test[[:space:]]*\\]' "${harness_files[@]}" || true)"
+  harness_test_matches="$(grep -nE '^[[:space:]]*#\\[[[:space:]]*(tokio::)?test[[:space:]]*\\]' "${harness_files[@]}" || true)"
 fi
 
-if [[ -n "${harness_fn_matches}" || -n "${harness_test_matches}" ]]; then
-  echo "error: unified integration harness files must not contain test/helper functions:" >&2
+harness_bad_lines="$(
+  awk '
+  {
+    line = $0
+    trimmed = line
+    sub(/^[ \t]+/, "", trimmed)
+
+    if (trimmed == "") next
+    if (trimmed ~ /^\/\//) next
+    if (trimmed ~ /^\/\*/) next
+    if (trimmed ~ /^\*/) next
+    if (trimmed ~ /^#/) next
+    if (trimmed ~ /^(pub(\([^)]*\))?[ \t]+)?mod[ \t]+[A-Za-z0-9_#]+[ \t]*;/) next
+
+    print FILENAME ":" NR ":" line
+  }
+  ' "${harness_files[@]}"
+)"
+
+integration_mod_dups="$(
+  awk '
+  {
+    line = $0
+    sub(/^[ \t]+/, "", line)
+    if (line ~ /^(pub(\([^)]*\))?[ \t]+)?mod[ \t]+[A-Za-z0-9_#]+[ \t]*;/) {
+      sub(/^(pub(\([^)]*\))?[ \t]+)?mod[ \t]+/, "", line)
+      sub(/[ \t]*;.*/, "", line)
+      sub(/^r#/, "", line)
+      counts[line]++
+    }
+  }
+  END {
+    for (name in counts) {
+      if (counts[name] > 1) print name
+    }
+  }
+  ' tests/integration.rs | sort
+)"
+
+if [[ -n "${harness_test_matches}" || -n "${harness_bad_lines}" || -n "${integration_mod_dups}" ]]; then
+  echo "error: unified integration harness files must be pure module lists:" >&2
   echo "  - tests/integration.rs (and tests/allocation_failure.rs) should be module declarations only" >&2
   echo >&2
   if [[ -n "${harness_test_matches}" ]]; then
-    echo "found #[test] in harness files:" >&2
+    echo "found test attributes in harness files:" >&2
     echo "${harness_test_matches}" >&2
     echo >&2
   fi
-  if [[ -n "${harness_fn_matches}" ]]; then
-    echo "found fn definitions in harness files:" >&2
-    echo "${harness_fn_matches}" >&2
+  if [[ -n "${harness_bad_lines}" ]]; then
+    echo "found non-module code in harness files:" >&2
+    echo "${harness_bad_lines}" >&2
+    echo >&2
+  fi
+  if [[ -n "${integration_mod_dups}" ]]; then
+    echo "found duplicate mod declarations in tests/integration.rs:" >&2
+    echo "${integration_mod_dups}" >&2
     echo >&2
   fi
   echo "see: ${doc_ref}" >&2
