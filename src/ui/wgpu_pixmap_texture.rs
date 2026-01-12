@@ -80,6 +80,30 @@ where
   Some(resource)
 }
 
+fn reregister_on_filter_change<R>(
+  egui_renderer: &mut R,
+  id: &mut egui::TextureId,
+  filter: &mut wgpu::FilterMode,
+  new_filter: wgpu::FilterMode,
+  register: impl FnOnce(&mut R) -> egui::TextureId,
+) -> bool
+where
+  R: EguiWgpuTextureRegistry,
+{
+  if *filter == new_filter {
+    return false;
+  }
+
+  // Free the old egui `TextureId` first to avoid the renderer's texture registry growing
+  // indefinitely as we re-register the same `TextureView` with different sampler settings.
+  egui_renderer.free_texture(id);
+
+  let new_id = register(egui_renderer);
+  *id = new_id;
+  *filter = new_filter;
+  true
+}
+
 impl WgpuPixmapTexture {
   pub fn new(
     device: &wgpu::Device,
@@ -115,6 +139,28 @@ impl WgpuPixmapTexture {
       padded_bytes_per_row,
       filter,
     }
+  }
+
+  /// Switch the texture's sampler filter mode as registered in `egui_wgpu::Renderer`.
+  ///
+  /// This re-registers the existing `TextureView` with a new sampler (and therefore a new
+  /// `TextureId`), without recreating the underlying wgpu texture.
+  pub fn set_filter_mode(
+    &mut self,
+    device: &wgpu::Device,
+    egui_renderer: &mut egui_wgpu::Renderer,
+    filter: wgpu::FilterMode,
+  ) {
+    // Borrow the view separately so we can mutably borrow `self.id`/`self.filter` while still
+    // passing the view into the register closure.
+    let view = &self.view;
+    reregister_on_filter_change(
+      egui_renderer,
+      &mut self.id,
+      &mut self.filter,
+      filter,
+      |egui_renderer| egui_renderer.register_native_texture(device, view, filter),
+    );
   }
 
   pub fn update(
@@ -362,5 +408,93 @@ mod tests {
     assert_eq!(registry.freed, vec![old_id]);
     assert_eq!(size_px, (20, 30));
     assert_eq!(id, egui::TextureId::User(2));
+  }
+
+  #[test]
+  fn reregister_on_filter_change_frees_old_texture_id_before_registering_new() {
+    #[derive(Default)]
+    struct MockRegistry {
+      freed: Vec<egui::TextureId>,
+      registered_filters: Vec<wgpu::FilterMode>,
+    }
+
+    impl EguiWgpuTextureRegistry for MockRegistry {
+      fn register_native_texture(
+        &mut self,
+        _device: &wgpu::Device,
+        _view: &wgpu::TextureView,
+        _filter: wgpu::FilterMode,
+      ) -> egui::TextureId {
+        unreachable!("not used by this test")
+      }
+
+      fn free_texture(&mut self, id: &egui::TextureId) {
+        self.freed.push(*id);
+      }
+    }
+
+    let mut registry = MockRegistry::default();
+    let mut id = egui::TextureId::User(1);
+    let mut filter = wgpu::FilterMode::Nearest;
+    let old_id = id;
+
+    let changed = reregister_on_filter_change(
+      &mut registry,
+      &mut id,
+      &mut filter,
+      wgpu::FilterMode::Linear,
+      |registry| {
+        // Ensure we freed the old id before trying to "register" a new one.
+        assert_eq!(registry.freed, vec![old_id]);
+        registry.registered_filters.push(wgpu::FilterMode::Linear);
+        egui::TextureId::User(2)
+      },
+    );
+
+    assert!(changed);
+    assert_eq!(registry.freed, vec![old_id]);
+    assert_eq!(registry.registered_filters, vec![wgpu::FilterMode::Linear]);
+    assert_eq!(id, egui::TextureId::User(2));
+    assert_eq!(filter, wgpu::FilterMode::Linear);
+  }
+
+  #[test]
+  fn reregister_on_filter_change_is_noop_when_filter_is_unchanged() {
+    #[derive(Default)]
+    struct MockRegistry {
+      freed: Vec<egui::TextureId>,
+    }
+
+    impl EguiWgpuTextureRegistry for MockRegistry {
+      fn register_native_texture(
+        &mut self,
+        _device: &wgpu::Device,
+        _view: &wgpu::TextureView,
+        _filter: wgpu::FilterMode,
+      ) -> egui::TextureId {
+        unreachable!("not used by this test")
+      }
+
+      fn free_texture(&mut self, id: &egui::TextureId) {
+        self.freed.push(*id);
+      }
+    }
+
+    let mut registry = MockRegistry::default();
+    let mut id = egui::TextureId::User(1);
+    let mut filter = wgpu::FilterMode::Nearest;
+
+    let changed = reregister_on_filter_change(
+      &mut registry,
+      &mut id,
+      &mut filter,
+      wgpu::FilterMode::Nearest,
+      |_registry| unreachable!("register should not be called when filter is unchanged"),
+    );
+
+    assert!(!changed);
+    assert!(registry.freed.is_empty());
+    assert_eq!(id, egui::TextureId::User(1));
+    assert_eq!(filter, wgpu::FilterMode::Nearest);
   }
 }

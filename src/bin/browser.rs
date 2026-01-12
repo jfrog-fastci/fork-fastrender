@@ -1160,6 +1160,45 @@ impl BrowserHud {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageTextureFilterPolicy {
+  /// Use nearest-neighbour filtering when the page image is drawn at ~1:1, otherwise use linear.
+  Auto,
+  /// Always use nearest-neighbour filtering for page textures.
+  Nearest,
+  /// Always use linear filtering for page textures.
+  Linear,
+}
+
+#[cfg(feature = "browser_ui")]
+impl PageTextureFilterPolicy {
+  const ENV_KEY: &'static str = "FASTR_BROWSER_PAGE_FILTER";
+
+  fn from_env() -> Self {
+    let raw = std::env::var(Self::ENV_KEY).ok();
+    let Some(raw) = raw else {
+      return Self::Auto;
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+      return Self::Auto;
+    }
+    match raw.to_ascii_lowercase().as_str() {
+      "auto" => Self::Auto,
+      "nearest" => Self::Nearest,
+      "linear" => Self::Linear,
+      other => {
+        eprintln!(
+          "{}: invalid value {other:?} (expected nearest|linear|auto); defaulting to auto",
+          Self::ENV_KEY
+        );
+        Self::Auto
+      }
+    }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
@@ -1174,6 +1213,7 @@ struct App {
   egui_renderer: egui_wgpu::Renderer,
   pixels_per_point: f32,
   browser_limits: fastrender::ui::browser_limits::BrowserLimits,
+  page_texture_filter_policy: PageTextureFilterPolicy,
   theme_override: Option<fastrender::ui::theme::ThemeMode>,
   theme: fastrender::ui::theme::BrowserTheme,
   clear_color: wgpu::Color,
@@ -1530,6 +1570,7 @@ error: {err}",
       egui_renderer,
       pixels_per_point,
       browser_limits: fastrender::ui::browser_limits::BrowserLimits::from_env(),
+      page_texture_filter_policy: PageTextureFilterPolicy::from_env(),
       theme_override,
       theme,
       clear_color,
@@ -4567,7 +4608,7 @@ error: {err}",
         .map(|t| (t.loading, t.stage))
         .unwrap_or((false, None));
 
-      if let Some(tex) = self.tab_textures.get(&active_tab) {
+      if let Some(tex) = self.tab_textures.get_mut(&active_tab) {
         let loading_ui =
           fastrender::ui::loading_overlay::decide_page_loading_ui(true, tab_loading, tab_stage);
         self.page_loading_overlay_blocks_input = loading_ui.intercept_pointer_events;
@@ -4587,6 +4628,37 @@ error: {err}",
         // The input mapping (points→CSS) uses `viewport_css_for_mapping`, so scaling here stays
         // coherent for hit-testing.
         let size_points = logical_viewport_points.max(egui::Vec2::ZERO);
+
+        let desired_filter = match self.page_texture_filter_policy {
+          PageTextureFilterPolicy::Nearest => wgpu::FilterMode::Nearest,
+          PageTextureFilterPolicy::Linear => wgpu::FilterMode::Linear,
+          PageTextureFilterPolicy::Auto => {
+            let (tex_w_px, tex_h_px) = tex.size_px();
+            let drawn_px_w = size_points.x * self.pixels_per_point;
+            let drawn_px_h = size_points.y * self.pixels_per_point;
+
+            let one_to_one = if tex_w_px > 0
+              && tex_h_px > 0
+              && drawn_px_w.is_finite()
+              && drawn_px_h.is_finite()
+            {
+              let scale_x = drawn_px_w / tex_w_px as f32;
+              let scale_y = drawn_px_h / tex_h_px as f32;
+              const EPSILON: f32 = 0.01;
+              (scale_x - 1.0).abs() < EPSILON && (scale_y - 1.0).abs() < EPSILON
+            } else {
+              true
+            };
+
+            if one_to_one {
+              wgpu::FilterMode::Nearest
+            } else {
+              wgpu::FilterMode::Linear
+            }
+          }
+        };
+
+        tex.set_filter_mode(&self.device, &mut self.egui_renderer, desired_filter);
         let response =
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
         self.page_rect_points = Some(response.rect);
