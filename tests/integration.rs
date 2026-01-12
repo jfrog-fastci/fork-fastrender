@@ -25,6 +25,7 @@ mod grid;
 mod iframe;
 mod image_integration;
 mod js_harness;
+mod layout;
 mod misc;
 mod progress;
 mod render;
