@@ -109,6 +109,7 @@ fn empty_span() -> Span {
 }
 
 fn native_error(message: impl Into<String>) -> Diagnostic {
+  // `native-oracle-harness` diagnostics use the ORACLE#### prefix (see `docs/diagnostic-codes.md`).
   Diagnostic::error("ORACLE0001", message, empty_span())
 }
 
