@@ -306,8 +306,6 @@ pub struct Vm {
   async_resume_call: Option<NativeFunctionId>,
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
   module_tla_on_rejected_call: Option<NativeFunctionId>,
-  module_tla_init_default_export_on_fulfilled_call: Option<NativeFunctionId>,
-  module_tla_throw_on_fulfilled_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_fulfilled_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_rejected_call: Option<NativeFunctionId>,
   module_namespace_getter_call: Option<NativeFunctionId>,
@@ -553,8 +551,6 @@ impl Vm {
       async_resume_call: None,
       module_tla_on_fulfilled_call: None,
       module_tla_on_rejected_call: None,
-      module_tla_init_default_export_on_fulfilled_call: None,
-      module_tla_throw_on_fulfilled_call: None,
       dynamic_import_eval_on_fulfilled_call: None,
       dynamic_import_eval_on_rejected_call: None,
       module_namespace_getter_call: None,
@@ -636,6 +632,15 @@ impl Vm {
     &mut self.microtasks
   }
 
+  /// Returns the number of in-progress async continuations currently stored in the VM.
+  ///
+  /// Async continuations are used to resume `async` function bodies and async module evaluation
+  /// (top-level await) across microtasks.
+  #[inline]
+  pub fn async_continuation_count(&self) -> usize {
+    self.async_continuations.len()
+  }
+
   pub(crate) fn reserve_async_continuations(&mut self, additional: usize) -> Result<(), VmError> {
     self
       .async_continuations
@@ -677,27 +682,6 @@ impl Vm {
     }
     let id = self.register_native_call(crate::module_graph::module_tla_on_rejected)?;
     self.module_tla_on_rejected_call = Some(id);
-    Ok(id)
-  }
-
-  pub(crate) fn module_tla_init_default_export_on_fulfilled_call_id(
-    &mut self,
-  ) -> Result<NativeFunctionId, VmError> {
-    if let Some(id) = self.module_tla_init_default_export_on_fulfilled_call {
-      return Ok(id);
-    }
-    let id =
-      self.register_native_call(crate::exec::module_tla_init_default_export_on_fulfilled)?;
-    self.module_tla_init_default_export_on_fulfilled_call = Some(id);
-    Ok(id)
-  }
-
-  pub(crate) fn module_tla_throw_on_fulfilled_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
-    if let Some(id) = self.module_tla_throw_on_fulfilled_call {
-      return Ok(id);
-    }
-    let id = self.register_native_call(crate::exec::module_tla_throw_on_fulfilled)?;
-    self.module_tla_throw_on_fulfilled_call = Some(id);
     Ok(id)
   }
 
@@ -3538,13 +3522,6 @@ mod tests {
     let close_rejected_second = vm.async_iterator_close_on_rejected_call_id()?;
     assert_eq!(close_rejected_first, close_rejected_second);
     assert_eq!(close_rejected_len, vm.native_calls.len());
-
-    let init_default_first = vm.module_tla_init_default_export_on_fulfilled_call_id()?;
-    let init_default_len = vm.native_calls.len();
-    let init_default_second = vm.module_tla_init_default_export_on_fulfilled_call_id()?;
-    assert_eq!(init_default_first, init_default_second);
-    assert_eq!(init_default_len, vm.native_calls.len());
-
     Ok(())
   }
 

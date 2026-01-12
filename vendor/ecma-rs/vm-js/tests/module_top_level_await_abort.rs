@@ -137,6 +137,11 @@ fn abort_tla_evaluation_rejects_pending_module_evaluation_promise() -> Result<()
   // fallback microtask queue.
   assert!(hooks.is_empty());
   assert!(vm.microtask_queue().is_empty());
+  assert_eq!(
+    vm.async_continuation_count(),
+    0,
+    "abort_tla_evaluation should not leak async continuations"
+  );
 
   // Abort should have restored the module graph pointer (the module graph was only attached for the
   // duration of module evaluation).

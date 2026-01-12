@@ -18903,7 +18903,7 @@ fn async_resume_from_frames(
         },
         AsyncState::Expr(_) => {
           return Err(VmError::InvariantViolation(
-            "module body resumed with expression state",
+            "async module evaluation resumed with expression state",
           ))
         }
       },
@@ -24131,165 +24131,23 @@ pub(crate) fn run_module(
   result
 }
 
-pub(crate) fn module_tla_init_default_export_on_fulfilled(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let Some(env) = scope.heap().get_function_closure_env(callee)? else {
-    return Err(VmError::InvariantViolation(
-      "module TLA default export initializer missing closure env",
-    ));
-  };
-
-  let value = args.get(0).copied().unwrap_or(Value::Undefined);
-  scope.push_root(value)?;
-
-  let binding_name = "*default*";
-  if !scope.heap().env_has_binding(env, binding_name)? {
-    return Err(VmError::InvariantViolation(
-      "export default expression missing *default* binding",
-    ));
-  }
-  scope
-    .heap_mut()
-    .env_initialize_binding(env, binding_name, value)?;
-  Ok(Value::Undefined)
-}
-
-pub(crate) fn module_tla_throw_on_fulfilled(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  // Fulfillment of `throw await <expr>` throws the awaited value. This lets the module evaluation
-  // machinery (which already treats rejected awaited promises as fatal) reuse the same path by
-  // converting fulfillment into rejection.
-  let value = args.get(0).copied().unwrap_or(Value::Undefined);
-
-  // Best-effort: if the thrown value is an object (typically an Error instance), attach a `stack`
-  // property that points at the `throw` statement location (mirrors sync `eval_throw` behavior).
-  //
-  // This is primarily for debugging: module evaluation is asynchronous here, so the stack trace
-  // would otherwise refer to the internal Promise reaction job rather than the original throw
-  // statement.
-  if let Value::Object(obj) = value {
-    let slots = scope.heap().get_function_native_slots(callee)?;
-    if slots.len() != 3 {
-      return Err(VmError::InvariantViolation(
-        "module TLA throw callback missing location slots",
-      ));
-    }
-
-    let source_name = match slots[0] {
-      Value::String(s) => Arc::<str>::from(scope.heap().get_string(s)?.to_utf8_lossy()),
-      _ => {
-        return Err(VmError::InvariantViolation(
-          "module TLA throw callback source slot must be a string",
-        ))
-      }
-    };
-    let line = match slots[1] {
-      Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
-      _ => {
-        return Err(VmError::InvariantViolation(
-          "module TLA throw callback line slot must be a number",
-        ))
-      }
-    };
-    let col = match slots[2] {
-      Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
-      _ => {
-        return Err(VmError::InvariantViolation(
-          "module TLA throw callback col slot must be a number",
-        ))
-      }
-    };
-
-    let stack_trace = {
-      let mut stack = vm.capture_stack();
-      if let Some(top) = stack.first_mut() {
-        top.source = source_name.clone();
-        top.line = line;
-        top.col = col;
-      } else {
-        stack.push(StackFrame {
-          function: None,
-          source: source_name.clone(),
-          line,
-          col,
-        });
-      }
-      crate::format_stack_trace(&stack)
-    };
-
-    if !stack_trace.is_empty() {
-      // Do not overwrite an existing own `stack` property; mirrors browser behavior where
-      // `Error.stack` can be customized by user code.
-      let mut scope = scope.reborrow();
-      if scope.push_root(Value::Object(obj)).is_ok() {
-        if let Ok(key_s) = scope.alloc_string("stack") {
-          if scope.push_root(Value::String(key_s)).is_ok() {
-            let key = PropertyKey::from_string(key_s);
-            if matches!(scope.heap().object_get_own_property(obj, &key), Ok(None)) {
-              if let Ok(stack_s) = scope.alloc_string(&stack_trace) {
-                if scope.push_root(Value::String(stack_s)).is_ok() {
-                  let _ = scope.define_property(
-                    obj,
-                    key,
-                    PropertyDescriptor {
-                      enumerable: false,
-                      configurable: true,
-                      kind: PropertyKind::Data {
-                        value: Value::String(stack_s),
-                        writable: true,
-                      },
-                    },
-                  );
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  Err(VmError::Throw(value))
-}
-
 /// Result of executing a module statement list until a supported top-level `await` boundary.
 ///
-/// This is used to model a minimal subset of top-level await by executing a module in "chunks"
-/// separated by `await <expr>;` expression statements (where the awaited value is resolved via
-/// Promise jobs).
+/// This is used by `ModuleGraph` to implement top-level await by running module evaluation until
+/// the first `await` suspension point, then resuming via Promise jobs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ModuleTlaStepResult {
   /// The module body ran to completion (no further supported `await` statements).
   Completed,
-  /// Execution suspended at `await <expr>;`, returning the awaited Promise and the statement index
-  /// at which execution should resume.
-  Await { promise: Value, resume_index: usize },
+  /// Execution suspended at an `await` boundary, returning the awaited Promise and the async
+  /// continuation id that should be resumed when it settles.
+  Await { promise: Value, continuation_id: u32 },
 }
 
-/// Executes a module's statement list starting at `start_index`, stopping when it encounters a
-/// supported top-level `await` suspension point.
-///
-/// Notes / limitations:
-/// - This is **not** a full implementation of `await` as an expression.
-/// - Only the following forms are treated as suspension points:
-///   - `await <expr>;`
-///   - `export default await <expr>;`
-///   - `throw await <expr>;`
-/// - Other uses of `await` (e.g. in variable initializers) remain unimplemented.
-pub(crate) fn run_module_until_await(
+/// Runs module evaluation (starting at the top) until completion or the first async `await`
+/// suspension, using the async evaluator so `await` can appear anywhere (including `for await..of`
+/// and variable initializers).
+pub(crate) fn start_module_tla_evaluation(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -24299,13 +24157,8 @@ pub(crate) fn run_module_until_await(
   module_id: ModuleId,
   module_env: GcEnv,
   source: Arc<SourceText>,
-  stmts: &[Node<Stmt>],
-  start_index: usize,
+  stmts: &Vec<Node<Stmt>>,
 ) -> Result<ModuleTlaStepResult, VmError> {
-  if start_index >= stmts.len() {
-    return Ok(ModuleTlaStepResult::Completed);
-  }
-
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,
@@ -24317,318 +24170,329 @@ pub(crate) fn run_module_until_await(
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
     env.set_source_info(source.clone(), 0, 0);
 
-    let result = (|| -> Result<ModuleTlaStepResult, VmError> {
-      let (line, col) = source.line_col(0);
-      let frame = StackFrame {
-        function: None,
-        source: source.name.clone(),
-        line,
-        col,
+    let (line, col) = source.line_col(0);
+    let frame = StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    };
+    let mut vm_frame = vm.enter_frame(frame)?;
+
+    let mut evaluator = Evaluator {
+      vm: &mut *vm_frame,
+      host,
+      hooks,
+      env: &mut env,
+      strict: true,
+      // Per ECMA-262, module top-level `this` is `undefined`.
+      this: Value::Undefined,
+      new_target: Value::Undefined,
+    };
+
+    // Start module evaluation. If we suspend, convert the suspended evaluator call stack into a VM
+    // async continuation so it can be resumed across microtasks.
+    let mut next = match async_eval_stmt_list(&mut evaluator, scope, stmts)? {
+      AsyncEval::Complete(completion) => match completion {
+        Completion::Normal(_) => {
+          env.teardown(scope.heap_mut());
+          return Ok(ModuleTlaStepResult::Completed);
+        }
+        Completion::Throw(thrown) => {
+          env.teardown(scope.heap_mut());
+          return Err(VmError::ThrowWithStack {
+            value: thrown.value,
+            stack: thrown.stack,
+          });
+        }
+        Completion::Return(_) => {
+          env.teardown(scope.heap_mut());
+          return Err(VmError::InvariantViolation(
+            "module evaluation produced Return completion (early errors should prevent this)",
+          ));
+        }
+        Completion::Break(..) => {
+          env.teardown(scope.heap_mut());
+          return Err(VmError::InvariantViolation(
+            "module evaluation produced Break completion (early errors should prevent this)",
+          ));
+        }
+        Completion::Continue(..) => {
+          env.teardown(scope.heap_mut());
+          return Err(VmError::InvariantViolation(
+            "module evaluation produced Continue completion (early errors should prevent this)",
+          ));
+        }
+      },
+      AsyncEval::Suspend(mut suspend) => {
+        async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)?;
+        AsyncBodyResult::Await {
+          await_value: suspend.await_value,
+          frames: suspend.frames,
+        }
+      }
+    };
+
+    // If `PromiseResolve(%Promise%, awaitValue)` throws, treat it as a rejection at the await site
+    // (i.e. resume immediately with a throw completion so `try/catch` around `await` can observe it).
+    loop {
+      let AsyncBodyResult::Await { await_value, frames } = next else {
+        env.teardown(scope.heap_mut());
+        return match next {
+          AsyncBodyResult::CompleteOk(_) => Ok(ModuleTlaStepResult::Completed),
+          AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
+          AsyncBodyResult::Await { .. } => unreachable!(),
+        };
       };
-      let mut vm_frame = vm.enter_frame(frame)?;
 
-      let mut evaluator = Evaluator {
-        vm: &mut *vm_frame,
-        host,
-        hooks,
-        env: &mut env,
-        strict: true,
-        // Per ECMA-262, module top-level `this` is `undefined`.
-        this: Value::Undefined,
-        new_target: Value::Undefined,
+      let awaited_promise_res = {
+        let mut promise_scope = scope.reborrow();
+        promise_scope.push_root(await_value)?;
+        crate::promise_ops::promise_resolve_with_host_and_hooks(
+          evaluator.vm,
+          &mut promise_scope,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          await_value,
+        )
       };
 
-      // Root the running completion value so it cannot be collected while evaluating subsequent
-      // statements (which may allocate and trigger GC).
-      let last_root = scope.heap_mut().add_root(Value::Undefined)?;
-      let mut last_value: Option<Value> = None;
-
-      for (idx, stmt) in stmts.iter().enumerate().skip(start_index) {
-        // Minimal top-level await support: suspend on `await <expr>;` expression statements.
-        if let Stmt::Expr(expr_stmt) = &*stmt.stx {
-          if let Expr::Unary(unary) = &*expr_stmt.stx.expr.stx {
-            if unary.stx.operator == OperatorName::Await {
-              // Clean up the per-step completion root before suspending.
-              scope.heap_mut().remove_root(last_root);
-
-              // Evaluate the awaited expression (argument) and coerce it with `PromiseResolve`.
-              let awaited_value = evaluator.eval_expr(scope, &unary.stx.argument)?;
-              let mut promise_scope = scope.reborrow();
-              promise_scope.push_root(awaited_value)?;
-              let promise = if let Value::Object(obj) = awaited_value {
-                if promise_scope.heap().is_promise_object(obj) {
-                  let ctor_key_s = promise_scope.alloc_string("constructor")?;
-                  promise_scope.push_root(Value::String(ctor_key_s))?;
-                  let ctor_key = PropertyKey::from_string(ctor_key_s);
-                  let _ = promise_scope.ordinary_get_with_host_and_hooks(
-                    &mut *vm_frame,
-                    host,
-                    hooks,
-                    obj,
-                    ctor_key,
-                    Value::Object(obj),
-                  )?;
-                  awaited_value
-                } else {
-                  crate::promise_ops::promise_resolve_with_host_and_hooks(
-                    &mut *vm_frame,
-                    &mut promise_scope,
-                    host,
-                    hooks,
-                    awaited_value,
-                  )?
-                }
-              } else {
-                crate::promise_ops::promise_resolve_with_host_and_hooks(
-                  &mut *vm_frame,
-                  &mut promise_scope,
-                  host,
-                  hooks,
-                  awaited_value,
-                )?
-              };
-              return Ok(ModuleTlaStepResult::Await {
-                promise,
-                resume_index: idx.saturating_add(1),
-              });
+      let awaited_promise = match awaited_promise_res {
+        Ok(p) => p,
+        Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+          next = match async_resume_from_frames(&mut evaluator, scope, frames, Err(reason)) {
+            Ok(r) => r,
+            Err(err) => {
+              env.teardown(scope.heap_mut());
+              return Err(err);
             }
-          }
+          };
+          continue;
         }
-
-        // Minimal top-level await support: suspend on `export default await <expr>;`.
-        if let Stmt::ExportDefaultExpr(export_default) = &*stmt.stx {
-          if let Expr::Unary(unary) = &*export_default.stx.expression.stx {
-            if unary.stx.operator == OperatorName::Await {
-              // Clean up the per-step completion root before suspending.
-              scope.heap_mut().remove_root(last_root);
-
-              // Evaluate the awaited expression (argument) and coerce it with `PromiseResolve`.
-              let awaited_value = evaluator.eval_expr(scope, &unary.stx.argument)?;
-              let intr = vm_frame
-                .intrinsics()
-                .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-              let job_realm = vm_frame.current_realm();
-
-              let mut promise_scope = scope.reborrow();
-              promise_scope.push_root(awaited_value)?;
-              let awaited_promise = if let Value::Object(obj) = awaited_value {
-                if promise_scope.heap().is_promise_object(obj) {
-                  let ctor_key_s = promise_scope.alloc_string("constructor")?;
-                  promise_scope.push_root(Value::String(ctor_key_s))?;
-                  let ctor_key = PropertyKey::from_string(ctor_key_s);
-                  let _ = promise_scope.ordinary_get_with_host_and_hooks(
-                    &mut *vm_frame,
-                    host,
-                    hooks,
-                    obj,
-                    ctor_key,
-                    Value::Object(obj),
-                  )?;
-                  awaited_value
-                } else {
-                  crate::promise_ops::promise_resolve_with_host_and_hooks(
-                    &mut *vm_frame,
-                    &mut promise_scope,
-                    host,
-                    hooks,
-                    awaited_value,
-                  )?
-                }
-              } else {
-                crate::promise_ops::promise_resolve_with_host_and_hooks(
-                  &mut *vm_frame,
-                  &mut promise_scope,
-                  host,
-                  hooks,
-                  awaited_value,
-                )?
-              };
-              promise_scope.push_root(awaited_promise)?;
-
-              // Defer default export binding initialization until the awaited promise is fulfilled,
-              // but ensure it runs before the module body resumes.
-              let call_id = vm_frame.module_tla_init_default_export_on_fulfilled_call_id()?;
-              let name = promise_scope.alloc_string("")?;
-              let on_fulfilled = promise_scope.alloc_native_function_with_env(
-                call_id,
-                None,
-                name,
-                1,
-                Some(module_env),
-              )?;
-              promise_scope.push_root(Value::Object(on_fulfilled))?;
-              promise_scope
-                .heap_mut()
-                .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
-              promise_scope
-                .heap_mut()
-                .set_function_realm(on_fulfilled, global_object)?;
-              if let Some(realm) = job_realm {
-                promise_scope
-                  .heap_mut()
-                  .set_function_job_realm(on_fulfilled, realm)?;
-              }
-
-              let promise = crate::promise_ops::perform_promise_then_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut promise_scope,
-                host,
-                hooks,
-                awaited_promise,
-                Some(Value::Object(on_fulfilled)),
-                None,
-              )?;
-              return Ok(ModuleTlaStepResult::Await {
-                promise,
-                resume_index: idx.saturating_add(1),
-              });
-            }
-          }
+        Err(err) => {
+          env.teardown(scope.heap_mut());
+          return Err(err);
         }
+      };
 
-        // Minimal top-level await support: suspend on `throw await <expr>;`.
-        if let Stmt::Throw(throw_stmt) = &*stmt.stx {
-          if let Expr::Unary(unary) = &*throw_stmt.stx.value.stx {
-            if unary.stx.operator == OperatorName::Await {
-              // Clean up the per-step completion root before suspending.
-              scope.heap_mut().remove_root(last_root);
+      // Root all GC-managed values while we create persistent roots and register the continuation.
+      let mut root_scope = scope.reborrow();
+      // Create persistent roots for dummy async continuation fields plus the awaited promise.
+      let values = [
+        Value::Undefined,
+        Value::Undefined,
+        Value::Undefined,
+        Value::Undefined,
+        Value::Undefined,
+        awaited_promise,
+      ];
+      root_scope.push_roots(&values)?;
 
-              // Evaluate the awaited expression (argument) and coerce it with `PromiseResolve`.
-              let awaited_value = evaluator.eval_expr(scope, &unary.stx.argument)?;
-              let rel_start = throw_stmt
-                .loc
-                .start_u32()
-                .saturating_sub(evaluator.env.prefix_len());
-              let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
-              let (throw_line, throw_col) = source.line_col(abs_offset);
-
-              let intr = vm_frame
-                .intrinsics()
-                .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-              let job_realm = vm_frame.current_realm();
-
-              let mut promise_scope = scope.reborrow();
-              promise_scope.push_root(awaited_value)?;
-              let awaited_promise = if let Value::Object(obj) = awaited_value {
-                if promise_scope.heap().is_promise_object(obj) {
-                  let ctor_key_s = promise_scope.alloc_string("constructor")?;
-                  promise_scope.push_root(Value::String(ctor_key_s))?;
-                  let ctor_key = PropertyKey::from_string(ctor_key_s);
-                  let _ = promise_scope.ordinary_get_with_host_and_hooks(
-                    &mut *vm_frame,
-                    host,
-                    hooks,
-                    obj,
-                    ctor_key,
-                    Value::Object(obj),
-                  )?;
-                  awaited_value
-                } else {
-                  crate::promise_ops::promise_resolve_with_host_and_hooks(
-                    &mut *vm_frame,
-                    &mut promise_scope,
-                    host,
-                    hooks,
-                    awaited_value,
-                  )?
-                }
-              } else {
-                crate::promise_ops::promise_resolve_with_host_and_hooks(
-                  &mut *vm_frame,
-                  &mut promise_scope,
-                  host,
-                  hooks,
-                  awaited_value,
-                )?
-              };
-              promise_scope.push_root(awaited_promise)?;
-
-              // Convert fulfillment into rejection so the module resume machinery can treat it as
-              // an abrupt completion (matching the semantics of `throw await <expr>`).
-              let call_id = vm_frame.module_tla_throw_on_fulfilled_call_id()?;
-              let name = promise_scope.alloc_string("")?;
-              let source_name = promise_scope.alloc_string(source.name.as_ref())?;
-              promise_scope.push_root(Value::String(source_name))?;
-              let slots = [
-                Value::String(source_name),
-                Value::Number(throw_line as f64),
-                Value::Number(throw_col as f64),
-              ];
-              let on_fulfilled =
-                promise_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots)?;
-              promise_scope.push_root(Value::Object(on_fulfilled))?;
-              promise_scope
-                .heap_mut()
-                .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
-              promise_scope
-                .heap_mut()
-                .set_function_realm(on_fulfilled, global_object)?;
-              if let Some(realm) = job_realm {
-                promise_scope
-                  .heap_mut()
-                  .set_function_job_realm(on_fulfilled, realm)?;
-              }
-
-              let promise = crate::promise_ops::perform_promise_then_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut promise_scope,
-                host,
-                hooks,
-                awaited_promise,
-                Some(Value::Object(on_fulfilled)),
-                None,
-              )?;
-              return Ok(ModuleTlaStepResult::Await {
-                promise,
-                resume_index: idx.saturating_add(1),
-              });
+      let mut roots: Vec<RootId> = Vec::new();
+      roots
+        .try_reserve_exact(values.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for &value in &values {
+        match root_scope.heap_mut().add_root(value) {
+          Ok(id) => roots.push(id),
+          Err(e) => {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
             }
-          }
-        }
-
-        let completion = evaluator.eval_stmt(scope, stmt)?;
-        let completion = completion.update_empty(last_value);
-        match completion {
-          Completion::Normal(v) => {
-            if let Some(v) = v {
-              last_value = Some(v);
-              scope.heap_mut().set_root(last_root, v);
-            }
-          }
-          Completion::Throw(thrown) => {
-            scope.heap_mut().remove_root(last_root);
-            return Err(VmError::ThrowWithStack {
-              value: thrown.value,
-              stack: thrown.stack,
-            });
-          }
-          Completion::Return(_) => {
-            scope.heap_mut().remove_root(last_root);
-            return Err(VmError::InvariantViolation(
-              "module evaluation produced Return completion (early errors should prevent this)",
-            ));
-          }
-          Completion::Break(..) => {
-            scope.heap_mut().remove_root(last_root);
-            return Err(VmError::InvariantViolation(
-              "module evaluation produced Break completion (early errors should prevent this)",
-            ));
-          }
-          Completion::Continue(..) => {
-            scope.heap_mut().remove_root(last_root);
-            return Err(VmError::InvariantViolation(
-              "module evaluation produced Continue completion (early errors should prevent this)",
-            ));
+            env.teardown(root_scope.heap_mut());
+            return Err(e);
           }
         }
       }
 
-      scope.heap_mut().remove_root(last_root);
-      Ok(ModuleTlaStepResult::Completed)
-    })();
+      let cont = AsyncContinuation {
+        env: env.clone(),
+        strict: true,
+        exec_ctx: Some(exec_ctx),
+        this_root: roots[0],
+        new_target_root: roots[1],
+        promise_root: roots[2],
+        resolve_root: roots[3],
+        reject_root: roots[4],
+        awaited_promise_root: Some(roots[5]),
+        frames,
+      };
 
-    env.teardown(scope.heap_mut());
-    result
+      // Ensure async continuation insertion cannot fail after consuming `cont`, so we don't leak
+      // frame-owned persistent roots (e.g. statement-list completion roots) if the continuation
+      // storage allocation fails.
+      if let Err(err) = vm_frame.reserve_async_continuations(1) {
+        for id in roots.drain(..) {
+          root_scope.heap_mut().remove_root(id);
+        }
+        // Tear down any persistent roots owned by suspended frames.
+        let mut frames = cont.frames;
+        for mut frame in frames.drain(..) {
+          async_teardown_frame(root_scope.heap_mut(), &mut frame);
+        }
+        env.teardown(root_scope.heap_mut());
+        return Err(err);
+      }
+
+      let continuation_id = match vm_frame.insert_async_continuation(cont) {
+        Ok(id) => id,
+        Err(e) => {
+          for id in roots.drain(..) {
+            root_scope.heap_mut().remove_root(id);
+          }
+          env.teardown(root_scope.heap_mut());
+          return Err(e);
+        }
+      };
+
+      // Do not tear down `env`: its env root is now owned by the continuation.
+      return Ok(ModuleTlaStepResult::Await {
+        promise: awaited_promise,
+        continuation_id,
+      });
+    }
+  })();
+
+  let popped = vm.pop_execution_context();
+  debug_assert_eq!(popped, Some(exec_ctx));
+  debug_assert!(popped.is_some(), "module execution popped no execution context");
+  result
+}
+
+/// Resumes an async module evaluation continuation (top-level await).
+///
+/// The continuation must have been created by [`start_module_tla_evaluation`] and stored via
+/// [`Vm::insert_async_continuation`].
+pub(crate) fn resume_module_tla_evaluation(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  realm_id: RealmId,
+  module_id: ModuleId,
+  continuation_id: u32,
+  resume_value: Result<Value, Value>,
+) -> Result<ModuleTlaStepResult, VmError> {
+  // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
+  let exec_ctx = ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(ScriptOrModule::Module(module_id)),
+  };
+  vm.push_execution_context(exec_ctx);
+
+  let result = (|| -> Result<ModuleTlaStepResult, VmError> {
+    let Some(mut cont) = vm.take_async_continuation(continuation_id) else {
+      return Err(VmError::InvariantViolation(
+        "module TLA continuation not found (was it already completed or aborted?)",
+      ));
+    };
+
+    // The awaited promise has settled; it no longer needs to be rooted by the continuation.
+    if let Some(root) = cont.awaited_promise_root.take() {
+      scope.heap_mut().remove_root(root);
+    }
+
+    let source = cont.env.source();
+    let (line, col) = source.line_col(0);
+    let frame = StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    };
+    let mut vm_frame = vm.enter_frame(frame)?;
+
+    let mut evaluator = Evaluator {
+      vm: &mut *vm_frame,
+      host,
+      hooks,
+      env: &mut cont.env,
+      strict: true,
+      this: Value::Undefined,
+      new_target: Value::Undefined,
+    };
+
+    let mut next = async_resume_from_frames(
+      &mut evaluator,
+      scope,
+      mem::take(&mut cont.frames),
+      resume_value,
+    );
+
+    loop {
+      match next {
+        Ok(AsyncBodyResult::CompleteOk(_)) => {
+          async_teardown_continuation(scope, cont);
+          return Ok(ModuleTlaStepResult::Completed);
+        }
+        Ok(AsyncBodyResult::CompleteThrow(reason)) => {
+          async_teardown_continuation(scope, cont);
+          return Err(VmError::Throw(reason));
+        }
+        Ok(AsyncBodyResult::Await { await_value, frames }) => {
+          // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
+          match crate::promise_ops::promise_resolve_with_host_and_hooks(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            await_value,
+          ) {
+            Ok(awaited_promise) => {
+              // Root the awaited promise across root creation.
+              if let Err(err) = scope.push_root(awaited_promise) {
+                async_teardown_continuation(scope, cont);
+                return Err(err);
+              }
+
+              let awaited_root = match scope.heap_mut().add_root(awaited_promise) {
+                Ok(id) => id,
+                Err(err) => {
+                  async_teardown_continuation(scope, cont);
+                  return Err(err);
+                }
+              };
+
+              cont.awaited_promise_root = Some(awaited_root);
+              cont.frames = frames;
+
+              // Ensure `replace_async_continuation` cannot fail after consuming `cont`, so we don't
+              // leak roots if the async continuation storage allocation fails.
+              if let Err(err) = vm_frame.reserve_async_continuations(1) {
+                async_teardown_continuation(scope, cont);
+                return Err(err);
+              }
+
+              // Reinsert continuation before returning to the host so it can be resumed by Promise
+              // jobs.
+              if let Err(err) = vm_frame.replace_async_continuation(continuation_id, cont) {
+                // Should be unreachable after `reserve_async_continuations`, but preserve
+                // fallibility: the caller will treat this as a fatal VM error.
+                return Err(err);
+              }
+
+              return Ok(ModuleTlaStepResult::Await {
+                promise: awaited_promise,
+                continuation_id,
+              });
+            }
+            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+              // Treat PromiseResolve throw as an immediate throw completion at the await site.
+              next = async_resume_from_frames(&mut evaluator, scope, frames, Err(reason));
+              continue;
+            }
+            Err(err) => {
+              async_teardown_continuation(scope, cont);
+              return Err(err);
+            }
+          }
+        }
+        Err(err) => {
+          async_teardown_continuation(scope, cont);
+          return Err(err);
+        }
+      }
+    }
   })();
 
   let popped = vm.pop_execution_context();

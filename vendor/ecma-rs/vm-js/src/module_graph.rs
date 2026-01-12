@@ -1,12 +1,10 @@
 use crate::execution_context::ModuleId;
 use crate::exec::{
   instantiate_module_decls,
-  resume_module_async,
   run_module,
-  run_module_async,
-  ModuleAsyncContinuation,
-  ModuleAsyncEvalResult,
-  ModuleAsyncResumeResult,
+  resume_module_tla_evaluation,
+  start_module_tla_evaluation,
+  ModuleTlaStepResult,
 };
 use crate::import_meta::{create_import_meta_object, VmImportMetaHostHooks};
 use crate::module_loading::DynamicImportState;
@@ -1523,7 +1521,7 @@ impl ModuleGraph {
       );
 
       match step {
-        Ok(ModuleAsyncEvalResult::Completed) => {
+        Ok(ModuleTlaStepResult::Completed) => {
           eval_scope.push_root(cap.resolve)?;
           let _ = vm.call_with_host_and_hooks(
             host,
@@ -1534,14 +1532,11 @@ impl ModuleGraph {
             &[Value::Undefined],
           )?;
         }
-        Ok(ModuleAsyncEvalResult::Await {
-          await_value,
-          continuation,
+        Ok(ModuleTlaStepResult::Await {
+          promise: awaited_promise,
+          continuation_id,
         }) => {
-          // `await_value` is produced by evaluating the module body and is not automatically rooted
-          // across subsequent allocations. Root it before creating persistent roots / scheduling
-          // Promise reactions so a GC cannot collect it (leaving behind an invalid handle).
-          eval_scope.push_root(await_value)?;
+          // Keep the module graph pointer installed until async evaluation completes.
 
           // Root the capability values in the heap so they survive across microtasks.
           let roots = PromiseCapabilityRoots::new(&mut eval_scope, cap)?;
@@ -1553,18 +1548,22 @@ impl ModuleGraph {
               .tla_states
               .resize_with(idx.saturating_add(1), || None);
           }
+          let mut async_continuation_ids = Vec::<u32>::new();
+          async_continuation_ids
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          async_continuation_ids.push(continuation_id);
           self.tla_states[idx] = Some(TlaEvaluationState {
-            continuation: Some(continuation),
-            awaited_promise_root: None,
+            continuation_id,
             promise_roots: Some(roots),
             global_object,
             realm_id,
             prev_graph: graph_guard.prev_graph(),
-            async_continuation_ids: Vec::new(),
+            async_continuation_ids,
           });
 
           // Schedule the first resume step.
-          match self.schedule_tla_resume(vm, &mut eval_scope, host, hooks, module, await_value) {
+          match self.schedule_tla_resume(vm, &mut eval_scope, host, hooks, module, awaited_promise) {
             Ok(()) => {
               // Keep the module graph pointer installed until async evaluation completes.
               graph_guard.disarm();
@@ -1807,13 +1806,13 @@ impl ModuleGraph {
     module: ModuleId,
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
-  ) -> Result<ModuleAsyncEvalResult, VmError> {
+  ) -> Result<ModuleTlaStepResult, VmError> {
     let idx = module_index(module);
     let status = self.modules[idx].status;
     match status {
-      ModuleStatus::Evaluated => return Ok(ModuleAsyncEvalResult::Completed),
+      ModuleStatus::Evaluated => return Ok(ModuleTlaStepResult::Completed),
       ModuleStatus::Evaluating | ModuleStatus::EvaluatingAsync => {
-        return Ok(ModuleAsyncEvalResult::Completed)
+        return Ok(ModuleTlaStepResult::Completed)
       }
       ModuleStatus::Linked => {}
       ModuleStatus::Errored => {
@@ -1828,7 +1827,7 @@ impl ModuleGraph {
 
     self.modules[idx].status = ModuleStatus::EvaluatingAsync;
 
-    let eval_result = (|| -> Result<ModuleAsyncEvalResult, VmError> {
+    let eval_result = (|| -> Result<ModuleTlaStepResult, VmError> {
       // Evaluate dependencies synchronously (top-level await in dependencies remains unsupported).
       let requested_modules = self.modules[idx].requested_modules.clone();
       const EVAL_TICK_EVERY: usize = 32;
@@ -1858,7 +1857,7 @@ impl ModuleGraph {
         .clone()
         .ok_or(VmError::Unimplemented("module AST missing"))?;
 
-      match run_module_async(
+      let step = start_module_tla_evaluation(
         vm,
         scope,
         host,
@@ -1869,18 +1868,14 @@ impl ModuleGraph {
         module_env,
         source,
         &ast.stx.body,
-      )? {
-        ModuleAsyncEvalResult::Completed => {
+      )?;
+
+      match step {
+        ModuleTlaStepResult::Completed => {
           self.modules[idx].status = ModuleStatus::Evaluated;
-          Ok(ModuleAsyncEvalResult::Completed)
+          Ok(ModuleTlaStepResult::Completed)
         }
-        ModuleAsyncEvalResult::Await {
-          await_value,
-          continuation,
-        } => Ok(ModuleAsyncEvalResult::Await {
-          await_value,
-          continuation,
-        }),
+        ModuleTlaStepResult::Await { .. } => Ok(step),
       }
     })();
 
@@ -1901,74 +1896,16 @@ impl ModuleGraph {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     module: ModuleId,
-    await_value: Value,
+    awaited_promise: Value,
   ) -> Result<(), VmError> {
     let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
       "top-level await requires intrinsics (create a Realm first)",
     ))?;
 
     let idx = module_index(module);
-    let mut state_opt = self.tla_states.get_mut(idx).and_then(|s| s.as_mut());
-    let function_realm = state_opt.as_deref().map(|s| s.global_object);
+    let state_opt = self.tla_states.get(idx).and_then(|s| s.as_ref());
+    let function_realm = state_opt.map(|s| s.global_object);
     let job_realm = vm.current_realm();
-
-    // Drop the previously awaited promise root, if any. The awaited promise has just settled and no
-    // longer needs to be kept alive by the module evaluation state.
-    if let Some(state) = state_opt.as_deref_mut() {
-      if let Some(root) = state.awaited_promise_root.take() {
-        scope.heap_mut().remove_root(root);
-      }
-    }
-
-    // `await` suspends on `PromiseResolve(%Promise%, await_value)` and resumes via Promise jobs. This
-    // mirrors async function evaluation: if `await_value` is already a Promise object, avoid
-    // wrapping it (which can trigger Promise species side effects), but still observe
-    // `await_value.constructor` for side effects/throws.
-    let awaited_promise = {
-      let mut await_scope = scope.reborrow();
-      await_scope.push_root(await_value)?;
-      if let Value::Object(obj) = await_value {
-        if await_scope.heap().is_promise_object(obj) {
-          let ctor_key_s = await_scope.alloc_string("constructor")?;
-          await_scope.push_root(Value::String(ctor_key_s))?;
-          let ctor_key = PropertyKey::from_string(ctor_key_s);
-          let _ = await_scope.ordinary_get_with_host_and_hooks(
-            vm,
-            host,
-            hooks,
-            obj,
-            ctor_key,
-            Value::Object(obj),
-          )?;
-          await_value
-        } else {
-          crate::promise_ops::promise_resolve_with_host_and_hooks(
-            vm,
-            &mut await_scope,
-            host,
-            hooks,
-            await_value,
-          )?
-        }
-      } else {
-        crate::promise_ops::promise_resolve_with_host_and_hooks(
-          vm,
-          &mut await_scope,
-          host,
-          hooks,
-          await_value,
-        )?
-      }
-    };
-
-    // Root the awaited promise and stash it in persistent roots (when state exists) so it stays
-    // alive across microtasks.
-    scope.push_root(awaited_promise)?;
-    if let Some(state) = state_opt {
-      let root = scope.heap_mut().add_root(awaited_promise)?;
-      state.awaited_promise_root = Some(root);
-      self.torn_down = false;
-    }
 
     let on_fulfilled_call = vm.module_tla_on_fulfilled_call_id()?;
     let on_rejected_call = vm.module_tla_on_rejected_call_id()?;
@@ -2036,8 +1973,7 @@ impl Drop for ModuleGraph {
 
 #[derive(Debug)]
 struct TlaEvaluationState {
-  continuation: Option<ModuleAsyncContinuation>,
-  awaited_promise_root: Option<RootId>,
+  continuation_id: u32,
   promise_roots: Option<PromiseCapabilityRoots>,
   global_object: GcObject,
   realm_id: RealmId,
@@ -2067,14 +2003,8 @@ impl TlaEvaluationState {
     for id in self.async_continuation_ids.drain(..) {
       vm.abort_async_continuation(heap, id);
     }
-    if let Some(root) = self.awaited_promise_root.take() {
-      heap.remove_root(root);
-    }
     if let Some(roots) = self.promise_roots.take() {
       roots.teardown(heap);
-    }
-    if let Some(cont) = self.continuation.take() {
-      cont.teardown(heap);
     }
   }
 }
@@ -2086,10 +2016,7 @@ impl Drop for TlaEvaluationState {
       return;
     }
     debug_assert!(
-      self.promise_roots.is_none()
-        && self.continuation.is_none()
-        && self.awaited_promise_root.is_none()
-        && self.async_continuation_ids.is_empty(),
+      self.promise_roots.is_none() && self.async_continuation_ids.is_empty(),
       "TlaEvaluationState dropped with leaked persistent roots; ensure the module evaluation promise is settled or aborted"
     );
   }
@@ -2153,12 +2080,6 @@ fn module_tla_resume_inner(
     return Ok(());
   };
 
-  // The awaited promise has settled; it no longer needs to be rooted by the module evaluation
-  // state.
-  if let Some(root) = state.awaited_promise_root.take() {
-    scope.heap_mut().remove_root(root);
-  }
-
   // `vm.tick` is a potential termination point. Ensure we restore `vm.module_graph_ptr` and free
   // persistent roots even if it returns an error (termination, OOM, etc).
   if let Err(err) = vm.tick() {
@@ -2169,26 +2090,21 @@ fn module_tla_resume_inner(
   }
 
   let realm_id = state.realm_id;
-  let Some(cont) = state.continuation.as_mut() else {
-    state.teardown(vm, scope.heap_mut());
-    return Err(VmError::InvariantViolation(
-      "missing async module evaluation continuation",
-    ));
-  };
+  let continuation_id = state.continuation_id;
 
-  let result = resume_module_async(
+  let result = resume_module_tla_evaluation(
     vm,
     scope,
     host,
     hooks,
     realm_id,
     module,
-    cont,
+    continuation_id,
     resume_value,
   );
 
   match result {
-    Ok(ModuleAsyncResumeResult::Completed) => {
+    Ok(ModuleTlaStepResult::Completed) => {
       graph.modules[idx].status = ModuleStatus::Evaluated;
 
       let Some(roots) = state.promise_roots.take() else {
@@ -2224,9 +2140,22 @@ fn module_tla_resume_inner(
       resolve_res?;
       Ok(())
     }
-    Ok(ModuleAsyncResumeResult::Await { await_value }) => {
+    Ok(ModuleTlaStepResult::Await {
+      promise: awaited_promise,
+      continuation_id,
+    }) => {
+      state.continuation_id = continuation_id;
+      if !state.async_continuation_ids.contains(&continuation_id) {
+        state
+          .async_continuation_ids
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        state.async_continuation_ids.push(continuation_id);
+      }
       graph.tla_states[idx] = Some(state);
-      if let Err(err) = graph.schedule_tla_resume(vm, scope, host, hooks, module, await_value) {
+      if let Err(err) =
+        graph.schedule_tla_resume(vm, scope, host, hooks, module, awaited_promise)
+      {
         // Scheduling failed: treat this as a module evaluation failure and reject the evaluation
         // promise.
         let Some(mut state) = graph.tla_states.get_mut(idx).and_then(|s| s.take()) else {

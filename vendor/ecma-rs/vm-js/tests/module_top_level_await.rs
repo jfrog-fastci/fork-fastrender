@@ -792,3 +792,87 @@ fn dynamic_import_after_top_level_await_starts_and_resolves() -> Result<(), VmEr
   realm.teardown(&mut heap);
   Ok(())
 }
+
+#[test]
+fn for_await_of_and_await_in_initializer_work_in_modules() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = graph.add_module_with_specifier(
+    "m.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        export const init = await Promise.resolve(2);
+        export let out = 0;
+        for await (const x of [Promise.resolve(1)]) { out = x; }
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  // Top-level await should suspend module evaluation (promise starts pending).
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(
+    heap.promise_state(eval_promise_obj)?,
+    PromiseState::Pending,
+    "top-level await should produce a pending evaluation promise"
+  );
+
+  assert_eq!(
+    vm.async_continuation_count(),
+    1,
+    "pending TLA evaluation should store exactly one async continuation"
+  );
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  assert_eq!(
+    vm.async_continuation_count(),
+    0,
+    "module TLA continuation should be cleaned up after evaluation completes"
+  );
+
+  let mut scope = heap.scope();
+  let eval_promise_value = scope
+    .heap()
+    .get_root(eval_promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(eval_promise_obj) = eval_promise_value else {
+    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+  };
+  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+  let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "init")?,
+    Value::Number(2.0)
+  );
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "out")?,
+    Value::Number(1.0)
+  );
+
+  drop(scope);
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
