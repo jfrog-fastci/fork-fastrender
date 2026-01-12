@@ -6014,3 +6014,9 @@ impl InteractionEngine {
     (changed, action)
   }
 }
+
+#[cfg(test)]
+mod pointer_tests;
+
+#[cfg(test)]
+mod fuzz_tests;
