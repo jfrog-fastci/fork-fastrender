@@ -14,7 +14,6 @@ mod shorthand_reset_tests;
 mod time_precision_test;
 mod time_sampling;
 mod timeline_scope_tests;
-mod timeline_supports_test;
 
 // Consolidated from standalone transition/animation integration tests.
 mod browser_document_transition_state;

@@ -173,6 +173,7 @@ mod text_orientation_properties;
 mod text_overflow_invalid_values_ignored_test;
 mod text_size_adjust_test;
 mod timeline_name_none_tests;
+mod timeline_supports_test;
 mod tokenize_property_value_comments_test;
 mod top_layer_closed_hidden_test;
 mod transition_global_keyword_tests;
