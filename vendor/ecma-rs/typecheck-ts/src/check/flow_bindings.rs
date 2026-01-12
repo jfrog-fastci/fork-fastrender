@@ -501,8 +501,8 @@ impl<'a> FlowBindingsBuilder<'a> {
       }
       ExprKind::Unary { expr, .. }
       | ExprKind::Update { expr, .. }
-      | ExprKind::TypeAssertion { expr, .. }
-      | ExprKind::Instantiation { expr, .. } => {
+      | ExprKind::Instantiation { expr, .. }
+      | ExprKind::TypeAssertion { expr, .. } => {
         self.process_expr(*expr, lexical_scopes);
       }
       ExprKind::Binary { left, right, .. } => {

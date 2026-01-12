@@ -637,6 +637,7 @@ impl<'a> EffectsAnalyzer<'a> {
       };
       match &node.kind {
         ExprKind::TypeAssertion { expr: inner, .. }
+        | ExprKind::Instantiation { expr: inner, .. }
         | ExprKind::NonNull { expr: inner }
         | ExprKind::Instantiation { expr: inner, .. }
         | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,

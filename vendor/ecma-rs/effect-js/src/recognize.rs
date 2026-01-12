@@ -696,8 +696,8 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
       ExprKind::Unary { expr, .. }
       | ExprKind::Update { expr, .. }
       | ExprKind::Await { expr }
-      | ExprKind::NonNull { expr }
-      | ExprKind::Instantiation { expr, .. } => {
+      | ExprKind::Instantiation { expr, .. }
+      | ExprKind::NonNull { expr } => {
         visit_expr(body, *expr, reachable);
       }
       ExprKind::Binary { left, right, .. } => {
