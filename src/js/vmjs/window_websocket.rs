@@ -879,26 +879,33 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
     let (vm, heap) = window_realm.vm_and_heap_mut();
     let mut vm = vm.push_budget(budget);
 
-    vm.tick()
-      .map_err(|err| vm_error_to_event_loop_error(heap, err))?;
+    let result: crate::error::Result<()> = (|| {
+      vm.tick()
+        .map_err(|err| vm_error_to_event_loop_error(heap, err))?;
 
-    // Resolve WS object. If the wrapper is no longer reachable, skip dispatch.
-    let ws_obj: Option<GcObject> = with_env_state(env_id, |state| {
-      Ok(state.sockets.get(&ws_id).and_then(|ws| ws.weak_obj.upgrade(heap)))
-    })
-    .unwrap_or(None);
-    let Some(ws_obj) = ws_obj else {
-      return Ok(());
-    };
+      // Resolve WS object. If the wrapper is no longer reachable, skip dispatch.
+      let ws_obj: Option<GcObject> = with_env_state(env_id, |state| {
+        Ok(state.sockets.get(&ws_id).and_then(|ws| ws.weak_obj.upgrade(heap)))
+      })
+      .unwrap_or(None);
+      let Some(ws_obj) = ws_obj else {
+        return Ok(());
+      };
 
-    let call_result = (|| {
-      let result = f(vm_host, heap, &mut vm, &mut hooks, ws_obj);
-      match result {
+      let call_result = (|| {
+        let result = f(vm_host, heap, &mut vm, &mut hooks, ws_obj);
+        match result {
+          Ok(()) => Ok(()),
+          Err(err) => match err {
+            VmError::Throw(_) | VmError::ThrowWithStack { .. } => Ok(()),
+            other => Err(other),
+          },
+        }
+      })();
+
+      match call_result {
         Ok(()) => Ok(()),
-        Err(err) => match err {
-          VmError::Throw(_) | VmError::ThrowWithStack { .. } => Ok(()),
-          other => Err(other),
-        },
+        Err(err) => Err(vm_error_to_event_loop_error(heap, err)),
       }
     })();
 
@@ -906,10 +913,7 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
       return Err(err);
     }
 
-    match call_result {
-      Ok(()) => Ok(()),
-      Err(err) => Err(vm_error_to_event_loop_error(heap, err)),
-    }
+    result
   });
 
   if queue_result.is_err() {

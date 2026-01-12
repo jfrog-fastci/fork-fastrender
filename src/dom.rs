@@ -5666,6 +5666,62 @@ fn sanitize_input_value_string(
   }
 }
 
+/// Parse a date input value (`YYYY-MM-DD`) according to HTML rules.
+///
+/// Returns an internal day-count representation (days from CE) when valid.
+pub fn parse_input_date_value(value: &str) -> Option<i32> {
+  let trimmed = trim_ascii_whitespace_html(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+  forms_validation::parse_date_value(trimmed)
+}
+
+/// Parse a time input value (`HH:MM[:SS[.sss]]`) according to HTML rules.
+///
+/// Returns milliseconds since midnight when valid.
+pub fn parse_input_time_value(value: &str) -> Option<i64> {
+  let trimmed = trim_ascii_whitespace_html(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+  forms_validation::parse_time_value(trimmed)
+}
+
+/// Parse a datetime-local input value (`YYYY-MM-DDTHH:MM[:SS[.sss]]`) according to HTML rules.
+///
+/// Returns an internal millisecond representation based on the parsed date's day-count
+/// (`chrono::NaiveDate::num_days_from_ce`) and the time's milliseconds since midnight.
+pub fn parse_input_datetime_local_value(value: &str) -> Option<i64> {
+  let trimmed = trim_ascii_whitespace_html(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+  forms_validation::parse_datetime_local_value(trimmed)
+}
+
+/// Parse a month input value (`YYYY-MM`) according to HTML rules.
+///
+/// Returns an internal month-count representation (months since year 0) when valid.
+pub fn parse_input_month_value(value: &str) -> Option<i32> {
+  let trimmed = trim_ascii_whitespace_html(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+  forms_validation::parse_month_value(trimmed)
+}
+
+/// Parse a week input value (`YYYY-Www`) according to HTML rules.
+///
+/// Returns days-from-CE for the Monday of the given ISO week when valid.
+pub fn parse_input_week_value(value: &str) -> Option<i32> {
+  let trimmed = trim_ascii_whitespace_html(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+  forms_validation::parse_week_value(trimmed)
+}
+
 pub(crate) fn input_number_value_string(node: &DomNode) -> Option<String> {
   if !matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input")) {
     return None;

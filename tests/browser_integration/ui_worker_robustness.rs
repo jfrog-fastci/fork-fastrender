@@ -66,6 +66,8 @@ fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
       tab_id: msg_tab, ..
     }
     | WorkerToUi::SelectDropdownClosed { tab_id: msg_tab }
+    | WorkerToUi::DateTimePickerOpened { tab_id: msg_tab, .. }
+    | WorkerToUi::DateTimePickerClosed { tab_id: msg_tab }
     | WorkerToUi::NavigationStarted { tab_id: msg_tab, .. }
     | WorkerToUi::NavigationCommitted { tab_id: msg_tab, .. }
     | WorkerToUi::NavigationFailed { tab_id: msg_tab, .. }

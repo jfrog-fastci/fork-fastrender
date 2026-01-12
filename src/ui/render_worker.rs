@@ -605,18 +605,18 @@ fn apply_original_fragment_to_final_url(original_url: &str, final_url: &str) -> 
   format!("{final_url}#{fragment}")
 }
 
-fn select_anchor_css(
+fn styled_node_anchor_css(
   box_tree: &crate::BoxTree,
   fragment_tree: &crate::FragmentTree,
   scroll_state: &ScrollState,
-  select_node_id: usize,
+  styled_node_id: usize,
 ) -> Option<Rect> {
-  // BoxTree: find the first box produced by the `<select>` element.
-  let select_box_id = {
+  // BoxTree: find the first box produced by the element.
+  let box_id = {
     let mut stack: Vec<&crate::BoxNode> = vec![&box_tree.root];
     let mut found = None;
     while let Some(node) = stack.pop() {
-      if node.styled_node_id == Some(select_node_id) {
+      if node.styled_node_id == Some(styled_node_id) {
         found = Some(node.id);
         break;
       }
@@ -630,17 +630,25 @@ fn select_anchor_css(
     found?
   };
 
-  // FragmentTree: compute absolute page-space bounds for the select's box.
+  // FragmentTree: compute absolute page-space bounds for the box.
   let mut fragment_tree_scrolled = fragment_tree.clone();
   crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, scroll_state);
-  let page_rect =
-    crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
+  let page_rect = crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, box_id)?;
 
   // Convert page-space bounds to viewport-local coords for UI positioning.
   Some(page_rect.translate(Point::new(
     -scroll_state.viewport.x,
     -scroll_state.viewport.y,
   )))
+}
+
+fn select_anchor_css(
+  box_tree: &crate::BoxTree,
+  fragment_tree: &crate::FragmentTree,
+  scroll_state: &ScrollState,
+  select_node_id: usize,
+) -> Option<Rect> {
+  styled_node_anchor_css(box_tree, fragment_tree, scroll_state, select_node_id)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1509,6 +1517,19 @@ impl BrowserRuntime {
         item_index,
       } => {
         self.handle_select_dropdown_pick(tab_id, select_node_id, item_index);
+      }
+      UiToWorker::DateTimePickerChoose {
+        tab_id,
+        input_node_id,
+        value,
+      } => {
+        self.handle_date_time_picker_choose(tab_id, input_node_id, value);
+      }
+      UiToWorker::DateTimePickerCancel { tab_id } => {
+        // The browser UI typically owns the picker overlay state, so cancellation is a no-op on the
+        // worker side. Emit `DateTimePickerClosed` anyway so front-ends that expect an explicit
+        // close notification can dismiss the popup deterministically.
+        let _ = self.ui_tx.send(WorkerToUi::DateTimePickerClosed { tab_id });
       }
       UiToWorker::TextInput { tab_id, text } => {
         self.handle_text_input(tab_id, &text);
@@ -3090,6 +3111,7 @@ impl BrowserRuntime {
       dom_changed,
       action,
       anchor_css,
+      date_time_value,
       scroll_changed,
       mouseup_target,
       mouseup_target_element_id,
@@ -3106,6 +3128,7 @@ impl BrowserRuntime {
         dom_changed,
         action,
         anchor_css,
+        date_time_value,
         focus_scroll,
         mouseup_target,
         mouseup_target_element_id,
@@ -3158,6 +3181,37 @@ impl BrowserRuntime {
             // offsets internally.
             select_anchor_css(box_tree, fragment_tree, &scroll_snapshot, *select_node_id)
           }
+          InteractionAction::OpenDateTimePicker { input_node_id, .. } => styled_node_anchor_css(
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+            *input_node_id,
+          ),
+          _ => None,
+        };
+
+        let date_time_value = match &action {
+          InteractionAction::OpenDateTimePicker { input_node_id, kind } => Some(
+            crate::dom::find_node_mut_by_preorder_id(dom, *input_node_id)
+              .map(|node| match *kind {
+                crate::interaction::DateTimeInputKind::Date => {
+                  crate::dom::input_date_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Time => {
+                  crate::dom::input_time_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::DateTimeLocal => {
+                  crate::dom::input_datetime_local_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Month => {
+                  crate::dom::input_month_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Week => {
+                  crate::dom::input_week_value_string(node).unwrap_or_default()
+                }
+              })
+              .unwrap_or_default(),
+          ),
           _ => None,
         };
 
@@ -3189,6 +3243,7 @@ impl BrowserRuntime {
             dom_changed,
             action,
             anchor_css,
+            date_time_value,
             focus_scroll,
             mouseup_target,
             mouseup_target_element_id,
@@ -3218,6 +3273,7 @@ impl BrowserRuntime {
         dom_changed,
         action,
         anchor_css,
+        date_time_value,
         scroll_changed,
         mouseup_target,
         mouseup_target_element_id,
@@ -3440,6 +3496,27 @@ impl BrowserRuntime {
           tab.needs_repaint = true;
         }
       }
+      InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
+        // Prefer anchoring the popup to the `<input>` control's box, falling back to the cursor
+        // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
+        let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
+        let anchor_css = anchor_css
+          .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+          .unwrap_or(cursor_anchor_css);
+
+        let value = date_time_value.unwrap_or_default();
+
+        let _ = self.ui_tx.send(WorkerToUi::DateTimePickerOpened {
+          tab_id,
+          input_node_id,
+          kind,
+          value,
+          anchor_css,
+        });
+        if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
+      }
       _ => {
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
@@ -3643,6 +3720,27 @@ impl BrowserRuntime {
 
     let changed = doc.mutate_dom(|dom| tab.interaction.text_input(dom, text));
     if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_date_time_picker_choose(&mut self, tab_id: TabId, input_node_id: usize, value: String) {
+    // Close the picker popup deterministically for any UI: `DateTimePickerChoose` always
+    // corresponds to a user choosing a value in the picker overlay, so the popup should be
+    // dismissed even if the selection is a no-op (choosing the currently-set value).
+    let _ = self.ui_tx.send(WorkerToUi::DateTimePickerClosed { tab_id });
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let engine = &mut tab.interaction;
+    let dom_changed = doc.mutate_dom(|dom| engine.set_date_time_input_value(dom, input_node_id, &value));
+    if dom_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -4082,6 +4180,57 @@ impl BrowserRuntime {
             control,
             anchor_css,
           });
+          if changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
+        }
+        InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
+          let anchor_css = doc
+            .prepared()
+            .and_then(|prepared| {
+              styled_node_anchor_css(
+                prepared.box_tree(),
+                prepared.fragment_tree(),
+                &tab.scroll_state,
+                input_node_id,
+              )
+            })
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
+
+          let mut value: String = String::new();
+          let _ = doc.mutate_dom(|dom| {
+            value = crate::dom::find_node_mut_by_preorder_id(dom, input_node_id)
+              .map(|node| match kind {
+                crate::interaction::DateTimeInputKind::Date => {
+                  crate::dom::input_date_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Time => {
+                  crate::dom::input_time_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::DateTimeLocal => {
+                  crate::dom::input_datetime_local_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Month => {
+                  crate::dom::input_month_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Week => {
+                  crate::dom::input_week_value_string(node).unwrap_or_default()
+                }
+              })
+              .unwrap_or_default();
+            false
+          });
+
+          let _ = self.ui_tx.send(WorkerToUi::DateTimePickerOpened {
+            tab_id,
+            input_node_id,
+            kind,
+            value,
+            anchor_css,
+          });
+
           if changed {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;

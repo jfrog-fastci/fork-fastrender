@@ -40,6 +40,15 @@ pub enum InputModality {
   Keyboard,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateTimeInputKind {
+  Date,
+  Time,
+  DateTimeLocal,
+  Month,
+  Week,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionAction {
   None,
@@ -67,6 +76,10 @@ pub enum InteractionAction {
   OpenSelectDropdown {
     select_node_id: usize,
     control: crate::tree::box_tree::SelectControl,
+  },
+  OpenDateTimePicker {
+    input_node_id: usize,
+    kind: DateTimeInputKind,
   },
 }
 
@@ -1722,6 +1735,26 @@ fn is_radio_input(node: &DomNode) -> bool {
 
 fn is_range_input(node: &DomNode) -> bool {
   is_input(node) && input_type(node).eq_ignore_ascii_case("range")
+}
+
+fn date_time_input_kind(node: &DomNode) -> Option<DateTimeInputKind> {
+  if !is_input(node) {
+    return None;
+  }
+  let ty = input_type(node);
+  if ty.eq_ignore_ascii_case("date") {
+    Some(DateTimeInputKind::Date)
+  } else if ty.eq_ignore_ascii_case("time") {
+    Some(DateTimeInputKind::Time)
+  } else if ty.eq_ignore_ascii_case("datetime-local") {
+    Some(DateTimeInputKind::DateTimeLocal)
+  } else if ty.eq_ignore_ascii_case("month") {
+    Some(DateTimeInputKind::Month)
+  } else if ty.eq_ignore_ascii_case("week") {
+    Some(DateTimeInputKind::Week)
+  } else {
+    None
+  }
 }
 
 fn is_submit_input(node: &DomNode) -> bool {
@@ -3631,6 +3664,74 @@ impl InteractionEngine {
     changed
   }
 
+  /// Update the value for a date/time-like `<input>` control as if the user edited it.
+  ///
+  /// This applies HTML value sanitization rules: invalid values sanitize to the empty string.
+  pub fn set_date_time_input_value(
+    &mut self,
+    dom: &mut DomNode,
+    input_node_id: usize,
+    value: &str,
+  ) -> bool {
+    let mut index = DomIndexMut::new(dom);
+    let Some(node) = index.node(input_node_id) else {
+      return false;
+    };
+    let Some(kind) = date_time_input_kind(node) else {
+      return false;
+    };
+
+    if node_or_ancestor_is_inert(&index, input_node_id) || node_is_disabled(&index, input_node_id) {
+      return false;
+    }
+    if node_is_readonly(&index, input_node_id) {
+      return false;
+    }
+
+    let trimmed = trim_ascii_whitespace(value);
+    let sanitized = if trimmed.is_empty() {
+      ""
+    } else {
+      let ok = match kind {
+        DateTimeInputKind::Date => crate::dom::parse_input_date_value(trimmed).is_some(),
+        DateTimeInputKind::Time => crate::dom::parse_input_time_value(trimmed).is_some(),
+        DateTimeInputKind::DateTimeLocal => {
+          crate::dom::parse_input_datetime_local_value(trimmed).is_some()
+        }
+        DateTimeInputKind::Month => crate::dom::parse_input_month_value(trimmed).is_some(),
+        DateTimeInputKind::Week => crate::dom::parse_input_week_value(trimmed).is_some(),
+      };
+      if ok { trimmed } else { "" }
+    };
+
+    let Some(node_mut) = index.node_mut(input_node_id) else {
+      return false;
+    };
+
+    // Any direct value mutation cancels an in-progress IME preedit string.
+    let mut changed = self.ime_cancel_internal();
+    let changed_value = set_node_attr(node_mut, "value", sanitized);
+    changed |= changed_value;
+    if changed_value {
+      changed |= self.mark_user_validity(input_node_id);
+    }
+
+    // Keep caret state in sync for focused controls.
+    if self.state.focused == Some(input_node_id) {
+      let len = sanitized.chars().count();
+      self.text_edit = Some(TextEditState {
+        node_id: input_node_id,
+        caret: len,
+        caret_affinity: CaretAffinity::Downstream,
+        selection_anchor: None,
+        preferred_x: None,
+      });
+      changed |= self.sync_text_edit_paint_state();
+    }
+
+    changed
+  }
+
   pub fn focused_node_id(&self) -> Option<usize> {
     self.state.focused
   }
@@ -4785,6 +4886,16 @@ impl InteractionEngine {
                   dom_changed |= self.mark_user_validity(target_id);
                 }
               }
+            } else if let Some(kind) = index
+              .node(target_id)
+              .and_then(|node| date_time_input_kind(node))
+            {
+              if !node_is_disabled(&index, target_id) && !node_is_readonly(&index, target_id) {
+                action = InteractionAction::OpenDateTimePicker {
+                  input_node_id: target_id,
+                  kind,
+                };
+              }
             } else if index.node(target_id).is_some_and(is_submit_control) {
               if node_is_disabled(&index, target_id) {
                 // Disabled submit controls do not submit.
@@ -4884,6 +4995,18 @@ impl InteractionEngine {
     let focused_is_text_input = index.node(focused).is_some_and(is_text_input);
     let focused_is_textarea = index.node(focused).is_some_and(is_textarea);
     if !(focused_is_text_input || focused_is_textarea) {
+      return changed;
+    }
+
+    // `<input type=date|time|datetime-local|month|week>` uses Space to open its picker UI
+    // (handled via `KeyAction::Space`). The browser UI sends both KeyAction and TextInput for Space,
+    // so suppress raw space insertion here to avoid corrupting date/time values.
+    if focused_is_text_input
+      && text == " "
+      && index
+        .node(focused)
+        .is_some_and(|node| date_time_input_kind(node).is_some())
+    {
       return changed;
     }
 
@@ -6308,6 +6431,16 @@ impl InteractionEngine {
       KeyAction::Enter => {
         if node_or_ancestor_is_inert(&index, focused) {
           // Inert subtrees are not interactive.
+        } else if let Some(kind) = index
+          .node(focused)
+          .and_then(|node| date_time_input_kind(node))
+        {
+          if !node_is_disabled(&index, focused) && !node_is_readonly(&index, focused) {
+            action = InteractionAction::OpenDateTimePicker {
+              input_node_id: focused,
+              kind,
+            };
+          }
         } else if let Some(href) = index
           .node(focused)
           .filter(|node| is_anchor_with_href(node))
@@ -6416,6 +6549,16 @@ impl InteractionEngine {
       KeyAction::Space | KeyAction::ShiftSpace => {
         if node_or_ancestor_is_inert(&index, focused) {
           // Inert subtrees are not interactive.
+        } else if let Some(kind) = index
+          .node(focused)
+          .and_then(|node| date_time_input_kind(node))
+        {
+          if !node_is_disabled(&index, focused) && !node_is_readonly(&index, focused) {
+            action = InteractionAction::OpenDateTimePicker {
+              input_node_id: focused,
+              kind,
+            };
+          }
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
             if let Some(node_mut) = index.node_mut(focused) {

@@ -1047,6 +1047,14 @@ impl BrowserAppState {
         // Front-ends that show a `<select>` overlay should dismiss it.
         update.request_redraw = true;
       }
+      WorkerToUi::DateTimePickerOpened { .. } => {
+        // Front-ends may show an overlay picker for date/time-like inputs.
+        update.request_redraw = true;
+      }
+      WorkerToUi::DateTimePickerClosed { .. } => {
+        // Front-ends that show a picker overlay should dismiss it.
+        update.request_redraw = true;
+      }
       WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.stage = Some(stage);

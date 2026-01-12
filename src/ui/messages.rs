@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 pub use crate::interaction::KeyAction;
+pub use crate::interaction::DateTimeInputKind;
 use tiny_skia::Pixmap;
 
 static NEXT_TAB_ID: AtomicU64 = AtomicU64::new(1);
@@ -398,6 +399,22 @@ pub enum UiToWorker {
   SelectDropdownCancel {
     tab_id: TabId,
   },
+  /// User chose a value in a date/time picker popup.
+  ///
+  /// The UI should send this after receiving [`WorkerToUi::DateTimePickerOpened`].
+  DateTimePickerChoose {
+    tab_id: TabId,
+    input_node_id: usize,
+    /// The raw value string; workers apply HTML sanitization based on the input type.
+    value: String,
+  },
+  /// User dismissed an open date/time picker popup without choosing a value.
+  ///
+  /// Front-ends typically send this when the user presses Escape or clicks outside the popup.
+  /// Workers may treat this as a no-op or use it to emit [`WorkerToUi::DateTimePickerClosed`].
+  DateTimePickerCancel {
+    tab_id: TabId,
+  },
   TextInput {
     tab_id: TabId,
     text: String,
@@ -508,6 +525,18 @@ impl UiToWorker {
   pub fn select_dropdown_cancel(tab_id: TabId) -> Self {
     UiToWorker::SelectDropdownCancel { tab_id }
   }
+
+  pub fn date_time_picker_choose(tab_id: TabId, input_node_id: usize, value: String) -> Self {
+    UiToWorker::DateTimePickerChoose {
+      tab_id,
+      input_node_id,
+      value,
+    }
+  }
+
+  pub fn date_time_picker_cancel(tab_id: TabId) -> Self {
+    UiToWorker::DateTimePickerCancel { tab_id }
+  }
 }
 
 /// Messages sent from the render worker to the UI thread.
@@ -592,6 +621,28 @@ pub enum WorkerToUi {
     anchor_css: Rect,
   },
   SelectDropdownClosed {
+    tab_id: TabId,
+  },
+  /// Request that the UI open a date/time picker popup for an `<input>` control.
+  ///
+  /// This is emitted in response to user activation (click, Enter/Space) on inputs with
+  /// `type=date|time|datetime-local|month|week`.
+  DateTimePickerOpened {
+    tab_id: TabId,
+    input_node_id: usize,
+    kind: DateTimeInputKind,
+    /// Current value string for the input, after applying HTML sanitization rules.
+    value: String,
+    /// Bounding box of the `<input>` control in **viewport CSS coordinates**.
+    ///
+    /// (0,0 is the top-left of the rendered viewport; does not include scroll offset.)
+    anchor_css: Rect,
+  },
+  /// Notification that a date/time picker popup should be dismissed.
+  ///
+  /// Workers emit this in response to [`UiToWorker::DateTimePickerChoose`] and
+  /// [`UiToWorker::DateTimePickerCancel`] so front-ends can close the overlay deterministically.
+  DateTimePickerClosed {
     tab_id: TabId,
   },
   /// Response to [`UiToWorker::ContextMenuRequest`].

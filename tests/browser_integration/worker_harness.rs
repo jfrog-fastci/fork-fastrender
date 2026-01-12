@@ -3,7 +3,9 @@
 use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::tree::box_tree::SelectControl;
-use fastrender::ui::messages::{CursorKind, DownloadId, RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  CursorKind, DateTimeInputKind, DownloadId, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -79,6 +81,15 @@ pub enum WorkerToUiEvent {
   SelectDropdownClosed {
     tab_id: TabId,
   },
+  DateTimePickerOpened {
+    tab_id: TabId,
+    input_node_id: usize,
+    kind: DateTimeInputKind,
+    value: String,
+  },
+  DateTimePickerClosed {
+    tab_id: TabId,
+  },
   ContextMenu {
     tab_id: TabId,
     pos_css: (f32, f32),
@@ -134,6 +145,8 @@ pub enum WorkerEventKind {
   SetClipboardText,
   DebugLog,
   SelectDropdownClosed,
+  DateTimePickerOpened,
+  DateTimePickerClosed,
   ContextMenu,
   HoverChanged,
   FindResult,
@@ -159,6 +172,8 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::SetClipboardText { .. } => WorkerEventKind::SetClipboardText,
       WorkerToUiEvent::DebugLog { .. } => WorkerEventKind::DebugLog,
       WorkerToUiEvent::SelectDropdownClosed { .. } => WorkerEventKind::SelectDropdownClosed,
+      WorkerToUiEvent::DateTimePickerOpened { .. } => WorkerEventKind::DateTimePickerOpened,
+      WorkerToUiEvent::DateTimePickerClosed { .. } => WorkerEventKind::DateTimePickerClosed,
       WorkerToUiEvent::ContextMenu { .. } => WorkerEventKind::ContextMenu,
       WorkerToUiEvent::HoverChanged { .. } => WorkerEventKind::HoverChanged,
       WorkerToUiEvent::FindResult { .. } => WorkerEventKind::FindResult,
@@ -257,6 +272,22 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::SelectDropdownClosed { tab_id } => {
       (WorkerToUiEvent::SelectDropdownClosed { tab_id }, None)
     }
+    WorkerToUi::DateTimePickerOpened {
+      tab_id,
+      input_node_id,
+      kind,
+      value,
+      anchor_css: _,
+    } => (
+      WorkerToUiEvent::DateTimePickerOpened {
+        tab_id,
+        input_node_id,
+        kind,
+        value,
+      },
+      None,
+    ),
+    WorkerToUi::DateTimePickerClosed { tab_id } => (WorkerToUiEvent::DateTimePickerClosed { tab_id }, None),
     WorkerToUi::ContextMenu {
       tab_id,
       pos_css,

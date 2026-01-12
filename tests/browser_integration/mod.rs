@@ -19,6 +19,7 @@ mod browser_thread_history_scroll_restore;
 mod browser_thread_paint_cancellation;
 mod browser_thread_select_dropdown;
 mod browser_thread_select_dropdown_choose;
+mod browser_thread_date_time_picker;
 mod browser_thread_worker;
 mod browser_worker_cancel_gens;
 mod browser_worker_cancellation;

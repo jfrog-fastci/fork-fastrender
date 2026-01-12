@@ -1565,6 +1565,36 @@ struct OpenSelectDropdown {
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
+enum DateTimePickerState {
+  Date {
+    year: i32,
+    month: u32,
+    selected_day: Option<u32>,
+  },
+  Time {
+    hour: u32,
+    minute: u32,
+  },
+  Text {
+    draft: String,
+  },
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
+struct OpenDateTimePicker {
+  tab_id: fastrender::ui::TabId,
+  input_node_id: usize,
+  kind: fastrender::ui::messages::DateTimeInputKind,
+  /// Bounding box of the `<input>` control in viewport CSS coordinates.
+  anchor_css: fastrender::geometry::Rect,
+  /// Fallback anchor position in egui points (cursor position).
+  anchor_points: egui::Pos2,
+  state: DateTimePickerState,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
 struct PendingContextMenuRequest {
   tab_id: fastrender::ui::TabId,
   pos_css: (f32, f32),
@@ -1926,6 +1956,8 @@ struct App {
 
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
+  open_date_time_picker: Option<OpenDateTimePicker>,
+  open_date_time_picker_rect: Option<egui::Rect>,
   debug_log: std::collections::VecDeque<String>,
   debug_log_ui_enabled: bool,
   debug_log_ui_open: bool,
@@ -2013,6 +2045,9 @@ impl App {
     self
       .open_select_dropdown_rect
       .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_date_time_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_context_menu_rect
         .is_some_and(|rect| rect.contains(pos_points))
@@ -2265,6 +2300,8 @@ impl App {
       open_context_menu_rect: None,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
+      open_date_time_picker: None,
+      open_date_time_picker_rect: None,
       bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState::default(),
       debug_log: std::collections::VecDeque::new(),
       debug_log_ui_enabled,
@@ -2590,6 +2627,8 @@ impl App {
       | UiToWorker::SelectDropdownChoose { tab_id, .. }
       | UiToWorker::SelectDropdownCancel { tab_id }
       | UiToWorker::SelectDropdownPick { tab_id, .. }
+      | UiToWorker::DateTimePickerChoose { tab_id, .. }
+      | UiToWorker::DateTimePickerCancel { tab_id }
       | UiToWorker::TextInput { tab_id, .. }
       | UiToWorker::ImePreedit { tab_id, .. }
       | UiToWorker::ImeCommit { tab_id, .. }
@@ -2626,6 +2665,8 @@ impl App {
           | UiToWorker::SelectDropdownChoose { .. }
           | UiToWorker::SelectDropdownCancel { .. }
           | UiToWorker::SelectDropdownPick { .. }
+          | UiToWorker::DateTimePickerChoose { .. }
+          | UiToWorker::DateTimePickerCancel { .. }
           | UiToWorker::TextInput { .. }
           | UiToWorker::ImePreedit { .. }
           | UiToWorker::ImeCommit { .. }
@@ -2704,6 +2745,18 @@ impl App {
       ));
     }
     self.close_select_dropdown();
+  }
+
+  fn close_date_time_picker(&mut self) {
+    self.open_date_time_picker = None;
+    self.open_date_time_picker_rect = None;
+  }
+
+  fn cancel_date_time_picker(&mut self) {
+    if let Some(picker) = self.open_date_time_picker.as_ref() {
+      self.send_worker_msg(fastrender::ui::UiToWorker::date_time_picker_cancel(picker.tab_id));
+    }
+    self.close_date_time_picker();
   }
 
   fn flush_pending_pointer_move(&mut self) {
@@ -2942,6 +2995,7 @@ impl App {
     self.destroy_all_textures();
   }
 
+  /// Open `url` in a new tab and focus the page (matching the expected "open in new tab" UX).
   fn open_url_in_new_tab(&mut self, url: String) -> bool {
     use fastrender::ui::cancel::CancelGens;
     use fastrender::ui::messages::{NavigationReason, RepaintReason, UiToWorker};
@@ -2950,6 +3004,9 @@ impl App {
     // Close any transient UI state before switching tabs.
     if self.open_select_dropdown.is_some() {
       self.cancel_select_dropdown();
+    }
+    if self.open_date_time_picker.is_some() {
+      self.cancel_date_time_picker();
     }
     if self.pointer_captured {
       self.cancel_pointer_capture();
@@ -3002,13 +3059,21 @@ impl App {
       fastrender::ui::WorkerToUi::NavigationStarted { tab_id, .. }
       | fastrender::ui::WorkerToUi::NavigationCommitted { tab_id, .. }
       | fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. }
-      | fastrender::ui::WorkerToUi::SelectDropdownClosed { tab_id } => {
+      | fastrender::ui::WorkerToUi::SelectDropdownClosed { tab_id }
+      | fastrender::ui::WorkerToUi::DateTimePickerClosed { tab_id } => {
         if self
           .open_select_dropdown
           .as_ref()
           .is_some_and(|d| d.tab_id == *tab_id)
         {
           self.close_select_dropdown();
+        }
+        if self
+          .open_date_time_picker
+          .as_ref()
+          .is_some_and(|picker| picker.tab_id == *tab_id)
+        {
+          self.close_date_time_picker();
         }
         if self
           .open_context_menu
@@ -3056,10 +3121,10 @@ impl App {
       pos_css,
       link_url,
     } = &msg
-    {
-      if self.browser_state.active_tab_id() == Some(*tab_id) {
-        if self
-          .pending_context_menu_request
+      {
+        if self.browser_state.active_tab_id() == Some(*tab_id) {
+          if self
+            .pending_context_menu_request
           .as_ref()
           .is_some_and(|pending| pending.tab_id == *tab_id && pending.pos_css == *pos_css)
         {
@@ -3075,6 +3140,77 @@ impl App {
             request_redraw = true;
           }
         }
+      }
+    }
+
+    if let fastrender::ui::WorkerToUi::DateTimePickerOpened {
+      tab_id,
+      input_node_id,
+      kind,
+      value,
+      anchor_css,
+    } = &msg
+    {
+      if self.browser_state.active_tab_id() == Some(*tab_id) {
+        let mut anchor_points = self
+          .last_cursor_pos_points
+          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
+          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
+        if self.page_input_tab == Some(*tab_id) {
+          if let Some(mapping) = self.page_input_mapping {
+            if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(*anchor_css) {
+              anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+            }
+          }
+        }
+
+        let state = match kind {
+          fastrender::ui::messages::DateTimeInputKind::Date => {
+            let parsed = fastrender::dom::parse_input_date_value(value)
+              .and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
+            let year = parsed
+              .as_ref()
+              .map(|d| chrono::Datelike::year(d))
+              .unwrap_or(1970);
+            let month = parsed
+              .as_ref()
+              .map(|d| chrono::Datelike::month(d))
+              .unwrap_or(1);
+            let selected_day = parsed.as_ref().map(|d| chrono::Datelike::day(d));
+            DateTimePickerState::Date {
+              year,
+              month,
+              selected_day,
+            }
+          }
+          fastrender::ui::messages::DateTimeInputKind::Time => {
+            let (mut hour, mut minute) = (0u32, 0u32);
+            if let Some(ms) = fastrender::dom::parse_input_time_value(value) {
+              if ms >= 0 {
+                let total_minutes = (ms / 60_000) as u32;
+                hour = (total_minutes / 60) % 24;
+                minute = total_minutes % 60;
+              }
+            }
+            DateTimePickerState::Time { hour, minute }
+          }
+          fastrender::ui::messages::DateTimeInputKind::DateTimeLocal
+          | fastrender::ui::messages::DateTimeInputKind::Month
+          | fastrender::ui::messages::DateTimeInputKind::Week => {
+            DateTimePickerState::Text { draft: value.clone() }
+          }
+        };
+
+        self.open_date_time_picker = Some(OpenDateTimePicker {
+          tab_id: *tab_id,
+          input_node_id: *input_node_id,
+          kind: *kind,
+          anchor_css: *anchor_css,
+          anchor_points,
+          state,
+        });
+        self.open_date_time_picker_rect = None;
+        request_redraw = true;
       }
     }
 
@@ -4668,6 +4804,240 @@ impl App {
     self.window.request_redraw();
   }
 
+  fn render_date_time_picker(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::messages::DateTimeInputKind;
+    use fastrender::ui::UiToWorker;
+
+    let (tab_id, input_node_id, kind, anchor_css, fallback_anchor_points) =
+      match self.open_date_time_picker.as_ref() {
+        Some(picker) => (
+          picker.tab_id,
+          picker.input_node_id,
+          picker.kind,
+          picker.anchor_css,
+          picker.anchor_points,
+        ),
+        None => {
+          self.open_date_time_picker_rect = None;
+          return;
+        }
+      };
+
+    let mut anchor_pos_points = fallback_anchor_points;
+    if let Some(mapping) = self.page_input_mapping {
+      if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
+        anchor_pos_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+      }
+    }
+
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      self.cancel_date_time_picker();
+      self.window.request_redraw();
+      return;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      self.cancel_date_time_picker();
+      self.window.request_redraw();
+      return;
+    }
+
+    enum Action {
+      Choose(String),
+      Cancel,
+    }
+
+    let popup = egui::Area::new(egui::Id::new((
+      "fastr_date_time_picker_popup",
+      tab_id.0,
+      input_node_id,
+    )))
+    .order(egui::Order::Foreground)
+    .fixed_pos(anchor_pos_points)
+    .show(ctx, |ui| {
+      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+        let Some(picker) = self.open_date_time_picker.as_mut() else {
+          return None;
+        };
+
+        let mut action: Option<Action> = None;
+        match (&picker.kind, &mut picker.state) {
+          (DateTimeInputKind::Date, DateTimePickerState::Date { year, month, selected_day }) => {
+            let header = format!("{:04}-{:02}", *year, *month);
+            ui.horizontal(|ui| {
+              if ui.button("◀").clicked() {
+                if *month <= 1 {
+                  *month = 12;
+                  *year -= 1;
+                } else {
+                  *month -= 1;
+                }
+              }
+              ui.label(header);
+              if ui.button("▶").clicked() {
+                if *month >= 12 {
+                  *month = 1;
+                  *year += 1;
+                } else {
+                  *month += 1;
+                }
+              }
+
+              if ui.button("Clear").clicked() {
+                action = Some(Action::Choose(String::new()));
+              }
+            });
+            ui.separator();
+
+            let Some(first_day) = chrono::NaiveDate::from_ymd_opt(*year, *month, 1) else {
+              ui.colored_label(egui::Color32::RED, "Invalid month/year");
+              return action;
+            };
+            let (next_year, next_month) = if *month == 12 {
+              (*year + 1, 1)
+            } else {
+              (*year, *month + 1)
+            };
+            let Some(first_next_month) = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1) else {
+              ui.colored_label(egui::Color32::RED, "Invalid month/year");
+              return action;
+            };
+            let last_day = first_next_month - chrono::Duration::days(1);
+            let days_in_month = chrono::Datelike::day(&last_day);
+            let weekday_idx = chrono::Datelike::weekday(&first_day).num_days_from_monday() as usize;
+
+            let week_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+            egui::Grid::new(egui::Id::new(("dt_picker_calendar", tab_id.0, input_node_id)))
+              .num_columns(7)
+              .spacing([4.0, 4.0])
+              .show(ui, |ui| {
+                for label in week_labels {
+                  ui.label(egui::RichText::new(label).small().strong());
+                }
+                ui.end_row();
+
+                let mut col = 0usize;
+                for _ in 0..weekday_idx {
+                  ui.label("");
+                  col += 1;
+                }
+
+                for day in 1..=days_in_month {
+                  let selected = *selected_day == Some(day);
+                  let response = ui.selectable_label(selected, day.to_string());
+                  if response.clicked() {
+                    *selected_day = Some(day);
+                    action = Some(Action::Choose(format!(
+                      "{:04}-{:02}-{:02}",
+                      *year, *month, day
+                    )));
+                  }
+                  col += 1;
+                  if col == 7 {
+                    ui.end_row();
+                    col = 0;
+                  }
+                }
+
+                if col != 0 {
+                  for _ in col..7 {
+                    ui.label("");
+                  }
+                  ui.end_row();
+                }
+              });
+          }
+          (DateTimeInputKind::Time, DateTimePickerState::Time { hour, minute }) => {
+            ui.horizontal(|ui| {
+              ui.label("Hour");
+              ui.add(egui::DragValue::new(hour).clamp_range(0..=23));
+              ui.label("Minute");
+              ui.add(egui::DragValue::new(minute).clamp_range(0..=59));
+            });
+            ui.horizontal(|ui| {
+              if ui.button("Set").clicked() {
+                action = Some(Action::Choose(format!("{:02}:{:02}", *hour, *minute)));
+              }
+              if ui.button("Clear").clicked() {
+                action = Some(Action::Choose(String::new()));
+              }
+              if ui.button("Cancel").clicked() {
+                action = Some(Action::Cancel);
+              }
+            });
+          }
+          (DateTimeInputKind::DateTimeLocal, DateTimePickerState::Text { draft })
+          | (DateTimeInputKind::Month, DateTimePickerState::Text { draft })
+          | (DateTimeInputKind::Week, DateTimePickerState::Text { draft }) => {
+            let hint = match kind {
+              DateTimeInputKind::DateTimeLocal => "YYYY-MM-DDTHH:MM",
+              DateTimeInputKind::Month => "YYYY-MM",
+              DateTimeInputKind::Week => "YYYY-Www",
+              _ => "",
+            };
+            ui.label(format!("Value ({hint})"));
+            ui.add(egui::TextEdit::singleline(draft).desired_width(180.0));
+
+            let trimmed = draft.trim();
+            let valid = trimmed.is_empty()
+              || match kind {
+                DateTimeInputKind::DateTimeLocal => {
+                  fastrender::dom::parse_input_datetime_local_value(trimmed).is_some()
+                }
+                DateTimeInputKind::Month => fastrender::dom::parse_input_month_value(trimmed).is_some(),
+                DateTimeInputKind::Week => fastrender::dom::parse_input_week_value(trimmed).is_some(),
+                _ => true,
+              };
+            if !valid {
+              ui.colored_label(egui::Color32::RED, "Invalid value");
+            }
+
+            ui.horizontal(|ui| {
+              let apply = ui.add_enabled(valid, egui::Button::new("Apply"));
+              if apply.clicked() {
+                action = Some(Action::Choose(draft.clone()));
+              }
+              if ui.button("Clear").clicked() {
+                action = Some(Action::Choose(String::new()));
+              }
+              if ui.button("Cancel").clicked() {
+                action = Some(Action::Cancel);
+              }
+            });
+          }
+          // Mismatch: reset to a text editor as a fallback.
+          (_, state) => {
+            let current = match state {
+              DateTimePickerState::Text { draft } => draft.clone(),
+              DateTimePickerState::Date { .. } | DateTimePickerState::Time { .. } => String::new(),
+            };
+            *state = DateTimePickerState::Text { draft: current };
+          }
+        }
+
+        action
+      });
+
+      (frame.response.rect, frame.inner)
+    });
+
+    let (popup_rect, action) = popup.inner;
+    self.open_date_time_picker_rect = Some(popup_rect);
+
+    match action {
+      Some(Action::Choose(value)) => {
+        self.send_worker_msg(UiToWorker::date_time_picker_choose(tab_id, input_node_id, value));
+        self.close_date_time_picker();
+        self.window.request_redraw();
+      }
+      Some(Action::Cancel) => {
+        self.cancel_date_time_picker();
+        self.window.request_redraw();
+      }
+      None => {}
+    }
+  }
+
   fn sync_hover_after_tab_change(&mut self, ctx: &egui::Context) {
     use fastrender::ui::PointerButton;
     use fastrender::ui::UiToWorker;
@@ -4817,40 +5187,6 @@ impl App {
     )
   }
 
-  /// Open `url` in a new tab and focus the page (matching the expected "open in new tab" UX).
-  fn open_url_in_new_tab(&mut self, url: String) -> bool {
-    use fastrender::ui::RepaintReason;
-    use fastrender::ui::UiToWorker;
-
-    let tab_id = fastrender::ui::TabId::new();
-    let tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
-    let cancel = tab_state.cancel.clone();
-    self.tab_cancel.insert(tab_id, cancel.clone());
-
-    self.browser_state.push_tab(tab_state, true);
-    self.browser_state.chrome.address_bar_text = url.clone();
-    self.page_has_focus = true;
-    self.viewport_cache_tab = None;
-    self.pointer_captured = false;
-    self.captured_button = fastrender::ui::PointerButton::None;
-    self.cursor_in_page = false;
-    self.hover_sync_pending = true;
-    self.pending_pointer_move = None;
-
-    self.send_worker_msg(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: Some(url),
-      cancel,
-    });
-    self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
-    self.send_worker_msg(UiToWorker::RequestRepaint {
-      tab_id,
-      reason: RepaintReason::Explicit,
-    });
-    self.window.request_redraw();
-    true
-  }
-
   fn sync_history_after_mutation(&mut self, flush: bool) {
     // Keep omnibox history suggestions consistent with the canonical global store.
     self.browser_state.visited.clear();
@@ -4974,6 +5310,10 @@ impl App {
         // pointer drags.
         if self.open_select_dropdown.is_some() {
           self.cancel_select_dropdown();
+          self.window.request_redraw();
+        }
+        if self.open_date_time_picker.is_some() {
+          self.cancel_date_time_picker();
           self.window.request_redraw();
         }
         if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
@@ -5230,6 +5570,34 @@ impl App {
           self.cancel_select_dropdown();
           self.window.request_redraw();
           if clicked_select_control {
+            return;
+          }
+        }
+
+        if matches!(state, ElementState::Pressed) && self.open_date_time_picker.is_some() {
+          // If the picker popup is open, clicks inside it are handled by egui.
+          if self
+            .open_date_time_picker_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+
+          // Close the picker before processing the click so we don't require a second click to
+          // interact with the underlying page/chrome.
+          //
+          // Special-case: clicking the `<input>` control itself should typically just toggle the
+          // popup closed (don't immediately reopen it by forwarding the click to the page).
+          let clicked_input_control = self.open_date_time_picker.as_ref().is_some_and(|picker| {
+            self
+              .page_input_mapping
+              .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(picker.anchor_css))
+              .is_some_and(|rect_points| rect_points.contains(pos_points))
+          });
+
+          self.cancel_date_time_picker();
+          self.window.request_redraw();
+          if clicked_input_control {
             return;
           }
         }
@@ -5937,6 +6305,9 @@ impl App {
         if self.open_select_dropdown.is_some() {
           self.cancel_select_dropdown();
         }
+        if self.open_date_time_picker.is_some() {
+          self.cancel_date_time_picker();
+        }
 
         match ime {
           Ime::Preedit(text, cursor_range) => {
@@ -5989,6 +6360,10 @@ impl App {
           self.window.request_redraw();
           return;
         }
+        if self.open_date_time_picker.is_some() {
+          self.cancel_date_time_picker();
+          self.window.request_redraw();
+        }
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
@@ -6010,6 +6385,7 @@ impl App {
 
     if !actions.is_empty() {
       self.cancel_select_dropdown();
+      self.cancel_date_time_picker();
       self.cancel_pointer_capture();
       self.close_context_menu();
     }
@@ -7063,18 +7439,30 @@ impl App {
         return;
       };
 
-      // Best-effort dropdown UX: when a native wheel scroll happens outside an open `<select>`
-      // dropdown, close it (matching typical browser behaviour).
-      let mut wheel_blocked_by_dropdown = false;
-      if !wheel_events.is_empty() && self.open_select_dropdown.is_some() {
+      // Best-effort popup UX: when a native wheel scroll happens outside an open picker/dropdown,
+      // close it (matching typical browser behaviour).
+      let mut wheel_blocked_by_popup = false;
+      if !wheel_events.is_empty() {
         if let Some(pos_points) = ctx.input(|i| i.pointer.hover_pos()) {
-          if self
-            .open_select_dropdown_rect
-            .is_some_and(|rect| rect.contains(pos_points))
-          {
-            wheel_blocked_by_dropdown = true;
-          } else {
-            self.cancel_select_dropdown();
+          if self.open_select_dropdown.is_some() {
+            if self
+              .open_select_dropdown_rect
+              .is_some_and(|rect| rect.contains(pos_points))
+            {
+              wheel_blocked_by_popup = true;
+            } else {
+              self.cancel_select_dropdown();
+            }
+          }
+          if self.open_date_time_picker.is_some() {
+            if self
+              .open_date_time_picker_rect
+              .is_some_and(|rect| rect.contains(pos_points))
+            {
+              wheel_blocked_by_popup = true;
+            } else {
+              self.cancel_date_time_picker();
+            }
           }
         }
       }
@@ -7162,6 +7550,9 @@ impl App {
             if self.open_select_dropdown.is_some() {
               self.cancel_select_dropdown();
             }
+            if self.open_date_time_picker.is_some() {
+              self.cancel_date_time_picker();
+            }
             if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
               self.close_context_menu();
             }
@@ -7202,7 +7593,7 @@ impl App {
 
             // If a wheel scroll is happening this frame, register it before drawing so scrollbars
             // become visible immediately (even if this is a single-tick wheel scroll).
-            if !wheel_events.is_empty() && !wheel_blocked_by_dropdown && response.hovered() {
+            if !wheel_events.is_empty() && !wheel_blocked_by_popup && response.hovered() {
               let mut delta_css = (0.0, 0.0);
               for (unit, delta) in &wheel_events {
                 let Some((dx, dy)) = mapping
@@ -7451,7 +7842,7 @@ impl App {
         }
 
         if !wheel_events.is_empty()
-          && !wheel_blocked_by_dropdown
+          && !wheel_blocked_by_popup
           && response.hovered()
           && !self.page_loading_overlay_blocks_input
         {
@@ -7566,6 +7957,7 @@ impl App {
     self.render_debug_log_overlay(&ctx);
     // Hovered-link URLs are rendered by `ui::chrome_ui` in the bottom status bar.
     self.render_select_dropdown(&ctx);
+    self.render_date_time_picker(&ctx);
     session_dirty |= self.render_context_menu(&ctx);
     self.sync_hover_after_tab_change(&ctx);
     // Coalesce pointer-move bursts to at most one message per rendered frame.

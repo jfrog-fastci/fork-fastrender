@@ -17,7 +17,7 @@ pub mod state;
 pub mod url;
 
 pub use anchor_scroll::scroll_offset_for_fragment_target;
-pub use engine::{InputModality, InteractionAction, InteractionEngine, KeyAction};
+pub use engine::{DateTimeInputKind, InputModality, InteractionAction, InteractionEngine, KeyAction};
 pub use element_geometry::{element_geometry_for_styled_node_id, ElementBoxGeometry};
 pub use form_submit::{
   form_submission, form_submission_get_url, FormSubmission, FormSubmissionEnctype,
