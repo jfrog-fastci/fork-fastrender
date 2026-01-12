@@ -534,8 +534,9 @@ edge-triggered readiness notifications back to the async event loop thread.
 
 Contract:
 
-- `fd` must already be set to `O_NONBLOCK` before registration/update. `runtime-native` does not
-  implicitly modify caller-owned fd flags.
+- `fd` must already be set to `O_NONBLOCK` before registration/update and must remain `O_NONBLOCK`
+  for the lifetime of the registration. `runtime-native` does not implicitly modify caller-owned fd
+  flags.
 - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
 - Readiness notifications are **edge-triggered**. Consumers must drain reads/writes until the
   operation returns `EAGAIN`/`WouldBlock`; otherwise the reactor may not deliver another edge.
