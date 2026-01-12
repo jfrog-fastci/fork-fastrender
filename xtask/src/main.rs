@@ -969,7 +969,9 @@ fn run_update_goldens(args: UpdateGoldensArgs) -> Result<()> {
       }
       GoldenSuite::Reference => {
         cmd.env("UPDATE_GOLDEN", "1");
-        cmd.args(["--test", "integration", "form_controls_reference_image_matches_golden"]);
+        // Update all reference-image goldens by filtering to the shared test suffix used by the
+        // reference fixtures under `tests/ref/fixtures/*`.
+        cmd.args(["--test", "integration", "reference_image_matches_golden"]);
       }
       GoldenSuite::Wpt => {
         cmd.env("UPDATE_WPT_EXPECTED", "1");
