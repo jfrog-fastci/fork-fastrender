@@ -1922,7 +1922,7 @@ impl TextItem {
     let max_width_with_epsilon = max_width + LINE_PIXEL_FIT_EPSILON;
 
     if let Some(mandatory) = self.first_mandatory_break {
-      if self.advance_at_offset(mandatory.byte_offset) <= max_width_with_epsilon {
+      if self.effective_advance_at_break(&mandatory) <= max_width_with_epsilon {
         return Some(mandatory);
       }
     }
@@ -1981,15 +1981,20 @@ impl TextItem {
     let mut offset = brk.byte_offset.min(self.text.len());
     offset = Self::previous_char_boundary_in_text(&self.text, offset);
 
-    // Soft line breaks discard trailing collapsible spaces (CSS Text 3 §4.1.1). When choosing a
-    // break opportunity, measure the width *after* that trimming so we don't wrap earlier than
-    // necessary.
-    if matches!(brk.break_type, BreakType::Allowed)
-      && matches!(
-        self.style.white_space,
-        WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
-      )
-    {
+    // CSS Text whitespace handling affects line fitting at break opportunities:
+    //
+    // - For `white-space: normal | nowrap | pre-line`, trailing *collapsible* spaces at line ends
+    //   are removed.
+    // - For `white-space: pre-wrap`, trailing preserved spaces can be *hanging*: they are not
+    //   considered when measuring whether the line fits, even though they still paint.
+    //
+    // Spec: https://drafts.csswg.org/css-text-3/#white-space-processing
+    let trims_or_hangs_trailing_spaces = matches!(
+      self.style.white_space,
+      WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+    ) || (matches!(self.style.white_space, WhiteSpace::PreWrap)
+      && !matches!(self.style.text_wrap, TextWrap::NoWrap));
+    if trims_or_hangs_trailing_spaces {
       if let Some(prefix) = self.text.get(..offset) {
         let trimmed_len = prefix.trim_end_matches(' ').len();
         return self.advance_at_offset(trimmed_len);
@@ -7132,13 +7137,51 @@ mod tests {
       .expect("expected break at the space");
     assert_eq!(brk.byte_offset, 6);
 
-    // If whitespace is preserved, the trailing space counts toward fitting and the break shouldn't
-    // be accepted when it would overflow.
+    // For `white-space: pre-wrap`, trailing preserved spaces are hanging and are not considered
+    // when measuring fit at a wrap opportunity.
     let mut prewrap = item.clone();
     Arc::make_mut(&mut prewrap.style).white_space = WhiteSpace::PreWrap;
+    let brk = prewrap
+      .find_break_point(max_width)
+      .expect("pre-wrap should ignore trailing space width for fitting");
+    assert_eq!(brk.byte_offset, 6);
+
+    // `break-spaces` keeps spaces in-flow, so their width must be considered.
+    let mut break_spaces = item.clone();
+    Arc::make_mut(&mut break_spaces.style).white_space = WhiteSpace::BreakSpaces;
     assert!(
-      prewrap.find_break_point(max_width).is_none(),
-      "pre-wrap should not ignore trailing space width for fitting"
+      break_spaces.find_break_point(max_width).is_none(),
+      "break-spaces should not ignore trailing space width for fitting"
+    );
+  }
+
+  #[test]
+  fn pre_wrap_hanging_spaces_are_ignored_for_mandatory_break_fitting() {
+    let mut item = make_text_item("hi ", 3.0);
+    item.break_opportunities = vec![BreakOpportunity::mandatory(3)];
+    item.first_mandatory_break = TextItem::first_mandatory_break(&item.break_opportunities);
+
+    let width_without_space = item.advance_at_offset(2);
+    let width_with_space = item.advance_at_offset(3);
+    let max_width = width_without_space + 0.1;
+    assert!(
+      max_width < width_with_space,
+      "test setup: max_width should not fit the trailing space"
+    );
+
+    let mut prewrap = item.clone();
+    Arc::make_mut(&mut prewrap.style).white_space = WhiteSpace::PreWrap;
+    let brk = prewrap
+      .find_break_point(max_width)
+      .expect("expected mandatory break to fit after ignoring hanging space width");
+    assert_eq!(brk.break_type, BreakType::Mandatory);
+    assert_eq!(brk.byte_offset, 3);
+
+    let mut break_spaces = item.clone();
+    Arc::make_mut(&mut break_spaces.style).white_space = WhiteSpace::BreakSpaces;
+    assert!(
+      break_spaces.find_break_point(max_width).is_none(),
+      "break-spaces should not ignore trailing space width for fitting"
     );
   }
 
@@ -7390,10 +7433,7 @@ mod tests {
     let mut emergency_allowed_break: Option<BreakOpportunity> = None;
 
     for brk in &item.break_opportunities {
-      let width_at_break = match brk.break_type {
-        BreakType::Mandatory => item.advance_at_offset(brk.byte_offset),
-        BreakType::Allowed => item.effective_advance_at_break(brk),
-      };
+      let width_at_break = item.effective_advance_at_break(brk);
       if width_at_break <= max_width + LINE_PIXEL_FIT_EPSILON {
         match brk.break_type {
           BreakType::Mandatory => {

@@ -847,7 +847,7 @@ fn parse_image_set_type_descriptor(token: &str) -> Option<String> {
   }
 
   let mime = parser
-    .parse_nested_block(|nested| {
+    .parse_nested_block(|nested| -> Result<String, cssparser::ParseError<'_, ()>> {
       let mut mime: Option<String> = None;
       while !nested.is_exhausted() {
         match nested.next_including_whitespace_and_comments()? {

@@ -1566,11 +1566,12 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       if timeout_ms > 0 {
         let (tx, rx) = mpsc::channel::<crate::error::Result<FetchedResource>>();
         let fetcher = Arc::clone(&fetcher);
+        let request_for_thread = request.clone();
 
         // Run the blocking fetch on a worker thread so the networking task can enforce timeouts.
         let _handle = thread::spawn(move || {
           let fetch_req = {
-            let mut fr = FetchRequest::new(&request.url, FetchDestination::Fetch)
+            let mut fr = FetchRequest::new(&request_for_thread.url, FetchDestination::Fetch)
               .with_credentials_mode(credentials_mode);
             if let Some(referrer) = document_url.as_deref() {
               fr = fr.with_referrer_url(referrer);
@@ -1584,10 +1585,10 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
 
           let http_req = HttpRequest {
             fetch: fetch_req,
-            method: &request.method,
+            method: &request_for_thread.method,
             redirect: crate::resource::web_fetch::RequestRedirect::Follow,
-            headers: request.headers.as_slice(),
-            body: request.body.as_deref(),
+            headers: request_for_thread.headers.as_slice(),
+            body: request_for_thread.body.as_deref(),
           };
 
           let result: crate::error::Result<FetchedResource> = fetcher.fetch_http_request(http_req);
@@ -3136,7 +3137,8 @@ mod tests {
     let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
     let global = realm.global_object();
-    let url = get_string(scope.heap(), get_prop(&mut scope, global, "__url"));
+    let url_val = get_prop(&mut scope, global, "__url");
+    let url = get_string(scope.heap(), url_val);
     assert_eq!(url, "https://example.invalid/ok");
     Ok(())
   }
