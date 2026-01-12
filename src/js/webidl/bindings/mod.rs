@@ -48,6 +48,8 @@ mod regression_tests;
 #[cfg(test)]
 mod webidl_union_record_tests;
 #[cfg(test)]
+mod legacy_vmjs_generated_tests;
+#[cfg(test)]
 mod window_host_installer_tests;
 
 #[cfg(test)]

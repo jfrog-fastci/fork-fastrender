@@ -97,6 +97,4 @@ mod vm_js_optional_chaining_this;
 mod vm_js_promise_job_rooting;
 mod vm_js_promise_smoke;
 mod vm_js_webidl_constructors;
-mod vm_js_webidl_generated_constructors;
-mod vm_js_webidl_generated_descriptors;
 mod vm_js_window_host_import_maps_dynamic_import;
