@@ -1850,7 +1850,7 @@ declare namespace JSX {
   let entry = FileKey::new("entry.tsx");
   let source = "const el = <div>hi</div>;";
   let host = TestHost::new(options)
-    .with_lib(jsx)
+    .with_lib(jsx.clone())
     .with_file(entry.clone(), source);
   let program = Program::new(host, vec![entry]);
   let diagnostics = program.check();
@@ -1860,6 +1860,21 @@ declare namespace JSX {
       d.code.as_str() == codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.as_str()
     }),
     "expected TS2608 for invalid ElementChildrenAttribute, got {diagnostics:?}"
+  );
+
+  // tsc suppresses TS2608 when it originates from `.d.ts` files under
+  // `skipLibCheck: true`.
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.skip_lib_check = true;
+  options.jsx = Some(JsxMode::React);
+  let entry = FileKey::new("entry.tsx");
+  let host = TestHost::new(options).with_lib(jsx).with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "expected TS2608 to be suppressed under skipLibCheck, got {diagnostics:?}"
   );
 }
 
