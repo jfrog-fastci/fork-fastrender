@@ -80,6 +80,7 @@ use hir_js::NameInterner;
 use hir_js::PatId;
 use opt::optpass_async_elide::optpass_async_elide;
 use opt::optpass_cfg_prune::optpass_cfg_prune;
+use opt::optpass_devirtualize::optpass_devirtualize;
 use opt::optpass_dvn::optpass_dvn;
 use opt::optpass_exception_prune::optpass_exception_prune;
 use opt::optpass_impossible_branches::optpass_impossible_branches;
@@ -157,6 +158,15 @@ pub struct CompileCfgOptions {
   /// This is disabled by default because it requires additional analysis to be effective and can
   /// change existing optimization/test baselines.
   pub enable_licm: bool,
+  /// Enable devirtualization (`optpass_devirtualize`) during the optimization loop.
+  ///
+  /// When enabled, the optimizer attempts to rewrite indirect calls where the callee function
+  /// value is statically known (e.g. calls through object literal fields) into direct `Arg::Fn`
+  /// callsites.
+  ///
+  /// This is disabled by default to avoid changing existing compilation/test baselines unless
+  /// explicitly requested by the caller.
+  pub enable_devirtualize: bool,
   /// Enable additional loop optimizations (induction variable analysis, strength reduction,
   /// conservative unrolling).
   ///
@@ -197,6 +207,7 @@ impl Default for CompileCfgOptions {
       elide_known_resolved_awaits: true,
       inline: InlineOptions::default(),
       enable_licm: false,
+      enable_devirtualize: false,
       enable_loop_opts: false,
     }
   }
@@ -717,6 +728,10 @@ pub(crate) fn build_program_function_with_options(
       }
       iteration_result.merge(optpass_dvn(&mut cfg, dom));
       dbg_checkpoint(&format!("opt{}_dvn", i), &cfg);
+      if options.enable_devirtualize {
+        iteration_result.merge(optpass_devirtualize(&mut cfg));
+        dbg_checkpoint(&format!("opt{}_devirtualize", i), &cfg);
+      }
       if options.enable_licm {
         // LICM uses `InstMeta` effect/purity annotations to decide whether certain
         // instructions (notably calls) can be hoisted safely.
@@ -731,7 +746,6 @@ pub(crate) fn build_program_function_with_options(
           &purity_summaries,
           effect_summaries.constant_foreign_fns(),
         );
-
         let licm_before = cfg.graph.labels().max().unwrap_or(cfg.entry);
         let licm_result = optpass_licm(&mut cfg, dom);
         // LICM may insert loop preheaders and rewrite CFG edges.

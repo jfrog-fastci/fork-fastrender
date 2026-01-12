@@ -1,6 +1,7 @@
 pub mod optpass_async_elide;
 pub mod optpass_cfg_prune;
 pub mod optpass_async_elision;
+pub mod optpass_devirtualize;
 pub mod optpass_dvn;
 pub mod optpass_exception_prune;
 pub mod optpass_impossible_branches;

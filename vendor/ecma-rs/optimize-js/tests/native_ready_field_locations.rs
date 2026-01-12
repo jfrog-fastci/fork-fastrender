@@ -87,6 +87,8 @@ fn native_ready_strict_native_populates_field_locations() {
     );
     let loc = effects.writes.iter().next().unwrap();
     match loc {
+      // In strict-native mode, effect analysis should model constant-key property writes precisely.
+      // When alias analysis can identify the receiver allocation site, this uses `AllocField`.
       EffectLocation::AllocField { alloc, key } => fields.push((alloc.clone(), key.clone())),
       other => panic!("expected EffectLocation::AllocField but got {other:?}"),
     }
