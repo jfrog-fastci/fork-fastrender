@@ -341,6 +341,38 @@ impl ProgramState {
     if !self.compiler_options.no_default_lib && self.compiler_options.libs.is_empty() {
       return;
     }
+
+    // TypeScript treats `--lib` as a complete replacement for the target-derived
+    // default library set. When the explicit list does not include a foundational
+    // ES lib (e.g. `es5`, `es2015`, `es2020`, `esnext`), `tsc` still reports
+    // TS2318 for the required global types even if some of the selected libs
+    // happen to declare partial versions of them.
+    if !self.compiler_options.no_default_lib && !self.compiler_options.libs.is_empty() {
+      let has_foundational_es_lib = self.compiler_options.libs.iter().any(|lib| {
+        let name = lib.as_str();
+        name.starts_with("es") && !name.contains('.')
+      });
+      if !has_foundational_es_lib {
+        const REQUIRED: [&str; 8] = [
+          "Array",
+          "Boolean",
+          "Function",
+          "IArguments",
+          "Number",
+          "Object",
+          "RegExp",
+          "String",
+        ];
+        for name in REQUIRED {
+          self.push_program_diagnostic(codes::CANNOT_FIND_GLOBAL_TYPE.error(
+            format!("Cannot find global type '{name}'."),
+            Span::new(FileId(u32::MAX), TextRange::new(0, 0)),
+          ));
+        }
+        return;
+      }
+    }
+
     let Some(semantics) = self.semantics.as_ref().map(Arc::clone) else {
       return;
     };
