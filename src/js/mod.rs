@@ -105,6 +105,8 @@ pub mod window_css;
 pub mod window_file;
 #[path = "vmjs/window_file_reader.rs"]
 pub mod window_file_reader;
+#[path = "vmjs/window_dom_rect.rs"]
+pub mod window_dom_rect;
 #[path = "vmjs/window_text_encoding.rs"]
 pub mod window_text_encoding;
 #[path = "vmjs/window_env.rs"]

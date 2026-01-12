@@ -11891,6 +11891,82 @@ fn alloc_mutation_records_array(
   Ok(array)
 }
 
+/// Allocates an `IntersectionObserverEntry`-shaped object.
+///
+/// FastRender currently models observer entries as plain objects; tests and future observer
+/// implementations rely on the rect fields being real `DOMRectReadOnly` instances rather than
+/// plain `{x,y,width,height}` objects.
+#[allow(dead_code)]
+pub(crate) fn alloc_intersection_observer_entry_object(
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  root_bounds: Option<(f64, f64, f64, f64)>,
+  bounding_client_rect: (f64, f64, f64, f64),
+  intersection_rect: (f64, f64, f64, f64),
+) -> Result<GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let root_bounds_value = match root_bounds {
+    Some((x, y, width, height)) => Value::Object(crate::js::window_dom_rect::alloc_dom_rect_read_only(
+      &mut scope,
+      realm,
+      x,
+      y,
+      width,
+      height,
+    )?),
+    None => Value::Null,
+  };
+  scope.push_root(root_bounds_value)?;
+  let root_bounds_key = alloc_key(&mut scope, "rootBounds")?;
+  scope.define_property(obj, root_bounds_key, data_desc(root_bounds_value))?;
+
+  let (x, y, width, height) = bounding_client_rect;
+  let bounding_rect = crate::js::window_dom_rect::alloc_dom_rect_read_only(&mut scope, realm, x, y, width, height)?;
+  scope.push_root(Value::Object(bounding_rect))?;
+  let bounding_client_rect_key = alloc_key(&mut scope, "boundingClientRect")?;
+  scope.define_property(
+    obj,
+    bounding_client_rect_key,
+    data_desc(Value::Object(bounding_rect)),
+  )?;
+
+  let (x, y, width, height) = intersection_rect;
+  let intersection_rect =
+    crate::js::window_dom_rect::alloc_dom_rect_read_only(&mut scope, realm, x, y, width, height)?;
+  scope.push_root(Value::Object(intersection_rect))?;
+  let intersection_rect_key = alloc_key(&mut scope, "intersectionRect")?;
+  scope.define_property(
+    obj,
+    intersection_rect_key,
+    data_desc(Value::Object(intersection_rect)),
+  )?;
+
+  Ok(obj)
+}
+
+/// Allocates a `ResizeObserverEntry`-shaped object.
+#[allow(dead_code)]
+pub(crate) fn alloc_resize_observer_entry_object(
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  content_rect: (f64, f64, f64, f64),
+) -> Result<GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let (x, y, width, height) = content_rect;
+  let rect = crate::js::window_dom_rect::alloc_dom_rect_read_only(&mut scope, realm, x, y, width, height)?;
+  scope.push_root(Value::Object(rect))?;
+  let content_rect_key = alloc_key(&mut scope, "contentRect")?;
+  scope.define_property(obj, content_rect_key, data_desc(Value::Object(rect)))?;
+
+  Ok(obj)
+}
+
 fn mutation_observer_observe_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -28584,6 +28660,7 @@ fn init_window_globals(
   crate::js::window_crypto::install_window_crypto_bindings(vm, realm, heap)?;
   crate::js::window_css::install_window_css_bindings(vm, realm, heap)?;
   crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
+  crate::js::window_dom_rect::install_window_dom_rect_bindings(vm, realm, heap)?;
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
   crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;
   crate::js::window_file::install_window_file_bindings(vm, realm, heap)?;
