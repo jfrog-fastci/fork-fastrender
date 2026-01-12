@@ -1656,6 +1656,7 @@ impl BrowserHud {
 struct TabNotificationUiState {
   warning_toast: fastrender::ui::WarningToastState,
   warning_toast_expanded: bool,
+  last_warning_toast: Option<String>,
   last_error: Option<String>,
   error_details_open: bool,
 }
@@ -1663,12 +1664,16 @@ struct TabNotificationUiState {
 #[cfg(feature = "browser_ui")]
 impl TabNotificationUiState {
   fn sync_error(&mut self, error: Option<&str>) {
-    let error = error.map(str::to_string).filter(|s| !s.trim().is_empty());
-    if error != self.last_error {
-      self.last_error = error;
-      self.error_details_open = false;
-    }
-    if self.last_error.is_none() {
+    let error = error.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(error) = error {
+      let error = error.to_string();
+      if Some(&error) != self.last_error.as_ref() {
+        self.last_error = Some(error);
+        self.error_details_open = false;
+      }
+    } else {
+      // Error no longer present: collapse details, but keep the last message so the infobar can
+      // fade out gracefully.
       self.error_details_open = false;
     }
   }
@@ -3582,6 +3587,7 @@ impl App {
         WARNING_TOAST_DEFAULT_TTL,
       );
       if shown {
+        state.last_warning_toast = state.warning_toast.toast().map(|toast| toast.text.clone());
         state.warning_toast_expanded = false;
       }
       if state.warning_toast.toast().is_none() {
@@ -3604,24 +3610,35 @@ impl App {
       return;
     };
 
-    let (toast_text, expanded_initial) = {
+    let motion = fastrender::ui::motion::UiMotion::from_ctx(ctx);
+    let (toast_text, expanded_initial, toast_is_open) = {
       let Some(state) = self.tab_notifications.get(&tab_id) else {
         self.warning_toast_rect = None;
         return;
       };
-      let Some(toast) = state.warning_toast.toast() else {
-        self.warning_toast_rect = None;
-        return;
-      };
-      (toast.text.clone(), state.warning_toast_expanded)
+      let live_toast_text = state.warning_toast.toast().map(|toast| toast.text.as_str());
+      let toast_text = live_toast_text
+        .or_else(|| state.last_warning_toast.as_deref())
+        .unwrap_or("")
+        .to_string();
+      (toast_text, state.warning_toast_expanded, live_toast_text.is_some())
     };
+
+    let toast_id = egui::Id::new(("fastr_warning_toast", tab_id.0));
+    let open_t = motion.animate_bool(
+      ctx,
+      toast_id.with("open"),
+      toast_is_open,
+      motion.durations.popup_open,
+    );
+    let open_opacity = open_t.clamp(0.0, 1.0);
+    if open_opacity <= 0.0 {
+      self.warning_toast_rect = None;
+      return;
+    }
 
     let theme_colors = self.theme.colors.clone();
     let theme_sizing = self.theme.sizing.clone();
-
-    let with_alpha = |color: egui::Color32, alpha: u8| {
-      egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
-    };
 
     // Position relative to the central content area so the toast doesn't cover the status bar.
     let screen_rect = ctx.screen_rect();
@@ -3631,15 +3648,28 @@ impl App {
     let margin = theme_sizing.padding.max(8.0) + 4.0;
     let anchor_offset = egui::vec2(-margin - right_inset, -margin - bottom_inset);
 
-    let mut expanded = expanded_initial;
-    let popup = egui::Area::new(egui::Id::new(("fastr_warning_toast", tab_id.0)))
+    let mut expanded = expanded_initial && toast_is_open;
+    let popup = egui::Area::new(toast_id)
       .order(egui::Order::Foreground)
       .anchor(egui::Align2::RIGHT_BOTTOM, anchor_offset)
+      .interactable(toast_is_open)
       .show(ctx, |ui| {
+        ui.set_enabled(toast_is_open);
+        ui.visuals_mut().override_text_color =
+          Some(Self::with_alpha(ui.visuals().text_color(), open_opacity));
         let mut dismiss = false;
 
-        let fill = with_alpha(theme_colors.raised, 240);
-        let stroke = egui::Stroke::new(theme_sizing.stroke_width, theme_colors.warn);
+        let fill = egui::Color32::from_rgba_unmultiplied(
+          theme_colors.raised.r(),
+          theme_colors.raised.g(),
+          theme_colors.raised.b(),
+          240,
+        );
+        let fill = Self::with_alpha(fill, open_opacity);
+        let stroke = egui::Stroke::new(
+          theme_sizing.stroke_width,
+          Self::with_alpha(theme_colors.warn, open_opacity),
+        );
         let frame = egui::Frame::none()
           .fill(fill)
           .stroke(stroke)
@@ -3658,7 +3688,7 @@ impl App {
               ui,
               fastrender::ui::BrowserIcon::WarningInsecure,
               icon_side,
-              theme_colors.warn,
+              Self::with_alpha(theme_colors.warn, open_opacity),
             );
             icon_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Label, "Warning: Viewport clamped")
@@ -3669,7 +3699,7 @@ impl App {
                 egui::Label::new(
                   egui::RichText::new("Viewport clamped")
                     .strong()
-                    .color(theme_colors.text_primary),
+                    .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
                 )
                 .sense(egui::Sense::click()),
               )
@@ -3697,7 +3727,7 @@ impl App {
             ui.label(
               egui::RichText::new(&toast_text)
                 .small()
-                .color(theme_colors.text_primary),
+                .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
             );
           }
         });
@@ -3729,22 +3759,31 @@ impl App {
       self.error_infobar_rect = None;
       return;
     };
-    let Some(error) = tab.error.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-      self.error_infobar_rect = None;
-      return;
-    };
+    let error_now = tab.error.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let error_is_open = error_now.is_some();
 
-    let details_open_initial = self
+    let (last_error, details_open_initial) = self
       .tab_notifications
       .get(&tab_id)
-      .is_some_and(|state| state.error_details_open);
+      .map(|state| (state.last_error.clone(), state.error_details_open))
+      .unwrap_or((None, false));
+
+    let motion = fastrender::ui::motion::UiMotion::from_ctx(ctx);
+    let infobar_id = egui::Id::new(("fastr_error_infobar", tab_id.0));
+    let open_t = motion.animate_bool(
+      ctx,
+      infobar_id.with("open"),
+      error_is_open,
+      motion.durations.popup_open,
+    );
+    let open_opacity = open_t.clamp(0.0, 1.0);
+    if open_opacity <= 0.0 {
+      self.error_infobar_rect = None;
+      return;
+    }
 
     let theme_colors = self.theme.colors.clone();
     let theme_sizing = self.theme.sizing.clone();
-
-    let with_alpha = |color: egui::Color32, alpha: u8| {
-      egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
-    };
 
     let screen_rect = ctx.screen_rect();
     let content_rect = self.content_rect_points.unwrap_or(screen_rect);
@@ -3752,24 +3791,39 @@ impl App {
     let pos = egui::pos2(content_rect.min.x + margin, content_rect.min.y + margin);
     let available_width = (content_rect.width() - margin * 2.0).max(240.0);
 
-    let first_line = error.lines().next().unwrap_or(error).trim();
+    let error = error_now
+      .map(str::to_string)
+      .or(last_error)
+      .unwrap_or_else(String::new);
+    let first_line = error.lines().next().unwrap_or(&error).trim();
     let short_error = if first_line.chars().count() > 160 {
       format!("{}…", first_line.chars().take(160).collect::<String>())
     } else {
       first_line.to_string()
     };
-    let error = error.to_string();
+    let mut details_open = details_open_initial && error_is_open;
 
-    let mut details_open = details_open_initial;
-
-    let popup = egui::Area::new(egui::Id::new(("fastr_error_infobar", tab_id.0)))
+    let popup = egui::Area::new(infobar_id)
       .order(egui::Order::Foreground)
       .fixed_pos(pos)
+      .interactable(error_is_open)
       .show(ctx, |ui| {
+        ui.set_enabled(error_is_open);
+        ui.visuals_mut().override_text_color =
+          Some(Self::with_alpha(ui.visuals().text_color(), open_opacity));
         let mut retry = false;
 
-        let fill = with_alpha(theme_colors.raised, 245);
-        let stroke = egui::Stroke::new(theme_sizing.stroke_width, theme_colors.danger);
+        let fill = egui::Color32::from_rgba_unmultiplied(
+          theme_colors.raised.r(),
+          theme_colors.raised.g(),
+          theme_colors.raised.b(),
+          245,
+        );
+        let fill = Self::with_alpha(fill, open_opacity);
+        let stroke = egui::Stroke::new(
+          theme_sizing.stroke_width,
+          Self::with_alpha(theme_colors.danger, open_opacity),
+        );
         let frame = egui::Frame::none()
           .fill(fill)
           .stroke(stroke)
@@ -3789,7 +3843,7 @@ impl App {
                 ui,
                 fastrender::ui::BrowserIcon::Error,
                 icon_side,
-                theme_colors.danger,
+                Self::with_alpha(theme_colors.danger, open_opacity),
               );
               icon_resp.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Label, "Navigation failed")
@@ -3798,9 +3852,12 @@ impl App {
               ui.label(
                 egui::RichText::new("Navigation failed")
                   .strong()
-                  .color(theme_colors.text_primary),
+                  .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
               );
-              ui.label(egui::RichText::new(&short_error).color(theme_colors.text_primary));
+              ui.label(
+                egui::RichText::new(&short_error)
+                  .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
+              );
 
               ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Retry").clicked() {
@@ -3822,7 +3879,11 @@ impl App {
               ui.add_space(6.0);
               ui.separator();
               ui.add_space(6.0);
-              ui.label(egui::RichText::new(&error).small().color(theme_colors.text_primary));
+              ui.label(
+                egui::RichText::new(&error)
+                  .small()
+                  .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
+              );
             }
           });
         });
