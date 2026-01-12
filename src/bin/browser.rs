@@ -1579,6 +1579,22 @@ error: {err}",
     control_flow: &mut winit::event_loop::ControlFlow,
   ) {
     let now = std::time::Instant::now();
+    let Some(deadline) = self.next_wakeup_deadline(now) else {
+      return;
+    };
+
+    // In a multi-window event loop, each window `App` can contribute its own desired wakeup
+    // deadline. Avoid "last window wins" behaviour by merging with any existing wait deadline.
+    *control_flow = match *control_flow {
+      winit::event_loop::ControlFlow::Wait => winit::event_loop::ControlFlow::WaitUntil(deadline),
+      winit::event_loop::ControlFlow::WaitUntil(existing) => {
+        winit::event_loop::ControlFlow::WaitUntil(existing.min(deadline))
+      }
+      other => other,
+    };
+  }
+
+  fn next_wakeup_deadline(&mut self, now: std::time::Instant) -> Option<std::time::Instant> {
     let mut deadline: Option<std::time::Instant> = None;
 
     // Worker-driven animation ticks (CSS animations/transitions).
@@ -1619,9 +1635,7 @@ error: {err}",
       });
     }
 
-    if let Some(deadline) = deadline {
-      *control_flow = winit::event_loop::ControlFlow::WaitUntil(deadline);
-    }
+    deadline
   }
 
   fn maybe_request_redraw_for_ui_timers(&mut self) {
