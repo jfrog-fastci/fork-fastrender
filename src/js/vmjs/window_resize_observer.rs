@@ -9,22 +9,29 @@
 //! - `observe(target)` queues a microtask (via the internal `__fastrender_queue_microtask` binding
 //!   when available) that invokes the callback with entries where:
 //!   - `entry.target === target`
-//!   - `entry.contentRect.{x,y,width,height,top,left,bottom,right}` are all `0`
+//!   - `entry.contentRect` is a `DOMRectReadOnly` with all fields `0`
+//!   - `entry.{borderBoxSize,contentBoxSize,devicePixelContentBoxSize}` are single-element arrays
+//!     containing `{inlineSize: 0, blockSize: 0}`
 //! - `takeRecords()` returns any pending queued entries (and clears them).
 //! - `unobserve()`/`disconnect()` clear any pending queued entries.
 //!
 //! This is intentionally minimal: it focuses on API presence + callback delivery so scripts can
 //! progress through ResizeObserver gating logic during server-side execution.
 
+use crate::js::window_dom_rect;
 use vm_js::{
-  GcObject, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks,
+  GcObject, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope,
+  Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
-const OBSERVER_BRAND_KEY: &str = "__fastrender_resize_observer";
+// Brand wrapper instances as platform objects via `HostSlots` so `structuredClone` rejects them.
+const RESIZE_OBSERVER_HOST_TAG: u64 = 0x5245_5349_5A45_4F42; // "RESIZEOB"
+const RESIZE_OBSERVER_ENTRY_HOST_TAG: u64 = 0x524F_4245_4E54_5259; // "ROBENTRY"
+
 const OBSERVER_CALLBACK_KEY: &str = "__fastrender_resize_observer_callback";
 const OBSERVER_PENDING_TARGETS_KEY: &str = "__fastrender_resize_observer_pending_targets";
 const OBSERVER_SCHEDULED_KEY: &str = "__fastrender_resize_observer_scheduled";
+const OBSERVER_GLOBAL_KEY: &str = "__fastrender_resize_observer_global";
 
 // Must match `window_timers::INTERNAL_QUEUE_MICROTASK_KEY`, but duplicated here to keep this module
 // independent of timer bindings.
@@ -33,6 +40,9 @@ const INTERNAL_QUEUE_MICROTASK_KEY: &str = "__fastrender_queue_microtask";
 // Native slot indices for `ResizeObserver.prototype.observe`.
 const OBSERVE_GLOBAL_SLOT: usize = 0;
 const OBSERVE_NOTIFY_CALL_ID_SLOT: usize = 1;
+
+// Native slot indices for the `ResizeObserver` constructor.
+const CTOR_GLOBAL_SLOT: usize = 0;
 
 // Native slot indices for the microtask notification callback.
 const NOTIFY_OBSERVER_SLOT: usize = 0;
@@ -97,10 +107,12 @@ fn require_object(this: Value, err: &'static str) -> Result<GcObject, VmError> {
   }
 }
 
-fn require_resize_observer(scope: &mut Scope<'_>, this: Value, err: &'static str) -> Result<GcObject, VmError> {
+fn require_resize_observer(scope: &Scope<'_>, this: Value, err: &'static str) -> Result<GcObject, VmError> {
   let obj = require_object(this, err)?;
-  let brand = get_own_data_prop(scope, obj, OBSERVER_BRAND_KEY)?;
-  if matches!(brand, Value::Bool(true)) {
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError(err));
+  };
+  if slots.a == RESIZE_OBSERVER_HOST_TAG {
     Ok(obj)
   } else {
     Err(VmError::TypeError(err))
@@ -117,6 +129,16 @@ fn observe_global_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcO
     Value::Object(obj) => Ok(obj),
     _ => Err(VmError::InvariantViolation(
       "ResizeObserver.observe missing required global slot",
+    )),
+  }
+}
+
+fn ctor_global_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.get(CTOR_GLOBAL_SLOT).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "ResizeObserver constructor missing required global slot",
     )),
   }
 }
@@ -191,35 +213,67 @@ fn clear_pending_targets(vm: &Vm, scope: &mut Scope<'_>, observer_obj: GcObject)
   Ok(())
 }
 
-fn alloc_zero_rect(vm: &Vm, scope: &mut Scope<'_>) -> Result<GcObject, VmError> {
-  let rect = scope.alloc_object()?;
-  scope.push_root(Value::Object(rect))?;
+fn alloc_resize_observer_size_object(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  inline_size: f64,
+  block_size: f64,
+) -> Result<GcObject, VmError> {
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
   if let Some(intrinsics) = vm.intrinsics() {
     scope
       .heap_mut()
-      .object_set_prototype(rect, Some(intrinsics.object_prototype()))?;
+      .object_set_prototype(obj, Some(intrinsics.object_prototype()))?;
   }
 
-  // DOMRectReadOnly-ish shape.
-  for (k, v) in [
-    ("x", 0.0),
-    ("y", 0.0),
-    ("width", 0.0),
-    ("height", 0.0),
-    ("top", 0.0),
-    ("left", 0.0),
-    ("bottom", 0.0),
-    ("right", 0.0),
-  ] {
-    let key = alloc_key(scope, k)?;
-    scope.define_property(rect, key, data_desc(Value::Number(v), /* writable */ false))?;
-  }
-  Ok(rect)
+  let inline_key = alloc_key(scope, "inlineSize")?;
+  scope.define_property(
+    obj,
+    inline_key,
+    data_desc(Value::Number(inline_size), /* writable */ false),
+  )?;
+
+  let block_key = alloc_key(scope, "blockSize")?;
+  scope.define_property(
+    obj,
+    block_key,
+    data_desc(Value::Number(block_size), /* writable */ false),
+  )?;
+
+  Ok(obj)
+}
+
+fn alloc_resize_observer_size_array(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  inline_size: f64,
+  block_size: f64,
+) -> Result<GcObject, VmError> {
+  let array = alloc_array_with_prototype(vm, scope, 1)?;
+  scope.push_root(Value::Object(array))?;
+
+  let idx0_key = alloc_key(scope, "0")?;
+  let size_obj = alloc_resize_observer_size_object(vm, scope, inline_size, block_size)?;
+  scope.define_property(
+    array,
+    idx0_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(size_obj),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(array)
 }
 
 fn build_entries_from_pending_targets(
   vm: &Vm,
   scope: &mut Scope<'_>,
+  global: Option<GcObject>,
   pending_targets: GcObject,
 ) -> Result<GcObject, VmError> {
   // Root the pending array while we read elements and allocate entry objects/strings.
@@ -244,6 +298,13 @@ fn build_entries_from_pending_targets(
 
     let entry = iter_scope.alloc_object()?;
     iter_scope.push_root(Value::Object(entry))?;
+    iter_scope.heap_mut().object_set_host_slots(
+      entry,
+      HostSlots {
+        a: RESIZE_OBSERVER_ENTRY_HOST_TAG,
+        b: 0,
+      },
+    )?;
     iter_scope.push_root(target)?;
 
     set_own_data_prop(
@@ -254,7 +315,22 @@ fn build_entries_from_pending_targets(
       /* writable */ false,
     )?;
 
-    let content_rect = alloc_zero_rect(vm, &mut iter_scope)?;
+    // Spec-ish geometry shape: provide a `DOMRectReadOnly` instance for `contentRect`.
+    let content_rect = if let Some(global) = global {
+      window_dom_rect::alloc_dom_rect_read_only_from_global(
+        &mut iter_scope,
+        global,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+      )?
+    } else {
+      // Fallback: should be unreachable in normal Window realms.
+      let rect = iter_scope.alloc_object()?;
+      iter_scope.push_root(Value::Object(rect))?;
+      rect
+    };
     iter_scope.push_root(Value::Object(content_rect))?;
     set_own_data_prop(
       &mut iter_scope,
@@ -264,10 +340,52 @@ fn build_entries_from_pending_targets(
       /* writable */ false,
     )?;
 
+    // Provide spec-shaped size arrays (all zeros).
+    let border_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, 0.0, 0.0)?;
+    iter_scope.push_root(Value::Object(border_box_size))?;
+    set_own_data_prop(
+      &mut iter_scope,
+      entry,
+      "borderBoxSize",
+      Value::Object(border_box_size),
+      /* writable */ false,
+    )?;
+
+    let content_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, 0.0, 0.0)?;
+    iter_scope.push_root(Value::Object(content_box_size))?;
+    set_own_data_prop(
+      &mut iter_scope,
+      entry,
+      "contentBoxSize",
+      Value::Object(content_box_size),
+      /* writable */ false,
+    )?;
+
+    let device_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, 0.0, 0.0)?;
+    iter_scope.push_root(Value::Object(device_box_size))?;
+    set_own_data_prop(
+      &mut iter_scope,
+      entry,
+      "devicePixelContentBoxSize",
+      Value::Object(device_box_size),
+      /* writable */ false,
+    )?;
+
     // entries[idx] = entry
     iter_scope.push_root(Value::Object(entries))?;
     let idx_key = alloc_key(&mut iter_scope, &idx.to_string())?;
-    iter_scope.define_property(entries, idx_key, data_desc(Value::Object(entry), true))?;
+    iter_scope.define_property(
+      entries,
+      idx_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(entry),
+          writable: true,
+        },
+      },
+    )?;
   }
 
   Ok(entries)
@@ -348,7 +466,11 @@ fn deliver_pending_entries(
     return Ok(());
   }
 
-  let entries = build_entries_from_pending_targets(vm, scope, pending_targets)?;
+  let global = match get_own_data_prop(scope, observer_obj, OBSERVER_GLOBAL_KEY)? {
+    Value::Object(obj) => Some(obj),
+    _ => None,
+  };
+  let entries = build_entries_from_pending_targets(vm, scope, global, pending_targets)?;
   scope.push_root(Value::Object(entries))?;
 
   // Clear pending state before invoking the callback so re-entrancy behaves sensibly.
@@ -427,6 +549,8 @@ fn resize_observer_ctor_construct(
     return Err(VmError::TypeError("ResizeObserver callback is not callable"));
   }
 
+  let global = ctor_global_from_callee(scope, callee)?;
+
   let ctor = match new_target {
     Value::Object(obj) => obj,
     _ => callee,
@@ -448,7 +572,13 @@ fn resize_observer_ctor_construct(
   }
 
   // Internal state.
-  set_own_data_prop(scope, observer, OBSERVER_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
+  scope.heap_mut().object_set_host_slots(
+    observer,
+    HostSlots {
+      a: RESIZE_OBSERVER_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_own_data_prop(
     scope,
     observer,
@@ -462,6 +592,13 @@ fn resize_observer_ctor_construct(
     OBSERVER_SCHEDULED_KEY,
     Value::Bool(false),
     /* writable */ true,
+  )?;
+  set_own_data_prop(
+    scope,
+    observer,
+    OBSERVER_GLOBAL_KEY,
+    Value::Object(global),
+    /* writable */ false,
   )?;
   let pending = alloc_empty_targets_array(vm, scope)?;
   set_own_data_prop(
@@ -597,7 +734,11 @@ fn resize_observer_take_records_native(
     _ => alloc_empty_targets_array(vm, scope)?,
   };
 
-  let entries = build_entries_from_pending_targets(vm, scope, pending_targets)?;
+  let global = match get_own_data_prop(scope, observer_obj, OBSERVER_GLOBAL_KEY)? {
+    Value::Object(obj) => Some(obj),
+    _ => None,
+  };
+  let entries = build_entries_from_pending_targets(vm, scope, global, pending_targets)?;
   clear_pending_targets(vm, scope, observer_obj)?;
   set_own_data_prop(
     scope,
@@ -777,7 +918,13 @@ pub fn install_window_resize_observer_bindings(
   let ctor_construct_id = vm.register_native_construct(resize_observer_ctor_construct)?;
   let name = scope.alloc_string("ResizeObserver")?;
   scope.push_root(Value::String(name))?;
-  let ctor = scope.alloc_native_function(ctor_call_id, Some(ctor_construct_id), name, 1)?;
+  let ctor = scope.alloc_native_function_with_slots(
+    ctor_call_id,
+    Some(ctor_construct_id),
+    name,
+    1,
+    &[Value::Object(global)],
+  )?;
   scope.heap_mut().object_set_prototype(ctor, Some(func_proto))?;
   scope.push_root(Value::Object(ctor))?;
 
@@ -793,4 +940,3 @@ pub fn install_window_resize_observer_bindings(
 
   Ok(())
 }
-
