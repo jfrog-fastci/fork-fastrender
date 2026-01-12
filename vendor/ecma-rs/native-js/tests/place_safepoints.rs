@@ -1,7 +1,10 @@
 use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
+use inkwell::values::AsValueRef as _;
 use inkwell::{IntPredicate, OptimizationLevel};
+use llvm_sys::core::LLVMSetFunctionCallConv;
+use llvm_sys::LLVMCallConv;
 use native_js::llvm::{gc, passes};
 use object::{Object, ObjectSection};
 use runtime_native::stackmaps::StackMap;
@@ -135,6 +138,51 @@ fn place_safepoints_rejects_rt_gc_safepoint_slow_marked_gc_leaf_function() {
   assert!(
     matches!(err, passes::PassError::SafepointSlowIsLeafFunction { .. }),
     "expected SafepointSlowIsLeafFunction, got: {err}"
+  );
+}
+
+#[test]
+fn place_safepoints_rejects_rt_gc_safepoint_slow_non_c_calling_convention() {
+  let context = Context::create();
+  let module = context.create_module("place_safepoints_slow_bad_cc");
+  let builder = context.create_builder();
+
+  let void_ty = context.void_type();
+  let i64_ty = context.i64_type();
+  let slow_ty = void_ty.fn_type(&[i64_ty.into()], false);
+  let slow = module.add_function("rt_gc_safepoint_slow", slow_ty, None);
+  // LLVM uses calling convention 0 for the platform C ABI. Anything else would mismatch the
+  // `runtime-native` exported symbol.
+  unsafe {
+    LLVMSetFunctionCallConv(slow.as_value_ref(), LLVMCallConv::LLVMFastCallConv as u32);
+  }
+
+  let test_ty = void_ty.fn_type(&[], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(test_fn, "entry");
+  builder.position_at_end(entry);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(
+      err,
+      passes::PassError::IncompatibleSafepointSlowCallingConvention { .. }
+    ),
+    "expected IncompatibleSafepointSlowCallingConvention, got: {err}"
   );
 }
 

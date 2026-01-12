@@ -6,7 +6,8 @@ use llvm_sys::core::{
   LLVMCountBasicBlocks, LLVMCountIncoming, LLVMCountParamTypes, LLVMCreateBuilderInContext, LLVMDeleteBasicBlock,
   LLVMDisposeBuilder,
   LLVMDisposeMessage, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetBasicBlockTerminator, LLVMGetConstOpcode,
-  LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetGC, LLVMGetIncomingBlock,
+  LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFunctionCallConv, LLVMGetGC,
+  LLVMGetIncomingBlock,
   LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetIntTypeWidth,
   LLVMGetModuleContext, LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction,
   LLVMGetNextInstruction, LLVMGetTailCallKind,
@@ -24,7 +25,7 @@ use llvm_sys::transforms::pass_builder::{
   LLVMCreatePassBuilderOptions, LLVMDisposePassBuilderOptions, LLVMRunPasses,
 };
 use llvm_sys::{
-  LLVMAtomicOrdering, LLVMIntPredicate, LLVMLinkage, LLVMTailCallKind, LLVMOpcode, LLVMTypeKind,
+  LLVMAtomicOrdering, LLVMCallConv, LLVMIntPredicate, LLVMLinkage, LLVMTailCallKind, LLVMOpcode, LLVMTypeKind,
   LLVMValueKind,
 };
 use std::ffi::{CStr, CString};
@@ -76,6 +77,10 @@ pub enum PassError {
   IncompatibleSafepointEpochType { name: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void (i64)`)")]
   IncompatibleSafepointSlowSignature { name: String },
+  #[error(
+    "LLVM module defines `{name}` with incompatible calling convention (expected C calling convention, got {call_conv})"
+  )]
+  IncompatibleSafepointSlowCallingConvention { name: String, call_conv: u32 },
   #[error("LLVM module defines `{name}` as a `gc-leaf-function`, but it must be a may-GC callsite")]
   SafepointSlowIsLeafFunction { name: String },
   #[error(
@@ -371,6 +376,13 @@ fn ensure_rt_gc_safepoint_slow_decl(module: &Module<'_>) -> Result<LLVMValueRef,
       {
         return Err(PassError::IncompatibleSafepointSlowSignature {
           name: "rt_gc_safepoint_slow".to_string(),
+        });
+      }
+      let call_conv = LLVMGetFunctionCallConv(existing);
+      if call_conv != LLVMCallConv::LLVMCCallConv as u32 {
+        return Err(PassError::IncompatibleSafepointSlowCallingConvention {
+          name: "rt_gc_safepoint_slow".to_string(),
+          call_conv,
         });
       }
       if is_gc_leaf_function(existing) {
