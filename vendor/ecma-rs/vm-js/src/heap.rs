@@ -8391,6 +8391,12 @@ impl<'a> Scope<'a> {
 
     let obj = HeapObject::Function(func);
     let func = GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?);
+    // Root the newly-allocated function object while defining its standard properties.
+    //
+    // `set_function_name` / `set_function_length` / `make_constructor` can allocate (and therefore
+    // trigger GC). Without rooting, the fresh function object is only held in a local Rust
+    // variable and can be collected before this method returns, producing an invalid handle.
+    scope.push_root(Value::Object(func))?;
 
     // Define standard function properties.
     //

@@ -348,6 +348,9 @@ fn get_async_iterator_sync_fallback_awaits_array_values() -> Result<(), VmError>
     let next_promise = {
       let intr = realm.intrinsics();
       let mut scope = heap.scope();
+      // Root the promise across allocations while constructing the array, so GC cannot collect it
+      // before we store it into the array.
+      scope.push_root(promise)?;
 
       // Root the Promise across subsequent allocations (array creation, property key strings, etc).
       // Otherwise, it is only held in a Rust local (not traced by GC) and can be collected if a GC

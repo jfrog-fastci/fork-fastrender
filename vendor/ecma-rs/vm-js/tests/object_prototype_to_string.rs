@@ -75,7 +75,7 @@ fn object_prototype_to_string_promise_falls_back_to_object_when_to_string_tag_is
 }
 
 #[test]
-fn object_prototype_to_string_weak_map_falls_back_to_object_when_to_string_tag_is_deleted() {
+fn object_prototype_to_string_weak_map_falls_back_to_weak_map_when_to_string_tag_is_deleted() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -83,14 +83,14 @@ fn object_prototype_to_string_weak_map_falls_back_to_object_when_to_string_tag_i
          var wm = new WeakMap();
          toString.call(wm) === "[object WeakMap]" &&
          (delete WeakMap.prototype[Symbol.toStringTag], true) &&
-         toString.call(wm) === "[object Object]""#,
+         toString.call(wm) === "[object WeakMap]""#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
 
 #[test]
-fn object_prototype_to_string_weak_set_falls_back_to_object_when_to_string_tag_is_deleted() {
+fn object_prototype_to_string_weak_set_falls_back_to_weak_set_when_to_string_tag_is_deleted() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -98,7 +98,7 @@ fn object_prototype_to_string_weak_set_falls_back_to_object_when_to_string_tag_i
          var ws = new WeakSet();
          toString.call(ws) === "[object WeakSet]" &&
          (delete WeakSet.prototype[Symbol.toStringTag], true) &&
-         toString.call(ws) === "[object Object]""#,
+         toString.call(ws) === "[object WeakSet]""#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));

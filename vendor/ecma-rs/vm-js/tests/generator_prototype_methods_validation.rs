@@ -183,6 +183,8 @@ fn generator_prototype_methods_validate_this_and_resume_generator() -> Result<()
       },
     )?;
 
+    // `next` is implemented in `vm-js` for real generator objects, but this fake object is missing
+    // the VM's internal continuation id marker so it should throw a TypeError.
     let err = rt
       .vm
       .call_without_host(
@@ -354,4 +356,3 @@ fn generator_prototype_methods_validate_this_and_resume_generator() -> Result<()
 
   Ok(())
 }
-
