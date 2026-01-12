@@ -454,7 +454,10 @@ pub fn fuzz_type_graph(data: &[u8]) {
   for ty in roots.iter().copied().take(16) {
     let mut evaluator = TypeEvaluator::new(store.clone(), &expander)
       .with_depth_limit(128)
-      .with_step_limit(50_000);
+      .with_step_limit(50_000)
+      // Avoid allocating enormous intermediate strings on adversarial template literal types.
+      .with_max_template_string_len(4 * 1024)
+      .with_max_template_total_bytes(256 * 1024);
     let _ = evaluator.evaluate(ty);
     let _ = store.evaluate(ty);
   }

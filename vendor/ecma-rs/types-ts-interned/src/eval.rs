@@ -270,11 +270,18 @@ pub struct EvaluatorLimits {
   pub depth_limit: usize,
   pub step_limit: usize,
   pub max_template_strings: usize,
+  /// Maximum length (in UTF-8 bytes) of any *enumerated* template literal string.
+  pub max_template_string_len: usize,
+  /// Maximum cumulative size (in UTF-8 bytes) of all strings produced by a
+  /// single template literal enumeration.
+  pub max_template_total_bytes: usize,
 }
 
 impl EvaluatorLimits {
   pub const DEFAULT_DEPTH_LIMIT: usize = 64;
   pub const DEFAULT_MAX_TEMPLATE_STRINGS: usize = 1024;
+  pub const DEFAULT_MAX_TEMPLATE_STRING_LEN: usize = 16 * 1024;
+  pub const DEFAULT_MAX_TEMPLATE_TOTAL_BYTES: usize = 1024 * 1024;
   pub const DEFAULT_STEP_LIMIT: usize = usize::MAX;
 }
 
@@ -284,6 +291,8 @@ impl Default for EvaluatorLimits {
       depth_limit: Self::DEFAULT_DEPTH_LIMIT,
       step_limit: Self::DEFAULT_STEP_LIMIT,
       max_template_strings: Self::DEFAULT_MAX_TEMPLATE_STRINGS,
+      max_template_string_len: Self::DEFAULT_MAX_TEMPLATE_STRING_LEN,
+      max_template_total_bytes: Self::DEFAULT_MAX_TEMPLATE_TOTAL_BYTES,
     }
   }
 }
@@ -614,6 +623,16 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     self
   }
 
+  pub fn with_max_template_string_len(mut self, limit: usize) -> Self {
+    self.limits.max_template_string_len = limit;
+    self
+  }
+
+  pub fn with_max_template_total_bytes(mut self, limit: usize) -> Self {
+    self.limits.max_template_total_bytes = limit;
+    self
+  }
+
   pub fn step_count(&self) -> usize {
     self.steps
   }
@@ -638,6 +657,8 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         step_limit = self.limits.step_limit as u64,
         depth_limit = self.limits.depth_limit as u64,
         max_template_strings = self.limits.max_template_strings as u64,
+        max_template_string_len = self.limits.max_template_string_len as u64,
+        max_template_total_bytes = self.limits.max_template_total_bytes as u64,
         steps = tracing::field::Empty,
         eval_cache_hits = tracing::field::Empty,
         eval_cache_misses = tracing::field::Empty,
@@ -2594,6 +2615,21 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       return TemplateStringComputation::TooLarge;
     }
 
+    // If any template atom is `never` (i.e. has no possible strings), then the
+    // overall template also has no possible strings regardless of the head /
+    // literal sizes.
+    if atom_strings.iter().any(|strings| strings.is_empty()) {
+      return TemplateStringComputation::Finite(Vec::new());
+    }
+
+    if tpl.head.len() > self.limits.max_template_string_len {
+      return TemplateStringComputation::TooLarge;
+    }
+    let mut acc_total_bytes = tpl.head.len();
+    if acc_total_bytes > self.limits.max_template_total_bytes {
+      return TemplateStringComputation::TooLarge;
+    }
+
     let mut acc = vec![tpl.head.clone()];
     for (span, atom_strings) in tpl.spans.iter().zip(atom_strings.into_iter()) {
       if acc.is_empty() {
@@ -2608,20 +2644,43 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         _ => return TemplateStringComputation::TooLarge,
       }
       let mut next = Vec::new();
+      let mut next_total_bytes: usize = 0;
       for base in &acc {
         for atom in &atom_strings {
           if next.len() >= self.limits.max_template_strings {
             return TemplateStringComputation::TooLarge;
           }
-          let mut new = base.clone();
+          let Some(new_len) = base
+            .len()
+            .checked_add(atom.len())
+            .and_then(|len| len.checked_add(span.literal.len()))
+          else {
+            return TemplateStringComputation::TooLarge;
+          };
+          if new_len > self.limits.max_template_string_len {
+            return TemplateStringComputation::TooLarge;
+          }
+          match next_total_bytes.checked_add(new_len) {
+            Some(total) if total <= self.limits.max_template_total_bytes => {
+              next_total_bytes = total;
+            }
+            _ => return TemplateStringComputation::TooLarge,
+          }
+
+          let mut new = String::with_capacity(new_len);
+          new.push_str(base);
           new.push_str(atom);
           new.push_str(&span.literal);
           next.push(new);
         }
       }
       acc = next;
+      acc_total_bytes = next_total_bytes;
     }
     if acc.len() > self.limits.max_template_strings {
+      return TemplateStringComputation::TooLarge;
+    }
+    if acc_total_bytes > self.limits.max_template_total_bytes {
       return TemplateStringComputation::TooLarge;
     }
     acc.sort();
@@ -2637,17 +2696,86 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
   ) -> TemplateStringComputation {
     let evaluated = self.evaluate_with_subst(ty, subst, depth + 1);
     match self.store.type_kind(evaluated) {
-      TypeKind::StringLiteral(id) => TemplateStringComputation::Finite(vec![self.store.name(id)]),
-      TypeKind::NumberLiteral(num) => TemplateStringComputation::Finite(vec![num.0.to_string()]),
-      TypeKind::BooleanLiteral(val) => TemplateStringComputation::Finite(vec![val.to_string()]),
-      TypeKind::BigIntLiteral(val) => TemplateStringComputation::Finite(vec![val.to_string()]),
-      TypeKind::Boolean => TemplateStringComputation::Finite(vec!["false".into(), "true".into()]),
-      TypeKind::Null => TemplateStringComputation::Finite(vec!["null".into()]),
-      TypeKind::Undefined => TemplateStringComputation::Finite(vec!["undefined".into()]),
+      TypeKind::StringLiteral(id) => {
+        let value = self.store.name(id);
+        if value.len() > self.limits.max_template_string_len
+          || value.len() > self.limits.max_template_total_bytes
+        {
+          TemplateStringComputation::TooLarge
+        } else {
+          TemplateStringComputation::Finite(vec![value])
+        }
+      }
+      TypeKind::NumberLiteral(num) => {
+        let value = num.0.to_string();
+        if value.len() > self.limits.max_template_string_len
+          || value.len() > self.limits.max_template_total_bytes
+        {
+          TemplateStringComputation::TooLarge
+        } else {
+          TemplateStringComputation::Finite(vec![value])
+        }
+      }
+      TypeKind::BooleanLiteral(val) => {
+        let value = val.to_string();
+        if value.len() > self.limits.max_template_string_len
+          || value.len() > self.limits.max_template_total_bytes
+        {
+          TemplateStringComputation::TooLarge
+        } else {
+          TemplateStringComputation::Finite(vec![value])
+        }
+      }
+      TypeKind::BigIntLiteral(val) => {
+        let value = val.to_string();
+        if value.len() > self.limits.max_template_string_len
+          || value.len() > self.limits.max_template_total_bytes
+        {
+          TemplateStringComputation::TooLarge
+        } else {
+          TemplateStringComputation::Finite(vec![value])
+        }
+      }
+      TypeKind::Boolean => {
+        let false_str = "false".to_string();
+        let true_str = "true".to_string();
+        let Some(total_len) = false_str.len().checked_add(true_str.len()) else {
+          return TemplateStringComputation::TooLarge;
+        };
+        if false_str.len() > self.limits.max_template_string_len
+          || true_str.len() > self.limits.max_template_string_len
+          || total_len > self.limits.max_template_total_bytes
+        {
+          TemplateStringComputation::TooLarge
+        } else {
+          TemplateStringComputation::Finite(vec![false_str, true_str])
+        }
+      }
+      TypeKind::Null => {
+        let value = "null".to_string();
+        if value.len() > self.limits.max_template_string_len
+          || value.len() > self.limits.max_template_total_bytes
+        {
+          TemplateStringComputation::TooLarge
+        } else {
+          TemplateStringComputation::Finite(vec![value])
+        }
+      }
+      TypeKind::Undefined => {
+        let value = "undefined".to_string();
+        if value.len() > self.limits.max_template_string_len
+          || value.len() > self.limits.max_template_total_bytes
+        {
+          TemplateStringComputation::TooLarge
+        } else {
+          TemplateStringComputation::Finite(vec![value])
+        }
+      }
       TypeKind::TemplateLiteral(tpl) => self.compute_template_strings(&tpl, subst, depth + 1),
       TypeKind::Union(members) => {
         let mut saw_too_large = false;
         let mut out: AHashSet<String> = AHashSet::new();
+        let mut out_total_bytes: usize = 0;
         for member in members {
           match self.template_atom_strings(member, subst, depth + 1) {
             TemplateStringComputation::Finite(vals) => {
@@ -2655,10 +2783,32 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
                 continue;
               }
               for val in vals {
+                let val_len = val.len();
+                if val_len > self.limits.max_template_string_len {
+                  saw_too_large = true;
+                  out.clear();
+                  out_total_bytes = 0;
+                  break;
+                }
+                if out.contains(&val) {
+                  continue;
+                }
+                match out_total_bytes.checked_add(val_len) {
+                  Some(total) if total <= self.limits.max_template_total_bytes => {
+                    out_total_bytes = total;
+                  }
+                  _ => {
+                    saw_too_large = true;
+                    out.clear();
+                    out_total_bytes = 0;
+                    break;
+                  }
+                }
                 out.insert(val);
                 if out.len() > self.limits.max_template_strings {
                   saw_too_large = true;
                   out.clear();
+                  out_total_bytes = 0;
                   break;
                 }
               }
