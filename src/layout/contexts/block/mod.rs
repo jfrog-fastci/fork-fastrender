@@ -7967,8 +7967,23 @@ impl BlockFormattingContext {
     let push_promoted_marker =
       |fragments: &mut Vec<FragmentNode>, slice_idx: usize, side: Option<PageSide>| {
         let set_index = slice_idx / column_count;
-        let offset = axes.block_offset(set_offset(set_index));
-        let bounds = Rect::from_xywh(offset.x, offset.y, 0.0, 0.0);
+        // Markers sit at the start of a column set boundary. Give them a tiny extent so they are
+        // associated with the *preceding* page when the set boundary lands exactly on a page boundary
+        // (otherwise zero-sized blocks at the boundary would be assigned to the next page, creating an
+        // extra blank page when the marker forces a break).
+        const MARKER_BLOCK_SIZE: f32 = 0.02;
+        let set_start = set_offset(set_index).max(0.0);
+        let block_size = if set_start > MARKER_BLOCK_SIZE {
+          MARKER_BLOCK_SIZE
+        } else {
+          0.0
+        };
+        let marker_start = (set_start - block_size).max(0.0);
+        let offset = axes.block_offset(marker_start);
+        let bounds = match axes.block_axis() {
+          crate::layout::axis::PhysicalAxis::Y => Rect::from_xywh(offset.x, offset.y, 0.0, block_size),
+          crate::layout::axis::PhysicalAxis::X => Rect::from_xywh(offset.x, offset.y, block_size, 0.0),
+        };
         let mut marker_style = ComputedStyle::default();
         marker_style.display = Display::Block;
         marker_style.writing_mode = writing_mode;
@@ -7987,6 +8002,7 @@ impl BlockFormattingContext {
           Arc::new(marker_style),
         ));
       };
+
     for (index, window) in boundaries.windows(2).enumerate() {
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut deadline_counter, 32, RenderStage::Layout)
