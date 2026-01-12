@@ -7490,7 +7490,10 @@ pub fn string_from_char_code(
     .try_reserve_exact(args.len())
     .map_err(|_| VmError::OutOfMemory)?;
 
-  for &arg in args {
+  for (i, &arg) in args.iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
     let n = scope.to_number(vm, host, hooks, arg)?;
     let unit = if !n.is_finite() || n == 0.0 {
       0
@@ -7508,6 +7511,152 @@ pub fn string_from_char_code(
 
   let s = scope.alloc_string_from_u16_vec(units)?;
   Ok(Value::String(s))
+}
+
+/// `String.fromCodePoint(...codePoints)` (ECMA-262).
+pub fn string_from_code_point(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.fromcodepoint
+  //
+  // Validate each argument as a code point in [0, 0x10FFFF], then UTF-16 encode.
+  let mut out: Vec<u16> = Vec::new();
+  let cap = args
+    .len()
+    .checked_mul(2)
+    .ok_or(VmError::OutOfMemory)?;
+  out.try_reserve_exact(cap).map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, &arg) in args.iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let next = scope.to_integer_or_infinity(vm, host, hooks, arg)?;
+
+    if !next.is_finite() || next < 0.0 || next > 0x10FFFF as f64 {
+      let intr = require_intrinsics(vm)?;
+      let err = crate::new_range_error(scope, intr, "Invalid code point")?;
+      return Err(VmError::Throw(err));
+    }
+
+    let cp = next as u32;
+    if cp <= 0xFFFF {
+      out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      out.push(cp as u16);
+    } else {
+      let cp = cp - 0x10000;
+      let high = 0xD800 + ((cp >> 10) as u16);
+      let low = 0xDC00 + ((cp & 0x3FF) as u16);
+      out.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
+      out.push(high);
+      out.push(low);
+    }
+  }
+
+  let s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(s))
+}
+
+/// `String.raw(callSite, ...substitutions)` (ECMA-262).
+pub fn string_raw(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.raw
+  let mut scope = scope.reborrow();
+
+  let call_site = args.get(0).copied().unwrap_or(Value::Undefined);
+  let template = scope.to_object(vm, host, hooks, call_site)?;
+  scope.push_root(Value::Object(template))?;
+
+  let raw_key_s = scope.alloc_string("raw")?;
+  scope.push_root(Value::String(raw_key_s))?;
+  let raw_key = PropertyKey::from_string(raw_key_s);
+  let raw_val =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, template, raw_key, Value::Object(template))?;
+  scope.push_root(raw_val)?;
+  let raw = scope.to_object(vm, host, hooks, raw_val)?;
+  scope.push_root(Value::Object(raw))?;
+
+  let length_key_s = scope.alloc_string("length")?;
+  scope.push_root(Value::String(length_key_s))?;
+  let length_key = PropertyKey::from_string(length_key_s);
+  let length_val = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    raw,
+    length_key,
+    Value::Object(raw),
+  )?;
+  scope.push_root(length_val)?;
+  let literal_segments = scope.to_length(vm, host, hooks, length_val)?;
+
+  if literal_segments == 0 {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+
+  let substitutions = args.get(1..).unwrap_or(&[]);
+  let mut out: Vec<u16> = Vec::new();
+
+  for i in 0..literal_segments {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    // Get raw[i] and append it.
+    {
+      let mut iter_scope = scope.reborrow();
+      iter_scope.push_root(Value::Object(raw))?;
+
+      let idx_s = iter_scope.alloc_string(&i.to_string())?;
+      iter_scope.push_root(Value::String(idx_s))?;
+      let idx_key = PropertyKey::from_string(idx_s);
+      let next_seg = iter_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        raw,
+        idx_key,
+        Value::Object(raw),
+      )?;
+      iter_scope.push_root(next_seg)?;
+      let next_seg_s = iter_scope.to_string(vm, host, hooks, next_seg)?;
+      iter_scope.push_root(Value::String(next_seg_s))?;
+      let units = {
+        let js = iter_scope.heap().get_string(next_seg_s)?;
+        js.as_code_units()
+      };
+      vec_try_extend_from_slice(&mut out, units)?;
+
+      // If this is not the last literal segment, append the substitution (if any).
+      if i + 1 != literal_segments {
+        if let Some(sub) = substitutions.get(i) {
+          let sub_s = iter_scope.to_string(vm, host, hooks, *sub)?;
+          iter_scope.push_root(Value::String(sub_s))?;
+          let sub_units = {
+            let js = iter_scope.heap().get_string(sub_s)?;
+            js.as_code_units()
+          };
+          vec_try_extend_from_slice(&mut out, sub_units)?;
+        }
+      }
+    }
+  }
+
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
 }
 
 /// `String.prototype.toString` (minimal).
@@ -7596,6 +7745,64 @@ pub fn string_prototype_char_code_at(
   Ok(Value::Number(units[idx] as f64))
 }
 
+/// `String.prototype.codePointAt(pos)` (ECMA-262).
+pub fn string_prototype_code_point_at(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.codepointat
+  let mut scope = scope.reborrow();
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let pos_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let pos = scope.to_integer_or_infinity(vm, host, hooks, pos_val)?;
+  if !pos.is_finite() {
+    return Ok(Value::Undefined);
+  }
+  if pos < 0.0 {
+    return Ok(Value::Undefined);
+  }
+  if pos > (usize::MAX as f64) {
+    return Ok(Value::Undefined);
+  }
+  let idx = pos as usize;
+
+  let cp = {
+    let js = scope.heap().get_string(s)?;
+    let units = js.as_code_units();
+    if idx >= units.len() {
+      return Ok(Value::Undefined);
+    }
+    let first = units[idx];
+    if (0xD800..=0xDBFF).contains(&first) && idx + 1 < units.len() {
+      let second = units[idx + 1];
+      if (0xDC00..=0xDFFF).contains(&second) {
+        let high = (first as u32) - 0xD800;
+        let low = (second as u32) - 0xDC00;
+        0x10000 + ((high << 10) | low)
+      } else {
+        first as u32
+      }
+    } else {
+      first as u32
+    }
+  };
+
+  Ok(Value::Number(cp as f64))
+}
+
 /// `String.prototype.charAt(pos)` (ECMA-262) (minimal).
 pub fn string_prototype_char_at(
   vm: &mut Vm,
@@ -7644,6 +7851,196 @@ pub fn string_prototype_char_at(
 
   let out = scope.alloc_string_from_u16_vec(vec![unit])?;
   Ok(Value::String(out))
+}
+
+/// `String.prototype.at(index)` (ECMA-262).
+pub fn string_prototype_at(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.at
+  let mut scope = scope.reborrow();
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let pos_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let relative = scope.to_integer_or_infinity(vm, host, hooks, pos_val)?;
+  if !relative.is_finite() {
+    return Ok(Value::Undefined);
+  }
+
+  let len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+  let k = if relative >= 0.0 {
+    relative
+  } else {
+    (len as f64) + relative
+  };
+  if k < 0.0 || k >= len as f64 || k > (usize::MAX as f64) {
+    return Ok(Value::Undefined);
+  }
+  let idx = k as usize;
+
+  let cp = {
+    let js = scope.heap().get_string(s)?;
+    let units = js.as_code_units();
+    let first = units[idx];
+    if (0xD800..=0xDBFF).contains(&first) && idx + 1 < units.len() {
+      let second = units[idx + 1];
+      if (0xDC00..=0xDFFF).contains(&second) {
+        let high = (first as u32) - 0xD800;
+        let low = (second as u32) - 0xDC00;
+        0x10000 + ((high << 10) | low)
+      } else {
+        first as u32
+      }
+    } else {
+      first as u32
+    }
+  };
+
+  let out_units: Vec<u16> = if cp <= 0xFFFF {
+    vec![cp as u16]
+  } else {
+    let cp = cp - 0x10000;
+    let high = 0xD800 + ((cp >> 10) as u16);
+    let low = 0xDC00 + ((cp & 0x3FF) as u16);
+    vec![high, low]
+  };
+  let out = scope.alloc_string_from_u16_vec(out_units)?;
+  Ok(Value::String(out))
+}
+
+fn string_pad_impl(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  this: Value,
+  args: &[Value],
+  at_start: bool,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let max_len_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let max_len = scope.to_length(vm, host, hooks, max_len_val)?;
+
+  let s_len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+  if max_len <= s_len {
+    return Ok(Value::String(s));
+  }
+
+  let fill_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let fill = if matches!(fill_val, Value::Undefined) {
+    scope.alloc_string(" ")?
+  } else {
+    scope.to_string(vm, host, hooks, fill_val)?
+  };
+  scope.push_root(Value::String(fill))?;
+
+  let fill_len = {
+    let js = scope.heap().get_string(fill)?;
+    js.len_code_units()
+  };
+  if fill_len == 0 {
+    return Ok(Value::String(s));
+  }
+
+  let fill_needed = max_len.saturating_sub(s_len);
+
+  // Ensure the resulting string fits within heap limits *before* allocating the backing vector.
+  // This prevents attacker-controlled `maxLength` from forcing untracked (non-GC-heap) allocations.
+  scope.ensure_can_alloc_string_units(max_len)?;
+
+  let mut out: Vec<u16> = Vec::new();
+  out.try_reserve_exact(max_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  {
+    let s_js = scope.heap().get_string(s)?;
+    let s_units = s_js.as_code_units();
+    let fill_js = scope.heap().get_string(fill)?;
+    let fill_units = fill_js.as_code_units();
+
+    if at_start {
+      let mut produced = 0usize;
+      while produced < fill_needed {
+        if produced % 1024 == 0 {
+          vm.tick()?;
+        }
+        let take = (fill_needed - produced).min(fill_units.len());
+        out.extend_from_slice(&fill_units[..take]);
+        produced += take;
+      }
+      out.extend_from_slice(s_units);
+    } else {
+      out.extend_from_slice(s_units);
+      let mut produced = 0usize;
+      while produced < fill_needed {
+        if produced % 1024 == 0 {
+          vm.tick()?;
+        }
+        let take = (fill_needed - produced).min(fill_units.len());
+        out.extend_from_slice(&fill_units[..take]);
+        produced += take;
+      }
+    }
+  }
+
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
+}
+
+/// `String.prototype.padStart(maxLength, fillString)` (ECMA-262).
+pub fn string_prototype_pad_start(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.padstart
+  string_pad_impl(vm, scope, host, hooks, this, args, true)
+}
+
+/// `String.prototype.padEnd(maxLength, fillString)` (ECMA-262).
+pub fn string_prototype_pad_end(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.padend
+  string_pad_impl(vm, scope, host, hooks, this, args, false)
 }
 
 /// `String.prototype.slice` (ECMA-262) (minimal).
@@ -8377,135 +8774,6 @@ pub fn string_prototype_repeat(
 
   let out = scope.alloc_string_from_u16_vec(out)?;
   Ok(Value::String(out))
-}
-
-fn string_pad(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  this: Value,
-  args: &[Value],
-  pad_at_start: bool,
-) -> Result<Value, VmError> {
-  // Spec reference: `String.prototype.padStart` / `String.prototype.padEnd`.
-  //
-  // This is a deliberately small, deterministic implementation:
-  // - supports the common `targetLength` + optional `padString` arguments
-  // - throws RangeError for non-finite target lengths (e.g. Infinity)
-  // - treats empty padString as a no-op, per spec
-  let mut scope = scope.reborrow();
-
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
-
-  let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let mut n = scope.to_number(vm, host, hooks, target_value)?;
-  if n.is_nan() || n <= 0.0 {
-    return Ok(Value::String(s));
-  }
-  if !n.is_finite() {
-    let intr = require_intrinsics(vm)?;
-    let err = crate::new_range_error(&mut scope, intr, "Invalid string length")?;
-    return Err(VmError::Throw(err));
-  }
-  n = n.trunc();
-  if n <= 0.0 {
-    return Ok(Value::String(s));
-  }
-
-  // Guard before converting to usize.
-  if n > (usize::MAX as f64) {
-    let intr = require_intrinsics(vm)?;
-    let err = crate::new_range_error(&mut scope, intr, "Invalid string length")?;
-    return Err(VmError::Throw(err));
-  }
-  let target_len = n as usize;
-
-  let units: Vec<u16> = {
-    let js = scope.heap().get_string(s)?;
-    js.as_code_units().to_vec()
-  };
-  if target_len <= units.len() {
-    return Ok(Value::String(s));
-  }
-  let fill_len = target_len - units.len();
-
-  // Compute pad string code units.
-  let pad_units: Vec<u16> = match args.get(1).copied().unwrap_or(Value::Undefined) {
-    Value::Undefined => vec![0x0020], // " "
-    pad_value => {
-      let pad_s = scope.to_string(vm, host, hooks, pad_value)?;
-      let js = scope.heap().get_string(pad_s)?;
-      js.as_code_units().to_vec()
-    }
-  };
-
-  if pad_units.is_empty() {
-    // Per spec, empty padString results in no padding.
-    return Ok(Value::String(s));
-  }
-
-  // Build the filler string (truncated repetition of padString to exactly `fill_len` code units).
-  let mut filler: Vec<u16> = Vec::new();
-  filler
-    .try_reserve_exact(fill_len)
-    .map_err(|_| VmError::OutOfMemory)?;
-
-  let mut iterations: usize = 0;
-  while filler.len() < fill_len {
-    if iterations % 1024 == 0 {
-      vm.tick()?;
-    }
-    iterations = iterations.saturating_add(1);
-
-    let remaining = fill_len - filler.len();
-    if remaining >= pad_units.len() {
-      filler.extend_from_slice(&pad_units);
-    } else {
-      filler.extend_from_slice(&pad_units[..remaining]);
-    }
-  }
-
-  let mut out: Vec<u16> = Vec::new();
-  out
-    .try_reserve_exact(target_len)
-    .map_err(|_| VmError::OutOfMemory)?;
-  if pad_at_start {
-    out.extend_from_slice(&filler);
-    out.extend_from_slice(&units);
-  } else {
-    out.extend_from_slice(&units);
-    out.extend_from_slice(&filler);
-  }
-
-  Ok(Value::String(scope.alloc_string_from_u16_vec(out)?))
-}
-
-/// `String.prototype.padStart(targetLength, padString)` (ECMA-262).
-pub fn string_prototype_pad_start(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  string_pad(vm, scope, host, hooks, this, args, /* pad_at_start */ true)
-}
-
-/// `String.prototype.padEnd(targetLength, padString)` (ECMA-262).
-pub fn string_prototype_pad_end(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  string_pad(vm, scope, host, hooks, this, args, /* pad_at_start */ false)
 }
 
 /// `String.prototype.replaceAll(searchValue, replaceValue)` (ECMA-262) (minimal, string search only).

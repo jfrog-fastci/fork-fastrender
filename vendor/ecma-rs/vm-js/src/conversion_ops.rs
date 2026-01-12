@@ -22,6 +22,34 @@ impl ToPrimitiveHint {
 }
 
 impl<'a> Scope<'a> {
+  /// ECMAScript `ToIntegerOrInfinity(argument)`.
+  ///
+  /// Spec: <https://tc39.es/ecma262/#sec-tointegerorinfinity>
+  pub fn to_integer_or_infinity(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<f64, VmError> {
+    let number = self.to_number(vm, host, hooks, value)?;
+    Ok(to_integer_or_infinity_number(number))
+  }
+
+  /// ECMAScript `ToLength(argument)`.
+  ///
+  /// Spec: <https://tc39.es/ecma262/#sec-tolength>
+  pub fn to_length(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<usize, VmError> {
+    let len = self.to_integer_or_infinity(vm, host, hooks, value)?;
+    Ok(to_length_number(len))
+  }
+
   /// ECMAScript `ToPrimitive(input, preferredType)`.
   ///
   /// This operation can invoke user code (`@@toPrimitive`, `valueOf`, `toString`) and therefore
@@ -281,52 +309,35 @@ impl<'a> Scope<'a> {
       }
     }
   }
+}
 
-  /// ECMAScript `ToLength(argument)`.
-  ///
-  /// Spec: <https://tc39.es/ecma262/#sec-tolength>
-  ///
-  /// This operation performs `ToIntegerOrInfinity(ToNumber(argument))` and clamps the result to the
-  /// range `0..=2^53-1`.
-  pub fn to_length(
-    &mut self,
-    vm: &mut Vm,
-    host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    value: Value,
-  ) -> Result<usize, VmError> {
-    // Root `value` across ToNumber, which can allocate and trigger GC (via `ToPrimitive`).
-    let mut scope = self.reborrow();
-    scope.push_root(value)?;
-    let n = scope.to_number(vm, host, hooks, value)?;
+fn to_integer_or_infinity_number(number: f64) -> f64 {
+  // Per spec, `ToIntegerOrInfinity` normalizes NaN and ±0 to +0.
+  if number.is_nan() || number == 0.0 {
+    return 0.0;
+  }
+  if !number.is_finite() {
+    return number;
+  }
+  number.trunc()
+}
 
-    // `ToIntegerOrInfinity` rounds toward zero.
-    let int = if n.is_nan() || n == 0.0 {
-      0.0
-    } else if !n.is_finite() {
-      n
-    } else {
-      n.trunc()
-    };
+fn to_length_number(number: f64) -> usize {
+  // ES `ToLength` clamps to `2^53 - 1` (Number.MAX_SAFE_INTEGER).
+  const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
-    if int.is_sign_negative() || int == 0.0 {
-      return Ok(0);
-    }
-
-    // `ToLength` clamps to `2^53 - 1` (MAX_SAFE_INTEGER).
-    const MAX_SAFE_INTEGER: f64 = 9007199254740991.0;
-    let clamped = if int.is_finite() {
-      int.min(MAX_SAFE_INTEGER)
-    } else {
-      MAX_SAFE_INTEGER
-    };
-
-    // `clamped` is an integral IEEE-754 value in range. It fits in `usize` on 64-bit targets;
-    // clamp defensively for smaller targets.
-    if clamped >= (usize::MAX as f64) {
-      Ok(usize::MAX)
-    } else {
-      Ok(clamped as usize)
-    }
+  if number <= 0.0 {
+    return 0;
+  }
+  let clamped = if number.is_finite() {
+    number.min(MAX_SAFE_INTEGER)
+  } else {
+    // Only +Infinity reaches here (negative Infinity returns 0 above).
+    MAX_SAFE_INTEGER
+  };
+  if clamped >= usize::MAX as f64 {
+    usize::MAX
+  } else {
+    clamped as usize
   }
 }

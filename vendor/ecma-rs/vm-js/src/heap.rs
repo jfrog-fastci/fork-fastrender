@@ -4156,6 +4156,21 @@ impl<'a> Scope<'a> {
     Ok(GcString(self.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
+  /// Ensures that allocating a string with `units_len` UTF-16 code units would not exceed heap
+  /// limits.
+  ///
+  /// This is useful for built-ins that need to allocate an intermediate `Vec<u16>` of the final
+  /// string size: without this pre-check, attacker-controlled length arguments could force the host
+  /// process to allocate large buffers outside the GC heap before we notice the heap limit would be
+  /// exceeded.
+  ///
+  /// Callers must ensure any values that should remain live across a potential GC are rooted before
+  /// invoking this method.
+  pub fn ensure_can_alloc_string_units(&mut self, units_len: usize) -> Result<(), VmError> {
+    let new_bytes = JsString::heap_size_bytes_for_len(units_len);
+    self.heap.ensure_can_allocate(new_bytes)
+  }
+
   /// Allocates a JavaScript string on the heap from a UTF-16 code unit buffer.
   pub fn alloc_string_from_u16_vec(&mut self, units: Vec<u16>) -> Result<GcString, VmError> {
     let new_bytes = JsString::heap_size_bytes_for_len(units.len());

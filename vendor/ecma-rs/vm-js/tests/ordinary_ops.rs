@@ -220,6 +220,9 @@ fn to_string_and_to_number_cover_webidl_primitives() -> Result<(), VmError> {
     let mut scope = heap.scope();
     scope.alloc_object()?
   };
+  // `Heap::to_number` is intentionally *primitive-only*: full `ToNumber` on objects requires
+  // `ToPrimitive` (and therefore a `Vm` + host context). Use `Scope::to_number` for the spec
+  // operation.
   let err = heap.to_number(Value::Object(obj)).unwrap_err();
   assert!(matches!(err, VmError::Unimplemented(_)));
 

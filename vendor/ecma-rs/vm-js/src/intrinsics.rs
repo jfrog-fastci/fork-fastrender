@@ -537,6 +537,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
     let string_prototype_char_at = vm.register_native_call(builtins::string_prototype_char_at)?;
     let string_from_char_code = vm.register_native_call(builtins::string_from_char_code)?;
+    let string_from_code_point = vm.register_native_call(builtins::string_from_code_point)?;
+    let string_raw = vm.register_native_call(builtins::string_raw)?;
     let string_prototype_trim = vm.register_native_call(builtins::string_prototype_trim)?;
     let string_prototype_trim_start = vm.register_native_call(builtins::string_prototype_trim_start)?;
     let string_prototype_trim_end = vm.register_native_call(builtins::string_prototype_trim_end)?;
@@ -544,6 +546,9 @@ impl Intrinsics {
     let string_prototype_substr = vm.register_native_call(builtins::string_prototype_substr)?;
     let string_prototype_split = vm.register_native_call(builtins::string_prototype_split)?;
     let string_prototype_repeat = vm.register_native_call(builtins::string_prototype_repeat)?;
+    let string_prototype_code_point_at =
+      vm.register_native_call(builtins::string_prototype_code_point_at)?;
+    let string_prototype_at = vm.register_native_call(builtins::string_prototype_at)?;
     let string_prototype_pad_start = vm.register_native_call(builtins::string_prototype_pad_start)?;
     let string_prototype_pad_end = vm.register_native_call(builtins::string_prototype_pad_end)?;
     let string_prototype_replace_all = vm.register_native_call(builtins::string_prototype_replace_all)?;
@@ -1424,6 +1429,41 @@ impl Intrinsics {
         )?;
       }
 
+      // String.fromCodePoint
+      {
+        let from_code_point_s = scope.alloc_string("fromCodePoint")?;
+        scope.push_root(Value::String(from_code_point_s))?;
+        let key = PropertyKey::from_string(from_code_point_s);
+        let func =
+          scope.alloc_native_function(string_from_code_point, None, from_code_point_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_constructor,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.raw
+      {
+        let raw_s = scope.alloc_string("raw")?;
+        scope.push_root(Value::String(raw_s))?;
+        let key = PropertyKey::from_string(raw_s);
+        let func = scope.alloc_native_function(string_raw, None, raw_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_constructor,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
       // String.prototype.toString
       {
         let to_string_s = scope.alloc_string("toString")?;
@@ -1460,12 +1500,51 @@ impl Intrinsics {
         )?;
       }
 
+      // String.prototype.codePointAt
+      {
+        let code_point_at_s = scope.alloc_string("codePointAt")?;
+        scope.push_root(Value::String(code_point_at_s))?;
+        let key = PropertyKey::from_string(code_point_at_s);
+        let func = scope.alloc_native_function(
+          string_prototype_code_point_at,
+          None,
+          code_point_at_s,
+          1,
+        )?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
       // String.prototype.charAt
       {
         let char_at_s = scope.alloc_string("charAt")?;
         scope.push_root(Value::String(char_at_s))?;
         let key = PropertyKey::from_string(char_at_s);
         let func = scope.alloc_native_function(string_prototype_char_at, None, char_at_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.at
+      {
+        let at_s = scope.alloc_string("at")?;
+        scope.push_root(Value::String(at_s))?;
+        let key = PropertyKey::from_string(at_s);
+        let func = scope.alloc_native_function(string_prototype_at, None, at_s, 1)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()
