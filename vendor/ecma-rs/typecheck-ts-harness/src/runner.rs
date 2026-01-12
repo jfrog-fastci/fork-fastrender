@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::{info_span, Level};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -39,6 +39,24 @@ use typecheck_ts::{FileKey, Host, HostError, Program, QueryStats};
 use walkdir::WalkDir;
 
 const HARNESS_SLEEP_ENV: &str = "HARNESS_SLEEP_MS_PER_TEST";
+
+fn warm_bundled_lib_cache() {
+  // Conformance runs create thousands of `Program` instances in-process. The
+  // first program pays the full bundled-lib parse/lower cost before the global
+  // cache in `typecheck-ts` is populated, which can exceed per-case timeouts on
+  // slower/contended machines.
+  //
+  // Warm once per process before running any timed cases so timeouts reflect the
+  // steady-state checking cost instead of cold-start overhead.
+  static WARMED: OnceLock<()> = OnceLock::new();
+  WARMED.get_or_init(|| {
+    let mut host = typecheck_ts::MemoryHost::new();
+    let entry = typecheck_ts::FileKey::new("file0.ts");
+    host.insert(entry.clone(), "export {};\n");
+    let program = Program::new(host, vec![entry]);
+    let _ = program.compiler_options();
+  });
+}
 
 #[cfg(test)]
 static HARNESS_THREAD_SPAWN_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -640,6 +658,14 @@ pub fn run_conformance(opts: ConformanceOptions) -> Result<ConformanceReport> {
     .num_threads(job_count)
     .build()
     .map_err(|err| crate::HarnessError::Typecheck(format!("create thread pool: {err}")))?;
+
+  // Avoid paying the bundled-lib warmup cost for very small-timeout runs. The
+  // harness unit tests intentionally use tiny timeouts (1-2s) to validate
+  // cancellation behaviour; forcing a multi-second warmup would make those tests
+  // flaky and defeat their purpose.
+  if opts.timeout >= Duration::from_secs(5) {
+    warm_bundled_lib_cache();
+  }
 
   // `planned_cases` is sorted by test id, and Rayon preserves iteration order
   // when collecting indexed parallel iterators into a `Vec`, so the final
