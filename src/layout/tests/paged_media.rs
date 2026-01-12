@@ -5784,6 +5784,53 @@ fn vertical_writing_forced_break_respected() {
 }
 
 #[test]
+fn footnote_policy_auto_defers_body_without_moving_call() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 40px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          .line { height: 20px; }
+          .note { float: footnote; footnote-policy: auto; display: inline-block; height: 20px; }
+        </style>
+      </head>
+      <body>
+        <div class="line">Alpha</div>
+        <div class="line">Beta <span class="note">Footnote body</span></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 40, MediaType::Print)
+    .unwrap();
+
+  let page_roots = pages(&tree);
+  assert_eq!(page_roots.len(), 2, "expected a deferred footnote to create a second page");
+
+  let page1 = page_roots[0];
+  let wrapper1 = page_document_wrapper(page1);
+  assert_eq!(wrapper1.children.len(), 1, "page 1 should have no footnote area");
+  assert!(find_text(page_content(page1), "1").is_some(), "call marker should stay on page 1");
+
+  let page2 = page_roots[1];
+  let wrapper2 = page_document_wrapper(page2);
+  assert_eq!(wrapper2.children.len(), 2, "page 2 should have a footnote area");
+  let footnote_area2 = wrapper2.children.get(1).expect("page 2 footnote area");
+  assert!(
+    find_text(footnote_area2, "Footnote body").is_some(),
+    "deferred footnote body should be placed on page 2"
+  );
+  assert!(
+    find_text(page_content(page2), "1").is_none(),
+    "call marker must not be moved to page 2"
+  );
+}
+
+#[test]
 fn footnote_float_does_not_detach_without_pagination() {
   let html = r#"
     <html>
