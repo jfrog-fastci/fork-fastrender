@@ -10,6 +10,7 @@ pub(crate) fn global_test_lock() -> crate::common::GlobalTestLockGuard {
 }
 mod data_url_svg;
 mod error_format_snapshot;
+mod font_db_generic_fallbacks;
 mod js_css_supports;
 mod js_dom_exception;
 mod js_dom_realm_selectors;

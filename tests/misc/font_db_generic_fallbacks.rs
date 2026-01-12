@@ -15,8 +15,11 @@ fn generic_fallbacks_prefer_non_bundled_faces_when_both_available() {
   // Noto Sans is the bundled one we should still pick the non-bundled DejaVu Sans.
   let temp_dir = tempfile::tempdir().expect("create temp dir");
   let font_path = temp_dir.path().join("DejaVuSans-subset.ttf");
-  std::fs::write(&font_path, include_bytes!("fixtures/fonts/DejaVuSans-subset.ttf"))
-    .expect("write DejaVu Sans subset");
+  std::fs::write(
+    &font_path,
+    include_bytes!("../fixtures/fonts/DejaVuSans-subset.ttf"),
+  )
+  .expect("write DejaVu Sans subset");
 
   let config = FontConfig {
     use_system_fonts: false,
