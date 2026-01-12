@@ -16,101 +16,98 @@ pub struct ParsedQualifiedName {
   pub local_name: String,
 }
 
-fn is_xml_ncname_start_char(ch: char) -> bool {
-  if ch == ':' {
+#[inline]
+fn is_dom_ascii_whitespace(byte: u8) -> bool {
+  // DOM "ASCII whitespace" excludes U+000B (vertical tab).
+  matches!(byte, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
+}
+
+fn is_valid_namespace_prefix(prefix: &str) -> bool {
+  if prefix.is_empty() {
     return false;
   }
-  match ch {
-    'A'..='Z' | '_' | 'a'..='z' => true,
-    _ => {
-      let u = ch as u32;
-      matches!(u,
-        0xC0..=0xD6
-          | 0xD8..=0xF6
-          | 0xF8..=0x2FF
-          | 0x370..=0x37D
-          | 0x37F..=0x1FFF
-          | 0x200C..=0x200D
-          | 0x2070..=0x218F
-          | 0x2C00..=0x2FEF
-          | 0x3001..=0xD7FF
-          | 0xF900..=0xFDCF
-          | 0xFDF0..=0xFFFD
-          | 0x10000..=0xEFFFF)
-    }
-  }
+  !prefix.bytes().any(|b| {
+    is_dom_ascii_whitespace(b) || b == b'\0' || b == b'/' || b == b'>'
+  })
 }
 
-fn is_xml_ncname_char(ch: char) -> bool {
-  if is_xml_ncname_start_char(ch) {
-    return true;
+fn is_valid_attribute_local_name(name: &str) -> bool {
+  if name.is_empty() {
+    return false;
   }
-  match ch {
-    '-' | '.' | '0'..='9' | '\u{B7}' => true,
-    _ => {
-      let u = ch as u32;
-      matches!(u, 0x0300..=0x036F | 0x203F..=0x2040)
-    }
-  }
+  !name.bytes().any(|b| {
+    is_dom_ascii_whitespace(b) || b == b'\0' || b == b'/' || b == b'=' || b == b'>'
+  })
 }
 
-fn is_valid_ncname(s: &str) -> bool {
-  let mut chars = s.chars();
+fn is_valid_element_local_name(name: &str) -> bool {
+  let mut chars = name.chars();
   let Some(first) = chars.next() else {
     return false;
   };
-  if !is_xml_ncname_start_char(first) {
+
+  // https://dom.spec.whatwg.org/#valid-element-local-name
+  if first.is_ascii_alphabetic() {
+    return !name.bytes().any(|b| {
+      is_dom_ascii_whitespace(b) || b == b'\0' || b == b'/' || b == b'>'
+    });
+  }
+
+  // https://dom.spec.whatwg.org/#valid-element-local-name
+  if !(first == ':' || first == '_' || (first as u32) >= 0x80) {
     return false;
   }
+
   for ch in chars {
-    if !is_xml_ncname_char(ch) {
-      return false;
+    if ch.is_ascii_alphanumeric()
+      || ch == '-'
+      || ch == '.'
+      || ch == ':'
+      || ch == '_'
+      || (ch as u32) >= 0x80
+    {
+      continue;
     }
+    return false;
   }
+
   true
 }
 
-fn is_valid_qualified_name(s: &str) -> bool {
-  let first_colon = s.find(':');
-  let Some(first_colon) = first_colon else {
-    return is_valid_ncname(s);
-  };
-  let Some(last_colon) = s.rfind(':') else {
-    return false;
-  };
-  if first_colon != last_colon {
-    // Multiple colons are not allowed in a QName.
-    return false;
-  }
-  // Colon cannot be the first or last character.
-  if first_colon == 0 || first_colon + 1 >= s.len() {
-    return false;
-  }
-  let (prefix, local) = s.split_at(first_colon);
-  let local = &local[1..];
-  is_valid_ncname(prefix) && is_valid_ncname(local)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameContext {
+  Element,
+  Attribute,
 }
 
-/// Parse `qualified_name` into `(prefix, local_name)` and validate it per the DOM Standard.
-///
-/// This implements the DOM Standard's "validate and extract" algorithm (but returns only the parsed
-/// prefix/local name; callers keep the `namespace` separately).
-///
-/// It enforces:
-/// - qualified name validity (`QName` per Namespaces in XML),
-/// - the `xml` and `xmlns` namespace/prefix constraints.
-pub fn validate_and_extract(
+fn validate_and_extract_with_context(
   namespace: Option<&str>,
   qualified_name: &str,
+  context: NameContext,
 ) -> Result<ParsedQualifiedName, DomError> {
-  if !is_valid_qualified_name(qualified_name) {
-    return Err(DomError::InvalidCharacterError);
-  }
-
-  let (prefix, local_name) = match qualified_name.split_once(':') {
-    Some((prefix, local)) => (Some(prefix.to_string()), local.to_string()),
+  let (prefix, local_name) = match qualified_name.find(':') {
+    Some(first_colon) => {
+      let last_colon = qualified_name.rfind(':').unwrap_or(first_colon);
+      if first_colon != last_colon {
+        return Err(DomError::InvalidCharacterError);
+      }
+      let (prefix, local) = qualified_name.split_at(first_colon);
+      let local = &local[1..];
+      if !is_valid_namespace_prefix(prefix) {
+        return Err(DomError::InvalidCharacterError);
+      }
+      (Some(prefix.to_string()), local.to_string())
+    }
     None => (None, qualified_name.to_string()),
   };
+
+  let local_name_ok = match context {
+    NameContext::Element => is_valid_element_local_name(&local_name),
+    NameContext::Attribute => is_valid_attribute_local_name(&local_name),
+  };
+  if !local_name_ok {
+    return Err(DomError::InvalidCharacterError);
+  }
 
   // Namespace/prefix constraints.
   if prefix.is_some() && namespace.is_none() {
@@ -137,4 +134,29 @@ pub fn validate_and_extract(
   }
 
   Ok(ParsedQualifiedName { prefix, local_name })
+}
+
+/// Validate and extract a namespace + qualified name for an element (used by `createElementNS()`).
+pub fn validate_and_extract_element(
+  namespace: Option<&str>,
+  qualified_name: &str,
+) -> Result<ParsedQualifiedName, DomError> {
+  validate_and_extract_with_context(namespace, qualified_name, NameContext::Element)
+}
+
+/// Validate and extract a namespace + qualified name for an attribute (used by `createAttributeNS()`).
+pub fn validate_and_extract_attribute(
+  namespace: Option<&str>,
+  qualified_name: &str,
+) -> Result<ParsedQualifiedName, DomError> {
+  validate_and_extract_with_context(namespace, qualified_name, NameContext::Attribute)
+}
+
+/// Validate an attribute local name (used by `createAttribute()`).
+pub fn validate_attribute_local_name(local_name: &str) -> Result<(), DomError> {
+  if is_valid_attribute_local_name(local_name) {
+    Ok(())
+  } else {
+    Err(DomError::InvalidCharacterError)
+  }
 }

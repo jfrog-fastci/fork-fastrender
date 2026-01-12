@@ -81,6 +81,14 @@ test(() => {
 }, "Document.createAttribute returns an Attr-like object");
 
 test(() => {
+  const attr = document.createAttribute("Foo:Bar");
+  assert_equals(attr.name, "foo:bar");
+  assert_equals(attr.localName, "foo:bar");
+  assert_equals(attr.namespaceURI, null);
+  assert_equals(attr.prefix, null);
+}, "Document.createAttribute allows colons (no namespace)");
+
+test(() => {
   const attr = document.createAttributeNS("http://example.com/ns", "p:name");
   assert_true(attr !== null && typeof attr === "object", "createAttributeNS should return an object");
   assert_equals(attr.name, "p:name");

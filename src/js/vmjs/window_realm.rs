@@ -5692,7 +5692,7 @@ fn document_create_element_ns_native(
   ))?;
 
   let dom2::ParsedQualifiedName { prefix, mut local_name } =
-    match dom2::validate_and_extract(namespace.as_deref(), &qualified_name) {
+    match dom2::validate_and_extract_element(namespace.as_deref(), &qualified_name) {
       Ok(v) => v,
       Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
     };
@@ -5727,13 +5727,10 @@ fn document_create_attribute_native(
   };
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let qualified_name = value_to_rust_utf16_string(scope, name_value)?;
-
-  let dom2::ParsedQualifiedName { prefix, mut local_name } =
-    match dom2::validate_and_extract(None, &qualified_name) {
-      Ok(v) => v,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
-    };
+  let mut local_name = value_to_rust_utf16_string(scope, name_value)?;
+  if let Err(err) = dom2::validate_attribute_local_name(&local_name) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
 
   // HTML documents lowercase attribute local names.
   local_name = local_name.to_ascii_lowercase();
@@ -5742,10 +5739,7 @@ fn document_create_attribute_native(
   scope.push_root(Value::Object(attr_obj))?;
 
   // Basic Attr shape: name/localName/prefix/namespaceURI/value.
-  let name = match prefix.as_deref() {
-    Some(prefix) => format!("{prefix}:{local_name}"),
-    None => local_name.clone(),
-  };
+  let name = local_name.clone();
 
   let name_key = alloc_key(scope, "name")?;
   let local_name_key = alloc_key(scope, "localName")?;
@@ -5805,7 +5799,7 @@ fn document_create_attribute_ns_native(
   let qualified_name = value_to_rust_utf16_string(scope, qualified_name_value)?;
 
   let dom2::ParsedQualifiedName { prefix, mut local_name } =
-    match dom2::validate_and_extract(namespace.as_deref(), &qualified_name) {
+    match dom2::validate_and_extract_attribute(namespace.as_deref(), &qualified_name) {
       Ok(v) => v,
       Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
     };

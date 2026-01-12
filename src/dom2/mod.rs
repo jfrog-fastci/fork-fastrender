@@ -18,7 +18,9 @@ mod error;
 pub use error::{DomError, Result as DomResult};
 mod qualified_name;
 pub use qualified_name::{ParsedQualifiedName, XMLNS_NAMESPACE, XML_NAMESPACE};
-pub(crate) use qualified_name::validate_and_extract;
+pub(crate) use qualified_name::{
+  validate_and_extract_attribute, validate_and_extract_element, validate_attribute_local_name,
+};
 
 mod dom_parsing;
 mod html;
