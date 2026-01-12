@@ -522,6 +522,7 @@ extern "C" {
   pub fn rt_thread_register(kind: RtThreadKind) -> u64;
   pub fn rt_thread_unregister();
   pub fn rt_thread_set_parked(parked: bool);
+  pub fn rt_thread_current() -> *mut Thread;
   pub fn rt_thread_attach(runtime: *mut Runtime) -> *mut Thread;
   pub fn rt_thread_detach(thread: *mut Thread);
   pub fn rt_register_current_thread();

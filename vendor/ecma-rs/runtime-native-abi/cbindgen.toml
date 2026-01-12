@@ -64,6 +64,7 @@ include = [
   "rt_thread_register",
   "rt_thread_unregister",
   "rt_thread_set_parked",
+  "rt_thread_current",
   "rt_thread_attach",
   "rt_thread_detach",
   "rt_register_current_thread",
