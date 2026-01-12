@@ -65,7 +65,7 @@ A change counts if it lands at least one of:
 - **No page-specific hacks**: no hard-coded hostnames, selectors, magic numbers, special-case branches for one site.
 - **No deviating-spec behavior**: implement the spec behavior the page depends on, even if partial/incomplete elsewhere.
 - **Fix root causes, not symptoms**: if something looks wrong, find the primitive that is wrong (parsing/cascade/layout/paint/text/resources) and correct it.
-- **Add regressions**: every meaningful fix must land with a regression (unit/layout/paint fixture). The page is the motivation; the regression is the permanent guardrail.
+- **Add regressions**: every meaningful fix must land with a regression (prefer a unit test next to the code; use an integration test only when exercising public APIs/fixtures/WPT; use a tiny offline fixture only when needed). The page is the motivation; the regression is the permanent guardrail.
 
 ## Supporting documentation
 
@@ -120,12 +120,21 @@ If you can't explain the failure in terms of a spec rule + code path, you are no
 
 Prefer, in order:
 
-1. **Unit test** (parser / cascade / computed value).
-2. **Layout test** under `tests/layout/`.
-3. **Paint test** under `tests/paint/`.
-4. **Tiny fixture** (offline HTML/CSS) only when the behavior can't be expressed otherwise.
+1. **Unit tests in `src/`** next to the code you changed (parser / cascade / layout / paint internals).
+2. **Integration tests under `tests/`** (via `tests/integration.rs` modules) only when you need to exercise the public API, offline fixture runners, or WPT harnesses.
+3. **Tiny offline fixture** (minimal HTML/CSS/assets) only when the behavior can't be expressed cleanly as a unit/integration test.
 
 The regression should encode the *primitive* (not the whole live page).
+
+How to run the relevant tests (always wrap with `timeout -k` per the safety rules at the top of this doc):
+
+```bash
+# Unit tests (in `src/`):
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib <filter>
+
+# Integration tests (in `tests/integration.rs`):
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration <filter>
+```
 
 ### 6) Repeat until the page is "good"
 
