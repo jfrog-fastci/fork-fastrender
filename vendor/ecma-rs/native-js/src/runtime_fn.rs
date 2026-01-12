@@ -49,6 +49,18 @@ pub enum RuntimeFn {
   ///
   /// `rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize)`
   RegisterShapeTable,
+  /// Append additional shapes to the global shape table and return the first assigned id.
+  ///
+  /// `rt_register_shape_table_extend(ptr: *const RtShapeDescriptor, len: usize) -> RtShapeId`
+  RegisterShapeTableExtend,
+  /// Compatibility alias for [`RuntimeFn::RegisterShapeTableExtend`].
+  ///
+  /// `rt_register_shape_table_append(ptr: *const RtShapeDescriptor, len: usize) -> RtShapeId`
+  RegisterShapeTableAppend,
+  /// Register a single shape descriptor and return its assigned id.
+  ///
+  /// `rt_register_shape(desc: *const RtShapeDescriptor) -> RtShapeId`
+  RegisterShape,
   /// Allocation entrypoint: always may trigger GC.
   Alloc,
   /// Pinned allocation entrypoint: always may trigger GC.
@@ -407,6 +419,51 @@ impl RuntimeFn {
           runtime_params: &[AbiTy::RawPtr, AbiTy::I64],
           codegen_ret: AbiTy::Void,
           codegen_params: &[AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::RegisterShapeTableExtend => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_register_shape_table_extend",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I32,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::I32,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::RegisterShapeTableAppend => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_register_shape_table_append",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I32,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::I32,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::RegisterShape => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_register_shape",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I32,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::I32,
+          codegen_params: &[AbiTy::RawPtr],
         },
       },
       RuntimeFn::Alloc => RuntimeFnDecl {
@@ -1301,6 +1358,9 @@ mod tests {
       RuntimeFn::ThreadUnregister,
       RuntimeFn::ThreadSetParked,
       RuntimeFn::RegisterShapeTable,
+      RuntimeFn::RegisterShapeTableExtend,
+      RuntimeFn::RegisterShapeTableAppend,
+      RuntimeFn::RegisterShape,
       RuntimeFn::Alloc,
       RuntimeFn::AllocPinned,
       RuntimeFn::AllocArray,

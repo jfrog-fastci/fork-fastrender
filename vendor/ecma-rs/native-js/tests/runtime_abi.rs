@@ -148,6 +148,18 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     ir.contains("declare void @rt_register_shape_table(ptr, i64)"),
     "missing rt_register_shape_table:\n{ir}"
   );
+  assert!(
+    ir.contains("declare i32 @rt_register_shape_table_extend(ptr, i64)"),
+    "missing rt_register_shape_table_extend:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare i32 @rt_register_shape_table_append(ptr, i64)"),
+    "missing rt_register_shape_table_append:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare i32 @rt_register_shape(ptr)"),
+    "missing rt_register_shape:\n{ir}"
+  );
 
   // ABI regression guards for thread entrypoints.
   let thread_init_params = fns.rt_thread_init.get_type().get_param_types();
@@ -182,6 +194,33 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     register_shape_table_params[1].into_int_type().get_bit_width(),
     64
   );
+ 
+  let register_shape_table_extend_params = fns
+    .rt_register_shape_table_extend
+    .get_type()
+    .get_param_types();
+  assert_eq!(register_shape_table_extend_params.len(), 2);
+  assert!(register_shape_table_extend_params[0].is_pointer_type());
+  assert_eq!(
+    register_shape_table_extend_params[1].into_int_type().get_bit_width(),
+    64
+  );
+  let register_shape_table_extend_ret = fns
+    .rt_register_shape_table_extend
+    .get_type()
+    .get_return_type()
+    .expect("rt_register_shape_table_extend returns RtShapeId");
+  assert_eq!(register_shape_table_extend_ret.into_int_type().get_bit_width(), 32);
+ 
+  let register_shape_params = fns.rt_register_shape.get_type().get_param_types();
+  assert_eq!(register_shape_params.len(), 1);
+  assert!(register_shape_params[0].is_pointer_type());
+  let register_shape_ret = fns
+    .rt_register_shape
+    .get_type()
+    .get_return_type()
+    .expect("rt_register_shape returns RtShapeId");
+  assert_eq!(register_shape_ret.into_int_type().get_bit_width(), 32);
 
   assert!(ir.contains("declare ptr @rt_alloc"), "missing rt_alloc:\n{ir}");
   assert!(

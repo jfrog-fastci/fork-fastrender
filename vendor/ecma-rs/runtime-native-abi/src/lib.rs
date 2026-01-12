@@ -599,7 +599,9 @@ extern "C" {
   pub fn rt_array_data(obj: *mut u8) -> *mut u8;
 
   pub fn rt_register_shape_table(table: *const RtShapeDescriptor, len: usize);
+  pub fn rt_register_shape_table_extend(table: *const RtShapeDescriptor, len: usize) -> RtShapeId;
   pub fn rt_register_shape_table_append(table: *const RtShapeDescriptor, len: usize) -> RtShapeId;
+  pub fn rt_register_shape(desc: *const RtShapeDescriptor) -> RtShapeId;
 
   // GC
   ///
@@ -1218,7 +1220,9 @@ mod tests {
       "rt_array_len(",
       "rt_array_data(",
       "rt_register_shape_table(",
+      "rt_register_shape_table_extend(",
       "rt_register_shape_table_append(",
+      "rt_register_shape(",
       "RT_GC_EPOCH",
       "rt_gc_safepoint(",
       "rt_gc_safepoint_slow(",
