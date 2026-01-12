@@ -541,7 +541,10 @@ pub(crate) fn dynamic_import_eval_on_fulfilled(
         let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
           "dynamic import continuation requires intrinsics (create a Realm first)",
         ))?;
-        crate::new_error(scope, intr.error_prototype(), "Error", &err.to_string())?
+        // Avoid formatting `err` into a host `String` here: allocator OOM while formatting would
+        // abort the process. This path exists mainly for internal invariant failures, so a stable
+        // generic message is sufficient.
+        crate::new_error(scope, intr.error_prototype(), "Error", "dynamic import failed")?
       };
       state.reject(vm, scope, host_ctx, hooks, reason)?;
       return Ok(Value::Undefined);

@@ -2193,7 +2193,8 @@ impl<'a> Evaluator<'a> {
         }
         let mut idx_scope = scope.reborrow();
         idx_scope.push_root(v)?;
-        let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
+        let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+        let key = PropertyKey::from_string(idx_scope.alloc_u32_index_string(i_u32)?);
         idx_scope.define_property(args_obj, key, global_var_desc(v))?;
       }
 
@@ -2229,7 +2230,8 @@ impl<'a> Evaluator<'a> {
           }
           let mut elem_scope = rest_scope.reborrow();
           elem_scope.push_root(v)?;
-          let key_s = elem_scope.alloc_string(&i.to_string())?;
+          let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+          let key_s = elem_scope.alloc_u32_index_string(i_u32)?;
           elem_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
           elem_scope.create_data_property_or_throw(arr, key, v)?;
@@ -6904,7 +6906,7 @@ impl<'a> Evaluator<'a> {
 
               let mut elem_scope = spread_scope.reborrow();
               elem_scope.push_root(value)?;
-              let key_s = elem_scope.alloc_string(&idx.to_string())?;
+              let key_s = elem_scope.alloc_u32_index_string(idx)?;
               elem_scope.push_root(Value::String(key_s))?;
               let key = PropertyKey::from_string(key_s);
               elem_scope.create_data_property_or_throw(arr, key, value)?;
@@ -6923,7 +6925,7 @@ impl<'a> Evaluator<'a> {
           let mut elem_scope = arr_scope.reborrow();
           let value = self.eval_expr(&mut elem_scope, elem_expr)?;
           elem_scope.push_root(value)?;
-          let key_s = elem_scope.alloc_string(&idx.to_string())?;
+          let key_s = elem_scope.alloc_u32_index_string(idx)?;
           elem_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
           elem_scope.create_data_property_or_throw(arr, key, value)?;
@@ -12536,8 +12538,7 @@ fn async_array_like_get(
   obj: GcObject,
   idx: u32,
 ) -> Result<Value, VmError> {
-  let key_str = idx.to_string();
-  let key_s = scope.alloc_string(&key_str)?;
+  let key_s = scope.alloc_u32_index_string(idx)?;
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
   scope
@@ -12747,8 +12748,7 @@ fn async_bind_array_pattern_from(
       let mut elem_scope = rest_scope.reborrow();
       (|| -> Result<(), VmError> {
         let v = elem_scope.push_root(v)?;
-        let key_str = rest_idx.to_string();
-        let key_s = elem_scope.alloc_string(&key_str)?;
+        let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
         let key = PropertyKey::from_string(key_s);
         let _ = elem_scope
           .create_data_property(rest_arr, key, v)
@@ -16114,7 +16114,7 @@ fn async_eval_lit_arr_from(
             AsyncEval::Complete(value) => {
               let mut elem_scope = arr_scope.reborrow();
               elem_scope.push_root(value)?;
-              let key_s = elem_scope.alloc_string(&idx.to_string())?;
+              let key_s = elem_scope.alloc_u32_index_string(idx)?;
               elem_scope.push_root(Value::String(key_s))?;
               let key = PropertyKey::from_string(key_s);
               let ok = elem_scope
@@ -16178,7 +16178,7 @@ fn async_eval_lit_arr_from(
 
               let mut elem_scope = spread_scope.reborrow();
               elem_scope.push_root(value)?;
-              let key_s = elem_scope.alloc_string(&idx.to_string())?;
+              let key_s = elem_scope.alloc_u32_index_string(idx)?;
               elem_scope.push_root(Value::String(key_s))?;
               let key = PropertyKey::from_string(key_s);
               let ok = elem_scope
@@ -20371,7 +20371,7 @@ fn async_resume_from_frames(
               let store_res = (|| -> Result<(), VmError> {
                 let mut elem_scope = scope.reborrow();
                 elem_scope.push_roots(&[Value::Object(arr), value])?;
-                let key_s = elem_scope.alloc_string(&idx.to_string())?;
+                let key_s = elem_scope.alloc_u32_index_string(idx)?;
                 elem_scope.push_root(Value::String(key_s))?;
                 let key = PropertyKey::from_string(key_s);
                 let ok = elem_scope
@@ -20487,7 +20487,7 @@ fn async_resume_from_frames(
 
                   let mut elem_scope = spread_scope.reborrow();
                   elem_scope.push_root(value)?;
-                  let key_s = elem_scope.alloc_string(&idx.to_string())?;
+                  let key_s = elem_scope.alloc_u32_index_string(idx)?;
                   elem_scope.push_root(Value::String(key_s))?;
                   let key = PropertyKey::from_string(key_s);
                   let ok = elem_scope
@@ -27811,7 +27811,7 @@ mod tests {
       Stmt::Label(Node::new(
         loc,
         LabelStmt {
-          name: "label".to_string(),
+          name: String::from("label"),
           statement: Node::new(loc, Stmt::Empty(Node::new(loc, EmptyStmt {}))),
         },
       )),
@@ -27822,7 +27822,7 @@ mod tests {
       Stmt::Label(Node::new(
         loc,
         LabelStmt {
-          name: "label".to_string(),
+          name: String::from("label"),
           statement: Node::new(
             loc,
             Stmt::Block(Node::new(
@@ -27861,7 +27861,7 @@ mod tests {
       Stmt::Break(Node::new(
         loc,
         BreakStmt {
-          label: Some("undef".to_string()),
+          label: Some(String::from("undef")),
         },
       )),
     );
@@ -27910,7 +27910,7 @@ mod tests {
       Stmt::Continue(Node::new(
         loc,
         ContinueStmt {
-          label: Some("undef".to_string()),
+          label: Some(String::from("undef")),
         },
       )),
     );

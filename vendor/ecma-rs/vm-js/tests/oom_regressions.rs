@@ -84,3 +84,10 @@ fn regexp_compile_large_string_does_not_abort_on_oom() {
   // rather than aborting the process under RLIMIT_AS pressure.
   run_oom_harness("regexp_compile", 3_000_000);
 }
+
+#[test]
+fn array_map_large_length_does_not_abort_on_oom() {
+  // `Array.prototype.map` formats `ToString(k)` for each index `k < length`. Ensure tight-loop index
+  // key formatting is fallible and does not abort under allocator OOM.
+  run_oom_harness("arrayMap", 15_000_000);
+}

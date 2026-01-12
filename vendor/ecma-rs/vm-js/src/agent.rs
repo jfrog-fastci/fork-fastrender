@@ -171,7 +171,7 @@ impl Agent {
       .heap()
       .get_string(s)
       .map(|js| js.to_utf8_lossy())
-      .unwrap_or_else(|_| "<invalid string>".to_string())
+      .unwrap_or_else(|_| String::from("<invalid string>"))
   }
 
   /// Formats a VM error into a host-visible string.
@@ -191,7 +191,12 @@ impl Agent {
         }
       }
       VmError::Termination(term) => format_termination(term),
-      other => other.to_string(),
+      other => {
+        let mut out = String::new();
+        // Best-effort formatting; ignore fmt errors (only possible on OOM).
+        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{other}"));
+        out
+      }
     }
   }
 }
@@ -199,10 +204,14 @@ impl Agent {
 /// Formats a termination error into a stable, host-visible string, including stack frames.
 pub fn format_termination(term: &Termination) -> String {
   if term.stack.is_empty() {
-    term.to_string()
+    let mut out = String::new();
+    // Best-effort formatting; ignore fmt errors (only possible on OOM).
+    let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{term}"));
+    out
   } else {
     let stack_trace = format_stack_trace(&term.stack);
-    let mut out = term.to_string();
+    let mut out = String::new();
+    let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{term}"));
     out.push('\n');
     out.push_str(&stack_trace);
     out

@@ -319,7 +319,7 @@ impl U256 {
 
   fn to_decimal_string(self) -> String {
     if self.is_zero() {
-      return "0".to_string();
+      return String::from("0");
     }
     const BASE: u64 = 10_000_000_000_000_000_000;
     let mut parts: Vec<u64> = Vec::new();
@@ -332,9 +332,29 @@ impl U256 {
     let Some(first) = parts.pop() else {
       // Should be impossible: the loop above must push at least one part for non-zero values, but
       // avoid panicking in this formatting helper.
-      return "0".to_string();
+      return String::from("0");
     };
-    let mut s = first.to_string();
+    // Format the most-significant base-1e19 "part" without allocating an intermediate Rust `String`.
+    let mut s = String::new();
+    {
+      // `u64::MAX` has 20 decimal digits.
+      let mut buf = [0u8; 20];
+      let mut pos = buf.len();
+      let mut x = first;
+      if x == 0 {
+        pos -= 1;
+        buf[pos] = b'0';
+      } else {
+        while x != 0 {
+          pos -= 1;
+          buf[pos] = b'0' + (x % 10) as u8;
+          x /= 10;
+        }
+      }
+      // Safe by construction: ASCII digits.
+      let digits = std::str::from_utf8(&buf[pos..]).unwrap_or("0");
+      s.push_str(digits);
+    }
     for part in parts.iter().rev() {
       // Each `part` is in base 1e19, so it always fits in 19 decimal digits.
       let mut buf = [0u8; 19];

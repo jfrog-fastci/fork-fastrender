@@ -6448,6 +6448,40 @@ impl<'a> Scope<'a> {
     Ok(s)
   }
 
+  /// Allocates a canonical ECMAScript array-index string for `idx` (decimal digits, no leading
+  /// zeros).
+  ///
+  /// This avoids an intermediate Rust `String` allocation (e.g. formatting via `ToString`), which is
+  /// infallible and can abort the host process under allocator OOM.
+  pub fn alloc_u32_index_string(&mut self, idx: u32) -> Result<GcString, VmError> {
+    // `u32::MAX` has 10 decimal digits.
+    let mut buf = [0u8; 10];
+    let mut n = idx;
+    let mut pos = buf.len();
+
+    if n == 0 {
+      pos -= 1;
+      buf[pos] = b'0';
+    } else {
+      while n != 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+      }
+    }
+
+    let s = std::str::from_utf8(&buf[pos..]).map_err(|_| {
+      VmError::InvariantViolation("invalid UTF-8 in array index formatting buffer")
+    })?;
+    self.alloc_string_from_utf8(s)
+  }
+
+  /// Allocates a canonical array-index property key for `idx` (decimal digits).
+  #[inline]
+  pub fn alloc_array_index_key(&mut self, idx: u32) -> Result<PropertyKey, VmError> {
+    Ok(PropertyKey::from_string(self.alloc_u32_index_string(idx)?))
+  }
+
   /// Allocates a JavaScript symbol on the heap.
   pub fn new_symbol(&mut self, description: Option<GcString>) -> Result<GcSymbol, VmError> {
     // Root the description string during allocation in case `ensure_can_allocate` triggers a GC.

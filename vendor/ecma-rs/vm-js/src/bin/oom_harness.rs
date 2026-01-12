@@ -5,7 +5,9 @@ use std::process;
 
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
-  eprintln!("  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp");
+  eprintln!(
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap"
+  );
   process::exit(2);
 }
 
@@ -119,6 +121,10 @@ fn main() {
     "number" => "Number(S)",
     "parseFloat" => "parseFloat(S)",
     "regexp_compile" | "regexp" => "new RegExp(S)",
+    // Trigger per-iteration array index key formatting (`ToString(k)` for each `k < length`) under
+    // memory pressure. Previously this used intermediate Rust heap `String` allocations, which can
+    // abort the process on allocator OOM.
+    "arrayMap" => "Array(S.length).map(() => 0)",
     other => {
       eprintln!("oom_harness: unknown scenario: {other}");
       process::exit(2);

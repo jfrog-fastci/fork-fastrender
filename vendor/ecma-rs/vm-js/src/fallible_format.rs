@@ -42,7 +42,6 @@ pub(crate) fn try_push_char(out: &mut String, ch: char) -> Result<(), VmError> {
 }
 
 /// Writes `value` as decimal digits without allocating an intermediate `String`.
-#[allow(dead_code)]
 pub(crate) fn try_write_u32(out: &mut String, mut value: u32) -> Result<(), VmError> {
   // u32::MAX has 10 digits.
   let mut buf = [0u8; 10];

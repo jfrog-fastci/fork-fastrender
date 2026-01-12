@@ -114,7 +114,7 @@ impl<'vm> HirEvaluator<'vm> {
         .ok_or(VmError::InvariantViolation(
           "hir name id missing from interner",
         ))?
-        .to_string(),
+        .to_owned(),
     )
   }
 
@@ -703,7 +703,7 @@ impl<'vm> HirEvaluator<'vm> {
           .as_ref()
           .and_then(|id| self.hir().names.resolve(*id))
           .unwrap_or("")
-          .to_string();
+          .to_owned();
         let func_obj =
           self.alloc_user_function_object(scope, *func_body, name_str.as_str(), *is_arrow)?;
         Ok(Value::Object(func_obj))

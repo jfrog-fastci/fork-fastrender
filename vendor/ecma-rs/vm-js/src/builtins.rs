@@ -923,7 +923,10 @@ pub fn object_get_own_property_names(
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(array), Value::String(name)])?;
 
-    let idx_s = idx_scope.alloc_string(&out_idx.to_string())?;
+    let out_idx_u32 = u32::try_from(out_idx).map_err(|_| {
+      VmError::Unimplemented("Object.getOwnPropertyNames result exceeds u32")
+    })?;
+    let idx_s = idx_scope.alloc_u32_index_string(out_idx_u32)?;
     idx_scope.push_root(Value::String(idx_s))?;
     let idx_key = PropertyKey::from_string(idx_s);
     idx_scope.define_property(array, idx_key, data_desc(Value::String(name), true, true, true))?;
@@ -992,7 +995,9 @@ pub fn object_get_own_property_symbols(
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(array), Value::Symbol(sym)])?;
 
-    let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
+    let i_u32 =
+      u32::try_from(i).map_err(|_| VmError::Unimplemented("Object.getOwnPropertySymbols exceeds u32"))?;
+    let key = PropertyKey::from_string(idx_scope.alloc_u32_index_string(i_u32)?);
     idx_scope.define_property(array, key, data_desc(Value::Symbol(sym), true, true, true))?;
   }
 
@@ -1310,7 +1315,10 @@ pub fn object_keys(
 
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(array), Value::String(name)])?;
-    let idx_s = idx_scope.alloc_string(&out_idx.to_string())?;
+    let out_idx_u32 = u32::try_from(out_idx).map_err(|_| {
+      VmError::Unimplemented("Object.keys result exceeds u32")
+    })?;
+    let idx_s = idx_scope.alloc_u32_index_string(out_idx_u32)?;
     idx_scope.push_root(Value::String(idx_s))?;
     let idx_key = PropertyKey::from_string(idx_s);
     idx_scope.define_property(array, idx_key, data_desc(Value::String(name), true, true, true))?;
@@ -1383,7 +1391,9 @@ pub fn object_values(
     let mut iter_scope = scope.reborrow();
     iter_scope.push_roots(&[Value::Object(obj), Value::Object(array), Value::String(key_str)])?;
 
-    let idx_s = iter_scope.alloc_string(&out_i.to_string())?;
+    let out_i_u32 =
+      u32::try_from(out_i).map_err(|_| VmError::Unimplemented("Object.values result exceeds u32"))?;
+    let idx_s = iter_scope.alloc_u32_index_string(out_i_u32)?;
     iter_scope.push_root(Value::String(idx_s))?;
     let idx_key = PropertyKey::from_string(idx_s);
 
@@ -1474,7 +1484,9 @@ pub fn object_entries(
 
     // Allocate the destination index key before calling `Get` so any GC triggered by the
     // `Get`/getter sees it as rooted.
-    let idx_s = iter_scope.alloc_string(&out_i.to_string())?;
+    let out_i_u32 =
+      u32::try_from(out_i).map_err(|_| VmError::Unimplemented("Object.entries result exceeds u32"))?;
+    let idx_s = iter_scope.alloc_u32_index_string(out_i_u32)?;
     iter_scope.push_root(Value::String(idx_s))?;
     let idx_key = PropertyKey::from_string(idx_s);
 
@@ -2068,7 +2080,8 @@ pub fn reflect_own_keys(
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(array), value])?;
 
-    let idx_s = idx_scope.alloc_string(&i.to_string())?;
+    let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+    let idx_s = idx_scope.alloc_u32_index_string(i_u32)?;
     idx_scope.push_root(Value::String(idx_s))?;
     let idx_key = PropertyKey::from_string(idx_s);
 
@@ -2197,7 +2210,8 @@ fn array_constructor_impl(
         let mut idx_scope = scope.reborrow();
         idx_scope.push_roots(&[Value::Object(array), el])?;
 
-        let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
+        let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+        let key = PropertyKey::from_string(idx_scope.alloc_u32_index_string(i_u32)?);
         idx_scope.define_property(array, key, data_desc(el, true, true, true))?;
       }
 
@@ -3656,7 +3670,8 @@ pub fn typed_array_prototype_set(
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(source_obj), Value::Object(target)])?;
 
-    let key_s = idx_scope.alloc_string(&i.to_string())?;
+    let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+    let key_s = idx_scope.alloc_u32_index_string(i_u32)?;
     let key = PropertyKey::from_string(key_s);
     let value = vm.get_with_host_and_hooks(host, &mut idx_scope, hooks, source_obj, key)?;
 
@@ -4880,7 +4895,7 @@ fn aggregate_error_iterable_to_list_array(
       idx_scope.push_root(Value::Object(array))?;
       idx_scope.push_root(next_value)?;
 
-      let key_s = idx_scope.alloc_string(&idx.to_string())?;
+      let key_s = idx_scope.alloc_u32_index_string(idx)?;
       idx_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
       idx_scope.create_data_property_or_throw(array, key, next_value)?;
@@ -6798,7 +6813,7 @@ fn perform_promise_all(
     {
       let mut idx_scope = step_scope.reborrow();
       idx_scope.push_root(Value::Object(values))?;
-      let idx_s = idx_scope.alloc_string(&index.to_string())?;
+      let idx_s = idx_scope.alloc_u32_index_string(index)?;
       idx_scope.push_root(Value::String(idx_s))?;
       let key = PropertyKey::from_string(idx_s);
       idx_scope.create_data_property_or_throw(values, key, Value::Undefined)?;
@@ -7057,7 +7072,7 @@ fn perform_promise_all_settled(
     {
       let mut idx_scope = step_scope.reborrow();
       idx_scope.push_root(Value::Object(values))?;
-      let idx_s = idx_scope.alloc_string(&index.to_string())?;
+      let idx_s = idx_scope.alloc_u32_index_string(index)?;
       idx_scope.push_root(Value::String(idx_s))?;
       let key = PropertyKey::from_string(idx_s);
       idx_scope.create_data_property_or_throw(values, key, Value::Undefined)?;
@@ -7262,7 +7277,7 @@ fn perform_promise_any(
     {
       let mut idx_scope = step_scope.reborrow();
       idx_scope.push_root(Value::Object(errors))?;
-      let idx_s = idx_scope.alloc_string(&index.to_string())?;
+      let idx_s = idx_scope.alloc_u32_index_string(index)?;
       idx_scope.push_root(Value::String(idx_s))?;
       let key = PropertyKey::from_string(idx_s);
       idx_scope.create_data_property_or_throw(errors, key, Value::Undefined)?;
@@ -7423,7 +7438,7 @@ pub fn promise_all_resolve_element_call(
   {
     let mut idx_scope = scope.reborrow();
     idx_scope.push_root(Value::Object(values))?;
-    let idx_s = idx_scope.alloc_string(&(index as u32).to_string())?;
+    let idx_s = idx_scope.alloc_u32_index_string(index as u32)?;
     idx_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
     idx_scope.create_data_property_or_throw(values, key, x)?;
@@ -7531,7 +7546,7 @@ pub fn promise_all_settled_element_call(
   {
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(values), Value::Object(obj)])?;
-    let idx_s = idx_scope.alloc_string(&(index as u32).to_string())?;
+    let idx_s = idx_scope.alloc_u32_index_string(index as u32)?;
     idx_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
     idx_scope.create_data_property_or_throw(values, key, Value::Object(obj))?;
@@ -7610,7 +7625,7 @@ pub fn promise_any_reject_element_call(
   {
     let mut idx_scope = scope.reborrow();
     idx_scope.push_root(Value::Object(errors))?;
-    let idx_s = idx_scope.alloc_string(&(index as u32).to_string())?;
+    let idx_s = idx_scope.alloc_u32_index_string(index as u32)?;
     idx_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
     idx_scope.create_data_property_or_throw(errors, key, x)?;
@@ -9412,7 +9427,7 @@ pub fn array_prototype_map(
     }
 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
 
@@ -9461,9 +9476,9 @@ pub fn array_prototype_for_each(
     if k % 1024 == 0 {
       vm.tick()?;
     }
-
+ 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -9511,9 +9526,9 @@ pub fn array_prototype_index_of(
     if k % 1024 == 0 {
       vm.tick()?;
     }
-
+ 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -9577,13 +9592,13 @@ pub fn array_prototype_includes(
     if k % 1024 == 0 {
       vm.tick()?;
     }
-
+ 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-
+ 
     let equal = match (search, value) {
       (Value::Undefined, Value::Undefined) => true,
       (Value::Null, Value::Null) => true,
@@ -9646,9 +9661,9 @@ pub fn array_prototype_filter(
     if k % 1024 == 0 {
       vm.tick()?;
     }
-
+ 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -9664,7 +9679,7 @@ pub fn array_prototype_filter(
       continue;
     }
 
-    let to_s = iter_scope.alloc_string(&to.to_string())?;
+    let to_s = alloc_string_from_usize(&mut iter_scope, to)?;
     iter_scope.push_root(Value::String(to_s))?;
     let to_key = PropertyKey::from_string(to_s);
     iter_scope.create_data_property_or_throw(out, to_key, value)?;
@@ -9727,7 +9742,7 @@ pub fn array_prototype_reduce(
       }
 
       let mut iter_scope = scope.reborrow();
-      let key_s = iter_scope.alloc_string(&k.to_string())?;
+      let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
       iter_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
       if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -9754,7 +9769,7 @@ pub fn array_prototype_reduce(
     }
 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&idx.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, idx)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -9819,9 +9834,9 @@ pub fn array_prototype_some(
     if k % 1024 == 0 {
       vm.tick()?;
     }
-
+ 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -9870,9 +9885,9 @@ pub fn array_prototype_every(
     if k % 1024 == 0 {
       vm.tick()?;
     }
-
+ 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -9921,9 +9936,9 @@ pub fn array_prototype_find(
     if k % 1024 == 0 {
       vm.tick()?;
     }
-
+ 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -9972,9 +9987,9 @@ pub fn array_prototype_find_index(
     if k % 1024 == 0 {
       vm.tick()?;
     }
-
+ 
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
@@ -10045,7 +10060,7 @@ pub fn array_prototype_concat(
         }
         let mut iter_scope = scope.reborrow();
 
-        let key_s = iter_scope.alloc_string(&k.to_string())?;
+        let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
         iter_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
         if crate::spec_ops::internal_has_property_with_host_and_hooks(
@@ -10066,7 +10081,7 @@ pub fn array_prototype_concat(
             Value::Object(source_obj),
           )?;
 
-          let to_s = iter_scope.alloc_string(&n.to_string())?;
+          let to_s = alloc_string_from_usize(&mut iter_scope, *n)?;
           iter_scope.push_root(Value::String(to_s))?;
           let to_key = PropertyKey::from_string(to_s);
           iter_scope.create_data_property_or_throw(out, to_key, value)?;
@@ -10078,7 +10093,7 @@ pub fn array_prototype_concat(
 
     // Not spreadable: append as a single element.
     let mut iter_scope = scope.reborrow();
-    let to_s = iter_scope.alloc_string(&n.to_string())?;
+    let to_s = alloc_string_from_usize(&mut iter_scope, *n)?;
     iter_scope.push_root(Value::String(to_s))?;
     let to_key = PropertyKey::from_string(to_s);
     iter_scope.create_data_property_or_throw(out, to_key, item)?;
@@ -10137,9 +10152,9 @@ pub fn array_prototype_reverse(
 
     let mut iter_scope = scope.reborrow();
 
-    let lower_s = iter_scope.alloc_string(&lower.to_string())?;
+    let lower_s = alloc_string_from_usize(&mut iter_scope, lower)?;
     iter_scope.push_root(Value::String(lower_s))?;
-    let upper_s = iter_scope.alloc_string(&upper.to_string())?;
+    let upper_s = alloc_string_from_usize(&mut iter_scope, upper)?;
     iter_scope.push_root(Value::String(upper_s))?;
 
     let lower_key = PropertyKey::from_string(lower_s);
@@ -10303,7 +10318,7 @@ pub fn array_prototype_sort(
 
     let value = {
       let mut iter_scope = scope.reborrow();
-      let key_s = iter_scope.alloc_string(&k.to_string())?;
+      let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
       iter_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
 
@@ -10436,7 +10451,7 @@ pub fn array_prototype_sort(
     }
     let value = items[j].value;
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&j.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, j)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     let ok = iter_scope.set_with_host_and_hooks(
@@ -10458,7 +10473,7 @@ pub fn array_prototype_sort(
       vm.tick()?;
     }
     let mut iter_scope = scope.reborrow();
-    let key_s = iter_scope.alloc_string(&j.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, j)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     let ok = iter_scope.delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
@@ -10618,9 +10633,9 @@ pub fn array_prototype_slice(
 
     let mut iter_scope = scope.reborrow();
 
-    let from_s = iter_scope.alloc_string(&from.to_string())?;
+    let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
     iter_scope.push_root(Value::String(from_s))?;
-    let to_s = iter_scope.alloc_string(&k.to_string())?;
+    let to_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(to_s))?;
 
     let from_key = PropertyKey::from_string(from_s);
@@ -10662,7 +10677,7 @@ pub fn array_prototype_push(
     }
 
     let mut iter_scope = scope.reborrow();
-    let idx_s = iter_scope.alloc_string(&len.to_string())?;
+    let idx_s = alloc_string_from_usize(&mut iter_scope, len)?;
     iter_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
     let ok = iter_scope.set_with_host_and_hooks(
@@ -10734,7 +10749,7 @@ pub fn array_prototype_pop(
 
   let idx = len - 1;
   let mut idx_scope = scope.reborrow();
-  let idx_s = idx_scope.alloc_string(&idx.to_string())?;
+  let idx_s = alloc_string_from_usize(&mut idx_scope, idx)?;
   idx_scope.push_root(Value::String(idx_s))?;
   let key = PropertyKey::from_string(idx_s);
 
@@ -10811,9 +10826,9 @@ pub fn array_prototype_shift(
     let to = k - 1;
 
     let mut iter_scope = scope.reborrow();
-    let from_s = iter_scope.alloc_string(&from.to_string())?;
+    let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
     iter_scope.push_root(Value::String(from_s))?;
-    let to_s = iter_scope.alloc_string(&to.to_string())?;
+    let to_s = alloc_string_from_usize(&mut iter_scope, to)?;
     iter_scope.push_root(Value::String(to_s))?;
 
     let from_key = PropertyKey::from_string(from_s);
@@ -10853,7 +10868,7 @@ pub fn array_prototype_shift(
   let last = len - 1;
   {
     let mut del_scope = scope.reborrow();
-    let last_s = del_scope.alloc_string(&last.to_string())?;
+    let last_s = alloc_string_from_usize(&mut del_scope, last)?;
     del_scope.push_root(Value::String(last_s))?;
     let last_key = PropertyKey::from_string(last_s);
     let ok = del_scope.delete_with_host_and_hooks(vm, host, hooks, obj, last_key)?;
@@ -10918,9 +10933,9 @@ pub fn array_prototype_unshift(
       .ok_or(VmError::OutOfMemory)?;
 
     let mut iter_scope = scope.reborrow();
-    let from_s = iter_scope.alloc_string(&from.to_string())?;
+    let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
     iter_scope.push_root(Value::String(from_s))?;
-    let to_s = iter_scope.alloc_string(&to.to_string())?;
+    let to_s = alloc_string_from_usize(&mut iter_scope, to)?;
     iter_scope.push_root(Value::String(to_s))?;
 
     let from_key = PropertyKey::from_string(from_s);
@@ -10962,7 +10977,7 @@ pub fn array_prototype_unshift(
       vm.tick()?;
     }
     let mut set_scope = scope.reborrow();
-    let idx_s = set_scope.alloc_string(&i.to_string())?;
+    let idx_s = alloc_string_from_usize(&mut set_scope, i)?;
     set_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
     let ok = set_scope.set_with_host_and_hooks(
@@ -11067,9 +11082,9 @@ pub fn array_prototype_splice(
 
     let mut iter_scope = scope.reborrow();
 
-    let from_s = iter_scope.alloc_string(&from.to_string())?;
+    let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
     iter_scope.push_root(Value::String(from_s))?;
-    let to_s = iter_scope.alloc_string(&k.to_string())?;
+    let to_s = alloc_string_from_usize(&mut iter_scope, k)?;
     iter_scope.push_root(Value::String(to_s))?;
 
     let from_key = PropertyKey::from_string(from_s);
@@ -11112,9 +11127,9 @@ pub fn array_prototype_splice(
 
       let mut iter_scope = scope.reborrow();
 
-      let from_s = iter_scope.alloc_string(&from.to_string())?;
+      let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
       iter_scope.push_root(Value::String(from_s))?;
-      let to_s = iter_scope.alloc_string(&to.to_string())?;
+      let to_s = alloc_string_from_usize(&mut iter_scope, to)?;
       iter_scope.push_root(Value::String(to_s))?;
 
       let from_key = PropertyKey::from_string(from_s);
@@ -11164,7 +11179,7 @@ pub fn array_prototype_splice(
       }
       let idx = k - 1;
       let mut del_scope = scope.reborrow();
-      let idx_s = del_scope.alloc_string(&idx.to_string())?;
+      let idx_s = alloc_string_from_usize(&mut del_scope, idx)?;
       del_scope.push_root(Value::String(idx_s))?;
       let key = PropertyKey::from_string(idx_s);
       let ok = del_scope.delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
@@ -11192,9 +11207,9 @@ pub fn array_prototype_splice(
 
       let mut iter_scope = scope.reborrow();
 
-      let from_s = iter_scope.alloc_string(&from.to_string())?;
+      let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
       iter_scope.push_root(Value::String(from_s))?;
-      let to_s = iter_scope.alloc_string(&to.to_string())?;
+      let to_s = alloc_string_from_usize(&mut iter_scope, to)?;
       iter_scope.push_root(Value::String(to_s))?;
 
       let from_key = PropertyKey::from_string(from_s);
@@ -11246,7 +11261,7 @@ pub fn array_prototype_splice(
     }
     let to = actual_start.checked_add(j).ok_or(VmError::OutOfMemory)?;
     let mut set_scope = scope.reborrow();
-    let to_s = set_scope.alloc_string(&to.to_string())?;
+    let to_s = alloc_string_from_usize(&mut set_scope, to)?;
     set_scope.push_root(Value::String(to_s))?;
     let key = PropertyKey::from_string(to_s);
     let ok =
@@ -12144,7 +12159,7 @@ pub fn regexp_prototype_symbol_match(
       iter_scope.alloc_string_from_u16_vec(units)?
     };
     iter_scope.push_root(Value::String(part))?;
-    let key_s = iter_scope.alloc_string(&i.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, i)?;
     iter_scope.push_root(Value::String(key_s))?;
     iter_scope.define_property(
       array,
@@ -12585,7 +12600,7 @@ pub fn regexp_prototype_symbol_split(
         }
       }
     };
-    let key_s = iter_scope.alloc_string(&i.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, i)?;
     iter_scope.push_root(Value::String(key_s))?;
     iter_scope.define_property(array, PropertyKey::from_string(key_s), data_desc(value, true, true, true))?;
   }
@@ -13054,7 +13069,7 @@ pub fn string_raw(
       let mut iter_scope = scope.reborrow();
       iter_scope.push_root(Value::Object(raw))?;
 
-      let idx_s = iter_scope.alloc_string(&i.to_string())?;
+      let idx_s = alloc_string_from_usize(&mut iter_scope, i)?;
       iter_scope.push_root(Value::String(idx_s))?;
       let idx_key = PropertyKey::from_string(idx_s);
       let next_seg = iter_scope.get_with_host_and_hooks(vm, host, hooks, raw, idx_key, Value::Object(raw))?;
@@ -14781,7 +14796,7 @@ pub fn string_prototype_split(
       let part = iter_scope.alloc_string_from_u16_vec(vec![unit])?;
       iter_scope.push_root(Value::String(part))?;
 
-      let key_s = iter_scope.alloc_string(&i.to_string())?;
+      let key_s = alloc_string_from_usize(&mut iter_scope, i)?;
       iter_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
 
@@ -14873,7 +14888,7 @@ pub fn string_prototype_split(
     };
     iter_scope.push_root(Value::String(part))?;
 
-    let key_s = iter_scope.alloc_string(&i.to_string())?;
+    let key_s = alloc_string_from_usize(&mut iter_scope, i)?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
 

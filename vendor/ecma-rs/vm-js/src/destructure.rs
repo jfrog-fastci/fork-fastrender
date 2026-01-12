@@ -877,7 +877,7 @@ fn bind_array_pattern(
       let mut elem_scope = scope.reborrow();
       elem_scope.push_roots(&[Value::Object(rest_arr), v])?;
 
-      let key_s = elem_scope.alloc_string(&rest_idx.to_string())?;
+      let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
       let key = PropertyKey::from_string(key_s);
       elem_scope.create_data_property_or_throw(rest_arr, key, v)
     };

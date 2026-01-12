@@ -293,17 +293,17 @@ impl Heap {
 // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-tostring
 pub(crate) fn number_to_string(n: f64) -> String {
   if n.is_nan() {
-    return "NaN".to_string();
+    return String::from("NaN");
   }
   if n == 0.0 {
     // Covers both +0 and -0.
-    return "0".to_string();
+    return String::from("0");
   }
   if n.is_infinite() {
     if n.is_sign_negative() {
-      return "-Infinity".to_string();
+      return String::from("-Infinity");
     } else {
-      return "Infinity".to_string();
+      return String::from("Infinity");
     }
   }
 
@@ -351,12 +351,32 @@ pub(crate) fn number_to_string(n: f64) -> String {
   }
   out.push('e');
   let exp = k - 1;
+  fn push_u32_decimal(out: &mut String, mut value: u32) {
+    // `u32::MAX` has 10 decimal digits.
+    let mut buf = [0u8; 10];
+    let mut pos = buf.len();
+    if value == 0 {
+      pos -= 1;
+      buf[pos] = b'0';
+    } else {
+      while value != 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (value % 10) as u8;
+        value /= 10;
+      }
+    }
+    // Safe by construction: ASCII digits.
+    let s = std::str::from_utf8(&buf[pos..]).unwrap_or("0");
+    out.push_str(s);
+  }
   if exp >= 0 {
     out.push('+');
-    out.push_str(&exp.to_string());
+    push_u32_decimal(&mut out, exp as u32);
   } else {
     out.push('-');
-    out.push_str(&(-exp).to_string());
+    // `exp` is `i32`, so its magnitude always fits in `u32`.
+    let mag = (-i64::from(exp)) as u32;
+    push_u32_decimal(&mut out, mag);
   }
   out
 }
@@ -376,16 +396,34 @@ fn parse_ryu_to_decimal(raw: &str) -> (String, i32) {
   let mut exp: i32 = exp_part.map_or(0, |e| e.parse().unwrap_or(0));
 
   let mut digits = String::with_capacity(mantissa.len());
-  if let Some((int_part, frac_part)) = mantissa.split_once('.') {
-    digits.push_str(int_part);
-    digits.push_str(frac_part);
-    exp -= frac_part.len() as i32;
-  } else {
-    digits.push_str(mantissa);
+  let mut in_frac = false;
+  let mut frac_len = 0usize;
+  let mut started = false;
+
+  for &b in mantissa.as_bytes() {
+    if b == b'.' {
+      in_frac = true;
+      continue;
+    }
+    // `mantissa` is expected to be ASCII digits and `.` only.
+    if in_frac {
+      frac_len += 1;
+    }
+    if !started {
+      if b == b'0' {
+        continue;
+      }
+      started = true;
+    }
+    digits.push(b as char);
   }
 
-  // Strip leading zeros introduced by `0.xxx` forms.
-  let trimmed = digits.trim_start_matches('0');
-  // `raw` comes from a non-zero number, so we should always have digits.
-  (trimmed.to_string(), exp)
+  exp -= frac_len as i32;
+
+  // `raw` comes from a non-zero number, but keep this robust against internal bugs.
+  if digits.is_empty() {
+    digits.push('0');
+  }
+
+  (digits, exp)
 }

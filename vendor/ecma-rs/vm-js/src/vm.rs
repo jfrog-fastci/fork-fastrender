@@ -1836,29 +1836,6 @@ impl Vm {
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-    // Helper: allocate a canonical array index property key for `idx` without intermediate heap
-    // allocations (avoid `idx.to_string()`, which can abort the host process on allocator OOM).
-    fn alloc_array_index_key(scope: &mut Scope<'_>, idx: u32) -> Result<PropertyKey, VmError> {
-      let mut buf = [0u8; 10];
-      let mut n = idx;
-      let mut pos = buf.len();
-      if n == 0 {
-        pos -= 1;
-        buf[pos] = b'0';
-      } else {
-        while n != 0 {
-          pos -= 1;
-          buf[pos] = b'0' + (n % 10) as u8;
-          n /= 10;
-        }
-      }
-      let s = std::str::from_utf8(&buf[pos..]).map_err(|_| {
-        VmError::InvariantViolation("invalid UTF-8 in array index formatting buffer")
-      })?;
-      let key_s = scope.alloc_string_from_utf8(s)?;
-      Ok(PropertyKey::from_string(key_s))
-    }
-
     if parts.raw.len() != parts.cooked.len() {
       return Err(VmError::InvariantViolation(
         "TemplateStringParts raw/cooked length mismatch",
@@ -1898,7 +1875,7 @@ impl Vm {
 
       let mut elem_scope = scope.reborrow();
 
-      let key = alloc_array_index_key(&mut elem_scope, idx_u32)?;
+      let key = elem_scope.alloc_array_index_key(idx_u32)?;
       let key_root = match key {
         PropertyKey::String(s) => Value::String(s),
         PropertyKey::Symbol(s) => Value::Symbol(s),

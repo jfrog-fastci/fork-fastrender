@@ -3324,7 +3324,8 @@ impl<'a> Scope<'a> {
         if i % TICK_EVERY == 0 {
           tick()?;
         }
-        let key_s = self.alloc_string(&i.to_string())?;
+        let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+        let key_s = self.alloc_u32_index_string(i_u32)?;
         self.push_root(Value::String(key_s))?;
         out.push(PropertyKey::from_string(key_s));
       }
@@ -3366,7 +3367,8 @@ impl<'a> Scope<'a> {
         if i % TICK_EVERY == 0 {
           tick()?;
         }
-        let key_s = self.alloc_string(&i.to_string())?;
+        let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+        let key_s = self.alloc_u32_index_string(i_u32)?;
         self.push_root(Value::String(key_s))?;
         out.push(PropertyKey::from_string(key_s));
       }

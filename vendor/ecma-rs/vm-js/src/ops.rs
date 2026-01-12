@@ -1,4 +1,5 @@
 use crate::tick::{tick_every, DEFAULT_TICK_EVERY};
+use crate::fallible_format::try_write_u32;
 use crate::{GcString, Heap, Value, VmError};
 
 /// ECMAScript `ToNumber` for the supported value types.
@@ -314,7 +315,12 @@ pub(crate) fn parse_ascii_decimal_to_f64_units(
     }
   }
   s.push('e');
-  s.push_str(&exp10.to_string());
+  if exp10 < 0 {
+    s.push('-');
+    try_write_u32(&mut s, (-exp10) as u32)?;
+  } else {
+    try_write_u32(&mut s, exp10 as u32)?;
+  }
 
   match fast_float::parse::<f64, _>(&s) {
     Ok(n) => Ok(Some(n)),
@@ -460,7 +466,12 @@ pub(crate) fn parse_ascii_decimal_to_f64_str(
     }
   }
   s.push('e');
-  s.push_str(&exp10.to_string());
+  if exp10 < 0 {
+    s.push('-');
+    try_write_u32(&mut s, (-exp10) as u32)?;
+  } else {
+    try_write_u32(&mut s, exp10 as u32)?;
+  }
 
   match fast_float::parse::<f64, _>(&s) {
     Ok(n) => Ok(Some(n)),

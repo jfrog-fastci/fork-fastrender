@@ -617,7 +617,7 @@ impl SourceTextModuleRecord {
     }
 
     // 2. Append the Record { [[Module]]: module, [[ExportName]]: exportName } to resolveSet.
-    resolve_set.push((module, export_name.to_string()));
+    resolve_set.push((module, export_name.to_owned()));
 
     // 3. For each ExportEntry Record e of module.[[LocalExportEntries]], do
     for entry in &self.local_export_entries {
@@ -2699,16 +2699,16 @@ mod tests {
       record.local_export_entries,
       vec![
         LocalExportEntry {
-          export_name: "a".to_string(),
-          local_name: "a".to_string(),
+          export_name: String::from("a"),
+          local_name: String::from("a"),
         },
         LocalExportEntry {
-          export_name: "c".to_string(),
-          local_name: "c".to_string(),
+          export_name: String::from("c"),
+          local_name: String::from("c"),
         },
         LocalExportEntry {
-          export_name: "d".to_string(),
-          local_name: "d".to_string(),
+          export_name: String::from("d"),
+          local_name: String::from("d"),
         },
       ]
     );
@@ -2722,16 +2722,16 @@ mod tests {
       record.local_export_entries,
       vec![
         LocalExportEntry {
-          export_name: "a".to_string(),
-          local_name: "a".to_string(),
+          export_name: String::from("a"),
+          local_name: String::from("a"),
         },
         LocalExportEntry {
-          export_name: "b".to_string(),
-          local_name: "b".to_string(),
+          export_name: String::from("b"),
+          local_name: String::from("b"),
         },
         LocalExportEntry {
-          export_name: "rest".to_string(),
-          local_name: "rest".to_string(),
+          export_name: String::from("rest"),
+          local_name: String::from("rest"),
         },
       ]
     );
@@ -2743,8 +2743,8 @@ mod tests {
     assert_eq!(
       record.local_export_entries,
       vec![LocalExportEntry {
-        export_name: "b".to_string(),
-        local_name: "b".to_string(),
+        export_name: String::from("b"),
+        local_name: String::from("b"),
       }]
     );
   }
@@ -2757,16 +2757,16 @@ mod tests {
       record.local_export_entries,
       vec![
         LocalExportEntry {
-          export_name: "a".to_string(),
-          local_name: "a".to_string(),
+          export_name: String::from("a"),
+          local_name: String::from("a"),
         },
         LocalExportEntry {
-          export_name: "b".to_string(),
-          local_name: "b".to_string(),
+          export_name: String::from("b"),
+          local_name: String::from("b"),
         },
         LocalExportEntry {
-          export_name: "c".to_string(),
-          local_name: "c".to_string(),
+          export_name: String::from("c"),
+          local_name: String::from("c"),
         },
       ]
     );
