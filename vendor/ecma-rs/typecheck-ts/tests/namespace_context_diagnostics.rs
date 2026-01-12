@@ -32,6 +32,22 @@ fn ts1194_export_list_without_module_specifier_points_at_statement() {
 }
 
 #[test]
+fn ts1194_export_list_without_module_specifier_includes_semicolon_after_comment() {
+  let source = "export namespace M { export { x } /*c*/; }\nconst x = 1;\n";
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("main.ts");
+  host.insert(key.clone(), source);
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  assert_eq!(diagnostics.len(), 1, "unexpected diagnostics: {diagnostics:?}");
+
+  let diag = &diagnostics[0];
+  assert_eq!(diag.code.as_str(), codes::EXPORT_DECLARATION_IN_NAMESPACE.as_str());
+  assert_primary_span_equals(diag, source, "export { x } /*c*/;");
+}
+
+#[test]
 fn ts1194_export_list_with_module_specifier_points_at_specifier() {
   let source = "declare namespace N { export { x } from \"mod\"; }\n";
   let mut host = MemoryHost::new();
@@ -87,4 +103,3 @@ declare module "foo" {
     "unexpected namespace-context diagnostics: {diagnostics:?}"
   );
 }
-

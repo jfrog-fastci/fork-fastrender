@@ -1133,10 +1133,33 @@ fn namespace_context_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
     // export declarations (it is consumed separately to avoid producing empty
     // statements). TypeScript diagnostics include the semicolon when it is
     // present, so extend the span when possible.
-    while cursor < source.len() && matches!(source.as_bytes()[cursor], b' ' | b'\t' | b'\r') {
-      cursor += 1;
+    let bytes = source.as_bytes();
+    while cursor < bytes.len() {
+      match bytes[cursor] {
+        b if b.is_ascii_whitespace() => {
+          cursor += 1;
+        }
+        b'/' if cursor + 1 < bytes.len() && bytes[cursor + 1] == b'/' => {
+          cursor += 2;
+          while cursor < bytes.len() && bytes[cursor] != b'\n' {
+            cursor += 1;
+          }
+        }
+        b'/' if cursor + 1 < bytes.len() && bytes[cursor + 1] == b'*' => {
+          cursor += 2;
+          while cursor + 1 < bytes.len() {
+            if bytes[cursor] == b'*' && bytes[cursor + 1] == b'/' {
+              cursor += 2;
+              break;
+            }
+            cursor += 1;
+          }
+        }
+        _ => break,
+      }
     }
-    if cursor < source.len() && source.as_bytes()[cursor] == b';' {
+
+    if cursor < bytes.len() && bytes[cursor] == b';' {
       return TextRange::new(span.start, (cursor + 1) as u32);
     }
     span
