@@ -11745,7 +11745,7 @@ fn mouse_event_constructor_native(
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
 
-  brand_event_object(scope, obj, BrandedEventKind::CustomEvent)?;
+  brand_event_object(scope, obj, BrandedEventKind::MouseEvent)?;
 
   let type_key = alloc_key(scope, "type")?;
   scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
@@ -12782,54 +12782,51 @@ fn event_prototype_composed_path_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(event_obj) = this else {
-    return Err(VmError::TypeError(
-      "Event.composedPath must be called on an Event object",
-    ));
+    return Err(VmError::TypeError("Illegal invocation"));
   };
+  if !is_branded_event(scope, event_obj)? {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
   scope.push_root(Value::Object(event_obj))?;
 
-  let path_key = alloc_key(scope, EVENT_COMPOSED_PATH_KEY)?;
-  let stored_path = match scope
+  let composed_path_key = alloc_key(scope, EVENT_COMPOSED_PATH_KEY)?;
+  let stored = scope
     .heap()
-    .object_get_own_data_property_value(event_obj, &path_key)?
-  {
+    .object_get_own_data_property_value(event_obj, &composed_path_key)?;
+  let stored_array = match stored {
     Some(Value::Object(obj)) => Some(obj),
     _ => None,
   };
 
-  // Per WHATWG DOM, `Event.composedPath()` returns the event's dispatch path in target → window
-  // order.
-  //
-  // WindowRealm caches the dispatch path on the JS Event object during dispatch so this can work in
-  // minimal harnesses that do not provide an `ActiveEventStack` (and after dispatch completes).
-  let array = scope.alloc_array(0)?;
-  scope.push_root(Value::Object(array))?;
+  let out = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(out))?;
   if let Some(intrinsics) = vm.intrinsics() {
     scope
       .heap_mut()
-      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+      .object_set_prototype(out, Some(intrinsics.array_prototype()))?;
   }
 
-  let mut len = 0usize;
-
-  if let Some(stored_path) = stored_path {
-    // Return a shallow copy of the cached path.
-    scope.push_root(Value::Object(stored_path))?;
+  let mut len: usize = 0;
+  if let Some(stored_array) = stored_array {
+    scope.push_root(Value::Object(stored_array))?;
     let length_key = alloc_key(scope, "length")?;
-    len = match scope
+    let length_value = scope
       .heap()
-      .object_get_own_data_property_value(stored_path, &length_key)?
-    {
-      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+      .object_get_own_data_property_value(stored_array, &length_key)?
+      .unwrap_or(Value::Undefined);
+    len = match length_value {
+      Value::Number(n) if n.is_finite() && n >= 0.0 => n.trunc() as usize,
       _ => 0,
     };
+
     for idx in 0..len {
       let key = alloc_key(scope, &idx.to_string())?;
       let value = scope
         .heap()
-        .object_get_own_data_property_value(stored_path, &key)?
+        .object_get_own_data_property_value(stored_array, &key)?
         .unwrap_or(Value::Undefined);
-      scope.define_property(array, key, data_desc(value))?;
+      scope.push_root(value)?;
+      scope.define_property(out, key, data_desc(value))?;
     }
   } else {
     // Fallback: if the event is active and the embedder provides an `ActiveEventStack`, derive the
@@ -12879,21 +12876,22 @@ fn event_prototype_composed_path_native(
           web_events::EventTargetId::Node(node_id) => {
             get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?
           }
-          web_events::EventTargetId::Opaque(id) => match registry.opaque_target_object(scope.heap(), id) {
-            Some(obj) => Value::Object(obj),
-            None => Value::Null,
-          },
+          web_events::EventTargetId::Opaque(id) => registry
+            .opaque_target_object(scope.heap(), id)
+            .map(Value::Object)
+            .unwrap_or(Value::Null),
         };
 
         let key = alloc_key(scope, &idx.to_string())?;
-        scope.define_property(array, key, data_desc(value))?;
+        scope.push_root(value)?;
+        scope.define_property(out, key, data_desc(value))?;
       }
     }
   }
 
   let length_key = alloc_key(scope, "length")?;
   scope.define_property(
-    array,
+    out,
     length_key,
     PropertyDescriptor {
       enumerable: false,
@@ -12905,7 +12903,7 @@ fn event_prototype_composed_path_native(
     },
   )?;
 
-  Ok(Value::Object(array))
+  Ok(Value::Object(out))
 }
 
 fn event_prototype_return_value_get_native(
@@ -17006,7 +17004,14 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       Some(web_events::EventTargetId::Node(node_id)) => {
         get_or_create_node_wrapper(vm, scope, document_obj, dom, node_id)
       }
-      Some(web_events::EventTargetId::Opaque(_)) => Ok(Value::Null),
+      Some(web_events::EventTargetId::Opaque(id)) => Ok(match dom {
+        Some(dom) => dom
+          .events()
+          .opaque_target_object(scope.heap(), id)
+          .map(Value::Object)
+          .unwrap_or(Value::Null),
+        None => Value::Null,
+      }),
     }
   }
 
@@ -18074,9 +18079,6 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
     event: &mut web_events::Event,
   ) -> std::result::Result<(), web_events::DomError> {
     let target = target.normalize();
-    let web_events::EventTargetId::Node(_) = target else {
-      return Ok(());
-    };
 
     let scope = unsafe { &mut *self.scope };
     let vm = unsafe { &mut *self.vm };
@@ -18087,6 +18089,13 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
     self
       .sync_event_object(event)
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    // This invoker currently only models `on{type}` handler properties for DOM nodes (Element,
+    // Document, etc). For other targets (window / document / opaque EventTargets), the embedding
+    // layers handle EventHandler properties separately.
+    let web_events::EventTargetId::Node(_) = target else {
+      return Ok(());
+    };
 
     let target_value = self
       .js_value_for_target(Some(target))
@@ -19341,7 +19350,6 @@ pub(crate) fn event_target_dispatch_event_dom2(
       default_prevented_key,
       data_desc(Value::Bool(rust_event.default_prevented)),
     )?;
-
     // `Event.composedPath()` reads the cached path stored under `EVENT_COMPOSED_PATH_KEY`.
     //
     // The cache is populated during dispatch by `VmJsDomEventInvoker::sync_event_object` (which runs
