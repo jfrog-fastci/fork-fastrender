@@ -46,7 +46,8 @@ fi
 # Usage:
 #   scripts/cargo_agent.sh build --release
 #   scripts/cargo_agent.sh test --lib
-#   scripts/cargo_agent.sh test --test wpt_test -- --exact wpt_local_suite_passes
+#   scripts/cargo_agent.sh test --test integration -- --exact wpt_local_suite_passes
+#   scripts/cargo_agent.sh test --test allocation_failure
 #
 # Tuning knobs (env vars):
 #   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
@@ -71,7 +72,8 @@ Examples:
   scripts/cargo_agent.sh check --quiet
   scripts/cargo_agent.sh build --release
   scripts/cargo_agent.sh test --lib
-  scripts/cargo_agent.sh test --test wpt_test -- --exact wpt_local_suite_passes
+  scripts/cargo_agent.sh test --test integration -- --exact wpt_local_suite_passes
+  scripts/cargo_agent.sh test --test allocation_failure
 
 Environment:
   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
@@ -131,29 +133,6 @@ elif [[ "${1:-}" == "-p" || "${1:-}" == "--package" ]]; then
   shift 3
   set -- "${subcmd}" -p "${pkg}" "$@"
 fi
-
-# Compatibility: older docs/tests refer to the layout integration test target as `layout`, but the
-# aggregator binary is named `layout_tests` (see tests/layout_tests.rs).
-#
-# Accept `--test layout` and rewrite it to the actual target name so guidance like:
-#   scripts/cargo_agent.sh test -p fastrender --test layout <filter>
-# keeps working.
-argv=("$@")
-for ((i = 0; i < ${#argv[@]}; i++)); do
-  if [[ "${argv[$i]}" == "--" ]]; then
-    break
-  fi
-  if [[ "${argv[$i]}" == "--test" && "${argv[$((i + 1))]:-}" == "layout" ]]; then
-    argv[$((i + 1))]="layout_tests"
-  elif [[ "${argv[$i]}" == "--test" && "${argv[$((i + 1))]:-}" == "style" ]]; then
-    argv[$((i + 1))]="style_tests"
-  elif [[ "${argv[$i]}" == "--test=layout" ]]; then
-    argv[$i]="--test=layout_tests"
-  elif [[ "${argv[$i]}" == "--test=style" ]]; then
-    argv[$i]="--test=style_tests"
-  fi
-done
-set -- "${argv[@]}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
