@@ -119,6 +119,86 @@ jobs:
           bash scripts/cargo_agent.sh check -p fastrender --lib --locked
 
   # ===========================================================================
+  # ecma-rs WebIDL - Run the vendored WebIDL crate test suites (scoped)
+  # ===========================================================================
+  ecma-rs-webidl-tests:
+    name: ecma-rs WebIDL tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
+            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init vendor/ecma-rs" >&2
+            exit 1
+          fi
+
+      - name: Cache cargo registry (ecma-rs WebIDL)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-ecma-rs-webidl-cargo-registry-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-webidl-cargo-registry-
+
+      - name: Cache cargo git (ecma-rs WebIDL)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-ecma-rs-webidl-cargo-git-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-webidl-cargo-git-
+
+      - name: Cache target dir (vendor/ecma-rs)
+        uses: actions/cache@v4
+        with:
+          path: vendor/ecma-rs/target
+          key: ${{ runner.os }}-ecma-rs-webidl-target-stable-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-webidl-target-stable-
+
+      - name: Test webidl (vendored ecma-rs)
+        shell: bash
+        env:
+          # Keep the cargo_agent lockfiles inside the vendored workspace target dir.
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl --lib --tests
+
+      - name: Test webidl-vm-js (vendored ecma-rs)
+        shell: bash
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-vm-js --lib --tests
+
+      - name: Test webidl-js-runtime (vendored ecma-rs, if present)
+        shell: bash
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          if [ -f vendor/ecma-rs/webidl-runtime/Cargo.toml ]; then
+            bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-js-runtime --lib
+          else
+            echo "vendor/ecma-rs/webidl-runtime/Cargo.toml not present; skipping webidl-js-runtime tests."
+          fi
+
+  # ===========================================================================
   # Test Job - Run all tests across multiple platforms and Rust versions
   # ===========================================================================
   test:
@@ -1012,7 +1092,7 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [lockfile, ecma-rs-sanity, test, browser_ui_headless_smoke, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
+    needs: [lockfile, ecma-rs-sanity, ecma-rs-webidl-tests, test, browser_ui_headless_smoke, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
     if: always()
     steps:
       - name: Check CI Status
@@ -1020,6 +1100,7 @@ jobs:
           if [ "${{ needs.test.result }}" != "success" ] || \
               [ "${{ needs.lockfile.result }}" != "success" ] || \
               [ "${{ needs.ecma-rs-sanity.result }}" != "success" ] || \
+              [ "${{ needs.ecma-rs-webidl-tests.result }}" != "success" ] || \
               [ "${{ needs.browser_ui_headless_smoke.result }}" != "success" ] || \
               [ "${{ needs.chrome_baseline_viewport.result }}" != "success" ] || \
               [ "${{ needs.msrv.result }}" != "success" ] || \
