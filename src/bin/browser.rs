@@ -2070,6 +2070,10 @@ impl App {
 
     let mut needs_redraw = false;
 
+    if desired.reduced_motion != prev.reduced_motion {
+      needs_redraw = true;
+    }
+
     if (desired.ui_scale - prev.ui_scale).abs() > 1e-6 {
       self.ui_scale = desired.ui_scale;
       self.update_effective_pixels_per_point();
@@ -4115,7 +4119,7 @@ impl App {
     };
     use fastrender::ui::motion::UiMotion;
 
-    let motion = UiMotion::from_env();
+    let motion = UiMotion::from_ctx(ctx);
     let open_t = motion.animate_bool(
       ctx,
       egui::Id::new("fastr_page_context_menu_open"),
@@ -4717,7 +4721,7 @@ impl App {
     use fastrender::ui::motion::UiMotion;
     use fastrender::ui::UiToWorker;
 
-    let motion = UiMotion::from_env();
+    let motion = UiMotion::from_ctx(ctx);
     let open_t = motion.animate_bool(
       ctx,
       egui::Id::new("fastr_select_dropdown_open"),
@@ -7341,6 +7345,10 @@ impl App {
     self.egui_ctx.begin_frame(raw_input);
 
     let ctx = self.egui_ctx.clone();
+    fastrender::ui::motion::UiMotion::set_ctx_reduced_motion(
+      &ctx,
+      self.browser_state.appearance.reduced_motion,
+    );
 
     // When using a full-size content view on macOS (transparent titlebar / unified toolbar),
     // the top chrome is drawn into the titlebar area. Reserve a left inset so the system traffic

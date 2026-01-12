@@ -516,7 +516,7 @@ pub fn icon_button(
 /// Today this uses `egui::Spinner` directly (vector drawing, theme-aware). The SVG icon is still
 /// included in `assets/browser_icons/` for completeness and potential future use.
 pub fn spinner(ui: &mut egui::Ui, side_points: f32) -> egui::Response {
-  let motion = UiMotion::from_env();
+  let motion = UiMotion::from_ctx(ui.ctx());
   let response = if motion.enabled {
     ui.add(egui::Spinner::new().size(side_points))
   } else {

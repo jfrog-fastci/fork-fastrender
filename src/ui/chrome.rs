@@ -425,7 +425,7 @@ fn tab_search_overlay_ui(
     return;
   }
 
-  let motion = UiMotion::from_env();
+  let motion = UiMotion::from_ctx(ctx);
   let was_open = ctx.data(|d| d.get_temp::<bool>(was_open_id)).unwrap_or(false);
   ctx.data_mut(|d| {
     d.insert_temp(was_open_id, true);
