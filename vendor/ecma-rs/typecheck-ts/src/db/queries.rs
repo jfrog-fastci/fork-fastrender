@@ -464,6 +464,380 @@ fn unresolved_module_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
   Arc::from(diagnostics.into_boxed_slice())
 }
 
+#[salsa::tracked]
+fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagnostic]> {
+  panic_if_cancelled(db);
+  let parsed = parse_for(db, file);
+  let Some(ast) = parsed.ast.as_deref() else {
+    return Arc::from([]);
+  };
+
+  let file_id = file.file_id(db);
+  let source = file_text_for(db, file);
+  let is_external_module = sem_ts::module_syntax::ast_has_module_syntax(ast);
+
+  use parse_js::ast::class_or_object::ClassOrObjVal;
+  use parse_js::ast::func::FuncBody;
+  use parse_js::ast::node::Node;
+  use parse_js::ast::stmt::Stmt;
+  use parse_js::ast::ts_stmt::{ModuleName, NamespaceBody};
+  use parse_js::loc::Loc;
+
+  const MESSAGE: &str =
+    "Augmentations for the global scope can only be directly nested in external modules or ambient module declarations.";
+
+  #[derive(Clone, Copy)]
+  enum ParentKind {
+    FileTopLevel,
+    AmbientModuleBody,
+    Nested,
+  }
+
+  fn to_range(loc: Loc) -> TextRange {
+    TextRange::new(loc.start_u32(), loc.end_u32())
+  }
+
+  fn refine_global_keyword_span(source: &str, span: TextRange) -> TextRange {
+    const NEEDLE: &str = "global";
+
+    if (span.end as usize) <= source.len() {
+      if let Some(segment) = source.get(span.start as usize..span.end as usize) {
+        if let Some(idx) = segment.find(NEEDLE) {
+          let start = span.start + idx as u32;
+          let end = start + NEEDLE.len() as u32;
+          if start < end && end <= span.end {
+            return TextRange::new(start, end);
+          }
+        }
+      }
+    }
+
+    let start = span.start;
+    let end = span.start.saturating_add(NEEDLE.len() as u32).min(span.end);
+    TextRange::new(start, end)
+  }
+
+  fn walk_namespace_body(
+    body: &NamespaceBody,
+    parent: ParentKind,
+    is_external_module: bool,
+    file_id: FileId,
+    source: &str,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    match body {
+      NamespaceBody::Block(stmts) => {
+        walk_stmts(stmts, parent, is_external_module, file_id, source, diags);
+      }
+      NamespaceBody::Namespace(inner) => {
+        walk_namespace_body(
+          &inner.stx.body,
+          parent,
+          is_external_module,
+          file_id,
+          source,
+          diags,
+        );
+      }
+    }
+  }
+
+  fn walk_func_body(
+    body: &FuncBody,
+    is_external_module: bool,
+    file_id: FileId,
+    source: &str,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    match body {
+      FuncBody::Block(stmts) => walk_stmts(
+        stmts,
+        ParentKind::Nested,
+        is_external_module,
+        file_id,
+        source,
+        diags,
+      ),
+      FuncBody::Expression(_) => {}
+    }
+  }
+
+  fn walk_class_members(
+    members: &[Node<parse_js::ast::class_or_object::ClassMember>],
+    is_external_module: bool,
+    file_id: FileId,
+    source: &str,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    for member in members {
+      match &member.stx.val {
+        ClassOrObjVal::Getter(getter) => {
+          if let Some(body) = getter.stx.func.stx.body.as_ref() {
+            walk_func_body(body, is_external_module, file_id, source, diags);
+          }
+        }
+        ClassOrObjVal::Setter(setter) => {
+          if let Some(body) = setter.stx.func.stx.body.as_ref() {
+            walk_func_body(body, is_external_module, file_id, source, diags);
+          }
+        }
+        ClassOrObjVal::Method(method) => {
+          if let Some(body) = method.stx.func.stx.body.as_ref() {
+            walk_func_body(body, is_external_module, file_id, source, diags);
+          }
+        }
+        ClassOrObjVal::StaticBlock(block) => {
+          walk_stmts(
+            &block.stx.body,
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        ClassOrObjVal::Prop(_) | ClassOrObjVal::IndexSignature(_) => {}
+      }
+    }
+  }
+
+  fn walk_stmts(
+    stmts: &[Node<Stmt>],
+    parent: ParentKind,
+    is_external_module: bool,
+    file_id: FileId,
+    source: &str,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    for stmt in stmts {
+      match stmt.stx.as_ref() {
+        Stmt::GlobalDecl(global) => {
+          let allowed = match parent {
+            ParentKind::FileTopLevel => is_external_module,
+            ParentKind::AmbientModuleBody => true,
+            ParentKind::Nested => false,
+          };
+          if !allowed {
+            let stmt_range = to_range(stmt.loc);
+            let global_range = refine_global_keyword_span(source, stmt_range);
+            diags.push(Diagnostic::error(
+              "TS2669",
+              MESSAGE,
+              Span::new(file_id, global_range),
+            ));
+          }
+
+          walk_stmts(
+            &global.stx.body,
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::ModuleDecl(module) => {
+          if let Some(body) = module.stx.body.as_ref() {
+            let body_parent = match &module.stx.name {
+              ModuleName::String(_) => ParentKind::AmbientModuleBody,
+              ModuleName::Identifier(_) => ParentKind::Nested,
+            };
+            walk_stmts(
+              body,
+              body_parent,
+              is_external_module,
+              file_id,
+              source,
+              diags,
+            );
+          }
+        }
+        Stmt::NamespaceDecl(ns) => {
+          walk_namespace_body(
+            &ns.stx.body,
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::Block(block) => {
+          walk_stmts(
+            &block.stx.body,
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::If(if_stmt) => {
+          walk_stmts(
+            std::slice::from_ref(&if_stmt.stx.consequent),
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+          if let Some(alt) = if_stmt.stx.alternate.as_ref() {
+            walk_stmts(
+              std::slice::from_ref(alt),
+              ParentKind::Nested,
+              is_external_module,
+              file_id,
+              source,
+              diags,
+            );
+          }
+        }
+        Stmt::DoWhile(do_while) => {
+          walk_stmts(
+            std::slice::from_ref(&do_while.stx.body),
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::While(while_stmt) => {
+          walk_stmts(
+            std::slice::from_ref(&while_stmt.stx.body),
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::With(with_stmt) => {
+          walk_stmts(
+            std::slice::from_ref(&with_stmt.stx.body),
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::Label(label) => {
+          walk_stmts(
+            std::slice::from_ref(&label.stx.statement),
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::ForIn(for_in) => {
+          walk_stmts(
+            &for_in.stx.body.stx.body,
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::ForOf(for_of) => {
+          walk_stmts(
+            &for_of.stx.body.stx.body,
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::ForTriple(for_triple) => {
+          walk_stmts(
+            &for_triple.stx.body.stx.body,
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        Stmt::Switch(switch_stmt) => {
+          for branch in switch_stmt.stx.branches.iter() {
+            walk_stmts(
+              &branch.stx.body,
+              ParentKind::Nested,
+              is_external_module,
+              file_id,
+              source,
+              diags,
+            );
+          }
+        }
+        Stmt::Try(try_stmt) => {
+          walk_stmts(
+            &try_stmt.stx.wrapped.stx.body,
+            ParentKind::Nested,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+          if let Some(catch) = try_stmt.stx.catch.as_ref() {
+            walk_stmts(
+              &catch.stx.body,
+              ParentKind::Nested,
+              is_external_module,
+              file_id,
+              source,
+              diags,
+            );
+          }
+          if let Some(finally) = try_stmt.stx.finally.as_ref() {
+            walk_stmts(
+              &finally.stx.body,
+              ParentKind::Nested,
+              is_external_module,
+              file_id,
+              source,
+              diags,
+            );
+          }
+        }
+        Stmt::FunctionDecl(func_decl) => {
+          if let Some(body) = func_decl.stx.function.stx.body.as_ref() {
+            walk_func_body(body, is_external_module, file_id, source, diags);
+          }
+        }
+        Stmt::ClassDecl(class_decl) => {
+          walk_class_members(
+            &class_decl.stx.members,
+            is_external_module,
+            file_id,
+            source,
+            diags,
+          );
+        }
+        _ => {}
+      }
+    }
+  }
+
+  let mut diagnostics = Vec::new();
+  walk_stmts(
+    &ast.stx.body,
+    ParentKind::FileTopLevel,
+    is_external_module,
+    file_id,
+    source.as_ref(),
+    &mut diagnostics,
+  );
+
+  diagnostics.sort_by(::diagnostics::diagnostic_cmp);
+  diagnostics.dedup();
+  Arc::from(diagnostics.into_boxed_slice())
+}
+
 #[derive(Debug, Clone)]
 pub struct LowerResultWithDiagnostics {
   pub lowered: Option<Arc<LowerResult>>,
@@ -2699,6 +3073,13 @@ pub fn unresolved_module_diagnostics(db: &dyn Db, file: FileId) -> Arc<[Diagnost
   unresolved_module_diagnostics_for(db, handle)
 }
 
+pub fn global_augmentation_diagnostics(db: &dyn Db, file: FileId) -> Arc<[Diagnostic]> {
+  let handle = db
+    .file_input(file)
+    .expect("file must be seeded before querying global augmentation diagnostics");
+  global_augmentation_diagnostics_for(db, handle)
+}
+
 pub fn reachable_files(db: &dyn Db) -> Arc<Vec<FileId>> {
   all_files_for(db)
 }
@@ -3947,6 +4328,7 @@ fn program_diagnostics_for(db: &dyn Db) -> Arc<[Diagnostic]> {
   let mut parse_diags = Vec::new();
   let mut lower_diags = Vec::new();
   let mut module_diags = Vec::new();
+  let mut global_aug_diags = Vec::new();
   for file in files.iter() {
     panic_if_cancelled(db);
     let parsed = parse(db, *file);
@@ -3955,6 +4337,7 @@ fn program_diagnostics_for(db: &dyn Db) -> Arc<[Diagnostic]> {
     lower_diags.extend(lowered.diagnostics.into_iter());
     lower_diags.extend(decl_types(db, *file).diagnostics.iter().cloned());
     module_diags.extend(unresolved_module_diagnostics(db, *file).iter().cloned());
+    global_aug_diags.extend(global_augmentation_diagnostics(db, *file).iter().cloned());
   }
   let semantics = ts_semantics(db);
   let mut body_diags = Vec::new();
@@ -3974,7 +4357,8 @@ fn program_diagnostics_for(db: &dyn Db) -> Arc<[Diagnostic]> {
     .iter()
     .filter(|diag| diag.code.as_str() != "BIND1002")
     .cloned()
-    .chain(module_diags.into_iter());
+    .chain(module_diags.into_iter())
+    .chain(global_aug_diags.into_iter());
   aggregate_program_diagnostics(parse_diags, lower_diags, semantic_diags, body_diags)
 }
 
