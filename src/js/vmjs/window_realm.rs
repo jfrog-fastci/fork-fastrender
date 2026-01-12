@@ -454,6 +454,10 @@ impl WindowRealmUserData {
   pub(crate) fn set_dom_platform(&mut self, platform: DomPlatform) {
     self.dom_platform = Some(platform);
   }
+
+  pub(crate) fn events_dom_fallback(&self) -> &dom2::Document {
+    &self.events_dom_fallback
+  }
 }
 
 impl WindowRealm {
@@ -2259,7 +2263,6 @@ const EVENT_HANDLER_WRAPPER_CALL_ID_SLOT: usize = 2;
 const EVENT_HANDLER_EVENT_TYPE_SLOT: usize = 3;
 pub(crate) const EVENT_TARGET_HOST_TAG: u64 = u64::from_be_bytes(*b"EVTARGET");
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
-const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const DOM_PARSER_BRAND_KEY: &str = "__fastrender_dom_parser";
 const DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT: usize = 0;
 const NODE_ID_KEY: &str = "__fastrender_node_id";
@@ -15613,17 +15616,17 @@ fn gc_object_id(obj: GcObject) -> u64 {
   (obj.index() as u64) | ((obj.generation() as u64) << 32)
 }
 
+fn host_slots_for_object(scope: &Scope<'_>, obj: GcObject) -> Result<Option<HostSlots>, VmError> {
+  match scope.heap().object_host_slots(obj) {
+    Ok(slots) => Ok(slots),
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => Ok(None),
+    Err(err) => Err(err),
+  }
+}
+
 fn is_branded_event_target(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
-  // `resolve_event_target` must treat unknown objects as non-EventTargets. `Heap::object_host_slots`
-  // is only defined for ordinary objects/functions; for other heap object kinds, treat "unsupported"
-  // as "unbranded" rather than surfacing an internal error.
-  let slots = match scope.heap().object_host_slots(obj) {
-    Ok(slots) => slots,
-    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
-    Err(err) => return Err(err),
-  };
   Ok(matches!(
-    slots,
+    host_slots_for_object(scope, obj)?,
     Some(slots) if slots.a == EVENT_TARGET_HOST_TAG || slots.b == EVENT_TARGET_HOST_TAG
   ))
 }
@@ -15706,10 +15709,9 @@ fn is_branded_event(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmErro
 }
 
 fn is_branded_abort_signal(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
-  let key = alloc_key(scope, ABORT_SIGNAL_BRAND_KEY)?;
   Ok(matches!(
-    scope.heap().object_get_own_data_property_value(obj, &key)?,
-    Some(Value::Bool(true))
+    host_slots_for_object(scope, obj)?,
+    Some(slots) if slots.a == crate::js::window_abort::ABORT_SIGNAL_HOST_TAG
   ))
 }
 
@@ -15731,10 +15733,10 @@ fn resolve_event_target(
 ) -> Result<ResolvedEventTarget, VmError> {
   let (resolved_dom, dom_ptr) = match resolve_dom_event_target(vm, scope, host, target_obj) {
     Ok(ok) => ok,
-    Err(err) => {
+    Err(_) => {
       // Non-DOM EventTarget objects (e.g. `AbortSignal`, `new EventTarget()`).
       if !is_branded_event_target(scope, target_obj)? {
-        return Err(err);
+        return Err(VmError::TypeError("Illegal invocation"));
       }
 
       let (window_obj, document_obj, dom_ptr) = {

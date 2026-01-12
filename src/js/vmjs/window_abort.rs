@@ -25,16 +25,18 @@
 use vm_js::iterator;
 use vm_js::{
   GcObject, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks,
+  VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
-use crate::js::window_realm::EVENT_TARGET_HOST_TAG;
+use crate::api::BrowserDocumentDom2;
+use crate::dom2;
+use crate::js::host_document::DocumentHostState;
+use crate::js::window_realm::{WindowRealmUserData, EVENT_TARGET_HOST_TAG};
 
 const ABORT_CONTROLLER_HOST_TAG: u64 = 0x4142_4F52_5443_5452; // "ABORTCTR"
-const ABORT_SIGNAL_HOST_TAG: u64 = 0x4142_4F52_5453_4947; // "ABORTSIG"
+pub(crate) const ABORT_SIGNAL_HOST_TAG: u64 = 0x4142_4F52_5453_4947; // "ABORTSIG"
 
 const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_signal";
-const SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 /// Internal reference to the realm's `Event` constructor.
 ///
 /// AbortSignal dispatches an `abort` event when transitioning to the aborted state. Once
@@ -107,13 +109,63 @@ fn require_object(this: Value, err: &'static str) -> Result<GcObject, VmError> {
   }
 }
 
+fn gc_object_id(obj: GcObject) -> u64 {
+  (obj.index() as u64) | ((obj.generation() as u64) << 32)
+}
+
+fn host_slots_for_object(scope: &Scope<'_>, obj: GcObject) -> Result<Option<HostSlots>, VmError> {
+  match scope.heap().object_host_slots(obj) {
+    Ok(slots) => Ok(slots),
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => Ok(None),
+    Err(err) => Err(err),
+  }
+}
+
+fn dom_from_vm_host(host: &mut dyn VmHost) -> Option<&dom2::Document> {
+  use std::any::TypeId;
+
+  let any = host.as_any_mut();
+  let ty = any.type_id();
+  let ptr = any as *mut dyn std::any::Any;
+
+  // SAFETY: we only cast the erased `Any` pointer back to a concrete type after checking its
+  // runtime `TypeId`.
+  unsafe {
+    if ty == TypeId::of::<DocumentHostState>() {
+      let host = &mut *(ptr as *mut DocumentHostState);
+      return Some(host.dom());
+    }
+    if ty == TypeId::of::<BrowserDocumentDom2>() {
+      let host = &mut *(ptr as *mut BrowserDocumentDom2);
+      return Some(host.dom());
+    }
+  }
+
+  None
+}
+
+fn register_opaque_event_target(vm: &mut Vm, host: &mut dyn VmHost, obj: GcObject) {
+  let id = gc_object_id(obj);
+  if let Some(dom) = dom_from_vm_host(host) {
+    dom.events().register_opaque_target(id, WeakGcObject::new(obj));
+    return;
+  }
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return;
+  };
+  data
+    .events_dom_fallback()
+    .events()
+    .register_opaque_target(id, WeakGcObject::new(obj));
+}
+
 fn require_abort_controller(
   scope: &Scope<'_>,
   this: Value,
   err: &'static str,
 ) -> Result<GcObject, VmError> {
   let obj = require_object(this, err)?;
-  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+  let Some(slots) = host_slots_for_object(scope, obj)? else {
     return Err(VmError::TypeError(err));
   };
   if slots.a == ABORT_CONTROLLER_HOST_TAG {
@@ -129,7 +181,7 @@ fn require_abort_signal(
   err: &'static str,
 ) -> Result<GcObject, VmError> {
   let obj = require_object(this, err)?;
-  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+  let Some(slots) = host_slots_for_object(scope, obj)? else {
     return Err(VmError::TypeError(err));
   };
   if slots.a == ABORT_SIGNAL_HOST_TAG {
@@ -295,9 +347,9 @@ fn abort_controller_ctor_call(
 }
 
 fn abort_controller_ctor_construct(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _args: &[Value],
@@ -351,7 +403,7 @@ fn abort_controller_ctor_construct(
       b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
+  register_opaque_event_target(vm, host, signal);
   let event_ctor = match get_own_data_prop(scope, signal_proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
     Value::Object(obj) => Value::Object(obj),
     _ => {
@@ -514,9 +566,9 @@ fn global_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, V
 }
 
 fn abort_signal_static_abort_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -533,7 +585,7 @@ fn abort_signal_static_abort_native(
       b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
+  register_opaque_event_target(vm, host, signal);
   let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
     Value::Object(obj) => Value::Object(obj),
     _ => {
@@ -609,7 +661,7 @@ fn abort_signal_static_timeout_native(
       b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
+  register_opaque_event_target(vm, host_ctx, signal);
   let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
     Value::Object(obj) => Value::Object(obj),
     _ => {
@@ -736,7 +788,7 @@ fn abort_signal_static_any_native(
       b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
+  register_opaque_event_target(vm, host_ctx, signal);
   let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
     Value::Object(obj) => Value::Object(obj),
     _ => {

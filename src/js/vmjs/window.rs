@@ -3590,6 +3590,67 @@ mod tests {
   }
 
   #[test]
+  fn event_target_and_abort_signal_receiver_branding_is_not_forgeable() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    host.exec_script(
+      r#"
+      globalThis.__event_target_illegal = false;
+      globalThis.__event_target_forge_illegal = false;
+      globalThis.__abort_signal_illegal = false;
+      globalThis.__abort_signal_is_event_target = false;
+
+      try {
+        EventTarget.prototype.addEventListener.call({}, "x", () => {});
+      } catch (e) {
+        globalThis.__event_target_illegal = e instanceof TypeError;
+      }
+
+      const forged = {};
+      Object.defineProperty(forged, "__fastrender_event_target", { value: true });
+      try {
+        EventTarget.prototype.addEventListener.call(forged, "x", () => {});
+      } catch (e) {
+        globalThis.__event_target_forge_illegal = e instanceof TypeError;
+      }
+
+      try {
+        AbortSignal.prototype.throwIfAborted.call({}, "x");
+      } catch (e) {
+        globalThis.__abort_signal_illegal = e instanceof TypeError;
+      }
+
+      try {
+        const c = new AbortController();
+        c.signal.addEventListener("abort", () => {});
+        globalThis.__abort_signal_is_event_target = true;
+      } catch (e) {
+        globalThis.__abort_signal_is_event_target = false;
+      }
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__event_target_illegal"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__event_target_forge_illegal"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__abort_signal_illegal"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__abort_signal_is_event_target"),
+      Value::Bool(true)
+    ));
+
+    Ok(())
+  }
+
+  #[test]
   fn headers_for_each_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
