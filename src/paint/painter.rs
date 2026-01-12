@@ -13155,22 +13155,6 @@ impl Painter {
       return;
     }
 
-    if matches!(replaced_type, ReplacedType::Image { .. }) {
-      self.paint_inside_border_rect(rect, Rgba::rgb(192, 192, 192), clip_mask);
-
-      let icon_inset = 2.0;
-      let icon_size = Self::missing_image_icon_size(rect);
-      if icon_size > 0.0 {
-        let icon_rect = Rect::from_xywh(
-          rect.x() + icon_inset,
-          rect.y() + icon_inset,
-          icon_size,
-          icon_size,
-        );
-        self.paint_broken_image_icon(icon_rect, clip_mask);
-      }
-      return;
-    }
     // For `<video controls>` without a poster/frame, browsers still paint a dark video surface and
     // chrome for the native controls. Emit a stable approximation rather than leaving the element
     // transparent.
