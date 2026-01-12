@@ -29449,6 +29449,30 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_rejects_dom_node_wrappers() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        function isDataCloneError(fn) {\n\
+          try { fn(); return false; } catch (e) { return e && e.name === 'DataCloneError'; }\n\
+        }\n\
+\n\
+        const a = isDataCloneError(() => structuredClone(document.createElement('div')));\n\
+        const b = isDataCloneError(() => structuredClone(document));\n\
+        const c = isDataCloneError(() => structuredClone(document.body));\n\
+        return a && b && c;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn dom_token_list_indexed_property_access_reads_tokens() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);

@@ -3,8 +3,8 @@ use crate::dom::HTML_NAMESPACE;
 use crate::web::events::EventTargetId;
 use std::collections::HashMap;
 use vm_js::{
-  GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, Value,
-  VmError, WeakGcObject,
+  GcObject, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId,
+  Scope, Value, VmError, WeakGcObject,
 };
 
 // Must match `window_realm::NODE_ID_KEY`.
@@ -14,6 +14,12 @@ const INTERNAL_NODE_ID_KEY: &str = "__fastrender_node_id";
 ///
 /// Note: `dom2::NodeId` values are only unique within a document, not across documents.
 pub type DocumentId = u64;
+
+/// HostSlots tag used to brand DOM platform object wrappers (Document/Element/etc).
+///
+/// The `structuredClone()` implementation treats any object with `HostSlots` as a platform object
+/// and throws `DataCloneError` (HTML structured clone algorithm).
+pub const DOM_WRAPPER_HOST_TAG: u64 = 0x444F_4D57_5241_5050; // "DOMWRAPP"
 
 /// Unique identity for a `dom2` node in a realm.
 ///
@@ -432,6 +438,13 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(wrapper, Some(self.prototype_for(primary_interface)))?;
+    scope.heap_mut().object_set_host_slots(
+      wrapper,
+      HostSlots {
+        a: DOM_WRAPPER_HOST_TAG,
+        b: 0,
+      },
+    )?;
 
     // Ensure wrappers always expose an up-to-date node ID property so native DOM operations that
     // read it directly (rather than consulting `DomPlatform` metadata) remain correct.
@@ -457,7 +470,6 @@ impl DomPlatform {
         },
       )?;
     }
-
     self.register_wrapper(scope.heap(), wrapper, key, primary_interface);
     Ok(wrapper)
   }
