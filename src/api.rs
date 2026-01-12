@@ -264,7 +264,9 @@ mod dom2_geometry;
 pub use dom2_geometry::Dom2GeometryContext;
 
 mod browser_tab;
-pub use browser_tab::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus};
+pub use browser_tab::{
+  BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus,
+};
 
 mod browser_tab_vm_js_executor;
 pub use browser_tab_vm_js_executor::VmJsBrowserTabExecutor;

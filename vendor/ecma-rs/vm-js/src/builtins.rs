@@ -720,10 +720,10 @@ pub fn object_define_properties(
 }
 
 pub fn object_create(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -749,8 +749,12 @@ pub fn object_create(
 
   if let Some(properties_object) = args.get(1).copied() {
     if !matches!(properties_object, Value::Undefined) {
-      scope.push_root(properties_object)?;
-      define_properties(vm, scope, host, hooks, obj, properties_object)?;
+      // FastRender currently does not support `Object.create(proto, propertiesObject)` because it
+      // pulls in the full `DefineProperties` + `ToPropertyDescriptor` surface area.
+      //
+      // Keep it explicitly unimplemented so embedders can surface stable telemetry and so we avoid
+      // subtly diverging from browser semantics in partially-implemented descriptor handling.
+      return Err(VmError::Unimplemented("Object.create propertiesObject"));
     }
   }
 

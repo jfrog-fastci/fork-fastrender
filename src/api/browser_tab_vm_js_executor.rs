@@ -38,6 +38,7 @@ use super::{
   BrowserTabHost, BrowserTabJsExecutor, ConsoleMessageLevel, ModuleScriptExecutionStatus,
   SharedRenderDiagnostics,
 };
+use super::browser_tab::ModuleScriptEvaluationOutcome;
 
 #[derive(Debug, Clone, Copy)]
 struct PendingModuleEvaluation {
@@ -1263,7 +1264,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let diagnostics = self.diagnostics.clone();
     // Collect settled module evaluation promises without holding an active JS borrow while we
     // dispatch error events (dispatch can allocate/GC).
-    let mut completed: Vec<(HtmlScriptId, RootId, Option<Value>)> = Vec::new();
+    let mut completed: Vec<(HtmlScriptId, RootId, ModuleScriptEvaluationOutcome, Option<Value>)> =
+      Vec::new();
     {
       let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
       for (script_id, pending) in &self.pending_module_evaluations {
@@ -1279,7 +1281,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
         match state {
           PromiseState::Fulfilled => {
-            completed.push((*script_id, pending.promise_root, None));
+            completed.push((
+              *script_id,
+              pending.promise_root,
+              ModuleScriptEvaluationOutcome::Fulfilled,
+              None,
+            ));
           }
           PromiseState::Rejected => {
             let reason = match heap.promise_result(pending.promise) {
@@ -1291,14 +1298,19 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
                 return Err(vm_error_format::vm_error_to_error(heap, err));
               }
             };
-            completed.push((*script_id, pending.promise_root, Some(reason)));
+            completed.push((
+              *script_id,
+              pending.promise_root,
+              ModuleScriptEvaluationOutcome::Rejected,
+              Some(reason),
+            ));
           }
           PromiseState::Pending => {}
         }
       }
     }
 
-    for (script_id, root_id, rejection_reason) in completed {
+    for (script_id, root_id, outcome, rejection_reason) in completed {
       if let Some(reason) = rejection_reason {
         // Propagate top-level await rejections as global `error` events (per HTML module script
         // evaluation error reporting) and record them into diagnostics when not handled.
@@ -1314,7 +1326,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       }
 
       event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-        host.on_module_script_evaluation_complete(script_id, event_loop)
+        host.on_module_script_evaluation_complete(script_id, outcome, event_loop)
       })?;
       realm.heap_mut().remove_root(root_id);
       self.pending_module_evaluations.remove(&script_id);

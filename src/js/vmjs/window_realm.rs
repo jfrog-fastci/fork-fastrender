@@ -12193,6 +12193,12 @@ fn before_unload_event_constructor_impl(
 
   define_event_default_properties(scope, obj)?;
 
+  // `dispatchEvent` validates that the input is a branded Event instance. Keep specialized event
+  // constructors aligned with the base `Event`/`CustomEvent` constructors so lifecycle events
+  // (e.g. `beforeunload`, `pagehide`, `pageshow`) can be dispatched through the shared DOM event
+  // system.
+  brand_event_object(scope, obj, BrandedEventKind::Event)?;
+
   let return_value_key = alloc_key(scope, "returnValue")?;
   scope.define_property(
     obj,
@@ -12297,6 +12303,9 @@ fn page_transition_event_constructor_impl(
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
   define_event_default_properties(scope, obj)?;
+
+  // `dispatchEvent` validates that the input is a branded Event instance.
+  brand_event_object(scope, obj, BrandedEventKind::Event)?;
 
   let persisted_key = alloc_key(scope, "persisted")?;
   scope.define_property(

@@ -64,6 +64,12 @@ pub enum ModuleScriptExecutionStatus {
   Pending,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModuleScriptEvaluationOutcome {
+  Fulfilled,
+  Rejected,
+}
+
 pub trait BrowserTabJsExecutor {
   /// Notify the executor that the document referrer policy has been set/updated for the current
   /// navigation.
@@ -2639,7 +2645,7 @@ impl BrowserTabHost {
           let entry = self.scripts.get(&script_id).cloned();
 
           let should_checkpoint = matches!(
-            work,
+            &work,
             HtmlScriptWork::Classic { .. } | HtmlScriptWork::Module { .. }
           );
 
@@ -2781,8 +2787,8 @@ impl BrowserTabHost {
               }
             }
             Ok(ScriptExecutionCompletion::PendingModuleEvaluation) => {
-              // Module script evaluation is still pending (top-level await). Dispatch `load` once it
-              // completes.
+              // Module script evaluation is still pending (top-level await). Dispatch `load`/`error`
+              // once the evaluation promise settles.
             }
             Err(err) => {
               let Some(entry) = entry else {
@@ -3072,6 +3078,7 @@ impl BrowserTabHost {
   pub(crate) fn on_module_script_evaluation_complete(
     &mut self,
     script_id: HtmlScriptId,
+    outcome: ModuleScriptEvaluationOutcome,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     if !self.pending_module_executions.remove(&script_id) {
@@ -3088,8 +3095,17 @@ impl BrowserTabHost {
     self.finish_script_execution(script_id, event_loop)?;
 
     if let Some(entry) = self.scripts.get(&script_id) {
-      if entry.spec.src_attr_present && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty()) {
-        self.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
+      match outcome {
+        ModuleScriptEvaluationOutcome::Fulfilled => {
+          if entry.spec.src_attr_present
+            && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty())
+          {
+            self.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
+          }
+        }
+        ModuleScriptEvaluationOutcome::Rejected => {
+          self.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
+        }
       }
     }
 
@@ -13258,6 +13274,97 @@ html, body { margin: 0; padding: 0; }
       diagnostics.js_exceptions
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn module_top_level_await_blocks_later_ordered_module_scripts_and_domcontentloaded() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let html = r#"<!doctype html><body>
+      <script>
+        globalThis.__log = [];
+        document.addEventListener("DOMContentLoaded", () => globalThis.__log.push("DOMContentLoaded"));
+        window.addEventListener("load", () => {
+          globalThis.__log.push("load");
+          document.body.setAttribute("data-log", globalThis.__log.join(","));
+        });
+      </script>
+      <script type="module">
+        globalThis.__log.push("m1-start");
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        globalThis.__log.push("m1-end");
+      </script>
+      <script type="module">
+        globalThis.__log.push("m2");
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-log")
+        .expect("get_attribute should succeed"),
+      Some("m1-start,m1-end,m2,DOMContentLoaded,load"),
+      "expected ordered module scripts to execute sequentially even across top-level await, and to delay DOMContentLoaded/load",
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_script_load_event_waits_for_top_level_await_to_complete() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let module_source = r#"
+      globalThis.__log.push("module-start");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      globalThis.__log.push("module-end");
+    "#;
+    let b64 = BASE64_STANDARD.encode(module_source.as_bytes());
+    let entry_url = Url::parse(&format!("data:text/javascript;base64,{b64}"))
+      .expect("data URL should parse")
+      .to_string();
+
+    let html = format!(
+      r#"<!doctype html><body>
+        <script type="module" src="{entry_url}"></script>
+        <script>
+          globalThis.__log = [];
+          const mod = document.querySelector('script[type="module"]');
+          mod.addEventListener("load", () => {{
+            globalThis.__log.push("load-event");
+            document.body.setAttribute("data-log", globalThis.__log.join(","));
+          }});
+        </script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-log")
+        .expect("get_attribute should succeed"),
+      Some("module-start,module-end,load-event"),
+      "expected module <script> load event to fire only after module evaluation completes (including top-level await)",
+    );
     Ok(())
   }
 
