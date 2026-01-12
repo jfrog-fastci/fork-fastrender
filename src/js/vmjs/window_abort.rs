@@ -31,6 +31,12 @@ use vm_js::{
 const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_signal";
 const SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
+/// Internal reference to the realm's `Event` constructor.
+///
+/// AbortSignal dispatches an `abort` event when transitioning to the aborted state. Once
+/// `EventTarget.dispatchEvent` becomes spec-correct (WebIDL conversion), the event argument must be
+/// a real `Event` object rather than a duck-typed `{ type: "abort" }` plain object.
+const SIGNAL_EVENT_CTOR_INTERNAL_KEY: &str = "__fastrender_abort_signal_event_ctor";
 /// Hard cap on how many signals `AbortSignal.any(signals)` will consume from the provided iterable.
 ///
 /// This is a hostile-input guardrail: the `signals` argument is specified as a WebIDL `sequence`,
@@ -167,19 +173,39 @@ fn create_timeout_reason(scope: &mut Scope<'_>) -> Result<Value, VmError> {
   create_dom_exception_like(scope, "TimeoutError", "The operation timed out")
 }
 
-fn create_abort_event(scope: &mut Scope<'_>) -> Result<Value, VmError> {
-  // `EventTarget.dispatchEvent` only requires an object with a `type` property.
-  let event = scope.alloc_object()?;
-  scope.push_root(Value::Object(event))?;
+fn create_abort_event(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  signal_obj: GcObject,
+) -> Result<Value, VmError> {
+  // Construct a real `Event` instance (`new Event("abort")`) so the event remains dispatchable once
+  // `EventTarget.dispatchEvent` performs WebIDL conversion and rejects non-Event objects.
+  //
+  // The `Event` constructor is captured during `install_window_abort_bindings` and stored on each
+  // signal so abort dispatch does not consult potentially-mutated globals.
+  scope.push_root(Value::Object(signal_obj))?;
+  let ctor = get_own_data_prop(scope, signal_obj, SIGNAL_EVENT_CTOR_INTERNAL_KEY)?;
+  let Value::Object(ctor) = ctor else {
+    return Err(VmError::InvariantViolation(
+      "AbortSignal missing internal Event constructor",
+    ));
+  };
+
+  // Root `ctor` and the argument string while constructing (both allocation and construction can
+  // trigger GC).
+  scope.push_root(Value::Object(ctor))?;
   let type_s = scope.alloc_string("abort")?;
   scope.push_root(Value::String(type_s))?;
-  let type_key = alloc_key(scope, "type")?;
-  scope.define_property(
-    event,
-    type_key,
-    data_desc(Value::String(type_s), /* writable */ false),
-  )?;
-  Ok(Value::Object(event))
+  vm.construct_with_host_and_hooks(
+    host,
+    scope,
+    host_hooks,
+    Value::Object(ctor),
+    &[Value::String(type_s)],
+    Value::Object(ctor),
+  )
 }
 
 fn abort_signal(
@@ -213,7 +239,7 @@ fn abort_signal(
 
   // Dispatch the `abort` event and call `onabort`.
   if dispatch_event {
-    let ev = create_abort_event(scope)?;
+    let ev = create_abort_event(vm, scope, host, host_hooks, signal_obj)?;
     scope.push_root(ev)?;
 
     let dispatch_fn = {
@@ -319,6 +345,21 @@ fn abort_controller_ctor_construct(
     signal,
     SIGNAL_BRAND_KEY,
     Value::Bool(true),
+    /* writable */ false,
+  )?;
+  let event_ctor = match get_own_data_prop(scope, signal_proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
+    Value::Object(obj) => Value::Object(obj),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AbortSignal prototype missing internal Event constructor",
+      ))
+    }
+  };
+  set_own_data_prop(
+    scope,
+    signal,
+    SIGNAL_EVENT_CTOR_INTERNAL_KEY,
+    event_ctor,
     /* writable */ false,
   )?;
   set_own_data_prop(
@@ -494,6 +535,21 @@ fn abort_signal_static_abort_native(
     Value::Bool(true),
     /* writable */ false,
   )?;
+  let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
+    Value::Object(obj) => Value::Object(obj),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AbortSignal prototype missing internal Event constructor",
+      ))
+    }
+  };
+  set_own_data_prop(
+    scope,
+    signal,
+    SIGNAL_EVENT_CTOR_INTERNAL_KEY,
+    event_ctor,
+    /* writable */ false,
+  )?;
 
   let reason_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let reason = if matches!(reason_arg, Value::Undefined) {
@@ -559,6 +615,21 @@ fn abort_signal_static_timeout_native(
     signal,
     SIGNAL_BRAND_KEY,
     Value::Bool(true),
+    /* writable */ false,
+  )?;
+  let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
+    Value::Object(obj) => Value::Object(obj),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AbortSignal prototype missing internal Event constructor",
+      ))
+    }
+  };
+  set_own_data_prop(
+    scope,
+    signal,
+    SIGNAL_EVENT_CTOR_INTERNAL_KEY,
+    event_ctor,
     /* writable */ false,
   )?;
   set_own_data_prop(
@@ -677,6 +748,21 @@ fn abort_signal_static_any_native(
     signal,
     SIGNAL_BRAND_KEY,
     Value::Bool(true),
+    /* writable */ false,
+  )?;
+  let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
+    Value::Object(obj) => Value::Object(obj),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AbortSignal prototype missing internal Event constructor",
+      ))
+    }
+  };
+  set_own_data_prop(
+    scope,
+    signal,
+    SIGNAL_EVENT_CTOR_INTERNAL_KEY,
+    event_ctor,
     /* writable */ false,
   )?;
   set_own_data_prop(
@@ -896,6 +982,13 @@ pub fn install_window_abort_bindings(
   let global = realm.global_object();
   scope.push_root(Value::Object(global))?;
 
+  // Capture the realm's `Event` constructor once so abort-event dispatch can always create a real
+  // `Event` instance (even if user code overwrites `globalThis.Event` later).
+  let event_ctor = match get_own_data_prop(&mut scope, global, "Event")? {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::Unimplemented("Event is not installed on the global object")),
+  };
+
   // Look up the existing `EventTarget.prototype` installed by `WindowRealm`.
   let event_target_proto = {
     let event_target_key = alloc_key(&mut scope, "EventTarget")?;
@@ -926,6 +1019,13 @@ pub fn install_window_abort_bindings(
   // --- AbortSignal (illegal constructor, but has static methods) ------------------------------
   let abort_signal_proto = scope.alloc_object_with_prototype(Some(event_target_proto))?;
   scope.push_root(Value::Object(abort_signal_proto))?;
+  set_own_data_prop(
+    &mut scope,
+    abort_signal_proto,
+    SIGNAL_EVENT_CTOR_INTERNAL_KEY,
+    Value::Object(event_ctor),
+    /* writable */ false,
+  )?;
 
   // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
   let abort_signal_tag = scope.alloc_string("AbortSignal")?;

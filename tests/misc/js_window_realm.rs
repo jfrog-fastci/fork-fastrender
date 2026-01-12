@@ -1737,8 +1737,14 @@ fn abort_signal_abort_event_handlers_can_mutate_dom() -> Result<()> {
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
+globalThis.__abort_is_event = false;
+globalThis.__abort_type = "";
+globalThis.__abort_cancelable = null;
 const controller = new AbortController();
-controller.signal.addEventListener('abort', () => {
+controller.signal.addEventListener('abort', (e) => {
+  globalThis.__abort_is_event = e instanceof Event;
+  globalThis.__abort_type = e.type;
+  globalThis.__abort_cancelable = e.cancelable;
   const d = document.createElement('div');
   d.id = 'abl';
   document.body.appendChild(d);
@@ -1755,6 +1761,20 @@ controller.abort();
   // `abort()` dispatches synchronously, but run a checkpoint anyway to ensure any nested microtasks
   // don't affect assertions.
   event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let (is_event, cancelable, type_) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let is_event = get_data_prop(&mut scope, global, "__abort_is_event");
+    let cancelable = get_data_prop(&mut scope, global, "__abort_cancelable");
+    let type_ = get_data_prop(&mut scope, global, "__abort_type");
+    (is_event, cancelable, get_string(scope.heap(), type_))
+  };
+  assert_eq!(is_event, Value::Bool(true));
+  assert_eq!(cancelable, Value::Bool(false));
+  assert_eq!(type_, "abort");
 
   assert!(
     host.dom().get_element_by_id("abl").is_some(),
