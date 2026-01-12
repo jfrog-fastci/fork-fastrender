@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum AbstractLoc {
   /// Unknown location; aliases everything.
   Top,
@@ -18,6 +19,7 @@ pub enum AbstractLoc {
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct PointsToSet {
   locs: BTreeSet<AbstractLoc>,
 }
@@ -86,7 +88,12 @@ impl fmt::Debug for PointsToSet {
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct AliasResult {
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub points_to: HashMap<u32, PointsToSet>,
 }
 

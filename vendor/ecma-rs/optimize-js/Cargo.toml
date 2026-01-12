@@ -56,3 +56,8 @@ harness = false
 [[bench]]
 name = "typed"
 harness = false
+
+[[example]]
+name = "native_ready"
+path = "examples/native_ready.rs"
+required-features = ["typed"]

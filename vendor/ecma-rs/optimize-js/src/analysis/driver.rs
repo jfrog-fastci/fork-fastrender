@@ -71,23 +71,69 @@ pub enum FunctionKey {
   Fn(FnId),
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for FunctionKey {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: serde::Serializer,
+  {
+    match self {
+      FunctionKey::TopLevel => serializer.serialize_str("top_level"),
+      FunctionKey::Fn(id) => serializer.serialize_str(&format!("fn:{id}")),
+    }
+  }
+}
+
 /// Program-wide analysis results.
 ///
 /// This is returned by both [`analyze_program`] and [`annotate_program`]. The
 /// `annotate_*` variant additionally writes relevant information into
 /// [`InstMeta`] on each instruction.
 #[derive(Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ProgramAnalyses {
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub effects_summary: HashMap<FunctionKey, EffectSet>,
   /// Conservative purity classification derived from the function-level effect summary.
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub purity: HashMap<FunctionKey, purity::Purity>,
 
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub alias: HashMap<FunctionKey, alias::AliasResult>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub escape: HashMap<FunctionKey, escape::EscapeResult>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub ownership: HashMap<FunctionKey, ownership::OwnershipResult>,
 
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub range: HashMap<FunctionKey, range::RangeResult>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub nullability: HashMap<FunctionKey, nullability::NullabilityResult>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
   pub encoding: HashMap<FunctionKey, encoding::EncodingResult>,
 }
 

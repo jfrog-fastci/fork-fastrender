@@ -45,10 +45,14 @@ pub mod ssa;
 pub mod symbol;
 pub mod types;
 pub mod util;
+#[cfg(feature = "typed")]
+pub mod native;
 
 pub use crate::decompile::program_to_js;
 pub use crate::decompile::ProgramToJsError;
 pub use crate::decompile::{program_to_ast, DecompileOptions};
+#[cfg(feature = "typed")]
+pub use crate::native::{compile_file_native_ready, NativeReadyOptions, NativeReadyProgram};
 use crate::il::inst::Inst;
 use crate::util::counter::Counter;
 use ahash::HashMap;
@@ -762,7 +766,7 @@ pub struct ProgramCompilerInner {
   pub lower: Arc<LowerResult>,
   pub(crate) bindings: HirSymbolBindings,
   pub names: Arc<NameInterner>,
-  pub(crate) types: crate::types::TypeContext,
+  pub(crate) types: Arc<crate::types::TypeContext>,
 }
 
 /// Our internal compiler state for a program.
@@ -926,16 +930,19 @@ pub fn compile_file_with_typecheck_cfg_options(
   let top_level_node = parse_source(&source, file, mode)?;
 
   if let Some(lowered) = program.hir_lowered(file) {
-    let types = crate::types::TypeContext::from_typecheck_program_aligned(
+    let types = Arc::new(crate::types::TypeContext::from_typecheck_program_aligned(
       Arc::clone(&program),
       file,
       lowered.as_ref(),
-    );
+    ));
     Program::compile_with_lower(top_level_node, lowered, mode, debug, types, cfg_options)
   } else {
     let lower = hir_js::lower_file(file, HirFileKind::Ts, &top_level_node);
-    let types =
-      crate::types::TypeContext::from_typecheck_program(Arc::clone(&program), file, &lower);
+    let types = Arc::new(crate::types::TypeContext::from_typecheck_program(
+      Arc::clone(&program),
+      file,
+      &lower,
+    ));
     Program::compile_with_lower(
       top_level_node,
       Arc::new(lower),
@@ -1130,7 +1137,7 @@ impl Program {
     lower: Arc<LowerResult>,
     top_level_mode: TopLevelMode,
     debug: bool,
-    types: crate::types::TypeContext,
+    types: Arc<crate::types::TypeContext>,
     cfg_options: CompileCfgOptions,
   ) -> OptimizeResult<Self> {
     let source_file = lower.hir.file;
@@ -1233,7 +1240,7 @@ impl Program {
       lower,
       top_level_mode,
       debug,
-      Default::default(),
+      Arc::new(Default::default()),
       CompileCfgOptions::default(),
     )
   }
@@ -1254,7 +1261,7 @@ impl Program {
       lower,
       top_level_mode,
       debug,
-      Default::default(),
+      Arc::new(Default::default()),
       cfg_options,
     )
   }
@@ -1288,7 +1295,7 @@ impl Program {
       Arc::new(lower),
       top_level_mode,
       debug,
-      Default::default(),
+      Arc::new(Default::default()),
       cfg_options,
     )
   }

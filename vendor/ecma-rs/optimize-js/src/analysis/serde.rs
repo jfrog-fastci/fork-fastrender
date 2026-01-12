@@ -7,7 +7,7 @@
 //! This module is only compiled when the crate is built with `feature = "serde"`.
 
 use ahash::HashMap;
-use serde::ser::{Serialize, SerializeMap, Serializer};
+use serde::ser::{Serialize, SerializeSeq, Serializer};
 
 pub(crate) fn serialize_hashmap_sorted<K, V, S>(
   map: &HashMap<K, V>,
@@ -21,9 +21,12 @@ where
   let mut entries: Vec<_> = map.iter().collect();
   entries.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-  let mut out = serializer.serialize_map(Some(entries.len()))?;
+  // Serialize as a list of `(key, value)` pairs instead of a JSON object. This keeps output
+  // deterministic while avoiding `serde_json`'s restriction that object keys must be strings (some
+  // analyses use tuple keys like `(pred, succ)`).
+  let mut out = serializer.serialize_seq(Some(entries.len()))?;
   for (k, v) in entries {
-    out.serialize_entry(k, v)?;
+    out.serialize_element(&(k, v))?;
   }
   out.end()
 }
