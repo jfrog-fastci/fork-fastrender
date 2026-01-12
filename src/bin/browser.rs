@@ -5570,6 +5570,9 @@ impl App {
                 tab.find = fastrender::ui::FindInPageState::default();
               }
               self.send_worker_msg(fastrender::ui::UiToWorker::FindStop { tab_id });
+              self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+                && !self.bookmarks_panel_open
+                && !self.history_panel_open;
               self.window.request_redraw();
               return;
             }
@@ -5623,11 +5626,24 @@ impl App {
                 return;
               }
 
+              ShortcutAction::FocusAddressBar => {
+                // Prevent text typed before the next egui frame from being forwarded to the page.
+                self.focus_address_bar_select_all();
+                self.window.request_redraw();
+                return;
+              }
+
+              ShortcutAction::FindInPage => {
+                // Prevent text typed before the next egui frame (when the find bar takes focus)
+                // from being forwarded to the page.
+                self.page_has_focus = false;
+                self.window.request_redraw();
+                return;
+              }
+
               // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
               // can respect its editing focus rules. Ensure they never reach page input.
-              ShortcutAction::FocusAddressBar
-              | ShortcutAction::FindInPage
-              | ShortcutAction::ToggleBookmarksManager
+              ShortcutAction::ToggleBookmarksManager
               | ShortcutAction::NewWindow
               | ShortcutAction::NewTab
               | ShortcutAction::CloseTab
@@ -5984,7 +6000,11 @@ impl App {
           // Request another redraw so egui can apply the focus/select-all request.
           self.window.request_redraw();
         }
-        ChromeAction::OpenFindInPage => {}
+        ChromeAction::OpenFindInPage => {
+          // Treat the find bar as chrome text input: while it's opening/active, don't forward
+          // keyboard events to the page.
+          self.page_has_focus = false;
+        }
         ChromeAction::FindQuery {
           tab_id,
           query,
@@ -6004,6 +6024,9 @@ impl App {
         }
         ChromeAction::CloseFindInPage(tab_id) => {
           self.send_worker_msg(UiToWorker::FindStop { tab_id });
+          self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+            && !self.bookmarks_panel_open
+            && !self.history_panel_open;
           self.window.request_redraw();
         }
         ChromeAction::AddressBarFocusChanged(has_focus) => {

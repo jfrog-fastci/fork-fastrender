@@ -276,7 +276,6 @@ pub fn chrome_ui_with_bookmarks(
     home,
     toggle_bookmark,
     toggle_history_panel,
-    toggle_bookmarks_manager,
     tab_delta,
     tab_number,
     back,
@@ -358,7 +357,6 @@ pub fn chrome_ui_with_bookmarks(
       home,
       toggle_bookmark,
       toggle_history_panel,
-      toggle_bookmarks_manager,
       tab_delta,
       tab_number,
       back,
@@ -414,6 +412,8 @@ pub fn chrome_ui_with_bookmarks(
   }
   if open_find_in_page {
     actions.push(ChromeAction::OpenFindInPage);
+    // Ctrl/Cmd+F should close the omnibox dropdown so it doesn't keep focus in the address bar.
+    app.chrome.omnibox.reset();
   }
   if toggle_bookmarks_manager {
     actions.push(ChromeAction::ToggleBookmarksManager);
@@ -442,9 +442,6 @@ pub fn chrome_ui_with_bookmarks(
   }
   if toggle_history_panel {
     actions.push(ChromeAction::ToggleHistoryPanel);
-  }
-  if toggle_bookmarks_manager {
-    actions.push(ChromeAction::ToggleBookmarksManager);
   }
   if let Some(zoom_action) = zoom_action {
     if let Some(tab) = app.active_tab_mut() {
@@ -2302,6 +2299,58 @@ mod tests {
       )),
       "expected ChromeAction::FindQuery for {tab_id:?}, got {actions:?}"
     );
+  }
+
+  #[test]
+  fn ctrl_f_closes_omnibox_dropdown() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app
+      .visited
+      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.chrome.address_bar_text.clear();
+
+    let ctx = egui::Context::default();
+
+    // Focus address bar.
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+    assert!(app.chrome.address_bar_has_focus);
+
+    // Type input to open omnibox dropdown.
+    begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+    assert!(app.chrome.omnibox.open);
+    assert!(!app.chrome.omnibox.suggestions.is_empty());
+
+    // Ctrl/Cmd+F opens find bar and should close the omnibox dropdown so it doesn't keep focus.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Key {
+        key: egui::Key::F,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+          command: true,
+          ..Default::default()
+        },
+      }],
+    );
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      app.active_tab().is_some_and(|tab| tab.find.open),
+      "expected find bar to be open"
+    );
+    assert!(!app.chrome.omnibox.open, "expected omnibox dropdown to be closed");
   }
 
   #[test]
