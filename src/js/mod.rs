@@ -103,6 +103,8 @@ pub mod window_css;
 pub mod window_file;
 #[path = "vmjs/window_file_reader.rs"]
 pub mod window_file_reader;
+#[path = "vmjs/window_text_encoding.rs"]
+pub mod window_text_encoding;
 #[path = "vmjs/window_env.rs"]
 pub mod window_env;
 #[path = "vmjs/window_fetch.rs"]
@@ -113,8 +115,6 @@ pub mod window_form_data;
 pub mod window_intersection_observer;
 #[path = "vmjs/window_realm.rs"]
 pub mod window_realm;
-#[path = "vmjs/window_text_encoding.rs"]
-pub mod window_text_encoding;
 #[path = "vmjs/window_timers.rs"]
 pub mod window_timers;
 #[path = "vmjs/window_url.rs"]
