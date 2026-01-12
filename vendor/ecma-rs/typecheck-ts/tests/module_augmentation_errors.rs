@@ -29,7 +29,6 @@ impl ModuleHost {
     self.files.insert(key, Arc::from(text));
   }
 
-  #[allow(dead_code)]
   fn link(&mut self, from: FileKey, specifier: &str, to: FileKey) {
     self.edges.insert((from, specifier.to_string()), to);
   }
@@ -83,13 +82,6 @@ fn assert_lacks_code(diagnostics: &[Diagnostic], code: &str) {
   assert!(
     !has_code(diagnostics, code),
     "expected diagnostics to exclude {code}, got {diagnostics:?}"
-  );
-}
-
-fn assert_has_one_of(diagnostics: &[Diagnostic], candidates: &[&str]) {
-  assert!(
-    candidates.iter().any(|code| has_code(diagnostics, code)),
-    "expected diagnostics to include one of {candidates:?}, got {diagnostics:?}"
   );
 }
 
@@ -147,9 +139,7 @@ var x = ext;
   let program = Program::new(host, vec![entry]);
   let diagnostics = program.check();
   assert_has_code(&diagnostics, "TS2664");
-  // `typecheck-ts` uses `TC1001` for missing module specifiers, which corresponds to tsc's
-  // TS2307. Accept either so the test stays stable if we move to tsc codes directly.
-  assert_has_one_of(&diagnostics, &[codes::UNRESOLVED_MODULE.as_str(), "TS2307"]);
+  assert_has_code(&diagnostics, codes::UNRESOLVED_MODULE.as_str());
 }
 
 #[test]
@@ -191,3 +181,39 @@ export {};
   let diagnostics = program.check();
   assert_lacks_code(&diagnostics, "TS2664");
 }
+
+#[test]
+fn module_augmentation_errors_use_internal_unresolved_module_and_unknown_export_codes() {
+  let options = CompilerOptions {
+    no_default_lib: true,
+    skip_lib_check: false,
+    ..CompilerOptions::default()
+  };
+
+  let pkg = FileKey::new("pkg.ts");
+  let augment = FileKey::new("augment.ts");
+  let main = FileKey::new("main.ts");
+
+  let mut host = ModuleHost::new(options);
+  host.insert(pkg.clone(), "export const x = 1;");
+  host.insert(
+    augment.clone(),
+    r#"export {};
+import "./missing";
+declare module "./pkg" {
+  export const y: string;
+}
+"#,
+  );
+  host.insert(main.clone(), r#"export { z } from "./pkg";"#);
+
+  host.link(augment.clone(), "./pkg", pkg.clone());
+  host.link(main.clone(), "./pkg", pkg);
+
+  let program = Program::new(host, vec![main, augment]);
+  let diagnostics = program.check();
+
+  assert_has_code(&diagnostics, codes::UNRESOLVED_MODULE.as_str());
+  assert_has_code(&diagnostics, codes::UNKNOWN_EXPORT.as_str());
+}
+
