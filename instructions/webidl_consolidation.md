@@ -24,7 +24,7 @@ vendor/ecma-rs/
 └── webidl-runtime/       ← legacy heap-only runtime adapter (compat/migration; Cargo package `webidl-js-runtime`)
 
 src/js/webidl/            ← FastRender-specific bindings integration (re-exports, host dispatch,
-                            realm installation/runtime glue)
+                             realm installation/runtime glue)
 
 crates/
 └── js-wpt-dom-runner/    ← FastRender-specific tooling (offline WPT runner)
