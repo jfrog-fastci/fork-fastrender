@@ -1,4 +1,4 @@
-// Re-export the style keyword-case-insensitivity test into the `grid_tests` harness.
+// Re-export the style keyword-case-insensitivity test.
 //
 // This file used to be a standalone `tests/*.rs` integration-test binary. Keeping it as a module
 // avoids spawning yet another test executable (see `AGENTS.md` / `docs/testing.md`).
