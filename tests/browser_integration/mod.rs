@@ -50,6 +50,7 @@ mod author_css_cannot_observe_data_fastr_hover;
 mod browser_cli_gpu_flags;
 mod browser_cli_help;
 mod browser_cli_start_url_scheme;
+mod browser_cli_search_fallback;
 mod browser_headless_smoke_test;
 mod headless_chrome_media_features;
 mod browser_mem_limit_env;

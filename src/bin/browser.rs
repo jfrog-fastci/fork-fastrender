@@ -131,7 +131,7 @@ enum UserEvent {
   disable_help_subcommand = true,
   color = clap::ColorChoice::Never,
   term_width = 90,
-  after_help = "If URL is omitted, the browser attempts to restore the previous session; if none exists it opens `about:newtab`.\nUse `--restore` to try restoring even when a URL is provided, or `--no-restore` to disable session restore.\nThe URL value is normalized like the address bar (e.g. `example.com` → https).\nSupported schemes: http, https, file, about."
+  after_help = "If URL is omitted, the browser attempts to restore the previous session; if none exists it opens `about:newtab`.\nUse `--restore` to try restoring even when a URL is provided, or `--no-restore` to disable session restore.\nThe URL value is resolved like the address bar: URL-like inputs are normalized (e.g. `example.com` → https), otherwise treated as a DuckDuckGo search (e.g. `cats` → https://duckduckgo.com/?q=cats).\nSupported schemes: http, https, file, about."
 )]
 struct BrowserCliArgs {
   /// Start URL (omit to restore previous session when available; otherwise `about:newtab`)
@@ -435,9 +435,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // When the user provides `<url>`, normalize + apply an allowlist (same as the address bar).
   // This is *not* applied to session restore entries: those are expected to already be normalized.
   let cli_url = cli.url.as_deref().map(|raw_url| {
-    match fastrender::ui::normalize_user_url(raw_url).and_then(|url| {
-      fastrender::ui::validate_user_navigation_url_scheme(&url)?;
-      Ok(url)
+    match fastrender::ui::resolve_omnibox_input(raw_url).and_then(|resolved| {
+      let url = resolved.url();
+      fastrender::ui::validate_user_navigation_url_scheme(url)?;
+      Ok(url.to_string())
     }) {
       Ok(url) => url,
       Err(err) => {
