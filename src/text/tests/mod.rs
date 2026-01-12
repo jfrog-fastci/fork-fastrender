@@ -75,3 +75,4 @@ mod emphasis_string_truncation_test;
 mod emphasis_string_vertical_shaping_test;
 mod mark_only_clusters_test;
 mod multiscript_fallback_test;
+mod weibo_web_font_relative_url_test;
