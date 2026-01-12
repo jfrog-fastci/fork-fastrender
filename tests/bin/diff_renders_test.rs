@@ -624,6 +624,15 @@ fn diff_renders_reports_perceptual_metric() {
     .as_f64()
     .expect("perceptual_distance missing");
   assert!(dist > 0.0);
+
+  let html = fs::read_to_string(tmp.path().join("diff_report.html")).expect("read html");
+  assert!(
+    html.contains(&format!(
+      "<strong>Perceptual metric:</strong> {}",
+      fastrender::image_compare::PERCEPTUAL_METRIC_ID
+    )),
+    "expected perceptual metric id in HTML report:\n{html}"
+  );
 }
 
 #[test]
