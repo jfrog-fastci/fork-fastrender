@@ -193,6 +193,10 @@ pub enum TypeKind {
   /// - With `strictNullChecks: true`: all types except `null` and `undefined`.
   /// - With `strictNullChecks: false`: behaves like the top type (everything).
   ///
+  /// Note: this crate models `void` separately from `undefined`, but under
+  /// `strictNullChecks: true` it is treated as effectively `undefined` for `{}`-
+  /// related operations (e.g. `void & {}` collapses to `never`).
+  ///
   /// This is intentionally distinct from the `object` keyword, which excludes
   /// primitives and is represented separately as an (empty) structural object.
   EmptyObject,
