@@ -201,6 +201,11 @@ include = [
   "built-ins/Promise/any/capability-reject-throws-no-close.js",
   "built-ins/Promise/any/resolve-throws-iterator-return-null-or-undefined.js",
   "built-ins/Promise/any/resolve-throws-iterator-return-is-not-callable.js",
+
+  # WeakMap/WeakSet (iterator-close semantics)
+  "built-ins/WeakMap/iterator-close-after-set-failure.js",
+  "built-ins/WeakMap/iterator-items-are-not-object-close-iterator.js",
+  "built-ins/WeakSet/iterator-close-after-add-failure.js",
 ]
 
 exclude = [
