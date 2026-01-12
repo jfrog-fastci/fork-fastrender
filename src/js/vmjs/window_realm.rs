@@ -25303,6 +25303,15 @@ fn init_window_globals(
     let node_proto = platform.prototype_for(DomInterface::Node);
     let document_type_proto = platform.prototype_for(DomInterface::DocumentType);
     let element_proto = platform.prototype_for(DomInterface::Element);
+    let html_element_proto = platform.prototype_for(DomInterface::HTMLElement);
+    let html_input_element_proto = platform.prototype_for(DomInterface::HTMLInputElement);
+    let html_select_element_proto = platform.prototype_for(DomInterface::HTMLSelectElement);
+    let html_text_area_element_proto = platform.prototype_for(DomInterface::HTMLTextAreaElement);
+    let html_option_element_proto = platform.prototype_for(DomInterface::HTMLOptionElement);
+    let html_form_element_proto = platform.prototype_for(DomInterface::HTMLFormElement);
+    let html_anchor_element_proto = platform.prototype_for(DomInterface::HTMLAnchorElement);
+    let html_image_element_proto = platform.prototype_for(DomInterface::HTMLImageElement);
+    let html_link_element_proto = platform.prototype_for(DomInterface::HTMLLinkElement);
     let document_proto = platform.prototype_for(DomInterface::Document);
     let document_fragment_proto = platform.prototype_for(DomInterface::DocumentFragment);
     let text_proto = platform.prototype_for(DomInterface::Text);
@@ -25389,23 +25398,30 @@ fn init_window_globals(
     let element_key = alloc_key(&mut scope, "Element")?;
     scope.define_property(global, element_key, data_desc(Value::Object(element_ctor)))?;
 
-    // Minimal HTMLElement constructor needed for `instanceof HTMLElement` checks in the WPT corpus.
+    // HTML element constructors + prototypes.
     //
-    // FastRender does not yet expose per-tag HTML element subclasses, so re-use the Element
-    // prototype object for HTMLElement as well.
-    let html_element_ctor = make_illegal_ctor(&mut scope, "HTMLElement")?;
-    scope.push_root(Value::Object(html_element_ctor))?;
-    scope.define_property(
-      html_element_ctor,
-      prototype_key,
-      data_desc(Value::Object(element_proto)),
-    )?;
-    let html_element_key = alloc_key(&mut scope, "HTMLElement")?;
-    scope.define_property(
-      global,
-      html_element_key,
-      data_desc(Value::Object(html_element_ctor)),
-    )?;
+    // These are needed for `instanceof HTMLElement` / `instanceof HTMLInputElement` checks in WPT
+    // and real-world scripts.
+    let install_illegal_dom_ctor =
+      |scope: &mut Scope<'_>, name: &str, proto: GcObject| -> Result<GcObject, VmError> {
+        let ctor = make_illegal_ctor(scope, name)?;
+        scope.push_root(Value::Object(ctor))?;
+        scope.define_property(ctor, prototype_key, data_desc(Value::Object(proto)))?;
+        scope.define_property(proto, constructor_key, data_desc(Value::Object(ctor)))?;
+        let key = alloc_key(scope, name)?;
+        scope.define_property(global, key, data_desc(Value::Object(ctor)))?;
+        Ok(ctor)
+      };
+
+    install_illegal_dom_ctor(&mut scope, "HTMLElement", html_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLInputElement", html_input_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLTextAreaElement", html_text_area_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLSelectElement", html_select_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLOptionElement", html_option_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLFormElement", html_form_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLImageElement", html_image_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLAnchorElement", html_anchor_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLLinkElement", html_link_element_proto)?;
 
     let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
     scope.push_root(Value::Object(document_ctor))?;
@@ -30370,6 +30386,37 @@ mod tests {
         node2.dispatchEvent(new Event('x'));\n\
         if (fired1 !== 1 || fired2 !== 1) ok = false;\n\
         return ok;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_element_constructors_prototype_chains_and_instanceof_work() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const div = document.createElement('div');\n\
+        const input = document.createElement('input');\n\
+        const form = document.createElement('form');\n\
+        const ok1 = div instanceof HTMLElement;\n\
+        const ok2 = div instanceof Element;\n\
+        const ok3 = input instanceof HTMLInputElement;\n\
+        const ok4 = form instanceof HTMLFormElement;\n\
+        const ok5 = Object.getPrototypeOf(HTMLElement.prototype) === Element.prototype;\n\
+        const ok6 = Object.getPrototypeOf(HTMLInputElement.prototype) === HTMLElement.prototype;\n\
+        let illegalOk = false;\n\
+        try { new HTMLInputElement(); } catch (e) {\n\
+          illegalOk = e && e.name === 'TypeError' && String(e.message).includes('Illegal constructor');\n\
+        }\n\
+        return ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && illegalOk;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
