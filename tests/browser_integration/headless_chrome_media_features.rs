@@ -1,14 +1,30 @@
-#[path = "paint/rayon_test_util.rs"]
-mod rayon_test_util;
+use std::sync::Once;
 
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::{FastRender, FastRenderConfig, FontConfig, LayoutParallelism};
+
+fn init_rayon_for_tests(num_threads: usize) {
+  static INIT: Once = Once::new();
+  let num_threads = num_threads.max(1);
+
+  INIT.call_once(|| {
+    if let Err(err) = rayon::ThreadPoolBuilder::new()
+      .num_threads(num_threads)
+      .build_global()
+    {
+      let already_initialized = std::panic::catch_unwind(|| rayon::current_num_threads()).is_ok();
+      if !already_initialized {
+        panic!("failed to initialize Rayon global pool for tests: {err}");
+      }
+    }
+  });
+}
 
 #[test]
 fn headless_chrome_media_features_default_to_no_input_devices() {
   // FastRender's pageset harness compares against headless Chrome. Chrome headless reports
   // `hover: none` and `pointer: none`, so ensure the renderer's default media context matches.
-  rayon_test_util::init_rayon_for_tests(2);
+  init_rayon_for_tests(2);
 
   let config = FastRenderConfig::new()
     .with_font_sources(FontConfig::bundled_only())
@@ -58,3 +74,4 @@ fn headless_chrome_media_features_default_to_no_input_devices() {
     pointer_pixel.alpha()
   );
 }
+

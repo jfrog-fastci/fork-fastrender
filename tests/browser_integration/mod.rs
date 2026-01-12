@@ -51,6 +51,7 @@ mod browser_cli_gpu_flags;
 mod browser_cli_help;
 mod browser_cli_start_url_scheme;
 mod browser_headless_smoke_test;
+mod headless_chrome_media_features;
 mod browser_mem_limit_env;
 mod browser_bookmarks_history_restore;
 mod browser_session_restore;
