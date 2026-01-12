@@ -1,0 +1,38 @@
+<!doctype html>
+<style>
+  body {
+    margin: 0;
+  }
+</style>
+<div id="host">
+  <template shadowroot="open">
+    <style>
+      slot {
+        display: block;
+      }
+
+      #fallback {
+        display: block;
+        width: 40px;
+        height: 40px;
+        background: rgb(0, 0, 220);
+      }
+
+      ::slotted(*) {
+        display: block;
+        width: 40px;
+        height: 40px;
+        background: rgb(220, 0, 0);
+      }
+    </style>
+    <slot name="a"><div id="fallback"></div></slot>
+  </template>
+  <span id="light">Light</span>
+</div>
+<script>
+  // Defer the mutation to an event-loop task so tests can assert both the pre- and post-mutation
+  // slotting state.
+  setTimeout(() => {
+    document.getElementById("light").slot = "a";
+  }, 0);
+</script>

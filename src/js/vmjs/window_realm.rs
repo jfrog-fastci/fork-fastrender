@@ -2374,6 +2374,8 @@ const ELEMENT_DIR_GET_KEY: &str = "__fastrender_element_dir_get";
 const ELEMENT_DIR_SET_KEY: &str = "__fastrender_element_dir_set";
 const ELEMENT_HIDDEN_GET_KEY: &str = "__fastrender_element_hidden_get";
 const ELEMENT_HIDDEN_SET_KEY: &str = "__fastrender_element_hidden_set";
+const ELEMENT_SLOT_GET_KEY: &str = "__fastrender_element_slot_get";
+const ELEMENT_SLOT_SET_KEY: &str = "__fastrender_element_slot_set";
 const ELEMENT_SRC_GET_KEY: &str = "__fastrender_element_src_get";
 const ELEMENT_SRC_SET_KEY: &str = "__fastrender_element_src_set";
 const ELEMENT_SRCSET_GET_KEY: &str = "__fastrender_element_srcset_get";
@@ -6755,6 +6757,14 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_HIDDEN_SET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let slot_get = {
+    let key = alloc_key(scope, ELEMENT_SLOT_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let slot_set = {
+    let key = alloc_key(scope, ELEMENT_SLOT_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
   let src_get = {
     let key = alloc_key(scope, ELEMENT_SRC_GET_KEY)?;
     scope
@@ -7328,6 +7338,24 @@ fn get_or_create_node_wrapper(
           },
         )?;
       }
+    }
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (slot_get, slot_set) {
+    let key = alloc_key(scope, "slot")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
+        },
+      )?;
     }
   }
 
@@ -33249,6 +33277,7 @@ fn init_window_globals(
       ELEMENT_SIZES_GET_KEY,
       ELEMENT_SIZES_SET_KEY,
     ),
+    ("slot", "slot", ELEMENT_SLOT_GET_KEY, ELEMENT_SLOT_SET_KEY),
     ("href", "href", ELEMENT_HREF_GET_KEY, ELEMENT_HREF_SET_KEY),
     ("rel", "rel", ELEMENT_REL_GET_KEY, ELEMENT_REL_SET_KEY),
     ("type", "type", ELEMENT_TYPE_GET_KEY, ELEMENT_TYPE_SET_KEY),
