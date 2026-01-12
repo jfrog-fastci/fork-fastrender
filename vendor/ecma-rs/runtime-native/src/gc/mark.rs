@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Barrier, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
@@ -271,14 +271,41 @@ impl ParallelMarkPool {
       worker0: Mutex::new(WorkStack::with_capacity_bytes(local_bytes)),
     });
 
+    // `no_alloc_rt_gc_collect` integration tests assert that the first stop-the-world GC does not
+    // allocate via the Rust global allocator.
+    //
+    // Spawning threads here ensures we don't try to create worker threads while the world is
+    // stopped. However, OS thread start-up (TLS initialization, libc bookkeeping, etc.) can perform
+    // allocations *on the worker threads* asynchronously after `spawn` returns. If those happen to
+    // race with the first `rt_gc_collect`, the test's global allocator hook can observe them.
+    //
+    // Wait for all mark worker threads to enter their event loops before returning so any one-time
+    // start-up allocations happen during heap initialization / `rt_thread_init`, not during the
+    // first GC cycle.
+    let ready = if max_workers > 1 {
+      Some(Arc::new(Barrier::new(max_workers)))
+    } else {
+      None
+    };
+
     for worker_id in 1..max_workers {
       let pool = Arc::clone(&pool);
       let local = WorkStack::with_capacity_bytes(local_bytes);
+      let ready = ready.as_ref().map(Arc::clone);
       let name = format!("rt-gc-mark-{worker_id}");
       let _ = thread::Builder::new()
         .name(name)
-        .spawn(move || crate::ffi::abort_on_panic(|| mark_worker_loop(worker_id, pool, local)))
+        .spawn(move || {
+          if let Some(ready) = ready {
+            let _ = ready.wait();
+          }
+          crate::ffi::abort_on_panic(|| mark_worker_loop(worker_id, pool, local))
+        })
         .unwrap_or_else(|_| std::process::abort());
+    }
+
+    if let Some(ready) = ready {
+      let _ = ready.wait();
     }
 
     pool

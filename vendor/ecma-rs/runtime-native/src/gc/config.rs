@@ -170,9 +170,33 @@ impl TryFrom<crate::abi::RtGcLimits> for HeapLimits {
   }
 }
 
+#[cfg(unix)]
+fn page_size() -> usize {
+  // SAFETY: sysconf is thread-safe.
+  let sz = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+  if sz <= 0 { 4096 } else { sz as usize }
+}
+
+#[cfg(not(unix))]
+fn page_size() -> usize {
+  4096
+}
+
+fn round_up_to_page_size(size_bytes: usize) -> Option<usize> {
+  if size_bytes == 0 {
+    return None;
+  }
+  let page = page_size();
+  size_bytes
+    .checked_add(page - 1)
+    .and_then(|v| v.checked_div(page).and_then(|pages| pages.checked_mul(page)))
+}
+
 pub fn validate_config_and_limits(config: &HeapConfig, limits: &HeapLimits) -> Result<(), &'static str> {
-  if config.nursery_size_bytes > limits.max_heap_bytes {
-    return Err("invalid GC heap config: nursery_size_bytes must be <= max_heap_bytes");
+  let rounded_nursery = round_up_to_page_size(config.nursery_size_bytes)
+    .ok_or("invalid GC heap config: nursery_size_bytes overflow")?;
+  if rounded_nursery > limits.max_heap_bytes {
+    return Err("invalid GC heap config: nursery_size_bytes (rounded up to page size) must be <= max_heap_bytes");
   }
   Ok(())
 }

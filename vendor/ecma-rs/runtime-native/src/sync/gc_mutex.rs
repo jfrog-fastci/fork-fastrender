@@ -79,7 +79,30 @@ impl<T> GcAwareMutex<T> {
     // This is important for root enumeration: the coordinator may need to take
     // GC-aware locks (e.g. the global root registry) while `RT_GC_EPOCH` is odd.
     if threading::registry::current_thread_state().is_none() {
-      return self.inner.lock();
+      // `parking_lot`'s contended lock path can do one-time per-thread initialization that may
+      // allocate. Some integration tests assert that stop-the-world GC does not call the Rust global
+      // allocator (directly or indirectly), so avoid blocking the thread via `lock()` while a GC
+      // epoch is active.
+      //
+      // Unregistered threads are not stopped by the safepoint coordinator. If such a thread tries to
+      // acquire a GC-aware lock while the world is stopped and the lock is contended (e.g. another
+      // test thread waiting on the global `TestRuntimeGuard` mutex), parking the thread can trigger
+      // allocator activity that is unrelated to GC but still violates the "no allocations during
+      // STW" invariant.
+      //
+      // Treat contended acquisitions during STW as "wait until the world resumes, then retry". This
+      // keeps the coordinator's view of GC-aware locks simple and makes allocation behavior
+      // deterministic for tests.
+      loop {
+        if let Some(g) = self.inner.try_lock() {
+          return g;
+        }
+        if threading::safepoint::current_epoch() & 1 == 1 {
+          threading::safepoint::wait_while_stop_the_world();
+          continue;
+        }
+        return self.inner.lock();
+      }
     }
 
     // Threads that are holding handle-stack roots (i.e. raw GC pointers live in

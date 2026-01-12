@@ -219,6 +219,7 @@ impl GcHeap {
   ) -> Self {
     let nursery =
       nursery::NurserySpace::new(config.nursery_size_bytes).expect("failed to reserve nursery space");
+    let nursery_reserved_bytes = nursery.size_bytes();
 
     // `card_table_objects` is a registry of old-generation pointer arrays that have an associated
     // per-object card table. Minor GC promotion may install new card tables while the world is
@@ -237,7 +238,7 @@ impl GcHeap {
       let min_obj_size = array::RT_ARRAY_DATA_OFFSET
         .saturating_add(super::CARD_TABLE_MIN_BYTES)
         .max(1);
-      let max_new = config.nursery_size_bytes.div_ceil(min_obj_size);
+      let max_new = nursery_reserved_bytes.div_ceil(min_obj_size);
       let max_total = limits.max_heap_bytes.div_ceil(min_obj_size);
       let cap = max_total.saturating_add(max_new).saturating_add(1);
       Vec::with_capacity(cap)
@@ -801,7 +802,7 @@ impl GcHeap {
     // arrays. Ensure the registry has enough capacity up-front so promotion
     // remains "no global allocator".
     let min_obj_size = array::RT_ARRAY_DATA_OFFSET.saturating_add(super::CARD_TABLE_MIN_BYTES).max(1);
-    let max_new = self.config.nursery_size_bytes.div_ceil(min_obj_size);
+    let max_new = self.nursery.size_bytes().div_ceil(min_obj_size);
     let required = self
       .card_table_objects
       .len()
