@@ -39,6 +39,7 @@ section in sync with `ls tests/*.rs`.
 |---|---|---|---|---|
 | `tests/browser_integration_tests.rs` | integration (shim) | delete | Compatibility shim for the standalone `browser_integration_tests` test binary (extra binary). Run via `cargo test --features browser_ui --test integration browser_integration::...`. Removed to satisfy the [end-state invariant](#end-state-invariants-to-verify) <code>ls tests/*.rs &#124; wc -l == 2</code>. | DONE |
 | `tests/style_tests.rs` | integration (shim) | delete | Standalone harness for running style regressions via `--test style_tests`. Removed because it is an extra integration-test binary and relied on forbidden `#[path = "..."]` shims. Style regressions now run as lib unit tests under `src/style/tests/**`. | DONE |
+| `tests/wpt_tests.rs` | integration (shim) | delete | Standalone harness for running the WPT-style suite via `--test wpt_tests`. Removed because it is an extra integration-test binary; WPT tests already run via `tests/integration.rs::wpt`. | DONE |
 | `tests/accessibility_tests.rs` | integration | `tests/integration.rs::accessibility` | Top-level harness removed; suite now lives under `tests/accessibility/**` and uses `tests/common/accessibility`. | DONE |
 | `tests/bin_tests.rs` | integration | `tests/integration.rs::bin` | Top-level harness removed; suite now lives under `tests/bin/**`. | DONE |
 | `tests/crates_directory_guard.rs` | delete | delete | Redundant `#[path]` shim removed; guard runs via `tests/integration.rs::guards::crates_directory_guard`. | DONE |
