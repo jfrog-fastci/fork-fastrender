@@ -20,3 +20,22 @@ Common entry points:
 - System requirements: [`instructions/native_aot.md#system-requirements-ubuntu-x64`](./instructions/native_aot.md#system-requirements-ubuntu-x64)
 - Strict TypeScript dialect: [`instructions/native_aot.md#our-typescript-dialect-strict-mode`](./instructions/native_aot.md#our-typescript-dialect-strict-mode)
 - Async runtime plan: [`instructions/native_aot.md#55-async-runtime`](./instructions/native_aot.md#55-async-runtime)
+
+---
+
+## Anchor compatibility stubs
+
+Some older links point directly at `EXEC.plan.md#...` section anchors. To keep those links working,
+we provide a small set of stub headings that redirect to the canonical docs.
+
+## System Requirements (Ubuntu x64)
+
+Moved to [`instructions/native_aot.md#system-requirements-ubuntu-x64`](./instructions/native_aot.md#system-requirements-ubuntu-x64).
+
+## Our TypeScript Dialect ("Strict Mode")
+
+Moved to [`instructions/native_aot.md#our-typescript-dialect-strict-mode`](./instructions/native_aot.md#our-typescript-dialect-strict-mode).
+
+### 5.5 Async Runtime
+
+Moved to [`instructions/native_aot.md#55-async-runtime`](./instructions/native_aot.md#55-async-runtime).

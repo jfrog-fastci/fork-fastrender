@@ -1460,22 +1460,31 @@ mod tests {
         threading::register_current_thread(ThreadKind::Worker);
  
         // Root a single object through the per-thread handle stack.
-        let mut root: *mut u8 = core::ptr::null_mut();
-        let mut scope = crate::roots::RootScope::new();
-        scope.push(&mut root as *mut *mut u8);
-        root = alloc_obj(idx);
+        //
+        // Important: ensure the handle stack is empty before calling into any operation that may
+        // block on a GC-aware lock (e.g. `unregister_current_thread`). Contended GC-aware locks
+        // transition the thread into a GC-safe region, which is only sound when no GC pointers are
+        // live in local variables/registers.
+        {
+          let mut root: *mut u8 = core::ptr::null_mut();
+          let mut scope = crate::roots::RootScope::new();
+          scope.push(&mut root as *mut *mut u8);
+          root = alloc_obj(idx);
  
-        barrier.wait();
+          barrier.wait();
  
-        for _ in 0..WORKER_ITERS {
-          crate::rt_gc_safepoint();
-          // Allocate a little garbage to keep the mutator doing work between safepoints.
-          let _ = alloc_obj(idx.wrapping_add(1000));
-        }
+          for _ in 0..WORKER_ITERS {
+            crate::rt_gc_safepoint();
+            // Allocate a little garbage to keep the mutator doing work between safepoints.
+            let _ = alloc_obj(idx.wrapping_add(1000));
+          }
  
-        // Ensure the rooted object remains readable after repeated STW pauses.
-        unsafe {
-          assert_eq!((*(root as *mut Obj)).value, idx);
+          // Ensure the rooted object remains readable after repeated STW pauses.
+          unsafe {
+            assert_eq!((*(root as *mut Obj)).value, idx);
+          }
+ 
+          drop(scope);
         }
         completed.fetch_add(1, Ordering::Release);
         // Unregistering the thread may contend on GC-aware locks, which can temporarily enter a
