@@ -39,6 +39,8 @@ fn no_deprecated_test_harness_names_in_tests_docs() {
     .join("|");
   let re = regex::Regex::new(&format!(r"\b({alternation})\b"))
     .expect("deprecated harness regex should compile");
+  let harness_path_re = regex::Regex::new(r"\btests/[A-Za-z0-9_]+_(?:tests|test)\.rs\b")
+    .expect("deprecated harness path regex should compile");
 
   let mut matches = Vec::new();
   for entry in WalkDir::new(&tests_dir).into_iter().filter_map(Result::ok) {
@@ -63,7 +65,7 @@ fn no_deprecated_test_harness_names_in_tests_docs() {
     };
 
     for (idx, line) in content.lines().enumerate() {
-      if re.is_match(line) {
+      if re.is_match(line) || harness_path_re.is_match(line) {
         let rel = path
           .strip_prefix(repo_root)
           .unwrap_or(path)
