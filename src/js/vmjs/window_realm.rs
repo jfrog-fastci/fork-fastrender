@@ -1899,6 +1899,7 @@ const CONSOLE_LEVEL_SLOT: usize = 0;
 const CONSOLE_THIS_SLOT: usize = 1;
 const CONSOLE_SINK_KEY_SLOT: usize = 2;
 const CONSOLE_SINK_ID_KEY: &str = "__fastrender_console_sink_id";
+const MAX_CONSOLE_TIME_LOG_ARGS: usize = 32;
 
 const LOCATION_URL_KEY: &str = "__fastrender_location_url";
 const LOCATION_ACCESSOR_LOCATION_OBJ_SLOT: usize = 0;
@@ -2464,6 +2465,40 @@ fn console_count_native(
   Ok(Value::Undefined)
 }
 
+fn console_count_reset_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sink = console_sink_from_callee_and_this(scope, callee, this)?;
+  let label = if args.is_empty() {
+    "default".to_string()
+  } else {
+    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
+  };
+
+  let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Ok(Value::Undefined);
+  };
+
+  let existed = user_data.console_counts.remove(&label).is_some();
+  if !existed {
+    if let Some(sink) = sink {
+      let msg = format!("Count for '{label}' does not exist");
+      let msg_s = scope.alloc_string(&msg)?;
+      scope.push_root(Value::String(msg_s))?;
+      let msg_v = [Value::String(msg_s)];
+      sink(ConsoleMessageLevel::Warn, scope.heap_mut(), &msg_v);
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn console_time_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2497,6 +2532,66 @@ fn console_time_native(
 
   let start = crate::js::time::clock_now(scope)?;
   user_data.console_timers.insert(label, start);
+  Ok(Value::Undefined)
+}
+
+fn console_time_log_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sink = console_sink_from_callee_and_this(scope, callee, this)?;
+  let label = if args.is_empty() {
+    "default".to_string()
+  } else {
+    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
+  };
+
+  let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Ok(Value::Undefined);
+  };
+
+  let Some(&start) = user_data.console_timers.get(&label) else {
+    if let Some(sink) = sink {
+      let msg = format!("Timer '{label}' does not exist");
+      let msg_s = scope.alloc_string(&msg)?;
+      scope.push_root(Value::String(msg_s))?;
+      let msg_v = [Value::String(msg_s)];
+      sink(ConsoleMessageLevel::Warn, scope.heap_mut(), &msg_v);
+    }
+    return Ok(Value::Undefined);
+  };
+
+  let end = crate::js::time::clock_now(scope)?;
+  let delta = end.checked_sub(start).unwrap_or(Duration::from_secs(0));
+  let ms = crate::js::time::duration_to_ms_f64(delta);
+  if let Some(sink) = sink {
+    let msg = format!("{label}: {:.3}ms", ms);
+    let msg_s = scope.alloc_string(&msg)?;
+    scope.push_root(Value::String(msg_s))?;
+
+    let extra = args.get(1..).unwrap_or(&[]);
+    if extra.is_empty() {
+      let msg_v = [Value::String(msg_s)];
+      sink(ConsoleMessageLevel::Log, scope.heap_mut(), &msg_v);
+    } else {
+      let max_extra = MAX_CONSOLE_TIME_LOG_ARGS.saturating_sub(1);
+      let extra = &extra[..extra.len().min(max_extra)];
+
+      let mut out: Vec<Value> = Vec::new();
+      out
+        .try_reserve_exact(1 + extra.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      out.push(Value::String(msg_s));
+      out.extend_from_slice(extra);
+      sink(ConsoleMessageLevel::Log, scope.heap_mut(), &out);
+    }
+  }
+
   Ok(Value::Undefined)
 }
 
@@ -21292,7 +21387,9 @@ fn init_window_globals(
   let console_noop_call_id = vm.register_native_call(console_noop_native)?;
   let console_assert_call_id = vm.register_native_call(console_assert_native)?;
   let console_count_call_id = vm.register_native_call(console_count_native)?;
+  let console_count_reset_call_id = vm.register_native_call(console_count_reset_native)?;
   let console_time_call_id = vm.register_native_call(console_time_native)?;
+  let console_time_log_call_id = vm.register_native_call(console_time_log_native)?;
   let console_time_end_call_id = vm.register_native_call(console_time_end_native)?;
   let console_dir_call_id = vm.register_native_call(console_dir_native)?;
   let console_table_call_id = vm.register_native_call(console_table_native)?;
@@ -21370,9 +21467,12 @@ fn init_window_globals(
   let clear_key = alloc_key(&mut scope, "clear")?;
   let assert_key = alloc_key(&mut scope, "assert")?;
   let count_key = alloc_key(&mut scope, "count")?;
+  let count_reset_key = alloc_key(&mut scope, "countReset")?;
   let time_key = alloc_key(&mut scope, "time")?;
+  let time_log_key = alloc_key(&mut scope, "timeLog")?;
   let time_end_key = alloc_key(&mut scope, "timeEnd")?;
   let dir_key = alloc_key(&mut scope, "dir")?;
+  let dirxml_key = alloc_key(&mut scope, "dirxml")?;
   let table_key = alloc_key(&mut scope, "table")?;
 
   let log_func = define_console_method(&mut scope, "log", ConsoleMessageLevel::Log)?;
@@ -21388,10 +21488,15 @@ fn init_window_globals(
   let clear_func = define_console_noop_method(&mut scope, "clear")?;
   let assert_func = define_console_standard_method(&mut scope, console_assert_call_id, "assert", 0)?;
   let count_func = define_console_standard_method(&mut scope, console_count_call_id, "count", 0)?;
+  let count_reset_func =
+    define_console_standard_method(&mut scope, console_count_reset_call_id, "countReset", 0)?;
   let time_func = define_console_standard_method(&mut scope, console_time_call_id, "time", 0)?;
+  let time_log_func =
+    define_console_standard_method(&mut scope, console_time_log_call_id, "timeLog", 0)?;
   let time_end_func =
     define_console_standard_method(&mut scope, console_time_end_call_id, "timeEnd", 0)?;
   let dir_func = define_console_standard_method(&mut scope, console_dir_call_id, "dir", 0)?;
+  let dirxml_func = define_console_standard_method(&mut scope, console_dir_call_id, "dirxml", 0)?;
   let table_func = define_console_standard_method(&mut scope, console_table_call_id, "table", 0)?;
 
   scope.define_property(console_obj, log_key, data_desc(log_func))?;
@@ -21406,9 +21511,12 @@ fn init_window_globals(
   scope.define_property(console_obj, clear_key, data_desc(clear_func))?;
   scope.define_property(console_obj, assert_key, data_desc(assert_func))?;
   scope.define_property(console_obj, count_key, data_desc(count_func))?;
+  scope.define_property(console_obj, count_reset_key, data_desc(count_reset_func))?;
   scope.define_property(console_obj, time_key, data_desc(time_func))?;
+  scope.define_property(console_obj, time_log_key, data_desc(time_log_func))?;
   scope.define_property(console_obj, time_end_key, data_desc(time_end_func))?;
   scope.define_property(console_obj, dir_key, data_desc(dir_func))?;
+  scope.define_property(console_obj, dirxml_key, data_desc(dirxml_func))?;
   scope.define_property(console_obj, table_key, data_desc(table_func))?;
 
   let console_sink_guard = config.console_sink.clone().map(ConsoleSinkGuard::new);
@@ -22027,6 +22135,36 @@ mod tests {
   fn console_sink_test_lock() -> &'static StdMutex<()> {
     static LOCK: StdOnceLock<StdMutex<()>> = StdOnceLock::new();
     LOCK.get_or_init(|| StdMutex::new(()))
+  }
+
+  fn capturing_console_sink() -> (ConsoleSink, Arc<Mutex<Vec<CapturedConsoleCall>>>) {
+    let captured: Arc<Mutex<Vec<CapturedConsoleCall>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_for_sink = captured.clone();
+
+    let sink: ConsoleSink = Arc::new(move |level, heap, args| {
+      let args: Vec<CapturedConsoleArg> = args
+        .iter()
+        .map(|value| match *value {
+          Value::Undefined => CapturedConsoleArg::Undefined,
+          Value::Null => CapturedConsoleArg::Null,
+          Value::Bool(b) => CapturedConsoleArg::Bool(b),
+          Value::Number(n) => CapturedConsoleArg::Number(n),
+          Value::BigInt(n) => CapturedConsoleArg::BigInt(n.to_decimal_string()),
+          Value::String(s) => CapturedConsoleArg::String(
+            heap
+              .get_string(s)
+              .expect("string handle should be valid")
+              .to_utf8_lossy(),
+          ),
+          Value::Object(_) => CapturedConsoleArg::Object,
+          Value::Symbol(_) => CapturedConsoleArg::Symbol,
+        })
+        .collect();
+
+      captured_for_sink.lock().push(CapturedConsoleCall { level, args });
+    });
+
+    (sink, captured)
   }
 
   fn exec_script_with_dom_host(
@@ -24961,32 +25099,7 @@ mod tests {
       .lock()
       .expect("console sink test mutex should not be poisoned");
     let url = "https://example.com/path";
-    let captured: Arc<Mutex<Vec<CapturedConsoleCall>>> = Arc::new(Mutex::new(Vec::new()));
-    let captured_for_sink = captured.clone();
-
-    let sink: ConsoleSink = Arc::new(move |level, heap, args| {
-      let args: Vec<CapturedConsoleArg> = args
-        .iter()
-        .map(|value| match *value {
-          Value::Undefined => CapturedConsoleArg::Undefined,
-          Value::Null => CapturedConsoleArg::Null,
-          Value::Bool(b) => CapturedConsoleArg::Bool(b),
-          Value::Number(n) => CapturedConsoleArg::Number(n),
-          Value::BigInt(n) => CapturedConsoleArg::BigInt(n.to_decimal_string()),
-          Value::String(s) => CapturedConsoleArg::String(
-            heap
-              .get_string(s)
-              .expect("string handle should be valid")
-              .to_utf8_lossy(),
-          ),
-          Value::Object(_) => CapturedConsoleArg::Object,
-          Value::Symbol(_) => CapturedConsoleArg::Symbol,
-        })
-        .collect();
-      captured_for_sink
-        .lock()
-        .push(CapturedConsoleCall { level, args });
-    });
+    let (sink, captured) = capturing_console_sink();
 
     let mut config = WindowRealmConfig::new(url);
     config.console_sink = Some(sink);
@@ -25098,6 +25211,131 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn console_time_log_keeps_timer_and_includes_extra_args() -> Result<(), VmError> {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
+    let url = "https://example.com/path";
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_config: Arc<dyn Clock> = clock.clone();
+    let (sink, captured) = capturing_console_sink();
+
+    let mut config = WindowRealmConfig::new(url).with_clock(clock_for_config);
+    config.console_sink = Some(sink);
+    let mut realm = new_realm(config)?;
+
+    clock.set_now(Duration::from_millis(0));
+    assert_eq!(realm.exec_script("console.time('a')")?, Value::Undefined);
+    clock.set_now(Duration::from_millis(5));
+    assert_eq!(
+      realm.exec_script("console.timeLog('a', 'x')")?,
+      Value::Undefined
+    );
+    clock.set_now(Duration::from_millis(12));
+    assert_eq!(realm.exec_script("console.timeEnd('a')")?, Value::Undefined);
+
+    assert_eq!(
+      &*captured.lock(),
+      &[
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Log,
+          args: vec![
+            CapturedConsoleArg::String("a: 5.000ms".to_string()),
+            CapturedConsoleArg::String("x".to_string()),
+          ],
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Log,
+          args: vec![CapturedConsoleArg::String("a: 12.000ms".to_string())],
+        },
+      ]
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn console_count_reset_resets_and_warns_on_missing_label() -> Result<(), VmError> {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
+    let url = "https://example.com/path";
+    let (sink, captured) = capturing_console_sink();
+
+    let mut config = WindowRealmConfig::new(url);
+    config.console_sink = Some(sink);
+    let mut realm = new_realm(config)?;
+
+    assert_eq!(realm.exec_script("console.count('a')")?, Value::Undefined);
+    assert_eq!(realm.exec_script("console.count('a')")?, Value::Undefined);
+    assert_eq!(realm.exec_script("console.countReset('a')")?, Value::Undefined);
+    assert_eq!(realm.exec_script("console.count('a')")?, Value::Undefined);
+    assert_eq!(
+      realm.exec_script("console.countReset('missing')")?,
+      Value::Undefined
+    );
+
+    assert_eq!(
+      &*captured.lock(),
+      &[
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Log,
+          args: vec![CapturedConsoleArg::String("a: 1".to_string())],
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Log,
+          args: vec![CapturedConsoleArg::String("a: 2".to_string())],
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Log,
+          args: vec![CapturedConsoleArg::String("a: 1".to_string())],
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Warn,
+          args: vec![CapturedConsoleArg::String(
+            "Count for 'missing' does not exist".to_string()
+          )],
+        },
+      ]
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn console_dirxml_exists_and_is_callable() -> Result<(), VmError> {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
+    let url = "https://example.com/path";
+    let (sink, captured) = capturing_console_sink();
+
+    let mut config = WindowRealmConfig::new(url);
+    config.console_sink = Some(sink);
+    let mut realm = new_realm(config)?;
+
+    assert_eq!(
+      realm.exec_script("typeof console.dirxml === 'function'")?,
+      Value::Bool(true)
+    );
+    captured.lock().clear();
+    assert_eq!(
+      realm.exec_script("(() => { console.dirxml({ a: 1 }); return true; })()")?,
+      Value::Bool(true)
+    );
+
+    assert_eq!(
+      &*captured.lock(),
+      &[CapturedConsoleCall {
+        level: ConsoleMessageLevel::Log,
+        args: vec![CapturedConsoleArg::Object],
+      }]
+    );
+
     Ok(())
   }
 
