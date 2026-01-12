@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
 mod golden;
 mod paths;
 mod pixmap;
@@ -21,6 +23,19 @@ pub(crate) use pixmap::{
 };
 pub(crate) use rayon::init_rayon_for_tests;
 pub(crate) use stack::{run_with_large_stack, run_with_stack_size, LARGE_STACK_BYTES};
+
+/// Serialises tests that mutate process-wide state.
+///
+/// This is the unit-test equivalent of `tests/common::global_test_lock()`. Prefer this over ad-hoc
+/// `static Mutex` guards so "reset + assert" tests stay deterministic when the Rust harness runs in
+/// parallel.
+pub(crate) fn global_test_lock() -> MutexGuard<'static, ()> {
+  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+  LOCK
+    .get_or_init(|| Mutex::new(()))
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Run `f` on a freshly spawned thread with a larger-than-default stack size.
 ///
@@ -111,4 +126,3 @@ mod tests {
     assert!(result.is_err());
   }
 }
-

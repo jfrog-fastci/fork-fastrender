@@ -3,9 +3,12 @@
 //! These tests are intended to catch accidental reintroduction of per-measure / per-intrinsic
 //! construction of heavyweight layout/text components such as `ShapingPipeline` and
 //! `FormattingContextFactory`.
+//!
+//! The assertions rely on debug/test counters that are reset at the start of each test. Hold the
+//! shared `crate::testing::global_test_lock()` to keep the "reset + measure + assert" sequence
+//! deterministic when the Rust test harness executes tests in parallel.
 
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::contexts::inline::InlineFormattingContext;
@@ -16,22 +19,13 @@ use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::text::ShapingPipeline;
 use fastrender::{
-  BoxNode, BoxTree, ComputedStyle, FontContext, FormattingContext, FormattingContextFactory,
-  FormattingContextType, IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
+  BoxNode, BoxTree, ComputedStyle, FontContext, FormattingContextFactory, FormattingContextType,
+  IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
 };
-
-/// Global guard to serialize churn-counter assertions.
-///
-/// These tests reset global debug/test counters (shaping pipeline creation, factory cloning, etc.).
-/// The Rust test harness runs tests in parallel within the same integration test binary by
-/// default, so we must prevent concurrent resets from introducing flakiness.
-static CHURN_COUNTER_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn layout_does_not_rebuild_shaping_pipeline_or_factory_in_hot_paths() {
-  let _guard = CHURN_COUNTER_LOCK
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let _guard = crate::testing::global_test_lock();
   // Build a flex tree that forces Taffy measurement for many children. The key invariant is that
   // we should *not* be creating new shaping pipelines or formatting context factories as part of
   // repeated intrinsic sizing / measure callbacks.
@@ -115,9 +109,7 @@ fn layout_does_not_rebuild_shaping_pipeline_or_factory_in_hot_paths() {
 
 #[test]
 fn block_intrinsic_sizing_does_not_rebuild_shaping_pipeline_or_factory() {
-  let _guard = CHURN_COUNTER_LOCK
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let _guard = crate::testing::global_test_lock();
   let viewport = Size::new(800.0, 600.0);
   let factory =
     FormattingContextFactory::with_font_context_and_viewport(FontContext::new(), viewport);
@@ -186,9 +178,7 @@ fn block_intrinsic_sizing_does_not_rebuild_shaping_pipeline_or_factory() {
 
 #[test]
 fn flex_positioned_children_do_not_churn_factories_or_inline_contexts() {
-  let _guard = CHURN_COUNTER_LOCK
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let _guard = crate::testing::global_test_lock();
   const ITEMS: usize = 256;
 
   let viewport = Size::new(800.0, 600.0);
@@ -274,9 +264,7 @@ fn flex_positioned_children_do_not_churn_factories_or_inline_contexts() {
 
 #[test]
 fn grid_positioned_children_do_not_churn_factories_or_inline_contexts() {
-  let _guard = CHURN_COUNTER_LOCK
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let _guard = crate::testing::global_test_lock();
   const ITEMS: usize = 256;
 
   let viewport = Size::new(800.0, 600.0);
@@ -361,9 +349,7 @@ fn grid_positioned_children_do_not_churn_factories_or_inline_contexts() {
 
 #[test]
 fn inline_positioned_children_do_not_churn_detached_factories() {
-  let _guard = CHURN_COUNTER_LOCK
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let _guard = crate::testing::global_test_lock();
   const ITEMS: usize = 256;
 
   let viewport = Size::new(800.0, 600.0);
@@ -448,9 +434,7 @@ fn inline_positioned_children_do_not_churn_detached_factories() {
 
 #[test]
 fn block_positioned_children_do_not_churn_detached_factories() {
-  let _guard = CHURN_COUNTER_LOCK
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let _guard = crate::testing::global_test_lock();
   const ITEMS: usize = 256;
 
   let viewport = Size::new(800.0, 600.0);
@@ -544,9 +528,7 @@ fn block_positioned_children_do_not_churn_detached_factories() {
 
 #[test]
 fn table_positioned_children_do_not_churn_detached_factories() {
-  let _guard = CHURN_COUNTER_LOCK
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let _guard = crate::testing::global_test_lock();
   const ITEMS: usize = 256;
 
   let viewport = Size::new(800.0, 600.0);
