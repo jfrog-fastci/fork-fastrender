@@ -6587,7 +6587,9 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     set_data_prop(&mut scope, proto, "cancel", Value::Object(cancel_fn), true)?;
 
     let key = alloc_key(&mut scope, "ReadableStreamDefaultReader")?;
-    scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
+    if matches!(vm.get(&mut scope, global, key)?, Value::Undefined) {
+      scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
+    }
     proto
   };
 
@@ -6659,7 +6661,9 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     )?;
 
     let key = alloc_key(&mut scope, "ReadableStream")?;
-    scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
+    if matches!(vm.get(&mut scope, global, key)?, Value::Undefined) {
+      scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
+    }
     proto
   };
 
@@ -7227,6 +7231,44 @@ mod tests {
 
     let response = window.exec_script("Object.prototype.toString.call(new Response())")?;
     assert_eq!(get_string(window.heap(), response), "[object Response]");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_does_not_override_global_readable_stream_when_window_streams_installed(
+  ) -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let stream_env_id = window.exec_script("new ReadableStream().__fastrender_fetch_env_id")?;
+    assert!(
+      matches!(stream_env_id, Value::Undefined),
+      "expected global ReadableStream to come from window_streams, got {stream_env_id:?}"
+    );
+
+    let response_stream_env_id =
+      window.exec_script("new Response('x').body.__fastrender_fetch_env_id")?;
+    assert!(
+      matches!(response_stream_env_id, Value::Number(_)),
+      "expected Response.body to be backed by fetch internal stream wrapper, got {response_stream_env_id:?}"
+    );
+
+    let has_get_reader = window.exec_script("typeof new Response('x').body.getReader === 'function'")?;
+    assert!(
+      matches!(has_get_reader, Value::Bool(true)),
+      "expected Response.body.getReader to be a function, got {has_get_reader:?}"
+    );
 
     drop(fetch_bindings);
     window.teardown();
