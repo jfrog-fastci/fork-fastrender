@@ -14,9 +14,10 @@ use std::time::Duration;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use typecheck_ts::lib_support::{
-  CompilerOptions, FileKind, JsxMode, LibFile, LibName, ModuleKind, ScriptTarget,
+  resolve_options_for_node_resolver, CompilerOptions, FileKind, JsxMode, LibFile, LibName,
+  ScriptTarget,
 };
-use typecheck_ts::resolve::{canonicalize_path, ModuleResolutionMode, NodeResolver, ResolveOptions};
+use typecheck_ts::resolve::{canonicalize_path, NodeResolver};
 use typecheck_ts::tsconfig;
 use typecheck_ts::{FileKey, Host, HostError, Program};
 
@@ -337,33 +338,7 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
   // are emitted by `typecheck-ts` core during `Program::check()`, not here.
   options = options.normalize();
 
-  let module_resolution = options.module_resolution.as_deref();
-  let node_resolve = args.node_resolve
-    || matches!(
-      module_resolution,
-      Some("node" | "node10" | "node16" | "nodenext" | "bundler")
-    )
-    || matches!(options.module, Some(ModuleKind::Node16 | ModuleKind::NodeNext))
-    || !options.types.is_empty();
-  let module_resolution_mode = match module_resolution {
-    Some("classic") => ModuleResolutionMode::Classic,
-    Some("node16") => ModuleResolutionMode::Node16,
-    Some("nodenext") => ModuleResolutionMode::NodeNext,
-    Some("bundler") => ModuleResolutionMode::Bundler,
-    Some("node" | "node10") => ModuleResolutionMode::Node10,
-    _ => match options.module {
-      Some(ModuleKind::Node16) => ModuleResolutionMode::Node16,
-      Some(ModuleKind::NodeNext) => ModuleResolutionMode::NodeNext,
-      _ => ModuleResolutionMode::Node10,
-    },
-  };
-  let resolve_options = ResolveOptions {
-    node_modules: node_resolve,
-    package_imports: node_resolve,
-    module_resolution: module_resolution_mode,
-    module_kind: options.module,
-    ..ResolveOptions::default()
-  };
+  let resolve_options = resolve_options_for_cli(&options, args.node_resolve);
 
   let mut root_paths = Vec::new();
   if let Some(cfg) = project.as_ref() {
@@ -573,6 +548,20 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
   } else {
     ExitCode::SUCCESS
   }
+}
+
+fn resolve_options_for_cli(
+  options: &CompilerOptions,
+  force_node_resolve: bool,
+) -> typecheck_ts::resolve::ResolveOptions {
+  let mut resolve_options = resolve_options_for_node_resolver(options);
+  // The CLI's `--node-resolve` flag acts as an override that enables `node_modules`
+  // and `package.json` imports resolution regardless of the computed defaults.
+  if force_node_resolve {
+    resolve_options.node_modules = true;
+    resolve_options.package_imports = true;
+  }
+  resolve_options
 }
 
 fn build_compiler_options(
@@ -1334,9 +1323,11 @@ fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
 
 #[cfg(test)]
 mod tests {
-  use super::{normalize_json_path, TsconfigResolver};
+  use super::{normalize_json_path, resolve_options_for_cli, TsconfigResolver};
   use std::fs;
   use tempfile::tempdir;
+  use typecheck_ts::lib_support::{CompilerOptions, ModuleKind};
+  use typecheck_ts::resolve::ModuleResolutionMode;
   use typecheck_ts::resolve::{NodeResolver, ResolveOptions};
 
   #[test]
@@ -1446,5 +1437,39 @@ mod tests {
       resolved.canonicalize().expect("canonicalize resolved"),
       foo.canonicalize().expect("canonicalize foo.ts")
     );
+  }
+
+  #[test]
+  fn cli_resolve_options_apply_classic_defaults_for_non_node_module_kinds() {
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::Amd);
+    let resolve_options = resolve_options_for_cli(&options, false);
+    assert_eq!(resolve_options.module_resolution, ModuleResolutionMode::Classic);
+    assert!(!resolve_options.node_modules);
+    assert!(!resolve_options.package_imports);
+
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::System);
+    let resolve_options = resolve_options_for_cli(&options, false);
+    assert_eq!(resolve_options.module_resolution, ModuleResolutionMode::Classic);
+  }
+
+  #[test]
+  fn cli_node_resolve_flag_overrides_resolve_options_flags() {
+    let options = CompilerOptions::default();
+    let resolve_options = resolve_options_for_cli(&options, false);
+    assert_eq!(resolve_options.module_resolution, ModuleResolutionMode::Node10);
+    assert!(
+      resolve_options.node_modules,
+      "Node10 defaults should enable node_modules resolution"
+    );
+    assert!(
+      !resolve_options.package_imports,
+      "Node10 defaults should not enable package.json imports"
+    );
+
+    let resolve_options = resolve_options_for_cli(&options, true);
+    assert!(resolve_options.node_modules);
+    assert!(resolve_options.package_imports);
   }
 }

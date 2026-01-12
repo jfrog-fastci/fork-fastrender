@@ -2,65 +2,14 @@ use std::path::{Path, PathBuf};
 
 use diagnostics::paths::normalize_ts_path;
 use serde_json::Value;
-use typecheck_ts::lib_support::{CompilerOptions, ModuleKind, ScriptTarget};
-use typecheck_ts::resolve::{ModuleResolutionMode, ResolveFs, ResolveOptions, Resolver};
+use typecheck_ts::lib_support::{
+  effective_module_resolution_mode, resolve_options_for_node_resolver, CompilerOptions,
+};
+use typecheck_ts::resolve::{ModuleResolutionMode, ResolveFs, Resolver};
 use typecheck_ts::FileKey;
 
 use crate::resolution_trace::ResolutionTraceMode;
 use crate::runner::HarnessFileSet;
-
-fn effective_module_kind(compiler_options: &CompilerOptions) -> ModuleKind {
-  compiler_options.module.unwrap_or_else(|| match compiler_options.target {
-    ScriptTarget::Es3 | ScriptTarget::Es5 => ModuleKind::CommonJs,
-    _ => ModuleKind::Es2015,
-  })
-}
-
-fn effective_module_resolution_mode(compiler_options: &CompilerOptions) -> ModuleResolutionMode {
-  let normalized = compiler_options
-    .module_resolution
-    .as_deref()
-    .map(|value| value.trim().to_ascii_lowercase());
-  match normalized.as_deref() {
-    Some("classic") => ModuleResolutionMode::Classic,
-    // TypeScript treats `node` as the legacy Node10 resolver.
-    Some("node") | Some("nodejs") | Some("node10") => ModuleResolutionMode::Node10,
-    Some("node16") => ModuleResolutionMode::Node16,
-    Some("nodenext") => ModuleResolutionMode::NodeNext,
-    Some("bundler") => ModuleResolutionMode::Bundler,
-    // `tsc` computes the default `moduleResolution` based on `module` when the
-    // option is unset. In particular, ES module outputs default to Classic
-    // resolution while CommonJS defaults to Node10.
-    None | Some("") => match effective_module_kind(compiler_options) {
-      ModuleKind::Node16 => ModuleResolutionMode::Node16,
-      ModuleKind::NodeNext => ModuleResolutionMode::NodeNext,
-      ModuleKind::CommonJs => ModuleResolutionMode::Node10,
-      _ => ModuleResolutionMode::Classic,
-    },
-    // Fall back to Classic semantics for unknown values so we don't accidentally
-    // enable `node_modules` lookups in misconfigured tests.
-    Some(_) => ModuleResolutionMode::Classic,
-  }
-}
-
-fn resolve_options_for_compiler_options(compiler_options: &CompilerOptions) -> ResolveOptions {
-  let module_resolution = effective_module_resolution_mode(compiler_options);
-  let (node_modules, package_imports) = match module_resolution {
-    ModuleResolutionMode::Classic => (false, false),
-    // TypeScript's legacy `node` resolver does not support `package.json` imports maps.
-    ModuleResolutionMode::Node10 => (true, false),
-    // Node16/NodeNext/Bundler support `package.json` exports/imports maps.
-    ModuleResolutionMode::Node16 | ModuleResolutionMode::NodeNext | ModuleResolutionMode::Bundler => (true, true),
-  };
-
-  ResolveOptions {
-    node_modules,
-    package_imports,
-    module_resolution,
-    module_kind: Some(effective_module_kind(compiler_options)),
-    ..Default::default()
-  }
-}
 
 fn starts_with_drive_letter(path: &str) -> bool {
   let bytes = path.as_bytes();
@@ -180,7 +129,7 @@ pub(crate) fn resolve_module_specifier(
   let fs = HarnessResolveFs {
     files: files.clone(),
   };
-  let mut resolve_options = resolve_options_for_compiler_options(compiler_options);
+  let mut resolve_options = resolve_options_for_node_resolver(compiler_options);
   // TypeScript resolves `/// <reference types="..." />` and `compilerOptions.types`
   // through the `@types/*` lookup regardless of the `moduleResolution` setting.
   //
@@ -291,4 +240,45 @@ pub(crate) fn resolve_at_types_entry(
   }
 
   None
+}
+
+#[cfg(test)]
+mod tests {
+  use super::harness_resolve_mode_for_options;
+  use crate::resolution_trace::ResolutionTraceMode;
+  use typecheck_ts::lib_support::{CompilerOptions, ModuleKind, ScriptTarget};
+
+  #[test]
+  fn harness_resolve_mode_defaults_match_tsc() {
+    let mut options = CompilerOptions::default();
+    options.target = ScriptTarget::Es5;
+    options.module = None;
+    assert_eq!(harness_resolve_mode_for_options(&options), ResolutionTraceMode::Node10);
+
+    let mut options = CompilerOptions::default();
+    options.target = ScriptTarget::Es2015;
+    options.module = None;
+    assert_eq!(harness_resolve_mode_for_options(&options), ResolutionTraceMode::Node10);
+
+    for module in [ModuleKind::None, ModuleKind::Amd, ModuleKind::Umd, ModuleKind::System] {
+      let mut options = CompilerOptions::default();
+      options.module = Some(module);
+      assert_eq!(
+        harness_resolve_mode_for_options(&options),
+        ResolutionTraceMode::Classic,
+        "expected module={module:?} to default to Classic resolution"
+      );
+    }
+
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::Node16);
+    assert_eq!(harness_resolve_mode_for_options(&options), ResolutionTraceMode::Node16);
+
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::NodeNext);
+    assert_eq!(
+      harness_resolve_mode_for_options(&options),
+      ResolutionTraceMode::NodeNext
+    );
+  }
 }

@@ -1,6 +1,6 @@
 use assert_cmd::Command;
 use diagnostics::paths::{normalize_fs_path, normalize_ts_path};
-use predicates::str::{contains, is_empty};
+use predicates::str::is_empty;
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
@@ -108,9 +108,9 @@ fn symbol_at_json_paths_are_normalized() {
   let normalized_path = normalized(&path);
   let content = fs::read_to_string(&path).expect("read fixture");
   let offset = content
-    .find("add(1, 2)")
-    .map(|idx| idx as u32)
-    .expect("offset for add(1, 2) call");
+    .find("function add")
+    .map(|idx| (idx + "function ".len()) as u32)
+    .expect("offset for add declaration");
   let query = format!("{}:{}", path.display(), offset);
 
   let output = typecheck_cli()
@@ -158,7 +158,7 @@ fn resolves_relative_modules_and_index_files() {
 }
 
 #[test]
-fn node_modules_resolution_is_opt_in() {
+fn node_modules_resolution_defaults_to_node10() {
   let tmp = tempdir().expect("temp dir");
   let path = tmp.path().join("src/main.ts");
   write_file(
@@ -175,8 +175,8 @@ fn node_modules_resolution_is_opt_in() {
     .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .assert()
-    .failure()
-    .stdout(contains("unresolved module specifier"));
+    .success()
+    .stdout(is_empty());
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)

@@ -8,8 +8,11 @@ mod compiler_options;
 pub mod lib_env;
 
 pub use compiler_options::{
-  CacheMode, CacheOptions, CompilerOptions, JsxMode, LibName, LibSet, ModuleKind, ScriptTarget,
+  effective_module_kind, CacheMode, CacheOptions, CompilerOptions, JsxMode, LibName, LibSet,
+  ModuleKind, ScriptTarget,
 };
+#[cfg(feature = "resolve")]
+pub use compiler_options::{effective_module_resolution_mode, resolve_options_for_node_resolver};
 pub use lib_env::{bundled_typescript_version, LibManager, LoadedLibs};
 pub use types_ts_interned::TypeOptions;
 
