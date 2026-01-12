@@ -28,6 +28,7 @@ use crate::lex::LexMode;
 use crate::lex::KEYWORDS_MAPPING;
 use crate::parse::stmt::decl::VarDeclParseMode;
 use crate::token::TT;
+use crate::utf16::is_string_well_formed_unicode;
 
 impl<'a> Parser<'a> {
   fn starts_with_type_only_import(&mut self, ctx: ParseCtx) -> bool {
@@ -63,8 +64,11 @@ impl<'a> Parser<'a> {
     #[rustfmt::skip]
     let (target, alias_is_required) = match t0.typ {
       TT::LiteralString => {
-        let (_, name, escape_loc, _code_units) =
+        let (loc, name, escape_loc, code_units) =
           self.lit_str_val_with_mode_and_legacy_escape(LexMode::Standard)?;
+        if !is_string_well_formed_unicode(&code_units) {
+          return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(TT::LiteralString)));
+        }
         target_escape = escape_loc;
         (ModuleExportImportName::Str(name), true)
       },
@@ -80,8 +84,11 @@ impl<'a> Parser<'a> {
       if is_export && t_alias.typ == TT::LiteralString {
         // ES2022: arbitrary module namespace identifiers - allow string literals
         // for *exported* names.
-        let (loc, name, escape_loc, _code_units) =
+        let (loc, name, escape_loc, code_units) =
           self.lit_str_val_with_mode_and_legacy_escape(LexMode::Standard)?;
+        if !is_string_well_formed_unicode(&code_units) {
+          return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(TT::LiteralString)));
+        }
         let mut alias = Node::new(loc, IdPat { name });
         if let Some(escape_loc) = escape_loc {
           alias.assoc.set(LegacyOctalEscapeSequence(escape_loc));
@@ -458,8 +465,14 @@ impl<'a> Parser<'a> {
             // ES2022: arbitrary module namespace identifiers - allow string literals
             let t = p.peek();
             if t.typ == TT::LiteralString {
-              let (loc, name, escape_loc, _code_units) =
+              let (loc, name, escape_loc, code_units) =
                 p.lit_str_val_with_mode_and_legacy_escape(LexMode::Standard)?;
+              if !is_string_well_formed_unicode(&code_units) {
+                return Err(loc.error(
+                  SyntaxErrorType::InvalidCharacterEscape,
+                  Some(TT::LiteralString),
+                ));
+              }
               let mut alias = Node::new(loc, IdPat { name });
               if let Some(escape_loc) = escape_loc {
                 alias.assoc.set(LegacyOctalEscapeSequence(escape_loc));
@@ -716,6 +729,13 @@ mod tests {
   use crate::ast::ts_stmt::ImportEqualsRhs;
   use crate::{parse_with_options, Dialect, ParseOptions, SourceType};
 
+  fn ecma_module_opts() -> ParseOptions {
+    ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Module,
+    }
+  }
+
   #[test]
   fn import_default_named_specifier_requires_alias() {
     let opts = ParseOptions {
@@ -762,5 +782,36 @@ mod tests {
       }
       ref other => panic!("expected export list statement, got {:?}", other),
     }
+  }
+
+  #[test]
+  fn rejects_ill_formed_unicode_module_export_import_names() {
+    let opts = ecma_module_opts();
+
+    // test262: language/module-code/early-export-ill-formed-string.js
+    assert!(
+      parse_with_options(r#"export {Moon as "\uD83C",} from "./m.js";"#, opts).is_err()
+    );
+    assert!(parse_with_options(r#"export {"\uD83C"} from "./m.js";"#, opts).is_err());
+    assert!(parse_with_options(r#"import {'\uD83C' as Usagi} from "./m.js";"#, opts).is_err());
+
+    // export * as "<alias>" from "..."
+    assert!(parse_with_options(r#"export * as "\uD83C" from "./m.js";"#, opts).is_err());
+  }
+
+  #[test]
+  fn accepts_well_formed_unicode_module_export_import_names() {
+    let opts = ecma_module_opts();
+
+    // 🌙 is "\uD83C\uDF19"
+    assert!(
+      parse_with_options(r#"export {Moon as "\uD83C\uDF19"} from "./m.js";"#, opts).is_ok()
+    );
+    assert!(
+      parse_with_options(r#"import {'\uD83C\uDF19' as Usagi} from "./m.js";"#, opts).is_ok()
+    );
+    assert!(
+      parse_with_options(r#"export * as "\uD83C\uDF19" from "./m.js";"#, opts).is_ok()
+    );
   }
 }

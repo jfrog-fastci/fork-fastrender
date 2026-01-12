@@ -80,6 +80,7 @@ pub mod num;
 pub mod operator;
 pub mod parse;
 pub mod token;
+pub mod utf16;
 pub mod util;
 
 #[derive(Debug)]
