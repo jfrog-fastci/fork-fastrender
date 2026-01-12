@@ -508,6 +508,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         AugmentationTarget::File(target) => {
           if let Some(mut state) = self.modules.remove(target) {
             let owner = SymbolOwner::Module(*target);
+            self.report_module_augmentation_imports_and_exports(aug.origin, &aug.module);
             self.bind_module_items(
               &mut state,
               &owner,
@@ -518,9 +519,9 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               true,
               &aug.module.decls,
               &aug.module.type_imports,
-              &aug.module.imports,
+              &[],
               &aug.module.import_equals,
-              &aug.module.exports,
+              &[],
               &aug.module.export_as_namespace,
               &aug.module.ambient_modules,
               &mut deps,
@@ -539,6 +540,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         AugmentationTarget::Ambient(specifier) => {
           if let Some(mut state) = self.ambient_modules.remove(specifier) {
             let owner = SymbolOwner::AmbientModule(specifier.clone());
+            self.report_module_augmentation_imports_and_exports(aug.origin, &aug.module);
             self.bind_module_items(
               &mut state,
               &owner,
@@ -549,9 +551,9 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               true,
               &aug.module.decls,
               &aug.module.type_imports,
-              &aug.module.imports,
+              &[],
               &aug.module.import_equals,
-              &aug.module.exports,
+              &[],
               &aug.module.export_as_namespace,
               &aug.module.ambient_modules,
               &mut deps,
@@ -613,6 +615,37 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       ),
       Span::new(file_id, span),
     ));
+  }
+
+  fn report_module_augmentation_imports_and_exports(
+    &mut self,
+    origin: FileId,
+    module: &AmbientModule,
+  ) {
+    for import in &module.imports {
+      self.diagnostics.push(Diagnostic::error(
+        "TS2667",
+        "Imports are not permitted in module augmentations. Consider moving them to the enclosing external module.",
+        Span::new(origin, import.specifier_span),
+      ));
+    }
+
+    for export in &module.exports {
+      let range = match export {
+        Export::Named(named) => named
+          .specifier_span
+          .or_else(|| named.items.first().and_then(|item| item.exported_span))
+          .or_else(|| named.items.first().map(|item| item.local_span))
+          .unwrap_or_else(|| TextRange::new(0, 0)),
+        Export::All(all) => all.specifier_span,
+        Export::ExportAssignment { span, .. } => *span,
+      };
+      self.diagnostics.push(Diagnostic::error(
+        "TS2666",
+        "Exports and export assignments are not permitted in module augmentations.",
+        Span::new(origin, range),
+      ));
+    }
   }
 
   fn bind_ambient_module(

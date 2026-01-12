@@ -1919,7 +1919,7 @@ fn export_modifier_on_ambient_module_reports_ts2668() {
 }
 
 #[test]
-fn ambient_module_in_dts_script_reports_export_mismatch_for_unexported_namespace_merge() {
+fn ambient_module_in_dts_script_does_not_report_ts2395_for_namespace_merge() {
   // Mirrors TypeScript's `tests/cases/compiler/namespaceNotMergedWithFunctionDefaultExport.ts`
   // (`replace-in-file/types/index.d.ts`).
   let source = r#"
@@ -1944,10 +1944,7 @@ fn ambient_module_in_dts_script_reports_export_mismatch_for_unexported_namespace
   let (_semantics, diags) =
     bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
 
-  assert!(
-    diags.iter().any(|d| d.code == "TS2395"),
-    "expected TS2395, got diagnostics: {diags:?}"
-  );
+  assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 }
 
 #[test]
@@ -3671,6 +3668,8 @@ fn module_augmentation_exports_new_names_and_merges_with_class() {
   aug.ambient_modules.push(AmbientModule {
     name: "./observable".to_string(),
     name_span: span(10),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![observable_iface, bar],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -3729,6 +3728,8 @@ fn unresolved_module_augmentation_reports_diagnostic() {
   hir.ambient_modules.push(AmbientModule {
     name: "./missing".to_string(),
     name_span: module_name_span,
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -3742,16 +3743,19 @@ fn unresolved_module_augmentation_reports_diagnostic() {
   let resolver = StaticResolver::new(HashMap::new());
 
   let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
-  assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got {:?}", diags);
-  let diag = &diags[0];
-  assert_eq!(diag.code, "BIND1005");
-  assert!(
-    diag.message.contains("module augmentation"),
-    "expected diagnostic message to mention module augmentation, got {:?}",
-    diag.message
-  );
-  assert_eq!(diag.primary.file, file);
-  assert_eq!(diag.primary.range, module_name_span);
+  let ts2664 = diags
+    .iter()
+    .find(|d| d.code == "TS2664")
+    .expect("expected TS2664");
+  assert_eq!(ts2664.primary.file, file);
+  assert_eq!(ts2664.primary.range, module_name_span);
+
+  let bind1005 = diags
+    .iter()
+    .find(|d| d.code == "BIND1005")
+    .expect("expected BIND1005");
+  assert_eq!(bind1005.primary.file, file);
+  assert_eq!(bind1005.primary.range, module_name_span);
 }
 
 #[test]
@@ -3864,15 +3868,124 @@ fn relative_module_augmentation_reports_ts2664_when_target_missing() {
     files.get(&f).unwrap().clone()
   });
 
-  assert_eq!(diags.len(), 1, "unexpected diagnostics: {:?}", diags);
-  let diag = &diags[0];
-  assert_eq!(diag.code, "TS2664");
+  let ts2664 = diags
+    .iter()
+    .find(|d| d.code == "TS2664")
+    .expect("expected TS2664");
   assert_eq!(
-    diag.message,
+    ts2664.message,
     "Invalid module name in augmentation, module './ext' cannot be found."
   );
-  assert_eq!(diag.primary.file, file);
-  assert_eq!(diag.primary.range, module_name_span);
+  assert_eq!(ts2664.primary.file, file);
+  assert_eq!(ts2664.primary.range, module_name_span);
+
+  let bind1005 = diags
+    .iter()
+    .find(|d| d.code == "BIND1005")
+    .expect("expected BIND1005");
+  assert_eq!(bind1005.primary.file, file);
+  assert_eq!(bind1005.primary.range, module_name_span);
+}
+
+#[test]
+fn module_augmentation_rejects_imports_and_exports() {
+  let file_a = FileId(170);
+  let file_aug = FileId(171);
+  let file_dep = FileId(172);
+
+  let mut a = HirFile::module(file_a);
+  a.decls
+    .push(mk_decl(0, "Existing", DeclKind::Var, Exported::Named));
+
+  let mut dep = HirFile::module(file_dep);
+  dep.decls
+    .push(mk_decl(0, "fromDep", DeclKind::Var, Exported::Named));
+
+  let mut aug = HirFile::module(file_aug);
+  aug.ambient_modules.push(AmbientModule {
+    name: "./a".to_string(),
+    name_span: span(10),
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: vec![mk_decl(1, "Augmented", DeclKind::Interface, Exported::No)],
+    imports: vec![Import {
+      specifier: "./dep".to_string(),
+      specifier_span: span(20),
+      default: None,
+      namespace: None,
+      named: vec![ImportNamed {
+        imported: "fromDep".to_string(),
+        local: "FromDep".to_string(),
+        is_type_only: false,
+        imported_span: span(21),
+        local_span: span(22),
+      }],
+      is_type_only: false,
+    }],
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: vec![Export::All(ExportAll {
+      specifier: "./dep".to_string(),
+      is_type_only: false,
+      specifier_span: span(30),
+      alias: None,
+      alias_span: None,
+    })],
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_aug => Arc::new(aug),
+    file_dep => Arc::new(dep),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "./a".to_string() => file_a,
+    "./dep".to_string() => file_dep,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_aug], &resolver, |f| files.get(&f).unwrap().clone());
+
+  assert_eq!(diags.len(), 2, "unexpected diagnostics: {:?}", diags);
+
+  let ts2667 = diags
+    .iter()
+    .find(|diag| diag.code == "TS2667")
+    .expect("expected TS2667 diagnostic");
+  assert_eq!(ts2667.primary.file, file_aug);
+  assert_eq!(ts2667.primary.range, span(20));
+
+  let ts2666 = diags
+    .iter()
+    .find(|diag| diag.code == "TS2666")
+    .expect("expected TS2666 diagnostic");
+  assert_eq!(ts2666.primary.file, file_aug);
+  assert_eq!(ts2666.primary.range, span(30));
+
+  assert!(
+    semantics
+      .resolve_in_module(file_a, "FromDep", Namespace::VALUE)
+      .is_none(),
+    "forbidden import should not add bindings to the target module"
+  );
+  assert!(
+    semantics.exports_of(file_a).get("fromDep").is_none(),
+    "forbidden export should not add exports to the target module"
+  );
+  assert!(
+    semantics.exports_of_opt(file_dep).is_none(),
+    "forbidden import/export should not create module graph dependencies"
+  );
+
+  assert!(
+    semantics
+      .resolve_in_module(file_a, "Augmented", Namespace::TYPE)
+      .is_some(),
+    "augmentation declarations should still be bound"
+  );
+  assert!(semantics.exports_of(file_a).contains_key("Existing"));
 }
 
 #[test]
