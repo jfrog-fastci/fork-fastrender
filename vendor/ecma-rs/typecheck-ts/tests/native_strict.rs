@@ -864,6 +864,23 @@ fn native_strict_bans_new_proxy() {
 }
 
 #[test]
+fn native_strict_bans_new_proxy_with_type_args() {
+  let source = "new Proxy<object>({}, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Proxy<object>";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict new Proxy diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_new_proxy_via_comma_callee() {
   let source = "new (0, Proxy)({}, {});";
   let (diagnostics, file_id) = check(source, true);
