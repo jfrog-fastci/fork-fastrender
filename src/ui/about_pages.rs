@@ -210,18 +210,68 @@ fn newtab_html() -> String {
     bookmark_count += 1;
   }
 
-  let mut history_tiles = String::new();
-  let mut history_count = 0usize;
-  let mut seen_urls = std::collections::HashSet::<&str>::new();
-  for entry in snapshot.history.iter() {
-    if history_count >= MAX_HISTORY {
-      break;
-    }
+  // "Recently visited" should ignore duplicate URLs and prefer the most recent visit.
+  //
+  // Most callers are expected to provide `snapshot.history` already sorted by recency, but we keep
+  // this robust: if callers provide unsorted data and include timestamps, we still surface the
+  // most recent entry per URL.
+  #[derive(Clone)]
+  struct HistoryMerged {
+    url: String,
+    title: Option<String>,
+    last_visited: Option<SystemTime>,
+    first_idx: usize,
+  }
+
+  let mut merged_by_url: std::collections::HashMap<String, HistoryMerged> =
+    std::collections::HashMap::new();
+  for (idx, entry) in snapshot.history.iter().enumerate() {
     let url = entry.url.trim();
-    if url.is_empty() {
+    if url.is_empty() || is_about_url(url) {
       continue;
     }
-    if !seen_urls.insert(url) {
+
+    let title = entry
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty())
+      .map(str::to_string);
+
+    let slot = merged_by_url.entry(url.to_string()).or_insert_with(|| HistoryMerged {
+      url: url.to_string(),
+      title: title.clone(),
+      last_visited: entry.last_visited,
+      first_idx: idx,
+    });
+
+    // Prefer the newest `last_visited` timestamp; break ties by keeping the first seen entry so
+    // behaviour is deterministic even when timestamps are missing.
+    if entry.last_visited > slot.last_visited {
+      slot.last_visited = entry.last_visited;
+      if title.is_some() {
+        slot.title = title.clone();
+      }
+    } else if slot.title.is_none() && title.is_some() {
+      // Best-effort: if the most-recent entry is missing a title but an older one has it, keep the
+      // known title instead of falling back to the raw URL.
+      slot.title = title.clone();
+    }
+  }
+
+  let mut merged_history: Vec<HistoryMerged> = merged_by_url.into_values().collect();
+  merged_history.sort_by(|a, b| {
+    b.last_visited
+      .cmp(&a.last_visited)
+      .then_with(|| a.first_idx.cmp(&b.first_idx))
+      .then_with(|| a.url.cmp(&b.url))
+  });
+
+  let mut history_tiles = String::new();
+  let mut history_count = 0usize;
+  for entry in merged_history.into_iter().take(MAX_HISTORY) {
+    let url = entry.url.trim();
+    if url.is_empty() {
       continue;
     }
     let title = entry
@@ -239,6 +289,9 @@ fn newtab_html() -> String {
       "<a class=\"btn\" href=\"{safe_url}\"><div class=\"label\">{safe_title}</div><div class=\"url\">{safe_display_url}</div></a>"
     );
     history_count += 1;
+    if history_count >= MAX_HISTORY {
+      break;
+    }
   }
 
   let bookmarks_body = if bookmark_count == 0 {
@@ -1313,6 +1366,8 @@ mod tests {
 
   #[test]
   fn newtab_renders_snapshot_bookmarks_and_history() {
+    use std::time::{Duration, UNIX_EPOCH};
+
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1330,23 +1385,23 @@ mod tests {
         },
       ],
       history: vec![
-        // Duplicate URL: only the first (most recent) should render.
-        HistorySnapshot {
-          title: Some("New title".to_string()),
-          url: "https://dup.example/?a=1&b=2".to_string(),
-          last_visited: None,
-          visit_count: 3,
-        },
+        // Duplicate URL: only the most recently visited entry should render.
         HistorySnapshot {
           title: Some("Old title".to_string()),
           url: "https://dup.example/?a=1&b=2".to_string(),
-          last_visited: None,
+          last_visited: Some(UNIX_EPOCH + Duration::from_secs(10)),
           visit_count: 1,
+        },
+        HistorySnapshot {
+          title: Some("New title".to_string()),
+          url: "https://dup.example/?a=1&b=2".to_string(),
+          last_visited: Some(UNIX_EPOCH + Duration::from_secs(20)),
+          visit_count: 3,
         },
         HistorySnapshot {
           title: Some("Visited & <Site>".to_string()),
           url: "https://visited.example/".to_string(),
-          last_visited: None,
+          last_visited: Some(UNIX_EPOCH + Duration::from_secs(30)),
           visit_count: 1,
         },
       ],
