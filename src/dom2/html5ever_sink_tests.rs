@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::Dom2TreeSink;
+use super::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
 use super::{Document, NodeId, NodeKind};
 use crate::debug::snapshot::snapshot_dom;
 use crate::dom::{parse_html_with_options, DomParseOptions, MATHML_NAMESPACE};
@@ -605,5 +606,62 @@ fn pausable_parser_attaches_shadowrootmode_during_parse_before_script_pause() {
     executor.observed,
     vec![None],
     "Document.currentScript must be null for classic scripts in shadow trees"
+  );
+}
+
+#[test]
+fn declarative_shadow_dom_insertion_emits_live_pre_insert_hook() {
+  use html5ever::tendril::StrTendril;
+  use html5ever::tree_builder::TreeSink;
+  use markup5ever::interface::Attribute;
+  use markup5ever::{LocalName, Namespace, QualName};
+
+  let sink = Dom2TreeSink::new(None);
+  let recorder = LiveMutationTestRecorder::default();
+
+  let (host, template) = {
+    let mut doc = sink.document_mut();
+    doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+    let host = doc.push_node(
+      NodeKind::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        prefix: None,
+        attributes: Vec::new(),
+      },
+      None,
+      /* inert_subtree */ false,
+    );
+    let template = doc.push_node(
+      NodeKind::Element {
+        tag_name: "template".to_string(),
+        namespace: String::new(),
+        prefix: None,
+        attributes: Vec::new(),
+      },
+      None,
+      /* inert_subtree */ false,
+    );
+    (host, template)
+  };
+
+  let attrs = vec![Attribute {
+    name: QualName::new(None, Namespace::from(""), LocalName::from("shadowrootmode")),
+    value: StrTendril::from("open"),
+  }];
+
+  assert!(
+    sink.attach_declarative_shadow(&host, &template, &attrs),
+    "expected declarative shadow root attachment to succeed"
+  );
+
+  assert_eq!(
+    recorder.take(),
+    vec![LiveMutationEvent::PreInsert {
+      parent: host,
+      index: 0,
+      count: 1,
+    }]
   );
 }

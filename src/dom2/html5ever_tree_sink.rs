@@ -642,6 +642,7 @@ impl TreeSink for Dom2TreeSink {
       /* inert_subtree */ false,
     );
     doc.node_mut(shadow_root_id).parent = Some(*location);
+    doc.live_mutation.pre_insert(*location, 0, 1);
     doc.node_mut(*location).children.insert(0, shadow_root_id);
 
     self
