@@ -285,7 +285,7 @@ fn tab_ui(
       .chars()
       .next()
       .map(|ch| ch.to_ascii_uppercase().to_string())
-      .unwrap_or_else(|| "□".to_string());
+      .unwrap_or_else(|| "?".to_string());
     ui.painter().text(
       icon_rect.center(),
       Align2::CENTER_CENTER,
@@ -532,7 +532,7 @@ fn pinned_tab_ui(
       .chars()
       .next()
       .map(|ch| ch.to_ascii_uppercase().to_string())
-      .unwrap_or_else(|| "□".to_string());
+      .unwrap_or_else(|| "?".to_string());
     ui.painter().text(
       icon_rect.center(),
       Align2::CENTER_CENTER,
