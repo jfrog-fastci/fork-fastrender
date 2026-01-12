@@ -162,3 +162,37 @@ fn call_spread_closes_iterator_on_throw() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn for_of_over_array_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var s=0; for (var x of [1,2].values()) { s = s + x; } s"#)
+    .unwrap();
+  assert_eq!(value, Value::Number(3.0));
+}
+
+#[test]
+fn array_iterator_is_iterable() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var it = [1,2].values(); it[Symbol.iterator]() === it"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn for_of_over_string_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var s=""; for (var c of "ab"[Symbol.iterator]()) { s = s + c; } s"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ab");
+}
+
+#[test]
+fn spread_over_array_iterator() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"[...[1,2].values()].length === 2"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

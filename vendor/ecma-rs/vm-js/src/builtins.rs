@@ -7421,7 +7421,6 @@ fn create_array_iterator_with_kind(
     kind_key,
     data_desc(Value::Number(kind as u8 as f64), true, false, true),
   )?;
-
   Ok(Value::Object(iter))
 }
 
@@ -9293,8 +9292,8 @@ pub fn string_prototype_to_upper_case(
 /// - `[[IteratedString]]`: stored as a non-enumerable symbol-keyed data property
 /// - `[[NextIndex]]`: stored as a non-enumerable symbol-keyed data property
 ///
-/// The iterator object's `next` method is a shared native builtin captured in the iterator method's
-/// native slots.
+/// The iterator object's `next` method is inherited from `%StringIteratorPrototype%`, and the
+/// shared native builtin captures the internal slot symbol keys via its own native slots.
 pub fn string_prototype_iterator(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -9310,22 +9309,17 @@ pub fn string_prototype_iterator(
     ));
   }
   let slots = scope.heap().get_function_native_slots(callee)?;
-  if slots.len() != 3 {
+  if slots.len() != 2 {
     return Err(VmError::InvariantViolation(
       "String.prototype[Symbol.iterator] has wrong native slot count",
     ));
   }
-  let Value::Object(next_fn) = slots[0] else {
-    return Err(VmError::InvariantViolation(
-      "String.prototype[Symbol.iterator] next slot is not an object",
-    ));
-  };
-  let Value::Symbol(iterated_sym) = slots[1] else {
+  let Value::Symbol(iterated_sym) = slots[0] else {
     return Err(VmError::InvariantViolation(
       "String.prototype[Symbol.iterator] iteratedString slot is not a symbol",
     ));
   };
-  let Value::Symbol(next_index_sym) = slots[2] else {
+  let Value::Symbol(next_index_sym) = slots[1] else {
     return Err(VmError::InvariantViolation(
       "String.prototype[Symbol.iterator] nextIndex slot is not a symbol",
     ));
@@ -9339,7 +9333,7 @@ pub fn string_prototype_iterator(
   scope.push_root(Value::Object(iter))?;
   scope
     .heap_mut()
-    .object_set_prototype(iter, Some(intr.object_prototype()))?;
+    .object_set_prototype(iter, Some(intr.string_iterator_prototype()))?;
 
   scope.define_property(
     iter,
@@ -9351,9 +9345,6 @@ pub fn string_prototype_iterator(
     PropertyKey::from_symbol(next_index_sym),
     data_desc(Value::Number(0.0), true, false, false),
   )?;
-
-  let next_key = string_key(scope, "next")?;
-  scope.define_property(iter, next_key, data_desc(Value::Object(next_fn), true, false, true))?;
 
   Ok(Value::Object(iter))
 }
