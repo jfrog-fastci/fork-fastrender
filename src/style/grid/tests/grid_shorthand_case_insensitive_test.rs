@@ -1,13 +1,13 @@
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::Declaration;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::types::GridAutoFlow;
-use fastrender::style::types::GridTrack;
-use fastrender::style::values::Length;
-use fastrender::ComputedStyle;
+use crate::css::properties::parse_property_value;
+use crate::css::types::Declaration;
+use crate::style::properties::apply_declaration;
+use crate::style::types::GridAutoFlow;
+use crate::style::types::GridTrack;
+use crate::style::values::Length;
+use crate::ComputedStyle;
 
 fn decl(name: &'static str, value: &str) -> Declaration {
-  let contains_var = fastrender::style::var_resolution::contains_var(value);
+  let contains_var = crate::style::var_resolution::contains_var(value);
   Declaration {
     property: name.into(),
     value: parse_property_value(name, value).expect("parse property value"),
@@ -39,3 +39,4 @@ fn grid_shorthand_auto_flow_keywords_are_ascii_case_insensitive() {
     GridTrack::Length(Length::px(20.0))
   );
 }
+

@@ -1,20 +1,21 @@
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::{Declaration, PropertyValue};
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::BoxNode;
+use crate::css::properties::parse_property_value;
+use crate::css::types::{Declaration, PropertyValue};
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::properties::apply_declaration;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::fragment_tree::FragmentContent;
 use std::sync::Arc;
 
 fn decl(property: &'static str, css_text: &str) -> Declaration {
   let value = parse_property_value(property, css_text).expect("parse property value");
   let contains_var = match &value {
     PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => {
-      fastrender::style::var_resolution::contains_var(raw)
+      crate::style::var_resolution::contains_var(raw)
     }
     _ => false,
   };
@@ -182,10 +183,8 @@ fn grid_row_start_end_numeric_places_item_in_second_row() {
   grid.id = 3;
 
   let fc = GridFormattingContext::new();
-  let constraints = LayoutConstraints::new(
-    fastrender::AvailableSpace::Definite(100.0),
-    fastrender::AvailableSpace::Indefinite,
-  );
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = fc
     .layout(&grid, &constraints)
     .expect("grid layout succeeds");
@@ -217,7 +216,9 @@ fn grid_row_start_end_numeric_places_item_in_second_row() {
     .find(|child| {
       matches!(
         child.content,
-        fastrender::tree::fragment_tree::FragmentContent::Block { box_id: Some(1) }
+        FragmentContent::Block {
+          box_id: Some(1), ..
+        }
       )
     })
     .expect("wrap fragment");
@@ -227,7 +228,9 @@ fn grid_row_start_end_numeric_places_item_in_second_row() {
     .find(|child| {
       matches!(
         child.content,
-        fastrender::tree::fragment_tree::FragmentContent::Block { box_id: Some(2) }
+        FragmentContent::Block {
+          box_id: Some(2), ..
+        }
       )
     })
     .expect("footer fragment");
@@ -667,3 +670,4 @@ fn grid_area_four_value_span_span_is_auto_placement_with_span() {
   assert_approx(placed_span.bounds.width(), 20.0, "span 2 columns width");
   assert_approx(placed_span.bounds.height(), 10.0, "span 1 row height");
 }
+

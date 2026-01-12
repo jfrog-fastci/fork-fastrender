@@ -1,11 +1,11 @@
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::Declaration;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::types::GridAutoFlow;
-use fastrender::ComputedStyle;
+use crate::css::properties::parse_property_value;
+use crate::css::types::Declaration;
+use crate::style::properties::apply_declaration;
+use crate::style::types::GridAutoFlow;
+use crate::ComputedStyle;
 
 fn decl(name: &'static str, value: &str) -> Declaration {
-  let contains_var = fastrender::style::var_resolution::contains_var(value);
+  let contains_var = crate::style::var_resolution::contains_var(value);
   Declaration {
     property: name.into(),
     value: parse_property_value(name, value).expect("parse property value"),
@@ -64,3 +64,4 @@ fn grid_auto_flow_rejects_invalid_identifiers_instead_of_substring_matching() {
   );
   assert_eq!(styles.grid_auto_flow, GridAutoFlow::Column);
 }
+

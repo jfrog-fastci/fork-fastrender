@@ -15988,6 +15988,8 @@ mod tests {
   use std::collections::HashMap;
   use std::sync::Arc;
 
+  mod placement_test;
+
   fn make_grid_style() -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
     style.display = CssDisplay::Grid;

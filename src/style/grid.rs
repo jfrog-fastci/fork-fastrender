@@ -1476,6 +1476,11 @@ fn parse_length_value(raw: &str) -> Option<Length> {
 mod tests {
   use super::*;
 
+  mod grid_auto_flow_tokenization_test;
+  mod grid_line_case_insensitive_test;
+  mod grid_shorthand_auto_flow_detection_test;
+  mod grid_shorthand_case_insensitive_test;
+
   #[test]
   fn grid_parsers_do_not_trim_non_ascii_whitespace() {
     let nbsp = "\u{00A0}";
