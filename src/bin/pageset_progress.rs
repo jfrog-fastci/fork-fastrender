@@ -5539,6 +5539,14 @@ fn format_accuracy_line(acc: &ProgressAccuracy, indent: &str) -> String {
     acc.tolerance,
     acc.max_diff_percent
   );
+  if let Some(metric) = acc
+    .perceptual_metric
+    .as_deref()
+    .map(str::trim)
+    .filter(|s| !s.is_empty())
+  {
+    line.push_str(&format!(" perceptual_metric={metric}"));
+  }
   if let Some(mismatch) = acc.first_mismatch.as_ref() {
     line.push_str(&format!(
       " first_mismatch=({}, {}) baseline_rgba={:?} rendered_rgba={:?}",
@@ -13181,7 +13189,10 @@ mod tests {
     let line = format_accuracy_line(&acc, "  ");
     assert_eq!(
       line,
-      "  accuracy: baseline=chrome diff_pixels=123 diff_percent=1.5000% perceptual=0.0000 tolerance=0 max_diff_percent=0 first_mismatch=(1, 2) baseline_rgba=[1, 2, 3, 4] rendered_rgba=[5, 6, 7, 8]"
+      format!(
+        "  accuracy: baseline=chrome diff_pixels=123 diff_percent=1.5000% perceptual=0.0000 tolerance=0 max_diff_percent=0 perceptual_metric={} first_mismatch=(1, 2) baseline_rgba=[1, 2, 3, 4] rendered_rgba=[5, 6, 7, 8]",
+        image_compare::PERCEPTUAL_METRIC_ID
+      )
     );
   }
 
