@@ -2458,12 +2458,12 @@ pub fn proxy_revocable(
     .object_set_prototype(result, Some(intr.object_prototype()))?;
 
   let proxy_key = string_key(&mut scope, "proxy")?;
-  let revoke_key = PropertyKey::from_string(revoke_name);
   scope.define_property(
     result,
     proxy_key,
     data_desc(Value::Object(proxy), true, true, true),
   )?;
+  let revoke_key = PropertyKey::from_string(revoke_name);
   scope.define_property(
     result,
     revoke_key,

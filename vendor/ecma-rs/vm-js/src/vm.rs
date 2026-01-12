@@ -3405,6 +3405,24 @@ mod tests {
   fn async_from_sync_iterator_internal_native_call_ids_are_cached() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
 
+    let next_first = vm.async_from_sync_iterator_next_call_id()?;
+    let next_len = vm.native_calls.len();
+    let next_second = vm.async_from_sync_iterator_next_call_id()?;
+    assert_eq!(next_first, next_second);
+    assert_eq!(next_len, vm.native_calls.len());
+
+    let return_first = vm.async_from_sync_iterator_return_call_id()?;
+    let return_len = vm.native_calls.len();
+    let return_second = vm.async_from_sync_iterator_return_call_id()?;
+    assert_eq!(return_first, return_second);
+    assert_eq!(return_len, vm.native_calls.len());
+
+    let throw_first = vm.async_from_sync_iterator_throw_call_id()?;
+    let throw_len = vm.native_calls.len();
+    let throw_second = vm.async_from_sync_iterator_throw_call_id()?;
+    assert_eq!(throw_first, throw_second);
+    assert_eq!(throw_len, vm.native_calls.len());
+
     let unwrap_first = vm.async_from_sync_iterator_unwrap_call_id()?;
     let unwrap_len = vm.native_calls.len();
     let unwrap_second = vm.async_from_sync_iterator_unwrap_call_id()?;
@@ -3416,6 +3434,18 @@ mod tests {
     let close_second = vm.async_from_sync_iterator_close_call_id()?;
     assert_eq!(close_first, close_second);
     assert_eq!(close_len, vm.native_calls.len());
+
+    let close_fulfilled_first = vm.async_iterator_close_on_fulfilled_call_id()?;
+    let close_fulfilled_len = vm.native_calls.len();
+    let close_fulfilled_second = vm.async_iterator_close_on_fulfilled_call_id()?;
+    assert_eq!(close_fulfilled_first, close_fulfilled_second);
+    assert_eq!(close_fulfilled_len, vm.native_calls.len());
+
+    let close_rejected_first = vm.async_iterator_close_on_rejected_call_id()?;
+    let close_rejected_len = vm.native_calls.len();
+    let close_rejected_second = vm.async_iterator_close_on_rejected_call_id()?;
+    assert_eq!(close_rejected_first, close_rejected_second);
+    assert_eq!(close_rejected_len, vm.native_calls.len());
 
     let init_default_first = vm.module_tla_init_default_export_on_fulfilled_call_id()?;
     let init_default_len = vm.native_calls.len();
