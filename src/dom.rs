@@ -281,9 +281,11 @@ pub enum DomNodeType {
     /// not execute scripts, but we still default to the parsing/rendering semantics of a typical
     /// browser where scripting is enabled.
     scripting_enabled: bool,
-    /// Whether this document is an HTML document (as opposed to an XML document).
+    /// Whether this document should use HTML-specific case-insensitive selector matching semantics.
     ///
-    /// This is used by selector matching to decide case-sensitivity rules for tag/attribute names.
+    /// This corresponds to the DOM concept of an "HTML document" and is distinct from the element
+    /// namespace: XML documents can contain elements in the HTML namespace (e.g. XHTML), but
+    /// selectors must still match element/attribute names case-sensitively in XML documents.
     is_html_document: bool,
   },
   ShadowRoot {
@@ -1143,7 +1145,7 @@ impl SiblingListCache {
       }
     }
 
-    let entry = build_parent_sibling_list(parent, context)?;
+    let entry = build_parent_sibling_list(parent, context, true)?;
     let mut parents = self.parents.borrow_mut();
     let cached = parents.entry(parent_ptr).or_insert(entry);
     cached.positions.get(&(child as *const DomNode)).copied()
@@ -1162,7 +1164,7 @@ impl SiblingListCache {
       }
     }
 
-    let entry = build_parent_sibling_list(parent, context)?;
+    let entry = build_parent_sibling_list(parent, context, true)?;
     let elements = entry.elements.clone();
     self.parents.borrow_mut().insert(parent_ptr, entry);
     Some(elements)
@@ -1664,14 +1666,26 @@ impl ElementAttrCache {
   }
 }
 
-fn sibling_type_key(node: &DomNode) -> Option<SiblingTypeKey> {
+fn sibling_type_key(node: &DomNode, is_html_document: bool) -> Option<SiblingTypeKey> {
   let tag = node.tag_name()?;
-  let namespace = node.namespace().unwrap_or("").to_string();
-  let is_html = node_is_html_element(node);
-  let local_name = if is_html {
-    tag.to_ascii_lowercase()
+  let namespace_raw = node.namespace().unwrap_or("");
+  // Some constructed DOMs may store the literal HTML namespace URL instead of FastRender's
+  // usual `""` representation; normalize to keep type comparisons consistent.
+  let namespace = if namespace_raw == HTML_NAMESPACE {
+    String::new()
   } else {
-    tag.to_string()
+    namespace_raw.to_string()
+  };
+  let is_html = is_html_document && namespace.is_empty();
+  let local_part = if is_html_document {
+    tag
+  } else {
+    tag.rsplit_once(':').map(|(_, local)| local).unwrap_or(tag)
+  };
+  let local_name = if is_html {
+    local_part.to_ascii_lowercase()
+  } else {
+    local_part.to_string()
   };
   Some(SiblingTypeKey {
     namespace,
@@ -1682,6 +1696,7 @@ fn sibling_type_key(node: &DomNode) -> Option<SiblingTypeKey> {
 fn build_parent_sibling_list(
   parent: &DomNode,
   context: &mut selectors::matching::MatchingContext<FastRenderSelectorImpl>,
+  is_html_document: bool,
 ) -> Option<ParentSiblingList> {
   let mut deadline_counter = 0usize;
   let mut elements: Vec<(*const DomNode, SiblingTypeKey)> = Vec::new();
@@ -1697,7 +1712,7 @@ fn build_parent_sibling_list(
     if !child.is_element() {
       continue;
     }
-    let Some(key) = sibling_type_key(child) else {
+    let Some(key) = sibling_type_key(child, is_html_document) else {
       continue;
     };
     elements.push((child as *const DomNode, key));
@@ -5939,11 +5954,19 @@ impl<'a> ElementRef<'a> {
     context: &mut selectors::matching::MatchingContext<FastRenderSelectorImpl>,
   ) -> Option<SiblingPosition> {
     let parent = self.parent?;
-    if let Some(cache) = context.extra_data.sibling_cache {
+    let is_html_document = self.document_is_html_document();
+    if is_html_document && context.extra_data.sibling_cache.is_some() {
+      // SiblingListCache currently assumes HTML document semantics (case-insensitive HTML element
+      // types). Avoid using it in XML documents so `:nth-of-type` and related selectors remain
+      // case-sensitive.
+      //
+      // Note: querySelector/matches() do not currently populate `sibling_cache`, so this is mostly a
+      // defensive correctness guard.
+      let cache = context.extra_data.sibling_cache?;
       return cache.position(parent, self.node, context);
     }
 
-    build_parent_sibling_list(parent, context)
+    build_parent_sibling_list(parent, context, is_html_document)
       .and_then(|entry| entry.positions.get(&(self.node as *const DomNode)).copied())
   }
 
@@ -5965,8 +5988,40 @@ impl<'a> ElementRef<'a> {
     self.element_index_and_len(context).map(|(idx, _)| idx)
   }
 
+  fn document_is_html_document(&self) -> bool {
+    // `selectors` needs to know whether the *document* is HTML to decide whether element and
+    // attribute name matching should be ASCII case-insensitive. XML documents can still contain
+    // elements in the HTML namespace (e.g. XHTML), but selectors must match case-sensitively there.
+    //
+    // Renderer DOM nodes do not have parent pointers, so determine the document kind by scanning the
+    // precomputed ancestor slice.
+    for ancestor in self.all_ancestors.iter().rev() {
+      if let DomNodeType::Document {
+        is_html_document, ..
+      } = &ancestor.node_type
+      {
+        return *is_html_document;
+      }
+    }
+    // Backwards compatibility: older call sites construct `ElementRef` without ancestors (and thus
+    // without a document node). Preserve historical HTML-matching semantics in that case.
+    true
+  }
+
+  fn tag_name_local_part<'b>(&self, tag_name: &'b str) -> &'b str {
+    // In XML documents, element names may be qualified (`prefix:local`). Selectors match on the
+    // local name portion only.
+    //
+    // In HTML documents, ':' is not a namespace separator, so keep the original string.
+    if self.document_is_html_document() {
+      tag_name
+    } else {
+      tag_name.rsplit_once(':').map(|(_, local)| local).unwrap_or(tag_name)
+    }
+  }
+
   fn is_html_element(&self) -> bool {
-    if !self.is_html_document() {
+    if !self.document_is_html_document() {
       return false;
     }
     matches!(
@@ -5974,21 +6029,6 @@ impl<'a> ElementRef<'a> {
       DomNodeType::Element { ref namespace, .. } | DomNodeType::Slot { ref namespace, .. }
         if namespace.is_empty() || namespace == HTML_NAMESPACE
     )
-  }
-
-  fn is_html_document(&self) -> bool {
-    // Default to HTML semantics when the ancestor chain does not include a document node. This
-    // matches historical behavior for matching against disconnected subtrees; selector entry points
-    // that care about XML-vs-HTML semantics must ensure a `DomNodeType::Document` ancestor exists.
-    for ancestor in self.all_ancestors.iter().rev() {
-      if let DomNodeType::Document {
-        is_html_document, ..
-      } = ancestor.node_type
-      {
-        return is_html_document;
-      }
-    }
-    true
   }
 
   fn is_shadow_host(&self) -> bool {
@@ -7716,7 +7756,7 @@ impl<'a> Element for ElementRef<'a> {
       if self.is_html_element() {
         tag.eq_ignore_ascii_case(local_name)
       } else {
-        tag == local_name
+        self.tag_name_local_part(tag) == local_name
       }
     })
   }
@@ -7757,15 +7797,22 @@ impl<'a> Element for ElementRef<'a> {
           namespace: b_ns,
           ..
         },
-      ) if a_ns == b_ns => {
-        if self.is_html_document()
-          && other.is_html_document()
-          && (a_ns == HTML_NAMESPACE || a_ns.is_empty())
-        {
-          a.eq_ignore_ascii_case(b)
-        } else {
-          a == b
+      ) if a_ns == b_ns
+        || (a_ns.is_empty() && b_ns == HTML_NAMESPACE)
+        || (a_ns == HTML_NAMESPACE && b_ns.is_empty()) =>
+      {
+        let doc_is_html = self.document_is_html_document() && other.document_is_html_document();
+        let html_ns = a_ns.is_empty() || a_ns == HTML_NAMESPACE;
+        if doc_is_html && html_ns {
+          return a.eq_ignore_ascii_case(b);
         }
+
+        if doc_is_html {
+          return a == b;
+        }
+
+        // XML documents compare expanded names (namespace + local name), ignoring namespace prefixes.
+        self.tag_name_local_part(a.as_str()) == self.tag_name_local_part(b.as_str())
       }
       (
         DomNodeType::Slot {
@@ -9617,6 +9664,7 @@ mod tests {
     DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -10758,6 +10806,7 @@ mod tests {
     let mut dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -13411,6 +13460,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
+        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -13460,6 +13510,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
+        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -13686,6 +13737,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -13964,6 +14016,7 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -14043,6 +14096,7 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -14120,6 +14174,7 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },

@@ -2542,6 +2542,8 @@ mod range_tests;
 #[cfg(test)]
 mod xml_selector_disconnected_tests;
 #[cfg(test)]
+mod xml_selector_tests;
+#[cfg(test)]
 mod wbr_tests;
 #[cfg(test)]
 mod xml_document_tests;
