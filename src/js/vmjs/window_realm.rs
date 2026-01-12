@@ -1904,8 +1904,11 @@ const MAX_CONSOLE_LABEL_BYTES: usize = 256;
 const MAX_CONSOLE_DISTINCT_LABELS: usize = 1024;
 const CONSOLE_LABEL_LIMIT_EXCEEDED: &str = "[console label limit exceeded]";
 
+const ABOUT_BLANK_URL: &str = "about:blank";
+
 const LOCATION_URL_KEY: &str = "__fastrender_location_url";
 const LOCATION_ACCESSOR_LOCATION_OBJ_SLOT: usize = 0;
+const DOM_IMPLEMENTATION_TEMPLATE_DOCUMENT_SLOT: usize = 0;
 const HISTORY_OBJ_SLOT: usize = 0;
 const HISTORY_LOCATION_OBJ_SLOT: usize = 1;
 const HISTORY_DOCUMENT_OBJ_SLOT: usize = 2;
@@ -3529,21 +3532,36 @@ fn location_to_primitive_native(
 }
 
 fn window_location_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  Ok(
-    slots
-      .get(LOCATION_ACCESSOR_LOCATION_OBJ_SLOT)
-      .copied()
-      .unwrap_or(Value::Undefined),
-  )
+  let location_value = slots
+    .get(LOCATION_ACCESSOR_LOCATION_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+
+  let Value::Object(receiver_obj) = this else {
+    return Ok(location_value);
+  };
+
+  // `document.location` must be `null` for windowless documents (e.g. those created via
+  // `document.implementation.createHTMLDocument()`). Guard the shared accessor so inheriting
+  // `document.location` from the host document cannot accidentally expose `window.location`.
+  let allow = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .map(|data| data.window_obj == Some(receiver_obj) || data.document_obj == Some(receiver_obj))
+    .unwrap_or(true);
+  if !allow {
+    return Ok(Value::Null);
+  }
+
+  Ok(location_value)
 }
 
 fn queue_hashchange_event_task(hooks: &mut dyn VmHostHooks, old_url: String, new_url: String) {
@@ -3910,9 +3928,20 @@ fn window_location_set_native(
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  if let Value::Object(receiver_obj) = this {
+    let allow = vm
+      .user_data_mut::<WindowRealmUserData>()
+      .map(|data| data.window_obj == Some(receiver_obj) || data.document_obj == Some(receiver_obj))
+      .unwrap_or(true);
+    if !allow {
+      // Prevent `document.location = ...` on owned documents from triggering navigation.
+      return Ok(Value::Undefined);
+    }
+  }
+
   let slots = scope.heap().get_function_native_slots(callee)?;
   let location_obj = slots
     .get(LOCATION_ACCESSOR_LOCATION_OBJ_SLOT)
@@ -22070,7 +22099,17 @@ fn document_ready_state_get_native(
   let Value::Object(document_obj) = this else {
     return Ok(Value::String(scope.alloc_string("complete")?));
   };
-  let _ = document_obj;
+
+  // `Document.readyState` is only meaningful for the realm's host document. Documents created via
+  // `document.implementation.createHTMLDocument()` (which have `defaultView === null`) should not
+  // reflect the host DOM's loading state.
+  let is_host_document = match _vm.user_data_mut::<WindowRealmUserData>() {
+    Some(data) => data.document_obj == Some(document_obj),
+    None => false,
+  };
+  if !is_host_document {
+    return Ok(Value::String(scope.alloc_string("complete")?));
+  }
 
   let Some(dom) = dom_from_vm_host(host) else {
     return Ok(Value::String(scope.alloc_string("complete")?));
@@ -22142,11 +22181,37 @@ fn document_base_uri_get_native(
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // `document.baseURI` reflects the document base URL used to resolve relative URLs. When the
-  // embedder has not yet installed a base URL, fall back to the realm's document URL.
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::String(scope.alloc_string(ABOUT_BLANK_URL)?));
+  };
+
+  // `document.baseURI` reflects the document base URL used to resolve relative URLs. It is
+  // realm-global for the host document, but must not leak the host document's base URL onto owned
+  // documents created via `createHTMLDocument()`.
+  let is_host_document = match vm.user_data_mut::<WindowRealmUserData>() {
+    Some(data) => data.document_obj == Some(document_obj),
+    None => false,
+  };
+
+  if !is_host_document {
+    // For windowless documents, return the document's own URL if stored, otherwise `about:blank`.
+    // Use an *own data property* lookup so documents inheriting from the host document don't
+    // accidentally see the host document URL.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    let url_key = alloc_key(&mut scope, "URL")?;
+    if let Some(Value::String(url_s)) =
+      scope.heap().object_get_own_data_property_value(document_obj, &url_key)?
+    {
+      return Ok(Value::String(url_s));
+    }
+    return Ok(Value::String(scope.alloc_string(ABOUT_BLANK_URL)?));
+  }
+
+  // Host document: consult the embedder-tracked base URL, falling back to the realm's document URL.
   let base_url = vm
     .user_data_mut::<WindowRealmUserData>()
     .map(|data| {
@@ -22222,11 +22287,20 @@ fn document_cookie_get_native(
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+
   let cookie = match vm.user_data_mut::<WindowRealmUserData>() {
     Some(data) => {
+      if data.document_obj != Some(document_obj) {
+        // Windowless documents have no cookie access.
+        return Ok(Value::String(scope.alloc_string("")?));
+      }
+
       if let Some(fetcher) = data.cookie_fetcher.as_ref() {
         if let Some(header) = fetcher.cookie_header_value(&data.document_url) {
           data.cookie_jar.replace_from_cookie_header(&header);
@@ -22245,12 +22319,20 @@ fn document_cookie_set_native(
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  // Windowless documents ignore `document.cookie = ...`.
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Ok(Value::Undefined);
   };
+  if data.document_obj != Some(document_obj) {
+    return Ok(Value::Undefined);
+  }
 
   let value = args.get(0).copied().unwrap_or(Value::Undefined);
   let value = match value {
@@ -22269,6 +22351,79 @@ fn document_cookie_set_native(
   }
   data.cookie_jar.set_cookie_string(&cookie_string);
   Ok(Value::Undefined)
+}
+
+fn dom_implementation_create_html_document_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let template_document_obj =
+    match slots.get(DOM_IMPLEMENTATION_TEMPLATE_DOCUMENT_SLOT).copied().unwrap_or(Value::Undefined) {
+      Value::Object(obj) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "DOMImplementation.createHTMLDocument missing template document slot",
+        ));
+      }
+    };
+
+  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
+  scope.push_root(Value::String(about_blank_s))?;
+
+  // Minimal owned-document semantics:
+  // - `defaultView` is `null`
+  // - `URL` is `about:blank`
+  // - `location` is `null`
+  //
+  // Keep the host document as the prototype so the returned object continues to pass `instanceof
+  // Document` checks and inherits Document APIs (even if most of them are no-ops today).
+  let document_obj = scope.alloc_object_with_prototype(Some(template_document_obj))?;
+
+  {
+    // Root while allocating property keys: string allocation can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    scope.push_root(Value::String(about_blank_s))?;
+
+    let default_view_key = alloc_key(&mut scope, "defaultView")?;
+    scope.define_property(
+      document_obj,
+      default_view_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+
+    let url_key = alloc_key(&mut scope, "URL")?;
+    scope.define_property(document_obj, url_key, data_desc(Value::String(about_blank_s)))?;
+
+    let location_key = alloc_key(&mut scope, "location")?;
+    scope.define_property(
+      document_obj,
+      location_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+  }
+
+  Ok(Value::Object(document_obj))
 }
 
 fn document_text_content_get_native(
@@ -23252,6 +23407,49 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Data {
         value: Value::Object(global),
+        writable: false,
+      },
+    },
+  )?;
+
+  // `Document.implementation`.
+  //
+  // A minimal DOMImplementation shim is enough for many real-world scripts (and WPT) that create
+  // windowless documents via `document.implementation.createHTMLDocument()`.
+  let implementation_key = alloc_key(&mut scope, "implementation")?;
+  let implementation_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(implementation_obj))?;
+
+  let create_html_document_call_id = vm.register_native_call(dom_implementation_create_html_document_native)?;
+  let create_html_document_name = scope.alloc_string("createHTMLDocument")?;
+  scope.push_root(Value::String(create_html_document_name))?;
+  let create_html_document_func = scope.alloc_native_function_with_slots(
+    create_html_document_call_id,
+    None,
+    create_html_document_name,
+    1,
+    &[Value::Object(document_obj)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    create_html_document_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_html_document_func))?;
+  let create_html_document_key = alloc_key(&mut scope, "createHTMLDocument")?;
+  scope.define_property(
+    implementation_obj,
+    create_html_document_key,
+    data_desc(Value::Object(create_html_document_func)),
+  )?;
+
+  scope.define_property(
+    document_obj,
+    implementation_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(implementation_obj),
         writable: false,
       },
     },
@@ -29590,6 +29788,30 @@ mod tests {
     assert_eq!(get_string(realm.heap(), visibility), "visible");
 
     assert_eq!(realm.exec_script("document.hidden")?, Value::Bool(false));
+
+    Ok(())
+  }
+
+  #[test]
+  fn create_html_document_has_windowless_globals() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script("typeof document.implementation.createHTMLDocument === 'function'")?,
+      Value::Bool(true)
+    );
+
+    let snapshot = realm.exec_script(
+      "(() => {\n\
+        const d = document.implementation.createHTMLDocument();\n\
+        d.cookie = 'a=b';\n\
+        return `${d.defaultView}|${d.URL}|${d.baseURI}|${d.location}|${d.cookie}|${d.readyState}`;\n\
+      })()",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), snapshot),
+      format!("null|{0}|{0}|null||complete", ABOUT_BLANK_URL)
+    );
 
     Ok(())
   }
