@@ -62,24 +62,24 @@ impl Substitution {
     }
   }
 
-  fn masked(&self, params: &[TypeParamId]) -> Self {
-    if params.is_empty() || self.bindings.is_empty() {
+  fn masked(&self, exclude: &[TypeParamId]) -> Self {
+    if exclude.is_empty() || self.bindings.is_empty() {
       return self.clone();
     }
 
-    let mut params = params.to_vec();
-    params.sort();
-    params.dedup();
+    let mut exclude = exclude.to_vec();
+    exclude.sort_unstable();
+    exclude.dedup();
 
     // `bindings` is already sorted by `TypeParamId`, so we can filter in a
     // deterministic order while doing a linear merge.
     let mut out = Vec::with_capacity(self.bindings.len());
-    let mut mask_idx = 0;
+    let mut exclude_idx = 0;
     for (param, ty) in self.bindings.iter().copied() {
-      while mask_idx < params.len() && params[mask_idx] < param {
-        mask_idx += 1;
+      while exclude_idx < exclude.len() && exclude[exclude_idx] < param {
+        exclude_idx += 1;
       }
-      if mask_idx < params.len() && params[mask_idx] == param {
+      if exclude_idx < exclude.len() && exclude[exclude_idx] == param {
         continue;
       }
       out.push((param, ty));

@@ -152,6 +152,119 @@ fn signature_type_params_do_not_capture_outer_substitutions() {
 }
 
 #[test]
+fn signature_type_params_are_not_substituted_by_outer_bindings() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let local_param = TypeParamId(0);
+  let local_ty = store.intern_type(TypeKind::TypeParam(local_param));
+
+  let mut sig = Signature::new(
+    vec![Param {
+      name: None,
+      ty: local_ty,
+      optional: false,
+      rest: false,
+    }],
+    local_ty,
+  );
+  sig.type_params.push(TypeParamDecl::new(local_param));
+  let sig_id = store.intern_signature(sig);
+
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_id],
+  });
+
+  // Bindings for `TypeParamId(0)` exist in the outer context, but the signature's
+  // local type parameter must shadow them.
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let evaluated = eval.evaluate_with_bindings(callable, vec![(local_param, primitives.number)]);
+
+  let TypeKind::Callable { overloads } = store.type_kind(evaluated) else {
+    panic!("expected callable, got {:?}", store.type_kind(evaluated));
+  };
+  assert_eq!(overloads.len(), 1);
+
+  let evaluated_sig = store.signature(overloads[0]);
+  assert!(matches!(
+    store.type_kind(evaluated_sig.params[0].ty),
+    TypeKind::TypeParam(TypeParamId(0))
+  ));
+  assert!(matches!(
+    store.type_kind(evaluated_sig.ret),
+    TypeKind::TypeParam(TypeParamId(0))
+  ));
+}
+
+#[test]
+fn signature_constraints_and_defaults_are_substituted_but_locals_are_masked() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let local_param = TypeParamId(0);
+  let outer_param = TypeParamId(10);
+
+  let local_ty = store.intern_type(TypeKind::TypeParam(local_param));
+  let outer_ty = store.intern_type(TypeKind::TypeParam(outer_param));
+
+  let mut sig = Signature::new(
+    vec![Param {
+      name: None,
+      ty: local_ty,
+      optional: false,
+      rest: false,
+    }],
+    local_ty,
+  );
+  sig.type_params.push(TypeParamDecl {
+    id: local_param,
+    constraint: Some(outer_ty),
+    default: Some(outer_ty),
+    variance: None,
+    const_: false,
+  });
+  let sig_id = store.intern_signature(sig);
+
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_id],
+  });
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let evaluated = eval.evaluate_with_bindings(
+    callable,
+    vec![
+      // Should substitute into constraints/defaults.
+      (outer_param, primitives.string),
+      // Must be ignored for signature-local occurrences.
+      (local_param, primitives.number),
+    ],
+  );
+
+  let TypeKind::Callable { overloads } = store.type_kind(evaluated) else {
+    panic!("expected callable, got {:?}", store.type_kind(evaluated));
+  };
+  assert_eq!(overloads.len(), 1);
+  let evaluated_sig = store.signature(overloads[0]);
+
+  // Constraint/default should see `outer_param` substituted.
+  assert_eq!(evaluated_sig.type_params.len(), 1);
+  assert_eq!(evaluated_sig.type_params[0].constraint, Some(primitives.string));
+  assert_eq!(evaluated_sig.type_params[0].default, Some(primitives.string));
+
+  // Signature-local occurrences must be masked.
+  assert!(matches!(
+    store.type_kind(evaluated_sig.params[0].ty),
+    TypeKind::TypeParam(TypeParamId(0))
+  ));
+  assert!(matches!(
+    store.type_kind(evaluated_sig.ret),
+    TypeKind::TypeParam(TypeParamId(0))
+  ));
+}
+
+#[test]
 fn recursive_promise_like_evaluation_terminates() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
