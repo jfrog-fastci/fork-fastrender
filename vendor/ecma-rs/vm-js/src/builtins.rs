@@ -14764,36 +14764,50 @@ pub fn string_iterator_next(
   };
 
   let iterated_key = PropertyKey::from_symbol(iterated_sym);
-  let Some(Value::String(iterated)) = scope
+  let next_index_key = PropertyKey::from_symbol(next_index_sym);
+  let iterated_val = scope
     .heap()
     .object_get_own_data_property_value(iter, &iterated_key)?
-  else {
-    // Once `[[IteratedString]]` is `undefined`, the iterator is complete.
-    let result = scope.alloc_object()?;
-    scope.push_root(Value::Object(result))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(result, Some(intr.object_prototype()))?;
-    let value_key = string_key(scope, "value")?;
-    scope.define_property(result, value_key, data_desc(Value::Undefined, true, true, true))?;
-    let done_key = string_key(scope, "done")?;
-    scope.define_property(result, done_key, data_desc(Value::Bool(true), true, true, true))?;
-    return Ok(Value::Object(result));
-  };
-
-  let next_index_key = PropertyKey::from_symbol(next_index_sym);
+    .ok_or(VmError::TypeError(
+      "String iterator next called on an object missing internal slots",
+    ))?;
   let next_index_val = scope
     .heap()
     .object_get_own_data_property_value(iter, &next_index_key)?
-    .unwrap_or(Value::Number(0.0));
+    .ok_or(VmError::TypeError(
+      "String iterator next called on an object missing internal slots",
+    ))?;
+
+  // Spec: if `[[IteratedString]]` is `undefined`, the iterator is complete.
+  let iterated = match iterated_val {
+    Value::Undefined => {
+      let result = scope.alloc_object()?;
+      scope.push_root(Value::Object(result))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(result, Some(intr.object_prototype()))?;
+      let value_key = string_key(scope, "value")?;
+      scope.define_property(result, value_key, data_desc(Value::Undefined, true, true, true))?;
+      let done_key = string_key(scope, "done")?;
+      scope.define_property(result, done_key, data_desc(Value::Bool(true), true, true, true))?;
+      return Ok(Value::Object(result));
+    }
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::TypeError(
+        "String iterator next called on an object missing internal slots",
+      ))
+    }
+  };
+
   let Value::Number(n) = next_index_val else {
-    return Err(VmError::InvariantViolation(
-      "String iterator nextIndex is not a number",
+    return Err(VmError::TypeError(
+      "String iterator next called on an object missing internal slots",
     ));
   };
-  if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-    return Err(VmError::InvariantViolation(
-      "String iterator nextIndex is not a non-negative integer",
+  if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > usize::MAX as f64 {
+    return Err(VmError::TypeError(
+      "String iterator next called on an object missing internal slots",
     ));
   }
   let idx = n as usize;
