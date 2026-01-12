@@ -1,4 +1,4 @@
-use crate::dom::{is_valid_shadow_host_name, ShadowRootMode};
+use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
 
 use super::{DomError, Document, NodeId, NodeKind, SlotAssignmentMode};
 
@@ -20,6 +20,10 @@ fn node_is_template_element(doc: &Document, kind: &NodeKind) -> bool {
 
 fn node_is_shadow_root(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::ShadowRoot { .. })
+}
+
+fn is_html_namespace(ns: &str) -> bool {
+  ns.is_empty() || ns == HTML_NAMESPACE
 }
 
 fn node_is_valid_shadow_host(doc: &Document, kind: &NodeKind) -> bool {
