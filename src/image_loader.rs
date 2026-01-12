@@ -4202,6 +4202,501 @@ fn inline_svg_style_imports<'a>(
   Ok(Cow::Owned(out))
 }
 
+#[derive(Debug, Clone)]
+struct SvgExternalUrlFragmentOccurrence {
+  /// Range of bytes inside the `url(...)` token that should be replaced. This range indexes into
+  /// the full SVG string.
+  ///
+  /// Specifically, this is the substring between the `(` and `)` characters.
+  arg_range: std::ops::Range<usize>,
+  doc_url: String,
+  id: String,
+}
+
+/// Best-effort preprocessor that expands external SVG fragment `url(<svg-url>#<id>)` references
+/// (commonly used for patterns/gradients/filters/masks) by fetching the referenced SVG document,
+/// extracting the referenced element, and injecting it into the current document as a local
+/// fragment (`url(#id)`).
+///
+/// External SVG fragments are injected into a new `<defs>` block immediately after the root `<svg>`
+/// start tag.
+///
+/// This is intentionally narrow and bounded: it only patches absolute/relative URL fragments, and
+/// skips malformed inputs rather than failing the entire SVG decode.
+fn inline_svg_external_url_fragment_references<'a>(
+  svg_content: &'a str,
+  svg_url: &str,
+  fetcher: &dyn ResourceFetcher,
+  ctx: Option<&ResourceContext>,
+  subresource_cache: Option<&SvgSubresourceCache>,
+) -> Result<Cow<'a, str>> {
+  fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
+    let bytes = haystack.as_bytes();
+    if bytes.len() < needle.len() {
+      return false;
+    }
+    bytes
+      .windows(needle.len())
+      .any(|window| window.iter().zip(needle).all(|(a, b)| a.to_ascii_lowercase() == *b))
+  }
+
+  // Avoid scanning unless we plausibly have url() tokens.
+  if !contains_ascii_case_insensitive(svg_content, b"url(") {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  const MAX_URL_FRAGMENTS: usize = 64;
+  const MAX_INJECTED_DEFS_BYTES: usize = 512 * 1024;
+
+  check_root(RenderStage::Paint).map_err(Error::Render)?;
+
+  let base_url = Url::parse(svg_url).ok().map(|_| svg_url).or_else(|| {
+    ctx
+      .and_then(|ctx| ctx.document_url.as_deref())
+      .filter(|doc_url| Url::parse(doc_url).is_ok())
+  });
+
+  // Scan the raw SVG text for `url(...)` tokens and record external fragments.
+  let bytes = svg_content.as_bytes();
+  let mut occurrences: Vec<SvgExternalUrlFragmentOccurrence> = Vec::new();
+  let mut deadline_counter = 0usize;
+  let mut i = 0usize;
+  while i + 4 <= bytes.len() {
+    check_root_periodic(
+      &mut deadline_counter,
+      IMAGE_DECODE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )
+    .map_err(Error::Render)?;
+
+    if (bytes[i] == b'u' || bytes[i] == b'U')
+      && (bytes[i + 1] == b'r' || bytes[i + 1] == b'R')
+      && (bytes[i + 2] == b'l' || bytes[i + 2] == b'L')
+      && bytes[i + 3] == b'('
+      && (i == 0 || !bytes[i.saturating_sub(1)].is_ascii_alphanumeric())
+    {
+      let mut quote: Option<u8> = None;
+      let mut close = None;
+      let mut j = i + 4;
+      while j < bytes.len() {
+        let b = bytes[j];
+        if let Some(q) = quote {
+          if b == q {
+            quote = None;
+          }
+        } else if b == b'"' || b == b'\'' {
+          quote = Some(b);
+        } else if b == b')' {
+          close = Some(j);
+          break;
+        }
+        j += 1;
+      }
+      let Some(close_idx) = close else {
+        break;
+      };
+
+      let inner = svg_content.get(i + 4..close_idx).unwrap_or_default();
+      let mut value = trim_ascii_whitespace(inner);
+      // Strip simple quotes when the entire argument is quoted.
+      if value.len() >= 2 {
+        let first = value.as_bytes()[0];
+        let last = value.as_bytes()[value.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+          value = trim_ascii_whitespace(&value[1..value.len() - 1]);
+        }
+      }
+      let value = trim_ascii_whitespace(value);
+      if value.is_empty()
+        || value.starts_with('#')
+        || crate::resource::is_data_url(value)
+        || is_about_url(value)
+      {
+        i = close_idx + 1;
+        continue;
+      }
+
+      let Some((doc_part, frag)) = value.split_once('#') else {
+        i = close_idx + 1;
+        continue;
+      };
+      let doc_part = trim_ascii_whitespace(doc_part);
+      let frag = trim_ascii_whitespace(frag);
+      if doc_part.is_empty() || frag.is_empty() || doc_part.starts_with('#') {
+        i = close_idx + 1;
+        continue;
+      }
+
+      let resolved = base_url
+        .as_deref()
+        .and_then(|base| resolve_against_base(base, doc_part))
+        .or_else(|| {
+          ctx
+            .and_then(|ctx| ctx.document_url.as_deref())
+            .and_then(|base| resolve_against_base(base, doc_part))
+        })
+        .or_else(|| Url::parse(doc_part).ok().map(|u| u.to_string()));
+      let Some(resolved_base) = resolved else {
+        i = close_idx + 1;
+        continue;
+      };
+
+      let Ok(mut parsed) = Url::parse(&resolved_base) else {
+        i = close_idx + 1;
+        continue;
+      };
+      parsed.set_fragment(None);
+      let scheme = parsed.scheme();
+      if scheme != "http" && scheme != "https" && scheme != "file" {
+        i = close_idx + 1;
+        continue;
+      }
+
+      occurrences.push(SvgExternalUrlFragmentOccurrence {
+        arg_range: (i + 4)..close_idx,
+        doc_url: parsed.to_string(),
+        id: frag.to_string(),
+      });
+      if occurrences.len() >= MAX_URL_FRAGMENTS {
+        break;
+      }
+
+      i = close_idx + 1;
+      continue;
+    }
+
+    i += 1;
+  }
+
+  if occurrences.is_empty() {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  // Collect ids already defined in the host document so we don't inject duplicates.
+  let mut existing_ids: HashSet<String> = HashSet::new();
+  let svg_for_parse = svg_markup_for_roxmltree(svg_content);
+  if let Ok(Ok(doc)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(svg_for_parse.as_ref())
+  })) {
+    for node in doc.descendants().filter(|n| n.is_element()) {
+      if let Some(id) = node
+        .attribute("id")
+        .map(trim_ascii_whitespace)
+        .filter(|id| !id.is_empty())
+      {
+        existing_ids.insert(id.to_string());
+      }
+    }
+  }
+
+  // Group by external document URL so we only fetch each SVG once.
+  let mut ids_by_doc: HashMap<String, HashSet<String>> = HashMap::new();
+  for occ in &occurrences {
+    ids_by_doc
+      .entry(occ.doc_url.clone())
+      .or_default()
+      .insert(occ.id.clone());
+  }
+
+  let mut injected_keys: HashSet<(String, String)> = HashSet::new();
+  let mut injected_defs = String::new();
+
+  // Iterate documents in a stable order so preprocessing doesn't introduce nondeterministic output
+  // (and thus unstable SVG pixmap cache keys).
+  let mut doc_urls: Vec<String> = ids_by_doc.keys().cloned().collect();
+  doc_urls.sort();
+
+  for doc_url in doc_urls {
+    let ids = ids_by_doc.remove(&doc_url).unwrap_or_default();
+    let mut ids: Vec<String> = ids.into_iter().collect();
+    ids.sort();
+
+    // Skip ids that are already defined in the host document.
+    ids.retain(|id| !existing_ids.contains(id));
+    if ids.is_empty() {
+      continue;
+    }
+    let wanted_ids: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+
+    if let Some(ctx) = ctx {
+      if let Err(err) = ctx.check_allowed(ResourceKind::Image, &doc_url) {
+        return Err(Error::Image(ImageError::LoadFailed {
+          url: doc_url.clone(),
+          reason: err.reason,
+        }));
+      }
+    }
+
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
+
+    let mut req = FetchRequest::new(&doc_url, FetchDestination::Image);
+    if let Some(ctx) = ctx {
+      if let Some(origin) = ctx.policy.document_origin.as_ref() {
+        req = req.with_client_origin(origin);
+      }
+      if let Some(referrer_url) = ctx.document_url.as_deref() {
+        req = req.with_referrer_url(referrer_url);
+      }
+      req = req.with_referrer_policy(ctx.referrer_policy);
+    }
+
+    let res = match fetcher.fetch_with_request(req) {
+      Ok(res) => res,
+      Err(err) => {
+        // Render-control failures must abort the render; other fetch failures are best-effort.
+        if matches!(&err, Error::Render(_)) {
+          return Err(err);
+        }
+        continue;
+      }
+    };
+
+    if let Some(ctx) = ctx {
+      if let Err(err) =
+        ctx.check_allowed_with_final(ResourceKind::Image, &doc_url, res.final_url.as_deref())
+      {
+        return Err(Error::Image(ImageError::LoadFailed {
+          url: doc_url.clone(),
+          reason: err.reason,
+        }));
+      }
+    }
+    if ensure_http_success(&res, &doc_url)
+      .and_then(|()| ensure_image_mime_sane(&res, &doc_url))
+      .is_err()
+    {
+      continue;
+    }
+
+    let doc_base_url = res.final_url.clone().unwrap_or_else(|| doc_url.clone());
+
+    let mut doc_text = {
+      let bytes = res.bytes;
+      if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
+        let mut decoder = GzDecoder::new(bytes.as_slice());
+        let mut out = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut decompression_deadline_counter = 0usize;
+        let mut ok = true;
+        loop {
+          check_root_periodic(&mut decompression_deadline_counter, 32, RenderStage::Paint)
+            .map_err(Error::Render)?;
+          let n = match decoder.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => {
+              ok = false;
+              break;
+            }
+          };
+          if n == 0 {
+            break;
+          }
+          if out.len().saturating_add(n) > MAX_SVGZ_DECOMPRESSED_BYTES {
+            ok = false;
+            break;
+          }
+          out.extend_from_slice(&buf[..n]);
+        }
+        if !ok {
+          continue;
+        }
+        match String::from_utf8(out) {
+          Ok(text) => text,
+          Err(_) => continue,
+        }
+      } else {
+        match String::from_utf8(bytes) {
+          Ok(text) => text,
+          Err(_) => continue,
+        }
+      }
+    };
+
+    // Preprocess the external SVG so any nested external resources resolve relative to the external
+    // document (not the host SVG).
+    doc_text =
+      inline_svg_use_references(&doc_text, &doc_base_url, fetcher, ctx, subresource_cache)?
+        .into_owned();
+    doc_text =
+      inline_svg_image_references(&doc_text, &doc_base_url, fetcher, ctx, subresource_cache)?
+        .into_owned();
+
+    let doc_for_parse = svg_markup_for_roxmltree(&doc_text);
+    let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      roxmltree::Document::parse(doc_for_parse.as_ref())
+    })) {
+      Ok(Ok(doc)) => doc,
+      Ok(Err(_)) | Err(_) => continue,
+    };
+
+    // Index elements by id for extraction.
+    let mut by_id: HashMap<String, std::ops::Range<usize>> = HashMap::new();
+    for node in doc.descendants().filter(|n| n.is_element()) {
+      let Some(id) = node
+        .attribute("id")
+        .map(trim_ascii_whitespace)
+        .filter(|id| !id.is_empty())
+      else {
+        continue;
+      };
+      if !wanted_ids.contains(id) {
+        continue;
+      }
+      by_id.entry(id.to_string()).or_insert_with(|| node.range());
+    }
+
+    for id in ids {
+      let Some(range) = by_id.get(&id).cloned() else {
+        continue;
+      };
+      let Some(fragment) = doc_text.get(range) else {
+        continue;
+      };
+
+      // Keep injection bounded.
+      if injected_defs.len().saturating_add(fragment.len()) > MAX_INJECTED_DEFS_BYTES {
+        break;
+      }
+
+      injected_keys.insert((doc_url.clone(), id.clone()));
+      existing_ids.insert(id);
+      injected_defs.push_str(fragment);
+    }
+  }
+
+  if injected_defs.is_empty() {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  // Rewrite url() references for successfully-injected fragments.
+  let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+  for occ in &occurrences {
+    if injected_keys.contains(&(occ.doc_url.clone(), occ.id.clone())) {
+      replacements.push((occ.arg_range.clone(), format!("#{}", occ.id)));
+    }
+  }
+  if replacements.is_empty() {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  replacements.sort_by_key(|(range, _)| range.start);
+  let mut rewritten = String::with_capacity(svg_content.len());
+  let mut cursor = 0usize;
+  for (range, replacement) in replacements {
+    if range.start < cursor || range.end < range.start || range.end > svg_content.len() {
+      return Ok(Cow::Borrowed(svg_content));
+    }
+    rewritten.push_str(&svg_content[cursor..range.start]);
+    rewritten.push_str(&replacement);
+    cursor = range.end;
+  }
+  rewritten.push_str(&svg_content[cursor..]);
+
+  // Inject collected defs into the root SVG element.
+  fn find_svg_root_start_tag_bounds(svg: &str) -> Option<(usize, usize)> {
+    const NEEDLE: &[u8] = b"<svg";
+    let bytes = svg.as_bytes();
+    if bytes.len() < NEEDLE.len() {
+      return None;
+    }
+    let mut start = None;
+    for idx in 0..=bytes.len() - NEEDLE.len() {
+      if bytes[idx..idx + NEEDLE.len()].eq_ignore_ascii_case(NEEDLE) {
+        // Ensure we're not matching `<svgFoo>`.
+        let boundary = bytes.get(idx + NEEDLE.len()).copied().unwrap_or(b'>');
+        if !(boundary.is_ascii_whitespace() || matches!(boundary, b'>' | b'/' | b':')) {
+          continue;
+        }
+        start = Some(idx);
+        break;
+      }
+    }
+    let start = start?;
+
+    let mut quote: Option<u8> = None;
+    let mut idx = start + NEEDLE.len();
+    while idx < bytes.len() {
+      let b = bytes[idx];
+      if let Some(q) = quote {
+        if b == q {
+          quote = None;
+        }
+      } else if b == b'\'' || b == b'"' {
+        quote = Some(b);
+      } else if b == b'>' {
+        return Some((start, idx + 1));
+      }
+      idx += 1;
+    }
+    None
+  }
+
+  fn contains_xlink_prefix(value: &str) -> bool {
+    const NEEDLE: &[u8] = b"xlink:";
+    value
+      .as_bytes()
+      .windows(NEEDLE.len())
+      .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+  }
+
+  fn start_tag_has_xmlns_xlink(start_tag: &str) -> bool {
+    const NEEDLE: &[u8] = b"xmlns:xlink";
+    start_tag
+      .as_bytes()
+      .windows(NEEDLE.len())
+      .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+  }
+
+  let (start_tag_start, start_tag_end) = match find_svg_root_start_tag_bounds(&rewritten) {
+    Some(bounds) => bounds,
+    None => return Ok(Cow::Borrowed(svg_content)),
+  };
+  let start_tag = match rewritten.get(start_tag_start..start_tag_end) {
+    Some(tag) => tag,
+    None => return Ok(Cow::Borrowed(svg_content)),
+  };
+
+  // Do not attempt to inject into a self-closing root `<svg/>`.
+  if start_tag_end >= 2 && rewritten.as_bytes()[start_tag_end.saturating_sub(2)] == b'/' {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  let needs_xlink = contains_xlink_prefix(&injected_defs);
+  let add_xlink = needs_xlink && !start_tag_has_xmlns_xlink(start_tag);
+  let extra_root_attr = if add_xlink {
+    " xmlns:xlink=\"http://www.w3.org/1999/xlink\""
+  } else {
+    ""
+  };
+
+  let mut out = String::with_capacity(
+    rewritten
+      .len()
+      .saturating_add(extra_root_attr.len())
+      .saturating_add("<defs></defs>".len() + injected_defs.len()),
+  );
+
+  if extra_root_attr.is_empty() {
+    out.push_str(&rewritten[..start_tag_end]);
+  } else {
+    // Insert before `>` (or before `/>`) of the root start tag.
+    let mut insert_at = start_tag_end - 1;
+    if insert_at > start_tag_start && rewritten.as_bytes()[insert_at - 1] == b'/' {
+      insert_at -= 1;
+    }
+    out.push_str(&rewritten[..insert_at]);
+    out.push_str(extra_root_attr);
+    out.push_str(&rewritten[insert_at..start_tag_end]);
+  }
+
+  out.push_str("<defs>");
+  out.push_str(&injected_defs);
+  out.push_str("</defs>");
+  out.push_str(&rewritten[start_tag_end..]);
+
+  Ok(Cow::Owned(out))
+}
+
 fn apply_svg_url_fragment<'a>(svg_content: &'a str, requested_url: &str) -> Cow<'a, str> {
   let Some((_, fragment)) = requested_url.split_once('#') else {
     return Cow::Borrowed(svg_content);
@@ -8618,8 +9113,15 @@ impl ImageCache {
 
     let svg_url_no_fragment = strip_url_fragment(svg_url);
 
-    let svg_use_inlined = inline_svg_use_references(
+    let svg_external_fragments_inlined = inline_svg_external_url_fragment_references(
       svg_content,
+      svg_url_no_fragment.as_ref(),
+      self.fetcher.as_ref(),
+      self.resource_context.as_ref(),
+      Some(&self.svg_subresource_cache),
+    )?;
+    let svg_use_inlined = inline_svg_use_references(
+      svg_external_fragments_inlined.as_ref(),
       svg_url_no_fragment.as_ref(),
       self.fetcher.as_ref(),
       self.resource_context.as_ref(),
@@ -8640,7 +9142,8 @@ impl ImageCache {
       self.resource_context.as_ref(),
     )?;
 
-    let modified = matches!(svg_use_inlined, Cow::Owned(_))
+    let modified = matches!(svg_external_fragments_inlined, Cow::Owned(_))
+      || matches!(svg_use_inlined, Cow::Owned(_))
       || matches!(svg_images_inlined, Cow::Owned(_))
       || matches!(svg_fragment_applied, Cow::Owned(_))
       || matches!(svg_imports_inlined, Cow::Owned(_));
@@ -8656,9 +9159,12 @@ impl ImageCache {
           Cow::Owned(s) => s,
           Cow::Borrowed(_) => match svg_use_inlined {
             Cow::Owned(s) => s,
-            Cow::Borrowed(_) => {
-              return Ok(SvgPreprocessedMarkup::Borrowed(svg_content));
-            }
+            Cow::Borrowed(_) => match svg_external_fragments_inlined {
+              Cow::Owned(s) => s,
+              Cow::Borrowed(_) => {
+                return Ok(SvgPreprocessedMarkup::Borrowed(svg_content));
+              }
+            },
           },
         },
       },
@@ -16798,6 +17304,76 @@ mod tests_inline {
     assert_eq!(
       (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
       (255, 0, 0, 255)
+    );
+  }
+
+  #[test]
+  fn svg_external_url_fragment_inlines_nested_image_relative_to_external_doc() {
+    let main_url = "https://example.test/b/main.svg";
+    let defs_url = "https://example.test/a/defs.svg";
+    let img_url = "https://example.test/a/img.png";
+
+    let defs_svg = r#"
+      <svg xmlns="http://www.w3.org/2000/svg" xml:base="./">
+        <defs>
+          <pattern id="p" patternUnits="userSpaceOnUse" width="1" height="1">
+            <image href="img.png" width="1" height="1"/>
+          </pattern>
+        </defs>
+      </svg>
+    "#;
+
+    let main_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="url({defs_url}#p)"/></svg>"#
+    );
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut defs_res = FetchedResource::new(
+      defs_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    defs_res.status = Some(200);
+    defs_res.final_url = Some(defs_url.to_string());
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (defs_url.to_string(), defs_res),
+      (img_url.to_string(), img_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    let image = cache.load(main_url).expect("load main svg with external url(#id)");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "external pattern fill should resolve nested <image> relative to the external defs document"
+    );
+
+    let requests = fetcher.requests();
+    assert!(
+      requests.iter().any(|(url, _, _)| url == img_url),
+      "expected fetch for nested external image {img_url}, got: {requests:?}"
+    );
+    assert!(
+      requests
+        .iter()
+        .all(|(url, _, _)| url != "https://example.test/b/img.png"),
+      "nested image must not resolve relative to the host SVG URL, got: {requests:?}"
     );
   }
 
