@@ -80,13 +80,14 @@ The fixture uses an *external* SVG filter document (embedded as a data URL)
 instead of inline `<svg>` so we exercise the `load_svg_filter()` /
 `parse_filter_node()` code path used by CSS `filter:url(...)` references.
 
-There is an integration golden test:
+There is a golden-image test: `svg_filter_filterres_offset_clip_matches_golden` (currently in
+`tests/paint/svg_filter_filterres_offset_clip_golden.rs`; it may migrate into `src/paint/` as a unit
+test during the test-suite cleanup).
 
-- `tests/paint/svg_filter_filterres_offset_clip_golden.rs::svg_filter_filterres_offset_clip_matches_golden`
-- (in the `paint_tests` test crate)
 - Golden image: `tests/fixtures/golden/svg_filter_filterres_offset_clip.png`
-- Update with:
-  `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test paint_tests svg_filter_filterres_offset_clip_matches_golden`
+- Update with one of:
+  - Integration harness: `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender -q --test integration svg_filter_filterres_offset_clip_matches_golden`
+  - Library/unit tests: `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender -q --lib svg_filter_filterres_offset_clip_matches_golden`
 
 ## Chromium note (baseline)
 
