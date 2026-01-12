@@ -242,39 +242,45 @@ pub extern "C" fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_l
 #[no_mangle]
 pub extern "C" fn rt_string_free(s: StringRef) {
   abort_on_panic(|| unsafe {
-    if s.len == 0 {
-      return;
-    }
-    if s.ptr.is_null() {
-      trap::rt_trap_invalid_arg("rt_string_free: `s.ptr` was null but `s.len` was non-zero");
-    }
-
-    let header_size = core::mem::size_of::<StringAllocHeader>();
-    let base = (s.ptr as *mut u8).sub(header_size);
-    let header = &*(base as *const StringAllocHeader);
-    if header.magic != STRING_ALLOC_MAGIC {
-      trap::rt_trap_invalid_arg("rt_string_free: buffer was not allocated by rt_string_concat");
-    }
-    if header.size < header_size {
-      trap::rt_trap_invalid_arg("rt_string_free: invalid allocation header");
-    }
-    let payload_len = header.size - header_size;
-    if payload_len != s.len {
-      trap::rt_trap_invalid_arg("rt_string_free: length mismatch");
-    }
-    if header.align == 0 || !header.align.is_power_of_two() {
-      trap::rt_trap_invalid_arg("rt_string_free: invalid allocation alignment");
-    }
-    let layout = std::alloc::Layout::from_size_align(header.size, header.align)
-      .unwrap_or_else(|_| trap::rt_trap_invalid_arg("rt_string_free: invalid allocation layout"));
-    std::alloc::dealloc(base, layout);
+    rt_string_free_impl(s);
   })
+}
+
+unsafe fn rt_string_free_impl(s: StringRef) {
+  if s.len == 0 {
+    return;
+  }
+  if s.ptr.is_null() {
+    trap::rt_trap_invalid_arg("rt_string_free: `s.ptr` was null but `s.len` was non-zero");
+  }
+
+  let header_size = core::mem::size_of::<StringAllocHeader>();
+  let base = (s.ptr as *mut u8).sub(header_size);
+  let header = &*(base as *const StringAllocHeader);
+  if header.magic != STRING_ALLOC_MAGIC {
+    trap::rt_trap_invalid_arg("rt_string_free: buffer was not allocated by rt_string_concat");
+  }
+  if header.size < header_size {
+    trap::rt_trap_invalid_arg("rt_string_free: invalid allocation header");
+  }
+  let payload_len = header.size - header_size;
+  if payload_len != s.len {
+    trap::rt_trap_invalid_arg("rt_string_free: length mismatch");
+  }
+  if header.align == 0 || !header.align.is_power_of_two() {
+    trap::rt_trap_invalid_arg("rt_string_free: invalid allocation alignment");
+  }
+  let layout = std::alloc::Layout::from_size_align(header.size, header.align)
+    .unwrap_or_else(|_| trap::rt_trap_invalid_arg("rt_string_free: invalid allocation layout"));
+  std::alloc::dealloc(base, layout);
 }
 
 /// Compatibility alias for older codegen/tests. Prefer [`rt_string_free`].
 #[no_mangle]
 pub extern "C" fn rt_stringref_free(s: StringRef) {
-  rt_string_free(s)
+  abort_on_panic(|| unsafe {
+    rt_string_free_impl(s);
+  })
 }
 
 /// Allocate a GC-managed UTF-8 string and copy `bytes`.
