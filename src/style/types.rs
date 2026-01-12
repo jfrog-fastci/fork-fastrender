@@ -919,7 +919,7 @@ pub struct ObjectPosition {
 /// Writing mode for block/inline axis orientation
 ///
 /// CSS: `writing-mode`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WritingMode {
   HorizontalTb,
   VerticalRl,

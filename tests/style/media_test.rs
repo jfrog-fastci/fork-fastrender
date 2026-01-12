@@ -12,15 +12,18 @@ use fastrender::style::media::DisplayMode;
 use fastrender::style::media::DynamicRange;
 use fastrender::style::media::LightLevel;
 use fastrender::style::media::MediaContext;
+use fastrender::style::media::MediaFeature;
 use fastrender::style::media::MediaQuery;
 use fastrender::style::media::MediaQueryCache;
 use fastrender::style::media::MediaType;
 use fastrender::style::media::PointerCapability;
 use fastrender::style::media::Scripting;
 use fastrender::style::media::UpdateFrequency;
+use fastrender::style::types::WritingMode;
 use fastrender::FastRender;
 use fastrender::FastRenderConfig;
 use fastrender::FragmentContent;
+use fastrender::Length;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -101,6 +104,67 @@ fn media_query_values4_font_relative_units_resolve_in_media_context() {
   let rlh = MediaQuery::parse("(min-width: 5rlh)").expect("parse rlh media query");
   assert!(!MediaContext::screen(80.0, 100.0).evaluate(&rlh));
   assert!(MediaContext::screen(100.0, 100.0).evaluate(&rlh));
+}
+
+#[test]
+fn media_query_inline_and_block_size_respect_writing_mode() {
+  // Use a non-square viewport so swapped axes are observable.
+  let viewport = (800.0, 600.0);
+
+  let inline_eq = MediaQuery::parse("(inline-size: 800px)").expect("parse inline-size query");
+  assert_eq!(
+    inline_eq.features,
+    vec![MediaFeature::InlineSize(Length::px(800.0))]
+  );
+
+  let block_eq = MediaQuery::parse("(block-size: 800px)").expect("parse block-size query");
+  assert_eq!(
+    block_eq.features,
+    vec![MediaFeature::BlockSize(Length::px(800.0))]
+  );
+
+  let min_inline = MediaQuery::parse("(min-inline-size: 700px)").expect("parse min-inline-size");
+  assert_eq!(
+    min_inline.features,
+    vec![MediaFeature::MinInlineSize(Length::px(700.0))]
+  );
+
+  let max_inline = MediaQuery::parse("(max-inline-size: 700px)").expect("parse max-inline-size");
+  assert_eq!(
+    max_inline.features,
+    vec![MediaFeature::MaxInlineSize(Length::px(700.0))]
+  );
+
+  let min_block = MediaQuery::parse("(min-block-size: 700px)").expect("parse min-block-size");
+  assert_eq!(
+    min_block.features,
+    vec![MediaFeature::MinBlockSize(Length::px(700.0))]
+  );
+
+  // Range syntax should follow the same axis mapping.
+  let range_inline =
+    MediaQuery::parse("(550px <= inline-size <= 650px)").expect("parse inline-size range");
+  let range_block =
+    MediaQuery::parse("(750px <= block-size <= 850px)").expect("parse block-size range");
+
+  let horizontal = MediaContext::screen(viewport.0, viewport.1);
+  assert!(horizontal.evaluate(&inline_eq));
+  assert!(!horizontal.evaluate(&block_eq));
+  assert!(horizontal.evaluate(&min_inline));
+  assert!(!horizontal.evaluate(&max_inline));
+  assert!(!horizontal.evaluate(&min_block));
+  assert!(!horizontal.evaluate(&range_inline));
+  assert!(!horizontal.evaluate(&range_block));
+
+  let vertical =
+    MediaContext::screen(viewport.0, viewport.1).with_writing_mode(WritingMode::VerticalRl);
+  assert!(!vertical.evaluate(&inline_eq));
+  assert!(vertical.evaluate(&block_eq));
+  assert!(!vertical.evaluate(&min_inline));
+  assert!(vertical.evaluate(&max_inline));
+  assert!(vertical.evaluate(&min_block));
+  assert!(vertical.evaluate(&range_inline));
+  assert!(vertical.evaluate(&range_block));
 }
 
 // ============================================================================

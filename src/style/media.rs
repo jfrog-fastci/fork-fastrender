@@ -41,6 +41,7 @@
 //! - CSS Media Queries Level 4: <https://www.w3.org/TR/mediaqueries-4/>
 //! - CSS Media Queries Level 5: <https://www.w3.org/TR/mediaqueries-5/>
 
+use crate::style::types::WritingMode;
 use crate::style::values::Length;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -604,6 +605,7 @@ struct ResolutionKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MediaContextFingerprint {
   media_type: MediaType,
+  writing_mode: WritingMode,
   viewport_width_bits: u32,
   viewport_height_bits: u32,
   device_width_bits: u32,
@@ -2061,6 +2063,12 @@ pub struct MediaContext {
   pub viewport_width: f32,
   /// Viewport height in CSS pixels
   pub viewport_height: f32,
+  /// Writing mode used to map logical viewport axes (`inline-size` / `block-size`)
+  /// onto physical dimensions.
+  ///
+  /// Per CSS Writing Modes 4, the document's principal writing mode is propagated to the initial
+  /// containing block and viewport, defining the viewport's inline/block axes.
+  pub writing_mode: WritingMode,
   /// Device width in CSS pixels
   pub device_width: f32,
   /// Device height in CSS pixels
@@ -2150,6 +2158,7 @@ impl MediaContext {
   pub(crate) fn fingerprint(&self) -> MediaContextFingerprint {
     MediaContextFingerprint {
       media_type: self.media_type,
+      writing_mode: self.writing_mode,
       viewport_width_bits: f32_to_canonical_bits(self.viewport_width),
       viewport_height_bits: f32_to_canonical_bits(self.viewport_height),
       device_width_bits: f32_to_canonical_bits(self.device_width),
@@ -2202,6 +2211,7 @@ impl MediaContext {
     Self {
       viewport_width: width,
       viewport_height: height,
+      writing_mode: WritingMode::HorizontalTb,
       device_width: width,
       device_height: height,
       base_font_size: 16.0,
@@ -2353,6 +2363,15 @@ impl MediaContext {
     self
   }
 
+  /// Returns a new context with the given writing mode.
+  ///
+  /// This affects evaluation of logical viewport media features such as `inline-size` and
+  /// `block-size`.
+  pub fn with_writing_mode(mut self, writing_mode: WritingMode) -> Self {
+    self.writing_mode = writing_mode;
+    self
+  }
+
   /// Creates a print context with given dimensions
   ///
   /// Sets defaults for printing:
@@ -2372,6 +2391,7 @@ impl MediaContext {
     Self {
       viewport_width: width,
       viewport_height: height,
+      writing_mode: WritingMode::HorizontalTb,
       device_width: width,
       device_height: height,
       base_font_size: 16.0,
@@ -2421,6 +2441,7 @@ impl MediaContext {
     Self {
       viewport_width: width,
       viewport_height: height,
+      writing_mode: WritingMode::HorizontalTb,
       device_width: width,
       device_height: height,
       base_font_size: 16.0,
@@ -2688,6 +2709,23 @@ impl MediaContext {
     }
   }
 
+  fn viewport_inline_size(&self) -> f32 {
+    // `inline-size`/`block-size` are defined in terms of the viewport's inline/block axes.
+    // Per CSS Writing Modes 4, the document's principal writing mode is propagated to the viewport
+    // (and initial containing block), which defines these axes.
+    match self.writing_mode {
+      WritingMode::HorizontalTb => self.viewport_width,
+      _ => self.viewport_height,
+    }
+  }
+
+  fn viewport_block_size(&self) -> f32 {
+    match self.writing_mode {
+      WritingMode::HorizontalTb => self.viewport_height,
+      _ => self.viewport_width,
+    }
+  }
+
   fn eval_length_feature<F>(
     &self,
     actual: f32,
@@ -2738,27 +2776,27 @@ impl MediaContext {
       ),
 
       // Inline-size
-      MediaFeature::InlineSize(length) => self.eval_length_feature(
-        self.viewport_width,
-        length,
-        self.viewport_width,
-        self.viewport_height,
-        |actual, target| (actual - target).abs() < 0.5,
-      ),
-      MediaFeature::MinInlineSize(length) => self.eval_length_feature(
-        self.viewport_width,
-        length,
-        self.viewport_width,
-        self.viewport_height,
-        |actual, target| actual >= target,
-      ),
-      MediaFeature::MaxInlineSize(length) => self.eval_length_feature(
-        self.viewport_width,
-        length,
-        self.viewport_width,
-        self.viewport_height,
-        |actual, target| actual <= target,
-      ),
+      MediaFeature::InlineSize(length) => {
+        let inline = self.viewport_inline_size();
+        let block = self.viewport_block_size();
+        self.eval_length_feature(inline, length, inline, block, |actual, target| {
+          (actual - target).abs() < 0.5
+        })
+      }
+      MediaFeature::MinInlineSize(length) => {
+        let inline = self.viewport_inline_size();
+        let block = self.viewport_block_size();
+        self.eval_length_feature(inline, length, inline, block, |actual, target| {
+          actual >= target
+        })
+      }
+      MediaFeature::MaxInlineSize(length) => {
+        let inline = self.viewport_inline_size();
+        let block = self.viewport_block_size();
+        self.eval_length_feature(inline, length, inline, block, |actual, target| {
+          actual <= target
+        })
+      }
 
       // Height features
       MediaFeature::Height(length) => self.eval_length_feature(
@@ -2784,27 +2822,27 @@ impl MediaContext {
       ),
 
       // Block-size
-      MediaFeature::BlockSize(length) => self.eval_length_feature(
-        self.viewport_height,
-        length,
-        self.viewport_height,
-        self.viewport_width,
-        |actual, target| (actual - target).abs() < 0.5,
-      ),
-      MediaFeature::MinBlockSize(length) => self.eval_length_feature(
-        self.viewport_height,
-        length,
-        self.viewport_height,
-        self.viewport_width,
-        |actual, target| actual >= target,
-      ),
-      MediaFeature::MaxBlockSize(length) => self.eval_length_feature(
-        self.viewport_height,
-        length,
-        self.viewport_height,
-        self.viewport_width,
-        |actual, target| actual <= target,
-      ),
+      MediaFeature::BlockSize(length) => {
+        let inline = self.viewport_inline_size();
+        let block = self.viewport_block_size();
+        self.eval_length_feature(block, length, block, inline, |actual, target| {
+          (actual - target).abs() < 0.5
+        })
+      }
+      MediaFeature::MinBlockSize(length) => {
+        let inline = self.viewport_inline_size();
+        let block = self.viewport_block_size();
+        self.eval_length_feature(block, length, block, inline, |actual, target| {
+          actual >= target
+        })
+      }
+      MediaFeature::MaxBlockSize(length) => {
+        let inline = self.viewport_inline_size();
+        let block = self.viewport_block_size();
+        self.eval_length_feature(block, length, block, inline, |actual, target| {
+          actual <= target
+        })
+      }
 
       // Device dimensions
       MediaFeature::DeviceWidth(length) => self.eval_length_feature(
@@ -3016,20 +3054,20 @@ impl MediaContext {
           self.viewport_height,
           |actual, target| compare_with_op(*op, actual, target),
         ),
-        (RangeFeature::InlineSize, RangeValue::Length(len)) => self.eval_length_feature(
-          self.viewport_width,
-          len,
-          self.viewport_width,
-          self.viewport_height,
-          |actual, target| compare_with_op(*op, actual, target),
-        ),
-        (RangeFeature::BlockSize, RangeValue::Length(len)) => self.eval_length_feature(
-          self.viewport_height,
-          len,
-          self.viewport_height,
-          self.viewport_width,
-          |actual, target| compare_with_op(*op, actual, target),
-        ),
+        (RangeFeature::InlineSize, RangeValue::Length(len)) => {
+          let inline = self.viewport_inline_size();
+          let block = self.viewport_block_size();
+          self.eval_length_feature(inline, len, inline, block, |actual, target| {
+            compare_with_op(*op, actual, target)
+          })
+        }
+        (RangeFeature::BlockSize, RangeValue::Length(len)) => {
+          let inline = self.viewport_inline_size();
+          let block = self.viewport_block_size();
+          self.eval_length_feature(block, len, block, inline, |actual, target| {
+            compare_with_op(*op, actual, target)
+          })
+        }
         (RangeFeature::Height, RangeValue::Length(len)) => self.eval_length_feature(
           self.viewport_height,
           len,
