@@ -198,6 +198,7 @@ jobs:
             --jobs 4 \
             --timeout-secs 10 \
             --shard ${{ matrix.shard_index }}/${{ matrix.shard_total }} \
+            --shard-strategy hash \
             > "${report_path}" 2> >(tee "${stderr_path}" >&2) || status=$?
 
           # The harness is expected to emit JSON even on failure (e.g. uncovered regressions).
