@@ -313,6 +313,16 @@ impl ApiDatabase {
     self.api_for_target(name, &TargetEnv::Unknown)
   }
 
+  pub fn get_by_id_for_target(&self, id: ApiId, target: &TargetEnv) -> Option<&ApiSemantics> {
+    let name = self.ids.get(&id)?;
+    self.api_for_target(name, target)
+  }
+
+  pub fn source_for_id_for_target(&self, id: ApiId, target: &TargetEnv) -> Option<&str> {
+    let name = self.ids.get(&id)?;
+    self.source_for_target(name, target)
+  }
+
   /// Resolve `name_or_alias` into the canonical [`ApiId`].
   ///
   /// Aliases take precedence over direct name matches so redundant alias entries
