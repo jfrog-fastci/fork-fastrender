@@ -83,3 +83,42 @@ fn viewport_throttle_emits_final_update() {
   );
   assert!(throttle.next_deadline().is_none());
 }
+
+#[test]
+fn viewport_throttle_deadline_respects_rate_limit() {
+  let config = ViewportThrottleConfig {
+    max_hz: 2,
+    debounce: Duration::from_millis(20),
+  };
+  let min_interval = min_interval_for(config.max_hz);
+  let mut throttle = ViewportThrottle::with_config(config);
+
+  let t0 = Instant::now();
+  assert_eq!(
+    throttle.push_desired(t0, (100, 100), 1.0),
+    Some(ViewportUpdate::new((100, 100), 1.0)),
+    "first update should be emitted immediately"
+  );
+
+  let updated_at = t0 + Duration::from_millis(10);
+  assert_eq!(throttle.push_desired(updated_at, (200, 100), 1.0), None);
+
+  let debounce_deadline = updated_at + config.debounce;
+  let expected_deadline = t0 + min_interval;
+  assert!(
+    expected_deadline > debounce_deadline,
+    "test expects the rate-limit interval to be the limiting factor"
+  );
+  assert_eq!(throttle.next_deadline(), Some(expected_deadline));
+
+  // Debounce has elapsed but the rate-limit window hasn't, so nothing is emitted.
+  assert_eq!(throttle.poll(debounce_deadline), None);
+  assert_eq!(throttle.poll(expected_deadline - Duration::from_millis(1)), None);
+
+  // Once the rate-limit window elapses, the latest pending value should be emitted.
+  assert_eq!(
+    throttle.poll(expected_deadline),
+    Some(ViewportUpdate::new((200, 100), 1.0))
+  );
+  assert!(throttle.next_deadline().is_none());
+}
