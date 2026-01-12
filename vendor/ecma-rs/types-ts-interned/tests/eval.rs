@@ -621,6 +621,35 @@ fn conditional_with_infer_in_extends_infers_identity() {
 }
 
 #[test]
+fn infer_placeholders_are_not_substituted_by_outer_bindings() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t_param = TypeParamId(1);
+  let u_param = TypeParamId(0);
+
+  let cond = store.intern_type(TypeKind::Conditional {
+    check: store.intern_type(TypeKind::TypeParam(t_param)),
+    extends: store.intern_type(TypeKind::Infer {
+      param: u_param,
+      constraint: None,
+    }),
+    true_ty: store.intern_type(TypeKind::TypeParam(u_param)),
+    false_ty: primitives.never,
+    distributive: false,
+  });
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(
+    cond,
+    vec![(u_param, primitives.string), (t_param, primitives.number)],
+  );
+
+  assert_eq!(result, primitives.number);
+}
+
+#[test]
 fn conditional_infers_return_type() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
