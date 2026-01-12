@@ -128,6 +128,9 @@ impl<'ctx> CodegenDebug<'ctx> {
     match kind {
       TsAbiKind::Number => self.types.number,
       TsAbiKind::Boolean => self.types.boolean,
+      // Treat GC pointers as `number` for now; the checked pipeline does not yet emit rich debug
+      // info for managed object graphs.
+      TsAbiKind::GcPtr => self.types.number,
       // There is no value type for `void`; treat it as `number` to keep the debug metadata builder
       // happy (return type does not materially affect variable inspection in our current subset).
       TsAbiKind::Void => self.types.number,

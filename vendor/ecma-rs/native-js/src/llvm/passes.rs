@@ -251,9 +251,9 @@ pub fn rewrite_statepoints_for_gc(
   super::debug_lint_module_gc_pointer_discipline(module)?;
 
   let pipeline = if cfg!(debug_assertions) {
-    "rewrite-statepoints-for-gc,verify<safepoint-ir>"
+    "function(mem2reg),rewrite-statepoints-for-gc,verify<safepoint-ir>"
   } else {
-    "rewrite-statepoints-for-gc"
+    "function(mem2reg),rewrite-statepoints-for-gc"
   };
 
   run_pass_pipeline(module, target_machine, pipeline)?;
@@ -316,9 +316,9 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   }
 
   let pipeline = if cfg!(debug_assertions) {
-    "rewrite-statepoints-for-gc,verify<safepoint-ir>"
+    "function(mem2reg),rewrite-statepoints-for-gc,verify<safepoint-ir>"
   } else {
-    "rewrite-statepoints-for-gc"
+    "function(mem2reg),rewrite-statepoints-for-gc"
   };
 
   run_pass_pipeline(module, target_machine, pipeline)?;

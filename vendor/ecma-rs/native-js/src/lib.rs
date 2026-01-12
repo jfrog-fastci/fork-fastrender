@@ -53,6 +53,7 @@ pub mod builtins;
 pub mod codegen;
 pub mod codes;
 pub mod compiler;
+pub(crate) mod array_abi;
 pub mod emit;
 pub mod eval;
 pub mod gc;

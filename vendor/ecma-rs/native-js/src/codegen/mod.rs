@@ -46,6 +46,8 @@
 //! Entrypoint-related errors are emitted by [`crate::strict::entrypoint`]
 //! (`NJS0108..NJS0111`).
 use crate::builtins::NativeJsIntrinsic;
+use crate::array_abi;
+use crate::llvm::gc;
 use crate::resolve::BindingId;
 use crate::runtime_abi::{RuntimeAbi, RuntimeFn};
 use crate::strict::Entrypoint;
@@ -54,14 +56,14 @@ use crate::Resolver;
 mod debuginfo;
 use diagnostics::{Diagnostic, Label, Span, TextRange};
 use hir_js::{
-  AssignOp, BinaryOp, ExprId, ExprKind, FileKind, ForInit, ImportKind, Literal, NameId, PatKind,
-  StmtId, StmtKind, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
+  ArrayElement, AssignOp, BinaryOp, ExprId, ExprKind, FileKind, ForInit, ImportKind, Literal, NameId, ObjectKey,
+  PatKind, StmtId, StmtKind, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
 };
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType};
+use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType, PointerType};
 use inkwell::values::{
   BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue,
   PointerValue,
@@ -70,6 +72,7 @@ use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use parse_js::num::JsNumber;
 use std::collections::{HashMap, HashSet, VecDeque};
 use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
+use types_ts_interned as tti;
 
 pub struct CodegenOptions {
   pub module_name: String,
@@ -111,6 +114,11 @@ enum TsAbiKind {
   Number,
   Boolean,
   Void,
+  /// GC-managed pointer value (`ptr addrspace(1)`).
+  ///
+  /// Used for local/global bindings of array/tuple types in the checked pipeline.
+  /// (Functions may not take/return this kind yet.)
+  GcPtr,
 }
 
 impl TsAbiKind {
@@ -118,6 +126,7 @@ impl TsAbiKind {
     match kind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
+      TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. } => Some(Self::GcPtr),
       TypeKindSummary::Void | TypeKindSummary::Undefined | TypeKindSummary::Never => Some(Self::Void),
       _ => None,
     }
@@ -145,6 +154,7 @@ impl TsAbiKind {
 enum NativeValue<'ctx> {
   Number(FloatValue<'ctx>),
   Boolean(IntValue<'ctx>),
+  GcPtr(PointerValue<'ctx>),
   Void,
 }
 
@@ -153,6 +163,7 @@ impl<'ctx> NativeValue<'ctx> {
     match self {
       NativeValue::Number(_) => TsAbiKind::Number,
       NativeValue::Boolean(_) => TsAbiKind::Boolean,
+      NativeValue::GcPtr(_) => TsAbiKind::GcPtr,
       NativeValue::Void => TsAbiKind::Void,
     }
   }
@@ -161,6 +172,7 @@ impl<'ctx> NativeValue<'ctx> {
     match self {
       NativeValue::Number(v) => Some(v.into()),
       NativeValue::Boolean(v) => Some(v.into()),
+      NativeValue::GcPtr(v) => Some(v.into()),
       NativeValue::Void => None,
     }
   }
@@ -287,10 +299,12 @@ struct ProgramCodegen<'ctx, 'p> {
   i32_ty: IntType<'ctx>,
   i64_ty: IntType<'ctx>,
   i1_ty: IntType<'ctx>,
+  gc_ptr_ty: PointerType<'ctx>,
   program: &'p Program,
   resolver: Resolver<'p>,
   exported_defs: HashSet<DefId>,
   globals: HashMap<DefId, GlobalSlot<'ctx>>,
+  gc_root_globals: Vec<GlobalValue<'ctx>>,
   functions: HashMap<DefId, FunctionValue<'ctx>>,
   function_sigs: HashMap<DefId, TsFunctionSigKind>,
   file_inits: HashMap<FileId, FunctionValue<'ctx>>,
@@ -310,10 +324,12 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       i32_ty: context.i32_type(),
       i64_ty: context.i64_type(),
       i1_ty: context.bool_type(),
+      gc_ptr_ty: gc::gc_ptr_type(context),
       program,
       resolver: Resolver::new(program),
       exported_defs: HashSet::new(),
       globals: HashMap::new(),
+      gc_root_globals: Vec::new(),
       functions: HashMap::new(),
       function_sigs: HashMap::new(),
       file_inits: HashMap::new(),
@@ -551,6 +567,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       let ty = match p {
         TsAbiKind::Number => self.f64_ty.into(),
         TsAbiKind::Boolean => self.i1_ty.into(),
+        TsAbiKind::GcPtr => unreachable!("gc pointers are not a valid parameter ABI kind"),
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
       };
       params.push(ty);
@@ -560,6 +577,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       TsAbiKind::Number => self.f64_ty.fn_type(&params, false),
       TsAbiKind::Boolean => self.i1_ty.fn_type(&params, false),
       TsAbiKind::Void => self.context.void_type().fn_type(&params, false),
+      TsAbiKind::GcPtr => unreachable!("gc pointers are not a valid return ABI kind"),
     };
 
     let linkage = if self.exported_defs.contains(&def) {
@@ -686,6 +704,11 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
                 .build_store(global.global.as_pointer_value(), v)
                 .expect("failed to build store");
             }
+            (TsAbiKind::GcPtr, NativeValue::GcPtr(v)) => {
+              cg.builder
+                .build_store(global.global.as_pointer_value(), v)
+                .expect("failed to build store");
+            }
             (expected, actual) => {
               return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
                 format!(
@@ -801,6 +824,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           cg.builder.build_store(slot, v).expect("store param");
           NativeValue::Boolean(v)
         }
+        TsAbiKind::GcPtr => unreachable!("gc pointers are not a valid parameter ABI kind"),
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
       };
 
@@ -895,11 +919,28 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let rt_thread_init = abi.get_or_declare_raw(RuntimeFn::ThreadInit);
     let rt_thread_deinit = abi.get_or_declare_raw(RuntimeFn::ThreadDeinit);
     let _rt_register_shape_table = abi.get_or_declare_raw(RuntimeFn::RegisterShapeTable);
+    let rt_global_root_register = abi.get_or_declare_raw(RuntimeFn::GlobalRootRegister);
 
     let call = builder
       .build_call(rt_thread_init, &[self.i32_ty.const_zero().into()], "rt.thread.init")
       .map_err(|e| vec![diagnostics::ice(ice_span, format!("failed to build call to rt_thread_init: {e}"))])?;
     crate::stack_walking::mark_call_notail(call);
+
+    // Register all GC pointer globals as roots so the runtime can trace/relocate them.
+    //
+    // (The native runtime does not scan arbitrary global memory; roots must be registered
+    // explicitly.)
+    for global in &self.gc_root_globals {
+      let call = builder
+        .build_call(rt_global_root_register, &[global.as_pointer_value().into()], "rt.global_root_register")
+        .map_err(|e| {
+          vec![diagnostics::ice(
+            ice_span,
+            format!("failed to build call to rt_global_root_register: {e}"),
+          )]
+        })?;
+      crate::stack_walking::mark_call_notail(call);
+    }
 
     // Shape table registration hook.
     //
@@ -950,6 +991,12 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         builder
           .build_int_z_extend(v, self.i32_ty, "exitcode")
           .expect("failed to build zext")
+      }
+      TsAbiKind::GcPtr => {
+        return Err(vec![diagnostics::ice(
+          ice_span,
+          "exported `main` must not return a GC-managed pointer value".to_string(),
+        )]);
       }
     };
 
@@ -1006,36 +1053,45 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         let global_ty: BasicTypeEnum<'ctx> = match abi_kind {
           TsAbiKind::Number => self.f64_ty.into(),
           TsAbiKind::Boolean => self.i1_ty.into(),
+          TsAbiKind::GcPtr => self.gc_ptr_ty.into(),
           TsAbiKind::Void => unreachable!(),
         };
         let global = self.module.add_global(global_ty, None, &name);
         match abi_kind {
           TsAbiKind::Number => global.set_initializer(&self.f64_ty.const_float(0.0)),
           TsAbiKind::Boolean => global.set_initializer(&self.i1_ty.const_int(0, false)),
+          TsAbiKind::GcPtr => global.set_initializer(&self.gc_ptr_ty.const_null()),
           TsAbiKind::Void => unreachable!(),
         };
+        if matches!(abi_kind, TsAbiKind::GcPtr) {
+          self.gc_root_globals.push(global);
+        }
         let is_local_to_unit = !self.exported_defs.contains(&def);
         if is_local_to_unit {
           global.set_linkage(Linkage::Internal);
         }
 
         if let Some(debug) = self.debug.as_mut() {
-          let debug_name = self
-            .program
-            .def_name(def)
-            .unwrap_or_else(|| format!("def{}", def.0));
-          let def_span = self.program.span_of_def(def).unwrap_or(span);
-          debug.declare_global_var(
-            self.context,
-            self.program,
-            def_span.file,
-            def_span.range.start,
-            &debug_name,
-            &name,
-            abi_kind,
-            global,
-            is_local_to_unit,
-          );
+          // Omit debug metadata for GC pointers for now (we only emit `number`/`boolean` DWARF
+          // types in this backend).
+          if !matches!(abi_kind, TsAbiKind::GcPtr) {
+            let debug_name = self
+              .program
+              .def_name(def)
+              .unwrap_or_else(|| format!("def{}", def.0));
+            let def_span = self.program.span_of_def(def).unwrap_or(span);
+            debug.declare_global_var(
+              self.context,
+              self.program,
+              def_span.file,
+              def_span.range.start,
+              &debug_name,
+              &name,
+              abi_kind,
+              global,
+              is_local_to_unit,
+            );
+          }
         }
 
         let slot = GlobalSlot {
@@ -1383,7 +1439,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let Some(scope) = self.debug_subprogram else {
       return;
     };
-    if matches!(kind, TsAbiKind::Void) {
+    if matches!(kind, TsAbiKind::Void | TsAbiKind::GcPtr) {
       return;
     }
 
@@ -1419,7 +1475,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let Some(scope) = self.debug_subprogram else {
       return;
     };
-    if matches!(kind, TsAbiKind::Void) {
+    if matches!(kind, TsAbiKind::Void | TsAbiKind::GcPtr) {
       return;
     }
 
@@ -1513,6 +1569,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .expect("failed to build dbg load")
             .into_int_value(),
         ),
+        TsAbiKind::GcPtr => continue,
         TsAbiKind::Void => continue,
       };
       self.dbg_value(binding, loaded, span);
@@ -1640,6 +1697,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let slot_ty: BasicTypeEnum<'ctx> = match kind {
       TsAbiKind::Number => self.cg.f64_ty.as_basic_type_enum(),
       TsAbiKind::Boolean => self.cg.i1_ty.as_basic_type_enum(),
+      TsAbiKind::GcPtr => self.cg.gc_ptr_ty.as_basic_type_enum(),
       TsAbiKind::Void => unreachable!(),
     };
 
@@ -1658,6 +1716,10 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .builder
         .build_float_compare(FloatPredicate::ONE, v, self.cg.f64_ty.const_float(0.0), "truthy")
         .expect("failed to build truthy compare"),
+      NativeValue::GcPtr(v) => {
+        let is_null = self.builder.build_is_null(v, "isnull").expect("build isnull");
+        self.builder.build_not(is_null, "truthy").expect("build not")
+      }
       // `undefined` is falsy in JS; we treat `void` expressions similarly when used in a truthy
       // context.
       NativeValue::Void => self.cg.i1_ty.const_int(0, false),
@@ -1721,6 +1783,171 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .builder
       .build_int_truncate(as_i64, self.cg.i32_ty, "to_i32")
       .expect("trunc i32")
+  }
+
+  fn declare_llvm_trap(&mut self) -> FunctionValue<'ctx> {
+    if let Some(existing) = self.cg.module.get_function("llvm.trap") {
+      return existing;
+    }
+    self
+      .cg
+      .module
+      .add_function("llvm.trap", self.cg.context.void_type().fn_type(&[], false), None)
+  }
+
+  fn emit_trap(&mut self) -> Result<(), Vec<Diagnostic>> {
+    let trap = self.declare_llvm_trap();
+    let call = self.builder.build_call(trap, &[], "trap").expect("call llvm.trap");
+    crate::stack_walking::mark_call_notail(call);
+    self
+      .builder
+      .build_unreachable()
+      .expect("build unreachable after trap");
+    Ok(())
+  }
+
+  /// Convert a `number` (`double`) to an `i64` for array indexing, trapping on NaN or out-of-range.
+  ///
+  /// LLVM's `fptosi` is UB for NaN/±Infinity/out-of-range values. Since indexing expressions may be
+  /// any `number` at runtime, guard the conversion so codegen never emits UB.
+  fn number_to_i64_index(&mut self, v: FloatValue<'ctx>) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    let is_nan = self
+      .builder
+      .build_float_compare(FloatPredicate::UNO, v, v, "idx.isnan")
+      .expect("fcmp uno");
+
+    // Valid `i64` range is [-2^63, 2^63-1]. Use a half-open upper bound at 2^63 so the compare is
+    // representable exactly in f64.
+    let min = self.cg.f64_ty.const_float(-9223372036854775808.0_f64); // -2^63
+    let max_excl = self.cg.f64_ty.const_float(9223372036854775808.0_f64); // 2^63
+    let lt_min = self
+      .builder
+      .build_float_compare(FloatPredicate::OLT, v, min, "idx.ltmin")
+      .expect("fcmp olt");
+    let ge_max = self
+      .builder
+      .build_float_compare(FloatPredicate::OGE, v, max_excl, "idx.gemax")
+      .expect("fcmp oge");
+    let bad1 = self.builder.build_or(is_nan, lt_min, "idx.bad1").expect("or bad1");
+    let bad = self.builder.build_or(bad1, ge_max, "idx.bad").expect("or bad");
+
+    let ok_bb = self.cg.context.append_basic_block(self.func, "idx.ok");
+    let trap_bb = self.cg.context.append_basic_block(self.func, "idx.bad");
+    self
+      .builder
+      .build_conditional_branch(bad, trap_bb, ok_bb)
+      .expect("branch idx.bad");
+
+    self.builder.position_at_end(trap_bb);
+    self.emit_trap()?;
+
+    self.builder.position_at_end(ok_bb);
+    Ok(
+      self
+        .builder
+        .build_float_to_signed_int(v, self.cg.i64_ty, "idx.i64")
+        .expect("fptosi idx"),
+    )
+  }
+
+  fn array_len_i64(&self, arr: PointerValue<'ctx>) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    let i8_ty = self.cg.context.i8_type();
+    let offset = self
+      .cg
+      .i64_ty
+      .const_int(array_abi::RT_ARRAY_LEN_OFFSET as u64, false);
+    // SAFETY: `arr` is expected to be a runtime-native array pointer allocated by `rt_alloc_array`.
+    let len_ptr = unsafe {
+      self
+        .builder
+        .build_gep(i8_ty, arr, &[offset], "arr.len.ptr")
+        .expect("gep arr.len")
+    };
+    Ok(
+      self
+        .builder
+        .build_load(self.cg.i64_ty, len_ptr, "arr.len")
+        .expect("load arr.len")
+        .into_int_value(),
+    )
+  }
+
+  fn array_bounds_check(
+    &mut self,
+    arr: PointerValue<'ctx>,
+    idx_i64: IntValue<'ctx>,
+  ) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    let idx_nonneg = self
+      .builder
+      .build_int_compare(IntPredicate::SGE, idx_i64, self.cg.i64_ty.const_zero(), "idx.nonneg")
+      .expect("idx.nonneg");
+    let len_i64 = self.array_len_i64(arr)?;
+    let idx_lt_len = self
+      .builder
+      .build_int_compare(IntPredicate::ULT, idx_i64, len_i64, "idx.ltlen")
+      .expect("idx.ltlen");
+    let ok = self
+      .builder
+      .build_and(idx_nonneg, idx_lt_len, "idx.ok")
+      .expect("idx.ok");
+
+    let ok_bb = self.cg.context.append_basic_block(self.func, "arr.idx.ok");
+    let trap_bb = self.cg.context.append_basic_block(self.func, "arr.idx.oob");
+    self
+      .builder
+      .build_conditional_branch(ok, ok_bb, trap_bb)
+      .expect("idx bounds branch");
+
+    self.builder.position_at_end(trap_bb);
+    self.emit_trap()?;
+
+    self.builder.position_at_end(ok_bb);
+    Ok(idx_i64)
+  }
+
+  fn array_elem_ptr(
+    &self,
+    arr: PointerValue<'ctx>,
+    idx_i64: IntValue<'ctx>,
+    elem_size_bytes: u64,
+  ) -> Result<PointerValue<'ctx>, Vec<Diagnostic>> {
+    let i8_ty = self.cg.context.i8_type();
+    let data_offset = self
+      .cg
+      .i64_ty
+      .const_int(array_abi::RT_ARRAY_DATA_OFFSET_BYTES as u64, false);
+    // SAFETY: `arr` is expected to be a runtime-native array pointer allocated by `rt_alloc_array`.
+    let data_ptr = unsafe {
+      self
+        .builder
+        .build_gep(i8_ty, arr, &[data_offset], "arr.data")
+        .expect("gep arr.data")
+    };
+    let stride = self.cg.i64_ty.const_int(elem_size_bytes, false);
+    let idx_bytes = self
+      .builder
+      .build_int_mul(idx_i64, stride, "idx.bytes")
+      .expect("idx.bytes");
+    // SAFETY: Caller performs a bounds check before requesting an element pointer.
+    Ok(unsafe {
+      self
+        .builder
+        .build_gep(i8_ty, data_ptr, &[idx_bytes], "arr.elem")
+        .expect("gep arr.elem")
+    })
+  }
+
+  fn emit_write_barrier(
+    &mut self,
+    owner: PointerValue<'ctx>,
+    slot: PointerValue<'ctx>,
+    span: Span,
+  ) -> Result<(), Vec<Diagnostic>> {
+    let rt = RuntimeAbi::new(self.cg.context, &self.cg.module);
+    let _ = rt.emit_runtime_call(&self.builder, RuntimeFn::WriteBarrier, &[owner.into(), slot.into()], "wb").map_err(|e| {
+      vec![diagnostics::ice(span, format!("failed to emit write barrier call: {e}"))]
+    })?;
+    Ok(())
   }
 
   fn codegen_stmt(&mut self, stmt_id: StmtId) -> Result<bool, Vec<Diagnostic>> {
@@ -2053,7 +2280,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Void => {
         if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`&&` currently only supports `void && void`, `number && number`, or `boolean && boolean`",
+            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `GcPtr && GcPtr`",
             span,
           )]);
         }
@@ -2062,7 +2289,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Number => {
         let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`&&` currently only supports `void && void`, `number && number`, or `boolean && boolean`",
+            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `GcPtr && GcPtr`",
             span,
           )]);
         };
@@ -2086,6 +2313,20 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .expect("failed to build phi");
         phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
         NativeValue::Boolean(phi.as_basic_value().into_int_value())
+      }
+      TsAbiKind::GcPtr => {
+        let (NativeValue::GcPtr(lhs), NativeValue::GcPtr(rhs)) = (lhs, rhs) else {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`&&` currently only supports `void && void`, `number && number`, `boolean && boolean`, or `GcPtr && GcPtr`",
+            span,
+          )]);
+        };
+        let phi = self
+          .builder
+          .build_phi(self.cg.gc_ptr_ty, "land")
+          .expect("failed to build phi");
+        phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
+        NativeValue::GcPtr(phi.as_basic_value().into_pointer_value())
       }
     };
     // Note: `dbg_value_locals_from_slots` emits loads (non-PHI instructions). Ensure it runs *after*
@@ -2133,7 +2374,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Void => {
         if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`||` currently only supports `void || void`, `number || number`, or `boolean || boolean`",
+            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `GcPtr || GcPtr`",
             span,
           )]);
         }
@@ -2142,7 +2383,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Number => {
         let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`||` currently only supports `void || void`, `number || number`, or `boolean || boolean`",
+            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `GcPtr || GcPtr`",
             span,
           )]);
         };
@@ -2166,6 +2407,20 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .expect("failed to build phi");
         phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
         NativeValue::Boolean(phi.as_basic_value().into_int_value())
+      }
+      TsAbiKind::GcPtr => {
+        let (NativeValue::GcPtr(lhs), NativeValue::GcPtr(rhs)) = (lhs, rhs) else {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`||` currently only supports `void || void`, `number || number`, `boolean || boolean`, or `GcPtr || GcPtr`",
+            span,
+          )]);
+        };
+        let phi = self
+          .builder
+          .build_phi(self.cg.gc_ptr_ty, "lor")
+          .expect("failed to build phi");
+        phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
+        NativeValue::GcPtr(phi.as_basic_value().into_pointer_value())
       }
     };
     // Note: `dbg_value_locals_from_slots` emits loads (non-PHI instructions). Ensure it runs *after*
@@ -2547,6 +2802,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                 .build_store(global.global.as_pointer_value(), v)
                 .expect("failed to build store");
             }
+            NativeValue::GcPtr(v) => {
+              self
+                .builder
+                .build_store(global.global.as_pointer_value(), v)
+                .expect("failed to build store");
+            }
             NativeValue::Void => unreachable!("void globals are rejected in ensure_global_var"),
           }
         }
@@ -2557,6 +2818,9 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               self.builder.build_store(slot, v).expect("failed to build store");
             }
             NativeValue::Boolean(v) => {
+              self.builder.build_store(slot, v).expect("failed to build store");
+            }
+            NativeValue::GcPtr(v) => {
               self.builder.build_store(slot, v).expect("failed to build store");
             }
             NativeValue::Void => unreachable!("void locals are rejected in ensure_local_slot"),
@@ -2705,6 +2969,143 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       }
 
       ExprKind::Literal(Literal::Boolean(b)) => Ok(NativeValue::Boolean(self.cg.i1_ty.const_int(u64::from(b), false))),
+
+      ExprKind::Array(arr) => {
+        // Determine the element ABI kind from the inferred/annotated type of the array expression.
+        let expr_ty = self.types.expr_type(expr).ok_or_else(|| {
+          vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+            "missing type information for array literal expression",
+            span,
+          )]
+        })?;
+
+        let mut cur_ty = expr_ty;
+        let elem_ty = loop {
+          match self.cg.program.interned_type_kind(cur_ty) {
+            tti::TypeKind::Array { ty, .. } => break ty,
+            tti::TypeKind::Tuple(elems) => break elems.first().map(|e| e.ty).unwrap_or(cur_ty),
+            tti::TypeKind::Infer { constraint, .. } => {
+              cur_ty = constraint.ok_or_else(|| {
+                vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                  "unsupported unconstrained `infer` type for array literal",
+                  span,
+                )]
+              })?;
+            }
+            tti::TypeKind::Intrinsic { ty, .. } => cur_ty = ty,
+            other => {
+              return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                format!("unsupported array literal type in native-js codegen: {other:?}"),
+                span,
+              )]);
+            }
+          }
+        };
+
+        let elem_kind = TsAbiKind::from_value_type_kind(&self.cg.program.type_kind(elem_ty)).ok_or_else(|| {
+          vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            format!(
+              "unsupported array element type in native-js codegen: {}",
+              self.cg.program.display_type(elem_ty)
+            ),
+            span,
+          )]
+        })?;
+        if matches!(elem_kind, TsAbiKind::Void) {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`void`/`undefined`/`never` array elements are not supported in native-js codegen",
+            span,
+          )]);
+        }
+
+        let mut len: u64 = 0;
+        for el in &arr.elements {
+          match el {
+            ArrayElement::Expr(_) => len += 1,
+            _ => {
+              return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                "unsupported array literal element in native-js codegen",
+                span,
+              )]);
+            }
+          }
+        }
+
+        let elem_size_bytes: u64 = match elem_kind {
+          TsAbiKind::Number => 8,
+          TsAbiKind::Boolean => 1,
+          TsAbiKind::GcPtr => 8,
+          TsAbiKind::Void => unreachable!(),
+        };
+        let elem_size_arg: u64 = match elem_kind {
+          TsAbiKind::GcPtr => (array_abi::RT_ARRAY_ELEM_PTR_FLAG_BITS | 8) as u64,
+          _ => elem_size_bytes,
+        };
+
+        let len_i64 = self.cg.i64_ty.const_int(len, false);
+        let elem_size_i64 = self.cg.i64_ty.const_int(elem_size_arg, false);
+
+        let rt = RuntimeAbi::new(self.cg.context, &self.cg.module);
+        let call = rt
+          .emit_runtime_call(
+            &self.builder,
+            RuntimeFn::AllocArray,
+            &[len_i64.into(), elem_size_i64.into()],
+            "arr.alloc",
+          )
+          .map_err(|e| vec![diagnostics::ice(span, format!("failed to emit rt_alloc_array call: {e}"))])?;
+        let arr_ptr = call
+          .try_as_basic_value()
+          .left()
+          .expect("rt_alloc_array should return a value")
+          .into_pointer_value();
+
+        let mut idx: u64 = 0;
+        for el in &arr.elements {
+          let ArrayElement::Expr(expr) = el else { unreachable!() };
+          let value = self.codegen_expr(*expr)?;
+
+          let idx_i64 = self.cg.i64_ty.const_int(idx, false);
+          match elem_kind {
+            TsAbiKind::Number => {
+              let NativeValue::Number(v) = value else {
+                return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                  "array element initializer type mismatch (expected `number`)",
+                  span,
+                )]);
+              };
+              let slot = self.array_elem_ptr(arr_ptr, idx_i64, elem_size_bytes)?;
+              self.builder.build_store(slot, v).expect("store array init");
+            }
+            TsAbiKind::Boolean => {
+              let NativeValue::Boolean(v) = value else {
+                return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                  "array element initializer type mismatch (expected `boolean`)",
+                  span,
+                )]);
+              };
+              let slot = self.array_elem_ptr(arr_ptr, idx_i64, elem_size_bytes)?;
+              self.builder.build_store(slot, v).expect("store array init");
+            }
+            TsAbiKind::GcPtr => {
+              let NativeValue::GcPtr(v) = value else {
+                return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                  "array element initializer type mismatch (expected GC pointer)",
+                  span,
+                )]);
+              };
+              let slot = self.array_elem_ptr(arr_ptr, idx_i64, elem_size_bytes)?;
+              self.builder.build_store(slot, v).expect("store array init");
+              self.emit_write_barrier(arr_ptr, slot, span)?;
+            }
+            TsAbiKind::Void => unreachable!(),
+          }
+
+          idx += 1;
+        }
+
+        Ok(NativeValue::GcPtr(arr_ptr))
+      }
 
       ExprKind::Unary { op, expr } => {
         let inner = self.codegen_expr(expr)?;
@@ -2898,6 +3299,101 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         }
       }
       ExprKind::Member(member) => {
+        if member.optional {
+          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+            "optional chaining is not supported in this codegen subset",
+            span,
+          )]);
+        }
+
+        // Array / tuple support:
+        // - `arr[i]` indexing (bounds-checked, traps on OOB)
+        // - `arr.length`
+        if let Some(obj_ty) = self.types.expr_type(member.object) {
+          if matches!(
+            self.cg.program.type_kind(obj_ty),
+            TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }
+          ) {
+            match &member.property {
+              ObjectKey::Ident(name) if self.names.resolve(*name) == Some("length") => {
+                let NativeValue::GcPtr(arr) = self.codegen_expr(member.object)? else {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                    "unsupported `.length` receiver in native-js codegen",
+                    span,
+                  )]);
+                };
+                let len_i64 = self.array_len_i64(arr)?;
+                let len_f = self
+                  .builder
+                  .build_unsigned_int_to_float(len_i64, self.cg.f64_ty, "len")
+                  .expect("uitofp len");
+                return Ok(NativeValue::Number(len_f));
+              }
+              ObjectKey::Computed(key_expr) => {
+                let NativeValue::GcPtr(arr) = self.codegen_expr(member.object)? else {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                    "unsupported array index receiver in native-js codegen",
+                    span,
+                  )]);
+                };
+                let NativeValue::Number(idx_f) = self.codegen_expr(*key_expr)? else {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                    "array index expression must have type `number` in native-js codegen",
+                    span,
+                  )]);
+                };
+                let idx_i64 = self.number_to_i64_index(idx_f)?;
+                let idx_i64 = self.array_bounds_check(arr, idx_i64)?;
+
+                let elem_kind = self.expr_abi_kind(expr, span)?;
+                let elem_size_bytes = match elem_kind {
+                  TsAbiKind::Number => 8,
+                  TsAbiKind::Boolean => 1,
+                  TsAbiKind::GcPtr => 8,
+                  TsAbiKind::Void => {
+                    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                      "`void` array elements are not supported in native-js codegen",
+                      span,
+                    )]);
+                  }
+                };
+                let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                return Ok(match elem_kind {
+                  TsAbiKind::Number => NativeValue::Number(
+                    self
+                      .builder
+                      .build_load(self.cg.f64_ty, slot, "elem")
+                      .expect("load elem")
+                      .into_float_value(),
+                  ),
+                  TsAbiKind::Boolean => NativeValue::Boolean(
+                    self
+                      .builder
+                      .build_load(self.cg.i1_ty, slot, "elem")
+                      .expect("load elem")
+                      .into_int_value(),
+                  ),
+                  TsAbiKind::GcPtr => NativeValue::GcPtr(
+                    self
+                      .builder
+                      .build_load(self.cg.gc_ptr_ty, slot, "elem")
+                      .expect("load elem")
+                      .into_pointer_value(),
+                  ),
+                  TsAbiKind::Void => unreachable!(),
+                });
+              }
+              _ => {
+                return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                  "only array/tuple indexing (`arr[i]`) and `.length` are supported member expressions in native-js codegen",
+                  span,
+                )]);
+              }
+            }
+          }
+        }
+
+        // Namespace import member access (`import * as ns from "./dep"; ns.x`).
         let export_def = self.resolve_namespace_member_export_def(&member, span)?;
         let resolved = self.cg.resolve_import_def(export_def, span)?;
         if matches!(
@@ -2925,6 +3421,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .build_load(self.cg.i1_ty, global.global.as_pointer_value(), "ns.load")
               .expect("failed to build load")
               .into_int_value(),
+          )),
+          TsAbiKind::GcPtr => Ok(NativeValue::GcPtr(
+            self
+              .builder
+              .build_load(self.cg.gc_ptr_ty, global.global.as_pointer_value(), "ns.load")
+              .expect("failed to build load")
+              .into_pointer_value(),
           )),
           TsAbiKind::Void => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
             "`void` values are not supported in this context",
@@ -2989,6 +3492,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .expect("failed to build load")
               .into_int_value(),
           ),
+          TsAbiKind::GcPtr => NativeValue::GcPtr(
+            self
+              .builder
+              .build_load(self.cg.gc_ptr_ty, slot.ptr, "load")
+              .expect("failed to build load")
+              .into_pointer_value(),
+          ),
           TsAbiKind::Void => {
             return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
               "`void` values are not supported in this context",
@@ -3002,6 +3512,123 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       }
 
       ExprKind::Assignment { op, target, value } => {
+        // Assignment to array element: `arr[i] = value`.
+        //
+        // Important: do not keep derived pointers (element-slot pointers) live across may-GC calls
+        // (e.g. while evaluating `value`). We therefore:
+        // - evaluate `arr` and `i` first (to preserve side-effect order),
+        // - do a bounds check (and trap on OOB),
+        // - then evaluate `value`,
+        // - then compute the element slot pointer and store.
+        if let Some(pat) = self.body.pats.get(target.0 as usize) {
+          if let PatKind::AssignTarget(target_expr) = pat.kind {
+            if let Some(target_expr_data) = self.body.exprs.get(target_expr.0 as usize) {
+              if let ExprKind::Member(member) = &target_expr_data.kind {
+                if member.optional {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                    "unsupported assignment target",
+                    span,
+                  )]);
+                }
+
+                let ObjectKey::Computed(key_expr) = &member.property else {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                    "unsupported assignment target (expected `arr[i]`)",
+                    span,
+                  )]);
+                };
+                let key_expr = *key_expr;
+
+                if !matches!(op, AssignOp::Assign) {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_OP.error(
+                    format!("unsupported assignment operator `{op:?}`"),
+                    span,
+                  )]);
+                }
+
+                // Ensure the receiver is array-like.
+                let Some(obj_ty) = self.types.expr_type(member.object) else {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                    "missing type information for assignment target receiver",
+                    span,
+                  )]);
+                };
+                if !matches!(
+                  self.cg.program.type_kind(obj_ty),
+                  TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }
+                ) {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                    "unsupported assignment target (expected array/tuple index)",
+                    span,
+                  )]);
+                }
+
+                let NativeValue::GcPtr(arr) = self.codegen_expr(member.object)? else {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                    "unsupported assignment target receiver in native-js codegen",
+                    span,
+                  )]);
+                };
+                let NativeValue::Number(idx_f) = self.codegen_expr(key_expr)? else {
+                  return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_TARGET.error(
+                    "array index expression must have type `number` in native-js codegen",
+                    span,
+                  )]);
+                };
+                let idx_i64 = self.number_to_i64_index(idx_f)?;
+
+                // Bounds check before evaluating the RHS (so OOB traps deterministically).
+                let idx_i64 = self.array_bounds_check(arr, idx_i64)?;
+
+                // Evaluate RHS after bounds check (may allocate / GC).
+                let rhs = self.codegen_expr(value)?;
+
+                // Determine element layout from the member-expression type.
+                let elem_kind = self.expr_abi_kind(target_expr, span)?;
+                if rhs.kind() != elem_kind {
+                  return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                    "array element assignment type mismatch",
+                    span,
+                  )]);
+                }
+                let elem_size_bytes = match elem_kind {
+                  TsAbiKind::Number => 8,
+                  TsAbiKind::Boolean => 1,
+                  TsAbiKind::GcPtr => 8,
+                  TsAbiKind::Void => {
+                    return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                      "`void` array elements are not supported in native-js codegen",
+                      span,
+                    )]);
+                  }
+                };
+
+                match elem_kind {
+                  TsAbiKind::Number => {
+                    let NativeValue::Number(rhs_f) = rhs else { unreachable!() };
+                    let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                    self.builder.build_store(slot, rhs_f).expect("store array elem");
+                  }
+                  TsAbiKind::Boolean => {
+                    let NativeValue::Boolean(rhs_b) = rhs else { unreachable!() };
+                    let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                    self.builder.build_store(slot, rhs_b).expect("store array elem");
+                  }
+                  TsAbiKind::GcPtr => {
+                    let NativeValue::GcPtr(rhs_p) = rhs else { unreachable!() };
+                    let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                    self.builder.build_store(slot, rhs_p).expect("store array elem");
+                    self.emit_write_barrier(arr, slot, span)?;
+                  }
+                  TsAbiKind::Void => unreachable!(),
+                }
+
+                return Ok(rhs);
+              }
+            }
+          }
+        }
+
         let binding = if let Some(name) = self.pat_ident_name(target) {
           if let Some(binding) = self.env.resolve(name) {
             binding
@@ -3242,6 +3869,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .expect("non-void call should return a value")
               .into_int_value(),
           )),
+          TsAbiKind::GcPtr => unreachable!("gc pointers are not a valid return ABI kind"),
         }
       }
 
@@ -3317,6 +3945,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .expect("failed to build store");
       }
       NativeValue::Boolean(v) => {
+        self
+          .builder
+          .build_store(slot.ptr, v)
+          .expect("failed to build store");
+      }
+      NativeValue::GcPtr(v) => {
         self
           .builder
           .build_store(slot.ptr, v)

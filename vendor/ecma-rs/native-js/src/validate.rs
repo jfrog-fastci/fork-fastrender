@@ -17,8 +17,8 @@ use crate::codes;
 use crate::resolve::{BindingId, Resolver};
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
-  AssignOp, BinaryOp, Body, BodyId, BodyKind, ExprId, ExprKind, FileKind, ForInit, FunctionBody, Literal, NameId,
-  PatKind, StmtId, StmtKind, TypeExprId, TypeExprKind, UnaryOp, VarDecl, VarDeclKind,
+  ArrayElement, AssignOp, BinaryOp, Body, BodyId, BodyKind, ExprId, ExprKind, FileKind, ForInit, FunctionBody,
+  Literal, NameId, ObjectKey, PatKind, StmtId, StmtKind, TypeExprId, TypeExprKind, UnaryOp, VarDecl, VarDeclKind,
 };
 use std::collections::{HashMap, HashSet};
 use typecheck_ts::{Program, TypeKindSummary};
@@ -617,12 +617,29 @@ fn validate_body_syntax(
           );
         }
       }
-      ExprKind::Member(_) => {
-        push_unsupported_syntax(
-          out,
-          Span::new(file, expr.span),
-          "property access is not supported by native-js yet",
-        );
+      ExprKind::Member(member) => {
+        if member.optional {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "optional chaining is not supported by native-js yet",
+          );
+          continue;
+        }
+        // Only allow the two member-expression forms we can lower:
+        // - `arr[i]` (array/tuple indexing)
+        // - `arr.length`
+        match &member.property {
+          ObjectKey::Ident(name) if lowered.names.resolve(*name) == Some("length") => {}
+          ObjectKey::Computed(_) => {}
+          _ => {
+            push_unsupported_syntax(
+              out,
+              Span::new(file, expr.span),
+              "property access is only supported for array/tuple indexing (`arr[i]`) and `.length` in native-js strict subset",
+            );
+          }
+        }
       }
       ExprKind::Object(_) => {
         push_unsupported_syntax(
@@ -631,12 +648,20 @@ fn validate_body_syntax(
           "object literals are not supported by native-js yet",
         );
       }
-      ExprKind::Array(_) => {
-        push_unsupported_syntax(
-          out,
-          Span::new(file, expr.span),
-          "array literals are not supported by native-js yet",
-        );
+      ExprKind::Array(arr) => {
+        // Array literals are supported as the backing representation for both `T[]` and tuple
+        // types, but only in the simplest form (no spreads / holes).
+        if arr
+          .elements
+          .iter()
+          .any(|el| !matches!(el, ArrayElement::Expr(_)))
+        {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "array literals with spreads or holes are not supported by native-js yet",
+          );
+        }
       }
       ExprKind::ClassExpr { .. } => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "classes are not supported by native-js yet");
@@ -733,6 +758,8 @@ fn validate_body_types(
   // - intrinsic `print(x)` in statement position
   // - direct calls to top-level function definitions (the only functions codegen can call)
   let mut skip_expr_type_check = vec![false; result.expr_types().len()];
+  let mut supported_cache: HashMap<typecheck_ts::TypeId, Option<SupportedAbiKind>> = HashMap::new();
+  let mut supported_visiting: HashSet<typecheck_ts::TypeId> = HashSet::new();
 
   for (expr_idx, expr) in hir.exprs.iter().enumerate() {
     let ExprKind::Call(call) = &expr.kind else {
@@ -822,6 +849,27 @@ fn validate_body_types(
               )
               .with_note("type assertions are erased by native-js codegen; asserted types must match the expression's runtime representation"),
           );
+          continue;
+        }
+
+        // Arrays/tuples are both lowered as GC-managed arrays; their *element* ABI is still part of
+        // the runtime representation (stride + pointer-ness). Ensure type assertions do not change
+        // element ABI within the array/tuple category.
+        if matches!(actual_group, TypeKindGroup::Array | TypeKindGroup::Tuple) {
+          let actual_elem_kind =
+            array_or_tuple_elem_kind(program, actual_ty, &mut supported_cache, &mut supported_visiting);
+          let asserted_elem_kind =
+            array_or_tuple_elem_kind(program, asserted_ty, &mut supported_cache, &mut supported_visiting);
+          if actual_elem_kind.is_some() && asserted_elem_kind.is_some() && actual_elem_kind != asserted_elem_kind {
+            out.push(
+              codes::STRICT_SUBSET_UNSAFE_TYPE_ASSERTION
+                .error(
+                  "unsafe type assertion changes array/tuple element ABI in native-js strict subset",
+                  Span::new(file, expr.span),
+                )
+                .with_note("type assertions are erased by native-js codegen; array/tuple assertions must preserve element ABI (number vs boolean vs GC pointer)"),
+            );
+          }
         }
       }
       ExprKind::NonNull { expr: inner } => {
@@ -847,45 +895,219 @@ fn validate_body_types(
     }
   }
 
+  // Member expressions are only supported for:
+  // - array/tuple indexing (`arr[i]`)
+  // - `.length`
+  for expr in hir.exprs.iter() {
+    let ExprKind::Member(member) = &expr.kind else { continue };
+    if member.optional {
+      continue;
+    }
+
+    let Some(obj_ty) = result.expr_type(member.object) else {
+      continue;
+    };
+    let obj_kind = program.type_kind(obj_ty);
+    if !matches!(obj_kind, TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }) {
+      push_unsupported_syntax(
+        out,
+        Span::new(file, expr.span),
+        "member access is only supported on arrays/tuples (`arr[i]` and `arr.length`) in native-js strict subset",
+      );
+      continue;
+    }
+
+    match &member.property {
+      ObjectKey::Ident(name) if lowered.names.resolve(*name) == Some("length") => {}
+      ObjectKey::Computed(key_expr) => {
+        let Some(key_ty) = result.expr_type(*key_expr) else {
+          continue;
+        };
+        if !matches!(
+          program.type_kind(key_ty),
+          TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_)
+        ) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "array/tuple index expressions must have type `number` in native-js strict subset",
+          );
+        }
+      }
+      _ => {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, expr.span),
+          "property access is only supported for array/tuple indexing (`arr[i]`) and `.length` in native-js strict subset",
+        );
+      }
+    }
+  }
+
   for (idx, ty) in result.expr_types().iter().copied().enumerate() {
     let Some(expr) = hir.exprs.get(idx) else { continue };
     if skip_expr_type_check.get(idx).copied().unwrap_or(false) {
       continue;
     }
-    validate_type_kind(program, Span::new(file, expr.span), ty, out);
+    validate_type_kind(
+      program,
+      Span::new(file, expr.span),
+      ty,
+      &mut supported_cache,
+      &mut supported_visiting,
+      out,
+    );
   }
 
   for (idx, ty) in result.pat_types().iter().copied().enumerate() {
     let Some(pat) = hir.pats.get(idx) else { continue };
-    validate_type_kind(program, Span::new(file, pat.span), ty, out);
+    validate_type_kind(
+      program,
+      Span::new(file, pat.span),
+      ty,
+      &mut supported_cache,
+      &mut supported_visiting,
+      out,
+    );
   }
 }
 
-fn validate_type_kind(program: &Program, span: Span, ty: typecheck_ts::TypeId, out: &mut Vec<Diagnostic>) {
-  let kind = program.type_kind(ty);
-  if is_supported_type_kind(&kind) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SupportedAbiKind {
+  Number,
+  Boolean,
+  Void,
+  /// GC-managed pointer (`ptr addrspace(1)`).
+  GcPtr,
+}
+
+fn validate_type_kind(
+  program: &Program,
+  span: Span,
+  ty: typecheck_ts::TypeId,
+  cache: &mut HashMap<typecheck_ts::TypeId, Option<SupportedAbiKind>>,
+  visiting: &mut HashSet<typecheck_ts::TypeId>,
+  out: &mut Vec<Diagnostic>,
+) {
+  if supported_abi_kind(program, ty, cache, visiting).is_some() {
     return;
   }
 
+  let kind = program.type_kind(ty);
   let message = unsupported_type_message(&kind);
   out.push(
     codes::STRICT_SUBSET_UNSUPPORTED_TYPE
       .error(message, span)
-      .with_note("supported types are currently limited to: number, boolean, void/undefined, never"),
+      .with_note("supported types are currently limited to: number, boolean, void/undefined, never, arrays, tuples"),
   );
 }
 
-fn is_supported_type_kind(kind: &TypeKindSummary) -> bool {
-  matches!(
-    kind,
-    TypeKindSummary::Never
-      | TypeKindSummary::Void
-      | TypeKindSummary::Undefined
-      | TypeKindSummary::Boolean
-      | TypeKindSummary::BooleanLiteral(_)
-      | TypeKindSummary::Number
-      | TypeKindSummary::NumberLiteral(_)
-  )
+fn supported_abi_kind(
+  program: &Program,
+  ty: typecheck_ts::TypeId,
+  cache: &mut HashMap<typecheck_ts::TypeId, Option<SupportedAbiKind>>,
+  visiting: &mut HashSet<typecheck_ts::TypeId>,
+) -> Option<SupportedAbiKind> {
+  if let Some(hit) = cache.get(&ty) {
+    return *hit;
+  }
+  if !visiting.insert(ty) {
+    // Break cycles conservatively.
+    return None;
+  }
+
+  let result = match program.interned_type_kind(ty) {
+    tti::TypeKind::Never | tti::TypeKind::Void | tti::TypeKind::Undefined => Some(SupportedAbiKind::Void),
+    tti::TypeKind::Boolean | tti::TypeKind::BooleanLiteral(_) => Some(SupportedAbiKind::Boolean),
+    tti::TypeKind::Number | tti::TypeKind::NumberLiteral(_) => Some(SupportedAbiKind::Number),
+
+    // Arrays: GC pointer + uniform element stride. Element type must be representable.
+    tti::TypeKind::Array { ty: elem_ty, .. } => match supported_abi_kind(program, elem_ty, cache, visiting) {
+      Some(SupportedAbiKind::Number | SupportedAbiKind::Boolean | SupportedAbiKind::GcPtr) => {
+        Some(SupportedAbiKind::GcPtr)
+      }
+      _ => None,
+    },
+
+    // Tuples: lowered as fixed-length arrays with a uniform element ABI.
+    tti::TypeKind::Tuple(elems) => {
+      let mut elem_kind: Option<SupportedAbiKind> = None;
+      for elem in elems.iter() {
+        if elem.optional || elem.rest {
+          elem_kind = None;
+          break;
+        }
+        let k = supported_abi_kind(program, elem.ty, cache, visiting)?;
+        if matches!(k, SupportedAbiKind::Void) {
+          elem_kind = None;
+          break;
+        }
+        if let Some(prev) = elem_kind {
+          if prev != k {
+            elem_kind = None;
+            break;
+          }
+        } else {
+          elem_kind = Some(k);
+        }
+      }
+      elem_kind.map(|_| SupportedAbiKind::GcPtr).or_else(|| {
+        // The empty tuple `[]` is treated as a valid fixed-length array (length 0).
+        if elems.is_empty() {
+          Some(SupportedAbiKind::GcPtr)
+        } else {
+          None
+        }
+      })
+    }
+
+    // Type wrappers: recurse through the underlying type.
+    tti::TypeKind::Infer { constraint, .. } => constraint.and_then(|inner| supported_abi_kind(program, inner, cache, visiting)),
+    tti::TypeKind::Intrinsic { ty, .. } => supported_abi_kind(program, ty, cache, visiting),
+
+    _ => None,
+  };
+
+  visiting.remove(&ty);
+  cache.insert(ty, result);
+  result
+}
+
+fn array_or_tuple_elem_kind(
+  program: &Program,
+  ty: typecheck_ts::TypeId,
+  cache: &mut HashMap<typecheck_ts::TypeId, Option<SupportedAbiKind>>,
+  visiting: &mut HashSet<typecheck_ts::TypeId>,
+) -> Option<SupportedAbiKind> {
+  match program.interned_type_kind(ty) {
+    tti::TypeKind::Array { ty: elem_ty, .. } => {
+      let k = supported_abi_kind(program, elem_ty, cache, visiting)?;
+      (!matches!(k, SupportedAbiKind::Void)).then_some(k)
+    }
+    tti::TypeKind::Tuple(elems) => {
+      let mut elem_kind: Option<SupportedAbiKind> = None;
+      for elem in elems.iter() {
+        if elem.optional || elem.rest {
+          return None;
+        }
+        let k = supported_abi_kind(program, elem.ty, cache, visiting)?;
+        if matches!(k, SupportedAbiKind::Void) {
+          return None;
+        }
+        if let Some(prev) = elem_kind {
+          if prev != k {
+            return None;
+          }
+        } else {
+          elem_kind = Some(k);
+        }
+      }
+      elem_kind
+    }
+    tti::TypeKind::Infer { constraint, .. } => constraint.and_then(|inner| array_or_tuple_elem_kind(program, inner, cache, visiting)),
+    tti::TypeKind::Intrinsic { ty, .. } => array_or_tuple_elem_kind(program, ty, cache, visiting),
+    _ => None,
+  }
 }
 
 fn unsupported_type_message(kind: &TypeKindSummary) -> String {

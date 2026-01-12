@@ -35,8 +35,9 @@ use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::BasicType as _;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, FunctionType, PointerType};
-use inkwell::values::{BasicMetadataValueEnum, CallSiteValue, FunctionValue, PointerValue};
+use inkwell::values::{AsValueRef as _, BasicMetadataValueEnum, CallSiteValue, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
+use llvm_sys::core::LLVMSetVolatile;
 
 use runtime_native_abi::RtShapeId;
 
@@ -342,14 +343,24 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     let slot = entry_builder
       .build_alloca(fn_ptr_ty, &format!("rt.fp.{hint}"))
       .expect("alloca runtime fn ptr slot");
-    entry_builder
+    let store = entry_builder
       .build_store(slot, raw.as_global_value().as_pointer_value())
       .expect("store runtime fn ptr");
+    // Prevent `mem2reg` from promoting this alloca and turning the indirect call back into a direct
+    // call. The runtime ABI symbols are declared with addrspace(0) signatures, while native-js
+    // often calls them with addrspace(1) signatures; we rely on an indirect call to avoid
+    // `addrspacecast` while still making the call ABI-correct.
+    unsafe {
+      LLVMSetVolatile(store.as_value_ref(), 1);
+    }
 
-    builder
+    let loaded = builder
       .build_load(fn_ptr_ty, slot, &format!("rt.fp.{hint}.ld"))
-      .expect("load runtime fn ptr")
-      .into_pointer_value()
+      .expect("load runtime fn ptr");
+    unsafe {
+      LLVMSetVolatile(loaded.as_value_ref(), 1);
+    }
+    loaded.into_pointer_value()
   }
 
   fn get_or_define_leaf_wrapper(&self, f: RuntimeFn) -> FunctionValue<'ctx> {
