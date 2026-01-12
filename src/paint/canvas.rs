@@ -5544,6 +5544,42 @@ mod tests {
   }
 
   #[test]
+  fn opaque_axis_aligned_rect_fills_do_not_cover_partial_max_edge_scanlines() {
+    // Regression for openbsd.org: a table-cell background ended at x=201.06, and we previously
+    // snapped opaque rect fills using `ceil(max)`, which painted one extra device pixel column into
+    // the adjacent cell.
+    //
+    // Chrome/Skia use a pixel-center rule ("open min / closed max"): pixels whose centers lie
+    // beyond the max edge must not be covered.
+    let fill_color = Rgba::rgb(7, 28, 46);
+    let mut canvas = Canvas::new(20, 20, Rgba::WHITE).unwrap();
+    canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.4, 10.4), fill_color);
+
+    // Max edge at 10.4px should *not* include pixel 10 (center at 10.5).
+    let px10 = canvas.pixmap().pixel(10, 0).unwrap();
+    assert_eq!(
+      (px10.red(), px10.green(), px10.blue(), px10.alpha()),
+      (255, 255, 255, 255)
+    );
+    let px9 = canvas.pixmap().pixel(9, 0).unwrap();
+    assert_eq!(
+      (px9.red(), px9.green(), px9.blue(), px9.alpha()),
+      (7, 28, 46, 255)
+    );
+
+    let py10 = canvas.pixmap().pixel(0, 10).unwrap();
+    assert_eq!(
+      (py10.red(), py10.green(), py10.blue(), py10.alpha()),
+      (255, 255, 255, 255)
+    );
+    let py9 = canvas.pixmap().pixel(0, 9).unwrap();
+    assert_eq!(
+      (py9.red(), py9.green(), py9.blue(), py9.alpha()),
+      (7, 28, 46, 255)
+    );
+  }
+
+  #[test]
   fn semi_transparent_axis_aligned_rounded_rect_fills_are_pixel_snapped() {
     let mut canvas = Canvas::new(100, 60, Rgba::WHITE).unwrap();
     let rect = Rect::from_xywh(10.0, 4.8, 80.0, 42.0);
