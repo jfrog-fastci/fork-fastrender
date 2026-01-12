@@ -37,6 +37,7 @@ typecheck-ts = { workspace = true }
 types-ts-interned = { workspace = true }
 
 [dev-dependencies]
+gimli = { version = "0.29.0", default-features = false, features = ["read", "std"] }
 object = { workspace = true }
 tempfile = { workspace = true }
 llvm-stackmaps = { path = "../llvm-stackmaps" }
