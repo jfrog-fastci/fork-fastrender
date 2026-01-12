@@ -172,6 +172,7 @@ pub fn bookmarks_manager_side_panel(
               "create_folder_parent",
               &folder_options,
               &mut create.parent,
+              "Parent folder",
             );
           });
           if let Some(err) = create.error.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -509,7 +510,13 @@ fn render_bookmark_row(
     });
     ui.horizontal(|ui| {
       ui.label("Folder:");
-      folder_combo_box(ui, format!("edit_parent_{}", entry.id.0), folder_options, &mut edit.parent);
+      folder_combo_box(
+        ui,
+        format!("edit_parent_{}", entry.id.0),
+        folder_options,
+        &mut edit.parent,
+        "Folder",
+      );
     });
     if let Some(err) = edit.error.as_deref().filter(|s| !s.trim().is_empty()) {
       ui.colored_label(ui.visuals().error_fg_color, err);
@@ -609,19 +616,22 @@ fn folder_combo_box(
   id_source: impl std::hash::Hash,
   options: &[(Option<BookmarkId>, String)],
   value: &mut Option<BookmarkId>,
+  a11y_label: &'static str,
 ) {
   let selected = options
     .iter()
     .find(|(id, _)| id == value)
     .map(|(_, label)| label.as_str())
     .unwrap_or("Root");
-  egui::ComboBox::from_id_source(id_source)
+  let response = egui::ComboBox::from_id_source(id_source)
     .selected_text(selected)
     .show_ui(ui, |ui| {
       for (id, label) in options {
         ui.selectable_value(value, *id, label);
       }
-    });
+    })
+    .response;
+  response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label));
 }
 
 fn normalize_optional_string(raw: &str) -> Option<String> {
