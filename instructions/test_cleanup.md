@@ -510,8 +510,7 @@ Update `scripts/cargo_agent.sh` and any CI scripts:
 
 ```bash
 # Old (broken)
-bash scripts/cargo_agent.sh test --test layout_tests
-bash scripts/cargo_agent.sh test --test paint_tests
+bash scripts/cargo_agent.sh test --test <suite_specific_test_binary>
 
 # New (correct)
 bash scripts/cargo_agent.sh test --lib           # unit tests
