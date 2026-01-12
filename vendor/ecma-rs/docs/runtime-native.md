@@ -219,6 +219,19 @@ pub struct InternedId(pub u32);
 #[repr(transparent)]
 pub struct TaskId(pub u64);
 
+/// Thread kind enum used by [`rt_thread_register`].
+///
+/// Must match `RtThreadKind` in `runtime-native/include/runtime_native.h`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum RtThreadKind {
+  RT_THREAD_MAIN = 0,
+  RT_THREAD_WORKER = 1,
+  RT_THREAD_IO = 2,
+  RT_THREAD_EXTERNAL = 3,
+}
+
 /// Stable persistent handle ID used for referencing GC-managed objects across async/OS/thread
 /// boundaries.
 ///
@@ -272,6 +285,13 @@ All functions are exported as `#[no_mangle] extern "C"` from `runtime-native`.
 The signatures below intentionally mirror the sketch in `instructions/native_aot.md`:
 
 ```rust
+// Threads
+pub fn rt_thread_init(kind: u32);
+pub fn rt_thread_deinit();
+pub fn rt_thread_register(kind: RtThreadKind) -> u64;
+pub fn rt_thread_unregister();
+pub fn rt_thread_set_parked(parked: bool);
+
 // Memory
 pub fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize);
 pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
@@ -396,10 +416,6 @@ compiler/runtime contract.
 - `rt_abi_version() -> u32`
 - `rt_init()`
 - `rt_shutdown()` (optional; tests/bench harnesses)
-
-#### Thread registration (planned)
-- `rt_thread_register()` / `rt_thread_unregister()` for any OS thread that may
-  run compiled code (scheduler workers, externally-created threads, etc.).
 
 #### Module + shape metadata plumbing (planned)
 To support precise tracing/moving GC, `native-js` will eventually need to
