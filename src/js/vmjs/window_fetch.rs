@@ -13862,6 +13862,149 @@ mod tests {
   }
 
   #[test]
+  fn response_body_stream_can_be_consumed_with_for_await() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+    let env = WindowFetchEnv::for_document(
+      Arc::new(StaticOkFetcher),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            globalThis.__out = "";
+            globalThis.__locked = null;
+            (async () => {
+              const resp = new Response(new Blob(["hello"]));
+              let out = "";
+              for await (const chunk of resp.body) {
+                out += new TextDecoder().decode(chunk);
+              }
+              globalThis.__out = out;
+              globalThis.__locked = resp.body.locked;
+            })();
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let out = host.window.exec_script("globalThis.__out").unwrap();
+    assert_eq!(get_string(host.window.heap(), out), "hello");
+    let locked = host.window.exec_script("globalThis.__locked").unwrap();
+    assert_eq!(locked, Value::Bool(false));
+
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_values_prevent_cancel_controls_cancellation() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+    let env = WindowFetchEnv::for_document(
+      Arc::new(StaticOkFetcher),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            globalThis.__firstCancel = 0;
+            globalThis.__remCancel = 0;
+            globalThis.__firstKeep = 0;
+            globalThis.__remKeep = 0;
+            (async () => {
+              const big = "a".repeat(70000);
+
+              const respCancel = new Response(new Blob([big]));
+              let firstCancel = 0;
+              for await (const chunk of respCancel.body) {
+                firstCancel = chunk.length;
+                break;
+              }
+              const readerCancel = respCancel.body.getReader();
+              let remCancel = 0;
+              while (true) {
+                const r = await readerCancel.read();
+                if (r.done) break;
+                remCancel += r.value.length;
+              }
+              readerCancel.releaseLock();
+
+              const respKeep = new Response(new Blob([big]));
+              let firstKeep = 0;
+              for await (const chunk of respKeep.body.values({ preventCancel: true })) {
+                firstKeep = chunk.length;
+                break;
+              }
+              const readerKeep = respKeep.body.getReader();
+              let remKeep = 0;
+              while (true) {
+                const r = await readerKeep.read();
+                if (r.done) break;
+                remKeep += r.value.length;
+              }
+              readerKeep.releaseLock();
+
+              globalThis.__firstCancel = firstCancel;
+              globalThis.__remCancel = remCancel;
+              globalThis.__firstKeep = firstKeep;
+              globalThis.__remKeep = remKeep;
+            })();
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let first_cancel = host.window.exec_script("globalThis.__firstCancel").unwrap();
+    let rem_cancel = host.window.exec_script("globalThis.__remCancel").unwrap();
+    let first_keep = host.window.exec_script("globalThis.__firstKeep").unwrap();
+    let rem_keep = host.window.exec_script("globalThis.__remKeep").unwrap();
+
+    let first_cancel = number_to_u64(first_cancel).unwrap();
+    let rem_cancel = number_to_u64(rem_cancel).unwrap();
+    let first_keep = number_to_u64(first_keep).unwrap();
+    let rem_keep = number_to_u64(rem_keep).unwrap();
+
+    let expected_first = 64 * 1024;
+    let expected_remaining = 70000 - expected_first;
+    assert_eq!(first_cancel, expected_first);
+    assert_eq!(rem_cancel, 0);
+    assert_eq!(first_keep, expected_first);
+    assert_eq!(rem_keep, expected_remaining);
+
+    Ok(())
+  }
+
+  #[test]
   fn fetch_blob_body_sends_bytes_and_sets_content_type() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);

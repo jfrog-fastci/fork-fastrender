@@ -47,6 +47,10 @@ const TRANSFORM_STREAM_HOST_TAG: u64 = 0x5452_4E53_5354_524D; // "TRNSSTRM"
 const TRANSFORM_STREAM_DEFAULT_CONTROLLER_HOST_TAG: u64 = 0x5453_434E_5452_4C52; // "TSCNTRLR"
 const TRANSFORM_STREAM_SINK_HOST_TAG: u64 = 0x5453_5349_4E4B_5F5F; // "TSSINK__"
 
+// Hidden per-iterator own properties.
+const ITER_READER_KEY: &str = "__fastrender_readable_stream_iter_reader";
+const ITER_PREVENT_CANCEL_KEY: &str = "__fastrender_readable_stream_iter_prevent_cancel";
+
 /// Maximum bytes returned by a single `reader.read()` call.
 ///
 /// This is an internal chunking detail; it bounds per-read allocation while still being reasonably
@@ -304,6 +308,11 @@ struct StreamRealmState {
   readable_stream_pipe_to_write_rejected_call_id: NativeFunctionId,
   readable_stream_pipe_to_close_fulfilled_call_id: NativeFunctionId,
   readable_stream_pipe_to_close_rejected_call_id: NativeFunctionId,
+  iterator_next_id: NativeFunctionId,
+  iterator_next_fulfilled_id: NativeFunctionId,
+  iterator_next_rejected_id: NativeFunctionId,
+  iterator_return_id: NativeFunctionId,
+  iterator_async_iterator_id: NativeFunctionId,
   streams: HashMap<WeakGcObject, StreamState>,
   readers: HashMap<WeakGcObject, ReaderState>,
   last_gc_runs: u64,
@@ -719,6 +728,364 @@ fn readable_stream_locked_get_native(
         ))?;
     Ok(Value::Bool(stream_state.locked))
   })
+}
+
+fn resolve_async_iterator_done_promise(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+) -> Result<Value, VmError> {
+  let cap: PromiseCapability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
+  let promise = scope.push_root(cap.promise)?;
+  let resolve = scope.push_root(cap.resolve)?;
+
+  let result = scope.alloc_object()?;
+  scope.push_root(Value::Object(result))?;
+  let value_key = alloc_key(scope, "value")?;
+  let done_key = alloc_key(scope, "done")?;
+  scope.define_property(result, value_key, result_data_desc(Value::Undefined))?;
+  scope.define_property(result, done_key, result_data_desc(Value::Bool(true)))?;
+
+  vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    resolve,
+    Value::Undefined,
+    &[Value::Object(result)],
+  )?;
+  Ok(promise)
+}
+
+fn readable_stream_values_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let stream_obj = require_host_tag(
+    scope,
+    this,
+    READABLE_STREAM_HOST_TAG,
+    "ReadableStream.values: illegal invocation",
+  )?;
+
+  // Minimal ReadableStreamIteratorOptions parsing: { preventCancel }.
+  let prevent_cancel = match args.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined | Value::Null => false,
+    Value::Object(options) => {
+      // Root options while allocating the property key: `alloc_key` can trigger GC.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(options))?;
+      let key = alloc_key(&mut scope, "preventCancel")?;
+      let v = vm.get_with_host_and_hooks(host, &mut scope, hooks, options, key)?;
+      scope.heap().to_boolean(v)?
+    }
+    _ => false,
+  };
+
+  // Acquire a default reader.
+  let reader_val =
+    readable_stream_get_reader_native(vm, scope, host, hooks, callee, Value::Object(stream_obj), &[])?;
+  let Value::Object(reader_obj) = reader_val else {
+    return Err(VmError::InvariantViolation(
+      "ReadableStream.getReader must return an object",
+    ));
+  };
+
+  let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
+  let (next_id, return_id, async_iter_id) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
+    Ok((
+      state.iterator_next_id,
+      state.iterator_return_id,
+      state.iterator_async_iterator_id,
+    ))
+  })?;
+
+  let intr = require_intrinsics(vm, "ReadableStream requires intrinsics")?;
+  let func_proto = intr.function_prototype();
+
+  let iter = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(iter, Some(intr.object_prototype()))?;
+
+  set_data_prop(scope, iter, ITER_READER_KEY, Value::Object(reader_obj), false)?;
+  set_data_prop(
+    scope,
+    iter,
+    ITER_PREVENT_CANCEL_KEY,
+    Value::Bool(prevent_cancel),
+    false,
+  )?;
+
+  let next_name = scope.alloc_string("next")?;
+  scope.push_root(Value::String(next_name))?;
+  let next_fn = scope.alloc_native_function_with_slots(
+    next_id,
+    None,
+    next_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(next_fn, Some(func_proto))?;
+  set_data_prop(scope, iter, "next", Value::Object(next_fn), true)?;
+
+  let return_name = scope.alloc_string("return")?;
+  scope.push_root(Value::String(return_name))?;
+  let return_fn = scope.alloc_native_function_with_slots(
+    return_id,
+    None,
+    return_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(return_fn, Some(func_proto))?;
+  set_data_prop(scope, iter, "return", Value::Object(return_fn), true)?;
+
+  let async_iter_name = scope.alloc_string("[Symbol.asyncIterator]")?;
+  scope.push_root(Value::String(async_iter_name))?;
+  let async_iter_fn = scope.alloc_native_function_with_slots(
+    async_iter_id,
+    None,
+    async_iter_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(async_iter_fn, Some(func_proto))?;
+  scope.push_root(Value::Object(async_iter_fn))?;
+  let async_iter_key = PropertyKey::from_symbol(intr.well_known_symbols().async_iterator);
+  scope.define_property(iter, async_iter_key, data_desc(Value::Object(async_iter_fn), true))?;
+
+  Ok(Value::Object(iter))
+}
+
+fn iterator_next_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError(
+      "ReadableStreamAsyncIterator.next: illegal invocation",
+    ));
+  };
+
+  let reader_val = get_data_prop(scope, iter_obj, ITER_READER_KEY)?;
+  let Value::Object(reader_obj) = reader_val else {
+    return resolve_async_iterator_done_promise(vm, scope, host, hooks);
+  };
+
+  let read_promise =
+    reader_read_native(vm, scope, host, hooks, callee, Value::Object(reader_obj), &[])?;
+  let Value::Object(read_promise_obj) = read_promise else {
+    return Err(VmError::InvariantViolation(
+      "ReadableStreamDefaultReader.read must return a Promise",
+    ));
+  };
+
+  let (fulfilled_id, rejected_id) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
+    Ok((state.iterator_next_fulfilled_id, state.iterator_next_rejected_id))
+  })?;
+  let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
+  let realm_slot = Value::Number(realm_id.to_raw() as f64);
+
+  // Root captured values across callback allocation.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(iter_obj))?;
+  scope.push_root(Value::Object(reader_obj))?;
+  scope.push_root(read_promise)?;
+
+  let on_fulfilled_name = scope.alloc_string("ReadableStream async iterator next fulfilled")?;
+  scope.push_root(Value::String(on_fulfilled_name))?;
+  let on_fulfilled = scope.alloc_native_function_with_slots(
+    fulfilled_id,
+    None,
+    on_fulfilled_name,
+    1,
+    &[
+      realm_slot,
+      Value::Object(iter_obj),
+      Value::Object(reader_obj),
+    ],
+  )?;
+  scope.push_root(Value::Object(on_fulfilled))?;
+
+  let on_rejected_name = scope.alloc_string("ReadableStream async iterator next rejected")?;
+  scope.push_root(Value::String(on_rejected_name))?;
+  let on_rejected = scope.alloc_native_function_with_slots(
+    rejected_id,
+    None,
+    on_rejected_name,
+    1,
+    &[
+      realm_slot,
+      Value::Object(iter_obj),
+      Value::Object(reader_obj),
+    ],
+  )?;
+  scope.push_root(Value::Object(on_rejected))?;
+
+  perform_promise_then_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(read_promise_obj),
+    Some(Value::Object(on_fulfilled)),
+    Some(Value::Object(on_rejected)),
+  )
+}
+
+fn iterator_next_fulfilled_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let result = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(result_obj) = result else {
+    return Ok(result);
+  };
+
+  // Root result object while reading `done`.
+  scope.push_root(Value::Object(result_obj))?;
+  let done_key = alloc_key(scope, "done")?;
+  let done_val = vm.get_with_host_and_hooks(host, scope, hooks, result_obj, done_key)?;
+  let done = scope.heap().to_boolean(done_val)?;
+
+  if !done {
+    return Ok(result);
+  }
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let iter_obj = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream async iterator next callback missing iterator slot",
+      ))
+    }
+  };
+  let reader_obj = match slots.get(2).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream async iterator next callback missing reader slot",
+      ))
+    }
+  };
+
+  // Auto-release lock on normal completion so `for await...of` doesn't leave the stream locked.
+  let _ = reader_release_lock_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(reader_obj),
+    &[],
+  );
+  let _ = set_data_prop(scope, iter_obj, ITER_READER_KEY, Value::Undefined, false);
+
+  Ok(result)
+}
+
+fn iterator_next_rejected_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let iter_obj = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("ReadableStream iterator callback missing iterator slot")),
+  };
+  let reader_obj = match slots.get(2).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("ReadableStream iterator callback missing reader slot")),
+  };
+
+  let _ = reader_release_lock_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(reader_obj),
+    &[],
+  );
+  let _ = set_data_prop(scope, iter_obj, ITER_READER_KEY, Value::Undefined, false);
+
+  Err(VmError::Throw(reason))
+}
+
+fn iterator_return_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError(
+      "ReadableStreamAsyncIterator.return: illegal invocation",
+    ));
+  };
+
+  let prevent_cancel = match get_data_prop(scope, iter_obj, ITER_PREVENT_CANCEL_KEY)? {
+    Value::Bool(b) => b,
+    _ => false,
+  };
+
+  if let Value::Object(reader_obj) = get_data_prop(scope, iter_obj, ITER_READER_KEY)? {
+    if !prevent_cancel {
+      let _ = reader_cancel_native(vm, scope, host, hooks, callee, Value::Object(reader_obj), &[]);
+    }
+    let _ =
+      reader_release_lock_native(vm, scope, host, hooks, callee, Value::Object(reader_obj), &[]);
+    set_data_prop(scope, iter_obj, ITER_READER_KEY, Value::Undefined, false)?;
+  }
+
+  resolve_async_iterator_done_promise(vm, scope, host, hooks)
+}
+
+fn iterator_async_iterator_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(this)
 }
 
 fn readable_stream_pipe_through_read_fulfilled_native(
@@ -4359,6 +4726,43 @@ pub fn install_window_streams_bindings(
     },
   )?;
 
+  let iterator_next_id: NativeFunctionId = vm.register_native_call(iterator_next_native)?;
+  let iterator_next_fulfilled_id: NativeFunctionId =
+    vm.register_native_call(iterator_next_fulfilled_native)?;
+  let iterator_next_rejected_id: NativeFunctionId =
+    vm.register_native_call(iterator_next_rejected_native)?;
+  let iterator_return_id: NativeFunctionId = vm.register_native_call(iterator_return_native)?;
+  let iterator_async_iterator_id: NativeFunctionId =
+    vm.register_native_call(iterator_async_iterator_native)?;
+
+  // `values({ preventCancel })` + `@@asyncIterator` (for `for await...of`).
+  let values_call_id: NativeFunctionId = vm.register_native_call(readable_stream_values_native)?;
+  let values_name = scope.alloc_string("values")?;
+  scope.push_root(Value::String(values_name))?;
+  let values_fn = scope.alloc_native_function_with_slots(
+    values_call_id,
+    None,
+    values_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(values_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(values_fn, Some(intr.function_prototype()))?;
+  let values_key = alloc_key(&mut scope, "values")?;
+  scope.define_property(
+    stream_proto,
+    values_key,
+    data_desc(Value::Object(values_fn), true),
+  )?;
+  let async_iter_key = PropertyKey::from_symbol(intr.well_known_symbols().async_iterator);
+  scope.define_property(
+    stream_proto,
+    async_iter_key,
+    data_desc(Value::Object(values_fn), true),
+  )?;
+
   let to_string_tag = intr.well_known_symbols().to_string_tag;
   let stream_tag_key = PropertyKey::from_symbol(to_string_tag);
   let stream_tag_val = scope.alloc_string("ReadableStream")?;
@@ -4943,6 +5347,11 @@ pub fn install_window_streams_bindings(
       readable_stream_pipe_to_write_rejected_call_id,
       readable_stream_pipe_to_close_fulfilled_call_id,
       readable_stream_pipe_to_close_rejected_call_id,
+      iterator_next_id,
+      iterator_next_fulfilled_id,
+      iterator_next_rejected_id,
+      iterator_return_id,
+      iterator_async_iterator_id,
       streams: HashMap::new(),
       readers: HashMap::new(),
       last_gc_runs: scope.heap().gc_runs(),

@@ -15,6 +15,7 @@ use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use crate::js::window_streams;
 use vm_js::{
   new_promise_capability_with_host_and_hooks, GcObject, GcString, Heap, NativeConstructId,
   NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, Scope, Value,
@@ -582,6 +583,20 @@ fn blob_array_buffer_native(
   Ok(promise)
 }
 
+fn blob_stream_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (_obj, data) = require_blob(vm, scope, callee, this)?;
+  let stream = window_streams::create_readable_byte_stream_from_bytes(vm, scope, callee, data.bytes)?;
+  Ok(Value::Object(stream))
+}
+
 pub fn install_window_blob_bindings(
   vm: &mut Vm,
   realm: &Realm,
@@ -681,6 +696,23 @@ pub fn install_window_blob_bindings(
     .object_set_prototype(ab_fn, Some(intr.function_prototype()))?;
   let ab_key = alloc_key(&mut scope, "arrayBuffer")?;
   scope.define_property(proto, ab_key, data_desc(Value::Object(ab_fn), true))?;
+
+  let stream_call_id: NativeFunctionId = vm.register_native_call(blob_stream_native)?;
+  let stream_name = scope.alloc_string("stream")?;
+  scope.push_root(Value::String(stream_name))?;
+  let stream_fn = scope.alloc_native_function_with_slots(
+    stream_call_id,
+    None,
+    stream_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(stream_fn, Some(intr.function_prototype()))?;
+  scope.push_root(Value::Object(stream_fn))?;
+  let stream_key = alloc_key(&mut scope, "stream")?;
+  scope.define_property(proto, stream_key, data_desc(Value::Object(stream_fn), true))?;
 
   let to_string_tag = intr.well_known_symbols().to_string_tag;
   let tag_key = PropertyKey::from_symbol(to_string_tag);

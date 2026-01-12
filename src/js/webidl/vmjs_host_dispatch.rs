@@ -3669,17 +3669,12 @@ mod element_dispatch_tests {
       .expect("append div to document");
     let mut host = DocumentHostState::new(dom);
 
-    // `DomPlatform` keys wrappers by (document wrapper object, node id) so the same `NodeId` can be
-    // wrapped independently for different documents. In this unit test we don't have a real JS
-    // `document` wrapper object, so use the realm global object as a stable per-document key.
-    let document_key = WeakGcObject::from(realm.global_object());
-
     let wrapper = {
       // `DomPlatform` caches wrappers keyed by `(document, node_id)`; tests can use a synthetic
       // document object as the key.
       let document_obj = scope.alloc_object()?;
       scope.push_root(Value::Object(document_obj))?;
-      let document_key = vm_js::WeakGcObject::from(document_obj);
+      let document_key = WeakGcObject::from(document_obj);
       let data = vm.user_data_mut::<WindowRealmUserData>().expect("user data");
       let platform = data.dom_platform_mut().expect("platform");
       platform.get_or_create_wrapper(&mut scope, document_key, div, DomInterface::Element)?

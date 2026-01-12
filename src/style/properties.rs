@@ -14338,7 +14338,7 @@ fn apply_declaration_with_base_internal_with_order(
           _ => styles.text_orientation,
         };
       }
-    }
+    },
     "text-combine-upright" => {
       if let Some(value) = parse_text_combine_upright(resolved_value) {
         styles.text_combine_upright = value;
