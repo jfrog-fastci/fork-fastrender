@@ -931,6 +931,24 @@ impl Heap {
     )
   }
 
+  /// Returns `true` if `obj` currently points to a live Date object allocation.
+  pub fn is_date_object(&self, obj: GcObject) -> bool {
+    matches!(self.date_value(obj), Ok(Some(_)))
+  }
+
+  /// Returns the `[[DateValue]]` internal slot for a Date object.
+  ///
+  /// Returns `Ok(None)` if `obj` is not a Date object.
+  pub fn date_value(&self, obj: GcObject) -> Result<Option<f64>, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::Object(o) => match &o.base.kind {
+        ObjectKind::Date(d) => Ok(Some(d.value)),
+        _ => Ok(None),
+      },
+      _ => Ok(None),
+    }
+  }
+
   pub(crate) fn array_buffer_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
     Ok(self.get_array_buffer(obj)?.byte_length())
   }
@@ -4697,6 +4715,22 @@ impl<'a> Scope<'a> {
     let obj = HeapObject::WeakSet(JsWeakSet::new(None));
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
   }
+
+  /// Allocates a JavaScript Date object on the heap.
+  pub fn alloc_date(&mut self, value: f64) -> Result<GcObject, VmError> {
+    let new_bytes = JsObject::heap_size_bytes_for_property_count(0);
+    self.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = JsObject {
+      base: ObjectBase {
+        prototype: None,
+        extensible: true,
+        properties: Box::default(),
+        kind: ObjectKind::Date(DateObject { value }),
+      },
+    };
+    Ok(GcObject(self.heap.alloc_unchecked(HeapObject::Object(obj), new_bytes)?))
+  }
   /// Allocates an ordinary object with the provided `[[Prototype]]` and own properties.
   pub fn alloc_object_with_properties(
     &mut self,
@@ -5933,7 +5967,7 @@ impl ObjectBase {
   fn array_length(&self) -> Option<u32> {
     match &self.kind {
       ObjectKind::Array(a) => Some(a.length),
-      ObjectKind::Ordinary => None,
+      ObjectKind::Ordinary | ObjectKind::Date(_) => None,
     }
   }
 
@@ -6359,11 +6393,17 @@ impl Trace for JsPromise {
 enum ObjectKind {
   Ordinary,
   Array(ArrayObject),
+  Date(DateObject),
 }
 
 #[derive(Debug)]
 struct ArrayObject {
   length: u32,
+}
+
+#[derive(Debug)]
+struct DateObject {
+  value: f64,
 }
 
 #[derive(Debug, Clone, Copy)]

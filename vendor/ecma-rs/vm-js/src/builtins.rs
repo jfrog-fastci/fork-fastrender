@@ -6705,6 +6705,7 @@ pub fn object_prototype_to_string(
     b'o' as u16,
     b'r' as u16,
   ];
+  const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
   const TAG_FUNCTION: [u16; 8] = [
     b'F' as u16,
     b'u' as u16,
@@ -6763,6 +6764,8 @@ pub fn object_prototype_to_string(
         &TAG_PROMISE
       } else if scope.heap().is_generator_object(o) {
         &TAG_GENERATOR
+      } else if scope.heap().is_date_object(o) {
+        &TAG_DATE
       } else if can_check_markers {
         let heap = scope.heap();
         let has_marker = |marker: Option<crate::GcSymbol>| -> Result<bool, VmError> {
@@ -12811,22 +12814,578 @@ pub fn math_random(
   Ok(Value::Number(n))
 }
 
-/// `Date` called as a function (extremely minimal).
+const DATE_MS_PER_SECOND: i64 = 1_000;
+const DATE_MS_PER_MINUTE: i64 = 60 * DATE_MS_PER_SECOND;
+const DATE_MS_PER_HOUR: i64 = 60 * DATE_MS_PER_MINUTE;
+const DATE_MS_PER_DAY: i64 = 24 * DATE_MS_PER_HOUR;
+const DATE_TIME_CLIP_RANGE: f64 = 8.64e15;
+
+fn date_time_clip(time: f64) -> f64 {
+  if !time.is_finite() {
+    return f64::NAN;
+  }
+  if time.abs() > DATE_TIME_CLIP_RANGE {
+    return f64::NAN;
+  }
+  time.trunc()
+}
+
+fn to_integer_or_infinity_i64(n: f64) -> Option<i64> {
+  // ECMA-262 `ToIntegerOrInfinity`:
+  // - NaN => +0
+  // - +/-Infinity => +/-Infinity
+  // - finite => truncate toward zero
+  let n = if n.is_nan() { 0.0 } else { n };
+  if !n.is_finite() {
+    return None;
+  }
+  let t = n.trunc();
+  if t < i64::MIN as f64 || t > i64::MAX as f64 {
+    return None;
+  }
+  Some(t as i64)
+}
+
+fn is_leap_year(year: i64) -> bool {
+  year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn day_from_year(year: i64) -> i64 {
+  365 * (year - 1970)
+    + (year - 1969).div_euclid(4)
+    - (year - 1901).div_euclid(100)
+    + (year - 1601).div_euclid(400)
+}
+
+fn time_from_year(year: i64) -> i64 {
+  day_from_year(year).saturating_mul(DATE_MS_PER_DAY)
+}
+
+fn year_from_time(time: i64) -> i64 {
+  // Time values are limited by TimeClip to ±8.64e15ms, which corresponds to roughly ±275k years.
+  // Use a fixed-range binary search to avoid fragile floating-point approximations.
+  let mut lo: i64 = -400_000;
+  let mut hi: i64 = 400_000;
+  while lo < hi {
+    let mid = lo + (hi - lo + 1) / 2;
+    if time_from_year(mid) <= time {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  lo
+}
+
+fn make_day(year: i64, month: i64, date: i64) -> Option<i128> {
+  let year = year as i128;
+  let month = month as i128;
+  let date = date as i128;
+
+  let ym = year.checked_add(month.div_euclid(12))?;
+  let mn = month.rem_euclid(12);
+  let mn_usize: usize = usize::try_from(mn).ok()?;
+  if mn_usize >= 12 {
+    return None;
+  }
+
+  let ym_i64: i64 = i64::try_from(ym).ok()?;
+  let leap = is_leap_year(ym_i64);
+
+  const DAYS_BEFORE_MONTH: [i128; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+
+  let mut days = 365i128
+    .checked_mul(ym - 1970)?
+    .checked_add((ym - 1969).div_euclid(4))?
+    .checked_sub((ym - 1901).div_euclid(100))?
+    .checked_add((ym - 1601).div_euclid(400))?;
+
+  days = days.checked_add(DAYS_BEFORE_MONTH[mn_usize])?;
+  if leap && mn_usize >= 2 {
+    days = days.checked_add(1)?;
+  }
+  days.checked_add(date.checked_sub(1)?)
+}
+
+fn make_time(hour: i64, min: i64, sec: i64, ms: i64) -> Option<i128> {
+  let hour = hour as i128;
+  let min = min as i128;
+  let sec = sec as i128;
+  let ms = ms as i128;
+
+  let t = hour.checked_mul(DATE_MS_PER_HOUR as i128)?;
+  let t = t.checked_add(min.checked_mul(DATE_MS_PER_MINUTE as i128)?)?;
+  let t = t.checked_add(sec.checked_mul(DATE_MS_PER_SECOND as i128)?)?;
+  t.checked_add(ms)
+}
+
+fn make_date(day: i128, time: i128) -> Option<i128> {
+  day
+    .checked_mul(DATE_MS_PER_DAY as i128)?
+    .checked_add(time)
+}
+
+#[derive(Clone, Copy)]
+struct DateParts {
+  year: i64,
+  month0: u8,
+  date: u8,
+  hour: u8,
+  minute: u8,
+  second: u8,
+  millisecond: u16,
+  weekday: u8,
+}
+
+fn date_parts_from_time(time: i64) -> DateParts {
+  let day = time.div_euclid(DATE_MS_PER_DAY);
+  let time_within_day = time.rem_euclid(DATE_MS_PER_DAY);
+
+  let year = year_from_time(time);
+  let day_within_year = day - day_from_year(year);
+  let leap = is_leap_year(year);
+
+  const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  let mut month0: u8 = 0;
+  let mut date: u8 = 1;
+  let mut acc = 0i64;
+  for (m, &dim0) in MONTH_DAYS.iter().enumerate() {
+    let dim = if leap && m == 1 { dim0 + 1 } else { dim0 };
+    if day_within_year < acc + dim {
+      month0 = m as u8;
+      date = (day_within_year - acc + 1) as u8;
+      break;
+    }
+    acc += dim;
+  }
+
+  let hour = (time_within_day / DATE_MS_PER_HOUR) as u8;
+  let minute = ((time_within_day % DATE_MS_PER_HOUR) / DATE_MS_PER_MINUTE) as u8;
+  let second = ((time_within_day % DATE_MS_PER_MINUTE) / DATE_MS_PER_SECOND) as u8;
+  let millisecond = (time_within_day % DATE_MS_PER_SECOND) as u16;
+
+  // 1970-01-01 is a Thursday. WeekDay: (Day + 4) mod 7, where 0 = Sunday.
+  let weekday = (day.saturating_add(4).rem_euclid(7)) as u8;
+
+  DateParts {
+    year,
+    month0,
+    date,
+    hour,
+    minute,
+    second,
+    millisecond,
+    weekday,
+  }
+}
+
+fn vec_try_push_ascii(buf: &mut Vec<u16>, bytes: &[u8]) -> Result<(), VmError> {
+  for &b in bytes {
+    vec_try_push(buf, b as u16)?;
+  }
+  Ok(())
+}
+
+fn vec_try_push_two_digits(buf: &mut Vec<u16>, n: u8) -> Result<(), VmError> {
+  vec_try_push(buf, (b'0' + (n / 10)) as u16)?;
+  vec_try_push(buf, (b'0' + (n % 10)) as u16)?;
+  Ok(())
+}
+
+fn vec_try_push_three_digits(buf: &mut Vec<u16>, n: u16) -> Result<(), VmError> {
+  vec_try_push(buf, (b'0' + ((n / 100) as u8)) as u16)?;
+  vec_try_push(buf, (b'0' + (((n / 10) % 10) as u8)) as u16)?;
+  vec_try_push(buf, (b'0' + ((n % 10) as u8)) as u16)?;
+  Ok(())
+}
+
+fn vec_try_push_year_iso(buf: &mut Vec<u16>, year: i64) -> Result<(), VmError> {
+  if (0..=9999).contains(&year) {
+    let y = year as u32;
+    vec_try_push(buf, (b'0' + ((y / 1000) as u8)) as u16)?;
+    vec_try_push(buf, (b'0' + (((y / 100) % 10) as u8)) as u16)?;
+    vec_try_push(buf, (b'0' + (((y / 10) % 10) as u8)) as u16)?;
+    vec_try_push(buf, (b'0' + ((y % 10) as u8)) as u16)?;
+    return Ok(());
+  }
+
+  let (sign, abs) = if year < 0 {
+    (b'-', year.saturating_neg() as u32)
+  } else {
+    (b'+', year as u32)
+  };
+  vec_try_push(buf, sign as u16)?;
+  let y = abs;
+  vec_try_push(buf, (b'0' + ((y / 100_000) as u8)) as u16)?;
+  vec_try_push(buf, (b'0' + (((y / 10_000) % 10) as u8)) as u16)?;
+  vec_try_push(buf, (b'0' + (((y / 1000) % 10) as u8)) as u16)?;
+  vec_try_push(buf, (b'0' + (((y / 100) % 10) as u8)) as u16)?;
+  vec_try_push(buf, (b'0' + (((y / 10) % 10) as u8)) as u16)?;
+  vec_try_push(buf, (b'0' + ((y % 10) as u8)) as u16)?;
+  Ok(())
+}
+
+fn date_alloc_iso_string(scope: &mut Scope<'_>, time: i64) -> Result<crate::GcString, VmError> {
+  let parts = date_parts_from_time(time);
+  let mut out: Vec<u16> = Vec::new();
+  out.try_reserve_exact(27).map_err(|_| VmError::OutOfMemory)?;
+
+  vec_try_push_year_iso(&mut out, parts.year)?;
+  vec_try_push(&mut out, b'-' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.month0 + 1)?;
+  vec_try_push(&mut out, b'-' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.date)?;
+  vec_try_push(&mut out, b'T' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.hour)?;
+  vec_try_push(&mut out, b':' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.minute)?;
+  vec_try_push(&mut out, b':' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.second)?;
+  vec_try_push(&mut out, b'.' as u16)?;
+  vec_try_push_three_digits(&mut out, parts.millisecond)?;
+  vec_try_push(&mut out, b'Z' as u16)?;
+
+  scope.alloc_string_from_u16_vec(out)
+}
+
+fn date_alloc_utc_string(scope: &mut Scope<'_>, time: i64) -> Result<crate::GcString, VmError> {
+  const WEEKDAY: [&[u8]; 7] = [b"Sun", b"Mon", b"Tue", b"Wed", b"Thu", b"Fri", b"Sat"];
+  const MONTH: [&[u8]; 12] = [
+    b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec",
+  ];
+
+  let parts = date_parts_from_time(time);
+  let mut out: Vec<u16> = Vec::new();
+  out.try_reserve_exact(32).map_err(|_| VmError::OutOfMemory)?;
+
+  vec_try_push_ascii(&mut out, WEEKDAY[parts.weekday as usize])?;
+  vec_try_push(&mut out, b',' as u16)?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.date)?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_ascii(&mut out, MONTH[parts.month0 as usize])?;
+  vec_try_push(&mut out, b' ' as u16)?;
+
+  // Year: match ISO formatting for out-of-range years.
+  vec_try_push_year_iso(&mut out, parts.year)?;
+
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.hour)?;
+  vec_try_push(&mut out, b':' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.minute)?;
+  vec_try_push(&mut out, b':' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.second)?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_ascii(&mut out, b"GMT")?;
+
+  scope.alloc_string_from_u16_vec(out)
+}
+
+fn date_alloc_string(scope: &mut Scope<'_>, time: i64) -> Result<crate::GcString, VmError> {
+  const WEEKDAY: [&[u8]; 7] = [b"Sun", b"Mon", b"Tue", b"Wed", b"Thu", b"Fri", b"Sat"];
+  const MONTH: [&[u8]; 12] = [
+    b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec",
+  ];
+
+  let parts = date_parts_from_time(time);
+  let mut out: Vec<u16> = Vec::new();
+  out.try_reserve_exact(32).map_err(|_| VmError::OutOfMemory)?;
+
+  vec_try_push_ascii(&mut out, WEEKDAY[parts.weekday as usize])?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_ascii(&mut out, MONTH[parts.month0 as usize])?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.date)?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_year_iso(&mut out, parts.year)?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.hour)?;
+  vec_try_push(&mut out, b':' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.minute)?;
+  vec_try_push(&mut out, b':' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.second)?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_ascii(&mut out, b"GMT")?;
+
+  scope.alloc_string_from_u16_vec(out)
+}
+
+fn parse_iso_date_string(vm: &mut Vm, scope: &mut Scope<'_>, s: crate::GcString) -> Result<f64, VmError> {
+  let js = scope.heap().get_string(s)?;
+  let units = js.as_code_units();
+
+  let mut start = 0usize;
+  let mut end = units.len();
+
+  while start < end && is_trim_whitespace_unit(units[start]) {
+    start += 1;
+    if start % 1024 == 0 {
+      vm.tick()?;
+    }
+  }
+  let mut trimmed = 0usize;
+  while end > start && is_trim_whitespace_unit(units[end - 1]) {
+    end -= 1;
+    trimmed += 1;
+    if trimmed % 1024 == 0 {
+      vm.tick()?;
+    }
+  }
+
+  if start == end {
+    return Ok(f64::NAN);
+  }
+
+  let mut i = start;
+
+  fn digit(u: u16) -> Option<u8> {
+    if (b'0' as u16..=b'9' as u16).contains(&u) {
+      Some((u - b'0' as u16) as u8)
+    } else {
+      None
+    }
+  }
+
+  fn parse_n_digits(units: &[u16], i: &mut usize, n: usize) -> Option<i64> {
+    if *i + n > units.len() {
+      return None;
+    }
+    let mut out: i64 = 0;
+    for _ in 0..n {
+      let d = digit(units[*i])? as i64;
+      out = out.checked_mul(10)?.checked_add(d)?;
+      *i += 1;
+    }
+    Some(out)
+  }
+
+  let year: i64;
+  if units[i] == b'+' as u16 || units[i] == b'-' as u16 {
+    let sign = if units[i] == b'-' as u16 { -1i64 } else { 1i64 };
+    i += 1;
+    let abs = match parse_n_digits(units, &mut i, 6) {
+      Some(v) => v,
+      None => return Ok(f64::NAN),
+    };
+    year = sign.saturating_mul(abs);
+  } else {
+    year = match parse_n_digits(units, &mut i, 4) {
+      Some(v) => v,
+      None => return Ok(f64::NAN),
+    };
+  }
+
+  if i >= end || units[i] != b'-' as u16 {
+    return Ok(f64::NAN);
+  }
+  i += 1;
+
+  let month1 = match parse_n_digits(units, &mut i, 2) {
+    Some(v) => v,
+    None => return Ok(f64::NAN),
+  };
+  if !(1..=12).contains(&month1) {
+    return Ok(f64::NAN);
+  }
+  let month0 = month1 - 1;
+
+  if i >= end || units[i] != b'-' as u16 {
+    return Ok(f64::NAN);
+  }
+  i += 1;
+
+  let mut date = match parse_n_digits(units, &mut i, 2) {
+    Some(v) => v,
+    None => return Ok(f64::NAN),
+  };
+  if date < 1 {
+    return Ok(f64::NAN);
+  }
+
+  let dim = match month0 {
+    0 | 2 | 4 | 6 | 7 | 9 | 11 => 31,
+    3 | 5 | 8 | 10 => 30,
+    1 => {
+      if is_leap_year(year) {
+        29
+      } else {
+        28
+      }
+    }
+    _ => return Ok(f64::NAN),
+  };
+  if date > dim {
+    return Ok(f64::NAN);
+  }
+
+  let mut hour: i64 = 0;
+  let mut minute: i64 = 0;
+  let mut second: i64 = 0;
+  let mut millisecond: i64 = 0;
+  let mut tz_offset_min: i64 = 0;
+
+  if i < end {
+    if units[i] != b'T' as u16 {
+      return Ok(f64::NAN);
+    }
+    i += 1;
+
+    hour = match parse_n_digits(units, &mut i, 2) {
+      Some(v) => v,
+      None => return Ok(f64::NAN),
+    };
+    if hour > 24 {
+      return Ok(f64::NAN);
+    }
+    if i >= end || units[i] != b':' as u16 {
+      return Ok(f64::NAN);
+    }
+    i += 1;
+
+    minute = match parse_n_digits(units, &mut i, 2) {
+      Some(v) => v,
+      None => return Ok(f64::NAN),
+    };
+    if minute > 59 {
+      return Ok(f64::NAN);
+    }
+
+    if i < end && units[i] == b':' as u16 {
+      i += 1;
+      second = match parse_n_digits(units, &mut i, 2) {
+        Some(v) => v,
+        None => return Ok(f64::NAN),
+      };
+      if second > 59 {
+        return Ok(f64::NAN);
+      }
+    }
+
+    if i < end && units[i] == b'.' as u16 {
+      i += 1;
+      if i >= end {
+        return Ok(f64::NAN);
+      }
+      let mut digits = 0usize;
+      let mut ms = 0i64;
+      let mut scanned = 0usize;
+      while i < end {
+        let Some(d) = digit(units[i]) else {
+          break;
+        };
+        if digits < 3 {
+          ms = ms.saturating_mul(10).saturating_add(d as i64);
+          digits += 1;
+        }
+        i += 1;
+        scanned += 1;
+        if scanned % 1024 == 0 {
+          vm.tick()?;
+        }
+      }
+      if digits == 0 {
+        return Ok(f64::NAN);
+      }
+      if digits == 1 {
+        ms *= 100;
+      } else if digits == 2 {
+        ms *= 10;
+      }
+      millisecond = ms;
+    }
+
+    if i < end {
+      match units[i] {
+        u if u == b'Z' as u16 => {
+          i += 1;
+          tz_offset_min = 0;
+        }
+        u if u == b'+' as u16 || u == b'-' as u16 => {
+          let sign = if u == b'-' as u16 { -1i64 } else { 1i64 };
+          i += 1;
+          let tz_h = match parse_n_digits(units, &mut i, 2) {
+            Some(v) => v,
+            None => return Ok(f64::NAN),
+          };
+          if tz_h > 23 {
+            return Ok(f64::NAN);
+          }
+          if i < end && units[i] == b':' as u16 {
+            i += 1;
+          }
+          let tz_m = match parse_n_digits(units, &mut i, 2) {
+            Some(v) => v,
+            None => return Ok(f64::NAN),
+          };
+          if tz_m > 59 {
+            return Ok(f64::NAN);
+          }
+          tz_offset_min = sign.saturating_mul(tz_h.saturating_mul(60).saturating_add(tz_m));
+        }
+        _ => {
+          // Date-time without an explicit timezone: treat as UTC for deterministic host behavior.
+          tz_offset_min = 0;
+        }
+      }
+    }
+  }
+
+  if i != end {
+    return Ok(f64::NAN);
+  }
+
+  if hour == 24 {
+    if minute != 0 || second != 0 || millisecond != 0 {
+      return Ok(f64::NAN);
+    }
+    hour = 0;
+    date = date.saturating_add(1);
+  }
+
+  let Some(day) = make_day(year, month0, date) else {
+    return Ok(f64::NAN);
+  };
+  let Some(time_within_day) = make_time(hour, minute, second, millisecond) else {
+    return Ok(f64::NAN);
+  };
+  let Some(mut ms) = make_date(day, time_within_day) else {
+    return Ok(f64::NAN);
+  };
+  ms = ms.saturating_sub((tz_offset_min as i128).saturating_mul(DATE_MS_PER_MINUTE as i128));
+
+  Ok(date_time_clip(ms as f64))
+}
+
+fn date_this_time_value(scope: &mut Scope<'_>, this: Value) -> Result<f64, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Date called on non-object"));
+  };
+  match scope.heap().date_value(obj)? {
+    Some(v) => Ok(v),
+    None => Err(VmError::TypeError("Date called on non-Date object")),
+  }
+}
+
+/// `Date` called as a function.
 pub fn date_constructor_call(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // Spec: `Date()` returns a string representation of the current time.
-  // For the interpreter/test262 we only need a deterministic placeholder.
-  Ok(Value::String(scope.alloc_string("[object Date]")?))
+  let tv = date_time_clip(hooks.host_current_time_millis());
+  if !tv.is_finite() {
+    return Ok(Value::String(scope.alloc_string("Invalid Date")?));
+  }
+  let s = date_alloc_string(scope, tv as i64)?;
+  Ok(Value::String(s))
 }
 
-/// `new Date(value)` (minimal wrapper object).
+/// `new Date(...)`.
 pub fn date_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -12837,26 +13396,73 @@ pub fn date_constructor_construct(
   new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
-  let time = match args.first().copied() {
-    None => 0.0,
-    Some(v) => scope.to_number(vm, host, hooks, v)?,
+  let time = match args.len() {
+    0 => date_time_clip(hooks.host_current_time_millis()),
+    1 => {
+      let v = args[0];
+      let prim = if matches!(v, Value::Object(_)) {
+        scope.to_primitive(vm, host, hooks, v, crate::ToPrimitiveHint::Default)?
+      } else {
+        v
+      };
+      match prim {
+        Value::String(s) => parse_iso_date_string(vm, scope, s)?,
+        other => date_time_clip(scope.to_number(vm, host, hooks, other)?),
+      }
+    }
+    _ => {
+      let y = scope.to_number(vm, host, hooks, args[0])?;
+      let m = scope.to_number(vm, host, hooks, args[1])?;
+      let dt = scope
+        .to_number(vm, host, hooks, args.get(2).copied().unwrap_or(Value::Number(1.0)))?;
+      let h =
+        scope.to_number(vm, host, hooks, args.get(3).copied().unwrap_or(Value::Number(0.0)))?;
+      let min =
+        scope.to_number(vm, host, hooks, args.get(4).copied().unwrap_or(Value::Number(0.0)))?;
+      let sec =
+        scope.to_number(vm, host, hooks, args.get(5).copied().unwrap_or(Value::Number(0.0)))?;
+      let ms =
+        scope.to_number(vm, host, hooks, args.get(6).copied().unwrap_or(Value::Number(0.0)))?;
+
+      match (
+        to_integer_or_infinity_i64(y),
+        to_integer_or_infinity_i64(m),
+        to_integer_or_infinity_i64(dt),
+        to_integer_or_infinity_i64(h),
+        to_integer_or_infinity_i64(min),
+        to_integer_or_infinity_i64(sec),
+        to_integer_or_infinity_i64(ms),
+      ) {
+        (
+          Some(mut year),
+          Some(month),
+          Some(date),
+          Some(hour),
+          Some(minute),
+          Some(second),
+          Some(millisecond),
+        ) => {
+          if (0..=99).contains(&year) {
+            year = year.saturating_add(1900);
+          }
+          match (make_day(year, month, date), make_time(hour, minute, second, millisecond)) {
+            (Some(day), Some(time)) => match make_date(day, time) {
+              Some(ms) => date_time_clip(ms as f64),
+              None => f64::NAN,
+            },
+            _ => f64::NAN,
+          }
+        }
+        _ => f64::NAN,
+      }
+    }
   };
 
-  let obj = scope.alloc_object()?;
+  let obj = scope.alloc_date(time)?;
   scope.push_root(Value::Object(obj))?;
   scope
     .heap_mut()
     .object_set_prototype(obj, Some(intr.date_prototype()))?;
-
-  // Store the time value on an internal symbol.
-  let marker = scope.alloc_string("vm-js.internal.DateData")?;
-  let marker_sym = scope.heap_mut().symbol_for(marker)?;
-  let marker_key = PropertyKey::from_symbol(marker_sym);
-  scope.define_property(
-    obj,
-    marker_key,
-    data_desc(Value::Number(time), true, false, false),
-  )?;
 
   // Best-effort: if `new_target.prototype` is an object, use it.
   if let Value::Object(nt) = new_target {
@@ -12869,21 +13475,159 @@ pub fn date_constructor_construct(
   Ok(Value::Object(obj))
 }
 
-/// `Date.prototype.toString` (minimal).
+/// `Date.now()`.
+pub fn date_now(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Number(date_time_clip(hooks.host_current_time_millis())))
+}
+
+/// `Date.parse(string)`.
+pub fn date_parse(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = scope.to_string(vm, host, hooks, arg)?;
+  Ok(Value::Number(parse_iso_date_string(vm, scope, s)?))
+}
+
+/// `Date.UTC(...)`.
+pub fn date_utc(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let y = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let m = scope.to_number(vm, host, hooks, args.get(1).copied().unwrap_or(Value::Undefined))?;
+  let dt = scope.to_number(vm, host, hooks, args.get(2).copied().unwrap_or(Value::Number(1.0)))?;
+  let h = scope.to_number(vm, host, hooks, args.get(3).copied().unwrap_or(Value::Number(0.0)))?;
+  let min = scope.to_number(vm, host, hooks, args.get(4).copied().unwrap_or(Value::Number(0.0)))?;
+  let sec = scope.to_number(vm, host, hooks, args.get(5).copied().unwrap_or(Value::Number(0.0)))?;
+  let ms = scope.to_number(vm, host, hooks, args.get(6).copied().unwrap_or(Value::Number(0.0)))?;
+
+  let Some(mut year) = to_integer_or_infinity_i64(y) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  if (0..=99).contains(&year) {
+    year = year.saturating_add(1900);
+  }
+  let Some(month) = to_integer_or_infinity_i64(m) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  let Some(date) = to_integer_or_infinity_i64(dt) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  let Some(hour) = to_integer_or_infinity_i64(h) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  let Some(minute) = to_integer_or_infinity_i64(min) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  let Some(second) = to_integer_or_infinity_i64(sec) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  let Some(millisecond) = to_integer_or_infinity_i64(ms) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+
+  let Some(day) = make_day(year, month, date) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  let Some(time) = make_time(hour, minute, second, millisecond) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  let Some(ms) = make_date(day, time) else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  Ok(Value::Number(date_time_clip(ms as f64)))
+}
+
+/// `Date.prototype.toString`.
 pub fn date_prototype_to_string(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // The test262 smoke suite only asserts that addition uses `toString` for Date objects.
-  Ok(Value::String(scope.alloc_string("[object Date]")?))
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::String(scope.alloc_string("Invalid Date")?));
+  }
+  let s = date_alloc_string(scope, tv as i64)?;
+  Ok(Value::String(s))
 }
 
-/// `Date.prototype.valueOf` (minimal).
+/// `Date.prototype.toUTCString`.
+pub fn date_prototype_to_utc_string(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::String(scope.alloc_string("Invalid Date")?));
+  }
+  let s = date_alloc_utc_string(scope, tv as i64)?;
+  Ok(Value::String(s))
+}
+
+/// `Date.prototype.toISOString`.
+pub fn date_prototype_to_iso_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(scope, intr, "Invalid time value")?;
+    return Err(VmError::Throw(err));
+  }
+  let s = date_alloc_iso_string(scope, tv as i64)?;
+  Ok(Value::String(s))
+}
+
+/// `Date.prototype.getTime`.
+pub fn date_prototype_get_time(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_value_of(_vm, scope, _host, _hooks, _callee, this, _args)
+}
+
+/// `Date.prototype.valueOf`.
 pub fn date_prototype_value_of(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -12893,45 +13637,71 @@ pub fn date_prototype_value_of(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(obj) = this else {
-    return Err(VmError::TypeError(
-      "Date.prototype.valueOf called on non-object",
-    ));
-  };
-  let marker = scope.alloc_string("vm-js.internal.DateData")?;
-  let marker_sym = scope.heap_mut().symbol_for(marker)?;
-  let marker_key = PropertyKey::from_symbol(marker_sym);
-  match scope
-    .heap()
-    .object_get_own_data_property_value(obj, &marker_key)?
-  {
-    Some(Value::Number(n)) => Ok(Value::Number(n)),
-    _ => Err(VmError::TypeError(
-      "Date.prototype.valueOf called on non-Date object",
-    )),
-  }
+  let tv = date_this_time_value(scope, this)?;
+  Ok(Value::Number(tv))
 }
 
-/// `Date.prototype[Symbol.toPrimitive]` (minimal).
+/// `Date.prototype[Symbol.toPrimitive]`.
 pub fn date_prototype_to_primitive(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Spec: Date's @@toPrimitive treats "default" like "string".
-  let hint = match args.first().copied() {
-    Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
-    _ => "default".to_string(),
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "Date.prototype[Symbol.toPrimitive] called on non-object",
+    ));
   };
-  if hint == "number" {
-    date_prototype_value_of(_vm, scope, _host, _hooks, _callee, this, &[])
+
+  let hint = match args.get(0).copied() {
+    Some(Value::String(s)) => s,
+    _ => return Err(VmError::TypeError("Invalid hint")),
+  };
+
+  let units = scope.heap().get_string(hint)?.as_code_units();
+  let hint = if units
+    == [
+      b'd' as u16,
+      b'e' as u16,
+      b'f' as u16,
+      b'a' as u16,
+      b'u' as u16,
+      b'l' as u16,
+      b't' as u16,
+    ]
+  {
+    crate::ToPrimitiveHint::String
+  } else if units
+    == [
+      b's' as u16,
+      b't' as u16,
+      b'r' as u16,
+      b'i' as u16,
+      b'n' as u16,
+      b'g' as u16,
+    ]
+  {
+    crate::ToPrimitiveHint::String
+  } else if units
+    == [
+      b'n' as u16,
+      b'u' as u16,
+      b'm' as u16,
+      b'b' as u16,
+      b'e' as u16,
+      b'r' as u16,
+    ]
+  {
+    crate::ToPrimitiveHint::Number
   } else {
-    date_prototype_to_string(_vm, scope, _host, _hooks, _callee, this, &[])
-  }
+    return Err(VmError::TypeError("Invalid hint"));
+  };
+
+  scope.ordinary_to_primitive(vm, host, hooks, obj, hint)
 }
 
 /// `Symbol(description)`.
@@ -14326,4 +15096,84 @@ pub fn json_stringify(
   serialize_json_value(vm, &mut scope, host, hooks, &mut state, &mut out, root_value)?;
 
   Ok(Value::String(scope.alloc_string_from_u16_vec(out.buf)?))
+}
+
+#[cfg(test)]
+mod date_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Job, RealmId, Value, Vm, VmError, VmHostHooks, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[derive(Default)]
+  struct DeterministicTimeHooks {
+    now_ms: i64,
+  }
+
+  impl VmHostHooks for DeterministicTimeHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {
+    }
+
+    fn host_current_time_millis(&mut self) -> f64 {
+      let out = self.now_ms as f64;
+      self.now_ms = self.now_ms.saturating_add(1);
+      out
+    }
+  }
+
+  #[test]
+  fn date_epoch_string_formats() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+
+    let v = rt.exec_script("new Date(0).toISOString()")?;
+    let Value::String(s) = v else {
+      return Err(VmError::Unimplemented("expected string"));
+    };
+    assert_eq!(rt.heap.get_string(s)?.to_utf8_lossy(), "1970-01-01T00:00:00.000Z");
+
+    let v = rt.exec_script("new Date(0).toUTCString()")?;
+    let Value::String(s) = v else {
+      return Err(VmError::Unimplemented("expected string"));
+    };
+    assert_eq!(rt.heap.get_string(s)?.to_utf8_lossy(), "Thu, 01 Jan 1970 00:00:00 GMT");
+
+    let v = rt.exec_script("new Date(0).toString()")?;
+    let Value::String(s) = v else {
+      return Err(VmError::Unimplemented("expected string"));
+    };
+    assert_eq!(rt.heap.get_string(s)?.to_utf8_lossy(), "Thu Jan 01 1970 00:00:00 GMT");
+
+    let v = rt.exec_script("Date.parse('1970-01-01T00:00:00.000Z')")?;
+    assert_eq!(v, Value::Number(0.0));
+
+    let v = rt.exec_script("Date.UTC(1970, 0, 1, 0, 0, 0, 0)")?;
+    assert_eq!(v, Value::Number(0.0));
+
+    Ok(())
+  }
+
+  #[test]
+  fn date_now_uses_host_time_hook() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let mut hooks = DeterministicTimeHooks { now_ms: 1000 };
+
+    let a = rt.exec_script_with_hooks(&mut hooks, "new Date().getTime()")?;
+    let b = rt.exec_script_with_hooks(&mut hooks, "Date.now()")?;
+    let c = rt.exec_script_with_hooks(&mut hooks, "Date.now()")?;
+    assert_eq!(a, Value::Number(1000.0));
+    assert_eq!(b, Value::Number(1001.0));
+    assert_eq!(c, Value::Number(1002.0));
+    Ok(())
+  }
+
+  #[test]
+  fn date_unary_plus_matches_get_time() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script("const d = new Date(1234); +d === d.getTime()")?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
 }

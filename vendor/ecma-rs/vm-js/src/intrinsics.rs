@@ -656,8 +656,14 @@ impl Intrinsics {
     let boolean_prototype_value_of = vm.register_native_call(builtins::boolean_prototype_value_of)?;
     let bigint_prototype_value_of = vm.register_native_call(builtins::bigint_prototype_value_of)?;
     let date_prototype_to_string = vm.register_native_call(builtins::date_prototype_to_string)?;
+    let date_prototype_to_utc_string = vm.register_native_call(builtins::date_prototype_to_utc_string)?;
+    let date_prototype_to_iso_string = vm.register_native_call(builtins::date_prototype_to_iso_string)?;
+    let date_prototype_get_time = vm.register_native_call(builtins::date_prototype_get_time)?;
     let date_prototype_value_of = vm.register_native_call(builtins::date_prototype_value_of)?;
     let date_prototype_to_primitive = vm.register_native_call(builtins::date_prototype_to_primitive)?;
+    let date_now = vm.register_native_call(builtins::date_now)?;
+    let date_parse = vm.register_native_call(builtins::date_parse)?;
+    let date_utc = vm.register_native_call(builtins::date_utc)?;
     let symbol_prototype_value_of = vm.register_native_call(builtins::symbol_prototype_value_of)?;
     let symbol_prototype_to_string = vm.register_native_call(builtins::symbol_prototype_to_string)?;
     let symbol_prototype_to_primitive =
@@ -2310,7 +2316,52 @@ impl Intrinsics {
       data_desc(Value::Object(date_constructor), true, false, true),
     )?;
 
-    // Date.prototype.toString / valueOf / @@toPrimitive
+    // Date.now / parse / UTC
+    {
+      let now_s = scope.alloc_string("now")?;
+      scope.push_root(Value::String(now_s))?;
+      let now_key = PropertyKey::from_string(now_s);
+      let now_fn = scope.alloc_native_function(date_now, None, now_s, 0)?;
+      scope.push_root(Value::Object(now_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(now_fn, Some(function_prototype))?;
+      scope.define_property(
+        date_constructor,
+        now_key,
+        data_desc(Value::Object(now_fn), true, false, true),
+      )?;
+
+      let parse_s = scope.alloc_string("parse")?;
+      scope.push_root(Value::String(parse_s))?;
+      let parse_key = PropertyKey::from_string(parse_s);
+      let parse_fn = scope.alloc_native_function(date_parse, None, parse_s, 1)?;
+      scope.push_root(Value::Object(parse_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(parse_fn, Some(function_prototype))?;
+      scope.define_property(
+        date_constructor,
+        parse_key,
+        data_desc(Value::Object(parse_fn), true, false, true),
+      )?;
+
+      let utc_s = scope.alloc_string("UTC")?;
+      scope.push_root(Value::String(utc_s))?;
+      let utc_key = PropertyKey::from_string(utc_s);
+      let utc_fn = scope.alloc_native_function(date_utc, None, utc_s, 7)?;
+      scope.push_root(Value::Object(utc_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(utc_fn, Some(function_prototype))?;
+      scope.define_property(
+        date_constructor,
+        utc_key,
+        data_desc(Value::Object(utc_fn), true, false, true),
+      )?;
+    }
+
+    // Date.prototype.toString / toUTCString / toISOString / getTime / valueOf / @@toPrimitive
     {
       let to_string_s = scope.alloc_string("toString")?;
       scope.push_root(Value::String(to_string_s))?;
@@ -2324,6 +2375,50 @@ impl Intrinsics {
         date_prototype,
         to_string_key,
         data_desc(Value::Object(to_string_fn), true, false, true),
+      )?;
+
+      let to_utc_s = scope.alloc_string("toUTCString")?;
+      scope.push_root(Value::String(to_utc_s))?;
+      let to_utc_key = PropertyKey::from_string(to_utc_s);
+      let to_utc_fn =
+        scope.alloc_native_function(date_prototype_to_utc_string, None, to_utc_s, 0)?;
+      scope.push_root(Value::Object(to_utc_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(to_utc_fn, Some(function_prototype))?;
+      scope.define_property(
+        date_prototype,
+        to_utc_key,
+        data_desc(Value::Object(to_utc_fn), true, false, true),
+      )?;
+
+      let to_iso_s = scope.alloc_string("toISOString")?;
+      scope.push_root(Value::String(to_iso_s))?;
+      let to_iso_key = PropertyKey::from_string(to_iso_s);
+      let to_iso_fn =
+        scope.alloc_native_function(date_prototype_to_iso_string, None, to_iso_s, 0)?;
+      scope.push_root(Value::Object(to_iso_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(to_iso_fn, Some(function_prototype))?;
+      scope.define_property(
+        date_prototype,
+        to_iso_key,
+        data_desc(Value::Object(to_iso_fn), true, false, true),
+      )?;
+
+      let get_time_s = scope.alloc_string("getTime")?;
+      scope.push_root(Value::String(get_time_s))?;
+      let get_time_key = PropertyKey::from_string(get_time_s);
+      let get_time_fn = scope.alloc_native_function(date_prototype_get_time, None, get_time_s, 0)?;
+      scope.push_root(Value::Object(get_time_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get_time_fn, Some(function_prototype))?;
+      scope.define_property(
+        date_prototype,
+        get_time_key,
+        data_desc(Value::Object(get_time_fn), true, false, true),
       )?;
 
       let value_of_s = scope.alloc_string("valueOf")?;

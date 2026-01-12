@@ -575,6 +575,21 @@ pub trait VmHostHooks {
     None
   }
 
+  /// Returns the current time in milliseconds since the Unix epoch.
+  ///
+  /// This is used by the `Date` built-in (`new Date()`, `Date.now()`).
+  ///
+  /// The default implementation uses [`std::time::SystemTime`]. Hosts that need deterministic
+  /// execution (e.g. test runners) can override this to return a controlled time source.
+  #[inline]
+  fn host_current_time_millis(&mut self) -> f64 {
+    let now = std::time::SystemTime::now();
+    match now.duration_since(std::time::UNIX_EPOCH) {
+      Ok(dur) => dur.as_secs_f64() * 1000.0,
+      Err(err) => -(err.duration().as_secs_f64() * 1000.0),
+    }
+  }
+
   /// Host hook for "exotic" `[[Get]]` behavior.
   ///
   /// This allows embeddings to model lightweight host objects (e.g. DOMStringMap-style named
@@ -700,6 +715,10 @@ pub trait VmHostHooks {
 
       fn host_math_random_u64(&mut self) -> Option<u64> {
         self.0.host_math_random_u64()
+      }
+
+      fn host_current_time_millis(&mut self) -> f64 {
+        self.0.host_current_time_millis()
       }
 
       fn host_exotic_get(
@@ -914,6 +933,10 @@ pub trait VmHostHooks {
 
       fn host_math_random_u64(&mut self) -> Option<u64> {
         self.0.host_math_random_u64()
+      }
+
+      fn host_current_time_millis(&mut self) -> f64 {
+        self.0.host_current_time_millis()
       }
 
       fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
