@@ -2,7 +2,7 @@
 //!
 //! After `instructions/webidl_consolidation.md` is complete, FastRender must only depend on the
 //! vendored `ecma-rs` WebIDL stack (`vendor/ecma-rs/webidl*`). The workspace-local WebIDL crates
-//! under `crates/webidl-*` are expected to be deleted.
+//! under the repo's `crates/` directory are expected to be deleted.
 //!
 //! This is a *future* guard: it asserts the end-state of the consolidation plan, so it is ignored
 //! until `instructions/webidl_consolidation.md` is complete. Run it manually with:
