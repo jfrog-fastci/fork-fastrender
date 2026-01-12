@@ -2208,7 +2208,13 @@ error: {err}",
 
     let tab = self.browser_state.active_tab();
     let loading = tab.map(|t| t.loading).unwrap_or(false);
+    // Use the monotonic stage/progress for user-facing display; the raw last-received stage can
+    // regress if heartbeats arrive out-of-order (keep it as a debug signal).
     let stage = tab
+      .and_then(|t| t.load_stage)
+      .map(|s| s.as_str())
+      .unwrap_or("-");
+    let last_stage = tab
       .and_then(|t| t.stage)
       .map(|s| s.as_str())
       .unwrap_or("-");
@@ -2241,9 +2247,10 @@ error: {err}",
 
     let _ = writeln!(
       &mut hud.text_buf,
-      "tab: loading={} stage={}",
+      "tab: loading={} stage={} last={}",
       if loading { "yes" } else { "no" },
-      stage
+      stage,
+      last_stage
     );
 
     if let (Some((w, h)), Some(dpr)) = (viewport_css, dpr) {

@@ -449,7 +449,7 @@ pub fn chrome_ui(
             t.can_go_back,
             t.can_go_forward,
             t.loading,
-            t.stage,
+            t.load_stage,
             t.load_progress,
             t.warning.clone(),
             t.error.clone(),

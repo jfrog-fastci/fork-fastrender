@@ -318,8 +318,10 @@ impl StageHeartbeat {
   /// This is intended for UI loading indicators that want a lightweight, deterministic notion of
   /// progress without relying on timing heuristics.
   pub fn loading_progress(self) -> f32 {
-    let denom = (Self::VARIANT_COUNT.saturating_sub(1)).max(1) as f32;
-    (self.as_index() as f32) / denom
+    // Map the *first* heartbeat to a value >0 so that callers can use `0.0` to represent
+    // "loading, but no stage heartbeat has been observed yet" (common for chrome progress bars).
+    let denom = (Self::VARIANT_COUNT).max(1) as f32;
+    ((self.as_index() + 1) as f32) / denom
   }
 }
 

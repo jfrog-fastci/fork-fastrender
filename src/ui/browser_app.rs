@@ -12,23 +12,6 @@ use url::Url;
 const DEBUG_LOG_CAPACITY: usize = 256;
 const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 
-fn progress_for_stage(stage: StageHeartbeat) -> f32 {
-  match stage {
-    StageHeartbeat::ReadCache => 1.0 / 12.0,
-    StageHeartbeat::FollowRedirects => 2.0 / 12.0,
-    StageHeartbeat::CssInline => 3.0 / 12.0,
-    StageHeartbeat::DomParse => 4.0 / 12.0,
-    StageHeartbeat::Script => 5.0 / 12.0,
-    StageHeartbeat::CssParse => 6.0 / 12.0,
-    StageHeartbeat::Cascade => 7.0 / 12.0,
-    StageHeartbeat::BoxTree => 8.0 / 12.0,
-    StageHeartbeat::Layout => 9.0 / 12.0,
-    StageHeartbeat::PaintBuild => 10.0 / 12.0,
-    StageHeartbeat::PaintRasterize => 11.0 / 12.0,
-    StageHeartbeat::Done => 1.0,
-  }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatestFrameMeta {
   pub pixmap_px: (u32, u32),
@@ -133,8 +116,12 @@ pub struct BrowserTabState {
   pub error: Option<String>,
   /// Optional non-fatal warning for this tab (e.g. viewport clamping).
   pub warning: Option<String>,
+  /// Last stage heartbeat received from the worker (debug; may regress if heartbeats arrive
+  /// out-of-order).
   pub stage: Option<StageHeartbeat>,
+  /// Highest stage heartbeat observed during the current load (monotonic; user-facing).
   pub load_stage: Option<StageHeartbeat>,
+  /// Monotonic progress fraction derived from the highest observed stage.
   pub load_progress: Option<f32>,
   pub can_go_back: bool,
   pub can_go_forward: bool,
@@ -201,7 +188,7 @@ impl BrowserTabState {
   /// - `None` when this tab is not loading.
   /// - `Some(0.0)` when loading but no stage heartbeat has been observed yet.
   pub fn chrome_loading_progress(&self) -> Option<f32> {
-    crate::ui::chrome_loading_progress::chrome_loading_progress(self.loading, self.stage)
+    crate::ui::chrome_loading_progress::chrome_loading_progress(self.loading, self.load_progress)
   }
 
   /// Validate + normalize an address-bar navigation and produce a `UiToWorker::Navigate` message.
@@ -271,7 +258,7 @@ impl BrowserTabState {
       .map(|p| p.clamp(0.0, 1.0))
       .unwrap_or(0.0);
 
-    let stage_progress = progress_for_stage(stage).clamp(0.0, 1.0);
+    let stage_progress = stage.loading_progress().clamp(0.0, 1.0);
     let next = prev.max(stage_progress);
 
     if stage_progress >= prev {
@@ -1109,28 +1096,11 @@ mod browser_app_tests {
     );
   }
 
-  fn ordered_stage_heartbeats() -> [StageHeartbeat; 12] {
-    [
-      StageHeartbeat::ReadCache,
-      StageHeartbeat::FollowRedirects,
-      StageHeartbeat::CssInline,
-      StageHeartbeat::DomParse,
-      StageHeartbeat::Script,
-      StageHeartbeat::CssParse,
-      StageHeartbeat::Cascade,
-      StageHeartbeat::BoxTree,
-      StageHeartbeat::Layout,
-      StageHeartbeat::PaintBuild,
-      StageHeartbeat::PaintRasterize,
-      StageHeartbeat::Done,
-    ]
-  }
-
   #[test]
-  fn progress_for_stage_is_monotonic_in_stage_order() {
+  fn stage_loading_progress_is_monotonic_in_stage_order() {
     let mut prev = 0.0;
-    for stage in ordered_stage_heartbeats() {
-      let p = progress_for_stage(stage);
+    for &stage in StageHeartbeat::all() {
+      let p = stage.loading_progress();
       assert!(p.is_finite());
       assert!(p > prev, "expected progress to increase (prev={prev}, next={p})");
       assert!(p >= 0.0);
@@ -1153,7 +1123,7 @@ mod browser_app_tests {
     let mut prev = app.active_tab().unwrap().load_progress.unwrap();
     assert!((prev - 0.0).abs() < 1e-6);
 
-    for stage in ordered_stage_heartbeats() {
+    for &stage in StageHeartbeat::all() {
       app.apply_worker_msg(WorkerToUi::Stage { tab_id, stage });
       let p = app.active_tab().unwrap().load_progress.unwrap();
       assert!(

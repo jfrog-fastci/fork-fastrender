@@ -4,8 +4,17 @@ use fastrender::ui::{BrowserAppState, BrowserTabState, TabId};
 
 #[test]
 fn stage_loading_progress_is_monotonic() {
+  assert!(
+    StageHeartbeat::ReadCache.loading_progress() > 0.0,
+    "expected ReadCache to map to a progress value > 0.0 so 0.0 can represent \"no stage yet\""
+  );
+  assert_eq!(
+    StageHeartbeat::Done.loading_progress(),
+    1.0,
+    "expected Done to map to exactly 1.0"
+  );
+
   let mut prev = 0.0_f32;
-  let mut seen_any = false;
 
   for stage in StageHeartbeat::all() {
     let progress = stage.loading_progress();
@@ -17,17 +26,13 @@ fn stage_loading_progress_is_monotonic() {
       (0.0..=1.0).contains(&progress),
       "expected progress in [0,1], got {progress} for StageHeartbeat::{stage:?}"
     );
-    if seen_any {
-      assert!(
-        progress >= prev,
-        "expected monotonic progress: StageHeartbeat::{stage:?} ({progress}) < previous ({prev})"
-      );
-    }
+    assert!(
+      progress > prev,
+      "expected strictly increasing progress: StageHeartbeat::{stage:?} ({progress}) <= previous ({prev})"
+    );
     prev = progress;
-    seen_any = true;
   }
 
-  assert!(seen_any, "expected StageHeartbeat::all() to be non-empty");
   assert!(
     (prev - 1.0).abs() <= f32::EPSILON,
     "expected final stage to map to 1.0, got {prev}"
@@ -92,3 +97,45 @@ fn chrome_loading_progress_resets_across_navigations() {
   );
 }
 
+#[test]
+fn chrome_loading_progress_is_monotonic_across_out_of_order_stage_events() {
+  let tab_id = TabId(1);
+  let mut app = BrowserAppState::new();
+  app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+  app.apply_worker_msg(WorkerToUi::NavigationStarted {
+    tab_id,
+    url: "https://example.com/".to_string(),
+  });
+
+  let mut prev = app
+    .tab(tab_id)
+    .expect("tab exists")
+    .chrome_loading_progress()
+    .expect("tab should be loading");
+  assert!(
+    (prev - 0.0).abs() <= f32::EPSILON,
+    "expected initial progress to be 0.0 after NavigationStarted, got {prev}"
+  );
+
+  for stage in [
+    StageHeartbeat::Layout,
+    // Regressing stage heartbeat must not reduce chrome progress.
+    StageHeartbeat::ReadCache,
+    StageHeartbeat::PaintRasterize,
+    StageHeartbeat::DomParse,
+    StageHeartbeat::Done,
+  ] {
+    app.apply_worker_msg(WorkerToUi::Stage { tab_id, stage });
+    let next = app
+      .tab(tab_id)
+      .expect("tab exists")
+      .chrome_loading_progress()
+      .expect("tab should be loading");
+    assert!(
+      next + f32::EPSILON >= prev,
+      "expected chrome loading progress to be monotonic (prev={prev}, next={next}, stage={stage:?})"
+    );
+    prev = next;
+  }
+}
