@@ -720,10 +720,11 @@ InternedId rt_string_intern(const uint8_t* s, size_t len);
 //
 // GC-safety / lifetime contract:
 // - The interner may store unpinned entries as weak references to GC-managed objects.
-// - For unpinned entries, `ptr..ptr+len` may point into movable GC storage and is only valid until the
-//   next GC safepoint/collection.
-// - If the entry is pinned, the returned bytes may be stable for the lifetime of the process, but
-//   callers that require a GC-stable byte pointer should still prefer `rt_string_lookup_pinned`.
+// - For **unpinned** entries, the returned `ptr..ptr+len` may point into a movable GC allocation and
+//   is only valid until the next GC safepoint/collection (the bytes may be relocated or reclaimed).
+// - For **pinned** entries, the returned `ptr` points to interner-owned non-GC memory and is stable
+//   for the lifetime of the process.
+// - If you need a GC-stable pointer and want to enforce "pinned-only", use `rt_string_lookup_pinned`.
 //
 // Return value contract:
 // - On success: returns `{ptr, len}` for the UTF-8 bytes.
