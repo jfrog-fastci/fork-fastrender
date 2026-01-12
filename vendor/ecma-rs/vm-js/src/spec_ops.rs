@@ -918,6 +918,15 @@ pub fn this_bigint_value(scope: &mut Scope<'_>, value: Value) -> Result<GcBigInt
     Value::Object(obj) => {
       // Fast path: wrapper objects created by vm-js store the BigInt value under an internal symbol
       // (not `Symbol.for`).
+      // `thisBigIntValue` checks for an internal slot and must not invoke Proxy traps or user code.
+      // BigInt wrapper internal slots are not present on Proxy objects, even when the Proxy target
+      // is a BigInt wrapper object.
+      if scope.heap().is_proxy_object(obj) {
+        return Err(VmError::TypeError(
+          "BigInt.prototype.valueOf called on incompatible receiver",
+        ));
+      }
+
       let marker_sym = match scope.heap().internal_bigint_data_symbol() {
         Some(sym) => sym,
         None => scope.heap_mut().ensure_internal_bigint_data_symbol()?,

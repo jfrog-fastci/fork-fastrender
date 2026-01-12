@@ -3498,8 +3498,14 @@ impl Intrinsics {
 
     // `%BigInt%` (callable, not constructable).
     let bigint_name = scope.alloc_string("BigInt")?;
-    let bigint_constructor =
-      alloc_rooted_native_function(scope, roots, bigint_call, None, bigint_name, 1)?;
+    let bigint_constructor = alloc_rooted_native_function(
+      scope,
+      roots,
+      bigint_call,
+      None,
+      bigint_name,
+      1,
+    )?;
     scope
       .heap_mut()
       .object_set_prototype(bigint_constructor, Some(function_prototype))?;
@@ -3588,7 +3594,7 @@ impl Intrinsics {
       let to_string_s = scope.alloc_string("toString")?;
       scope.push_root(Value::String(to_string_s))?;
       let key = PropertyKey::from_string(to_string_s);
-      let func = scope.alloc_native_function(bigint_prototype_to_string, None, to_string_s, 1)?;
+      let func = scope.alloc_native_function(bigint_prototype_to_string, None, to_string_s, 0)?;
       scope.push_root(Value::Object(func))?;
       scope
         .heap_mut()

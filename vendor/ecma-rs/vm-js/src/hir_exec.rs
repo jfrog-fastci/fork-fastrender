@@ -751,7 +751,11 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::Literal::Boolean(b) => Ok(Value::Bool(*b)),
       hir_js::Literal::Null => Ok(Value::Null),
       hir_js::Literal::Undefined => Ok(Value::Undefined),
-      hir_js::Literal::BigInt(_) => Err(VmError::Unimplemented("bigint literal (hir-js compiled path)")),
+      hir_js::Literal::BigInt(value) => {
+        let b = crate::JsBigInt::parse_ascii_radix_with_tick(value, 10, &mut || self.vm.tick())?;
+        let handle = scope.alloc_bigint(b)?;
+        Ok(Value::BigInt(handle))
+      }
       hir_js::Literal::Regex(_) => Err(VmError::Unimplemented("regex literal (hir-js compiled path)")),
     }
   }

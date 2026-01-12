@@ -16423,6 +16423,14 @@ fn to_bigint(
   hooks: &mut dyn VmHostHooks,
   value: Value,
 ) -> Result<crate::GcBigInt, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-tobigint
+  //
+  // 1. Let prim be ? ToPrimitive(argument, hint Number).
+  // 2. If Type(prim) is BigInt, return prim.
+  // 3. If Type(prim) is Boolean, return 1n or 0n.
+  // 4. If Type(prim) is String, parse via StringToBigInt; on failure, throw SyntaxError.
+  // 5. Otherwise, throw TypeError.
+  //
   // `ToBigInt` can invoke user code (via `ToPrimitive`), so root `value` for the duration of the
   // conversion.
   let mut scope = scope.reborrow();
@@ -16438,15 +16446,6 @@ fn to_bigint(
     Value::BigInt(b) => Ok(b),
     Value::Bool(true) => scope.alloc_bigint_from_u128(1),
     Value::Bool(false) => scope.alloc_bigint_from_u128(0),
-    Value::Number(n) => {
-      let Some(bi) = JsBigInt::from_f64_exact(n)? else {
-        let intr = require_intrinsics(vm)?;
-        let err =
-          crate::error_object::new_range_error(&mut scope, intr, "Cannot convert a Number value to a BigInt")?;
-        return Err(VmError::Throw(err));
-      };
-      scope.alloc_bigint(bi)
-    }
     Value::String(s) => {
       let units = scope.heap().get_string(s)?.as_code_units();
       let parsed = JsBigInt::parse_utf16_string_with_tick(units, &mut || vm.tick())?;
@@ -16456,6 +16455,7 @@ fn to_bigint(
       };
       scope.alloc_bigint(bi)
     }
+    Value::Number(_) => Err(VmError::TypeError("Cannot convert a Number value to a BigInt")),
     Value::Undefined => Err(VmError::TypeError("Cannot convert undefined to a BigInt")),
     Value::Null => Err(VmError::TypeError("Cannot convert null to a BigInt")),
     Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a BigInt")),
@@ -16503,12 +16503,58 @@ pub fn bigint_constructor_call(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  let bi = to_bigint(vm, scope, host, hooks, arg0)?;
-  Ok(Value::BigInt(bi))
+  // Spec: https://tc39.es/ecma262/#sec-bigint-constructor-number-value
+  //
+  // 1. If NewTarget is not undefined, throw a TypeError exception. (handled by
+  //    `bigint_constructor_construct`)
+  // 2. Let prim be ? ToPrimitive(value, hint Number).
+  // 3. If Type(prim) is Number, return ? NumberToBigInt(prim).
+  // 4. Otherwise, return ? ToBigInt(prim).
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Root `value` across `ToPrimitive`, which can allocate and trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(value)?;
+
+  let prim = match value {
+    Value::Object(_) => scope.to_primitive(vm, host, hooks, value, crate::ToPrimitiveHint::Number)?,
+    other => other,
+  };
+  scope.push_root(prim)?;
+
+  match prim {
+    Value::Number(n) => {
+      // `NumberToBigInt` throws on NaN/Infinity and non-integers.
+      let Some(bi) = JsBigInt::from_f64_exact(n)? else {
+        return Err(VmError::RangeError("Cannot convert number to BigInt"));
+      };
+      let handle = scope.alloc_bigint(bi)?;
+      Ok(Value::BigInt(handle))
+    }
+    other => {
+      let bi = to_bigint(vm, &mut scope, host, hooks, other)?;
+      Ok(Value::BigInt(bi))
+    }
+  }
 }
 
-/// `BigInt.asIntN(bits, bigint)` (ECMA-262).
+/// `new BigInt(...)` (always throws).
+pub fn bigint_constructor_construct(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-bigint-constructor-number-value
+  //
+  // 1. If NewTarget is not undefined, throw a TypeError exception.
+  Err(VmError::TypeError("BigInt is not a constructor"))
+}
+
+/// `BigInt.asIntN(bits, bigint)`.
 pub fn bigint_as_int_n(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -16532,7 +16578,7 @@ pub fn bigint_as_int_n(
   Ok(Value::BigInt(out))
 }
 
-/// `BigInt.asUintN(bits, bigint)` (ECMA-262).
+/// `BigInt.asUintN(bits, bigint)`.
 pub fn bigint_as_uint_n(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -16604,27 +16650,17 @@ pub fn bigint_prototype_to_string(
   )?;
 
   let radix_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let radix_u32 = if matches!(radix_val, Value::Undefined) {
-    10
+  let radix = if matches!(radix_val, Value::Undefined) {
+    10u32
   } else {
-    let intr = require_intrinsics(vm)?;
-    let mut radix = scope.to_number(vm, host, hooks, radix_val)?;
-    if radix.is_nan() {
-      radix = 0.0;
+    let radix_f = scope.to_integer_or_infinity(vm, host, hooks, radix_val)?;
+    if radix_f < 2.0 || radix_f > 36.0 {
+      return Err(VmError::RangeError("invalid radix"));
     }
-    if !radix.is_finite() {
-      let err = crate::new_range_error(scope, intr, "Invalid radix")?;
-      return Err(VmError::Throw(err));
-    }
-    radix = radix.trunc();
-    if radix < 2.0 || radix > 36.0 {
-      let err = crate::new_range_error(scope, intr, "Invalid radix")?;
-      return Err(VmError::Throw(err));
-    }
-    radix as u32
+    radix_f as u32
   };
 
-  let s = bigint_to_string_radix(vm, scope, x, radix_u32)?;
+  let s = bigint_to_string_radix(vm, scope, x, radix)?;
   Ok(Value::String(s))
 }
 
@@ -16632,13 +16668,22 @@ pub fn bigint_prototype_to_string(
 pub fn bigint_prototype_to_locale_string(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  bigint_prototype_to_string(vm, scope, host, hooks, callee, this, &[])
+  // Until `Intl` is implemented, behave like most engines when Intl is absent and fall back to
+  // `toString()`.
+  let x = this_bigint_value(
+    vm,
+    scope,
+    this,
+    "BigInt.prototype.toLocaleString called on incompatible receiver",
+  )?;
+  let s = bigint_to_string_radix(vm, scope, x, 10)?;
+  Ok(Value::String(s))
 }
 
 /// `BigInt.prototype[Symbol.toPrimitive]` (minimal).
