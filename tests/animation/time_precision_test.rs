@@ -1,15 +1,11 @@
-use fastrender::api::FastRender;
 use fastrender::{PreparedPaintOptions, RenderOptions, Rgba};
 
-use super::support::{ensure_test_env, pixel};
+use super::support::{ensure_test_env, pixel, test_renderer};
 
 #[test]
 fn animation_time_preserves_sub_millisecond_precision() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>

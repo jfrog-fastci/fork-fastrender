@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
-use fastrender::api::FastRender;
 use fastrender::scroll::ScrollState;
 use fastrender::style::types::TimelineScopeProperty;
 use fastrender::Rgba;
 use fastrender::{BoxNode, FragmentNode, FragmentTree, Point, PreparedPaintOptions, RenderOptions};
 
-use super::support::{ensure_test_env, pixel};
+use super::support::{ensure_test_env, pixel, test_renderer};
 
 fn find_box_id_by_dom_id(node: &BoxNode, id: &str) -> Option<usize> {
   if node.debug_info.as_ref().and_then(|info| info.id.as_deref()) == Some(id) {
@@ -37,10 +36,7 @@ fn find_fragment_by_box_id<'a>(tree: &'a FragmentTree, box_id: usize) -> Option<
 #[test]
 fn timeline_scope_promotes_named_scroll_timeline_for_siblings() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html_template = |with_scope: bool| {
@@ -135,10 +131,7 @@ fn timeline_scope_promotes_named_scroll_timeline_for_siblings() {
 #[test]
 fn timeline_scope_deduplicates_duplicate_names_in_value_list() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html = r#"
@@ -204,10 +197,7 @@ fn timeline_scope_deduplicates_duplicate_names_in_value_list() {
 #[test]
 fn timeline_scope_blocks_ancestor_timelines_inside_boundary() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html_template = |with_scope: bool| {
@@ -294,10 +284,7 @@ fn timeline_scope_blocks_ancestor_timelines_inside_boundary() {
 #[test]
 fn scroll_timeline_wins_over_view_timeline_with_same_name_on_element() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html = r#"
@@ -351,10 +338,7 @@ fn scroll_timeline_wins_over_view_timeline_with_same_name_on_element() {
 #[test]
 fn timeline_scope_all_marks_duplicate_names_inactive() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html = r#"
@@ -423,10 +407,7 @@ fn timeline_scope_all_marks_duplicate_names_inactive() {
 #[test]
 fn timeline_scope_all_does_not_block_export_of_own_timeline() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html = r#"
@@ -487,10 +468,7 @@ fn timeline_scope_all_does_not_block_export_of_own_timeline() {
 #[test]
 fn timeline_scope_supports_var_resolution() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html = r#"
@@ -554,10 +532,7 @@ fn timeline_scope_supports_var_resolution() {
 #[test]
 fn view_timeline_inset_auto_uses_scroll_padding() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html = r#"
@@ -620,10 +595,7 @@ fn view_timeline_inset_auto_uses_scroll_padding() {
 #[test]
 fn view_timeline_inset_auto_respects_rtl_inline_end_padding() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(100, 100);
 
   let html = r#"

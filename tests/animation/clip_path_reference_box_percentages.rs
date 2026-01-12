@@ -1,17 +1,14 @@
 use fastrender::animation as fr_animation;
-use fastrender::api::{FastRender, RenderOptions};
+use fastrender::api::RenderOptions;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::types::{BasicShape, ClipPath, ShapeRadius};
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 
-use super::support::ensure_test_env;
+use super::support::{ensure_test_env, test_renderer};
 
 fn prepare(html: &str, width: u32, height: u32) -> (BoxTree, FragmentTree, StyledNode) {
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(width, height);
   let prepared = renderer.prepare_html(html, options).expect("prepare");
   (

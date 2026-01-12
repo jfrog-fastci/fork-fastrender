@@ -1,20 +1,23 @@
-use crate::common::global_state::{global_test_lock, EnvVarGuard};
+use crate::common::global_state::global_test_lock;
 use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::image_output::{encode_image, OutputFormat};
+use fastrender::FontConfig;
 use std::fs;
 use std::path::PathBuf;
 
 #[test]
 fn visual_fixture_matches_goldens() {
   let _lock = global_test_lock();
-  let _fonts_guard = EnvVarGuard::set("FASTR_USE_BUNDLED_FONTS", "1");
 
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let html = fs::read_to_string(root.join("tests/fixtures/html/transition_starting_style.html"))
     .expect("fixture html");
   let compare_config = compare_config_from_env(CompareEnvVars::fixtures()).expect("compare config");
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
   let prepared = renderer
     .prepare_html(&html, RenderOptions::new().with_viewport(260, 180))
     .expect("prepare");

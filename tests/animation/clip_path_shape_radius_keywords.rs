@@ -1,9 +1,8 @@
 use fastrender::animation;
-use fastrender::api::FastRender;
 use fastrender::style::types::{BasicShape, ClipPath, ShapeRadius};
 use fastrender::{BoxNode, FragmentNode, FragmentTree, RenderOptions};
 
-use super::support::ensure_test_env;
+use super::support::{ensure_test_env, test_renderer};
 
 fn find_box_id_by_dom_id(node: &BoxNode, id: &str) -> Option<usize> {
   if node.debug_info.as_ref().and_then(|info| info.id.as_deref()) == Some(id) {
@@ -49,10 +48,7 @@ fn fragment_circle_radius_px(tree: &FragmentTree, box_id: usize) -> f32 {
 #[test]
 fn transitions_interpolate_circle_keyword_radius_over_time() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(200, 200);
   let html = r#"
     <style>

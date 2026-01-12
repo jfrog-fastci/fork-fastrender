@@ -20,8 +20,8 @@ fn iframe_file_src_renders_nested_document() {
 
   let parent_html = format!(
     r#"<!doctype html><html><body style=\"margin:0; background: rgb(0, 128, 0);\">\
- <iframe src=\"{src}\" style=\"width:48px; height:48px; border:0;\"></iframe>\
- </body></html>"#
+  <iframe src=\"{src}\" style=\"width:48px; height:48px; border:0;\"></iframe>\
+  </body></html>"#
   );
 
   let mut renderer = FastRender::builder()

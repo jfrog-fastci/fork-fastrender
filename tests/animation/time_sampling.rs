@@ -1,15 +1,11 @@
-use fastrender::api::FastRender;
 use fastrender::{PreparedPaintOptions, RenderOptions, Rgba};
 
-use super::support::{ensure_test_env, pixel};
+use super::support::{ensure_test_env, pixel, test_renderer};
 
 #[test]
 fn time_based_opacity_animation_samples_at_multiple_timestamps_and_settles_without_time() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -78,10 +74,7 @@ fn time_based_opacity_animation_samples_at_multiple_timestamps_and_settles_witho
 #[test]
 fn time_based_animation_honors_direction_and_iteration_count() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -141,10 +134,7 @@ fn time_based_animation_honors_direction_and_iteration_count() {
 #[test]
 fn time_based_transform_animation_samples_at_multiple_timestamps() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(30, 20);
   let html = r#"
     <style>
@@ -209,10 +199,7 @@ fn time_based_transform_animation_samples_at_multiple_timestamps() {
 #[test]
 fn time_based_animation_steps_timing_function_is_sampled() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -281,10 +268,7 @@ fn time_based_animation_steps_timing_function_is_sampled() {
 #[test]
 fn time_based_animation_ease_timing_function_is_non_linear() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -321,10 +305,7 @@ fn time_based_animation_ease_timing_function_is_non_linear() {
 #[test]
 fn multiple_time_based_animations_apply_in_list_order() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -389,10 +370,7 @@ fn multiple_time_based_animations_apply_in_list_order() {
 #[test]
 fn animation_composition_add_adds_transforms() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(50, 20);
   let html = r#"
     <style>
@@ -450,10 +428,7 @@ fn animation_composition_add_adds_transforms() {
 #[test]
 fn animation_delay_and_fill_mode_backwards_apply_start_state_before_delay() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(30, 20);
   let html = r#"
     <style>
@@ -497,10 +472,7 @@ fn animation_delay_and_fill_mode_backwards_apply_start_state_before_delay() {
 #[test]
 fn animation_fill_mode_forwards_settles_but_backwards_is_ignored_in_settled_mode() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(30, 20);
   let html = r#"
     <style>
@@ -538,10 +510,7 @@ fn animation_fill_mode_forwards_settles_but_backwards_is_ignored_in_settled_mode
 #[test]
 fn negative_animation_delay_advances_progress_at_time_zero() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -590,10 +559,7 @@ fn negative_animation_delay_advances_progress_at_time_zero() {
 #[test]
 fn infinite_iteration_time_based_animation_is_ignored_in_settled_mode() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -632,10 +598,7 @@ fn infinite_iteration_time_based_animation_is_ignored_in_settled_mode() {
 #[test]
 fn animations_override_transitions_when_both_apply() {
   ensure_test_env();
-  let mut renderer = FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -823,7 +786,7 @@ fn animation_play_state_paused_freezes_time_and_resume_preserves_current_time() 
 #[test]
 fn animation_fill_mode_none_switches_to_keyframes_at_delay_boundary() {
   ensure_test_env();
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>
@@ -867,7 +830,7 @@ fn animation_fill_mode_none_switches_to_keyframes_at_delay_boundary() {
 #[test]
 fn animation_fill_mode_forwards_applies_end_state_at_end_boundary() {
   ensure_test_env();
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(30, 20);
   let html = r#"
     <style>
@@ -909,7 +872,7 @@ fn animation_fill_mode_forwards_applies_end_state_at_end_boundary() {
 #[test]
 fn starting_style_transition_respects_delay_and_end_boundaries() {
   ensure_test_env();
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = test_renderer();
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
     <style>

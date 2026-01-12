@@ -6,7 +6,12 @@ use crate::style::display::Display;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 
 fn ensure_rayon_threads() {
-  crate::common::rayon_test_util::init_rayon_for_tests(4);
+  let threads = std::env::var("RAYON_NUM_THREADS")
+    .ok()
+    .and_then(|value| value.parse::<usize>().ok())
+    .unwrap_or(4)
+    .max(1);
+  crate::common::rayon_test_util::init_rayon_for_tests(threads);
 }
 
 #[derive(Debug, Clone)]

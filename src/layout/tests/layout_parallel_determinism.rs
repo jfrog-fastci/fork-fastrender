@@ -11,6 +11,7 @@ fn create_test_renderer() -> FastRender {
   FastRender::builder()
     .font_sources(FontConfig::bundled_only())
     .resource_policy(ResourcePolicy::default().allow_http(false).allow_https(false))
+    .font_sources(FontConfig::bundled_only())
     .build()
     .expect("renderer")
 }
