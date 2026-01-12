@@ -1718,6 +1718,133 @@ fn conditional_uses_structural_assignability_for_callables() {
 }
 
 #[test]
+fn homomorphic_mapped_type_readonly_over_array_produces_array() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t_param = TypeParamId(0);
+  let p_param = TypeParamId(1);
+  let t_ty = store.intern_type(TypeKind::TypeParam(t_param));
+  let p_ty = store.intern_type(TypeKind::TypeParam(p_param));
+
+  let mapped = store.intern_type(TypeKind::Mapped(MappedType {
+    param: p_param,
+    source: store.intern_type(TypeKind::KeyOf(t_ty)),
+    value: store.intern_type(TypeKind::IndexedAccess { obj: t_ty, index: p_ty }),
+    readonly: MappedModifier::Add,
+    optional: MappedModifier::Preserve,
+    name_type: None,
+    as_type: None,
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let array = store.intern_type(TypeKind::Array {
+    ty: primitives.number,
+    readonly: false,
+  });
+  let result = eval.evaluate_with_bindings(mapped, vec![(t_param, array)]);
+  match store.type_kind(result) {
+    TypeKind::Array { ty, readonly } => {
+      assert_eq!(ty, primitives.number);
+      assert!(readonly);
+    }
+    other => panic!("expected array, got {other:?}"),
+  }
+}
+
+#[test]
+fn homomorphic_mapped_type_readonly_over_tuple_produces_tuple() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t_param = TypeParamId(0);
+  let p_param = TypeParamId(1);
+  let t_ty = store.intern_type(TypeKind::TypeParam(t_param));
+  let p_ty = store.intern_type(TypeKind::TypeParam(p_param));
+
+  let mapped = store.intern_type(TypeKind::Mapped(MappedType {
+    param: p_param,
+    source: store.intern_type(TypeKind::KeyOf(t_ty)),
+    value: store.intern_type(TypeKind::IndexedAccess { obj: t_ty, index: p_ty }),
+    readonly: MappedModifier::Add,
+    optional: MappedModifier::Preserve,
+    name_type: None,
+    as_type: None,
+  }));
+
+  let tuple = store.intern_type(TypeKind::Tuple(vec![
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.string,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+  ]));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(mapped, vec![(t_param, tuple)]);
+  let TypeKind::Tuple(elems) = store.type_kind(result) else {
+    panic!("expected tuple, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(elems.len(), 2);
+  assert_eq!(elems[0].ty, primitives.number);
+  assert_eq!(elems[1].ty, primitives.string);
+  assert!(elems.iter().all(|elem| elem.readonly));
+}
+
+#[test]
+fn homomorphic_mapped_type_optional_modifier_over_tuple_updates_elements() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t_param = TypeParamId(0);
+  let p_param = TypeParamId(1);
+  let t_ty = store.intern_type(TypeKind::TypeParam(t_param));
+  let p_ty = store.intern_type(TypeKind::TypeParam(p_param));
+
+  let mapped = store.intern_type(TypeKind::Mapped(MappedType {
+    param: p_param,
+    source: store.intern_type(TypeKind::KeyOf(t_ty)),
+    value: store.intern_type(TypeKind::IndexedAccess { obj: t_ty, index: p_ty }),
+    readonly: MappedModifier::Preserve,
+    optional: MappedModifier::Add,
+    name_type: None,
+    as_type: None,
+  }));
+
+  let tuple = store.intern_type(TypeKind::Tuple(vec![
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.string,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+  ]));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(mapped, vec![(t_param, tuple)]);
+  let TypeKind::Tuple(elems) = store.type_kind(result) else {
+    panic!("expected tuple, got {:?}", store.type_kind(result));
+  };
+  assert!(elems.iter().all(|elem| elem.optional));
+}
+
+#[test]
 fn mapped_type_applies_modifiers_and_remaps() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();

@@ -1179,6 +1179,94 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     #[cfg(feature = "tracing")]
     let _enter = span.enter();
 
+    // Homomorphic mapped types (e.g. `Readonly<T>`) preserve the structure of
+    // tuples and arrays rather than lowering them to an object with numeric
+    // indexers.
+    //
+    // Keep this conservative: only treat the mapped type as homomorphic when the
+    // source is syntactically `keyof T` and there is no key remapping (`as` /
+    // `name_type`).
+    if mapped.as_type.is_none() && mapped.name_type.is_none() {
+      if let TypeKind::KeyOf(inner) = self.store.type_kind(mapped.source) {
+        let evaluated_inner = self.evaluate_with_subst(inner, subst, depth + 1);
+        match self.store.type_kind(evaluated_inner) {
+          TypeKind::Array { readonly, .. } => {
+            let prim = self.store.primitive_ids();
+
+            // Arrays only have a numeric key.
+            let mut inner_subst = subst.clone();
+            inner_subst = inner_subst.with(mapped.param, prim.number);
+            let mut mapped_elem = self.evaluate_with_subst(mapped.value, &inner_subst, depth + 1);
+
+            // Arrays don't have an explicit optional element flag; approximate
+            // `?:` by widening the element type.
+            if matches!(mapped.optional, MappedModifier::Add) {
+              mapped_elem = self.store.union(vec![mapped_elem, prim.undefined]);
+            }
+
+            let readonly = match mapped.readonly {
+              MappedModifier::Preserve => readonly,
+              MappedModifier::Add => true,
+              MappedModifier::Remove => false,
+            };
+            let result = self.store.intern_type(TypeKind::Array {
+              ty: mapped_elem,
+              readonly,
+            });
+            #[cfg(feature = "tracing")]
+            {
+              span.record("result", &tracing::field::debug(&result));
+            }
+            return result;
+          }
+          TypeKind::Tuple(elems) => {
+            let prim = self.store.primitive_ids();
+            let mut out = Vec::with_capacity(elems.len());
+
+            for (idx, elem) in elems.into_iter().enumerate() {
+              let key_ty = if elem.rest {
+                prim.number
+              } else {
+                self
+                  .store
+                  .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(idx as f64)))
+              };
+
+              let mut inner_subst = subst.clone();
+              inner_subst = inner_subst.with(mapped.param, key_ty);
+              let value_ty = self.evaluate_with_subst(mapped.value, &inner_subst, depth + 1);
+
+              let readonly = match mapped.readonly {
+                MappedModifier::Preserve => elem.readonly,
+                MappedModifier::Add => true,
+                MappedModifier::Remove => false,
+              };
+              let optional = match mapped.optional {
+                MappedModifier::Preserve => elem.optional,
+                MappedModifier::Add => true,
+                MappedModifier::Remove => false,
+              };
+
+              out.push(crate::kind::TupleElem {
+                ty: value_ty,
+                optional,
+                rest: elem.rest,
+                readonly,
+              });
+            }
+
+            let result = self.store.intern_type(TypeKind::Tuple(out));
+            #[cfg(feature = "tracing")]
+            {
+              span.record("result", &tracing::field::debug(&result));
+            }
+            return result;
+          }
+          _ => {}
+        }
+      }
+    }
+
     let entries = self.mapped_entries(mapped.source, subst, depth + 1);
     #[cfg(feature = "tracing")]
     {
