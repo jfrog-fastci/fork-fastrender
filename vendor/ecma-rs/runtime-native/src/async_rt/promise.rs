@@ -602,6 +602,24 @@ pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
     PromiseClass::Payload(payload) => {
       unsafe { &(*payload).payload_ptr }.load(Ordering::Acquire) as *mut u8
     }
+    PromiseClass::Unknown(header) if promise_is_gc_managed(header) => {
+      // Native async-ABI promises are GC-managed objects whose payload begins immediately after the
+      // `PromiseHeader` prefix at offset 0. Expose a pointer to that inline payload so callers can
+      // write/read structured results that may contain GC pointers.
+      //
+      // The returned pointer points into the GC heap and is only valid until the next GC/safepoint;
+      // callers must not store it across safepoints without also keeping the base `PromiseRef`
+      // (object base pointer) alive as a GC root.
+      let base = unsafe {
+        let obj = &(*header).obj;
+        if obj.is_forwarded() {
+          obj.forwarding_ptr()
+        } else {
+          header.cast::<u8>()
+        }
+      };
+      unsafe { base.add(core::mem::size_of::<PromiseHeader>()) }
+    }
     _ => core::ptr::null_mut(),
   }
 }

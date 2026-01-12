@@ -829,6 +829,10 @@ PromiseRef rt_parallel_spawn_promise_rooted_h(void (*task)(uint8_t*, PromiseRef)
 // This is required when the promise payload contains GC pointers: the runtime uses `promise_shape`
 // to precisely trace and update those pointers during moving GC.
 //
+// `promise_size` / `promise_align` must describe the full `Promise<T>` allocation (including the
+// `PromiseHeader` prefix at offset 0) and must match the registered shape descriptor for
+// `promise_shape`.
+//
 // The promise payload begins immediately after the `PromiseHeader` prefix (same as the native async
 // ABI). Use `rt_promise_payload_ptr` to obtain the payload pointer.
 PromiseRef rt_parallel_spawn_promise_with_shape(
@@ -896,15 +900,20 @@ void rt_promise_reject(PromiseRef p);
 bool rt_promise_try_reject(PromiseRef p);
 // Mark a promise as handled for unhandled-rejection tracking.
 void rt_promise_mark_handled(PromiseRef p);
-// Returns the promise payload pointer.
+// Return a pointer to a promise's payload.
 //
-// - For promises created by `rt_parallel_spawn_promise` / `rt_parallel_spawn_promise_rooted`, this
-//   returns the runtime-allocated **out-of-line** payload buffer.
-// - For GC-managed native async ABI promises (`rt_alloc` + `rt_promise_init`), this returns the
-//   **inline** payload pointer immediately after the `PromiseHeader` prefix. This includes promises
-//   created by `rt_parallel_spawn_promise_with_shape`.
+// - For payload promises created by `rt_parallel_spawn_promise*`, this returns the out-of-line
+//   payload buffer pointer.
+// - For GC-managed native async-ABI promises (allocated via `rt_alloc`, including promises created
+//   by `rt_parallel_spawn_promise_with_shape*`), this returns a pointer to the **inline** payload
+//   immediately after the `PromiseHeader` prefix.
 //
-// For non-payload promises, this may return NULL.
+// For non-payload non-GC-managed promises, this returns NULL.
+//
+// GC-safety / lifetime:
+// If this returns a pointer into the GC heap (inline payload), it is only valid until the next
+// GC/safepoint. Do not store it across safepoints unless you also keep the base `PromiseRef` alive
+// as a GC root.
 uint8_t* rt_promise_payload_ptr(PromiseRef p);
 
 // -----------------------------------------------------------------------------

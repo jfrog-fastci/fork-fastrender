@@ -1863,8 +1863,8 @@ pub extern "C" fn rt_parallel_spawn_promise_with_shape_rooted(
   })
 }
 
-/// Like [`rt_parallel_spawn_promise_with_shape_rooted`], but takes the GC-managed `data` pointer as a
-/// `GcHandle` (pointer-to-slot).
+/// Like [`rt_parallel_spawn_promise_with_shape_rooted`], but takes the GC-managed `data` pointer as
+/// a `GcHandle` (pointer-to-slot).
 ///
 /// # Safety
 /// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
@@ -3844,11 +3844,20 @@ pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
   })
 }
 
-/// Return the payload buffer associated with a promise created by `rt_parallel_spawn_promise` (or
-/// `rt_parallel_spawn_promise_rooted`), or the inline payload for a GC-managed promise created by
-/// `rt_parallel_spawn_promise_with_shape`.
+/// Return a pointer to a promise's payload.
 ///
-/// For non-payload promises, this may return null.
+/// - For payload promises created by `rt_parallel_spawn_promise*`, this returns the out-of-line
+///   payload buffer pointer.
+/// - For GC-managed native async-ABI promises (allocated via `rt_alloc`, including promises created
+///   by `rt_parallel_spawn_promise_with_shape*`), this returns a pointer to the **inline** payload
+///   immediately after the `PromiseHeader` prefix.
+///
+/// For non-payload non-GC-managed promises, this returns null.
+///
+/// ## GC-safety / lifetime
+/// When this returns a pointer into the GC heap (inline payload), the returned pointer is only valid
+/// until the next GC/safepoint. Do not store it across safepoints unless you also keep the base
+/// `PromiseRef` alive as a GC root.
 #[no_mangle]
 pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
   abort_on_panic(|| {
