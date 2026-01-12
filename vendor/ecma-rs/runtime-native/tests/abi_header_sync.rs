@@ -83,6 +83,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_keep_alive_gc_ref(",
     "rt_register_shape_table(",
     "rt_register_shape_table_append(",
+    "rt_register_shape_table_extend(",
+    "rt_register_shape(",
     "rt_parallel_spawn_rooted(",
     "rt_parallel_spawn_rooted_h(",
     // Strings.
