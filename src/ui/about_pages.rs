@@ -74,69 +74,33 @@ fn history_snapshots_from_global_history_store(store: &GlobalHistoryStore) -> Ve
 
   const MAX_HISTORY: usize = 500;
 
-  #[derive(Default)]
-  struct HistoryAgg {
-    title: Option<String>,
-    last_ms: Option<u64>,
-    visit_count: u64,
-  }
-
-  let mut by_url: std::collections::HashMap<String, HistoryAgg> = std::collections::HashMap::new();
-  for entry in &store.entries {
+  let mut out = Vec::with_capacity(store.entries.len().min(MAX_HISTORY));
+  for entry in store.entries.iter().rev() {
+    if out.len() >= MAX_HISTORY {
+      break;
+    }
     let url = entry.url.trim();
     if url.is_empty() || is_about_url(url) {
       continue;
     }
-    let agg = by_url.entry(url.to_string()).or_default();
-
-    // `GlobalHistoryStore` guarantees visit_count >= 1, but keep this robust for callers that
-    // construct stores manually.
-    agg.visit_count = agg
-      .visit_count
-      .saturating_add(entry.visit_count.max(1));
-
     let title = entry
       .title
       .as_deref()
       .map(str::trim)
       .filter(|t| !t.is_empty())
       .map(str::to_string);
-
-    // Prefer the title of the most recent visit, but don't throw away a known title just because
-    // the latest history entry is missing one.
-    if entry.visited_at_ms > agg.last_ms {
-      agg.last_ms = entry.visited_at_ms;
-      if title.is_some() {
-        agg.title = title;
-      }
-    } else if agg.title.is_none() && title.is_some() {
-      agg.title = title;
-    }
+    let last_visited =
+      entry
+        .visited_at_ms
+        .and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms)));
+    out.push(HistorySnapshot {
+      title,
+      url: url.to_string(),
+      last_visited,
+      visit_count: entry.visit_count,
+    });
   }
-
-  let mut history_items: Vec<(Option<u64>, String, HistoryAgg)> = by_url
-    .into_iter()
-    .map(|(url, agg)| (agg.last_ms, url, agg))
-    .collect();
-  history_items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-  history_items.truncate(MAX_HISTORY);
-
-  history_items
-    .into_iter()
-    .map(|(last_ms, url, agg)| HistorySnapshot {
-      title: agg.title,
-      url,
-      last_visited: last_ms.and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms))),
-      visit_count: agg.visit_count,
-    })
-    .collect()
-}
-
-pub fn clear_global_history_snapshot() {
-  let mut guard = about_page_snapshot_lock()
-    .write()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
-  guard.history.clear();
+  out
 }
 
 #[derive(Debug, Clone)]
@@ -1211,6 +1175,8 @@ fn escape_html(text: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ui::GlobalHistoryEntry;
+  use std::time::{Duration, UNIX_EPOCH};
 
   static SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1218,6 +1184,73 @@ mod tests {
     let start = html.find("<title>")? + "<title>".len();
     let end = html[start..].find("</title>")? + start;
     Some(&html[start..end])
+  }
+
+  #[test]
+  fn history_snapshot_rebuild_preserves_recency_order_and_visit_counts() {
+    let history = GlobalHistoryStore {
+      entries: vec![
+        GlobalHistoryEntry {
+          url: "https://old.example/".to_string(),
+          title: Some("Old".to_string()),
+          visited_at_ms: Some(1),
+          visit_count: 2,
+        },
+        GlobalHistoryEntry {
+          url: "https://mid.example/".to_string(),
+          title: None,
+          visited_at_ms: Some(2),
+          visit_count: 1,
+        },
+        GlobalHistoryEntry {
+          url: "https://new.example/".to_string(),
+          title: Some("New".to_string()),
+          visited_at_ms: Some(3),
+          visit_count: 9,
+        },
+      ],
+    };
+
+    let snapshot = super::history_snapshots_from_global_history_store(&history);
+    assert_eq!(snapshot.len(), 3);
+
+    assert_eq!(snapshot[0].url, "https://new.example/");
+    assert_eq!(snapshot[0].visit_count, 9);
+    assert_eq!(
+      snapshot[0]
+        .last_visited
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap(),
+      Duration::from_millis(3)
+    );
+
+    assert_eq!(snapshot[1].url, "https://mid.example/");
+    assert_eq!(snapshot[1].visit_count, 1);
+
+    assert_eq!(snapshot[2].url, "https://old.example/");
+    assert_eq!(snapshot[2].visit_count, 2);
+  }
+
+  #[test]
+  fn history_snapshot_rebuild_uses_normalized_urls_without_fragments() {
+    let mut history = GlobalHistoryStore {
+      entries: vec![GlobalHistoryEntry {
+        url: "https://example.test/a#frag".to_string(),
+        title: None,
+        visited_at_ms: Some(1),
+        visit_count: 1,
+      }],
+    };
+    history.normalize_in_place();
+
+    let snapshot = super::history_snapshots_from_global_history_store(&history);
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].url, "https://example.test/a");
+    assert!(
+      !snapshot[0].url.contains('#'),
+      "expected fragment to be stripped by GlobalHistoryStore normalization"
+    );
   }
 
   #[test]
