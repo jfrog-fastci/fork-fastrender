@@ -1,20 +1,7 @@
 use fastrender::FastRenderPool;
 
-fn has_valid_rayon_num_threads_override() -> bool {
-  std::env::var("RAYON_NUM_THREADS")
-    .ok()
-    .and_then(|raw| raw.trim().parse::<usize>().ok())
-    .is_some_and(|n| n > 0)
-}
-
 #[test]
 fn rayon_global_pool_is_capped_unless_preconfigured() {
-  // If the process is explicitly configured via `RAYON_NUM_THREADS`, FastRender intentionally
-  // defers to it. Avoid making assertions about the global pool size in that case.
-  if has_valid_rayon_num_threads_override() {
-    return;
-  }
-
   // Ensure FastRender has had a chance to initialize the global pool (order-independent no-op if
   // already done).
   crate::common::init_rayon_for_tests(1);
