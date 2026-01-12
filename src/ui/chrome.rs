@@ -59,6 +59,7 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::D => Key::D,
     egui::Key::K => Key::K,
     egui::Key::L => Key::L,
+    egui::Key::N => Key::N,
     egui::Key::R => Key::R,
     egui::Key::T => Key::T,
     egui::Key::V => Key::V,

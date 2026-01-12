@@ -7,6 +7,7 @@
 pub enum ShortcutAction {
   /// Focus the address bar and select all contents.
   FocusAddressBar,
+  NewWindow,
   NewTab,
   CloseTab,
   ReopenClosedTab,
@@ -58,6 +59,7 @@ pub enum Key {
   D,
   K,
   L,
+  N,
   OpenBracket,
   CloseBracket,
   Minus,
@@ -176,6 +178,7 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     ) => Some(ShortcutAction::FocusAddressBar),
 
     // Tabs.
+    (Key::N, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::NewWindow),
     (Key::T, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::ReopenClosedTab),
     (Key::T, _) if cmd => Some(ShortcutAction::NewTab),
     (Key::W, _) if cmd => Some(ShortcutAction::CloseTab),
@@ -471,6 +474,28 @@ mod tests {
   }
 
   #[test]
+  fn ctrl_n_new_window() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::N, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::NewWindow)
+    );
+  }
+
+  #[test]
+  fn mac_cmd_n_new_window() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::N, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::NewWindow)
+    );
+  }
+
+  #[test]
   fn ctrl_shift_t_reopens_closed_tab() {
     assert_eq!(
       map_shortcut_with_platform(
@@ -670,7 +695,7 @@ mod tests {
       None
     );
     // Ensure we don't treat AltGr as chrome-level Ctrl shortcuts.
-    for key in [Key::L, Key::Tab, Key::Num1, Key::Equals, Key::Minus, Key::R] {
+    for key in [Key::L, Key::N, Key::Tab, Key::Num1, Key::Equals, Key::Minus, Key::R] {
       assert_eq!(
         map_shortcut_with_platform(
           KeyEvent::new(key, Modifiers::new(true, false, true, false)),

@@ -3559,6 +3559,7 @@ error: {err}",
               // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
               // can respect its editing focus rules. Ensure they never reach page input.
               ShortcutAction::FocusAddressBar
+              | ShortcutAction::NewWindow
               | ShortcutAction::NewTab
               | ShortcutAction::CloseTab
               | ShortcutAction::ReopenClosedTab
@@ -4724,6 +4725,7 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::D => ShortcutKey::D,
     VirtualKeyCode::K => ShortcutKey::K,
     VirtualKeyCode::L => ShortcutKey::L,
+    VirtualKeyCode::N => ShortcutKey::N,
     VirtualKeyCode::LBracket => ShortcutKey::OpenBracket,
     VirtualKeyCode::RBracket => ShortcutKey::CloseBracket,
     VirtualKeyCode::R => ShortcutKey::R,
