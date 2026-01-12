@@ -663,7 +663,8 @@ pub struct ImageCacheDiagnostics {
 thread_local! {
   static IMAGE_CACHE_DIAGNOSTICS_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
-static IMAGE_CACHE_DIAGNOSTICS: Mutex<Option<ImageCacheDiagnostics>> = Mutex::new(None);
+static IMAGE_CACHE_DIAGNOSTICS: Mutex<Option<HashMap<std::thread::ThreadId, ImageCacheDiagnostics>>> =
+  Mutex::new(None);
 static NEXT_IMAGE_CACHE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn enable_image_cache_diagnostics() {
@@ -671,7 +672,8 @@ pub(crate) fn enable_image_cache_diagnostics() {
   let mut guard = IMAGE_CACHE_DIAGNOSTICS
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner());
-  *guard = Some(ImageCacheDiagnostics::default());
+  let map = guard.get_or_insert_with(HashMap::new);
+  map.insert(std::thread::current().id(), ImageCacheDiagnostics::default());
 }
 
 pub(crate) fn take_image_cache_diagnostics() -> Option<ImageCacheDiagnostics> {
@@ -679,7 +681,8 @@ pub(crate) fn take_image_cache_diagnostics() -> Option<ImageCacheDiagnostics> {
   IMAGE_CACHE_DIAGNOSTICS
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner())
-    .take()
+    .as_mut()
+    .and_then(|map| map.remove(&std::thread::current().id()))
 }
 
 #[inline]
@@ -690,8 +693,10 @@ fn with_image_cache_diagnostics<F: FnOnce(&mut ImageCacheDiagnostics)>(f: F) {
   let mut guard = IMAGE_CACHE_DIAGNOSTICS
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner());
-  if let Some(stats) = guard.as_mut() {
-    f(stats);
+  if let Some(map) = guard.as_mut() {
+    if let Some(stats) = map.get_mut(&std::thread::current().id()) {
+      f(stats);
+    }
   }
 }
 

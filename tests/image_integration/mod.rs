@@ -1,4 +1,4 @@
-//! Image integration tests consolidated from tests/image_*.rs
+//! Image integration tests consolidated from the old `image_*.rs` integration tests.
 
 mod cache_tests;
 mod crossorigin_cors_test;
