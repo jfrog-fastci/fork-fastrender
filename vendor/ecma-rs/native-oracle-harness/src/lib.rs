@@ -1439,42 +1439,42 @@ impl Default for VmJsOracleRunner {
 
 impl NativeRunner for VmJsOracleRunner {
   fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic> {
-    match run_fixture_ts_outcome(ts) {
-      RunOutcome::Ok { stdout, .. } => Ok(stdout),
-      RunOutcome::CompileError { diagnostic } => Err(diagnostic),
-      RunOutcome::Throw {
-        message,
-        stack,
-        stdout,
-        stderr,
-      } => {
-        let mut diag = harness_error(format!("uncaught exception: {message}"));
-        if let Some(stack) = stack {
-          diag.push_note(stack);
-        }
-        if !stdout.is_empty() {
-          diag.push_note(format!("stdout:\n{stdout}"));
-        }
-        if !stderr.is_empty() {
-          diag.push_note(format!("stderr:\n{stderr}"));
-        }
-        Err(diag)
+    let js = ts_to_js(ts)?;
+    let options = OracleHarnessOptions::default();
+    let mut rt = new_runtime_with_options(&options)
+      .map_err(|err| harness_error(format!("failed to init vm-js: {err}")))?;
+    rt.vm.set_user_data(ConsoleCapture::default());
+
+    let finish_err = |rt: &mut JsRuntime, mut diag: Diagnostic| -> Diagnostic {
+      let (stdout, stderr) = take_captured_console(&mut rt.vm);
+      teardown_microtasks(rt);
+      if !stdout.is_empty() {
+        diag.push_note(format!("stdout:\n{stdout}"));
       }
-      RunOutcome::Terminated {
-        message,
-        stdout,
-        stderr,
-      } => {
-        let mut diag = harness_error(format!("execution terminated: {message}"));
-        if !stdout.is_empty() {
-          diag.push_note(format!("stdout:\n{stdout}"));
-        }
-        if !stderr.is_empty() {
-          diag.push_note(format!("stderr:\n{stderr}"));
-        }
-        Err(diag)
+      if !stderr.is_empty() {
+        diag.push_note(format!("stderr:\n{stderr}"));
       }
+      diag
+    };
+
+    if let Err(err) = install_native_builtins(&mut rt) {
+      let diag = vm_error_to_diagnostic(&rt, err);
+      return Err(finish_err(&mut rt, diag));
     }
+
+    if let Err(err) = rt.exec_script_source(Arc::new(SourceText::new("<fixture>", js))) {
+      let diag = vm_error_to_diagnostic(&rt, err);
+      return Err(finish_err(&mut rt, diag));
+    }
+
+    if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+      let diag = vm_error_to_diagnostic(&rt, err);
+      return Err(finish_err(&mut rt, diag));
+    }
+
+    let (stdout, _stderr) = take_captured_console(&mut rt.vm);
+    teardown_microtasks(&mut rt);
+    Ok(stdout)
   }
 }
 
