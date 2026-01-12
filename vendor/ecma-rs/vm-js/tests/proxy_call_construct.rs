@@ -68,6 +68,64 @@ fn native_len_construct(
   Ok(Value::Object(obj))
 }
 
+fn apply_trap_returns_target_is_valid(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target else {
+    return Ok(Value::Bool(false));
+  };
+  Ok(Value::Bool(scope.heap().is_valid_object(target_obj)))
+}
+
+fn construct_trap_returns_object_if_target_valid(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target else {
+    return Ok(Value::Undefined);
+  };
+  if !scope.heap().is_valid_object(target_obj) {
+    return Ok(Value::Undefined);
+  }
+  Ok(Value::Object(scope.alloc_object()?))
+}
+
+fn trap_getter_revokes_proxy_and_forces_gc(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(Value::Object(proxy)) = slots.first().copied() else {
+    return Err(VmError::InvariantViolation("trap getter missing proxy slot"));
+  };
+  let Some(Value::Object(trap)) = slots.get(1).copied() else {
+    return Err(VmError::InvariantViolation("trap getter missing trap slot"));
+  };
+
+  scope.revoke_proxy(proxy)?;
+  // Force a GC while the proxy is revoked and its target is otherwise unreachable.
+  scope.heap_mut().collect_garbage();
+  Ok(Value::Object(trap))
+}
+
 fn expect_string(rt: &JsRuntime, value: Value) -> String {
   let Value::String(s) = value else {
     panic!("expected string value, got {value:?}");
@@ -182,5 +240,129 @@ fn proxy_typeof_call_and_construct() -> Result<(), VmError> {
   let msg = expect_string(&rt, v);
   assert!(msg.contains("revoked"), "expected revoked-proxy message, got {msg}");
 
+  Ok(())
+}
+
+#[test]
+fn proxy_apply_trap_can_revoke_during_trap_lookup() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let global = rt.realm().global_object();
+
+  {
+    let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let len_call_id = vm.register_native_call(native_len_call)?;
+    let apply_trap_id = vm.register_native_call(apply_trap_returns_target_is_valid)?;
+    let getter_id = vm.register_native_call(trap_getter_revokes_proxy_and_forces_gc)?;
+
+    let mut scope = heap.scope();
+
+    let target_name = scope.alloc_string("callTarget")?;
+    scope.push_root(Value::String(target_name))?;
+    let target = scope.alloc_native_function(len_call_id, None, target_name, 0)?;
+    scope.push_root(Value::Object(target))?;
+
+    let handler = scope.alloc_object()?;
+    scope.push_root(Value::Object(handler))?;
+
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    scope.push_root(Value::Object(proxy))?;
+
+    let trap_name = scope.alloc_string("applyTrap")?;
+    scope.push_root(Value::String(trap_name))?;
+    let trap = scope.alloc_native_function(apply_trap_id, None, trap_name, 3)?;
+    scope.push_root(Value::Object(trap))?;
+
+    let getter_name = scope.alloc_string("applyGetter")?;
+    scope.push_root(Value::String(getter_name))?;
+    let slots = [Value::Object(proxy), Value::Object(trap)];
+    let getter = scope.alloc_native_function_with_slots(getter_id, None, getter_name, 0, &slots)?;
+    scope.push_root(Value::Object(getter))?;
+
+    let apply_key_s = scope.alloc_string("apply")?;
+    scope.push_root(Value::String(apply_key_s))?;
+    let apply_key = PropertyKey::from_string(apply_key_s);
+    scope.define_property(
+      handler,
+      apply_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(getter),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  // Should succeed even if the proxy is revoked while looking up `handler.apply`.
+  assert_eq!(rt.exec_script("p()")?, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_construct_trap_can_revoke_during_trap_lookup() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let global = rt.realm().global_object();
+
+  {
+    let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let len_call_id = vm.register_native_call(native_len_call)?;
+    let len_construct_id = vm.register_native_construct(native_len_construct)?;
+    let construct_trap_id = vm.register_native_call(construct_trap_returns_object_if_target_valid)?;
+    let getter_id = vm.register_native_call(trap_getter_revokes_proxy_and_forces_gc)?;
+
+    let mut scope = heap.scope();
+
+    let target_name = scope.alloc_string("ctorTarget")?;
+    scope.push_root(Value::String(target_name))?;
+    let target = scope.alloc_native_function(len_call_id, Some(len_construct_id), target_name, 0)?;
+    scope.push_root(Value::Object(target))?;
+
+    let handler = scope.alloc_object()?;
+    scope.push_root(Value::Object(handler))?;
+
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    scope.push_root(Value::Object(proxy))?;
+
+    let trap_name = scope.alloc_string("constructTrap")?;
+    scope.push_root(Value::String(trap_name))?;
+    let trap = scope.alloc_native_function(construct_trap_id, None, trap_name, 3)?;
+    scope.push_root(Value::Object(trap))?;
+
+    let getter_name = scope.alloc_string("constructGetter")?;
+    scope.push_root(Value::String(getter_name))?;
+    let slots = [Value::Object(proxy), Value::Object(trap)];
+    let getter = scope.alloc_native_function_with_slots(getter_id, None, getter_name, 0, &slots)?;
+    scope.push_root(Value::Object(getter))?;
+
+    let construct_key_s = scope.alloc_string("construct")?;
+    scope.push_root(Value::String(construct_key_s))?;
+    let construct_key = PropertyKey::from_string(construct_key_s);
+    scope.define_property(
+      handler,
+      construct_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(getter),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  assert_eq!(rt.exec_script("typeof (new p()) === 'object'")?, Value::Bool(true));
   Ok(())
 }
