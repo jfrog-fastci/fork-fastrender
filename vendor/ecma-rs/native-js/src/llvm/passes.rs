@@ -11,6 +11,7 @@ use llvm_sys::core::{
   LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetIntTypeWidth,
   LLVMGetModuleContext, LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction,
   LLVMGetNextInstruction, LLVMGetTailCallKind,
+  LLVMGetNamedMetadataNumOperands,
   LLVMGetNumOperands, LLVMGetNumSuccessors, LLVMGetOperand, LLVMGetParamTypes, LLVMGetReturnType,
   LLVMGetStringAttributeAtIndex, LLVMGetValueKind,
   LLVMGetSuccessor, LLVMGetTypeKind, LLVMGetValueName2, LLVMGlobalGetValueType, LLVMInsertIntoBuilder,
@@ -305,7 +306,19 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   // call/statepoint overhead. Finally, `rewrite-statepoints-for-gc` rewrites the slow-path call
   // into a statepoint so stackmaps/relocations are emitted.
   run_pass_pipeline(module, target_machine, "function(place-safepoints)")?;
-  rewrite_safepoint_polls_to_inline_epoch_checks(module)?;
+  // In debug-info builds, lowering each poll call by splitting basic blocks can cause LLVM 18 to
+  // segfault during codegen when `llvm.dbg.*` intrinsics are present.
+  //
+  // Debug builds are performance-insensitive, so use a simpler (and more robust) strategy:
+  // - keep the `call void @gc.safepoint_poll()` markers inserted by `place-safepoints`
+  // - define a real `gc.safepoint_poll` body that performs the epoch check and calls the slow path
+  //
+  // This preserves GC progress in call-free loops while avoiding CFG surgery on debug IR.
+  if module_has_dwarf_debug_info(module) {
+    define_gc_safepoint_poll_body(module)?;
+  } else {
+    rewrite_safepoint_polls_to_inline_epoch_checks(module)?;
+  }
   if cfg!(debug_assertions) {
     if let Err(message) = module.verify() {
       return Err(PassError::Verify {
@@ -335,6 +348,12 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   super::debug_lint_module_gc_pointer_discipline(module)?;
   verify_no_stray_calls_in_ts_generated_functions(module)?;
   Ok(())
+}
+
+fn module_has_dwarf_debug_info(module: &Module<'_>) -> bool {
+  // `DebugInfoBuilder` materializes compile units as `!llvm.dbg.cu`.
+  let name = CString::new("llvm.dbg.cu").expect("llvm.dbg.cu contains NUL");
+  unsafe { LLVMGetNamedMetadataNumOperands(module.as_mut_ptr(), name.as_ptr()) > 0 }
 }
 
 // -----------------------------------------------------------------------------
@@ -468,6 +487,79 @@ fn validate_rt_gc_safepoint_slow_decl_if_present(module: &Module<'_>) -> Result<
     }
     validate_rt_gc_safepoint_slow_function(existing)
   }
+}
+
+fn define_gc_safepoint_poll_body(module: &Module<'_>) -> Result<(), PassError> {
+  let poll_name = CString::new("gc.safepoint_poll").expect("gc.safepoint_poll contains NUL");
+  unsafe {
+    let poll_fn = LLVMGetNamedFunction(module.as_mut_ptr(), poll_name.as_ptr());
+    if poll_fn.is_null() {
+      return Ok(());
+    }
+    // Only define the body if it's still a declaration.
+    if LLVMCountBasicBlocks(poll_fn) != 0 {
+      return Ok(());
+    }
+
+    let rt_gc_epoch = ensure_rt_gc_epoch_decl(module)?;
+    let rt_gc_safepoint_slow = ensure_rt_gc_safepoint_slow_decl(module)?;
+
+    let ctx = LLVMGetModuleContext(module.as_mut_ptr());
+    let i64_ty = LLVMInt64TypeInContext(ctx);
+
+    // Keep the definition local to avoid duplicate symbol conflicts when linking multiple objects.
+    LLVMSetLinkage(poll_fn, LLVMLinkage::LLVMInternalLinkage);
+
+    let entry_name = CString::new("entry").expect("entry contains NUL");
+    let entry_bb = LLVMAppendBasicBlockInContext(ctx, poll_fn, entry_name.as_ptr());
+    let slow_name = CString::new("slow").expect("slow contains NUL");
+    let slow_bb = LLVMAppendBasicBlockInContext(ctx, poll_fn, slow_name.as_ptr());
+    let cont_name = CString::new("cont").expect("cont contains NUL");
+    let cont_bb = LLVMAppendBasicBlockInContext(ctx, poll_fn, cont_name.as_ptr());
+
+    let builder = LLVMCreateBuilderInContext(ctx);
+
+    // entry: epoch = load atomic RT_GC_EPOCH; if requested -> slow else cont
+    LLVMPositionBuilderAtEnd(builder, entry_bb);
+    let epoch = LLVMBuildLoad2(builder, i64_ty, rt_gc_epoch, c_str!("gc.epoch"));
+    LLVMSetOrdering(epoch, LLVMAtomicOrdering::LLVMAtomicOrderingAcquire);
+    LLVMSetAlignment(epoch, 8);
+
+    let one = LLVMConstInt(i64_ty, 1, 0);
+    let lowbit = LLVMBuildAnd(builder, epoch, one, c_str!("gc.epoch.lowbit"));
+    let zero = LLVMConstInt(i64_ty, 0, 0);
+    let requested = LLVMBuildICmp(
+      builder,
+      LLVMIntPredicate::LLVMIntNE,
+      lowbit,
+      zero,
+      c_str!("gc.poll.requested"),
+    );
+    LLVMBuildCondBr(builder, requested, slow_bb, cont_bb);
+
+    // slow: call rt_gc_safepoint_slow(epoch); br cont
+    LLVMPositionBuilderAtEnd(builder, slow_bb);
+    let slow_fn_ty = LLVMGlobalGetValueType(rt_gc_safepoint_slow);
+    let mut args = [epoch];
+    let call = LLVMBuildCall2(
+      builder,
+      slow_fn_ty,
+      rt_gc_safepoint_slow,
+      args.as_mut_ptr(),
+      1,
+      c_str!(""),
+    );
+    LLVMSetTailCallKind(call, LLVMTailCallKind::LLVMTailCallKindNoTail);
+    LLVMBuildBr(builder, cont_bb);
+
+    // cont: ret void
+    LLVMPositionBuilderAtEnd(builder, cont_bb);
+    LLVMBuildRetVoid(builder);
+
+    LLVMDisposeBuilder(builder);
+  }
+
+  Ok(())
 }
 
 fn rewrite_safepoint_polls_to_inline_epoch_checks(module: &Module<'_>) -> Result<(), PassError> {
