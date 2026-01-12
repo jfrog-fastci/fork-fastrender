@@ -83,6 +83,7 @@ fn ui_worker_download_cancel_cleans_up() {
           pos_css: (10.0, 10.0),
           button: PointerButton::Primary,
           modifiers: PointerModifiers::NONE,
+          click_count: 1,
         })
         .unwrap();
       ui_tx

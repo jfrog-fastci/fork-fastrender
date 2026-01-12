@@ -20,6 +20,7 @@ fn click_download_link(ui_tx: &std::sync::mpsc::Sender<UiToWorker>, tab_id: TabI
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .unwrap();
   ui_tx
