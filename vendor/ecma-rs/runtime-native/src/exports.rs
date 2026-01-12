@@ -336,8 +336,21 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::
 }
 
 #[no_mangle]
+#[inline(never)]
 pub extern "C" fn rt_alloc_ptr_array(len: usize) -> *mut u8 {
-  abort_on_panic(|| rt_alloc_array(len, array::RT_ARRAY_ELEM_PTR_FLAG | core::mem::size_of::<*mut u8>()))
+  // Like `rt_alloc_array`, capture the frame pointer before entering `abort_on_panic` so allocator
+  // slow paths can publish a managed callsite safepoint context even if `catch_unwind` repurposes
+  // the FP register.
+  let entry_fp = crate::stackwalk::current_frame_pointer();
+  abort_on_panic(|| {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_alloc_array(len, core::mem::size_of::<*mut u8>());
+    crate::rt_alloc::alloc_array(
+      len,
+      array::RT_ARRAY_ELEM_PTR_FLAG | core::mem::size_of::<*mut u8>(),
+      entry_fp,
+    )
+  })
 }
 
 #[no_mangle]

@@ -1,4 +1,4 @@
-use runtime_native::abi::{PromiseRef, RtShapeDescriptor, RtShapeId};
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef, RtShapeDescriptor, RtShapeId};
 use runtime_native::rt_alloc;
 use runtime_native::rt_gc_collect;
 use runtime_native::rt_gc_get_young_range;
@@ -187,7 +187,7 @@ fn promise_then_rooted_is_safe_when_root_registration_blocks_under_moving_gc() {
       // Use a by-value promise pointer so it does not get updated by the moving GC; this reproduces
       // the TOCTOU hazard where `promise_then_rooted` uses `p` after potentially blocking handle-table
       // operations.
-      let promise = PromiseRef((promise_pre_gc as *mut u8).cast());
+      let promise = LegacyPromiseRef((promise_pre_gc as *mut u8).cast());
       rt_promise_then_rooted_legacy(promise, record_ptr_and_magic, data_pre_gc as *mut u8);
       c_done_tx.send(()).unwrap();
 
