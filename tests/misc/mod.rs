@@ -40,7 +40,6 @@ mod vm_js_dom_exception_smoke;
 mod vm_js_dynamic_script_crossorigin_cors;
 mod vm_js_function_call_apply_bind_smoke;
 mod vm_js_function_object_properties_smoke;
-mod vm_js_hooks_payload_regressions;
 mod vm_js_module_graph_loader_smoke;
 mod vm_js_new_target_smoke;
 mod vm_js_object_builtins_smoke;

@@ -2249,7 +2249,9 @@ mod tests {
   }
 
   #[derive(Default)]
-  struct DispatchHostCtx;
+  struct DispatchHostCtx {
+    assert_vm_host_calls: usize,
+  }
 
   struct DispatchHost {
     vm_host: DispatchHostCtx,
@@ -2262,7 +2264,7 @@ mod tests {
       let window =
         WindowRealm::new(WindowRealmConfig::new("https://example.com/index.html")).unwrap();
       Self {
-        vm_host: DispatchHostCtx,
+        vm_host: DispatchHostCtx::default(),
         bindings_host: DispatchBindingsHost::default(),
         window,
       }
@@ -2295,6 +2297,24 @@ mod tests {
     Ok(Value::Undefined)
   }
 
+  fn native_assert_vm_host_ctx(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    let Some(ctx) = host.as_any_mut().downcast_mut::<DispatchHostCtx>() else {
+      return Err(VmError::TypeError(
+        "expected module native call to receive embedder VmHost",
+      ));
+    };
+    ctx.assert_vm_host_calls += 1;
+    Ok(Value::Undefined)
+  }
+
   fn install_dispatch_binding(
     vm: &mut Vm,
     heap: &mut vm_js::Heap,
@@ -2311,6 +2331,40 @@ mod tests {
     scope.push_root(Value::Object(func))?;
 
     let key_s = scope.alloc_string("__webidl_dispatch")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(func),
+          writable: true,
+        },
+      },
+    )?;
+
+    Ok(())
+  }
+
+  fn install_assert_vm_host_ctx_binding(
+    vm: &mut Vm,
+    heap: &mut vm_js::Heap,
+    realm: &vm_js::Realm,
+  ) -> std::result::Result<(), VmError> {
+    let call_id = vm.register_native_call(native_assert_vm_host_ctx)?;
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("__assert_vm_host_ctx")?;
+    scope.push_root(Value::String(name_s))?;
+    let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+    scope.push_root(Value::Object(func))?;
+
+    let key_s = scope.alloc_string("__assert_vm_host_ctx")?;
     scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     scope.define_property(
@@ -2560,6 +2614,30 @@ mod tests {
     )?;
 
     assert_eq!(host.bindings_host.calls, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn module_evaluation_provides_vm_host_ctx_to_native_calls() -> Result<()> {
+    let fetcher = Arc::new(MapFetcher::new(HashMap::new()));
+    let mut host = DispatchHost::new();
+    let mut event_loop = EventLoop::<DispatchHost>::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_assert_vm_host_ctx_binding(vm, heap, realm).unwrap();
+    }
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html");
+    loader.evaluate_inline_module(
+      &mut host,
+      &mut event_loop,
+      "https://example.com/entry.js",
+      "https://example.com/index.html",
+      "globalThis.__assert_vm_host_ctx(); export const x = 1;",
+    )?;
+
+    assert_eq!(host.vm_host.assert_vm_host_calls, 1);
     Ok(())
   }
 
