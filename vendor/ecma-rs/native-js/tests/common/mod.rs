@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Output, Stdio};
 
 pub fn find_clang() -> Option<&'static str> {
   for cand in ["clang-18", "clang"] {
@@ -33,7 +33,7 @@ pub fn clang_link_ir_to_exe(
   ll_path: &Path,
   exe_path: &Path,
   runtime_native_a: &Path,
-) -> ExitStatus {
+) -> Output {
   let mut cmd = Command::new(clang);
   cmd
     .arg("-Wno-override-module")
@@ -50,6 +50,5 @@ pub fn clang_link_ir_to_exe(
   if cfg!(target_os = "linux") {
     cmd.args(["-lpthread", "-ldl", "-lm", "-lrt"]);
   }
-  cmd.arg("-o").arg(exe_path).status().expect("clang")
+  cmd.arg("-o").arg(exe_path).output().expect("clang")
 }
-

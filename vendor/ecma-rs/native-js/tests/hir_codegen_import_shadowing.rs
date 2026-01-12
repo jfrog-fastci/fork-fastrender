@@ -66,8 +66,14 @@ export function main(): number {
   std::fs::write(&ll_path, ir).expect("write ir");
 
   let exe_path = td.path().join("out");
-  let status = common::clang_link_ir_to_exe(clang, &ll_path, &exe_path, &runtime_native_a);
-  assert!(status.success(), "clang failed with {status}");
+  let out = common::clang_link_ir_to_exe(clang, &ll_path, &exe_path, &runtime_native_a);
+  assert!(
+    out.status.success(),
+    "clang failed (status={status}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    status = out.status,
+    stdout = String::from_utf8_lossy(&out.stdout),
+    stderr = String::from_utf8_lossy(&out.stderr)
+  );
 
   let out = Command::new(&exe_path).output().expect("run exe");
   assert_eq!(out.status.code(), Some(12));
