@@ -1,3 +1,4 @@
+use super::{fail_next_allocation, failed_allocs, lock_allocator};
 use fastrender::style::color::Rgba;
 use fastrender::text::color_fonts::ColorFontRenderer;
 use fastrender::text::font_db::{FontStretch, FontStyle, FontWeight, LoadedFont};
@@ -5,8 +6,6 @@ use fastrender::text::font_instance::FontInstance;
 use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-use super::{fail_next_allocation, failed_allocs, lock_allocator};
 
 fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
   let bytes = data.get(offset..offset + 2)?;
@@ -127,4 +126,3 @@ fn colr_v0_layer_records_parse_survives_allocation_failure() {
     "expected color glyph render to return None after allocation failure"
   );
 }
-

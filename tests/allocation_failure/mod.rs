@@ -15,6 +15,8 @@ static RECORDED_ALLOC_ALIGN: AtomicUsize = AtomicUsize::new(0);
 static COUNT_SIZE: AtomicUsize = AtomicUsize::new(0);
 static COUNT_ALIGN: AtomicUsize = AtomicUsize::new(0);
 static COUNT_MATCHES: AtomicUsize = AtomicUsize::new(0);
+static MAX_ALLOC: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 static LOCK: Mutex<()> = Mutex::new(());
 
@@ -37,6 +39,22 @@ pub(crate) fn recorded_allocation_layout() -> Option<(usize, usize)> {
     return None;
   }
   Some((size, RECORDED_ALLOC_ALIGN.load(Ordering::Relaxed)))
+}
+
+pub(crate) fn reset_max_alloc() {
+  MAX_ALLOC.store(0, Ordering::Relaxed);
+}
+
+pub(crate) fn max_alloc() -> usize {
+  MAX_ALLOC.load(Ordering::Relaxed)
+}
+
+pub(crate) fn reset_alloc_calls() {
+  ALLOC_CALLS.store(0, Ordering::Relaxed);
+}
+
+pub(crate) fn alloc_calls() -> usize {
+  ALLOC_CALLS.load(Ordering::Relaxed)
 }
 
 pub(crate) fn fail_next_allocation(size: usize, align: usize) {
@@ -62,8 +80,19 @@ pub(crate) fn stop_counting() -> usize {
   COUNT_MATCHES.load(Ordering::Relaxed)
 }
 
+fn record_max_alloc(size: usize) {
+  let mut current = MAX_ALLOC.load(Ordering::Relaxed);
+  while size > current {
+    match MAX_ALLOC.compare_exchange(current, size, Ordering::Relaxed, Ordering::Relaxed) {
+      Ok(_) => break,
+      Err(actual) => current = actual,
+    }
+  }
+}
+
 unsafe impl GlobalAlloc for FailingAllocator {
   unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+    record_max_alloc(layout.size());
     if RECORDED_ALLOC_SIZE.load(Ordering::Relaxed) == 0 {
       RECORDED_ALLOC_ALIGN.store(layout.align(), Ordering::Relaxed);
       RECORDED_ALLOC_SIZE.store(layout.size(), Ordering::Relaxed);
@@ -91,10 +120,15 @@ unsafe impl GlobalAlloc for FailingAllocator {
       FAILED_ALLOCS.fetch_add(1, Ordering::Relaxed);
       return std::ptr::null_mut();
     }
-    System.alloc(layout)
+    let ptr = System.alloc(layout);
+    if !ptr.is_null() {
+      ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+    ptr
   }
 
   unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+    record_max_alloc(layout.size());
     if RECORDED_ALLOC_SIZE.load(Ordering::Relaxed) == 0 {
       RECORDED_ALLOC_ALIGN.store(layout.align(), Ordering::Relaxed);
       RECORDED_ALLOC_SIZE.store(layout.size(), Ordering::Relaxed);
@@ -122,10 +156,15 @@ unsafe impl GlobalAlloc for FailingAllocator {
       FAILED_ALLOCS.fetch_add(1, Ordering::Relaxed);
       return std::ptr::null_mut();
     }
-    System.alloc_zeroed(layout)
+    let ptr = System.alloc_zeroed(layout);
+    if !ptr.is_null() {
+      ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+    ptr
   }
 
   unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    record_max_alloc(new_size);
     if RECORDED_ALLOC_SIZE.load(Ordering::Relaxed) == 0 {
       RECORDED_ALLOC_ALIGN.store(layout.align(), Ordering::Relaxed);
       RECORDED_ALLOC_SIZE.store(new_size, Ordering::Relaxed);
@@ -153,7 +192,11 @@ unsafe impl GlobalAlloc for FailingAllocator {
       FAILED_ALLOCS.fetch_add(1, Ordering::Relaxed);
       return std::ptr::null_mut();
     }
-    System.realloc(ptr, layout, new_size)
+    let new_ptr = System.realloc(ptr, layout, new_size);
+    if !new_ptr.is_null() {
+      ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+    new_ptr
   }
 
   unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -175,6 +218,8 @@ mod cpal_palette_allocation_failure_test;
 mod delta_set_index_map_allocation_failure_test;
 mod item_variation_store_allocation_failure_test;
 mod legacy_mask_luminance_allocation_failure_test;
+mod output_streaming_test;
 mod pattern_fill_allocation_failure_test;
 mod selector_bloom_allocation_failure_test;
 mod shape_outside_allocation_failure_test;
+mod stacking_context_no_translate_clone;

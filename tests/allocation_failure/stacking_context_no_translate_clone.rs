@@ -1,53 +1,7 @@
+use super::{alloc_calls, lock_allocator, reset_alloc_calls};
 use fastrender::paint::painter::Painter;
 use fastrender::{ComputedStyle, Display, FragmentNode, FragmentTree, Rect, Rgba};
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
-struct CountingAllocator;
-
-static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-#[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
-
-unsafe impl GlobalAlloc for CountingAllocator {
-  unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-    let ptr = System.alloc(layout);
-    if !ptr.is_null() {
-      ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-    }
-    ptr
-  }
-
-  unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-    let ptr = System.alloc_zeroed(layout);
-    if !ptr.is_null() {
-      ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-    }
-    ptr
-  }
-
-  unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-    let new_ptr = System.realloc(ptr, layout, new_size);
-    if !new_ptr.is_null() {
-      ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-    }
-    new_ptr
-  }
-
-  unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-    System.dealloc(ptr, layout);
-  }
-}
-
-fn reset_alloc_calls() {
-  ALLOC_CALLS.store(0, Ordering::Relaxed);
-}
-
-fn alloc_calls() -> usize {
-  ALLOC_CALLS.load(Ordering::Relaxed)
-}
 
 fn build_nested_stacking_context_tree(depth: usize) -> FragmentTree {
   let mut style = ComputedStyle::default();
@@ -91,6 +45,8 @@ fn paint_allocations_for_depth(depth: usize) -> usize {
 
 #[test]
 fn legacy_stacking_context_paint_allocations_scale_linearly() {
+  let _guard = lock_allocator();
+
   // Warm up one-time allocations so the scaling check is stable.
   let _ = paint_allocations_for_depth(1);
 
@@ -106,3 +62,4 @@ fn legacy_stacking_context_paint_allocations_scale_linearly() {
     "expected paint allocations to scale ~linearly, got depth {small_depth} -> {small} allocs, depth {large_depth} -> {large} allocs"
   );
 }
+
