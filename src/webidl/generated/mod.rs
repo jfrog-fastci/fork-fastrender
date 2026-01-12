@@ -10602,6 +10602,114 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "IntersectionObserver",
+    inherits: None,
+    callback: false,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(IntersectionObserverCallback callback, optional IntersectionObserverInit options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("root"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute (Element or Document)? root",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rootMargin"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString rootMargin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("thresholds"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<double> thresholds",
+      },
+      WebIdlInterfaceMember {
+        name: Some("observe"),
+        ext_attrs: &[
+        ],
+        raw: "undefined observe(Element target)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("unobserve"),
+        ext_attrs: &[
+        ],
+        raw: "undefined unobserve(Element target)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("disconnect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined disconnect()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("takeRecords"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<IntersectionObserverEntry> takeRecords()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "IntersectionObserverEntry",
+    inherits: None,
+    callback: false,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("time"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMHighResTimeStamp time",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rootBounds"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMRectReadOnly? rootBounds",
+      },
+      WebIdlInterfaceMember {
+        name: Some("boundingClientRect"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMRectReadOnly boundingClientRect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("intersectionRect"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMRectReadOnly intersectionRect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isIntersecting"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isIntersecting",
+      },
+      WebIdlInterfaceMember {
+        name: Some("intersectionRatio"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double intersectionRatio",
+      },
+      WebIdlInterfaceMember {
+        name: Some("target"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Element target",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "Location",
     inherits: None,
     callback: false,
@@ -13545,6 +13653,105 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "NewObject", value: None },
         ],
         raw: "Promise<USVString> text()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ResizeObserver",
+    inherits: None,
+    callback: false,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(ResizeObserverCallback callback)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("observe"),
+        ext_attrs: &[
+        ],
+        raw: "undefined observe(Element target, optional ResizeObserverOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("unobserve"),
+        ext_attrs: &[
+        ],
+        raw: "undefined unobserve(Element target)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("disconnect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined disconnect()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("takeRecords"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<ResizeObserverEntry> takeRecords()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ResizeObserverEntry",
+    inherits: None,
+    callback: false,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("target"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Element target",
+      },
+      WebIdlInterfaceMember {
+        name: Some("contentRect"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMRectReadOnly contentRect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("borderBoxSize"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<ResizeObserverSize> borderBoxSize",
+      },
+      WebIdlInterfaceMember {
+        name: Some("contentBoxSize"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<ResizeObserverSize> contentBoxSize",
+      },
+      WebIdlInterfaceMember {
+        name: Some("devicePixelContentBoxSize"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<ResizeObserverSize> devicePixelContentBoxSize",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ResizeObserverSize",
+    inherits: None,
+    callback: false,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("inlineSize"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double inlineSize",
+      },
+      WebIdlInterfaceMember {
+        name: Some("blockSize"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double blockSize",
       },
     ],
   },
@@ -19056,6 +19263,32 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlDictionary {
+    name: "IntersectionObserverInit",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("root"),
+        ext_attrs: &[
+        ],
+        raw: "(Element or Document)? root = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("rootMargin"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString rootMargin = \"0px\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("threshold"),
+        ext_attrs: &[
+        ],
+        raw: "(double or sequence<double>) threshold = 0",
+      },
+    ],
+  },
+  WebIdlDictionary {
     name: "MessageEventInit",
     inherits: Some("EventInit"),
     ext_attrs: &[
@@ -19534,6 +19767,20 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "any window",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ResizeObserverOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("box"),
+        ext_attrs: &[
+        ],
+        raw: "ResizeObserverBoxOptions box = \"content-box\"",
       },
     ],
   },
@@ -20262,6 +20509,16 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlEnum {
+    name: "ResizeObserverBoxOptions",
+    ext_attrs: &[
+    ],
+    values: &[
+      "border-box",
+      "content-box",
+      "device-pixel-content-box",
+    ],
+  },
+  WebIdlEnum {
     name: "ResizeQuality",
     ext_attrs: &[
     ],
@@ -20504,6 +20761,12 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     type_: "undefined (DOMString data)",
   },
   WebIdlCallback {
+    name: "IntersectionObserverCallback",
+    ext_attrs: &[
+    ],
+    type_: "undefined (sequence<IntersectionObserverEntry> entries, IntersectionObserver observer)",
+  },
+  WebIdlCallback {
     name: "MutationCallback",
     ext_attrs: &[
     ],
@@ -20534,6 +20797,12 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
       WebIdlExtendedAttribute { name: "LegacyTreatNonObjectAsNull", value: None },
     ],
     type_: "any ((Event or DOMString) event, optional DOMString source, optional unsigned long lineno, optional unsigned long colno, optional any error)",
+  },
+  WebIdlCallback {
+    name: "ResizeObserverCallback",
+    ext_attrs: &[
+    ],
+    type_: "undefined (sequence<ResizeObserverEntry> entries, ResizeObserver observer)",
   },
   WebIdlCallback {
     name: "VoidFunction",
