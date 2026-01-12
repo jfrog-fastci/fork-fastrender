@@ -136,6 +136,18 @@ pub struct CompileCfgOptions {
   /// This is enabled by default. Turning it off can be useful for experimenting
   /// with downstream backends/analyses on the unoptimised SSA graph.
   pub run_opt_passes: bool,
+  /// Elide (rewrite away) `await` operations that are marked `await_known_resolved`.
+  ///
+  /// When `native-async-ops` is enabled, the lowering may mark some await points
+  /// as "known resolved" (e.g. `await 1` inside an async function). The
+  /// `optpass_async_elide` optimization pass can rewrite those awaits into simple
+  /// value-forwarding assignments.
+  ///
+  /// Note: This is a documented semantic relaxation for native AOT backends:
+  /// eliding such awaits may remove a microtask yield that would otherwise occur
+  /// under ECMAScript semantics. Disable this flag to preserve strict await
+  /// scheduling.
+  pub elide_known_resolved_awaits: bool,
   /// Options controlling interprocedural inlining on SSA CFGs.
   pub inline: InlineOptions,
   /// Enable loop-invariant code motion (LICM).
@@ -180,6 +192,7 @@ impl Default for CompileCfgOptions {
     Self {
       keep_ssa: false,
       run_opt_passes: true,
+      elide_known_resolved_awaits: true,
       inline: InlineOptions::default(),
       enable_licm: false,
       enable_loop_opts: false,
@@ -696,8 +709,10 @@ pub(crate) fn build_program_function_with_options(
       let dom = dom_cache.ensure(&cfg, &mut stats);
       let mut iteration_result = PassResult::default();
 
-      iteration_result.merge(optpass_async_elide(&mut cfg));
-      dbg_checkpoint(&format!("opt{}_async_elide", i), &cfg);
+      if options.elide_known_resolved_awaits {
+        iteration_result.merge(optpass_async_elide(&mut cfg));
+        dbg_checkpoint(&format!("opt{}_async_elide", i), &cfg);
+      }
       iteration_result.merge(optpass_dvn(&mut cfg, dom));
       dbg_checkpoint(&format!("opt{}_dvn", i), &cfg);
       if options.enable_licm {
