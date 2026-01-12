@@ -155,6 +155,62 @@ const f = fn;
 }
 
 #[test]
+fn strict_native_reports_any_nested_in_object_type() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(&entry, "let x: { foo: any } = { foo: 1 };\n").expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains("TC4000"));
+}
+
+#[test]
+fn strict_native_reports_any_nested_in_type_ref() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    "type Foo = { foo: any };\nlet x: Foo = { foo: 1 };\n",
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains("TC4000"));
+}
+
+#[test]
+fn strict_native_reports_any_nested_in_callable_type() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    "type Fn = (x: any) => void;\nconst f: Fn = () => {};\n",
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains("TC4000"));
+}
+
+#[test]
 fn strict_native_json_includes_compiler_option() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
@@ -271,6 +327,81 @@ e("1");
 }
 
 #[test]
+fn strict_native_reports_eval_through_outer_const_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare function eval(code: string): unknown;
+const e = eval;
+function f() {
+  e("1+1");
+}
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_function_through_outer_const_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+const F = Function;
+F("return 1");
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_NEW_FUNCTION.as_str()));
+}
+
+#[test]
+fn strict_native_reports_proxy_through_outer_const_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const Proxy: {
+  new (target: object, handler: object): object;
+};
+const P = Proxy;
+new P({}, {});
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_PROXY.as_str()));
+}
+
+#[test]
 fn strict_native_reports_prototype_mutation_via_destructuring_define_property() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
@@ -322,6 +453,34 @@ sp({}, null);
 }
 
 #[test]
+fn strict_native_reports_prototype_mutation_through_outer_const_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+const dp = Object.defineProperty;
+function f() {
+  dp(Foo, "prototype", { value: 1 });
+}
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
 fn strict_native_destructuring_alias_respects_block_shadowing() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
@@ -355,6 +514,36 @@ const { eval: e } = globalThis;
     "expected no {} diagnostics, got {stdout}",
     codes::NATIVE_STRICT_EVAL.as_str()
   );
+}
+
+#[test]
+fn strict_native_aliases_respect_block_scoping() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const Proxy: {
+  new (target: object, handler: object): object;
+};
+const P = (o: object) => o;
+{
+  const P = Proxy;
+}
+function f() {
+  P({});
+}
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .success();
 }
 
 #[test]
@@ -609,7 +798,8 @@ fn native_strict_requires_strict_null_checks() {
 fn strict_native_reports_function_constructor_via_object_constructor() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
-  fs::write(&entry, "Object.constructor.call(null, \"return 1\");\n").expect("write main.ts");
+  fs::write(&entry, "Object.constructor.call(null, \"return 1\");\n")
+    .expect("write main.ts");
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)

@@ -1780,11 +1780,62 @@ pub mod body_check {
           strict_hooks,
           caches.relation.clone(),
         );
+        struct NativeStrictDbResolver<'a> {
+          ctx: &'a BodyCheckContext,
+          locals: RefCell<HashMap<FileId, sem_ts::locals::TsLocalSemantics>>,
+        }
+
+        impl<'a> NativeStrictDbResolver<'a> {
+          fn new(ctx: &'a BodyCheckContext) -> Self {
+            Self {
+              ctx,
+              locals: RefCell::new(HashMap::new()),
+            }
+          }
+        }
+
+        impl crate::program::check::native_strict::NativeStrictResolver for NativeStrictDbResolver<'_> {
+          fn body(&self, body: BodyId) -> Option<&hir_js::Body> {
+            let info = self.ctx.body_info.get(&body)?;
+            let hir_id = info.hir?;
+            let lowered = self.ctx.lowered.get(&info.file)?;
+            lowered.body(hir_id)
+          }
+
+          fn resolve_ident(&self, body: BodyId, expr: hir_js::ExprId) -> Option<DefId> {
+            let info = self.ctx.body_info.get(&body)?;
+            let file = info.file;
+            let needs_init = { !self.locals.borrow().contains_key(&file) };
+            if needs_init {
+              let ast = self.ctx.asts.get(&file)?;
+              let (locals, _) = sem_ts::locals::bind_ts_locals_tables(ast.as_ref(), file);
+              self.locals.borrow_mut().insert(file, locals);
+            }
+            let locals_map = self.locals.borrow();
+            let locals = locals_map.get(&file)?;
+            let hir_body = self.body(body)?;
+            let sym = locals.resolve_expr(hir_body, expr)?;
+            let span = locals.symbol(sym).span?;
+            self.ctx.def_spans.get(&(file, span)).copied()
+          }
+
+          fn var_initializer(&self, def: DefId) -> Option<crate::VarInit> {
+            let file = self.ctx.def_files.get(&def).copied()?;
+            let lowered = self.ctx.lowered.get(&file)?;
+            let hir_def = lowered.def(def)?;
+            let def_name = lowered.names.resolve(hir_def.path.name);
+            super::var_initializer_in_file(lowered, def, hir_def.span, def_name)
+          }
+        }
+
+        let resolver = NativeStrictDbResolver::new(ctx);
         let strict_diagnostics = crate::program::check::native_strict::validate_native_strict_body(
           body,
           &result,
           ctx.store.as_ref(),
           &strict_relate,
+          Some(&expander),
+          &resolver,
           meta.file,
         );
         result.diagnostics.extend(strict_diagnostics);
