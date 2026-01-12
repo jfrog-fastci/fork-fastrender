@@ -5777,9 +5777,39 @@ fn parse_style_block<'i, 't>(
   namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<(Vec<Declaration>, Vec<CssRule>), ParseError<'i, SelectorParseErrorKind<'i>>>
 {
+  // IMPORTANT: Preserve source order between declarations and nested rules.
+  //
+  // CSS Nesting allows declarations and nested rules to be interleaved:
+  //
+  //   div {
+  //     color: red;
+  //     & { color: blue; }
+  //     color: green;
+  //   }
+  //
+  // In that example, `color: green` must win because it appears after the nested rule in source
+  // order. Our internal stylesheet representation stores the parent rule's first declaration run
+  // in `StyleRule.declarations`, and any later declaration runs as separate style rules inserted
+  // into `StyleRule.nested_rules` at the correct source position.
+  //
+  // This keeps `collect_rules_recursive`'s depth-first traversal equivalent to the spec expansion
+  // of nested rules (which happens in-place, preserving ordering).
   let mut declarations = Vec::new();
   let mut nested_rules = Vec::new();
+  let mut saw_rule_item = false;
+  let mut pending_tail_decls: Vec<Declaration> = Vec::new();
   let mut media_query_cache = media_query_cache;
+
+  let flush_pending_tail_decls = |out: &mut Vec<CssRule>, decls: &mut Vec<Declaration>| {
+    if decls.is_empty() {
+      return;
+    }
+    out.push(CssRule::Style(StyleRule {
+      selectors: parent_selectors.clone(),
+      declarations: std::mem::take(decls),
+      nested_rules: Vec::new(),
+    }));
+  };
 
   while !parser.is_exhausted() {
     if !css_deadline_allows_progress() {
@@ -5805,7 +5835,11 @@ fn parse_style_block<'i, 't>(
           parsed_media_query_list_cache,
           namespace_state,
         ) {
-          Ok(Some(rule)) => nested_rules.push(rule),
+          Ok(Some(rule)) => {
+            saw_rule_item = true;
+            flush_pending_tail_decls(&mut nested_rules, &mut pending_tail_decls);
+            nested_rules.push(rule);
+          }
           Ok(None) => {}
           Err(e) => {
             errors.push_with_snippet_at(|| format!("{:?}", e.kind), e.location, css_source);
@@ -5821,7 +5855,11 @@ fn parse_style_block<'i, 't>(
       parse_declaration_in_style_block(p, errors, DeclarationContext::Style, css_source)
     }) {
       Ok(Some(decl)) => {
-        declarations.push(decl);
+        if saw_rule_item {
+          pending_tail_decls.push(decl);
+        } else {
+          declarations.push(decl);
+        }
         continue;
       }
       Ok(None) => continue,
@@ -5838,7 +5876,11 @@ fn parse_style_block<'i, 't>(
       parsed_media_query_list_cache,
       namespace_state,
     ) {
-      Ok(Some(rule)) => nested_rules.push(CssRule::Style(rule)),
+      Ok(Some(rule)) => {
+        saw_rule_item = true;
+        flush_pending_tail_decls(&mut nested_rules, &mut pending_tail_decls);
+        nested_rules.push(CssRule::Style(rule))
+      }
       Ok(None) => {}
       Err(e) => {
         errors.push_with_snippet_at(|| format!("{:?}", e.kind), e.location, css_source);
@@ -5846,6 +5888,8 @@ fn parse_style_block<'i, 't>(
       }
     }
   }
+
+  flush_pending_tail_decls(&mut nested_rules, &mut pending_tail_decls);
 
   Ok((declarations, nested_rules))
 }
@@ -7204,6 +7248,71 @@ p { color: red; }
     };
     assert_eq!(nested.declarations.len(), 1);
     assert_eq!(nested.declarations[0].property.as_str(), "color");
+  }
+
+  #[test]
+  fn nested_rules_preserve_source_order_against_late_declarations() {
+    // The nested rule appears between two declarations; the last declaration must be represented
+    // after the nested rule so cascade order matches the author stylesheet.
+    let css = "div { color: red; & { color: blue; } color: green; }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert_eq!(sheet.rules.len(), 1);
+
+    let CssRule::Style(rule) = &sheet.rules[0] else {
+      panic!("expected style rule");
+    };
+
+    // Only the first declaration run stays on the parent rule.
+    assert_eq!(
+      rule
+        .declarations
+        .iter()
+        .map(|d| d.property.as_str())
+        .collect::<Vec<_>>(),
+      vec!["color"],
+      "expected first declaration run to stay on parent rule"
+    );
+
+    // The nested rule and the late declaration should appear in source order.
+    assert_eq!(rule.nested_rules.len(), 2);
+    let CssRule::Style(nested_rule) = &rule.nested_rules[0] else {
+      panic!("expected nested style rule");
+    };
+    assert_eq!(nested_rule.selectors.to_css_string(), "div");
+    assert_eq!(nested_rule.declarations.len(), 1);
+    assert_eq!(nested_rule.declarations[0].property.as_str(), "color");
+
+    let CssRule::Style(late_decl_rule) = &rule.nested_rules[1] else {
+      panic!("expected late declaration style rule");
+    };
+    assert_eq!(late_decl_rule.selectors.to_css_string(), "div");
+    assert_eq!(late_decl_rule.declarations.len(), 1);
+    assert_eq!(late_decl_rule.declarations[0].property.as_str(), "color");
+  }
+
+  #[test]
+  fn nested_at_rules_preserve_source_order_against_late_declarations() {
+    // Nested at-rules are "rule items" and must also preserve ordering against declarations that
+    // appear later in the same block.
+    let css = "div { @media screen { color: blue; } color: red; }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert_eq!(sheet.rules.len(), 1);
+
+    let CssRule::Style(rule) = &sheet.rules[0] else {
+      panic!("expected style rule");
+    };
+    assert!(
+      rule.declarations.is_empty(),
+      "expected no leading declarations before nested @media"
+    );
+    assert_eq!(rule.nested_rules.len(), 2);
+    assert!(matches!(rule.nested_rules[0], CssRule::Media(_)));
+    let CssRule::Style(late_decl_rule) = &rule.nested_rules[1] else {
+      panic!("expected late declaration style rule");
+    };
+    assert_eq!(late_decl_rule.selectors.to_css_string(), "div");
+    assert_eq!(late_decl_rule.declarations.len(), 1);
+    assert_eq!(late_decl_rule.declarations[0].property.as_str(), "color");
   }
 
   #[test]
