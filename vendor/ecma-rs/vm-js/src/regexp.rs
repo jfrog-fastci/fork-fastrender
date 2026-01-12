@@ -564,6 +564,7 @@ impl RegExpProgram {
         Inst::Any => Inst::Any,
         Inst::Class(cls) => Inst::Class(cls.try_clone().map_err(|e| match e {
           RegExpCompileError::OutOfMemory => VmError::OutOfMemory,
+          RegExpCompileError::Vm(err) => err,
           // Cloning an already-compiled class should never fail with a syntax error.
           RegExpCompileError::Syntax(_) => {
             VmError::InvariantViolation("RegExpProgram clone syntax error")
