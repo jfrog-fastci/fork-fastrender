@@ -1544,7 +1544,21 @@ struct SvgUseInlineElement {
 struct SvgUseInlineSprite {
   content: String,
   by_id: HashMap<String, SvgUseInlineElement>,
+  /// Root element of the sprite document, used when `<use href="icon.svg">` has no fragment.
   root: Option<SvgUseInlineElement>,
+  /// Serialized SVG elements keyed by `id`, used to inline `<defs>` dependencies when expanding an
+  /// external `<use href="sprite.svg#id">`.
+  ///
+  /// Fragments are patched to include the sprite's root `xmlns*` declarations so they can be
+  /// reparsed as standalone XML documents by `defs_injection_for_svg_fragment`.
+  id_defs: HashMap<String, String>,
+  /// `xmlns*` attributes copied from the sprite root (plus a default `xmlns` fallback) serialized
+  /// as ` name="value"` pairs.
+  ///
+  /// Used when wrapping non-root fragments in `<svg ...>` for dependency detection.
+  xmlns_attrs: String,
+  /// Cache of `<defs>...</defs>` injection strings computed per referenced id.
+  defs_injection_cache: HashMap<String, Option<String>>,
 }
 
 /// Best-effort preprocessor that expands external SVG `<use>` references by fetching the
@@ -1785,13 +1799,14 @@ fn inline_svg_use_references<'a>(
         Ok(Err(_)) | Err(_) => continue,
       };
 
+      let sprite_root = sprite_doc.root_element();
+
       let root = Some({
-        let root_node = sprite_doc.root_element();
-        let tag_name = root_node.tag_name().name().to_string();
-        let range = root_node.range();
+        let tag_name = sprite_root.tag_name().name().to_string();
+        let range = sprite_root.range();
         let mut inner_start: Option<usize> = None;
         let mut inner_end: Option<usize> = None;
-        for child in root_node.children() {
+        for child in sprite_root.children() {
           let r = child.range();
           inner_start = Some(inner_start.map_or(r.start, |s| s.min(r.start)));
           inner_end = Some(inner_end.map_or(r.end, |e| e.max(r.end)));
@@ -1805,12 +1820,38 @@ fn inline_svg_use_references<'a>(
           tag_name,
           range,
           inner_range,
-          view_box: root_node.attribute("viewBox").map(|v| v.to_string()),
-          preserve_aspect_ratio: root_node
+          view_box: sprite_root.attribute("viewBox").map(|v| v.to_string()),
+          preserve_aspect_ratio: sprite_root
             .attribute("preserveAspectRatio")
             .map(|v| v.to_string()),
         }
       });
+
+      // Collect root namespace declarations so fragments can be reparsed (standalone) for
+      // `<defs>` dependency detection.
+      let mut xmlns_attrs_list: Vec<(String, String)> = Vec::new();
+      let mut xmlns_attrs = String::new();
+      let mut had_default_xmlns = false;
+      for attr in sprite_root.attributes() {
+        let name = attr.name();
+        if !name.starts_with("xmlns") {
+          continue;
+        }
+        if name == "xmlns" {
+          had_default_xmlns = true;
+        }
+        let value = attr.value().to_string();
+        xmlns_attrs_list.push((name.to_string(), value.clone()));
+        xmlns_attrs.push(' ');
+        xmlns_attrs.push_str(name);
+        xmlns_attrs.push_str("=\"");
+        xmlns_attrs.push_str(&escape_xml_attr_value(&value));
+        xmlns_attrs.push('"');
+      }
+      if !had_default_xmlns {
+        xmlns_attrs_list.push(("xmlns".to_string(), "http://www.w3.org/2000/svg".to_string()));
+        xmlns_attrs.push_str(" xmlns=\"http://www.w3.org/2000/svg\"");
+      }
 
       let mut by_id = HashMap::new();
       for sprite_node in sprite_doc.descendants().filter(|n| n.is_element()) {
@@ -1857,15 +1898,156 @@ fn inline_svg_use_references<'a>(
         });
       }
 
+      fn inject_xmlns_attrs_into_svg_fragment<'a>(
+        fragment: &'a str,
+        xmlns_attrs: &[(String, String)],
+      ) -> Cow<'a, str> {
+        if fragment.is_empty() || !fragment.starts_with('<') || xmlns_attrs.is_empty() {
+          return Cow::Borrowed(fragment);
+        }
+
+        let Some(tag_end) = find_xml_start_tag_end(fragment, 0, fragment.len()) else {
+          return Cow::Borrowed(fragment);
+        };
+        if tag_end > fragment.len() || tag_end == 0 {
+          return Cow::Borrowed(fragment);
+        }
+
+        // Find the position before `>` (or before `/>` for self-closing tags).
+        let mut insert_pos = tag_end.saturating_sub(1);
+        if insert_pos == 0 || fragment.as_bytes().get(insert_pos) != Some(&b'>') {
+          return Cow::Borrowed(fragment);
+        }
+        if fragment.as_bytes().get(insert_pos.saturating_sub(1)) == Some(&b'/') {
+          insert_pos = insert_pos.saturating_sub(1);
+        }
+
+        // Collect existing attribute names in the root start tag so we don't emit duplicates.
+        let bytes = fragment.as_bytes();
+        let mut i = 0usize;
+        if bytes.get(i) == Some(&b'<') {
+          i += 1;
+        }
+        while i < insert_pos && bytes[i].is_ascii_whitespace() {
+          i += 1;
+        }
+        while i < insert_pos
+          && !bytes[i].is_ascii_whitespace()
+          && bytes[i] != b'>'
+          && bytes[i] != b'/'
+        {
+          i += 1;
+        }
+
+        let mut existing: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        while i < insert_pos {
+          while i < insert_pos && bytes[i].is_ascii_whitespace() {
+            i += 1;
+          }
+          if i >= insert_pos || bytes[i] == b'>' || bytes[i] == b'/' {
+            break;
+          }
+
+          let name_start = i;
+          while i < insert_pos
+            && !bytes[i].is_ascii_whitespace()
+            && bytes[i] != b'='
+            && bytes[i] != b'>'
+            && bytes[i] != b'/'
+          {
+            i += 1;
+          }
+          let name_end = i;
+          if name_end == name_start {
+            i = i.saturating_add(1);
+            continue;
+          }
+          if let Some(name) = fragment.get(name_start..name_end) {
+            existing.insert(name);
+          }
+
+          while i < insert_pos && bytes[i].is_ascii_whitespace() {
+            i += 1;
+          }
+          if i >= insert_pos || bytes[i] != b'=' {
+            continue;
+          }
+          i += 1;
+          while i < insert_pos && bytes[i].is_ascii_whitespace() {
+            i += 1;
+          }
+          if i >= insert_pos {
+            break;
+          }
+
+          if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            i += 1;
+            while i < insert_pos && bytes[i] != quote {
+              i += 1;
+            }
+            if i < insert_pos {
+              i += 1;
+            }
+          } else {
+            while i < insert_pos
+              && !bytes[i].is_ascii_whitespace()
+              && bytes[i] != b'>'
+              && bytes[i] != b'/'
+            {
+              i += 1;
+            }
+          }
+        }
+
+        let mut missing: Vec<(&str, &str)> = Vec::new();
+        for pair in xmlns_attrs.iter() {
+          let name = pair.0.as_str();
+          let value = pair.1.as_str();
+          if !existing.contains(name) {
+            missing.push((name, value));
+          }
+        }
+        if missing.is_empty() {
+          return Cow::Borrowed(fragment);
+        }
+
+        let mut out = String::with_capacity(fragment.len().saturating_add(xmlns_attrs.len() * 16));
+        out.push_str(fragment.get(..insert_pos).unwrap_or_default());
+        for (name, value) in missing {
+          out.push(' ');
+          out.push_str(name);
+          out.push_str("=\"");
+          out.push_str(&escape_xml_attr_value(value));
+          out.push('"');
+        }
+        out.push_str(fragment.get(insert_pos..).unwrap_or_default());
+        Cow::Owned(out)
+      }
+
+      let mut id_defs =
+        crate::paint::svg_mask_image::collect_svg_id_defs_from_svg_document(&sprite_text);
+      if !id_defs.is_empty() {
+        for fragment in id_defs.values_mut() {
+          let patched = inject_xmlns_attrs_into_svg_fragment(fragment, &xmlns_attrs_list);
+          if let Cow::Owned(owned) = patched {
+            *fragment = owned;
+          }
+        }
+      }
+
       let sprite = SvgUseInlineSprite {
         content: sprite_text,
         by_id,
         root,
+        id_defs,
+        xmlns_attrs,
+        defs_injection_cache: HashMap::new(),
       };
       sprite_cache.insert(resolved_url.clone(), sprite);
     }
 
-    let Some(sprite) = sprite_cache.get(&resolved_url) else {
+    let Some(sprite) = sprite_cache.get_mut(&resolved_url) else {
       continue;
     };
 
@@ -1876,13 +2058,42 @@ fn inline_svg_use_references<'a>(
     let Some(element) = element else {
       continue;
     };
+    let cache_key = fragment.unwrap_or("");
 
+    let mut wrapper_defs_injection: Option<&str> = None;
     let referenced_markup = if element.tag_name == "symbol" {
       let inner = element
         .inner_range
         .as_ref()
         .and_then(|r| sprite.content.get(r.clone()))
         .unwrap_or_default();
+
+      let defs_injection = if sprite.id_defs.is_empty() {
+        None
+      } else if let Some(cached) = sprite.defs_injection_cache.get(cache_key) {
+        cached.as_deref()
+      } else {
+        let mut wrapped = String::with_capacity(
+          "<svg".len() + sprite.xmlns_attrs.len() + ">".len() + inner.len() + "</svg>".len(),
+        );
+        wrapped.push_str("<svg");
+        wrapped.push_str(&sprite.xmlns_attrs);
+        wrapped.push('>');
+        wrapped.push_str(inner);
+        wrapped.push_str("</svg>");
+
+        let injection = crate::paint::svg_mask_image::defs_injection_for_svg_fragment(
+          &sprite.id_defs,
+          &wrapped,
+        );
+        sprite
+          .defs_injection_cache
+          .insert(cache_key.to_string(), injection);
+        sprite
+          .defs_injection_cache
+          .get(cache_key)
+          .and_then(|v| v.as_deref())
+      };
 
       let width = node
         .attribute("width")
@@ -1912,14 +2123,50 @@ fn inline_svg_use_references<'a>(
         out.push('"');
       }
       out.push('>');
+      if let Some(defs) = defs_injection {
+        out.push_str(defs);
+      }
       out.push_str(inner);
       out.push_str("</svg>");
       out
     } else {
-      match sprite.content.get(element.range.clone()) {
-        Some(slice) => slice.to_string(),
+      let referenced = match sprite.content.get(element.range.clone()) {
+        Some(slice) => slice,
         None => continue,
+      };
+
+      if !sprite.id_defs.is_empty() {
+        wrapper_defs_injection = if let Some(cached) = sprite.defs_injection_cache.get(cache_key) {
+          cached.as_deref()
+        } else {
+          let mut wrapped = String::with_capacity(
+            "<svg".len()
+              + sprite.xmlns_attrs.len()
+              + ">".len()
+              + referenced.len()
+              + "</svg>".len(),
+          );
+          wrapped.push_str("<svg");
+          wrapped.push_str(&sprite.xmlns_attrs);
+          wrapped.push('>');
+          wrapped.push_str(referenced);
+          wrapped.push_str("</svg>");
+
+          let injection = crate::paint::svg_mask_image::defs_injection_for_svg_fragment(
+            &sprite.id_defs,
+            &wrapped,
+          );
+          sprite
+            .defs_injection_cache
+            .insert(cache_key.to_string(), injection);
+          sprite
+            .defs_injection_cache
+            .get(cache_key)
+            .and_then(|v| v.as_deref())
+        };
       }
+
+      referenced.to_string()
     };
 
     let x = node
@@ -1972,7 +2219,25 @@ fn inline_svg_use_references<'a>(
       wrapper_attrs.push('"');
     }
 
-    let replacement = format!("<g{wrapper_attrs}>{referenced_markup}</g>");
+    let replacement = if let Some(defs) = wrapper_defs_injection {
+      let mut replacement = String::with_capacity(
+        "<g".len()
+          .saturating_add(wrapper_attrs.len())
+          .saturating_add(1)
+          .saturating_add(defs.len())
+          .saturating_add(referenced_markup.len())
+          .saturating_add("</g>".len()),
+      );
+      replacement.push_str("<g");
+      replacement.push_str(&wrapper_attrs);
+      replacement.push('>');
+      replacement.push_str(defs);
+      replacement.push_str(&referenced_markup);
+      replacement.push_str("</g>");
+      replacement
+    } else {
+      format!("<g{wrapper_attrs}>{referenced_markup}</g>")
+    };
 
     expansions += 1;
     injected_bytes = injected_bytes.saturating_add(replacement.len());
@@ -15113,6 +15378,51 @@ mod tests_inline {
         .iter()
         .all(|(url, _, _)| url != cross_url),
       "hyperlink should not be fetched"
+    );
+  }
+
+  #[test]
+  fn inline_svg_use_includes_sprite_defs_dependencies() {
+    let sprite_url = "https://example.test/sprite.svg";
+    let main_url = "https://example.test/main.svg";
+
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="g">
+          <stop offset="0" stop-color="red"/>
+          <stop offset="1" stop-color="red"/>
+        </linearGradient>
+      </defs>
+      <symbol id="icon" viewBox="0 0 1 1">
+        <rect width="1" height="1" fill="url(#g)"/>
+      </symbol>
+    </svg>"#;
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svg#icon" width="1" height="1"/></svg>"#;
+    let expanded = inline_svg_use_references(main_svg, main_url, &fetcher, None).expect("expand");
+    assert!(
+      expanded.contains("linearGradient") && expanded.contains("id=\"g\""),
+      "expected sprite <defs> dependency to be injected, got: {expanded}"
+    );
+
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+    let pixmap = cache
+      .render_svg_pixmap_at_size(main_svg, 1, 1, main_url, 1.0)
+      .expect("rendered pixmap");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255),
+      "expected gradient-painted icon to render red after <use> expansion"
     );
   }
 
