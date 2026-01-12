@@ -114,7 +114,9 @@ limitations.
 
 COLRv1 rendering lives in
 [`src/text/color_fonts/colr_v1.rs`](../../src/text/color_fonts/colr_v1.rs) and is
-exercised by tests such as:
+exercised by unit tests in that module (see the `#[cfg(test)] mod tests` block; for
+example `colr_v1_table_parsing_is_cached_per_font` and
+`colr_v1_renderer_recovers_from_poisoned_cache_lock`).
 
 - `src/text/color_fonts/golden_tests.rs::colrv1_color_font_test`
 - `src/text/color_fonts/golden_tests.rs::colrv1_radial_gradient_test`
