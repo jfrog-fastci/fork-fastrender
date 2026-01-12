@@ -164,11 +164,11 @@ entry:
 #[test]
 fn parses_linker_concatenated_stackmap_blobs_and_indexes_all_callsites() {
   let Some(llc) = find_llc() else {
-    eprintln!("skipping: llc-18 not found in PATH");
+    eprintln!("skipping: llc not found in PATH (need llc-18 or llc)");
     return;
   };
   let Some(clang) = find_clang() else {
-    eprintln!("skipping: clang-18 not found in PATH");
+    eprintln!("skipping: clang not found in PATH (need clang-18 or clang)");
     return;
   };
 

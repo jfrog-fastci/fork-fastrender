@@ -265,19 +265,19 @@ fn slice_contains_patchpoint_ids(slice: &[u8], ids: &[u64]) -> bool {
 #[test]
 fn discovers_stackmaps_in_dlopened_shared_library() {
   let Some(llc) = find_llc() else {
-    eprintln!("skipping: llc-18 not found in PATH");
+    eprintln!("skipping: llc not found in PATH (need llc-18 or llc)");
     return;
   };
   let Some(clang) = find_clang() else {
-    eprintln!("skipping: clang-18 not found in PATH");
+    eprintln!("skipping: clang not found in PATH (need clang-18 or clang)");
     return;
   };
   let Some(objcopy) = find_llvm_objcopy() else {
-    eprintln!("skipping: llvm-objcopy-18 not found in PATH");
+    eprintln!("skipping: llvm-objcopy not found in PATH (need llvm-objcopy-18 or llvm-objcopy)");
     return;
   };
   let Some(readobj) = find_llvm_readobj() else {
-    eprintln!("skipping: llvm-readobj-18 not found in PATH");
+    eprintln!("skipping: llvm-readobj not found in PATH (need llvm-readobj-18 or llvm-readobj)");
     return;
   };
 

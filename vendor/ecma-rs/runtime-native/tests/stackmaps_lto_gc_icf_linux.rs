@@ -523,7 +523,7 @@ struct LinkConfig {
 #[test]
 fn stackmaps_survive_lto_gc_sections_and_icf() {
   let Some(clang) = find_clang() else {
-    eprintln!("skipping: clang-18 not found in PATH");
+    eprintln!("skipping: clang not found in PATH (need clang-18 or clang)");
     return;
   };
 
