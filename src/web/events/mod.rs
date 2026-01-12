@@ -1120,17 +1120,21 @@ pub fn dispatch_event(
   let dispatch_res: std::result::Result<(), DomError> = (|| {
     // Capturing pass: iterate path in reverse order.
     for idx in (0..event.path.len()).rev() {
-      if event.propagation_stopped {
-        break;
-      }
       let entry = event.path[idx];
       event.target = shadow_adjusted_prefix[idx];
-      event.current_target = Some(entry.invocation_target);
       event.event_phase = if entry.shadow_adjusted_target.is_some() {
         EventPhase::AtTarget
       } else {
         EventPhase::Capturing
       };
+      // DOM: the "stop propagation" flag is checked at the start of each `invoke` step.
+      //
+      // When it is set we still continue walking the path (so `event.target` can be retargeted for
+      // subsequent structs), but skip invoking listeners.
+      if event.propagation_stopped {
+        continue;
+      }
+      event.current_target = Some(entry.invocation_target);
       invoke_listeners(
         entry.invocation_target,
         event,
@@ -1188,10 +1192,10 @@ pub fn dispatch_event(
 
   event.event_phase = EventPhase::None;
   event.current_target = None;
-  event.propagation_stopped = false;
-  event.immediate_propagation_stopped = false;
   // The DOM dispatch algorithm clears the computed path at the end of dispatch.
   event.path.clear();
+  // Align with the DOM Standard: stop-propagation flags are per-dispatch and are cleared once the
+  // dispatch finishes.
   event.propagation_stopped = false;
   event.immediate_propagation_stopped = false;
   event.in_passive_listener = false;
