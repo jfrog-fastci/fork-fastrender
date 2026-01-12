@@ -14,6 +14,15 @@ fn have_tool(tool: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+fn find_tool(candidates: &[&'static str]) -> Option<&'static str> {
+  for &cand in candidates {
+    if have_tool(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn run(cmd: &mut Command) -> Result<()> {
   let output = cmd.output().with_context(|| format!("spawn {cmd:?}"))?;
   if !output.status.success() {
@@ -217,10 +226,10 @@ fn parse_statepoint_stackmap_v3_and_index_by_return_address() -> Result<()> {
 
 #[test]
 fn parse_constindex_locations_and_constants_pool() -> Result<()> {
-  if !have_tool("llc-18") {
-    eprintln!("skipping: llc-18 not available");
+  let Some(llc) = find_tool(&["llc-18", "llc"]) else {
+    eprintln!("skipping: llc not available in PATH (need llc-18 or llc)");
     return Ok(());
-  }
+  };
 
   let td = tempfile::tempdir().context("tempdir")?;
   let input_ll = td.path().join("input.ll");
@@ -241,7 +250,7 @@ fn parse_constindex_locations_and_constants_pool() -> Result<()> {
   .context("write input.ll")?;
 
   run(
-    Command::new("llc-18")
+    Command::new(llc)
       .arg("-O0")
       .arg("--frame-pointer=all")
       .arg("-filetype=obj")
