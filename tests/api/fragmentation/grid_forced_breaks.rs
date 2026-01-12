@@ -1,8 +1,4 @@
-//! Dedicated test target for focused grid forced-break pagination regressions.
-//!
-//! The full integration suite is linked via `tests/integration.rs`. This target exists so automation
-//! can validate a small set of grid forced-break invariants without executing the entire
-//! integration harness.
+//! Grid forced-break pagination regressions.
 
 use fastrender::api::{FastRender, LayoutDocumentOptions, PageStacking};
 use fastrender::style::color::Rgba;

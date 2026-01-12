@@ -1,8 +1,4 @@
-//! Dedicated test target for focused flex forced-break pagination regressions.
-//!
-//! The full integration suite is linked via `tests/integration.rs`. This target exists so automation
-//! can validate a small set of flex forced-break invariants without executing the entire
-//! integration harness.
+//! Flex forced-break pagination regressions.
 
 use fastrender::api::{FastRender, LayoutDocumentOptions, PageStacking};
 use fastrender::style::color::Rgba;

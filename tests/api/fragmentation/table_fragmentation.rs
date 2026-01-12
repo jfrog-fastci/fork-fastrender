@@ -1,8 +1,4 @@
-//! Dedicated test target for focused table fragmentation regressions.
-//!
-//! The full integration suite is linked via `tests/integration.rs`. This target exists so automation
-//! can validate table header repetition / pagination behavior without executing the entire
-//! integration harness.
+//! Table fragmentation regressions.
 
 use fastrender::api::FastRender;
 use fastrender::style::media::MediaType;
