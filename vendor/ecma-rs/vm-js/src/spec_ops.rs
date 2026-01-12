@@ -890,3 +890,69 @@ pub fn get_method(
 ) -> Result<Option<Value>, VmError> {
   vm.get_method(scope, value, key)
 }
+
+/// `CreateArrayFromList(elements)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-createarrayfromlist>
+///
+/// This is used by Proxy `[[Call]]` / `[[Construct]]` to materialize the `argumentsList` into a
+/// real Array object passed to apply/construct traps.
+pub fn create_array_from_list(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  elements: &[Value],
+) -> Result<GcObject, VmError> {
+  let mut scope = scope.reborrow();
+
+  // Root `elements` before any allocations (array allocation, key-string allocation) so a GC cannot
+  // collect an argument value that is only kept alive by the host stack.
+  //
+  // Use chunking so the root-stack growth path treats the still-unpushed tail as extra roots.
+  const CHUNK_SIZE: usize = 256;
+  let mut start = 0usize;
+  while start < elements.len() {
+    let end = elements
+      .len()
+      .min(start.saturating_add(CHUNK_SIZE));
+    let chunk = &elements[start..end];
+    let remaining = &elements[end..];
+    scope.push_roots_with_extra_roots(chunk, remaining, &[])?;
+    start = end;
+    if start < elements.len() {
+      vm.tick()?;
+    }
+  }
+
+  // `CreateArrayFromList` uses `ArrayCreate(0)` and then populates the array with
+  // `CreateDataPropertyOrThrow`.
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+
+  // `ArrayCreate` sets `[[Prototype]]` to `%Array.prototype%`.
+  if let Some(intr) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intr.array_prototype()))?;
+  }
+
+  const TICK_EVERY: usize = 256;
+  for (i, &elem) in elements.iter().enumerate() {
+    if i != 0 && i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    // Root `array` and the current element across allocation of the key string and any subsequent
+    // heap growth performed by `CreateDataPropertyOrThrow`.
+    let mut elem_scope = scope.reborrow();
+    elem_scope.push_root(Value::Object(array))?;
+    elem_scope.push_root(elem)?;
+
+    let key_s = elem_scope.alloc_string(&i.to_string())?;
+    // Root the key string until it has been stored into the array's property table.
+    elem_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    elem_scope.create_data_property_or_throw(array, key, elem)?;
+  }
+
+  Ok(array)
+}

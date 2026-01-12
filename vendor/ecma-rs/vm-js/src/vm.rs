@@ -93,45 +93,6 @@ pub(crate) fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError
     other => other,
   }
 }
-
-fn create_array_from_list(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  elements: &[Value],
-) -> Result<GcObject, VmError> {
-  // Mirror `CreateArrayFromList` enough for Proxy apply/construct trap dispatch:
-  // - allocate an Array exotic object
-  // - populate indices 0..len-1 via CreateDataProperty
-  //
-  // This intentionally skips full exotic Array semantics/invariants; those live elsewhere.
-  let mut scope = scope.reborrow();
-  let arr = scope.alloc_array(0)?;
-  scope.push_root(Value::Object(arr))?;
-
-  if let Some(intr) = vm.intrinsics() {
-    scope
-      .heap_mut()
-      .object_set_prototype(arr, Some(intr.array_prototype()))?;
-  }
-
-  for (i, v) in elements.iter().copied().enumerate() {
-    if i % ARG_HANDLING_CHUNK_SIZE == 0 {
-      vm.tick()?;
-    }
-    let mut elem_scope = scope.reborrow();
-    elem_scope.push_root(v)?;
-    let key_s = elem_scope.alloc_string(&i.to_string())?;
-    elem_scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
-    let ok = elem_scope.create_data_property(arr, key, v)?;
-    if !ok {
-      return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-    }
-  }
-
-  Ok(arr)
-}
-
 /// A native (host-implemented) function call handler.
 pub type NativeCall = for<'a> fn(
   &mut Vm,
@@ -2332,7 +2293,6 @@ impl Vm {
         ));
       }
     };
-
     // --- Proxy [[Call]] dispatch ---
     //
     // Callable Proxy objects are not `HeapObject::Function`, so `get_function_call_handler` would
@@ -2407,7 +2367,7 @@ impl Vm {
           args,
         ),
         Some(trap) => {
-          let arg_array = create_array_from_list(&mut vm, &mut scope, args)?;
+          let arg_array = crate::spec_ops::create_array_from_list(&mut vm, &mut scope, args)?;
           let trap_args = [Value::Object(target), this, Value::Object(arg_array)];
           vm.call_with_host_and_hooks(
             host,
@@ -2884,7 +2844,6 @@ impl Vm {
         ));
       }
     };
-
     // --- Proxy [[Construct]] dispatch ---
     let proxy_data = match scope.heap().get_proxy_data(callee_obj) {
       Ok(d) => d,
@@ -2958,7 +2917,7 @@ impl Vm {
           new_target,
         ),
         Some(trap) => {
-          let arg_array = create_array_from_list(&mut vm, &mut scope, args)?;
+          let arg_array = crate::spec_ops::create_array_from_list(&mut vm, &mut scope, args)?;
           let trap_args = [Value::Object(target), Value::Object(arg_array), new_target];
           let new_obj = vm.call_with_host_and_hooks(
             host,

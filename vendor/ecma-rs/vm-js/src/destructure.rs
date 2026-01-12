@@ -271,12 +271,17 @@ fn maybe_set_anonymous_function_name(
   value: Value,
   name: &str,
 ) -> Result<(), VmError> {
-  if !scope.heap().is_callable(value)? {
-    return Ok(());
-  }
   let Value::Object(func_obj) = value else {
     return Ok(());
   };
+  // `SetFunctionName` applies only to actual function objects; callable proxies forward calls to
+  // their target but do not have `[[Name]]` internal slots.
+  if let Err(err) = scope.heap().get_function(func_obj) {
+    return match err {
+      VmError::NotCallable => Ok(()),
+      other => Err(other),
+    };
+  }
 
   // Callable Proxies are callable, but they are not function objects, so `SetFunctionName` does not
   // apply (and `Heap::get_function_name` would fail with `InvalidHandle`).
