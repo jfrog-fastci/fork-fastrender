@@ -3,7 +3,9 @@ use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
-use fastrender::style::types::{BorderStyle, InsetValue, WritingMode};
+use fastrender::style::types::{
+  AnchorFunction, AnchorSide, BorderStyle, InsetValue, PositionAnchor, WritingMode,
+};
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::CrossOriginAttribute;
@@ -48,6 +50,37 @@ fn image_node(id: usize, size: Size, writing_mode: WritingMode) -> BoxNode {
   let mut style = fastrender::ComputedStyle::default();
   style.display = Display::Inline;
   style.writing_mode = writing_mode;
+
+  let mut node = BoxNode::new_replaced(
+    Arc::new(style),
+    ReplacedType::Image {
+      src: String::new(),
+      alt: None,
+      loading: Default::default(),
+      decoding: ImageDecodingAttribute::Auto,
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
+      srcset: Vec::<SrcsetCandidate>::new(),
+      sizes: None,
+      picture_sources: Vec::new(),
+    },
+    Some(size),
+    None,
+  );
+  node.id = id;
+  node
+}
+
+fn anchored_image_node(
+  id: usize,
+  size: Size,
+  writing_mode: WritingMode,
+  anchor_name: &str,
+) -> BoxNode {
+  let mut style = fastrender::ComputedStyle::default();
+  style.display = Display::Inline;
+  style.writing_mode = writing_mode;
+  style.anchor_names = vec![anchor_name.to_string()];
 
   let mut node = BoxNode::new_replaced(
     Arc::new(style),
@@ -154,5 +187,82 @@ fn abspos_descendant_inside_positioned_inline_wrapper_in_vertical_writing_mode_u
     wrapper_bounds,
     expected,
     abs_bounds
+  );
+}
+
+#[test]
+fn anchor_positioning_inside_positioned_inline_wrapper_in_vertical_writing_mode_uses_physical_coordinates(
+) {
+  let writing_mode = WritingMode::VerticalRl;
+
+  let mut root_style = fastrender::ComputedStyle::default();
+  root_style.display = Display::Block;
+  root_style.writing_mode = writing_mode;
+  root_style.width = Some(Length::px(200.0));
+  root_style.height = Some(Length::px(150.0));
+
+  let mut wrapper_style = fastrender::ComputedStyle::default();
+  wrapper_style.display = Display::Inline;
+  wrapper_style.writing_mode = writing_mode;
+  wrapper_style.position = Position::Relative;
+
+  let anchor_id = 3usize;
+  let overlay_id = 4usize;
+  let anchor = anchored_image_node(anchor_id, Size::new(60.0, 30.0), writing_mode, "--a");
+
+  let mut overlay_style = fastrender::ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.writing_mode = writing_mode;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+  overlay.id = overlay_id;
+
+  let mut wrapper = BoxNode::new_inline(Arc::new(wrapper_style), vec![anchor, overlay]);
+  wrapper.id = 2;
+
+  let mut root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![wrapper],
+  );
+  root.id = 1;
+
+  let constraints = LayoutConstraints::definite(400.0, 400.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&root, &constraints).expect("block layout");
+
+  let anchor_bounds = find_abs_bounds_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let overlay_bounds = find_abs_bounds_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+
+  assert!(
+    (overlay_bounds.x() - anchor_bounds.x()).abs() < 0.1,
+    "overlay left should resolve against anchor's left edge (overlay x={}, anchor x={})",
+    overlay_bounds.x(),
+    anchor_bounds.x()
+  );
+  assert!(
+    (overlay_bounds.y() - anchor_bounds.max_y()).abs() < 0.1,
+    "overlay top should resolve against anchor's bottom edge (overlay y={}, anchor bottom={})",
+    overlay_bounds.y(),
+    anchor_bounds.max_y()
   );
 }

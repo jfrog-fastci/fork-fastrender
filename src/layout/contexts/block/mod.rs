@@ -8016,7 +8016,9 @@ impl BlockFormattingContext {
           .peek()
           .is_some_and(|&&(slice_idx, _)| slice_idx == index)
         {
-          let (slice_idx, side) = promoted_break_iter.next().copied().expect("peeked break");
+          let Some((slice_idx, side)) = promoted_break_iter.next().copied() else {
+            break;
+          };
           push_promoted_marker(&mut fragments, slice_idx, side);
         }
       }

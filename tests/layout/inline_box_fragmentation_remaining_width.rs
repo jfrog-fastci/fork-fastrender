@@ -86,6 +86,38 @@ fn inline_boxes_do_not_use_emergency_breaks_mid_line() {
 }
 
 #[test]
+fn inline_boxes_do_not_use_emergency_breaks_mid_line_on_utf8_boundaries() {
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+
+  let dom = renderer
+    .parse_html(
+      r#"<!doctype html>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 140px; font: 16px/1 monospace; overflow-wrap: break-word; }
+          span { background: yellow; }
+        </style>
+        <div id="box">Hello <span>trânsformable</span></div>
+      "#,
+    )
+    .expect("parse HTML");
+
+  let fragments = renderer
+    .layout_document(&dom, 200, 200)
+    .expect("layout document");
+
+  let mut lines = Vec::new();
+  collect_line_texts(&fragments.root, &mut lines);
+  let trimmed: Vec<&str> = lines.iter().map(|line| line.trim()).collect();
+
+  // The emergency-break suppression heuristic should be robust across UTF-8 character boundaries.
+  assert_eq!(trimmed, ["Hello", "trânsformable"]);
+}
+
+#[test]
 fn inline_boxes_do_not_spuriously_break_before_leading_collapsible_space() {
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())

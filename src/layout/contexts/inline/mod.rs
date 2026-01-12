@@ -11180,8 +11180,7 @@ impl InlineFormattingContext {
         float_base_y,
         line_clamp,
       )?;
-      if !build.lines.is_empty() {
-        let fallback = build.lines.last().expect("non-empty");
+      if let Some(fallback) = build.lines.last() {
         for (idx, line) in stable_lines.lines.iter_mut().enumerate() {
           let base_line = build.lines.get(idx).unwrap_or(fallback);
           line.available_width = base_line.available_width;
@@ -13244,7 +13243,9 @@ impl InlineFormattingContext {
           break;
         }
 
-        let removed = seg_lines.pop().expect("last line exists");
+        let Some(removed) = seg_lines.pop() else {
+          break;
+        };
         let block_offset = *line_offset + removed.y_offset;
         let anchor_baseline_position = block_offset + removed.baseline;
         let indent_offset = if matches!(
@@ -14252,11 +14253,7 @@ impl InlineFormattingContext {
             child_cb.block_percentage_base(),
           )
           .with_writing_mode_and_direction(child_cb.writing_mode, child_cb.direction);
-          let anchors = Some(
-            anchor_index_physical
-              .as_ref()
-              .expect("physical anchor index should exist for vertical writing modes"),
-          );
+          let anchors = anchor_index_physical.as_ref();
           (anchors, physical_cb)
         } else {
           (Some(&anchor_index), child_cb)

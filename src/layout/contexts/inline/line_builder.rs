@@ -4280,9 +4280,14 @@ impl<'a> LineBuilder<'a> {
                   if !text_item.text.is_char_boundary(offset) {
                     return true;
                   }
-                  let after = text_item.text[offset..].chars().next().unwrap();
-                  let before = text_item.text[..offset].chars().rev().next().unwrap();
-                  !(after.is_whitespace() || before.is_whitespace())
+                  let after = text_item.text[offset..].chars().next();
+                  let before = text_item.text[..offset].chars().rev().next();
+                  match (after, before) {
+                    (Some(after), Some(before)) => {
+                      !(after.is_whitespace() || before.is_whitespace())
+                    }
+                    _ => false,
+                  }
                 }) {
                   remaining.push_front(InlineItem::Text(text_item));
                   let remaining_children: Vec<InlineItem> = remaining.into();

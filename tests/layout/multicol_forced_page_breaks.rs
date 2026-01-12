@@ -1,5 +1,6 @@
 use fastrender::api::{FastRender, LayoutDocumentOptions, PageStacking};
 use fastrender::style::media::MediaType;
+use fastrender::style::types::BreakBetween;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
 fn pages<'a>(tree: &'a FragmentTree) -> Vec<&'a FragmentNode> {
@@ -78,6 +79,28 @@ fn find_text_position(node: &FragmentNode, needle: &str, origin: (f32, f32)) -> 
   None
 }
 
+fn count_break_markers(node: &FragmentNode, kind: BreakBetween) -> usize {
+  let mut count = 0usize;
+  let mut stack = vec![node];
+  while let Some(next) = stack.pop() {
+    let is_marker = matches!(next.content, FragmentContent::Block { box_id: None })
+      && next.bounds.width().abs() < 0.01
+      && next.bounds.height().abs() < 0.01
+      && next.children.is_empty()
+      && next
+        .style
+        .as_ref()
+        .is_some_and(|style| style.break_after == kind);
+    if is_marker {
+      count += 1;
+    }
+    for child in next.children.iter() {
+      stack.push(child);
+    }
+  }
+  count
+}
+
 #[test]
 fn multicol_break_before_page_promotes_to_next_column_set() {
   let html = r#"
@@ -112,6 +135,13 @@ fn multicol_break_before_page_promotes_to_next_column_set() {
 
   let page1 = page_roots[0];
   let page2 = page_roots[1];
+
+  let marker_count =
+    count_break_markers(page1, BreakBetween::Page) + count_break_markers(page2, BreakBetween::Page);
+  assert!(
+    marker_count >= 1,
+    "expected at least one promoted fragmentation marker with break-after: page"
+  );
 
   let content1 = page_content(page1);
   let content2 = page_content(page2);
