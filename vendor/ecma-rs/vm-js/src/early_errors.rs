@@ -4,7 +4,7 @@ use parse_js::ast::class_or_object::{
   ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMember, ObjMemberType,
 };
 use parse_js::ast::expr::lit::{LitArrElem, LitTemplatePart};
-use parse_js::ast::expr::pat::{ArrPat, ArrPatElem, ObjPat, ObjPatProp, Pat};
+use parse_js::ast::expr::pat::{ArrPat, ArrPatElem, ClassOrFuncName, ObjPat, ObjPatProp, Pat};
 use parse_js::ast::expr::{
   ArrowFuncExpr, BinaryExpr, CallArg, CallExpr, ClassExpr, ComputedMemberExpr, CondExpr, Expr,
   FuncExpr, ImportExpr, MemberExpr, TaggedTemplateExpr, UnaryExpr, UnaryPostfixExpr,
@@ -22,6 +22,11 @@ use parse_js::operator::OperatorName;
 use std::collections::HashMap;
 
 const EARLY_ERROR_CODE: &str = "VMJS0004";
+
+fn is_restricted_identifier(name: &str) -> bool {
+  // Restricted identifiers (ECMA-262 `IsRestrictedIdentifier`) are early errors in strict mode.
+  name == "eval" || name == "arguments"
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EarlyErrorOptions {
@@ -310,9 +315,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_catch(&mut self, ctx: &mut ControlContext, catch: &CatchBlock) -> Result<(), VmError> {
-    // Catch parameter is a binding pattern only; it cannot contain expressions that matter for this
-    // early error set.
-    let _ = &catch.parameter;
+    // Catch binding patterns can contain identifier bindings that are restricted in strict mode
+    // (e.g. `catch (eval) {}`) and destructuring defaults that may contain invalid `await`.
+    if let Some(param) = &catch.parameter {
+      self.visit_pat(ctx, &param.stx.pat, PatRole::Binding)?;
+    }
     self.visit_stmt_list(ctx, &catch.body)
   }
 
@@ -512,6 +519,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_class_decl(&mut self, ctx: &mut ControlContext, decl: &ClassDecl) -> Result<(), VmError> {
+    if ctx.strict {
+      if let Some(name) = &decl.name {
+        if is_restricted_identifier(&name.stx.name) {
+          self.push_error(
+            name.loc,
+            format!("restricted identifier '{}' is not allowed in strict mode", name.stx.name),
+          )?;
+        }
+      }
+    }
     if let Some(extends) = &decl.extends {
       self.visit_expr(ctx, extends)?;
     }
@@ -519,6 +536,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_class_expr(&mut self, ctx: &mut ControlContext, expr: &ClassExpr) -> Result<(), VmError> {
+    if ctx.strict {
+      if let Some(name) = &expr.name {
+        if is_restricted_identifier(&name.stx.name) {
+          self.push_error(
+            name.loc,
+            format!("restricted identifier '{}' is not allowed in strict mode", name.stx.name),
+          )?;
+        }
+      }
+    }
     if let Some(extends) = &expr.extends {
       self.visit_expr(ctx, extends)?;
     }
@@ -541,9 +568,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn visit_class_member(&mut self, ctx: &mut ControlContext, member: &ClassMember) -> Result<(), VmError> {
     self.visit_class_or_obj_key(ctx, &member.key)?;
     match &member.val {
-      ClassOrObjVal::Getter(getter) => self.visit_func(ctx, &getter.stx.func, /* unique */ true),
-      ClassOrObjVal::Setter(setter) => self.visit_func(ctx, &setter.stx.func, /* unique */ true),
-      ClassOrObjVal::Method(method) => self.visit_func(ctx, &method.stx.func, /* unique */ true),
+      ClassOrObjVal::Getter(getter) => self.visit_func(ctx, None, &getter.stx.func, /* unique */ true),
+      ClassOrObjVal::Setter(setter) => self.visit_func(ctx, None, &setter.stx.func, /* unique */ true),
+      ClassOrObjVal::Method(method) => self.visit_func(ctx, None, &method.stx.func, /* unique */ true),
       ClassOrObjVal::Prop(Some(expr)) => self.visit_expr(ctx, expr),
       ClassOrObjVal::Prop(None) => Ok(()),
       ClassOrObjVal::StaticBlock(block) => self.visit_class_static_block(ctx, &block.stx.body),
@@ -590,11 +617,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_func_decl(&mut self, ctx: &mut ControlContext, decl: &FuncDecl) -> Result<(), VmError> {
-    self.visit_func(ctx, &decl.function, /* unique */ false)
+    self.visit_func(ctx, decl.name.as_ref(), &decl.function, /* unique */ false)
   }
 
   fn visit_var_decl(&mut self, ctx: &mut ControlContext, decl: &VarDecl) -> Result<(), VmError> {
     for declarator in &decl.declarators {
+      self.visit_pat(ctx, &declarator.pattern.stx.pat, PatRole::Binding)?;
       if let Some(expr) = &declarator.initializer {
         self.visit_expr(ctx, expr)?;
       }
@@ -636,7 +664,13 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
   }
 
-  fn visit_func(&mut self, ctx: &mut ControlContext, func: &Node<Func>, unique_formals: bool) -> Result<(), VmError> {
+  fn visit_func(
+    &mut self,
+    ctx: &mut ControlContext,
+    name: Option<&Node<ClassOrFuncName>>,
+    func: &Node<Func>,
+    unique_formals: bool,
+  ) -> Result<(), VmError> {
     self.step()?;
 
     let params = &func.stx.parameters;
@@ -651,6 +685,18 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       _ => false,
     };
     let func_strict = ctx.strict || body_strict;
+
+    // `eval` and `arguments` are restricted identifiers in strict mode (ES5 strict).
+    if func_strict {
+      if let Some(name) = name {
+        if is_restricted_identifier(&name.stx.name) {
+          self.push_error(
+            name.loc,
+            format!("restricted identifier '{}' is not allowed in strict mode", name.stx.name),
+          )?;
+        }
+      }
+    }
 
     let simple = Self::is_simple_parameter_list(params);
     let disallow_duplicates = unique_formals || func_strict || !simple || func.stx.arrow;
@@ -719,11 +765,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_arrow_func_expr(&mut self, ctx: &mut ControlContext, expr: &ArrowFuncExpr) -> Result<(), VmError> {
-    self.visit_func(ctx, &expr.func, /* unique */ true)
+    self.visit_func(ctx, None, &expr.func, /* unique */ true)
   }
 
   fn visit_func_expr(&mut self, ctx: &mut ControlContext, expr: &FuncExpr) -> Result<(), VmError> {
-    self.visit_func(ctx, &expr.func, /* unique */ false)
+    self.visit_func(ctx, expr.name.as_ref(), &expr.func, /* unique */ false)
   }
 
   fn visit_import(&mut self, ctx: &mut ControlContext, expr: &ImportExpr) -> Result<(), VmError> {
@@ -795,6 +841,25 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
   fn visit_binary(&mut self, ctx: &mut ControlContext, expr: &BinaryExpr) -> Result<(), VmError> {
     if expr.operator.is_assignment() {
+      // `eval = ...` and `arguments = ...` are strict-mode early errors.
+      if ctx.strict {
+        match &*expr.left.stx {
+          Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
+            self.push_error(
+              expr.left.loc,
+              format!("cannot assign to '{}' in strict mode", id.stx.name),
+            )?;
+          }
+          Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
+            self.push_error(
+              expr.left.loc,
+              format!("cannot assign to '{}' in strict mode", id.stx.name),
+            )?;
+          }
+          _ => {}
+        }
+      }
+
       // Optional chaining is a static early error in assignment targets.
       if matches!(&*expr.left.stx, Expr::ArrPat(_) | Expr::ObjPat(_)) {
         // Destructuring patterns handle optional chaining only in `Pat::AssignTarget` positions.
@@ -843,6 +908,23 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         }
       }
       OperatorName::PrefixIncrement | OperatorName::PrefixDecrement => {
+        if ctx.strict {
+          match &*expr.argument.stx {
+            Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
+              self.push_error(
+                expr.argument.loc,
+                format!("cannot assign to '{}' in strict mode", id.stx.name),
+              )?;
+            }
+            Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
+              self.push_error(
+                expr.argument.loc,
+                format!("cannot assign to '{}' in strict mode", id.stx.name),
+              )?;
+            }
+            _ => {}
+          }
+        }
         if let Some(loc) = Self::optional_chain_in_assignment_target_expr(&expr.argument) {
           self.push_error(loc, "optional chaining cannot appear in assignment targets")?;
         }
@@ -861,6 +943,23 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     match expr.operator {
       OperatorName::PostfixIncrement | OperatorName::PostfixDecrement => {
+        if ctx.strict {
+          match &*expr.argument.stx {
+            Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
+              self.push_error(
+                expr.argument.loc,
+                format!("cannot assign to '{}' in strict mode", id.stx.name),
+              )?;
+            }
+            Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
+              self.push_error(
+                expr.argument.loc,
+                format!("cannot assign to '{}' in strict mode", id.stx.name),
+              )?;
+            }
+            _ => {}
+          }
+        }
         if let Some(loc) = Self::optional_chain_in_assignment_target_expr(&expr.argument) {
           self.push_error(loc, "optional chaining cannot appear in assignment targets")?;
         }
@@ -917,9 +1016,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         ObjMemberType::Valued { key, val } => {
           self.visit_class_or_obj_key(ctx, key)?;
           match val {
-            ClassOrObjVal::Getter(getter) => self.visit_func(ctx, &getter.stx.func, true)?,
-            ClassOrObjVal::Setter(setter) => self.visit_func(ctx, &setter.stx.func, true)?,
-            ClassOrObjVal::Method(method) => self.visit_func(ctx, &method.stx.func, true)?,
+            ClassOrObjVal::Getter(getter) => self.visit_func(ctx, None, &getter.stx.func, true)?,
+            ClassOrObjVal::Setter(setter) => self.visit_func(ctx, None, &setter.stx.func, true)?,
+            ClassOrObjVal::Method(method) => self.visit_func(ctx, None, &method.stx.func, true)?,
             ClassOrObjVal::Prop(Some(expr)) => self.visit_expr(ctx, expr)?,
             ClassOrObjVal::Prop(None) => {}
             // Static blocks not valid in object literals; ignore others.
@@ -1003,7 +1102,15 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self.step()?;
     match &*pat.stx {
       Pat::Arr(arr) => self.visit_arr_pat(ctx, &arr.stx, role),
-      Pat::Id(_) => Ok(()),
+      Pat::Id(id) => {
+        if ctx.strict && is_restricted_identifier(&id.stx.name) {
+          self.push_error(
+            pat.loc,
+            format!("restricted identifier '{}' is not allowed in strict mode", id.stx.name),
+          )?;
+        }
+        Ok(())
+      }
       Pat::Obj(obj) => self.visit_obj_pat(ctx, &obj.stx, role),
       Pat::AssignTarget(expr) => {
         if matches!(role, PatRole::AssignmentTarget | PatRole::Assignment) {
