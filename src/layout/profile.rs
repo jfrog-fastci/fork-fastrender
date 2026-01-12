@@ -100,6 +100,13 @@ pub fn layout_profile_enabled() -> bool {
 }
 
 pub fn reset_layout_profile() {
+  // These counters are only meaningful when layout profiling is enabled. Resetting them when
+  // profiling is disabled can cause flaky behavior in test suites that enable profiling on a
+  // per-thread basis while other threads run renders with diagnostics enabled (which previously
+  // called `reset_layout_profile()` unconditionally).
+  if !enabled() {
+    return;
+  }
   for entry in TIME_NS.iter() {
     entry.store(0, Ordering::Relaxed);
   }
