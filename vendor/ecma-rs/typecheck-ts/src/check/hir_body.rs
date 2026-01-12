@@ -8485,8 +8485,21 @@ impl<'a> Checker<'a> {
               },
             ));
           }
-          self.insert_binding_in_scope(scope_idx, id.stx.name.clone(), value_ty, binding.type_params);
-          return value_ty;
+          // Keep the binding type stable: the base (AST) checker should not narrow mutable bindings
+          // to RHS literal types (e.g. `x = 10` => `x: 10`), since flow-sensitive updates are
+          // handled by `FlowBodyChecker`.
+          let next_binding_ty = if binding.ty == prim.unknown {
+            self.base_type(value_ty)
+          } else {
+            binding.ty
+          };
+          self.insert_binding_in_scope(
+            scope_idx,
+            id.stx.name.clone(),
+            next_binding_ty,
+            binding.type_params,
+          );
+          return self.base_type(value_ty);
         } else {
           let value_ty = self.check_expr(right);
           self.insert_binding(id.stx.name.clone(), value_ty, Vec::new());
@@ -8530,8 +8543,18 @@ impl<'a> Checker<'a> {
               },
             ));
           }
-          self.insert_binding_in_scope(scope_idx, id.stx.name.clone(), value_ty, binding.type_params);
-          return value_ty;
+          let next_binding_ty = if binding.ty == prim.unknown {
+            self.base_type(value_ty)
+          } else {
+            binding.ty
+          };
+          self.insert_binding_in_scope(
+            scope_idx,
+            id.stx.name.clone(),
+            next_binding_ty,
+            binding.type_params,
+          );
+          return self.base_type(value_ty);
         } else {
           let value_ty = self.check_expr(right);
           self.insert_binding(id.stx.name.clone(), value_ty, Vec::new());
