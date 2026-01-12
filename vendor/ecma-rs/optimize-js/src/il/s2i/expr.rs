@@ -918,30 +918,343 @@ impl<'p> HirSourceToInst<'p> {
       one_num: &Arg,
       one_bigint: &Arg,
     ) -> OptimizeResult<Arg> {
+      fn ensure_primitive_or_throw(
+        compiler: &mut HirSourceToInst<'_>,
+        value_var: u32,
+        ok_label: u32,
+        throw_label: u32,
+      ) {
+        // Null is primitive but `typeof null === "object"`, so it needs a dedicated fast path.
+        let is_null_tmp = compiler.c_temp.bump();
+        compiler.out.push(Inst::bin(
+          is_null_tmp,
+          Arg::Var(value_var),
+          BinOp::StrictEq,
+          Arg::Const(Const::Null),
+        ));
+        compiler
+          .out
+          .push(Inst::cond_goto(Arg::Var(is_null_tmp), ok_label, DUMMY_LABEL));
+
+        let typeof_tmp = compiler.c_temp.bump();
+        compiler
+          .out
+          .push(Inst::un(typeof_tmp, UnOp::Typeof, Arg::Var(value_var)));
+        let is_object_tmp = compiler.c_temp.bump();
+        compiler.out.push(Inst::bin(
+          is_object_tmp,
+          Arg::Var(typeof_tmp),
+          BinOp::StrictEq,
+          Arg::Const(Const::Str("object".to_string())),
+        ));
+        compiler.out.push(Inst::cond_goto(
+          Arg::Var(is_object_tmp),
+          throw_label,
+          DUMMY_LABEL,
+        ));
+
+        let is_function_tmp = compiler.c_temp.bump();
+        compiler.out.push(Inst::bin(
+          is_function_tmp,
+          Arg::Var(typeof_tmp),
+          BinOp::StrictEq,
+          Arg::Const(Const::Str("function".to_string())),
+        ));
+        compiler.out.push(Inst::cond_goto(
+          Arg::Var(is_function_tmp),
+          throw_label,
+          ok_label,
+        ));
+      }
+
+      fn emit_throw_type_error(compiler: &mut HirSourceToInst<'_>) {
+        let err_var = compiler.c_temp.bump();
+        compiler.out.push(Inst::call(
+          err_var,
+          Arg::Builtin("TypeError".to_string()),
+          Arg::Const(Const::Undefined),
+          vec![Arg::Const(Const::Str(
+            "Cannot convert object to primitive value".to_string(),
+          ))],
+          Vec::new(),
+        ));
+        compiler.out.push(Inst::throw(Arg::Var(err_var)));
+      }
+
+      // `++`/`--` perform `ToNumeric` on the operand:
+      // - `ToPrimitive` with hint Number
+      // - if result is BigInt, use BigInt arithmetic
+      // - otherwise, `ToNumber` and use number arithmetic
+      //
+      // We lower this with a small runtime check. The fast-path lowering for known-number/known-bigint
+      // stays above this.
       let bigint_label = compiler.c_label.bump();
       let after_label = compiler.c_label.bump();
-      let result_var = compiler.c_temp.bump();
+      let object_label = compiler.c_label.bump();
+      let after_to_primitive_label = compiler.c_label.bump();
+      let throw_label = compiler.c_label.bump();
+      let after_numeric_label = compiler.c_label.bump();
 
-      let typeof_tmp = compiler.c_temp.bump();
+      let result_var = compiler.c_temp.bump();
+      let prim_var = compiler.c_temp.bump();
       compiler
         .out
-        .push(Inst::un(typeof_tmp, UnOp::Typeof, Arg::Var(raw_var)));
-      let is_bigint_tmp = compiler.c_temp.bump();
+        .push(Inst::var_assign(prim_var, Arg::Var(raw_var)));
+
+      // If `raw` is a non-null object or function, we must run `ToPrimitive(raw, Number)`.
+      // Otherwise the primitive is the value itself.
+      let raw_is_null_tmp = compiler.c_temp.bump();
       compiler.out.push(Inst::bin(
-        is_bigint_tmp,
-        Arg::Var(typeof_tmp),
+        raw_is_null_tmp,
+        Arg::Var(raw_var),
         BinOp::StrictEq,
-        Arg::Const(Const::Str("bigint".to_string())),
+        Arg::Const(Const::Null),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(raw_is_null_tmp),
+        after_to_primitive_label,
+        DUMMY_LABEL,
+      ));
+
+      let typeof_raw_tmp = compiler.c_temp.bump();
+      compiler
+        .out
+        .push(Inst::un(typeof_raw_tmp, UnOp::Typeof, Arg::Var(raw_var)));
+
+      let raw_is_object_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        raw_is_object_tmp,
+        Arg::Var(typeof_raw_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Str("object".to_string())),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(raw_is_object_tmp),
+        object_label,
+        DUMMY_LABEL,
+      ));
+
+      let raw_is_function_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        raw_is_function_tmp,
+        Arg::Var(typeof_raw_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Str("function".to_string())),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(raw_is_function_tmp),
+        object_label,
+        after_to_primitive_label,
+      ));
+
+      // `ToPrimitive(raw, Number)` path.
+      compiler.out.push(Inst::label(object_label));
+      let fallback_label = compiler.c_label.bump();
+      let symbol_to_primitive = Arg::Builtin("Symbol.toPrimitive".to_string());
+      let exotic_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        exotic_tmp,
+        Arg::Var(raw_var),
+        BinOp::GetProp,
+        symbol_to_primitive,
+      ));
+      let exotic_is_undefined_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        exotic_is_undefined_tmp,
+        Arg::Var(exotic_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Undefined),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(exotic_is_undefined_tmp),
+        fallback_label,
+        DUMMY_LABEL,
+      ));
+
+      // If `@@toPrimitive` exists, call it as `exotic.call(raw, "number")`.
+      compiler.out.push(Inst::call(
+        prim_var,
+        Arg::Var(exotic_tmp),
+        Arg::Var(raw_var),
+        vec![Arg::Const(Const::Str("number".to_string()))],
+        Vec::new(),
+      ));
+      ensure_primitive_or_throw(compiler, prim_var, after_numeric_label, throw_label);
+
+      // OrdinaryToPrimitive(raw, Number): try `valueOf` then `toString`.
+      compiler.out.push(Inst::label(fallback_label));
+
+      let value_of_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        value_of_tmp,
+        Arg::Var(raw_var),
+        BinOp::GetProp,
+        Arg::Const(Const::Str("valueOf".to_string())),
+      ));
+      let typeof_value_of_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::un(
+        typeof_value_of_tmp,
+        UnOp::Typeof,
+        Arg::Var(value_of_tmp),
+      ));
+      let value_of_is_function_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        value_of_is_function_tmp,
+        Arg::Var(typeof_value_of_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Str("function".to_string())),
+      ));
+
+      let value_of_call_label = compiler.c_label.bump();
+      let after_value_of_call_label = compiler.c_label.bump();
+      let value_of_res_tmp = compiler.c_temp.bump();
+      compiler
+        .out
+        .push(Inst::var_assign(value_of_res_tmp, Arg::Var(raw_var)));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(value_of_is_function_tmp),
+        value_of_call_label,
+        after_value_of_call_label,
+      ));
+      compiler.out.push(Inst::label(value_of_call_label));
+      compiler.out.push(Inst::call(
+        value_of_res_tmp,
+        Arg::Var(value_of_tmp),
+        Arg::Var(raw_var),
+        Vec::new(),
+        Vec::new(),
+      ));
+      compiler.out.push(Inst::goto(after_value_of_call_label));
+      compiler.out.push(Inst::label(after_value_of_call_label));
+
+      let value_of_prim_label = compiler.c_label.bump();
+      let to_string_label = compiler.c_label.bump();
+      let value_of_is_null_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        value_of_is_null_tmp,
+        Arg::Var(value_of_res_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Null),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(value_of_is_null_tmp),
+        value_of_prim_label,
+        DUMMY_LABEL,
+      ));
+      let typeof_value_of_res_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::un(
+        typeof_value_of_res_tmp,
+        UnOp::Typeof,
+        Arg::Var(value_of_res_tmp),
+      ));
+      let value_of_res_is_object_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        value_of_res_is_object_tmp,
+        Arg::Var(typeof_value_of_res_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Str("object".to_string())),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(value_of_res_is_object_tmp),
+        to_string_label,
+        DUMMY_LABEL,
+      ));
+      let value_of_res_is_function_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        value_of_res_is_function_tmp,
+        Arg::Var(typeof_value_of_res_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Str("function".to_string())),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(value_of_res_is_function_tmp),
+        to_string_label,
+        value_of_prim_label,
+      ));
+
+      // Primitive result from valueOf.
+      compiler.out.push(Inst::label(value_of_prim_label));
+      compiler
+        .out
+        .push(Inst::var_assign(prim_var, Arg::Var(value_of_res_tmp)));
+      compiler.out.push(Inst::goto(after_numeric_label));
+
+      // Try toString.
+      compiler.out.push(Inst::label(to_string_label));
+      let to_string_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        to_string_tmp,
+        Arg::Var(raw_var),
+        BinOp::GetProp,
+        Arg::Const(Const::Str("toString".to_string())),
+      ));
+      let typeof_to_string_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::un(
+        typeof_to_string_tmp,
+        UnOp::Typeof,
+        Arg::Var(to_string_tmp),
+      ));
+      let to_string_is_function_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        to_string_is_function_tmp,
+        Arg::Var(typeof_to_string_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Str("function".to_string())),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(to_string_is_function_tmp),
+        DUMMY_LABEL,
+        throw_label,
+      ));
+
+      let to_string_res_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::call(
+        to_string_res_tmp,
+        Arg::Var(to_string_tmp),
+        Arg::Var(raw_var),
+        Vec::new(),
+        Vec::new(),
       ));
       compiler
         .out
-        .push(Inst::cond_goto(Arg::Var(is_bigint_tmp), bigint_label, DUMMY_LABEL));
+        .push(Inst::var_assign(prim_var, Arg::Var(to_string_res_tmp)));
+      ensure_primitive_or_throw(compiler, prim_var, after_numeric_label, throw_label);
 
-      // Number path (fallthrough): old = +raw; new = old (+|-) 1
+      // TypeError for `ToPrimitive` results that are not primitive values.
+      compiler.out.push(Inst::label(throw_label));
+      emit_throw_type_error(compiler);
+
+      compiler.out.push(Inst::label(after_numeric_label));
+      compiler.out.push(Inst::goto(after_to_primitive_label));
+
+      // Shared continuation after `ToPrimitive`.
+      compiler
+        .out
+        .push(Inst::label(after_to_primitive_label));
+
+      // `ToNumeric`: BigInt stays BigInt; everything else coerces to number.
+      let typeof_prim_tmp = compiler.c_temp.bump();
+      compiler
+        .out
+        .push(Inst::un(typeof_prim_tmp, UnOp::Typeof, Arg::Var(prim_var)));
+      let is_bigint_tmp = compiler.c_temp.bump();
+      compiler.out.push(Inst::bin(
+        is_bigint_tmp,
+        Arg::Var(typeof_prim_tmp),
+        BinOp::StrictEq,
+        Arg::Const(Const::Str("bigint".to_string())),
+      ));
+      compiler.out.push(Inst::cond_goto(
+        Arg::Var(is_bigint_tmp),
+        bigint_label,
+        DUMMY_LABEL,
+      ));
+
+      // Number path (fallthrough): old = +prim; new = old (+|-) 1
       let old_num_tmp = compiler.c_temp.bump();
       compiler
         .out
-        .push(Inst::un(old_num_tmp, UnOp::Plus, Arg::Var(raw_var)));
+        .push(Inst::un(old_num_tmp, UnOp::Plus, Arg::Var(prim_var)));
       let new_num_tmp = compiler.c_temp.bump();
       compiler.out.push(Inst::bin(
         new_num_tmp,
@@ -957,19 +1270,19 @@ impl<'p> HirSourceToInst<'p> {
       emit_store(compiler, expr_id, store, new_num_tmp);
       compiler.out.push(Inst::goto(after_label));
 
-      // BigInt path: old = raw; new = old (+|-) 1n
+      // BigInt path: old = prim; new = old (+|-) 1n
       compiler.out.push(Inst::label(bigint_label));
       let new_big_tmp = compiler.c_temp.bump();
       compiler.out.push(Inst::bin(
         new_big_tmp,
-        Arg::Var(raw_var),
+        Arg::Var(prim_var),
         rhs,
         one_bigint.clone(),
       ));
       if prefix {
         compiler.push_value_inst(expr_id, Inst::var_assign(result_var, Arg::Var(new_big_tmp)));
       } else {
-        compiler.push_value_inst(expr_id, Inst::var_assign(result_var, Arg::Var(raw_var)));
+        compiler.push_value_inst(expr_id, Inst::var_assign(result_var, Arg::Var(prim_var)));
       }
       emit_store(compiler, expr_id, store, new_big_tmp);
 
