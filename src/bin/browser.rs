@@ -5442,11 +5442,11 @@ impl App {
         }
       }
 
-      let (tab_loading, tab_stage) = self
+      let (tab_loading, tab_stage, tab_progress) = self
         .browser_state
         .tab(active_tab)
-        .map(|t| (t.loading, t.stage))
-        .unwrap_or((false, None));
+        .map(|t| (t.loading, t.load_stage, t.chrome_loading_progress()))
+        .unwrap_or((false, None, None));
 
       if let Some(tex) = self.tab_textures.get_mut(&active_tab) {
         let loading_ui =
@@ -5751,6 +5751,26 @@ impl App {
           let scrim = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 44);
           painter.rect_filled(response.rect, egui::Rounding::same(0.0), scrim);
 
+          if let Some(progress) = tab_progress {
+            let bar_h = 2.0;
+            let progress = if progress.is_finite() {
+              progress.clamp(0.0, 1.0).max(0.02)
+            } else {
+              0.02
+            };
+            let x1 = response.rect.left() + response.rect.width() * progress;
+            let bar_rect = egui::Rect::from_min_max(
+              egui::pos2(response.rect.left(), response.rect.top()),
+              egui::pos2(x1, response.rect.top() + bar_h),
+            );
+            if bar_rect.width() > 0.0 {
+              let accent = ui.visuals().selection.stroke.color;
+              let accent =
+                egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 220);
+              painter.rect_filled(bar_rect, egui::Rounding::same(1.0), accent);
+            }
+          }
+
           let center = response.rect.center();
           let overlay_padding = self.theme.sizing.padding;
           let spinner_size = 18.0;
@@ -5817,6 +5837,26 @@ impl App {
 
         let painter = ui.painter();
         painter.rect_filled(rect, egui::Rounding::same(0.0), ui.visuals().panel_fill);
+
+        if let Some(progress) = tab_progress {
+          let bar_h = 2.0;
+          let progress = if progress.is_finite() {
+            progress.clamp(0.0, 1.0).max(0.02)
+          } else {
+            0.02
+          };
+          let x1 = rect.left() + rect.width() * progress;
+          let bar_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.top()),
+            egui::pos2(x1, rect.top() + bar_h),
+          );
+          if bar_rect.width() > 0.0 {
+            let accent = ui.visuals().selection.stroke.color;
+            let accent =
+              egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 220);
+            painter.rect_filled(bar_rect, egui::Rounding::same(1.0), accent);
+          }
+        }
 
         if loading_ui.show_skeleton {
           let dark = ui.visuals().dark_mode;
