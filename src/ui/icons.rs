@@ -404,6 +404,15 @@ impl egui::Widget for IconButton {
       paint_icon(ui, rect, self.icon, icon_side, fg_color);
     }
 
+    if response.has_focus() {
+      let focus_stroke = ui.visuals().selection.stroke;
+      let expand = 1.0 + focus_stroke.width * 0.5;
+      let focus_rect = rect.expand(expand);
+      let focus_rounding = egui::Rounding::same(rounding.nw + expand);
+      ui.painter()
+        .rect_stroke(focus_rect, focus_rounding, focus_stroke);
+    }
+
     response = response.on_hover_text(self.tooltip);
     let label = icon.a11y_label();
     response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label));

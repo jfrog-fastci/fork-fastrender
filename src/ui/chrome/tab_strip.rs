@@ -171,6 +171,15 @@ fn tab_ui(
     painter.rect_filled(tab_rect, rounding, bg);
   }
 
+  if response.has_focus() {
+    let focus_stroke = visuals.selection.stroke;
+    let expand = 1.0 + focus_stroke.width * 0.5;
+    let focus_rect = tab_rect.expand(expand);
+    let focus_rounding = egui::Rounding::same(rounding.nw + expand);
+    ui.painter()
+      .rect_stroke(focus_rect, focus_rounding, focus_stroke);
+  }
+
   // Favicon.
   let icon_min = Pos2::new(tab_rect.min.x + TAB_PADDING_X, tab_rect.center().y - ICON_SIZE * 0.5);
   let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(ICON_SIZE));
@@ -240,6 +249,17 @@ fn tab_ui(
       FontId::proportional(16.0),
       visuals.text_color(),
     );
+
+    if close_resp.has_focus() {
+      let focus_stroke = visuals.selection.stroke;
+      let expand = 1.0 + focus_stroke.width * 0.5;
+      let focus_rect = close_rect.expand(expand);
+      let focus_rounding = egui::Rounding::same(
+        (visuals.widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0) + expand,
+      );
+      ui.painter()
+        .rect_stroke(focus_rect, focus_rounding, focus_stroke);
+    }
   }
 
   // Title.

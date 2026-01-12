@@ -729,7 +729,7 @@ pub fn chrome_ui_with_bookmarks(
       };
       ui.painter().rect_stroke(bar_rect, bar_rounding, border_stroke);
 
-      let has_focus = text_edit_response.as_ref().is_some_and(|r| r.has_focus());
+      let has_focus = text_edit_response.as_ref().is_some_and(|r| r.has_focus()) || bar_response.has_focus();
 
       // Micro-interaction: address bar focus ring animation.
       let focus_t = motion.animate_bool(
@@ -739,9 +739,10 @@ pub fn chrome_ui_with_bookmarks(
         motion.durations.focus_ring,
       );
       if focus_t > 0.0 {
-        let ring_color = with_alpha(ui.visuals().selection.stroke.color, focus_t);
-        let ring_width = 1.0 + focus_t;
-        let ring_rect = bar_rect.expand(1.0 + focus_t);
+        let focus_stroke = ui.visuals().selection.stroke;
+        let ring_color = with_alpha(focus_stroke.color, focus_t);
+        let ring_width = focus_stroke.width + focus_t;
+        let ring_rect = bar_rect.expand(focus_stroke.width + focus_t);
         let ring_rounding = egui::Rounding::same(ring_rect.height() / 2.0);
         ui.painter().rect_stroke(
           ring_rect,

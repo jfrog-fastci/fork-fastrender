@@ -5,6 +5,7 @@ pub mod browser_limits;
 pub mod browser_tab_controller;
 pub mod chrome_loading_progress;
 pub mod theme_parsing;
+pub mod high_contrast;
 // UI↔worker messaging lives in `messages.rs`.
 //
 // `render_worker` is the *single* production UI worker implementation. The `browser` binary and

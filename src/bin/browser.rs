@@ -2134,11 +2134,22 @@ impl App {
     let egui_state = egui_winit::State::new(event_loop);
 
     let theme_mode = fastrender::ui::theme::resolve_theme_mode(&window, theme_override);
+    let high_contrast = fastrender::ui::high_contrast::high_contrast_enabled_from_env();
     let theme = match theme_mode {
       fastrender::ui::theme::ThemeMode::Dark => {
-        fastrender::ui::theme::BrowserTheme::dark(theme_accent)
+        if high_contrast {
+          fastrender::ui::theme::BrowserTheme::dark_high_contrast(theme_accent)
+        } else {
+          fastrender::ui::theme::BrowserTheme::dark(theme_accent)
+        }
       }
-      _ => fastrender::ui::theme::BrowserTheme::light(theme_accent),
+      _ => {
+        if high_contrast {
+          fastrender::ui::theme::BrowserTheme::light_high_contrast(theme_accent)
+        } else {
+          fastrender::ui::theme::BrowserTheme::light(theme_accent)
+        }
+      }
     };
     fastrender::ui::theme::apply_browser_theme_with_ui_scale(&egui_ctx, &theme, ui_scale);
     let clear_color = {
@@ -4092,7 +4103,8 @@ impl App {
             };
 
             if bg != egui::Color32::TRANSPARENT {
-              ui.painter()
+              ui
+                .painter()
                 .rect_filled(rect.shrink(1.0), item_rounding, bg);
             }
 
@@ -4110,6 +4122,15 @@ impl App {
 
             if is_selected {
               response.request_focus();
+            }
+
+            let has_focus = response.has_focus() || is_selected;
+            if has_focus {
+              let focus_stroke = ui.visuals().selection.stroke;
+              let focus_rect = rect.shrink(1.0);
+              ui
+                .painter()
+                .rect_stroke(focus_rect, item_rounding, focus_stroke);
             }
 
             if response.hovered() {
@@ -4387,6 +4408,7 @@ impl App {
             let row_bg_inset_x = 4.0;
             let check_col_width = 18.0;
             let base_padding_x = 10.0;
+            let mut focus_requested = false;
 
             for (idx, item) in control.items.iter().enumerate() {
               match item {
@@ -4439,6 +4461,11 @@ impl App {
                     scroll_to_selected = false;
                   }
 
+                  if *selected && !*disabled && !focus_requested {
+                    response.request_focus();
+                    focus_requested = true;
+                  }
+
                   let hovered = response.hovered();
                   let mut bg = egui::Color32::TRANSPARENT;
                   if *selected {
@@ -4455,6 +4482,13 @@ impl App {
                   if bg != egui::Color32::TRANSPARENT {
                     let bg_rect = rect.shrink2(egui::vec2(row_bg_inset_x, 0.0));
                     painter.rect_filled(bg_rect, row_rounding, bg);
+                  }
+
+                  let has_focus = response.has_focus() || (*selected && !*disabled);
+                  if has_focus {
+                    let focus_stroke = ui.visuals().selection.stroke;
+                    let focus_rect = rect.shrink2(egui::vec2(row_bg_inset_x, 0.0));
+                    painter.rect_stroke(focus_rect, row_rounding, focus_stroke);
                   }
 
                   let text_color = if *disabled {

@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::text::font_db::{FontDatabase, FontStyle, FontWeight, GenericFamily, LoadedFont};
+use crate::ui::high_contrast;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Style};
 use egui::epaint::Shadow;
 
@@ -102,6 +103,7 @@ pub struct BrowserThemeTypography {
 #[derive(Debug, Clone)]
 pub struct BrowserTheme {
   pub mode: ThemeMode,
+  pub high_contrast: bool,
   pub colors: BrowserThemeColors,
   pub sizing: BrowserThemeSizing,
   pub typography: BrowserThemeTypography,
@@ -109,16 +111,30 @@ pub struct BrowserTheme {
 
 impl BrowserTheme {
   pub fn light(accent: Option<Color32>) -> Self {
+    Self::light_with_contrast(accent, false)
+  }
+
+  pub fn light_high_contrast(accent: Option<Color32>) -> Self {
+    Self::light_with_contrast(accent, true)
+  }
+
+  fn light_with_contrast(accent: Option<Color32>, high_contrast_enabled: bool) -> Self {
     let accent = accent.unwrap_or_else(|| Color32::from_rgb(0x3B, 0x82, 0xF6)); // blue-500
+    let tuning = high_contrast::theme_tuning(high_contrast_enabled);
     Self {
       mode: ThemeMode::Light,
+      high_contrast: high_contrast_enabled,
       colors: BrowserThemeColors {
         bg: Color32::from_rgb(0xF5, 0xF6, 0xF8),
         surface: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         raised: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         text_primary: Color32::from_rgb(0x11, 0x18, 0x27),
         text_secondary: Color32::from_rgb(0x6B, 0x72, 0x80),
-        border: Color32::from_rgb(0xE5, 0xE7, 0xEB),
+        border: if high_contrast_enabled {
+          Color32::from_rgb(0x9C, 0xA3, 0xAF) // gray-400
+        } else {
+          Color32::from_rgb(0xE5, 0xE7, 0xEB) // gray-200
+        },
         accent,
         danger: Color32::from_rgb(0xEF, 0x44, 0x44), // red-500
         warn: Color32::from_rgb(0xF5, 0x9E, 0x0B),   // amber-500
@@ -126,7 +142,7 @@ impl BrowserTheme {
       sizing: BrowserThemeSizing {
         corner_radius: 7.0,
         padding: 8.0,
-        stroke_width: 1.0,
+        stroke_width: tuning.bg_stroke_width,
       },
       typography: BrowserThemeTypography {
         base_font_size: 14.0,
@@ -136,16 +152,30 @@ impl BrowserTheme {
   }
 
   pub fn dark(accent: Option<Color32>) -> Self {
+    Self::dark_with_contrast(accent, false)
+  }
+
+  pub fn dark_high_contrast(accent: Option<Color32>) -> Self {
+    Self::dark_with_contrast(accent, true)
+  }
+
+  fn dark_with_contrast(accent: Option<Color32>, high_contrast_enabled: bool) -> Self {
     let accent = accent.unwrap_or_else(|| Color32::from_rgb(0x60, 0xA5, 0xFA)); // blue-400
+    let tuning = high_contrast::theme_tuning(high_contrast_enabled);
     Self {
       mode: ThemeMode::Dark,
+      high_contrast: high_contrast_enabled,
       colors: BrowserThemeColors {
         bg: Color32::from_rgb(0x0B, 0x0F, 0x14),
         surface: Color32::from_rgb(0x11, 0x18, 0x27),
         raised: Color32::from_rgb(0x1F, 0x29, 0x37),
         text_primary: Color32::from_rgb(0xF9, 0xFA, 0xFB),
         text_secondary: Color32::from_rgb(0x9C, 0xA3, 0xAF),
-        border: Color32::from_rgb(0x37, 0x41, 0x51),
+        border: if high_contrast_enabled {
+          Color32::from_rgb(0x6B, 0x72, 0x80) // gray-500
+        } else {
+          Color32::from_rgb(0x37, 0x41, 0x51)
+        },
         accent,
         danger: Color32::from_rgb(0xF8, 0x71, 0x71), // red-400
         warn: Color32::from_rgb(0xFB, 0xBF, 0x24),   // amber-400
@@ -153,7 +183,7 @@ impl BrowserTheme {
       sizing: BrowserThemeSizing {
         corner_radius: 7.0,
         padding: 8.0,
-        stroke_width: 1.0,
+        stroke_width: tuning.bg_stroke_width,
       },
       typography: BrowserThemeTypography {
         base_font_size: 14.0,
@@ -437,12 +467,19 @@ pub fn apply_browser_theme_with_ui_scale(ctx: &egui::Context, theme: &BrowserThe
   visuals.window_shadow = visuals.popup_shadow;
 
   // Selection + focus.
-  visuals.selection.bg_fill = rgba_with_alpha(theme.colors.accent, 90);
-  visuals.selection.stroke = Stroke::new(theme.sizing.stroke_width, theme.colors.accent);
+  let tuning = high_contrast::theme_tuning(theme.high_contrast);
+  visuals.selection.bg_fill = rgba_with_alpha(theme.colors.accent, tuning.selection_bg_alpha);
+  visuals.selection.stroke = Stroke::new(
+    tuning.focus_stroke_width,
+    rgba_with_alpha(theme.colors.accent, tuning.focus_stroke_alpha),
+  );
 
   let rounding = egui::Rounding::same(theme.sizing.corner_radius);
   let stroke = Stroke::new(theme.sizing.stroke_width, theme.colors.border);
-  let hovered_stroke = Stroke::new(theme.sizing.stroke_width, rgba_with_alpha(theme.colors.accent, 180));
+  let hovered_stroke = Stroke::new(
+    theme.sizing.stroke_width,
+    rgba_with_alpha(theme.colors.accent, tuning.hover_stroke_alpha),
+  );
   let active_stroke = Stroke::new(theme.sizing.stroke_width, theme.colors.accent);
 
   visuals.widgets.noninteractive.rounding = rounding;
