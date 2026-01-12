@@ -925,11 +925,19 @@ mod tests {
           const entries = observer.takeRecords();
           if (!Array.isArray(entries) || entries.length !== 1) return false;
           const e = entries[0];
-          return (
-            e.boundingClientRect instanceof DOMRectReadOnly &&
-            e.intersectionRect instanceof DOMRectReadOnly &&
-            e.rootBounds instanceof DOMRectReadOnly
-          );
+          try {
+            // Ensure the objects are real `DOMRectReadOnly` instances *and* expose derived getters
+            // backed by the internal slots (missing slots should throw).
+            const rects = [e.boundingClientRect, e.intersectionRect, e.rootBounds];
+            for (const r of rects) {
+              if (!(r instanceof DOMRectReadOnly)) return false;
+              if (typeof r.right !== 'number') return false;
+              if (typeof r.bottom !== 'number') return false;
+            }
+            return true;
+          } catch (err) {
+            return false;
+          }
         })()"#,
       )
       .unwrap();

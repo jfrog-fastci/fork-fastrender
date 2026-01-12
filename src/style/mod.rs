@@ -2191,7 +2191,6 @@ pub(crate) fn normalize_language_tag(tag: &str) -> String {
   }
   out
 }
-
 #[cfg(test)]
 mod normalize_language_tag_tests {
   use super::normalize_language_tag;
