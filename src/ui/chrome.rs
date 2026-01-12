@@ -2,6 +2,7 @@
 
 use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
+use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
@@ -453,7 +454,14 @@ pub fn chrome_ui(
         .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
         .unwrap_or("")
         .to_string();
-      let indicator = security_indicator::indicator_for_url(&active_url);
+      let formatted_url = format_address_bar_url(&active_url);
+      let indicator = match formatted_url.security_state {
+        AddressBarSecurityState::Https => security_indicator::SecurityIndicator::Secure,
+        AddressBarSecurityState::Http => security_indicator::SecurityIndicator::Insecure,
+        AddressBarSecurityState::File
+        | AddressBarSecurityState::About
+        | AddressBarSecurityState::Other => security_indicator::SecurityIndicator::Neutral,
+      };
 
       let stage = stage.filter(|s| *s != StageHeartbeat::Done);
       let loading_text = match stage {
@@ -553,15 +561,58 @@ pub fn chrome_ui(
             });
             text_edit_response = Some(response);
           } else {
-            let display = if active_url.trim().is_empty() {
-              egui::RichText::new("Enter URL…").color(ui.visuals().weak_text_color())
+            if active_url.trim().is_empty() {
+              ui.add(
+                egui::Label::new(
+                  egui::RichText::new("Enter URL…").color(ui.visuals().weak_text_color()),
+                )
+                .wrap(false)
+                .truncate(true),
+              );
             } else {
-              egui::RichText::new(url_display::truncate_url_middle(
-                &active_url,
-                ADDRESS_BAR_DISPLAY_MAX_CHARS,
-              ))
-            };
-            ui.add(egui::Label::new(display).wrap(false).truncate(true));
+              let font_id = egui::TextStyle::Body.resolve(ui.style());
+              let mut job = egui::text::LayoutJob::default();
+
+              if formatted_url.security_state == AddressBarSecurityState::Http {
+                job.append(
+                  "Not secure ",
+                  0.0,
+                  egui::text::TextFormat {
+                    font_id: font_id.clone(),
+                    color: ui.visuals().warn_fg_color,
+                    ..Default::default()
+                  },
+                );
+              }
+
+              job.append(
+                &formatted_url.display_host,
+                0.0,
+                egui::text::TextFormat {
+                  font_id: font_id.clone(),
+                  color: ui.visuals().text_color(),
+                  ..Default::default()
+                },
+              );
+
+              if let Some(rest) = formatted_url
+                .display_path_query_fragment
+                .as_deref()
+                .filter(|s| !s.is_empty())
+              {
+                job.append(
+                  &url_display::truncate_url_middle(rest, ADDRESS_BAR_DISPLAY_MAX_CHARS),
+                  0.0,
+                  egui::text::TextFormat {
+                    font_id,
+                    color: ui.visuals().weak_text_color(),
+                    ..Default::default()
+                  },
+                );
+              }
+
+              ui.add(egui::Label::new(job).wrap(false).truncate(true));
+            }
           }
 
           match indicator {
@@ -1207,6 +1258,24 @@ mod tests {
     ]
   }
 
+  fn left_click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+    vec![
+      egui::Event::PointerMoved(pos),
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+      },
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+      },
+    ]
+  }
+
   fn collect_text_shapes(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
     match shape {
       egui::Shape::Text(t) => {
@@ -1236,24 +1305,6 @@ mod tests {
       .collect()
   }
 
-  fn left_click_at(pos: egui::Pos2) -> Vec<egui::Event> {
-    vec![
-      egui::Event::PointerMoved(pos),
-      egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed: true,
-        modifiers: egui::Modifiers::default(),
-      },
-      egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed: false,
-        modifiers: egui::Modifiers::default(),
-      },
-    ]
-  }
-
   #[test]
   fn address_bar_blur_reverts_uncommitted_text() {
     let mut app = BrowserAppState::new();
@@ -1274,6 +1325,24 @@ mod tests {
     assert_eq!(app.chrome.address_bar_text, "https://example.com");
     assert!(!app.chrome.address_bar_has_focus);
     assert!(!app.chrome.address_bar_editing);
+  }
+
+  #[test]
+  fn clicking_address_bar_display_requests_focus_and_select_all() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, left_click_at(egui::pos2(400.0, 60.0)));
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.request_focus_address_bar);
+    assert!(app.chrome.request_select_all_address_bar);
   }
 
   #[test]

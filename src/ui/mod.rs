@@ -30,6 +30,7 @@ pub mod scrollbars;
 pub mod shortcuts;
 pub mod find_in_page;
 pub mod repaint_scheduler;
+pub mod address_bar;
 pub mod url;
 pub mod url_display;
 pub mod security_indicator;
