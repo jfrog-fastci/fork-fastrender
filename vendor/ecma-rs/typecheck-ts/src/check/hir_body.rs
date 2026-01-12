@@ -9821,7 +9821,14 @@ impl<'a> FlowBodyChecker<'a> {
           let _ = self.eval_expr_inner(*expr, env, true);
           prim.string
         }
-        UnaryOp::Void => prim.undefined,
+        UnaryOp::Void => {
+          let _ = self.eval_expr(*expr, env);
+          prim.undefined
+        }
+        UnaryOp::Delete => {
+          let _ = self.eval_expr(*expr, env);
+          prim.boolean
+        }
         UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => {
           let _ = self.eval_expr(*expr, env);
           prim.number
