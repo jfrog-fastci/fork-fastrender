@@ -20,6 +20,30 @@ If a command times out, that's a bug to investigate — not a limit to raise.
 
 ---
 
+## Cargo cache lock contention (multi-agent environments)
+
+On shared hosts with many concurrent agents, you may hit Cargo messages like:
+
+```
+Blocking waiting for file lock on package cache
+```
+
+This is Cargo serializing access to the shared package cache under the default
+`CARGO_HOME` (often `~/.cargo`). If this becomes a bottleneck, isolate the Cargo
+home directory per checkout:
+
+```bash
+# Use a per-repo cargo home to avoid global cache lock contention.
+timeout -k 10 600 env CARGO_HOME=$PWD/target/cargo_home \
+  bash vendor/ecma-rs/scripts/cargo_agent.sh test -p typecheck-ts --lib
+```
+
+Notes:
+- This trades shared caching for less contention (each checkout downloads its own crates).
+- `target/cargo_home/` is not committed; it is safe to delete to reclaim disk.
+
+---
+
 This document is the **authoritative architecture + implementation playbook** for adding **comprehensive, rigorous TypeScript type checking** to this repository.
 
 Assumptions:
