@@ -900,17 +900,11 @@ fn module_record_from_top_level(
 
         for declarator in &var_decl.stx.declarators {
           ctx.budget_tick()?;
-
-          let pat = &declarator.pattern.stx.pat;
-          let local_name = match &*pat.stx {
-            Pat::Id(id) => try_string_from_str(&id.stx.name)?,
-            _ => return Err(VmError::Unimplemented("exported destructuring patterns")),
-          };
-
-          record.local_export_entries.push(LocalExportEntry {
-            export_name: try_string_from_str(&local_name)?,
-            local_name,
-          });
+          push_local_export_entries_from_binding_pat(
+            &declarator.pattern.stx.pat,
+            &mut record.local_export_entries,
+            &mut ctx,
+          )?;
         }
       }
 
@@ -957,6 +951,53 @@ fn module_record_from_top_level(
   }
 
   Ok(record)
+}
+
+fn push_local_export_entries_from_binding_pat(
+  pat: &Node<Pat>,
+  out: &mut Vec<LocalExportEntry>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  ctx.budget_tick()?;
+
+  match &*pat.stx {
+    Pat::Id(id) => {
+      let local_name = try_string_from_str(&id.stx.name)?;
+      out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      out.push(LocalExportEntry {
+        export_name: try_string_from_str(&local_name)?,
+        local_name,
+      });
+      Ok(())
+    }
+    Pat::Obj(obj) => {
+      for prop in &obj.stx.properties {
+        ctx.budget_tick()?;
+        push_local_export_entries_from_binding_pat(&prop.stx.target, out, ctx)?;
+      }
+      if let Some(rest) = obj.stx.rest.as_ref() {
+        push_local_export_entries_from_binding_pat(rest, out, ctx)?;
+      }
+      Ok(())
+    }
+    Pat::Arr(arr) => {
+      for elem in &arr.stx.elements {
+        ctx.budget_tick()?;
+        let Some(elem) = elem.as_ref() else {
+          continue;
+        };
+        push_local_export_entries_from_binding_pat(&elem.target, out, ctx)?;
+      }
+      if let Some(rest) = arr.stx.rest.as_ref() {
+        push_local_export_entries_from_binding_pat(rest, out, ctx)?;
+      }
+      Ok(())
+    }
+    Pat::AssignTarget(_) => Err(syntax_error(
+      pat.loc,
+      "invalid binding pattern in export declaration",
+    )),
+  }
 }
 
 fn module_contains_top_level_await(
@@ -1630,7 +1671,7 @@ fn syntax_error(loc: parse_js::loc::Loc, message: &str) -> VmError {
 
 #[cfg(test)]
 mod tests {
-  use super::SourceTextModuleRecord;
+  use super::{LocalExportEntry, SourceTextModuleRecord};
   use crate::{SourceText, TerminationReason, Vm, VmError, VmOptions};
   use std::sync::Arc;
 
@@ -1650,5 +1691,86 @@ mod tests {
       VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
       other => panic!("expected OutOfFuel termination, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn export_object_destructuring_exports_bound_names() {
+    let record =
+      SourceTextModuleRecord::parse("export const { a, b: c, ...d } = obj;").unwrap();
+    assert_eq!(
+      record.local_export_entries,
+      vec![
+        LocalExportEntry {
+          export_name: "a".to_string(),
+          local_name: "a".to_string(),
+        },
+        LocalExportEntry {
+          export_name: "c".to_string(),
+          local_name: "c".to_string(),
+        },
+        LocalExportEntry {
+          export_name: "d".to_string(),
+          local_name: "d".to_string(),
+        },
+      ]
+    );
+  }
+
+  #[test]
+  fn export_array_destructuring_exports_bound_names() {
+    let record =
+      SourceTextModuleRecord::parse("export let [a, , b, ...rest] = arr;").unwrap();
+    assert_eq!(
+      record.local_export_entries,
+      vec![
+        LocalExportEntry {
+          export_name: "a".to_string(),
+          local_name: "a".to_string(),
+        },
+        LocalExportEntry {
+          export_name: "b".to_string(),
+          local_name: "b".to_string(),
+        },
+        LocalExportEntry {
+          export_name: "rest".to_string(),
+          local_name: "rest".to_string(),
+        },
+      ]
+    );
+  }
+
+  #[test]
+  fn export_nested_destructuring_exports_bound_names() {
+    let record = SourceTextModuleRecord::parse("export const { a: { b } } = obj;").unwrap();
+    assert_eq!(
+      record.local_export_entries,
+      vec![LocalExportEntry {
+        export_name: "b".to_string(),
+        local_name: "b".to_string(),
+      }]
+    );
+  }
+
+  #[test]
+  fn export_multiple_declarators_exports_all_bound_names() {
+    let record =
+      SourceTextModuleRecord::parse("export const { a } = obj, [b] = arr, c = 1;").unwrap();
+    assert_eq!(
+      record.local_export_entries,
+      vec![
+        LocalExportEntry {
+          export_name: "a".to_string(),
+          local_name: "a".to_string(),
+        },
+        LocalExportEntry {
+          export_name: "b".to_string(),
+          local_name: "b".to_string(),
+        },
+        LocalExportEntry {
+          export_name: "c".to_string(),
+          local_name: "c".to_string(),
+        },
+      ]
+    );
   }
 }
