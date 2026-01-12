@@ -29611,6 +29611,94 @@ mod tests {
     );
   }
 
+  fn green_1x1_png_data_url() -> String {
+    let mut pixels = RgbaImage::new(1, 1);
+    pixels.put_pixel(0, 0, image::Rgba([0, 255, 0, 255]));
+    let mut buf = Vec::new();
+    PngEncoder::new(&mut buf)
+      .write_image(pixels.as_raw(), 1, 1, ColorType::Rgba8.into())
+      .expect("encode png");
+    format!(
+      "data:image/png;base64,{}",
+      base64::engine::general_purpose::STANDARD.encode(&buf)
+    )
+  }
+
+  #[test]
+  fn csp_img_src_star_does_not_allow_data_url_image() {
+    let data_url = green_1x1_png_data_url();
+    let html = format!(
+      r#"<!doctype html>
+      <html>
+        <head>
+          <meta http-equiv="Content-Security-Policy" content="img-src *">
+          <style>
+            html, body {{ margin: 0; background: rgb(255, 0, 0); }}
+            img {{ display: block; width: 1px; height: 1px; }}
+          </style>
+        </head>
+        <body><img src="{data_url}"></body>
+      </html>"#
+    );
+
+    let mut renderer = FastRender::new().expect("renderer");
+    let result = renderer
+      .render_html_with_diagnostics(&html, RenderOptions::new().with_viewport(1, 1))
+      .expect("render should succeed");
+
+    assert_eq!(
+      pix_rgba(&result.pixmap, 0, 0),
+      (255, 0, 0, 255),
+      "expected CSP img-src * to block data: images"
+    );
+    assert!(
+      result.diagnostics.fetch_errors.iter().any(|e| {
+        e.kind == ResourceKind::Image
+          && e.url.starts_with("data:image/png;base64,")
+          && e.message.contains("Content-Security-Policy")
+          && e.message.contains("img-src")
+      }),
+      "expected CSP violation to be recorded for blocked data: image"
+    );
+  }
+
+  #[test]
+  fn csp_img_src_data_allows_data_url_image() {
+    let data_url = green_1x1_png_data_url();
+    let html = format!(
+      r#"<!doctype html>
+      <html>
+        <head>
+          <meta http-equiv="Content-Security-Policy" content="img-src data:">
+          <style>
+            html, body {{ margin: 0; background: rgb(255, 0, 0); }}
+            img {{ display: block; width: 1px; height: 1px; }}
+          </style>
+        </head>
+        <body><img src="{data_url}"></body>
+      </html>"#
+    );
+
+    let mut renderer = FastRender::new().expect("renderer");
+    let result = renderer
+      .render_html_with_diagnostics(&html, RenderOptions::new().with_viewport(1, 1))
+      .expect("render should succeed");
+
+    assert_eq!(
+      pix_rgba(&result.pixmap, 0, 0),
+      (0, 255, 0, 255),
+      "expected CSP img-src data: to allow data: images"
+    );
+    assert!(
+      !result.diagnostics.fetch_errors.iter().any(|e| {
+        e.kind == ResourceKind::Image
+          && e.message.contains("Content-Security-Policy")
+          && e.message.contains("img-src")
+      }),
+      "did not expect CSP violation for allowed data: image"
+    );
+  }
+
   #[test]
   fn base_href_like_text_in_script_does_not_override_base_url() {
     let html = r#"<!doctype html><html><head>

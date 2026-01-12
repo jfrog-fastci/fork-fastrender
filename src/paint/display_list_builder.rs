@@ -11529,7 +11529,12 @@ impl DisplayListBuilder {
       // image box itself transparent (so author-provided backgrounds show through). Chrome also
       // draws a thin border around the broken image box.
       ReplacedType::Image { .. } => {
-        self.emit_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192));
+        // Keep the border from turning tiny (≤2px) broken images into a solid block of gray: a
+        // 1px border drawn *inside* a 1×1/2×2 box would cover the entire content rect and prevent
+        // author-provided backgrounds from showing through.
+        if content_rect.width() > 2.0 && content_rect.height() > 2.0 {
+          self.emit_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192));
+        }
 
         // Draw a small icon in the top-left when there is enough room. Keep it from dominating
         // tiny boxes (e.g. 20×20) so author-provided backgrounds remain visible.
