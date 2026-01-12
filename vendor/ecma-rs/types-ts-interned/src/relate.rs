@@ -2790,17 +2790,15 @@ impl<'a> RelateCtx<'a> {
         }
         Some(src_elem) => {
           if dst_elem.rest {
+            let dst_spread = self.spread_element_type(dst_elem.ty);
+            let dst_ty = self.optional_type(dst_spread, dst_elem.optional, OptionalFlavor::TupleElement);
             for rem in src_elems.iter().skip(s_idx) {
-              let src_ty = self.optional_type(
-                rem.ty,
-                rem.optional || rem.rest,
-                OptionalFlavor::TupleElement,
-              );
-              let dst_ty = self.optional_type(
-                dst_elem.ty,
-                dst_elem.optional || dst_elem.rest,
-                OptionalFlavor::TupleElement,
-              );
+              let src_elem_ty = if rem.rest {
+                self.spread_element_type(rem.ty)
+              } else {
+                rem.ty
+              };
+              let src_ty = self.optional_type(src_elem_ty, rem.optional, OptionalFlavor::TupleElement);
               if !dst_elem.readonly && rem.readonly {
                 return RelationResult {
                   result: false,

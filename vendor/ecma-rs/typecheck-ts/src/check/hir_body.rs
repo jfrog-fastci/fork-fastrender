@@ -5875,11 +5875,17 @@ impl<'a> Checker<'a> {
           }
           let idx = raw as usize;
           if let Some(elem) = elems.get(idx) {
-            let mut ty = elem.ty;
+            let mut ty = if elem.rest {
+              self.relate.spread_element_type(elem.ty)
+            } else {
+              elem.ty
+            };
             if elem.optional && !self.relate.options.exact_optional_property_types {
               ty = self.store.union(vec![ty, prim.undefined]);
             }
             ty
+          } else if let Some(rest) = elems.iter().find(|elem| elem.rest) {
+            self.relate.spread_element_type(rest.ty)
           } else {
             prim.undefined
           }
@@ -5890,7 +5896,11 @@ impl<'a> Checker<'a> {
           }
           let mut members = Vec::new();
           for elem in elems {
-            let mut ty = elem.ty;
+            let mut ty = if elem.rest {
+              self.relate.spread_element_type(elem.ty)
+            } else {
+              elem.ty
+            };
             if elem.optional && !self.relate.options.exact_optional_property_types {
               ty = self.store.union(vec![ty, prim.undefined]);
             }
@@ -6088,7 +6098,18 @@ impl<'a> Checker<'a> {
       }
       TypeKind::Array { ty, .. } => ty,
       TypeKind::Tuple(elems) => {
-        let members: Vec<_> = elems.into_iter().map(|e| e.ty).collect();
+        let mut members = Vec::new();
+        for elem in elems {
+          let mut ty = if elem.rest {
+            self.spread_element_type(elem.ty)
+          } else {
+            elem.ty
+          };
+          if elem.optional && !self.relate.options.exact_optional_property_types {
+            ty = self.store.union(vec![ty, prim.undefined]);
+          }
+          members.push(ty);
+        }
         if members.is_empty() {
           prim.unknown
         } else {
@@ -12184,11 +12205,17 @@ impl<'a> FlowBodyChecker<'a> {
           }
           let idx = raw as usize;
           if let Some(elem) = elems.get(idx) {
-            let mut ty = elem.ty;
+            let mut ty = if elem.rest {
+              self.relate.spread_element_type(elem.ty)
+            } else {
+              elem.ty
+            };
             if elem.optional && !self.relate.options.exact_optional_property_types {
               ty = self.store.union(vec![ty, prim.undefined]);
             }
             ty
+          } else if let Some(rest) = elems.iter().find(|elem| elem.rest) {
+            self.relate.spread_element_type(rest.ty)
           } else {
             prim.undefined
           }
@@ -12199,7 +12226,11 @@ impl<'a> FlowBodyChecker<'a> {
           }
           let mut members = Vec::new();
           for elem in elems {
-            let mut ty = elem.ty;
+            let mut ty = if elem.rest {
+              self.relate.spread_element_type(elem.ty)
+            } else {
+              elem.ty
+            };
             if elem.optional && !self.relate.options.exact_optional_property_types {
               ty = self.store.union(vec![ty, prim.undefined]);
             }
