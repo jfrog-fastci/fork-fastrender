@@ -64,9 +64,28 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
     scope.heap().object_prototype(array_iter_proto)?,
     Some(iterator_proto)
   );
+  assert_eq!(
+    scope.heap().object_prototype(it)?,
+    Some(array_iter_proto),
+    "Array iterator instances should have [[Prototype]] = %ArrayIteratorPrototype%",
+  );
 
   // The iterator instance should inherit `.next` from `%ArrayIteratorPrototype%`.
   let next_key = PropertyKey::from_string(scope.alloc_string("next")?);
+  let next_desc_on_it = scope
+    .heap()
+    .get_property(it, &next_key)?
+    .ok_or(VmError::InvariantViolation("Array iterator missing next"))?;
+  match next_desc_on_it.kind {
+    PropertyKind::Data { value, .. } => {
+      assert!(scope.heap().is_callable(value)?);
+    }
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "Array iterator next is not a data property",
+      ));
+    }
+  }
   assert!(scope
     .heap()
     .object_get_own_property(it, &next_key)?
