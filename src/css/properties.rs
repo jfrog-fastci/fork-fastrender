@@ -1502,9 +1502,19 @@ fn parse_property_value_in_context_internal(
     return Some(PropertyValue::Keyword(trimmed.to_string()));
   }
 
-  let parsed = parse_known_property_value(property, value_str)?;
-  value_cache::put(cache_key, parsed.clone());
-  Some(parsed)
+  match parse_known_property_value(property, trimmed) {
+    Some(parsed) => {
+      value_cache::put(cache_key, parsed.clone());
+      Some(parsed)
+    }
+    None => {
+      if skip_var_guard {
+        None
+      } else {
+        Some(PropertyValue::Keyword(trimmed.to_string()))
+      }
+    }
+  }
 }
 
 /// Parse a CSS property value when the property name has already been validated/interned.
