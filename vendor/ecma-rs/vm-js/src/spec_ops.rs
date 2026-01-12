@@ -909,10 +909,18 @@ pub fn this_boolean_value(scope: &mut Scope<'_>, value: Value) -> Result<bool, V
 /// Spec: <https://tc39.es/ecma262/#sec-thisbigintvalue>
 pub fn this_bigint_value(scope: &mut Scope<'_>, value: Value) -> Result<GcBigInt, VmError> {
   match value {
-    Value::BigInt(b) => scope.heap().get_bigint(b)?.copy(),
+    Value::BigInt(b) => {
+      // Validate the handle (and preserve the old `thisBigIntValue` contract of surfacing
+      // `InvalidHandle` for corrupted wrapper state) without cloning the BigInt payload.
+      scope.heap().get_bigint(b)?;
+      Ok(b)
+    }
     Value::Object(obj) => match get_internal_data_property(scope, obj, "vm-js.internal.BigIntData")?
     {
-      Some(Value::BigInt(b)) => scope.heap().get_bigint(b)?.copy(),
+      Some(Value::BigInt(b)) => {
+        scope.heap().get_bigint(b)?;
+        Ok(b)
+      }
       _ => Err(VmError::TypeError(
         "BigInt.prototype.valueOf called on incompatible receiver",
       )),
