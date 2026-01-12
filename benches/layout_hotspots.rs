@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::engine::LayoutParallelism;
 use fastrender::layout::table::{TableFormattingContext, TableStructure};
@@ -195,42 +194,6 @@ fn assign_box_ids(node: &mut BoxNode, next: &mut usize) {
   for child in &mut node.children {
     assign_box_ids(child, next);
   }
-}
-
-fn build_float_shrink_to_fit_tree(float_count: usize) -> BoxTree {
-  // Regression protected:
-  // - Float shrink-to-fit sizing performs intrinsic measurement on the float subtree.
-  //   Reusing the intrinsic cache avoids repeated measurement when the same float-heavy subtree is
-  //   laid out repeatedly (e.g. incremental layout / container query second pass).
-
-  const TEXT: &str = "supercalifragilisticexpialidocious";
-
-  let mut root_style = ComputedStyle::default();
-  root_style.display = Display::Block;
-  root_style.width = Some(Length::px(800.0));
-  let root_style = Arc::new(root_style);
-
-  let mut float_style = ComputedStyle::default();
-  float_style.display = Display::Block;
-  float_style.float = Float::Left;
-  let float_style = Arc::new(float_style);
-
-  let mut text_style = ComputedStyle::default();
-  text_style.display = Display::Inline;
-  let text_style = Arc::new(text_style);
-
-  let mut children = Vec::with_capacity(float_count);
-  for idx in 0..float_count {
-    let text = BoxNode::new_text(text_style.clone(), format!("float-{idx} {TEXT} {TEXT} {TEXT}"));
-    children.push(BoxNode::new_block(
-      float_style.clone(),
-      FormattingContextType::Block,
-      vec![text],
-    ));
-  }
-
-  let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
-  BoxTree::new(root)
 }
 
 fn build_table_tree(rows: usize, cols: usize) -> BoxNode {
