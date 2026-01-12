@@ -136,57 +136,6 @@ fn validate_proxy_own_keys_trap_result(
   Ok(())
 }
 
-fn proxy_own_keys_result_to_property_keys(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  array_like: GcObject,
-) -> Result<Vec<PropertyKey>, VmError> {
-  // Mirror `CreateListFromArrayLike(trapResult, « String, Symbol »)` closely:
-  // - read `length` (ToLength)
-  // - read indices 0..len-1 via `Get`
-  // - require each element to be a String or Symbol
-  //
-  // This is host-aware because `Get` can invoke user code via accessors.
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(array_like))?;
-
-  let length_key_s = scope.alloc_string("length")?;
-  scope.push_root(Value::String(length_key_s))?;
-  let length_key = PropertyKey::from_string(length_key_s);
-
-  let length_value =
-    scope.get_with_host_and_hooks(vm, host, hooks, array_like, length_key, Value::Object(array_like))?;
-  let len = scope.to_length(vm, host, hooks, length_value)?;
-
-  let mut out: Vec<PropertyKey> = Vec::new();
-  out
-    .try_reserve_exact(len)
-    .map_err(|_| VmError::OutOfMemory)?;
-
-  const TICK_EVERY: usize = 1024;
-  for idx in 0..len {
-    if idx % TICK_EVERY == 0 {
-      vm.tick()?;
-    }
-    let idx_s = scope.alloc_string(&idx.to_string())?;
-    let key = PropertyKey::from_string(idx_s);
-    let value = scope.get_with_host_and_hooks(vm, host, hooks, array_like, key, Value::Object(array_like))?;
-    match value {
-      Value::String(s) => out.push(PropertyKey::from_string(s)),
-      Value::Symbol(sym) => out.push(PropertyKey::from_symbol(sym)),
-      _ => {
-        return Err(VmError::TypeError(
-          "Proxy ownKeys trap returned a key that is not a String or Symbol",
-        ))
-      }
-    }
-  }
-
-  Ok(out)
-}
-
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: true,

@@ -4347,13 +4347,30 @@ impl Heap {
       }
     }
 
+    // vm-js uses a small number of reserved `Symbol.for("vm-js.internal.*")` markers to model
+    // internal slots on some built-in exotic objects (e.g. String/Number/Boolean wrapper objects).
+    //
+    // These must not be observable via `[[OwnPropertyKeys]]` / `Reflect.ownKeys` / etc.
+    let internal_marker_symbols = [
+      self.internal_string_data_symbol(),
+      self.internal_number_data_symbol(),
+      self.internal_boolean_data_symbol(),
+      self.internal_bigint_data_symbol(),
+      self.internal_symbol_data_symbol(),
+      self.internal_generator_state_symbol(),
+    ];
+
     for (i, prop) in properties.iter().enumerate() {
       if i % TICK_EVERY == 0 {
         tick()?;
       }
-      if matches!(prop.key, PropertyKey::Symbol(_)) {
-        out.push(prop.key);
+      let PropertyKey::Symbol(sym) = prop.key else {
+        continue;
+      };
+      if internal_marker_symbols.iter().flatten().any(|s| *s == sym) {
+        continue;
       }
+      out.push(prop.key);
     }
 
     Ok(out)
