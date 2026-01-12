@@ -97,7 +97,11 @@ fn module_graph_teardown_unregisters_persistent_roots() -> Result<(), VmError> {
   heap.collect_garbage();
   assert!(heap.is_valid_object(namespace_obj));
   assert!(heap.is_valid_object(import_meta_obj));
-  assert_eq!(heap.persistent_root_count(), roots_before + 2);
+  // The module graph persists:
+  // - the module namespace object,
+  // - the cached `import.meta` object, and
+  // - the module evaluation PromiseCapability (promise + resolve + reject) for the SCC root.
+  assert_eq!(heap.persistent_root_count(), roots_before + 5);
   assert_eq!(heap.persistent_env_root_count(), env_roots_before + 1);
 
   // Ensure teardown clears any attached module graph pointer.

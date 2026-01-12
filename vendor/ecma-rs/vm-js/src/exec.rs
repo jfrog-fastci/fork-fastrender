@@ -29535,40 +29535,39 @@ pub(crate) fn resume_module_tla_evaluation(
   result
 }
 
-/// Persistent continuation state for async module (top-level await) evaluation.
+/// Opaque continuation for async (top-level await) module evaluation.
+///
+/// This is a small wrapper around the internal async evaluator state (`AsyncFrame` stack +
+/// `RuntimeEnv`). The continuation owns persistent GC roots needed to keep the module evaluation
+/// alive across microtasks.
 #[derive(Debug)]
 pub(crate) struct ModuleAsyncContinuation {
   env: RuntimeEnv,
   frames: VecDeque<AsyncFrame>,
-}
-
-impl ModuleAsyncContinuation {
-  pub(crate) fn teardown(self, heap: &mut Heap) {
-    let mut this = self;
-    this.env.teardown(heap);
-    for mut frame in this.frames {
-      async_teardown_frame(heap, &mut frame);
-    }
-  }
+  awaited_promise_root: Option<RootId>,
 }
 
 #[derive(Debug)]
-pub(crate) enum ModuleAsyncEvalResult {
+pub(crate) enum ModuleAsyncStep {
   Completed,
   Await {
-    await_value: Value,
+    /// The awaited Promise returned by `PromiseResolve(%Promise%, awaitValue)`.
+    promise: Value,
     continuation: ModuleAsyncContinuation,
   },
 }
 
-#[derive(Debug)]
-pub(crate) enum ModuleAsyncResumeResult {
-  Completed,
-  Await { await_value: Value },
+pub(crate) fn module_async_teardown_continuation(scope: &mut Scope<'_>, mut cont: ModuleAsyncContinuation) {
+  cont.env.teardown(scope.heap_mut());
+  if let Some(root) = cont.awaited_promise_root.take() {
+    scope.heap_mut().remove_root(root);
+  }
+  for mut frame in cont.frames {
+    async_teardown_frame(scope.heap_mut(), &mut frame);
+  }
 }
 
-/// Starts evaluating a module as an async statement list, returning a continuation on suspension.
-pub(crate) fn run_module_async(
+pub(crate) fn run_module_async_start(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -29579,7 +29578,7 @@ pub(crate) fn run_module_async(
   module_env: GcEnv,
   source: Arc<SourceText>,
   stmts: &Vec<Node<Stmt>>,
-) -> Result<ModuleAsyncEvalResult, VmError> {
+) -> Result<ModuleAsyncStep, VmError> {
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,
@@ -29587,35 +29586,55 @@ pub(crate) fn run_module_async(
   };
   vm.push_execution_context(exec_ctx);
 
-  let result = (|| -> Result<ModuleAsyncEvalResult, VmError> {
-    let mut env =
-      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
-    env.set_source_info(source.clone(), 0, 0);
+  let result = (|| -> Result<ModuleAsyncStep, VmError> {
+    // Wrap the continuation in an `Option` so we can `take()` it only when returning
+    // `ModuleAsyncStep::Await`. This avoids borrow/move issues while still ensuring we can tear
+    // down roots on error paths.
+    let mut cont = Some(ModuleAsyncContinuation {
+      env: RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?,
+      frames: VecDeque::new(),
+      awaited_promise_root: None,
+    });
+    cont
+      .as_mut()
+      .expect("just inserted")
+      .env
+      .set_source_info(source.clone(), 0, 0);
 
-    let (line, col) = source.line_col(0);
-    let frame = StackFrame {
-      function: None,
-      source: source.name.clone(),
-      line,
-      col,
-    };
-    let mut vm_frame = vm.enter_frame(frame)?;
+    let result = (|| -> Result<ModuleAsyncStep, VmError> {
+      let (line, col) = source.line_col(0);
+      let frame = StackFrame {
+        function: None,
+        source: source.name.clone(),
+        line,
+        col,
+      };
+      let mut vm_frame = vm.enter_frame(frame)?;
 
-    let mut evaluator = Evaluator {
-      vm: &mut *vm_frame,
-      host,
-      hooks,
-      env: &mut env,
-      strict: true,
-      // Per ECMA-262, module top-level `this` is `undefined`.
-      this: Value::Undefined,
-      new_target: Value::Undefined,
-    };
+      let async_eval = {
+        let cont = cont.as_mut().expect("module async continuation missing");
+        let mut evaluator = Evaluator {
+          vm: &mut *vm_frame,
+          host,
+          hooks,
+          env: &mut cont.env,
+          strict: true,
+          // Per ECMA-262, module top-level `this` is `undefined`.
+          this: Value::Undefined,
+          new_target: Value::Undefined,
+        };
+        async_eval_stmt_list(&mut evaluator, scope, stmts)?
+      };
 
-    match async_eval_stmt_list(&mut evaluator, scope, stmts) {
-      Ok(AsyncEval::Complete(completion)) => {
-        let result = match completion {
-          Completion::Normal(_) => Ok(ModuleAsyncEvalResult::Completed),
+      match async_eval {
+        AsyncEval::Complete(completion) => match completion {
+          Completion::Normal(_) => {
+            // Completed without suspension: immediately tear down the continuation (it owns the
+            // module env roots).
+            let cont = cont.take().expect("module async continuation missing");
+            module_async_teardown_continuation(scope, cont);
+            Ok(ModuleAsyncStep::Completed)
+          }
           Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
             value: thrown.value,
             stack: thrown.stack,
@@ -29629,31 +29648,46 @@ pub(crate) fn run_module_async(
           Completion::Continue(..) => Err(VmError::InvariantViolation(
             "module evaluation produced Continue completion (early errors should prevent this)",
           )),
-        };
+        },
+        AsyncEval::Suspend(mut suspend) => {
+          async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)?;
+          cont
+            .as_mut()
+            .expect("module async continuation missing")
+            .frames = suspend.frames;
 
-        env.teardown(scope.heap_mut());
-        result
-      }
-      Ok(AsyncEval::Suspend(mut suspend)) => {
-        if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody) {
-          let cont = ModuleAsyncContinuation {
-            env,
-            frames: suspend.frames,
-          };
-          cont.teardown(scope.heap_mut());
-          return Err(err);
+          // `Await` uses `? PromiseResolve(%Promise%, value)`.
+          let mut await_scope = scope.reborrow();
+          await_scope.push_root(suspend.await_value)?;
+          let awaited_promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut await_scope,
+            host,
+            hooks,
+            suspend.await_value,
+          )?;
+          await_scope.push_root(awaited_promise)?;
+          let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
+          cont
+            .as_mut()
+            .expect("module async continuation missing")
+            .awaited_promise_root = Some(awaited_root);
+
+          let continuation = cont.take().expect("module async continuation missing");
+          Ok(ModuleAsyncStep::Await {
+            promise: awaited_promise,
+            continuation: continuation,
+          })
         }
-
-        Ok(ModuleAsyncEvalResult::Await {
-          await_value: suspend.await_value,
-          continuation: ModuleAsyncContinuation {
-            env,
-            frames: suspend.frames,
-          },
-        })
       }
+    })();
+    match result {
+      Ok(step) => Ok(step),
       Err(err) => {
-        env.teardown(scope.heap_mut());
+        // Best-effort: ensure no GC roots leak when we fail after creating `cont`.
+        if let Some(cont) = cont.take() {
+          module_async_teardown_continuation(scope, cont);
+        }
         Err(err)
       }
     }
@@ -29668,18 +29702,24 @@ pub(crate) fn run_module_async(
   result
 }
 
-/// Resumes an async module evaluation from a stored continuation.
-pub(crate) fn resume_module_async(
+pub(crate) fn run_module_async_resume(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   realm_id: RealmId,
   module_id: ModuleId,
-  continuation: &mut ModuleAsyncContinuation,
+  mut cont: ModuleAsyncContinuation,
   resume_value: Result<Value, Value>,
-) -> Result<ModuleAsyncResumeResult, VmError> {
-  let source = continuation.env.source();
+) -> Result<ModuleAsyncStep, VmError> {
+  // The awaited promise has settled; it no longer needs to be rooted by the continuation.
+  if let Some(root) = cont.awaited_promise_root.take() {
+    scope.heap_mut().remove_root(root);
+  }
+
+  // Wrap in an `Option` so we can move the continuation into `ModuleAsyncStep::Await` without
+  // affecting error-path teardown.
+  let mut cont = Some(cont);
 
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
@@ -29688,7 +29728,9 @@ pub(crate) fn resume_module_async(
   };
   vm.push_execution_context(exec_ctx);
 
-  let result = (|| -> Result<ModuleAsyncResumeResult, VmError> {
+  let source = cont.as_ref().expect("module async continuation missing").env.source().clone();
+
+  let result = (|| -> Result<ModuleAsyncStep, VmError> {
     let (line, col) = source.line_col(0);
     let frame = StackFrame {
       function: None,
@@ -29698,36 +29740,78 @@ pub(crate) fn resume_module_async(
     };
     let mut vm_frame = vm.enter_frame(frame)?;
 
-    let mut evaluator = Evaluator {
-      vm: &mut *vm_frame,
-      host,
-      hooks,
-      env: &mut continuation.env,
-      strict: true,
-      // Per ECMA-262, module top-level `this` is `undefined`.
-      this: Value::Undefined,
-      new_target: Value::Undefined,
+    let body_result = {
+      let cont = cont.as_mut().expect("module async continuation missing");
+      let mut evaluator = Evaluator {
+        vm: &mut *vm_frame,
+        host,
+        hooks,
+        env: &mut cont.env,
+        strict: true,
+        this: Value::Undefined,
+        new_target: Value::Undefined,
+      };
+
+      let frames = mem::take(&mut cont.frames);
+      async_resume_from_frames(&mut evaluator, scope, frames, resume_value)?
     };
 
-    let frames = mem::take(&mut continuation.frames);
-    match async_resume_from_frames(&mut evaluator, scope, frames, resume_value) {
-      Ok(AsyncBodyResult::CompleteOk(_)) => Ok(ModuleAsyncResumeResult::Completed),
-      Ok(AsyncBodyResult::CompleteThrow(reason)) => Err(VmError::Throw(reason)),
-      Ok(AsyncBodyResult::Await { await_value, frames }) => {
-        continuation.frames = frames;
-        Ok(ModuleAsyncResumeResult::Await { await_value })
+    match body_result {
+      AsyncBodyResult::CompleteOk(_) => {
+        let cont = cont.take().expect("module async continuation missing");
+        module_async_teardown_continuation(scope, cont);
+        Ok(ModuleAsyncStep::Completed)
       }
-      Err(err) => Err(err),
+      AsyncBodyResult::CompleteThrow(reason) => {
+        Err(VmError::Throw(reason))
+      }
+      AsyncBodyResult::Await { await_value, frames } => {
+        cont
+          .as_mut()
+          .expect("module async continuation missing")
+          .frames = frames;
+
+        let mut await_scope = scope.reborrow();
+        await_scope.push_root(await_value)?;
+        let awaited_promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
+          &mut *vm_frame,
+          &mut await_scope,
+          host,
+          hooks,
+          await_value,
+        )?;
+        await_scope.push_root(awaited_promise)?;
+        let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
+        cont
+          .as_mut()
+          .expect("module async continuation missing")
+          .awaited_promise_root = Some(awaited_root);
+
+        let continuation = cont.take().expect("module async continuation missing");
+        Ok(ModuleAsyncStep::Await {
+          promise: awaited_promise,
+          continuation: continuation,
+        })
+      }
     }
   })();
 
+  // Restore module graph pointer is handled by callers; just pop module execution context.
   let popped = vm.pop_execution_context();
   debug_assert_eq!(popped, Some(exec_ctx));
-  debug_assert!(
-    popped.is_some(),
-    "module execution popped no execution context"
-  );
-  result
+  debug_assert!(popped.is_some(), "module execution popped no execution context");
+
+  match result {
+    Ok(step) => Ok(step),
+    Err(err) => {
+      // Best-effort: if module evaluation failed after suspending, ensure no GC roots leak.
+      if let Some(cont) = cont.take() {
+        module_async_teardown_continuation(scope, cont);
+      }
+      // Restore the previous realm-specific stack frames etc is handled by the caller.
+      Err(err)
+    }
+  }
 }
 
 pub(crate) fn eval_expr(

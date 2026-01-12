@@ -761,7 +761,6 @@ impl Vm {
     self.module_tla_on_rejected_call = Some(id);
     Ok(id)
   }
-
   pub(crate) fn dynamic_import_eval_on_fulfilled_call_id(
     &mut self,
   ) -> Result<NativeFunctionId, VmError> {

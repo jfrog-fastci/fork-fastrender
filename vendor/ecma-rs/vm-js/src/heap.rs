@@ -4690,8 +4690,15 @@ impl Heap {
     }
 
     let n = crate::ops::string_to_number(self, s)?;
-    let s2 = crate::property::number_to_string(n)?;
-    if self.get_string(s)?.to_utf8_lossy() == s2 {
+    let mut buf = [0u8; 64];
+    let s2 = number_to_string_ascii_bytes(n, &mut buf);
+
+    let matches = units.len() == s2.len()
+      && units
+        .iter()
+        .zip(s2.iter().copied())
+        .all(|(u, b)| *u == b as u16);
+    if matches {
       Ok(Some(n))
     } else {
       Ok(None)
@@ -7462,6 +7469,112 @@ impl<'a> Scope<'a> {
     self.alloc_bigint(JsBigInt::from_i128(value)?)
   }
 
+  pub fn alloc_u32_string(&mut self, value: u32) -> Result<GcString, VmError> {
+    let mut buf = itoa::Buffer::new();
+    self.alloc_string(buf.format(value))
+  }
+
+  pub fn alloc_usize_string(&mut self, value: usize) -> Result<GcString, VmError> {
+    let mut buf = itoa::Buffer::new();
+    self.alloc_string(buf.format(value))
+  }
+
+  pub fn alloc_i32_string(&mut self, value: i32) -> Result<GcString, VmError> {
+    let mut buf = itoa::Buffer::new();
+    self.alloc_string(buf.format(value))
+  }
+
+  /// Allocates a JavaScript string for an ECMAScript `Number` value using the spec `ToString`
+  /// formatting rules.
+  pub fn alloc_number_string(&mut self, n: f64) -> Result<GcString, VmError> {
+    // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-tostring
+    if n.is_nan() {
+      return self.alloc_string("NaN");
+    }
+    if n == 0.0 {
+      // Covers both +0 and -0.
+      return self.alloc_string("0");
+    }
+    if n.is_infinite() {
+      if n.is_sign_negative() {
+        return self.alloc_string("-Infinity");
+      }
+      return self.alloc_string("Infinity");
+    }
+
+    // `ryu` is used only for digit/exponent decomposition; the final formatting rules match
+    // ECMAScript `Number::toString()` (not Rust's float formatting).
+    let sign_negative = n.is_sign_negative();
+    let abs = n.abs();
+
+    let mut ryu_buf = ryu::Buffer::new();
+    let raw = ryu_buf.format_finite(abs);
+    // `ryu` formats `1.0` as `"1.0"`, but ECMAScript `ToString(1)` is `"1"`.
+    let raw = raw.strip_suffix(".0").unwrap_or(raw);
+
+    let mut digits_buf = [0u8; 32];
+    let (digits, exp) = parse_ryu_to_decimal(raw, &mut digits_buf);
+    let k = exp + digits.len() as i32;
+
+    // Output is ASCII and has a small fixed upper bound (< 32 bytes for f64).
+    let mut out_buf = [0u8; 64];
+    let mut out_len = 0usize;
+
+    if sign_negative {
+      out_buf[out_len] = b'-';
+      out_len += 1;
+    }
+
+    if k > 0 && k <= 21 {
+      let k_usize = k as usize;
+      if k_usize >= digits.len() {
+        push_bytes(&mut out_buf, &mut out_len, digits);
+        for _ in 0..(k_usize - digits.len()) {
+          push_byte(&mut out_buf, &mut out_len, b'0');
+        }
+      } else {
+        push_bytes(&mut out_buf, &mut out_len, &digits[..k_usize]);
+        push_byte(&mut out_buf, &mut out_len, b'.');
+        push_bytes(&mut out_buf, &mut out_len, &digits[k_usize..]);
+      }
+
+      let s = unsafe { std::str::from_utf8_unchecked(&out_buf[..out_len]) };
+      return self.alloc_string(s);
+    }
+
+    if k <= 0 && k > -6 {
+      push_bytes(&mut out_buf, &mut out_len, b"0.");
+      for _ in 0..((-k) as usize) {
+        push_byte(&mut out_buf, &mut out_len, b'0');
+      }
+      push_bytes(&mut out_buf, &mut out_len, digits);
+
+      let s = unsafe { std::str::from_utf8_unchecked(&out_buf[..out_len]) };
+      return self.alloc_string(s);
+    }
+
+    // Exponential form.
+    push_byte(&mut out_buf, &mut out_len, digits[0]);
+    if digits.len() > 1 {
+      push_byte(&mut out_buf, &mut out_len, b'.');
+      push_bytes(&mut out_buf, &mut out_len, &digits[1..]);
+    }
+    push_byte(&mut out_buf, &mut out_len, b'e');
+
+    let exp = k - 1;
+    let mut exp_buf = itoa::Buffer::new();
+    if exp >= 0 {
+      push_byte(&mut out_buf, &mut out_len, b'+');
+      push_bytes(&mut out_buf, &mut out_len, exp_buf.format(exp as u32).as_bytes());
+    } else {
+      push_byte(&mut out_buf, &mut out_len, b'-');
+      push_bytes(&mut out_buf, &mut out_len, exp_buf.format((-exp) as u32).as_bytes());
+    }
+
+    let s = unsafe { std::str::from_utf8_unchecked(&out_buf[..out_len]) };
+    self.alloc_string(s)
+  }
+
   /// Allocates a JavaScript symbol on the heap.
   pub fn new_symbol(&mut self, description: Option<GcString>) -> Result<GcSymbol, VmError> {
     // Root the description string during allocation in case `ensure_can_allocate` triggers a GC.
@@ -10015,6 +10128,150 @@ fn reserve_vec_to_len<T>(vec: &mut Vec<T>, required_len: usize) -> Result<(), Vm
     .try_reserve_exact(additional)
     .map_err(|_| VmError::OutOfMemory)?;
   Ok(())
+}
+
+fn push_byte(buf: &mut [u8; 64], len: &mut usize, b: u8) {
+  debug_assert!(*len < buf.len());
+  buf[*len] = b;
+  *len += 1;
+}
+
+fn push_bytes(buf: &mut [u8; 64], len: &mut usize, bytes: &[u8]) {
+  debug_assert!(buf.len().saturating_sub(*len) >= bytes.len());
+  let end = *len + bytes.len();
+  buf[*len..end].copy_from_slice(bytes);
+  *len = end;
+}
+
+fn number_to_string_ascii_bytes<'a>(n: f64, out_buf: &'a mut [u8; 64]) -> &'a [u8] {
+  // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-tostring
+  if n.is_nan() {
+    out_buf[..3].copy_from_slice(b"NaN");
+    return &out_buf[..3];
+  }
+  if n == 0.0 {
+    // Covers both +0 and -0.
+    out_buf[0] = b'0';
+    return &out_buf[..1];
+  }
+  if n.is_infinite() {
+    if n.is_sign_negative() {
+      out_buf[..9].copy_from_slice(b"-Infinity");
+      return &out_buf[..9];
+    }
+    out_buf[..8].copy_from_slice(b"Infinity");
+    return &out_buf[..8];
+  }
+
+  // `ryu` is used only for digit/exponent decomposition; the final formatting rules match
+  // ECMAScript `Number::toString()` (not Rust's float formatting).
+  let sign_negative = n.is_sign_negative();
+  let abs = n.abs();
+
+  let mut ryu_buf = ryu::Buffer::new();
+  let raw = ryu_buf.format_finite(abs);
+  // `ryu` formats `1.0` as `"1.0"`, but ECMAScript `ToString(1)` is `"1"`.
+  let raw = raw.strip_suffix(".0").unwrap_or(raw);
+
+  let mut digits_buf = [0u8; 32];
+  let (digits, exp) = parse_ryu_to_decimal(raw, &mut digits_buf);
+  let k = exp + digits.len() as i32;
+
+  // Output is ASCII and has a small fixed upper bound (< 32 bytes for f64).
+  let mut out_len = 0usize;
+
+  if sign_negative {
+    out_buf[out_len] = b'-';
+    out_len += 1;
+  }
+
+  if k > 0 && k <= 21 {
+    let k_usize = k as usize;
+    if k_usize >= digits.len() {
+      push_bytes(out_buf, &mut out_len, digits);
+      for _ in 0..(k_usize - digits.len()) {
+        push_byte(out_buf, &mut out_len, b'0');
+      }
+    } else {
+      push_bytes(out_buf, &mut out_len, &digits[..k_usize]);
+      push_byte(out_buf, &mut out_len, b'.');
+      push_bytes(out_buf, &mut out_len, &digits[k_usize..]);
+    }
+    return &out_buf[..out_len];
+  }
+
+  if k <= 0 && k > -6 {
+    push_bytes(out_buf, &mut out_len, b"0.");
+    for _ in 0..((-k) as usize) {
+      push_byte(out_buf, &mut out_len, b'0');
+    }
+    push_bytes(out_buf, &mut out_len, digits);
+    return &out_buf[..out_len];
+  }
+
+  // Exponential form.
+  push_byte(out_buf, &mut out_len, digits[0]);
+  if digits.len() > 1 {
+    push_byte(out_buf, &mut out_len, b'.');
+    push_bytes(out_buf, &mut out_len, &digits[1..]);
+  }
+  push_byte(out_buf, &mut out_len, b'e');
+
+  let exp = k - 1;
+  let mut exp_buf = itoa::Buffer::new();
+  if exp >= 0 {
+    push_byte(out_buf, &mut out_len, b'+');
+    push_bytes(out_buf, &mut out_len, exp_buf.format(exp as u32).as_bytes());
+  } else {
+    push_byte(out_buf, &mut out_len, b'-');
+    push_bytes(out_buf, &mut out_len, exp_buf.format((-exp) as u32).as_bytes());
+  }
+
+  &out_buf[..out_len]
+}
+
+fn parse_ryu_to_decimal<'a>(raw: &str, digits_buf: &'a mut [u8; 32]) -> (&'a [u8], i32) {
+  // `raw` is expected to be ASCII and contain either:
+  // - digits with optional decimal point
+  // - digits with optional decimal point and a trailing `e[+-]?\d+`
+  //
+  // Returns `(digits, exp)` such that `value = digits × 10^exp` and `digits`
+  // contains no leading zeros.
+  let (mantissa, exp_part) = match raw.split_once('e') {
+    Some((mantissa, exp)) => (mantissa, Some(exp)),
+    None => (raw, None),
+  };
+
+  let mut exp: i32 = exp_part.map_or(0, |e| e.parse().unwrap_or(0));
+
+  let mut digits_len = 0usize;
+  if let Some((int_part, frac_part)) = mantissa.split_once('.') {
+    exp = exp.saturating_sub(frac_part.len() as i32);
+    for b in int_part.bytes().chain(frac_part.bytes()) {
+      debug_assert!(digits_len < digits_buf.len());
+      digits_buf[digits_len] = b;
+      digits_len += 1;
+    }
+  } else {
+    for b in mantissa.bytes() {
+      debug_assert!(digits_len < digits_buf.len());
+      digits_buf[digits_len] = b;
+      digits_len += 1;
+    }
+  }
+
+  // Strip leading zeros introduced by `0.xxx` forms.
+  let mut start = 0usize;
+  while start < digits_len && digits_buf[start] == b'0' {
+    start += 1;
+  }
+  debug_assert!(start < digits_len, "expected non-zero number to produce digits");
+  if start > 0 {
+    digits_buf.copy_within(start..digits_len, 0);
+    digits_len -= start;
+  }
+
+  (&digits_buf[..digits_len], exp)
 }
 
 #[cfg(test)]
