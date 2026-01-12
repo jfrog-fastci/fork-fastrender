@@ -3821,8 +3821,11 @@ pub struct CoroutineId(pub u64);
 
 /// FFI-friendly UTF-8 byte string reference.
 ///
-/// Note: `StringRef` bytes returned by `rt_string_concat` are currently allocated **outside** the
-/// GC heap and are leak-only (valid for process lifetime).
+/// Note:
+/// - `StringRef` values returned by `rt_string_concat` / `rt_string_to_owned_utf8` are allocated
+///   **outside** the GC heap and must be freed via `rt_stringref_free`.
+/// - `rt_string_as_utf8` returns a borrowed `StringRef` view into the GC heap that is only valid
+///   until the next GC safepoint/collection (the string may be relocated).
 #[repr(C)]
 pub struct StringRef {
   pub ptr: *const u8,
@@ -3939,6 +3942,12 @@ pub fn rt_gc_collect();
 
 // Strings
 pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
+pub fn rt_stringref_free(s: StringRef);
+pub fn rt_string_new_utf8(bytes: *const u8, len: usize) -> GcPtr;
+pub fn rt_string_concat_gc(a: GcPtr, b: GcPtr) -> GcPtr;
+pub fn rt_string_len(s: GcPtr) -> usize;
+pub fn rt_string_as_utf8(s: GcPtr) -> StringRef;
+pub fn rt_string_to_owned_utf8(s: GcPtr) -> StringRef;
 pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
 pub fn rt_string_pin_interned(id: InternedId);
 

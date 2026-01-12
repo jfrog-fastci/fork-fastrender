@@ -1492,7 +1492,7 @@ mod tests {
         completed.fetch_add(1, Ordering::Release);
         // Unregistering the thread may contend on GC-aware locks, which can temporarily enter a
         // GC-safe region. That transition is only valid when no raw GC pointers are live in
-        // locals/registers (see `GcSafeGuard` contract). Drop the handle-stack root above before
+        // locals/registers (see `GcSafeGuard` contract). Drop the handle-stack root before
         // unregistering to keep this test deterministic under contention.
         threading::unregister_current_thread();
       }));

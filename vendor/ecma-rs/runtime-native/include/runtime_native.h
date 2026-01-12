@@ -644,7 +644,30 @@ void rt_thread_set_parked(bool parked);
 // -----------------------------------------------------------------------------
 // Strings
 // -----------------------------------------------------------------------------
+// Concatenate two UTF-8 byte strings into a new allocation.
+//
+// Ownership: the returned `StringRef` is allocated by the runtime and must be freed via
+// `rt_stringref_free` when no longer needed.
 StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);
+// Free an owned `StringRef` allocated by `rt_string_concat` or `rt_string_to_owned_utf8`.
+//
+// This is a no-op for empty string references (`len == 0`).
+void rt_stringref_free(StringRef s);
+// Allocate a GC-managed UTF-8 string and copy `bytes`.
+GcPtr rt_string_new_utf8(const uint8_t* bytes, size_t len);
+// Concatenate two GC-managed UTF-8 strings into a new GC-managed string.
+GcPtr rt_string_concat_gc(GcPtr a, GcPtr b);
+// Return the length (in UTF-8 bytes) of a GC-managed string.
+size_t rt_string_len(GcPtr s);
+// Borrow the UTF-8 bytes of a GC-managed string.
+//
+// The returned view points into the GC heap and is only valid until the next GC safepoint/collection
+// (the string may be relocated).
+StringRef rt_string_as_utf8(GcPtr s);
+// Allocate and return an owned copy of the UTF-8 bytes of a GC-managed string.
+//
+// The returned `StringRef` must be freed via `rt_stringref_free`.
+StringRef rt_string_to_owned_utf8(GcPtr s);
 InternedId rt_string_intern(const uint8_t* s, size_t len);
 void rt_string_pin_interned(InternedId id);
 

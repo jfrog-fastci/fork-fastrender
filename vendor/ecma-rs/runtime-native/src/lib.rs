@@ -640,6 +640,7 @@ mod tests {
     // Safety: `rt_string_concat` returns a valid byte slice for the returned length.
     let bytes = unsafe { std::slice::from_raw_parts(out.ptr, out.len) };
     assert_eq!(bytes, b"foobar");
+    rt_stringref_free(out);
   }
 
   #[test]
@@ -934,6 +935,12 @@ mod tests {
       "void rt_weak_remove(uint64_t handle);",
       "void rt_thread_set_parked(bool parked);",
       "StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);",
+      "void rt_stringref_free(StringRef s);",
+      "GcPtr rt_string_new_utf8(const uint8_t* bytes, size_t len);",
+      "GcPtr rt_string_concat_gc(GcPtr a, GcPtr b);",
+      "size_t rt_string_len(GcPtr s);",
+      "StringRef rt_string_as_utf8(GcPtr s);",
+      "StringRef rt_string_to_owned_utf8(GcPtr s);",
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
       "void rt_string_pin_interned(InternedId id);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
@@ -1094,6 +1101,12 @@ mod tests {
     let _root_pop: unsafe extern "C" fn(crate::roots::GcHandle) = rt_root_pop;
     let _thread_set_parked: extern "C" fn(bool) = rt_thread_set_parked;
     let _concat: extern "C" fn(*const u8, usize, *const u8, usize) -> abi::StringRef = rt_string_concat;
+    let _stringref_free: extern "C" fn(abi::StringRef) = rt_stringref_free;
+    let _string_new_utf8: extern "C" fn(*const u8, usize) -> *mut u8 = rt_string_new_utf8;
+    let _string_concat_gc: extern "C" fn(*mut u8, *mut u8) -> *mut u8 = rt_string_concat_gc;
+    let _string_len: extern "C" fn(*mut u8) -> usize = rt_string_len;
+    let _string_as_utf8: extern "C" fn(*mut u8) -> abi::StringRef = rt_string_as_utf8;
+    let _string_to_owned_utf8: extern "C" fn(*mut u8) -> abi::StringRef = rt_string_to_owned_utf8;
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
     let _pin_interned: extern "C" fn(abi::InternedId) = rt_string_pin_interned;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
@@ -1272,6 +1285,12 @@ mod tests {
       _thread_unregister,
       _thread_set_parked,
       _concat,
+      _stringref_free,
+      _string_new_utf8,
+      _string_concat_gc,
+      _string_len,
+      _string_as_utf8,
+      _string_to_owned_utf8,
       _intern,
       _pin_interned,
       _spawn,
@@ -1740,6 +1759,7 @@ int main(void) {
 
   StringRef s = rt_string_concat((const uint8_t*)"foo", 3, (const uint8_t*)"bar", 3);
   InternedId id = rt_string_intern(s.ptr, s.len);
+  rt_stringref_free(s);
   (void)id;
 
   TaskId t = rt_parallel_spawn(task, NULL);

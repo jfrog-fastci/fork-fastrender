@@ -641,15 +641,81 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
 ///
 /// The object is always allocated in the old generation (Immix or LOS), matching the interner's
 /// expectation that interned byte storage has a stable address across minor collections.
+///
+/// Prefer using [`alloc_typed_old`] for new runtime-owned types; this function is kept for
+/// compatibility with existing runtime-native subsystems.
 pub(crate) fn alloc_old_with_type_desc(desc: &'static TypeDescriptor) -> *mut u8 {
+  alloc_typed_old(desc)
+}
+
+/// Allocate a GC-managed object using a runtime-owned [`TypeDescriptor`].
+///
+/// This mirrors the behavior of [`alloc`] (nursery preferred → old-gen → LOS),
+/// but bypasses the shape table. It exists for runtime-owned allocation kinds
+/// like `RtString` that are not part of the compiler shape table.
+pub(crate) fn alloc_typed(desc: &'static TypeDescriptor) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
   ensure_global_heap_init();
 
+  let size = desc.size;
+  if size == 0 {
+    crate::trap::rt_trap_invalid_arg("alloc_typed: TypeDescriptor.size must be non-zero");
+  }
+
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_alloc(size);
+
+  let align = desc.align.max(OBJ_ALIGN);
   let global = global_heap();
   let epoch = current_mark_epoch(global);
+
+  if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
+    return with_heap_lock_mutator(|heap| {
+      let obj = heap.los.alloc(size, align);
+      unsafe { init_object(obj, size, desc, epoch, false) };
+      obj
+    });
+  }
+
+  // Fast path: per-thread nursery TLAB.
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, desc, epoch, false) };
+    return obj;
+  }
+
+  // Nursery exhausted: fall back to old-gen allocation.
+  alloc_old(size, align, desc, epoch)
+}
+
+/// Allocate a GC-managed object directly into the old generation (Immix/LOS).
+///
+/// This is intended for runtime-owned allocations that should avoid nursery
+/// evacuation overhead (e.g. weakly-interned strings).
+pub(crate) fn alloc_typed_old(desc: &'static TypeDescriptor) -> *mut u8 {
+  ensure_thread_registered_for_alloc();
+  crate::threading::safepoint_poll();
+  ensure_global_heap_init();
+
   let size = desc.size;
+  if size == 0 {
+    crate::trap::rt_trap_invalid_arg("alloc_typed_old: TypeDescriptor.size must be non-zero");
+  }
+
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_alloc(size);
+
   let align = desc.align.max(OBJ_ALIGN);
+  let global = global_heap();
+  let epoch = current_mark_epoch(global);
 
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
     return with_heap_lock_mutator(|heap| {

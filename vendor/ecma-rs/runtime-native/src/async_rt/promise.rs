@@ -1273,7 +1273,6 @@ mod tests {
   use crate::threading::ThreadKind;
   use std::sync::mpsc;
   use std::time::Duration;
-  use std::time::Instant;
 
   #[test]
   fn promises_with_pending_reactions_lock_is_gc_aware() {
@@ -1296,6 +1295,7 @@ mod tests {
       // Thread C attempts to track a promise while the lock is held.
       let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
       let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_attempt_tx, c_attempt_rx) = mpsc::channel::<()>();
       let (c_done_tx, c_done_rx) = mpsc::channel::<()>();
 
       scope.spawn(move || {
@@ -1327,6 +1327,7 @@ mod tests {
         c_start_rx.recv().unwrap();
 
         // `RtPromise` embeds `PromiseHeader` at offset 0.
+        c_attempt_tx.send(()).unwrap();
         track_pending_reactions(ptr);
         // Drop cleans up the tracking set entry too.
         promise_drop(p);
@@ -1335,31 +1336,19 @@ mod tests {
         threading::unregister_current_thread();
       });
 
-      let c_id = c_registered_rx
+      c_registered_rx
         .recv_timeout(TIMEOUT)
         .expect("thread C should register with the thread registry");
 
       // Ensure thread C is actively contending on the lock before starting STW.
       c_start_tx.send(()).unwrap();
+      c_attempt_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should attempt promise tracking while the lock is held");
 
-      // Wait until thread C is marked NativeSafe (this is what prevents STW deadlocks).
-      let start = Instant::now();
-      loop {
-        let mut native_safe = false;
-        threading::registry::for_each_thread(|t| {
-          if t.id() == c_id {
-            native_safe = t.is_native_safe();
-          }
-        });
-
-        if native_safe {
-          break;
-        }
-        if start.elapsed() > TIMEOUT {
-          panic!("thread C did not enter a GC-safe region while blocked on the pending-reactions lock");
-        }
-        std::thread::yield_now();
-      }
+      // Note: when contending while holding handle-stack roots, `GcAwareMutex` intentionally avoids
+      // entering `NativeSafe` and instead busy-spins with safepoint polls. The deadlock-free property
+      // is validated by the stop-the-world barrier below.
 
       // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
       let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
