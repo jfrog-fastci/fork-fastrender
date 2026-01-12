@@ -102,6 +102,78 @@ fn element_scroll_translates_descendants() {
 }
 
 #[test]
+fn overflow_clip_ignores_element_scroll_offsets() {
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.overflow_x = Overflow::Clip;
+  scroller_style.overflow_y = Overflow::Clip;
+  let scroller_style = Arc::new(scroller_style);
+
+  let mut red = ComputedStyle::default();
+  red.background_color = Rgba::rgb(255, 0, 0);
+  let red = Arc::new(red);
+  let mut green = ComputedStyle::default();
+  green.background_color = Rgba::rgb(0, 255, 0);
+  let green = Arc::new(green);
+
+  let red_block = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+    FragmentContent::Block { box_id: None },
+    vec![],
+    red,
+  );
+  let green_block = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 50.0, 50.0, 50.0),
+    FragmentContent::Block { box_id: None },
+    vec![],
+    green,
+  );
+
+  let scroller = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+    FragmentContent::Block { box_id: Some(1) },
+    vec![red_block, green_block],
+    scroller_style,
+  );
+  let root = FragmentNode::new(
+    Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+    FragmentContent::Block { box_id: None },
+    vec![scroller],
+  );
+  let mut tree = FragmentTree::with_viewport(root, Size::new(50.0, 50.0));
+
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(1usize, Point::new(0.0, 50.0))]),
+  );
+
+  // `overflow: clip` forbids scrolling entirely, so `apply_scroll_offsets` must not translate
+  // descendants even if a caller supplies a scroll offset.
+  fastrender::scroll::apply_scroll_offsets(&mut tree, &scroll_state);
+
+  let empty_scroll_state = ScrollState::default();
+  let pixmap = paint_tree_display_list_with_resources_scaled_offset(
+    &tree,
+    50,
+    50,
+    Rgba::WHITE,
+    FontContext::new(),
+    fastrender::image_loader::ImageCache::new(),
+    1.0,
+    Point::ZERO,
+    PaintParallelism::default(),
+    &empty_scroll_state,
+  )
+  .expect("paint fragment tree");
+
+  let pixel = pixmap.pixel(10, 10).expect("pixel in viewport");
+  assert_eq!(
+    (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+    (255, 0, 0, 255),
+    "overflow: clip should ignore element scroll offsets"
+  );
+}
+
+#[test]
 fn sticky_offsets_use_element_scroll_containers() {
   let mut sticky_style = ComputedStyle::default();
   sticky_style.position = Position::Sticky;
@@ -233,6 +305,167 @@ fn nested_scroller_offsets_flow_from_render_options() {
     (0, 255, 0),
     "prepared documents should retain element scroll offsets when painting"
   );
+}
+
+#[test]
+fn overflow_clip_ignores_scroll_offsets_from_render_options() {
+  let html = r#"
+    <style>
+      body { margin: 0; }
+      #scroller { width: 50px; height: 50px; overflow: clip; background: white; }
+      #first { height: 50px; background: rgb(255, 0, 0); }
+      #second { height: 50px; background: rgb(0, 255, 0); }
+    </style>
+    <div id="scroller">
+      <div id="first"></div>
+      <div id="second"></div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(50, 50);
+  let prepared = renderer
+    .prepare_html(html, options.clone())
+    .expect("prepare html");
+  let scroller_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+
+  let baseline = renderer
+    .render_html_with_options(html, options.clone())
+    .expect("baseline render");
+  let baseline_pixel = baseline.pixel(5, 5).expect("baseline pixel");
+  assert_eq!(
+    (
+      baseline_pixel.red(),
+      baseline_pixel.green(),
+      baseline_pixel.blue(),
+      baseline_pixel.alpha()
+    ),
+    (255, 0, 0, 255),
+    "baseline should show the first block"
+  );
+
+  let scrolls = HashMap::from([(scroller_id, Point::new(0.0, 50.0))]);
+  let scrolled = renderer
+    .render_html_with_options(html, options.with_element_scroll_offsets(scrolls))
+    .expect("scrolled render");
+  let scrolled_pixel = scrolled.pixel(5, 5).expect("scrolled pixel");
+  assert_eq!(
+    (
+      scrolled_pixel.red(),
+      scrolled_pixel.green(),
+      scrolled_pixel.blue(),
+      scrolled_pixel.alpha()
+    ),
+    (255, 0, 0, 255),
+    "overflow: clip forbids scrolling; element scroll offsets should be ignored"
+  );
+}
+
+#[test]
+fn overflow_clip_ignores_scroll_offsets_for_positioned_descendants_backend_parity() {
+  let html = r#"
+    <style>
+      body { margin: 0; }
+      #scroller { position: relative; width: 50px; height: 50px; overflow: clip; background: rgb(255, 0, 0); }
+      #abs { position: absolute; top: 50px; left: 0; width: 50px; height: 50px; background: rgb(0, 255, 0); }
+    </style>
+    <div id="scroller">
+      <div id="abs"></div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(50, 50);
+  let prepared = renderer
+    .prepare_html(html, options.clone())
+    .expect("prepare html");
+  let scroller_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(scroller_id, Point::new(0.0, 50.0))]),
+  );
+
+  for backend in [PaintBackend::Legacy, PaintBackend::DisplayList] {
+    let pixmap = paint_tree_with_resources_scaled_offset_backend(
+      prepared.fragment_tree(),
+      50,
+      50,
+      Rgba::WHITE,
+      FontContext::new(),
+      fastrender::image_loader::ImageCache::new(),
+      1.0,
+      Point::ZERO,
+      PaintParallelism::default(),
+      &scroll_state,
+      backend,
+    )
+    .expect("paint");
+    let pixel = pixmap.pixel(5, 5).expect("pixel in viewport");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255),
+      "overflow: clip forbids scrolling; backend {:?} should ignore element scroll offsets",
+      backend
+    );
+  }
+}
+
+#[test]
+fn overflow_y_clip_ignores_vertical_element_scroll_offsets() {
+  let html = r#"
+    <style>
+      body { margin: 0; }
+      #scroller { width: 50px; height: 50px; overflow-x: visible; overflow-y: clip; background: white; }
+      #first { height: 50px; background: rgb(255, 0, 0); }
+      #second { height: 50px; background: rgb(0, 255, 0); }
+    </style>
+    <div id="scroller">
+      <div id="first"></div>
+      <div id="second"></div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(50, 50);
+  let prepared = renderer
+    .prepare_html(html, options.clone())
+    .expect("prepare html");
+  let scroller_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+
+  // `overflow-y: clip` forbids vertical scrolling; when paired with `overflow-x: visible` the clip
+  // value is preserved at computed value time (see `normalize_overflow_axes`).
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(scroller_id, Point::new(0.0, 50.0))]),
+  );
+
+  for backend in [PaintBackend::Legacy, PaintBackend::DisplayList] {
+    let pixmap = paint_tree_with_resources_scaled_offset_backend(
+      prepared.fragment_tree(),
+      50,
+      50,
+      Rgba::WHITE,
+      FontContext::new(),
+      fastrender::image_loader::ImageCache::new(),
+      1.0,
+      Point::ZERO,
+      PaintParallelism::default(),
+      &scroll_state,
+      backend,
+    )
+    .expect("paint");
+    let pixel = pixmap.pixel(5, 5).expect("pixel in viewport");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255),
+      "overflow-y: clip should ignore vertical element scroll offsets (backend {:?})",
+      backend
+    );
+  }
 }
 
 #[test]

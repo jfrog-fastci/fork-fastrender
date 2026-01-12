@@ -1084,9 +1084,24 @@ fn clip_chain_link_for_fragment(
 
 #[inline]
 fn element_scroll_offset(fragment: &FragmentNode, scroll_state: Option<&ScrollState>) -> Point {
-  scroll_state
-    .and_then(|state| fragment.box_id().map(|id| state.element_offset(id)))
-    .unwrap_or(Point::ZERO)
+  let Some(scroll_state) = scroll_state else {
+    return Point::ZERO;
+  };
+  let Some(style) = fragment.style.as_deref() else {
+    return Point::ZERO;
+  };
+
+  let mut offset = fragment
+    .box_id()
+    .map(|id| scroll_state.element_offset(id))
+    .unwrap_or(Point::ZERO);
+  if !matches!(style.overflow_x, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+    offset.x = 0.0;
+  }
+  if !matches!(style.overflow_y, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+    offset.y = 0.0;
+  }
+  offset
 }
 
 /// Builds a stacking context tree from a fragment tree

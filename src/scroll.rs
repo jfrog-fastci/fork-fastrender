@@ -1288,12 +1288,16 @@ fn apply_element_scroll_offsets(
   cumulative_translation: Point,
   has_fixed_cb_ancestor: bool,
 ) {
-  let style = node.style.as_deref();
-  let establishes_fixed_cb = style.is_some_and(|style| style.establishes_fixed_containing_block());
-
-  let is_viewport_fixed = style.is_some_and(|style| {
-    matches!(style.position, crate::style::position::Position::Fixed) && !has_fixed_cb_ancestor
-  });
+  let (establishes_fixed_cb, is_viewport_fixed) = node
+    .style
+    .as_deref()
+    .map(|style| {
+      (
+        style.establishes_fixed_containing_block(),
+        matches!(style.position, Position::Fixed) && !has_fixed_cb_ancestor,
+      )
+    })
+    .unwrap_or((false, false));
   let (cumulative_translation, has_fixed_cb_ancestor) = if is_viewport_fixed {
     if cumulative_translation != Point::ZERO {
       node.translate_root_in_place(Point::new(
@@ -1306,9 +1310,26 @@ fn apply_element_scroll_offsets(
     (cumulative_translation, has_fixed_cb_ancestor)
   };
 
+  // Only apply element scroll offsets for real scroll containers.
+  //
+  // CSS Overflow 3:
+  // - `overflow: hidden|scroll|auto` are scroll containers (hidden allows programmatic scrolling).
+  // - `overflow: visible|clip` are not scroll containers, and `clip` forbids scrolling entirely.
+  //
+  // `ScrollState::elements` is a generic (id -> offset) map that callers can populate arbitrarily;
+  // enforce the spec rule here so non-scrollable boxes cannot be scrolled by accident.
   let offset = fragment_box_id(node)
-    .and_then(|id| scroll.elements.get(&id))
-    .copied()
+    .and_then(|id| {
+      let style = node.style.as_deref()?;
+      let mut offset = scroll.elements.get(&id).copied().unwrap_or(Point::ZERO);
+      if !matches!(style.overflow_x, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+        offset.x = 0.0;
+      }
+      if !matches!(style.overflow_y, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+        offset.y = 0.0;
+      }
+      (offset != Point::ZERO).then_some(offset)
+    })
     .unwrap_or(Point::ZERO);
   let delta = Point::new(-offset.x, -offset.y);
   let mut child_cumulative_translation = cumulative_translation;

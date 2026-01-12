@@ -1074,10 +1074,26 @@ impl Painter {
   }
 
   fn element_scroll_offset(&self, fragment: &FragmentNode) -> Point {
-    fragment
+    let Some(style) = fragment.style.as_deref() else {
+      return Point::ZERO;
+    };
+
+    // Element scroll offsets apply only to scroll containers.
+    //
+    // CSS Overflow 3: `overflow: clip` forbids scrolling entirely (not a scroll container), while
+    // `overflow: hidden|scroll|auto` are scroll containers (with `hidden` allowing programmatic
+    // scrolling).
+    let mut offset = fragment
       .box_id()
       .and_then(|id| self.scroll_state.elements.get(&id).copied())
-      .unwrap_or(Point::ZERO)
+      .unwrap_or(Point::ZERO);
+    if !matches!(style.overflow_x, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+      offset.x = 0.0;
+    }
+    if !matches!(style.overflow_y, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+      offset.y = 0.0;
+    }
+    offset
   }
 
   fn filter_quality_for_image(style: Option<&ComputedStyle>) -> FilterQuality {

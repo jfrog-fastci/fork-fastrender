@@ -1022,10 +1022,39 @@ impl DisplayListBuilder {
   }
 
   fn element_scroll_offset(&self, fragment: &FragmentNode) -> Point {
-    fragment
+    let Some(style) = fragment.style.as_deref() else {
+      return Point::ZERO;
+    };
+
+    // Element scroll offsets apply only to scroll containers.
+    //
+    // CSS Overflow 3 defines `overflow: clip` as non-scrollable (scrolling is forbidden entirely),
+    // and `overflow: visible` as non-scrollable. Treat `hidden|scroll|auto` as scroll containers so
+    // programmatic scrolling of `overflow: hidden` works, while `overflow: clip` cannot be scrolled
+    // even if a caller provides an entry in `ScrollState::elements`.
+    let mut offset = fragment
       .box_id()
       .and_then(|id| self.scroll_state.elements.get(&id).copied())
-      .unwrap_or(Point::ZERO)
+      .unwrap_or(Point::ZERO);
+
+    if !matches!(
+      style.overflow_x,
+      crate::style::types::Overflow::Hidden
+        | crate::style::types::Overflow::Scroll
+        | crate::style::types::Overflow::Auto
+    ) {
+      offset.x = 0.0;
+    }
+    if !matches!(
+      style.overflow_y,
+      crate::style::types::Overflow::Hidden
+        | crate::style::types::Overflow::Scroll
+        | crate::style::types::Overflow::Auto
+    ) {
+      offset.y = 0.0;
+    }
+
+    offset
   }
 
   fn snap_form_control_caret_rect(&self, rect: Rect) -> Rect {

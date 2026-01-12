@@ -5273,9 +5273,22 @@ fn apply_sticky_offsets_with_context(
         (padding_rect, content_rect)
       });
 
+  // Only apply element scroll offsets for scroll containers.
+  //
+  // CSS Overflow 3: `overflow: clip` forbids scrolling entirely (not a scroll container).
   let self_scroll = fragment
     .box_id()
-    .and_then(|id| scroll_state.elements.get(&id).copied())
+    .and_then(|id| {
+      let style = fragment.style.as_deref()?;
+      let mut offset = scroll_state.elements.get(&id).copied().unwrap_or(Point::ZERO);
+      if !overflow_establishes_sticky_scrollport(style.overflow_x) {
+        offset.x = 0.0;
+      }
+      if !overflow_establishes_sticky_scrollport(style.overflow_y) {
+        offset.y = 0.0;
+      }
+      Some(offset)
+    })
     .unwrap_or(Point::ZERO);
 
   let mut child_context = StickyTraversalContext {
