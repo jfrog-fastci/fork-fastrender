@@ -22,8 +22,8 @@ use std::time::Duration;
 use vm_js::{
   ExecutionContext, Heap, HostDefined, ImportMetaProperty, Job, JobCallback, ModuleGraph, ModuleId,
   ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseHandle, PromiseRejectionOperation,
-  PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks, VmJobContext,
+  PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, StackFrame,
+  Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
@@ -104,6 +104,209 @@ fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
   match scope.alloc_string(message) {
     Ok(s) => VmError::Throw(Value::String(s)),
     Err(_) => VmError::Throw(Value::Undefined),
+  }
+}
+
+fn resolve_error_event_location(
+  filename_hint: Option<&str>,
+  first_frame: Option<&StackFrame>,
+) -> (String, u32, u32) {
+  if let Some(frame) = first_frame {
+    let from_stack = frame.source.as_ref();
+    // vm-js uses synthetic `<inline>` names for unnamed scripts; prefer a real document/script URL
+    // when available so `window.onerror` gets a useful filename.
+    let filename = if from_stack.starts_with('<') {
+      filename_hint.unwrap_or(from_stack)
+    } else {
+      from_stack
+    };
+    (filename.to_string(), frame.line, frame.col)
+  } else {
+    (filename_hint.unwrap_or("").to_string(), 0, 0)
+  }
+}
+
+fn dispatch_window_error_event(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_obj: vm_js::GcObject,
+  message: &str,
+  filename: &str,
+  lineno: u32,
+  colno: u32,
+  error_value: Option<Value>,
+) -> Result<bool, VmError> {
+  // Root `global_obj` while allocating property keys: `alloc_key` can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(global_obj))?;
+
+  let type_s = scope.alloc_string("error")?;
+  scope.push_root(Value::String(type_s))?;
+
+  // Build the init dict.
+  let init_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(init_obj))?;
+
+  let cancelable_key = alloc_key(&mut scope, "cancelable")?;
+  scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
+
+  // ErrorEventInit:
+  let message_s = scope.alloc_string(message)?;
+  scope.push_root(Value::String(message_s))?;
+  let message_key = alloc_key(&mut scope, "message")?;
+  scope.define_property(init_obj, message_key, data_desc(Value::String(message_s)))?;
+
+  let filename_s = scope.alloc_string(filename)?;
+  scope.push_root(Value::String(filename_s))?;
+  let filename_key = alloc_key(&mut scope, "filename")?;
+  scope.define_property(init_obj, filename_key, data_desc(Value::String(filename_s)))?;
+
+  let lineno_key = alloc_key(&mut scope, "lineno")?;
+  scope.define_property(
+    init_obj,
+    lineno_key,
+    data_desc(Value::Number(lineno as f64)),
+  )?;
+
+  let colno_key = alloc_key(&mut scope, "colno")?;
+  scope.define_property(
+    init_obj,
+    colno_key,
+    data_desc(Value::Number(colno as f64)),
+  )?;
+
+  let error_key = alloc_key(&mut scope, "error")?;
+  let error_value = error_value.unwrap_or(Value::Null);
+  scope.push_root(error_value)?;
+  scope.define_property(init_obj, error_key, data_desc(error_value))?;
+
+  let error_event_ctor_key = alloc_key(&mut scope, "ErrorEvent")?;
+  let error_event_ctor = vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, error_event_ctor_key)?;
+  scope.push_root(error_event_ctor)?;
+
+  let (event_value, needs_payload_define) = if scope
+    .heap()
+    .is_constructor(error_event_ctor)
+    .unwrap_or(false)
+  {
+    (
+      vm.construct_with_host_and_hooks(
+        vm_host,
+        &mut scope,
+        hooks,
+        error_event_ctor,
+        &[Value::String(type_s), Value::Object(init_obj)],
+        error_event_ctor,
+      )?,
+      false,
+    )
+  } else {
+    let event_ctor_key = alloc_key(&mut scope, "Event")?;
+    let event_ctor = vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, event_ctor_key)?;
+    scope.push_root(event_ctor)?;
+    (
+      vm.construct_with_host_and_hooks(
+        vm_host,
+        &mut scope,
+        hooks,
+        event_ctor,
+        &[Value::String(type_s), Value::Object(init_obj)],
+        event_ctor,
+      )?,
+      true,
+    )
+  };
+
+  let Value::Object(event_obj) = event_value else {
+    return Err(VmError::Unimplemented(
+      "ErrorEvent/Event constructor returned non-object",
+    ));
+  };
+  scope.push_root(Value::Object(event_obj))?;
+
+  if needs_payload_define {
+    scope.define_property(event_obj, message_key, read_only_data_desc(Value::String(message_s)))?;
+    scope.define_property(
+      event_obj,
+      filename_key,
+      read_only_data_desc(Value::String(filename_s)),
+    )?;
+    scope.define_property(
+      event_obj,
+      lineno_key,
+      read_only_data_desc(Value::Number(lineno as f64)),
+    )?;
+    scope.define_property(
+      event_obj,
+      colno_key,
+      read_only_data_desc(Value::Number(colno as f64)),
+    )?;
+    scope.define_property(event_obj, error_key, read_only_data_desc(error_value))?;
+  }
+
+  let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
+  let dispatch = vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, dispatch_key)?;
+  let dispatch_result = vm.call_with_host_and_hooks(
+    vm_host,
+    &mut scope,
+    hooks,
+    dispatch,
+    Value::Object(global_obj),
+    &[Value::Object(event_obj)],
+  )?;
+
+  Ok(matches!(dispatch_result, Value::Bool(true)))
+}
+
+#[derive(Debug)]
+struct UncaughtErrorEventTaskPayload {
+  message: String,
+  filename: String,
+  lineno: u32,
+  colno: u32,
+  error_root: Option<RootId>,
+  host_error: String,
+}
+
+fn vm_error_to_uncaught_error_event_task_payload(
+  vm: &mut Vm,
+  heap: &mut Heap,
+  err: VmError,
+) -> UncaughtErrorEventTaskPayload {
+  // Root the thrown value so it survives GC until the queued error-event task runs.
+  let error_root: Option<RootId> = err
+    .thrown_value()
+    .and_then(|value| heap.add_root(value).ok());
+
+  let first_frame = err
+    .thrown_stack()
+    .and_then(|stack| stack.first())
+    .cloned();
+
+  let (message, stack) = vm_error_format::vm_error_to_message_and_stack(heap, err);
+
+  let mut host_error = message.clone();
+  if let Some(stack) = stack.as_ref() {
+    host_error.push('\n');
+    host_error.push_str(stack);
+  }
+
+  let filename_hint = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .map(|data| data.document_url().to_string())
+    .unwrap_or_default();
+  let hint = (!filename_hint.is_empty()).then_some(filename_hint.as_str());
+  let (filename, lineno, colno) = resolve_error_event_location(hint, first_frame.as_ref());
+
+  UncaughtErrorEventTaskPayload {
+    message,
+    filename,
+    lineno,
+    colno,
+    error_root,
+    host_error,
   }
 }
 
@@ -1305,9 +1508,18 @@ fn promise_rejection_microtask_checkpoint_hook<Host: WindowRealmHost + 'static>(
 
 fn queue_uncaught_error_event_task<Host: WindowRealmHost + 'static>(
   event_loop: &mut EventLoop<Host>,
-  message: String,
+  payload: UncaughtErrorEventTaskPayload,
 ) -> crate::error::Result<()> {
   event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+    let UncaughtErrorEventTaskPayload {
+      message,
+      filename,
+      lineno,
+      colno,
+      error_root,
+      mut host_error,
+    } = payload;
+
     let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
     let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
     hooks.set_event_loop(event_loop);
@@ -1316,98 +1528,51 @@ fn queue_uncaught_error_event_task<Host: WindowRealmHost + 'static>(
     let budget = window_realm.vm_budget_now();
     let (vm, heap) = window_realm.vm_and_heap_mut();
 
-    // Best-effort: errors while reporting an error should not recursively trigger more reporting.
-    // Still surface failures as event-loop errors so diagnostics/tests can observe regressions.
-    let result = (|| -> Result<(), VmError> {
+    // Best-effort: errors while reporting an error should not prevent the original exception from
+    // being surfaced. If dispatch fails, include the dispatch failure in the host-side error
+    // string so regressions are visible.
+    let dispatch_result: std::result::Result<bool, VmError> = (|| {
       let mut vm = vm.push_budget(budget);
       vm.tick()?;
 
+      let error_value = error_root.and_then(|root| heap.get_root(root));
       let mut scope = heap.scope();
-      scope.push_root(Value::Object(global_obj))?;
-
-      let message_s = scope.alloc_string(&message)?;
-      scope.push_root(Value::String(message_s))?;
-
-      // `window.addEventListener("error", ...)` listeners should observe uncaught exceptions, and
-      // `window.onerror` (EventHandler) should be invoked with the standard signature.
-      //
-      // Dispatch an `ErrorEvent("error", { message, cancelable: true })` so the event is both
-      // dispatchable (`dispatchEvent` expects branded Event objects) and carries a message payload.
-      let event_type_s = scope.alloc_string("error")?;
-      scope.push_root(Value::String(event_type_s))?;
-
-      let init_obj = scope.alloc_object()?;
-      scope.push_root(Value::Object(init_obj))?;
-      let cancelable_key = alloc_key(&mut scope, "cancelable")?;
-      scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
-      let message_key = alloc_key(&mut scope, "message")?;
-      scope.define_property(init_obj, message_key, data_desc(Value::String(message_s)))?;
-
-      let error_event_ctor_key = alloc_key(&mut scope, "ErrorEvent")?;
-      let error_event_ctor = vm.get_with_host_and_hooks(
-        vm_host,
+      dispatch_window_error_event(
+        &mut *vm,
         &mut scope,
+        vm_host,
         &mut hooks,
         global_obj,
-        error_event_ctor_key,
-      )?;
-      scope.push_root(error_event_ctor)?;
-      let event_value = if scope
-        .heap()
-        .is_constructor(error_event_ctor)
-        .unwrap_or(false)
-      {
-        vm.construct_with_host_and_hooks(
-          vm_host,
-          &mut scope,
-          &mut hooks,
-          error_event_ctor,
-          &[Value::String(event_type_s), Value::Object(init_obj)],
-          error_event_ctor,
-        )?
-      } else {
-        // Fall back to a plain `Event` object if the realm does not expose an `ErrorEvent`
-        // constructor.
-        let event_ctor_key = alloc_key(&mut scope, "Event")?;
-        let event_ctor =
-          vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, event_ctor_key)?;
-        scope.push_root(event_ctor)?;
-        vm.construct_with_host_and_hooks(
-          vm_host,
-          &mut scope,
-          &mut hooks,
-          event_ctor,
-          &[Value::String(event_type_s), Value::Object(init_obj)],
-          event_ctor,
-        )?
-      };
-      let Value::Object(event_obj) = event_value else {
-        return Ok(());
-      };
-      scope.push_root(Value::Object(event_obj))?;
-
-      let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
-      let dispatch = vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, dispatch_key)?;
-      vm.call_with_host_and_hooks(
-        vm_host,
-        &mut scope,
-        &mut hooks,
-        dispatch,
-        Value::Object(global_obj),
-        &[Value::Object(event_obj)],
-      )?;
-
-      Ok(())
+        &message,
+        &filename,
+        lineno,
+        colno,
+        error_value,
+      )
     })();
 
     let finish_err = hooks.finish(heap);
+    if let Some(root) = error_root {
+      heap.remove_root(root);
+    }
     if let Some(err) = finish_err {
       return Err(err);
     }
-    if let Err(err) = result {
-      return Err(vm_error_to_event_loop_error(heap, err));
+
+    let not_canceled = match dispatch_result {
+      Ok(not_canceled) => not_canceled,
+      Err(err) => {
+        host_error.push_str("\n\nfailed to dispatch window error event: ");
+        host_error.push_str(&err.to_string());
+        true
+      }
+    };
+
+    if not_canceled {
+      Err(crate::error::Error::Other(host_error))
+    } else {
+      Ok(())
     }
-    Ok(())
   })?;
 
   Ok(())
@@ -1513,16 +1678,19 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
         )
         .map(|_| ())
       });
-      let mut onerror_message: Option<String> = None;
+      let mut callback_threw = false;
+      let mut uncaught_error_payload: Option<UncaughtErrorEventTaskPayload> = None;
       let result: crate::error::Result<()> = match call_result {
         Ok(()) => Ok(()),
         Err(err) => {
-          let is_js_exception = vm_error_format::vm_error_is_js_exception(&err);
-          let err = vm_error_to_event_loop_error(heap, err);
-          if is_js_exception {
-            onerror_message = Some(err.to_string());
+          callback_threw = true;
+          if vm_error_format::vm_error_is_js_exception(&err) {
+            uncaught_error_payload =
+              Some(vm_error_to_uncaught_error_event_task_payload(&mut *vm, heap, err));
+            Ok(())
+          } else {
+            Err(vm_error_to_event_loop_error(heap, err))
           }
-          Err(err)
         }
       };
 
@@ -1543,13 +1711,24 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
 
       // If the callback succeeded, surface any failure to schedule pending dataset mutation observer
       // delivery. If the callback already failed, preserve the original error.
-      let result = match (result, drain_result) {
-        (Ok(()), Err(err)) => Err(err),
-        (other, _) => other,
+      let mut result = if callback_threw {
+        result
+      } else {
+        match (result, drain_result) {
+          (Ok(()), Err(err)) => Err(err),
+          (other, _) => other,
+        }
       };
 
-      if let Some(message) = onerror_message {
-        let _ = queue_uncaught_error_event_task::<Host>(event_loop, message);
+      if let Some(payload) = uncaught_error_payload {
+        let host_error = payload.host_error.clone();
+        let error_root = payload.error_root;
+        if queue_uncaught_error_event_task::<Host>(event_loop, payload).is_err() {
+          if let Some(root) = error_root {
+            heap.remove_root(root);
+          }
+          result = Err(crate::error::Error::Other(host_error));
+        }
       }
       let finish_err = hooks.finish(&mut *heap);
 
@@ -1687,16 +1866,19 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
         .map(|_| ())
       });
 
-      let mut onerror_message: Option<String> = None;
+      let mut callback_threw = false;
+      let mut uncaught_error_payload: Option<UncaughtErrorEventTaskPayload> = None;
       let result: crate::error::Result<()> = match call_result {
         Ok(()) => Ok(()),
         Err(err) => {
-          let is_js_exception = vm_error_format::vm_error_is_js_exception(&err);
-          let err = vm_error_to_event_loop_error(heap, err);
-          if is_js_exception {
-            onerror_message = Some(err.to_string());
+          callback_threw = true;
+          if vm_error_format::vm_error_is_js_exception(&err) {
+            uncaught_error_payload =
+              Some(vm_error_to_uncaught_error_event_task_payload(&mut *vm, heap, err));
+            Ok(())
+          } else {
+            Err(vm_error_to_event_loop_error(heap, err))
           }
-          Err(err)
         }
       };
 
@@ -1717,32 +1899,40 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
 
       // If the callback succeeded, surface any failure to schedule pending dataset mutation observer
       // delivery. If the callback already failed, preserve the original error.
-      let result = match (result, drain_result) {
-        (Ok(()), Err(err)) => Err(err),
-        (other, _) => other,
+      let mut result = if callback_threw {
+        result
+      } else {
+        match (result, drain_result) {
+          (Ok(()), Err(err)) => Err(err),
+          (other, _) => other,
+        }
       };
 
-      if let Some(message) = onerror_message {
-        let _ = queue_uncaught_error_event_task::<Host>(event_loop, message);
+      if let Some(payload) = uncaught_error_payload {
+        let host_error = payload.host_error.clone();
+        let error_root = payload.error_root;
+        if queue_uncaught_error_event_task::<Host>(event_loop, payload).is_err() {
+          if let Some(root) = error_root {
+            heap.remove_root(root);
+          }
+          result = Err(crate::error::Error::Other(host_error));
+        }
       }
       let finish_err = hooks.finish(&mut *heap);
 
-      if let Some(err) = finish_err {
-        // On error, cancel the interval and drop JS references to avoid repeated errors/leaks.
+      if callback_threw || finish_err.is_some() || result.is_err() {
+        // On error (or uncaught exception), cancel the interval and drop JS references to avoid
+        // repeated errors/leaks.
         event_loop.clear_interval(id);
         {
           let mut scope = heap.scope();
           let _ = clear_registry_entry(&mut scope, registry, id);
         }
+      }
+      if let Some(err) = finish_err {
         return Err(err);
       }
       if let Err(err) = result {
-        // On error, cancel the interval and drop JS references to avoid repeated errors/leaks.
-        event_loop.clear_interval(id);
-        {
-          let mut scope = heap.scope();
-          let _ = clear_registry_entry(&mut scope, registry, id);
-        }
         return Err(err);
       }
 
@@ -1830,6 +2020,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
       let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
+      let _global_obj = window_realm.global_object();
       let (vm, heap) = window_realm.vm_and_heap_mut();
       let callback = heap.get_root(root).unwrap_or(Value::Undefined);
 
@@ -1853,27 +2044,31 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
         call_result
       });
 
-      let mut onerror_message: Option<String> = None;
+      let mut callback_threw = false;
+      let mut uncaught_error_payload: Option<UncaughtErrorEventTaskPayload> = None;
       let result: crate::error::Result<()> = match call_result {
         Ok(()) => Ok(()),
         Err(err) => {
-          let is_js_exception = vm_error_format::vm_error_is_js_exception(&err);
-          let err = vm_error_to_event_loop_error(heap, err);
-          if is_js_exception {
-            onerror_message = Some(err.to_string());
+          callback_threw = true;
+          if vm_error_format::vm_error_is_js_exception(&err) {
+            uncaught_error_payload =
+              Some(vm_error_to_uncaught_error_event_task_payload(&mut *vm, heap, err));
+            Ok(())
+          } else {
+            Err(vm_error_to_event_loop_error(heap, err))
           }
-          Err(err)
         }
       };
-
-      if let Some(message) = onerror_message {
-        let _ = queue_uncaught_error_event_task::<Host>(event_loop, message);
-      }
 
       let drain_result: crate::error::Result<()> = {
         let drain_result = {
           let mut scope = heap.scope();
-          drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+          drain_pending_dataset_mutation_observer_microtasks(
+            &mut vm,
+            &mut scope,
+            vm_host,
+            &mut hooks,
+          )
         };
         drain_result
           .map_err(|err| vm_error_to_event_loop_error(heap, err))
@@ -1882,10 +2077,25 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
 
       // If the callback succeeded, surface any failure to schedule pending dataset mutation observer
       // delivery. If the callback already failed, preserve the original error.
-      let result = match (result, drain_result) {
-        (Ok(()), Err(err)) => Err(err),
-        (other, _) => other,
+      let mut result = if callback_threw {
+        result
+      } else {
+        match (result, drain_result) {
+          (Ok(()), Err(err)) => Err(err),
+          (other, _) => other,
+        }
       };
+
+      if let Some(payload) = uncaught_error_payload {
+        let host_error = payload.host_error.clone();
+        let error_root = payload.error_root;
+        if queue_uncaught_error_event_task::<Host>(event_loop, payload).is_err() {
+          if let Some(root) = error_root {
+            heap.remove_root(root);
+          }
+          result = Err(crate::error::Error::Other(host_error));
+        }
+      }
 
       let finish_err = hooks.finish(&mut *heap);
       heap.remove_root(root);
@@ -4620,6 +4830,180 @@ mod tests {
       get_prop(&mut scope, global, "__microtask_this_is_undefined")
     };
     assert_eq!(flag, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn uncaught_timeout_exception_dispatches_error_event_and_onerror_can_cancel() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (_, window_realm) = host.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+
+      let script = r#"
+        globalThis.__error_is_instance = false;
+        globalThis.__error_message = "";
+        globalThis.__onerror_called = false;
+        globalThis.__onerror_message = "";
+
+        addEventListener("error", (e) => {
+          globalThis.__error_is_instance = (e instanceof ErrorEvent);
+          globalThis.__error_message = String(e && e.message);
+        });
+
+        globalThis.onerror = function (message) {
+          globalThis.__onerror_called = true;
+          globalThis.__onerror_message = String(message);
+          return true; // cancel default reporting
+        };
+
+        setTimeout(() => { throw new Error("boom"); }, 0);
+      "#;
+
+      let result = window_realm.exec_script_with_hooks(&mut hooks, script);
+      if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+    })?;
+
+    let mut errors: Vec<String> = Vec::new();
+    assert_eq!(
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |err| {
+        errors.push(err.to_string());
+      })?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(
+      errors.is_empty(),
+      "expected onerror cancellation to suppress host error reporting, got errors={errors:?}"
+    );
+
+    let (error_is_instance, error_message, onerror_called, onerror_message) = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let error_is_instance = matches!(get_prop(&mut scope, global, "__error_is_instance"), Value::Bool(true));
+      let error_message = match get_prop(&mut scope, global, "__error_message") {
+        Value::String(s) => scope.heap().get_string(s).unwrap().to_utf8_lossy(),
+        _ => String::new(),
+      };
+      let onerror_called = matches!(get_prop(&mut scope, global, "__onerror_called"), Value::Bool(true));
+      let onerror_message = match get_prop(&mut scope, global, "__onerror_message") {
+        Value::String(s) => scope.heap().get_string(s).unwrap().to_utf8_lossy(),
+        _ => String::new(),
+      };
+      (error_is_instance, error_message, onerror_called, onerror_message)
+    };
+
+    assert!(error_is_instance, "expected `error` listener to see an ErrorEvent instance");
+    assert!(
+      error_message.contains("boom"),
+      "expected ErrorEvent.message to contain thrown message, got {error_message:?}"
+    );
+    assert!(onerror_called, "expected window.onerror to run");
+    assert!(
+      onerror_message.contains("boom"),
+      "expected onerror message arg to contain thrown message, got {onerror_message:?}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn uncaught_queue_microtask_exception_dispatches_error_event_and_onerror_can_cancel() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (_, window_realm) = host.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+
+      let script = r#"
+        globalThis.__micro_error_is_instance = false;
+        globalThis.__micro_error_message = "";
+        globalThis.__micro_onerror_called = false;
+
+        addEventListener("error", (e) => {
+          globalThis.__micro_error_is_instance = (e instanceof ErrorEvent);
+          globalThis.__micro_error_message = String(e && e.message);
+        });
+
+        globalThis.onerror = function () {
+          globalThis.__micro_onerror_called = true;
+          return true; // cancel default reporting
+        };
+
+        queueMicrotask(() => { throw new Error("microboom"); });
+      "#;
+
+      let result = window_realm.exec_script_with_hooks(&mut hooks, script);
+      if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+    })?;
+
+    let mut errors: Vec<String> = Vec::new();
+    assert_eq!(
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |err| {
+        errors.push(err.to_string());
+      })?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(
+      errors.is_empty(),
+      "expected onerror cancellation to suppress host error reporting, got errors={errors:?}"
+    );
+
+    let (error_is_instance, error_message, onerror_called) = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let error_is_instance = matches!(
+        get_prop(&mut scope, global, "__micro_error_is_instance"),
+        Value::Bool(true)
+      );
+      let error_message = match get_prop(&mut scope, global, "__micro_error_message") {
+        Value::String(s) => scope.heap().get_string(s).unwrap().to_utf8_lossy(),
+        _ => String::new(),
+      };
+      let onerror_called = matches!(
+        get_prop(&mut scope, global, "__micro_onerror_called"),
+        Value::Bool(true)
+      );
+      (error_is_instance, error_message, onerror_called)
+    };
+
+    assert!(error_is_instance, "expected `error` listener to see an ErrorEvent instance");
+    assert!(
+      error_message.contains("microboom"),
+      "expected ErrorEvent.message to contain thrown message, got {error_message:?}"
+    );
+    assert!(onerror_called, "expected window.onerror to run");
+
     Ok(())
   }
 
