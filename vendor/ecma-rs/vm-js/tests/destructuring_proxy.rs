@@ -54,6 +54,9 @@ fn object_destructuring_observes_proxy_get_trap() -> Result<(), VmError> {
       })
     "#,
   )?;
+  // Root values returned by `exec_script` across further `exec_script` calls; otherwise they may be
+  // collected and become invalid handles before we can push them into a stack-rooting `Scope`.
+  let get_trap_root = rt.heap_mut().add_root(get_trap)?;
   let target = rt.exec_script("({ a: 1 })")?;
 
   {
@@ -78,6 +81,8 @@ fn object_destructuring_observes_proxy_get_trap() -> Result<(), VmError> {
     define_global(&mut scope, global, "proxyObj", Value::Object(proxy))?;
   }
 
+  rt.heap_mut().remove_root(get_trap_root);
+
   let ok = rt.exec_script(r#"var {a} = proxyObj; a === 1 && getA === 1"#)?;
   assert_eq!(ok, Value::Bool(true));
   Ok(())
@@ -101,6 +106,9 @@ fn object_destructuring_rest_observes_proxy_traps() -> Result<(), VmError> {
       })
     "#,
   )?;
+  // Root values returned by `exec_script` across further `exec_script` calls; otherwise they may be
+  // collected and become invalid handles before we can push them into a stack-rooting `Scope`.
+  let get_trap_root = rt.heap_mut().add_root(get_trap)?;
   let own_keys_trap = rt.exec_script(
     r#"
       globalThis.ownKeysCount = 0;
@@ -110,6 +118,7 @@ fn object_destructuring_rest_observes_proxy_traps() -> Result<(), VmError> {
       })
     "#,
   )?;
+  let own_keys_trap_root = rt.heap_mut().add_root(own_keys_trap)?;
   let gopd_trap = rt.exec_script(
     r#"
       globalThis.gopdB = 0;
@@ -119,7 +128,9 @@ fn object_destructuring_rest_observes_proxy_traps() -> Result<(), VmError> {
       })
     "#,
   )?;
+  let gopd_trap_root = rt.heap_mut().add_root(gopd_trap)?;
   let target = rt.exec_script("({ a: 1, b: 2 })")?;
+  let target_root = rt.heap_mut().add_root(target)?;
 
   {
     let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
@@ -146,6 +157,14 @@ fn object_destructuring_rest_observes_proxy_traps() -> Result<(), VmError> {
 
     let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
     define_global(&mut scope, global, "proxyRestObj", Value::Object(proxy))?;
+  }
+
+  {
+    let heap = rt.heap_mut();
+    heap.remove_root(get_trap_root);
+    heap.remove_root(own_keys_trap_root);
+    heap.remove_root(gopd_trap_root);
+    heap.remove_root(target_root);
   }
 
   let ok = rt.exec_script(
@@ -205,4 +224,3 @@ fn object_destructuring_revoked_proxy_throws_type_error() -> Result<(), VmError>
   );
   Ok(())
 }
-
