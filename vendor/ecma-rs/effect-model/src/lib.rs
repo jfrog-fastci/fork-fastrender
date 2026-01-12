@@ -156,7 +156,7 @@ mod effect_set_serde {
   fn parse_token<E: serde::de::Error>(raw: &str) -> Result<EffectSet, E> {
     match normalize_token(raw).as_str() {
       "" | "0" | "EMPTY" | "NONE" => Ok(EffectSet::empty()),
-      "ALLOCATES" => Ok(EffectSet::ALLOCATES),
+      "ALLOCATES" | "ALLOC" => Ok(EffectSet::ALLOCATES),
       "MAY_THROW" | "MAYTHROW" => Ok(EffectSet::MAY_THROW),
       "IO" => Ok(EffectSet::IO),
       "NETWORK" => Ok(EffectSet::NETWORK),
@@ -766,5 +766,12 @@ mod tests {
 
     let template: PurityTemplate = serde_json::from_str(r#""readOnly""#).unwrap();
     assert_eq!(template, PurityTemplate::ReadOnly);
+  }
+
+  #[cfg(feature = "serde")]
+  #[test]
+  fn effect_set_deserialize_accepts_alloc_alias() {
+    let flags: EffectSet = serde_json::from_str(r#""alloc | mayThrow""#).unwrap();
+    assert_eq!(flags, EffectSet::ALLOCATES | EffectSet::MAY_THROW);
   }
 }
