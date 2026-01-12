@@ -364,6 +364,76 @@ fn import_meta_works_after_top_level_await() -> Result<(), VmError> {
 }
 
 #[test]
+fn export_default_await_initializes_default_binding() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = graph.add_module_with_specifier(
+    "m.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        export default await Promise.resolve(1);
+        export const ok = 2;
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  // Top-level await should suspend module evaluation (promise starts pending).
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(
+    heap.promise_state(eval_promise_obj)?,
+    PromiseState::Pending,
+    "top-level await should produce a pending evaluation promise"
+  );
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let eval_promise_value = scope
+    .heap()
+    .get_root(eval_promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(eval_promise_obj) = eval_promise_value else {
+    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+  };
+  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+  let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "default")?,
+    Value::Number(1.0)
+  );
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "ok")?,
+    Value::Number(2.0)
+  );
+
+  drop(scope);
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn dynamic_import_after_top_level_await_starts_and_resolves() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = TestHostHooks::new("https://example.invalid/m.js");

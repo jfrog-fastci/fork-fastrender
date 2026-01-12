@@ -7504,6 +7504,8 @@ enum AsyncFrame {
   ExprStmt,
   /// Finish a return statement after its value expression is evaluated.
   Return,
+  /// Finish an `export default <expr>` statement after the default expression is evaluated.
+  ExportDefaultExpr,
 
   /// Continue a `var`/`let`/`const` declaration after a declarator initializer completes.
   VarDecl {
@@ -8287,6 +8289,7 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     | Stmt::ClassDecl(_)
     | Stmt::Break(_)
     | Stmt::Continue(_) => false,
+    Stmt::ExportDefaultExpr(stmt) => expr_contains_await(&stmt.stx.expression),
     Stmt::Expr(expr_stmt) => expr_contains_await(&expr_stmt.stx.expr),
     Stmt::Return(ret) => ret.stx.value.as_ref().is_some_and(expr_contains_await),
     Stmt::Throw(throw_stmt) => expr_contains_await(&throw_stmt.stx.value),
@@ -8643,6 +8646,28 @@ fn async_eval_stmt_labelled(
       Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(Completion::normal(v))),
       Ok(AsyncEval::Suspend(mut suspend)) => {
         async_frames_push(&mut suspend.frames, AsyncFrame::ExprStmt)?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+      Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
+    },
+    Stmt::ExportDefaultExpr(stmt) => match async_eval_expr(evaluator, scope, &stmt.stx.expression) {
+      Ok(AsyncEval::Complete(v)) => {
+        let binding_name = "*default*";
+        if !scope
+          .heap()
+          .env_has_binding(evaluator.env.lexical_env, binding_name)?
+        {
+          return Err(VmError::InvariantViolation(
+            "export default expression missing *default* binding",
+          ));
+        }
+        scope
+          .heap_mut()
+          .env_initialize_binding(evaluator.env.lexical_env, binding_name, v)?;
+        Ok(AsyncEval::Complete(Completion::empty()))
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(&mut suspend.frames, AsyncFrame::ExportDefaultExpr)?;
         Ok(AsyncEval::Suspend(suspend))
       }
       Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
@@ -11859,6 +11884,32 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::ExportDefaultExpr => match state {
+        AsyncState::Expr(expr_res) => match expr_res {
+          Ok(v) => {
+            let binding_name = "*default*";
+            if !scope
+              .heap()
+              .env_has_binding(evaluator.env.lexical_env, binding_name)?
+            {
+              return Err(VmError::InvariantViolation(
+                "export default expression missing *default* binding",
+              ));
+            }
+            scope
+              .heap_mut()
+              .env_initialize_binding(evaluator.env.lexical_env, binding_name, v)?;
+            state = AsyncState::Completion(Completion::empty());
+          }
+          Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "export default expr frame received completion state",
+          ))
+        }
+      },
+
       AsyncFrame::VarDecl {
         decl,
         next_declarator_index,
@@ -13259,6 +13310,36 @@ pub(crate) fn run_module(
   result
 }
 
+fn module_tla_init_default_export_on_fulfilled(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(env) = scope.heap().get_function_closure_env(callee)? else {
+    return Err(VmError::InvariantViolation(
+      "module TLA default export initializer missing closure env",
+    ));
+  };
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(value)?;
+
+  let binding_name = "*default*";
+  if !scope.heap().env_has_binding(env, binding_name)? {
+    return Err(VmError::InvariantViolation(
+      "export default expression missing *default* binding",
+    ));
+  }
+  scope
+    .heap_mut()
+    .env_initialize_binding(env, binding_name, value)?;
+  Ok(Value::Undefined)
+}
+
 /// Result of executing a module statement list until a supported top-level `await` boundary.
 ///
 /// This is used to model a minimal subset of top-level await by executing a module in "chunks"
@@ -13274,11 +13355,13 @@ pub(crate) enum ModuleTlaStepResult {
 }
 
 /// Executes a module's statement list starting at `start_index`, stopping when it encounters a
-/// supported top-level `await <expr>;` expression statement.
+/// supported top-level `await` suspension point.
 ///
 /// Notes / limitations:
 /// - This is **not** a full implementation of `await` as an expression.
-/// - Only `await` used as an expression statement is treated as a suspension point.
+/// - Only the following forms are treated as suspension points:
+///   - `await <expr>;`
+///   - `export default await <expr>;`
 /// - Other uses of `await` (e.g. in variable initializers) remain unimplemented.
 pub(crate) fn run_module_until_await(
   vm: &mut Vm,
@@ -13352,6 +13435,72 @@ pub(crate) fn run_module_until_await(
                 host,
                 hooks,
                 awaited_value,
+              )?;
+              return Ok(ModuleTlaStepResult::Await {
+                promise,
+                resume_index: idx.saturating_add(1),
+              });
+            }
+          }
+        }
+
+        // Minimal top-level await support: suspend on `export default await <expr>;`.
+        if let Stmt::ExportDefaultExpr(export_default) = &*stmt.stx {
+          if let Expr::Unary(unary) = &*export_default.stx.expression.stx {
+            if unary.stx.operator == OperatorName::Await {
+              // Clean up the per-step completion root before suspending.
+              scope.heap_mut().remove_root(last_root);
+
+              // Evaluate the awaited expression (argument) and coerce it with `PromiseResolve`.
+              let awaited_value = evaluator.eval_expr(scope, &unary.stx.argument)?;
+              let intr = vm_frame
+                .intrinsics()
+                .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
+              let job_realm = vm_frame.current_realm();
+
+              let mut promise_scope = scope.reborrow();
+              promise_scope.push_root(awaited_value)?;
+              let awaited_promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
+                &mut *vm_frame,
+                &mut promise_scope,
+                host,
+                hooks,
+                awaited_value,
+              )?;
+              promise_scope.push_root(awaited_promise)?;
+
+              // Defer default export binding initialization until the awaited promise is fulfilled,
+              // but ensure it runs before the module body resumes.
+              let call_id = vm_frame.register_native_call(module_tla_init_default_export_on_fulfilled)?;
+              let name = promise_scope.alloc_string("")?;
+              let on_fulfilled = promise_scope.alloc_native_function_with_env(
+                call_id,
+                None,
+                name,
+                1,
+                Some(module_env),
+              )?;
+              promise_scope.push_root(Value::Object(on_fulfilled))?;
+              promise_scope
+                .heap_mut()
+                .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
+              promise_scope
+                .heap_mut()
+                .set_function_realm(on_fulfilled, global_object)?;
+              if let Some(realm) = job_realm {
+                promise_scope
+                  .heap_mut()
+                  .set_function_job_realm(on_fulfilled, realm)?;
+              }
+
+              let promise = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+                &mut *vm_frame,
+                &mut promise_scope,
+                host,
+                hooks,
+                awaited_promise,
+                Some(Value::Object(on_fulfilled)),
+                None,
               )?;
               return Ok(ModuleTlaStepResult::Await {
                 promise,
