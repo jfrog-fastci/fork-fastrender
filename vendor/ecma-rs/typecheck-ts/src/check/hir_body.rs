@@ -196,6 +196,13 @@ enum MemberKind {
   Setter,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemberAccessReceiver {
+  This,
+  Super,
+  Other,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ClassMemberContext {
   class_index: usize,
@@ -3610,6 +3617,11 @@ impl<'a> Checker<'a> {
         let start = full_range.end.saturating_sub(name_len);
         let prop_range = TextRange::new(start, full_range.end);
         let prim = self.store.primitive_ids();
+        let receiver_kind = match mem.stx.left.stx.as_ref() {
+          AstExpr::This(_) => MemberAccessReceiver::This,
+          AstExpr::Super(_) => MemberAccessReceiver::Super,
+          _ => MemberAccessReceiver::Other,
+        };
         let obj_ty = self.check_expr(&mem.stx.left);
         let chain_optional =
           mem.stx.optional_chaining || self.is_optional_chain_expr(&mem.stx.left);
@@ -3628,6 +3640,7 @@ impl<'a> Checker<'a> {
                 base_obj_ty,
                 &mem.stx.right,
                 prop_range,
+                receiver_kind,
                 true,
               );
               ty
@@ -3708,13 +3721,19 @@ impl<'a> Checker<'a> {
           TypeKind::StringLiteral(_) | TypeKind::NumberLiteral(_)
         );
 
+        let receiver_kind = match mem.stx.object.stx.as_ref() {
+          AstExpr::This(_) => MemberAccessReceiver::This,
+          AstExpr::Super(_) => MemberAccessReceiver::Super,
+          _ => MemberAccessReceiver::Other,
+        };
+
         let mut ty = if chain_optional && base_obj_ty == prim.never {
           prim.undefined
         } else if let Some(key) = literal_key {
           match self.member_type_opt(base_obj_ty, &key) {
             Some(ty) => {
               let key_range = loc_to_range(self.file, mem.stx.member.loc);
-              self.check_member_access_for_type(base_obj_ty, &key, key_range, false);
+              self.check_member_access_for_type(base_obj_ty, &key, key_range, receiver_kind, false);
               ty
             }
             None => {
@@ -3740,6 +3759,7 @@ impl<'a> Checker<'a> {
         } else {
           self.member_type_for_index_key(base_obj_ty, key_ty)
         };
+
         if self.relate.options.no_unchecked_indexed_access {
           ty = self.store.union(vec![ty, prim.undefined]);
         }
@@ -7752,16 +7772,19 @@ impl<'a> Checker<'a> {
 
   fn check_member_access_for_type(
     &mut self,
-    obj: TypeId,
+    receiver_ty: TypeId,
     prop: &str,
     span: TextRange,
+    receiver_kind: MemberAccessReceiver,
     hash_private_fallback: bool,
   ) {
     fn inner(
       checker: &mut Checker<'_>,
+      receiver_ty: TypeId,
       obj: TypeId,
       prop: &str,
       span: TextRange,
+      receiver_kind: MemberAccessReceiver,
       hash_private_fallback: bool,
       seen: &mut HashSet<TypeId>,
     ) -> bool {
@@ -7780,14 +7803,30 @@ impl<'a> Checker<'a> {
               _ => false,
             };
             if matches {
-              return checker.check_member_access(prop, &candidate.data, span, hash_private_fallback);
+              return checker.check_member_access(
+                receiver_ty,
+                receiver_kind,
+                prop,
+                &candidate.data,
+                span,
+                hash_private_fallback,
+              );
             }
           }
           false
         }
         TypeKind::Union(members) => {
           for member in members {
-            if inner(checker, member, prop, span, hash_private_fallback, seen) {
+            if inner(
+              checker,
+              receiver_ty,
+              member,
+              prop,
+              span,
+              receiver_kind,
+              hash_private_fallback,
+              seen,
+            ) {
               return true;
             }
           }
@@ -7796,7 +7835,16 @@ impl<'a> Checker<'a> {
         TypeKind::Intersection(members) => {
           for member in members {
             if checker.member_type_opt(member, prop).is_some()
-              && inner(checker, member, prop, span, hash_private_fallback, seen)
+              && inner(
+                checker,
+                receiver_ty,
+                member,
+                prop,
+                span,
+                receiver_kind,
+                hash_private_fallback,
+                seen,
+              )
             {
               return true;
             }
@@ -7808,7 +7856,16 @@ impl<'a> Checker<'a> {
     }
 
     let mut seen = HashSet::new();
-    let _ = inner(self, obj, prop, span, hash_private_fallback, &mut seen);
+    let _ = inner(
+      self,
+      receiver_ty,
+      receiver_ty,
+      prop,
+      span,
+      receiver_kind,
+      hash_private_fallback,
+      &mut seen,
+    );
   }
 
   fn is_subclass_of(&self, derived: DefId, base: DefId) -> bool {
@@ -7850,6 +7907,8 @@ impl<'a> Checker<'a> {
 
   fn check_member_access(
     &mut self,
+    receiver_ty: TypeId,
+    receiver_kind: MemberAccessReceiver,
     prop: &str,
     prop_data: &PropData,
     span: TextRange,
@@ -7895,7 +7954,15 @@ impl<'a> Checker<'a> {
     };
 
     let declaring = prop_data.declared_on;
-    let allowed = if is_private {
+    let declaring_is_value_def =
+      declaring.is_some_and(|decl| self.value_defs.values().any(|value_def| *value_def == decl));
+    let current_class = if declaring_is_value_def {
+      self.value_defs.get(&current_class).copied().unwrap_or(current_class)
+    } else {
+      current_class
+    };
+
+    let allowed_by_class = if is_private {
       declaring.is_none() || declaring == Some(current_class)
     } else {
       declaring.is_none()
@@ -7903,24 +7970,49 @@ impl<'a> Checker<'a> {
         || declaring.is_some_and(|decl| self.is_subclass_of(current_class, decl))
     };
 
-    if allowed {
-      return false;
+    if !allowed_by_class {
+      if is_private {
+        self.diagnostics.push(codes::PRIVATE_MEMBER_ACCESS.error(
+          format!("Property '{prop}' is private and only accessible within class."),
+          Span::new(self.file, span),
+        ));
+      } else {
+        self
+          .diagnostics
+          .push(codes::PROTECTED_MEMBER_ACCESS.error(
+            format!("Property '{prop}' is protected and only accessible within class and its subclasses."),
+            Span::new(self.file, span),
+          ));
+      }
+      return true;
     }
 
-    if is_private {
-      self.diagnostics.push(codes::PRIVATE_MEMBER_ACCESS.error(
-        format!("Property '{prop}' is private and only accessible within class."),
-        Span::new(self.file, span),
-      ));
-    } else {
+    // TypeScript further restricts protected member access: even in a derived
+    // class, a protected member declared in the base can only be accessed
+    // through an expression whose type is derived from the *current* class.
+    //
+    // Example (tsc TS2445):
+    //   class Base { protected x = 1; }
+    //   class Derived extends Base {
+    //     f(b: Base) { return b.x; } // error
+    //   }
+    //
+    // `super.prop` is always allowed once the class-chain check passes.
+    if is_protected
+      && declaring.is_some()
+      && matches!(receiver_kind, MemberAccessReceiver::Other)
+      && !self.receiver_is_derived_from_current_class(receiver_ty, current_class)
+    {
       self
         .diagnostics
         .push(codes::PROTECTED_MEMBER_ACCESS.error(
           format!("Property '{prop}' is protected and only accessible within class and its subclasses."),
           Span::new(self.file, span),
         ));
+      return true;
     }
-    true
+
+    false
   }
 
   fn type_has_prop(&self, ty: TypeId, prop: &str) -> bool {
@@ -7978,6 +8070,46 @@ impl<'a> Checker<'a> {
     }
 
     inner(self, ty, prop, &mut HashSet::new())
+  }
+
+  fn receiver_is_derived_from_current_class(&self, receiver_ty: TypeId, current: DefId) -> bool {
+    fn inner(
+      checker: &Checker<'_>,
+      ty: TypeId,
+      current: DefId,
+      seen: &mut HashSet<TypeId>,
+      depth: usize,
+    ) -> bool {
+      if depth > 64 {
+        return false;
+      }
+      let ty = checker.store.canon(ty);
+      if !seen.insert(ty) {
+        return false;
+      }
+      match checker.store.type_kind(ty) {
+        TypeKind::Any | TypeKind::Unknown | TypeKind::Never => true,
+        TypeKind::This => true,
+        TypeKind::TypeParam(param) => checker
+          .type_param_constraint(param)
+          .is_some_and(|constraint| inner(checker, constraint, current, seen, depth + 1)),
+        TypeKind::Ref { def, .. } => checker.is_subclass_of(def, current),
+        TypeKind::Union(members) => members
+          .iter()
+          .copied()
+          .all(|member| inner(checker, member, current, seen, depth + 1)),
+        TypeKind::Intersection(members) => members
+          .iter()
+          .copied()
+          .any(|member| inner(checker, member, current, seen, depth + 1)),
+        TypeKind::Null | TypeKind::Undefined => false,
+        TypeKind::Infer { constraint, .. } => constraint
+          .is_some_and(|constraint| inner(checker, constraint, current, seen, depth + 1)),
+        _ => false,
+      }
+    }
+
+    inner(self, receiver_ty, current, &mut HashSet::new(), 0)
   }
 
   fn member_type_for_index_key(&mut self, obj: TypeId, key_ty: TypeId) -> TypeId {
@@ -9916,7 +10048,13 @@ impl<'a> Checker<'a> {
           if !value_is_any {
             if let Some(ty) = self.member_type_opt(value, &direct.stx.key) {
               let key_range = loc_to_range(self.file, direct.loc);
-              self.check_member_access_for_type(value, &direct.stx.key, key_range, false);
+              self.check_member_access_for_type(
+                value,
+                &direct.stx.key,
+                key_range,
+                MemberAccessReceiver::Other,
+                false,
+              );
               prop_ty = ty;
             }
           }
@@ -9949,7 +10087,13 @@ impl<'a> Checker<'a> {
             if let Some(key) = literal_key {
               if let Some(ty) = self.member_type_opt(value, &key) {
                 let key_range = loc_to_range(self.file, expr.loc);
-                self.check_member_access_for_type(value, &key, key_range, false);
+                self.check_member_access_for_type(
+                  value,
+                  &key,
+                  key_range,
+                  MemberAccessReceiver::Other,
+                  false,
+                );
                 prop_ty = ty;
               }
             }
@@ -9983,7 +10127,13 @@ impl<'a> Checker<'a> {
           if !value_is_any {
             if let Some(ty) = self.member_type_opt(value, &direct.stx.key) {
               let key_range = loc_to_range(self.file, direct.loc);
-              self.check_member_access_for_type(value, &direct.stx.key, key_range, false);
+              self.check_member_access_for_type(
+                value,
+                &direct.stx.key,
+                key_range,
+                MemberAccessReceiver::Other,
+                false,
+              );
               prop_ty = ty;
             }
           }
@@ -10016,7 +10166,13 @@ impl<'a> Checker<'a> {
             if let Some(key) = literal_key {
               if let Some(ty) = self.member_type_opt(value, &key) {
                 let key_range = loc_to_range(self.file, expr.loc);
-                self.check_member_access_for_type(value, &key, key_range, false);
+                self.check_member_access_for_type(
+                  value,
+                  &key,
+                  key_range,
+                  MemberAccessReceiver::Other,
+                  false,
+                );
                 prop_ty = ty;
               }
             }

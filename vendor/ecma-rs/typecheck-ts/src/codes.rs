@@ -219,6 +219,19 @@ pub const POSSIBLY_UNDEFINED: Code = Code::new(
   &[],
 );
 
+/// TS2341: Property is private and only accessible within the declaring class.
+///
+/// - Primary span: the property name being accessed.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const PRIVATE_MEMBER_ACCESS: Code = Code::new(
+  "TS2341",
+  "private member access",
+  "property name within a member expression",
+  &["primary: property name"],
+  &[],
+);
+
 /// TS2345: Argument of type is not assignable to parameter of type.
 ///
 /// `typecheck-ts` reports the more specific TS2345 code for call/new argument
@@ -290,27 +303,15 @@ pub const PROPERTY_DOES_NOT_EXIST: Code = Code::new(
   &[],
 );
 
-/// TS2341: Property is private and only accessible within class.
+/// TS2445: Property is protected and only accessible within the declaring class
+/// and its subclasses.
 ///
-/// - Primary span: the property name within a member expression.
-/// - Labels: primary only.
-/// - Notes: none.
-pub const PRIVATE_MEMBER_ACCESS: Code = Code::new(
-  "TS2341",
-  "property is private and only accessible within class",
-  "property name within a member expression",
-  &["primary: property name"],
-  &[],
-);
-
-/// TS2445: Property is protected and only accessible within class and subclasses.
-///
-/// - Primary span: the property name within a member expression.
+/// - Primary span: the property name being accessed.
 /// - Labels: primary only.
 /// - Notes: none.
 pub const PROTECTED_MEMBER_ACCESS: Code = Code::new(
   "TS2445",
-  "property is protected and only accessible within class and subclasses",
+  "protected member access",
   "property name within a member expression",
   &["primary: property name"],
   &[],
