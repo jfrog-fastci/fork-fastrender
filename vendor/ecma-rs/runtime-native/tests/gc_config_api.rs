@@ -316,3 +316,78 @@ fn gc_config_misaligned_ptr_aborts() {
     "expected stderr to mention misaligned cfg, got:\n{stderr}"
   );
 }
+
+#[test]
+fn gc_limits_misaligned_ptr_aborts_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_LIMITS_MISALIGNED_CHILD").is_none() {
+    return;
+  }
+
+  let limits = RtGcLimits {
+    max_heap_bytes: 8 * 1024 * 1024,
+    max_total_bytes: 16 * 1024 * 1024,
+  };
+  let misaligned = unsafe { (&limits as *const RtGcLimits).cast::<u8>().add(1).cast::<RtGcLimits>() };
+  let _ = rt_gc_set_limits(misaligned);
+}
+
+#[test]
+fn gc_limits_misaligned_ptr_aborts() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let output = Command::new(exe)
+    .env("RT_GC_LIMITS_MISALIGNED_CHILD", "1")
+    .arg("--exact")
+    .arg("gc_limits_misaligned_ptr_aborts_child")
+    .arg("--nocapture")
+    .output()
+    .expect("spawn child");
+
+  assert!(
+    !output.status.success(),
+    "expected misaligned rt_gc_set_limits call to abort"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("rt_gc_set_limits: limits was misaligned"),
+    "expected stderr to mention misaligned limits, got:\n{stderr}"
+  );
+}
+
+#[test]
+fn gc_get_config_misaligned_out_ptr_aborts_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_GET_CONFIG_MISALIGNED_CHILD").is_none() {
+    return;
+  }
+
+  let mut out = core::mem::MaybeUninit::<RtGcConfig>::uninit();
+  let misaligned = unsafe { (out.as_mut_ptr() as *mut u8).add(1).cast::<RtGcConfig>() };
+  unsafe {
+    rt_gc_get_config(misaligned);
+  }
+}
+
+#[test]
+fn gc_get_config_misaligned_out_ptr_aborts() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let output = Command::new(exe)
+    .env("RT_GC_GET_CONFIG_MISALIGNED_CHILD", "1")
+    .arg("--exact")
+    .arg("gc_get_config_misaligned_out_ptr_aborts_child")
+    .arg("--nocapture")
+    .output()
+    .expect("spawn child");
+
+  assert!(
+    !output.status.success(),
+    "expected misaligned rt_gc_get_config call to abort"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("rt_gc_get_config: out_cfg was misaligned"),
+    "expected stderr to mention misaligned out_cfg, got:\n{stderr}"
+  );
+}
