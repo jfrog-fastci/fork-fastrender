@@ -291,6 +291,61 @@ fn window_host_cleared_base_url_falls_back_to_document_url_for_dynamic_import() 
 }
 
 #[test]
+fn window_host_cleared_base_url_falls_back_to_document_url_for_dynamic_import_in_microtask(
+) -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let fetcher = Arc::new(RecordingFetcher::default());
+  fetcher.insert(
+    "https://example.com/a/b/mod.js",
+    FetchedResource::new(
+      b"export default import.meta.url;".to_vec(),
+      Some("application/javascript".to_string()),
+    ),
+  );
+
+  let mut options = js_opts_for_test();
+  options.supports_module_scripts = true;
+
+  let mut host = WindowHost::new_with_fetcher_and_options(
+    dom,
+    // Use a URL with a filename to ensure path resolution uses the document URL when `base_url` is
+    // cleared.
+    "https://example.com/a/b/page.html",
+    fetcher.clone() as Arc<dyn ResourceFetcher>,
+    options,
+  )?;
+
+  // Clear the base URL override: relative `import()` inside a microtask should still resolve
+  // against the document URL (matching `document.baseURI` fallback semantics).
+  host.host_mut().set_document_base_url(None);
+
+  host.exec_script(
+    r#"
+    globalThis.__err = '';
+    globalThis.__url = '';
+    Promise.resolve()
+      .then(() => import('./mod.js'))
+      .then(m => { globalThis.__url = m.default; })
+      .catch(e => { globalThis.__err = String(e && (e.stack || e.message) || e); });
+    "#,
+  )?;
+
+  host.run_until_idle(RunLimits {
+    max_tasks: 20,
+    max_microtasks: 100,
+    max_wall_time: Some(Duration::from_secs(5)),
+  })?;
+
+  assert_eq!(get_global_string(&mut host, "__err").unwrap_or_default(), "");
+  assert_eq!(
+    get_global_string(&mut host, "__url").as_deref(),
+    Some("https://example.com/a/b/mod.js")
+  );
+  assert_eq!(fetcher.request_urls(), vec!["https://example.com/a/b/mod.js".to_string()]);
+  Ok(())
+}
+
+#[test]
 fn window_host_base_url_propagates_to_xhr_relative_urls() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let fetcher = Arc::new(RecordingFetcher::default());
