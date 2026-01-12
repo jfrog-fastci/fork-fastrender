@@ -29,7 +29,7 @@ use emit_js::{emit_top_level_diagnostic, EmitOptions};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use vm_js::{
   format_stack_trace, format_termination, Budget, Heap, HeapLimits, JsRuntime, MicrotaskQueue,
-  PromiseState, SourceText, Value, Vm, VmError, VmOptions,
+  PromiseState, RootId, SourceText, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
 };
 
 const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
@@ -40,6 +40,58 @@ const HEAP_GC_THRESHOLD_BYTES: usize = 4 * 1024 * 1024;
 
 // A deterministic guardrail for accidental infinite loops in fixtures.
 const VM_FUEL: u64 = 1_000_000;
+
+struct RootOnlyJobCtx<'a> {
+  heap: &'a mut Heap,
+}
+
+impl VmJobContext for RootOnlyJobCtx<'_> {
+  fn call(
+    &mut self,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: Value,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented("RootOnlyJobCtx::call"))
+  }
+
+  fn construct(
+    &mut self,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: Value,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented("RootOnlyJobCtx::construct"))
+  }
+
+  fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+    self.heap.add_root(value)
+  }
+
+  fn remove_root(&mut self, id: RootId) {
+    self.heap.remove_root(id);
+  }
+}
+
+fn teardown_microtask_queue(heap: &mut Heap, queue: &mut MicrotaskQueue) {
+  if queue.is_empty() {
+    return;
+  }
+
+  let mut ctx = RootOnlyJobCtx { heap };
+  queue.teardown(&mut ctx);
+}
+
+fn teardown_microtasks(rt: &mut JsRuntime) {
+  if rt.vm.microtask_queue().is_empty() {
+    return;
+  }
+  let (vm, heap) = (&mut rt.vm, &mut rt.heap);
+  let mut ctx = RootOnlyJobCtx { heap };
+  vm.microtask_queue_mut().teardown(&mut ctx);
+}
 
 #[derive(Debug)]
 pub enum TsToJsError {
@@ -259,10 +311,14 @@ pub fn run_js_source_with_options(
   let source = Arc::new(SourceText::new(source_name, source_text));
 
   let result = rt.exec_script_source(source);
-  match result {
+  let out = match result {
     Ok(value) => value_to_fixture_string(&mut rt, value, options),
     Err(err) => Err(map_vm_error(&mut rt, err)),
-  }
+  };
+
+  // `vm-js` jobs can hold persistent roots; never drop a runtime with queued jobs still pending.
+  teardown_microtasks(&mut rt);
+  out
 }
 
 fn value_to_fixture_string(
@@ -409,12 +465,17 @@ fn stringify_value(rt: &mut JsRuntime, value: Value, depth: usize) -> String {
 
   // Avoid borrowing the heap across recursion: stringify the value in a nested scope, then drop it
   // before potentially recursing on thrown values.
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
   let res = {
-    let mut host = ();
-    let mut hooks = MicrotaskQueue::new();
     let mut scope = rt.heap.scope();
     scope.to_string(&mut rt.vm, &mut host, &mut hooks, value)
   };
+
+  // String conversion can invoke user code and queue Promise jobs. We never execute microtasks
+  // while formatting error messages, but we must still discard queued jobs to clean up any
+  // persistent roots.
+  teardown_microtask_queue(&mut rt.heap, &mut hooks);
 
   match res {
     Ok(s) => rt
@@ -561,31 +622,46 @@ pub fn run_fixture_ts_with_name(name: &str, source: &str) -> Result<String, Diag
   let mut rt = new_runtime().map_err(|err| harness_error(format!("failed to init vm-js: {err}")))?;
 
   let fixture_source = Arc::new(SourceText::new(name, js));
-  rt.exec_script_source(fixture_source)
-    .map_err(|err| vm_error_to_diagnostic(&rt, err))?;
+  if let Err(err) = rt.exec_script_source(fixture_source) {
+    let diag = vm_error_to_diagnostic(&rt, err);
+    teardown_microtasks(&mut rt);
+    return Err(diag);
+  }
 
-  rt.vm
-    .perform_microtask_checkpoint(&mut rt.heap)
-    .map_err(|err| vm_error_to_diagnostic(&rt, err))?;
+  if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+    let diag = vm_error_to_diagnostic(&rt, err);
+    teardown_microtasks(&mut rt);
+    return Err(diag);
+  }
 
-  let value = rt
-    .exec_script_source(Arc::new(SourceText::new(
-      OBSERVE_SOURCE_NAME,
-      OBSERVE_SCRIPT,
-    )))
-    .map_err(|err| vm_error_to_diagnostic(&rt, err))?;
-
-  let Value::String(s) = value else {
-    return Err(harness_error(format!(
-      "observe script returned non-string value: {value:?}"
-    )));
+  let value = match rt.exec_script_source(Arc::new(SourceText::new(
+    OBSERVE_SOURCE_NAME,
+    OBSERVE_SCRIPT,
+  ))) {
+    Ok(v) => v,
+    Err(err) => {
+      let diag = vm_error_to_diagnostic(&rt, err);
+      teardown_microtasks(&mut rt);
+      return Err(diag);
+    }
   };
 
-  Ok(rt
+  let Value::String(s) = value else {
+    let diag = harness_error(format!(
+      "observe script returned non-string value: {value:?}"
+    ));
+    teardown_microtasks(&mut rt);
+    return Err(diag);
+  };
+
+  let out = rt
     .heap()
     .get_string(s)
     .map_err(|err| harness_error(format!("invalid string handle: {err}")))?
-    .to_utf8_lossy())
+    .to_utf8_lossy();
+
+  teardown_microtasks(&mut rt);
+  Ok(out)
 }
 
 #[cfg(test)]
