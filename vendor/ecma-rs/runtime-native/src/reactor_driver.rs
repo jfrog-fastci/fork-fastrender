@@ -165,6 +165,15 @@ impl ReactorDriver {
     self.inner.reactor_waker.wake()
   }
 
+  /// Register an fd with the driver's reactor for readiness notifications.
+  ///
+  /// ## Nonblocking / edge-triggered contract
+  ///
+  /// The provided fd **must already be set to `O_NONBLOCK`** and must remain `O_NONBLOCK` for the
+  /// lifetime of the registration.
+  ///
+  /// The underlying reactor is **edge-triggered**, so consumers must drain reads/writes until they
+  /// return `EAGAIN`/`WouldBlock` after being woken.
   pub fn register_fd(&self, fd: BorrowedFd<'_>, interest: Interest, waker: Waker) -> io::Result<Token> {
     let raw_fd = fd.as_raw_fd();
 

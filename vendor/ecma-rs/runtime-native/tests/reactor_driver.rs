@@ -46,6 +46,39 @@ fn counting_waker(counter: Arc<AtomicUsize>) -> Waker {
 }
 
 #[test]
+fn register_fd_requires_nonblocking() {
+  let driver = ReactorDriver::new().unwrap();
+
+  let (read_fd, write_fd) = new_pipe().unwrap();
+
+  // `pipe()` returns a blocking fd by default.
+  let io_wakes = Arc::new(AtomicUsize::new(0));
+  let err = driver
+    .register_fd(read_fd.as_fd(), Interest::READABLE, counting_waker(io_wakes.clone()))
+    .unwrap_err();
+  assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "got {err:?}");
+  assert_eq!(io_wakes.load(Ordering::SeqCst), 0);
+
+  // Ensure the failed registration did not leave a stale mapping behind by setting O_NONBLOCK and
+  // registering again.
+  set_nonblocking(read_fd.as_raw_fd()).unwrap();
+  let _token = driver
+    .register_fd(read_fd.as_fd(), Interest::READABLE, counting_waker(io_wakes.clone()))
+    .unwrap();
+
+  let b = [0x1u8; 1];
+  let rc = unsafe { libc::write(write_fd.as_raw_fd(), b.as_ptr().cast::<libc::c_void>(), 1) };
+  assert_eq!(rc, 1);
+  let out = driver.poll(Some(Duration::from_secs(1))).unwrap();
+  assert_eq!(out.io_events, 1);
+  assert_eq!(io_wakes.load(Ordering::SeqCst), 1);
+
+  driver.deregister_fd(read_fd.as_fd()).unwrap();
+  drop(write_fd);
+  drop(read_fd);
+}
+
+#[test]
 fn timer_wakes_exactly_once() {
   let driver = ReactorDriver::new().unwrap();
 

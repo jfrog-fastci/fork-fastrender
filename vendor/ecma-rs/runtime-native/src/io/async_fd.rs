@@ -31,6 +31,10 @@ extern "C" fn drop_registry_entry(data: *mut u8) {
 /// The wrapped file descriptor **must already be `O_NONBLOCK`**. `AsyncFd` does not
 /// modify fd flags.
 ///
+/// The fd must remain `O_NONBLOCK` for the lifetime of the registration. Clearing
+/// `O_NONBLOCK` while the fd is registered violates the reactor contract and may
+/// cause readiness polling to fail.
+///
 /// This is required because runtime-native's reactor uses **edge-triggered**
 /// readiness notifications. If a blocking fd is registered, readiness wakeups may
 /// stall (no new edges will be delivered while the consumer is blocked).
@@ -45,6 +49,10 @@ impl AsyncFd {
   /// The provided fd must already be set to `O_NONBLOCK`. If it isn't, the first
   /// attempt to await readability/writability will fail with
   /// [`io::ErrorKind::InvalidInput`].
+  ///
+  /// The fd must remain `O_NONBLOCK` for as long as it is registered with the
+  /// reactor (i.e. for as long as there are pending `readable()`/`writable()`
+  /// waiters).
   pub fn new(fd: OwnedFd) -> Self {
     let raw = fd.as_raw_fd();
     Self {
