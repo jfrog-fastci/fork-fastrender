@@ -15,7 +15,7 @@
     "layout": 89.96956046189376,
     "paint": 52.982074494226325
   },
-  "notes": "Visually good. Fixture Chrome diff at 1200x800 shows correct overall layout/structure; remaining ~9–11% pixel diffs vs Chrome (perceptual ≈0.02) are dominated by small per-channel differences from text rasterization/hinting and subtle blur/gradient rounding rather than missing cascade/layout primitives.",
+  "notes": "Visually good. Fixture Chrome diff at 1200x800 shows correct overall layout/structure; remaining ~9–11% pixel diffs vs Chrome (perceptual ≈0.02) are dominated by small per-channel differences from text rasterization/hinting and subtle blur/gradient rounding rather than missing cascade/layout primitives. Repro: `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --debug --no-build --fixtures espn.com --viewport 1200x800 --dpr 1 --media screen`.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 89579,
