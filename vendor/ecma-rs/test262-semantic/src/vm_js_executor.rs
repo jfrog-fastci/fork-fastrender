@@ -891,6 +891,10 @@ fn execute_module(
   cancel: &Arc<AtomicBool>,
   runtime: &mut vm_js::JsRuntime,
 ) -> ExecResult {
+  let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
+  let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
+  let expects_done = is_async && !is_raw;
+
   let (harness_src, module_src) = split_module_source(source);
 
   let mut hooks = Test262ModuleHooks::new(&case.path);
@@ -1074,12 +1078,26 @@ fn execute_module(
       return Err(err);
     }
 
-    match runtime.heap.promise_state(eval_promise_obj) {
-      Ok(PromiseState::Fulfilled) => Ok(()),
-      Ok(PromiseState::Rejected) => {
-        let reason = runtime
-          .heap
-          .promise_result(eval_promise_obj)
+      match runtime.heap.promise_state(eval_promise_obj) {
+        Ok(PromiseState::Fulfilled) => {
+          if expects_done {
+            let done = runtime
+              .exec_script("__test262AsyncDone__")
+              .map_err(|err| map_vm_error(case, module_src, cancel, runtime, err))?;
+            if done != Value::Bool(true) {
+              return Err(ExecError::Js(JsError::new(
+                ExecPhase::Runtime,
+                None,
+                "async test did not call $DONE()",
+              )));
+            }
+          }
+          Ok(())
+        }
+        Ok(PromiseState::Rejected) => {
+          let reason = runtime
+            .heap
+            .promise_result(eval_promise_obj)
           .map_err(|err| {
             map_vm_error_with_phase(case, module_src, cancel, runtime, ExecPhase::Runtime, err)
           })?
@@ -1658,6 +1676,81 @@ var assert = {
     assert_eq!(js.phase, ExecPhase::Runtime);
     assert_eq!(js.typ.as_deref(), Some("TypeError"));
     assert_eq!(js.message, "boom");
+  }
+
+  #[test]
+  fn module_variant_async_requires_done() {
+    let test262 = setup_test262_with_assert();
+    let test_dir = test262.path().join("test");
+    let main_path = test_dir.join("async_missing_done.js");
+    fs::write(&main_path, "/* placeholder */").unwrap();
+
+    let case = TestCase {
+      id: "async_missing_done.js".to_string(),
+      path: main_path,
+      variant: Variant::Module,
+      expected: ExpectedOutcome::Pass,
+      metadata: Frontmatter {
+        flags: vec!["async".to_string(), "module".to_string()],
+        ..Frontmatter::default()
+      },
+      body: "export const x = 1;\n".to_string(),
+    };
+
+    let source = assemble_source(
+      test262.path(),
+      &case.metadata,
+      case.variant,
+      &case.body,
+      HarnessMode::Test262,
+    )
+    .unwrap();
+
+    let exec = VmJsExecutor::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let err = exec.execute(&case, &source, &cancel).unwrap_err();
+    let ExecError::Js(js) = err else {
+      panic!("expected JS error, got {err:?}");
+    };
+    assert_eq!(js.phase, ExecPhase::Runtime);
+    assert!(
+      js.message.contains("async test did not call $DONE()"),
+      "unexpected error message: {}",
+      js.message
+    );
+  }
+
+  #[test]
+  fn module_variant_async_done_allows_success() {
+    let test262 = setup_test262_with_assert();
+    let test_dir = test262.path().join("test");
+    let main_path = test_dir.join("async_done.js");
+    fs::write(&main_path, "/* placeholder */").unwrap();
+
+    let case = TestCase {
+      id: "async_done.js".to_string(),
+      path: main_path,
+      variant: Variant::Module,
+      expected: ExpectedOutcome::Pass,
+      metadata: Frontmatter {
+        flags: vec!["async".to_string(), "module".to_string()],
+        ..Frontmatter::default()
+      },
+      body: "Promise.resolve().then(() => $DONE());\nexport const x = 1;\n".to_string(),
+    };
+
+    let source = assemble_source(
+      test262.path(),
+      &case.metadata,
+      case.variant,
+      &case.body,
+      HarnessMode::Test262,
+    )
+    .unwrap();
+
+    let exec = VmJsExecutor::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    exec.execute(&case, &source, &cancel).unwrap();
   }
 
   #[test]
