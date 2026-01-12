@@ -502,7 +502,7 @@ pub mod window {
   fn event_target_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: RtJsValue<Host, R>,
+    this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -561,7 +561,7 @@ pub mod window {
     }
     let result = host.call_operation(
       rt,
-      None,
+      Some(this),
       "EventTarget",
       "constructor",
       overload_index,
@@ -825,7 +825,7 @@ pub mod window {
   fn u_r_l_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: RtJsValue<Host, R>,
+    this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -869,7 +869,7 @@ pub mod window {
     }
     let result = host.call_operation(
       rt,
-      None,
+      Some(this),
       "URL",
       "constructor",
       overload_index,
@@ -1431,7 +1431,7 @@ pub mod window {
   fn u_r_l_search_params_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: RtJsValue<Host, R>,
+    this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -1475,7 +1475,7 @@ pub mod window {
     }
     let result = host.call_operation(
       rt,
-      None,
+      Some(this),
       "URLSearchParams",
       "constructor",
       overload_index,
@@ -2622,7 +2622,7 @@ pub mod worker {
   fn event_target_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: RtJsValue<Host, R>,
+    this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -2681,7 +2681,7 @@ pub mod worker {
     }
     let result = host.call_operation(
       rt,
-      None,
+      Some(this),
       "EventTarget",
       "constructor",
       overload_index,
@@ -2945,7 +2945,7 @@ pub mod worker {
   fn u_r_l_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: RtJsValue<Host, R>,
+    this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -2989,7 +2989,7 @@ pub mod worker {
     }
     let result = host.call_operation(
       rt,
-      None,
+      Some(this),
       "URL",
       "constructor",
       overload_index,
@@ -3551,7 +3551,7 @@ pub mod worker {
   fn u_r_l_search_params_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: RtJsValue<Host, R>,
+    this: RtJsValue<Host, R>,
     args: &[RtJsValue<Host, R>],
   ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
@@ -3595,7 +3595,7 @@ pub mod worker {
     }
     let result = host.call_operation(
       rt,
-      None,
+      Some(this),
       "URLSearchParams",
       "constructor",
       overload_index,

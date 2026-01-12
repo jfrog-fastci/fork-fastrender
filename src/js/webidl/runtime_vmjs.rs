@@ -1216,9 +1216,41 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     host: &mut Host,
     iterable: Self::JsValue,
   ) -> Result<IteratorRecord<Self::JsValue>, Self::Error> {
+    // Minimal Array fast-path: `vm-js` does not currently expose `%Array.prototype%[@@iterator]` on
+    // the intrinsic graph, so arrays need special handling for WebIDL `sequence<T>` conversions.
+    //
+    // We intentionally keep this fast-path even when host hooks are available: `GetIterator` for
+    // arrays should not depend on a prototype-chain `@@iterator` lookup (which `vm-js` does not yet
+    // implement).
+    if let Value::Object(obj) = iterable {
+      if self.cx.scope.heap().object_is_array(obj)? {
+        return self.with_stack_roots::<IteratorRecord<Self::JsValue>, _>(&[iterable], |rt| {
+          let length_key = rt.property_key("length")?;
+          let len_value = rt.get(host, iterable, length_key)?;
+          let len = rt.to_number(host, len_value)?;
+          if !len.is_finite() || len < 0.0 {
+            return Err(
+              rt.throw_type_error("GetIterator: array length is not a non-negative finite number"),
+            );
+          }
+          let length = len as u32;
+          Ok(IteratorRecord {
+            iterator: iterable,
+            next_method: Value::Undefined,
+            done: false,
+            kind: IteratorRecordKind::Array {
+              array: iterable,
+              next_index: 0,
+              length,
+            },
+          })
+        });
+      }
+    }
+
     // Prefer the engine's canonical iterator implementation when host hooks are available (native
     // call/construct). This avoids drift between the bindings runtime and `vm-js` iterator
-    // semantics (Array fast-path, iterator protocol errors, and host-hook propagation).
+    // semantics (iterator protocol errors, and host-hook propagation).
     if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
       let record =
         vm_js::iterator::get_iterator(&mut *self.cx.vm, host, hooks, &mut self.cx.scope, iterable)?;

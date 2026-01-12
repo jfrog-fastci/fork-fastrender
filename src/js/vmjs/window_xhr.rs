@@ -2753,6 +2753,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let ready_get_name = scope.alloc_string("get readyState")?;
   scope.push_root(Value::String(ready_get_name))?;
   let ready_get_fn = scope.alloc_native_function(ready_get_id, None, ready_get_name, 0)?;
+  scope.push_root(Value::Object(ready_get_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(ready_get_fn, Some(func_proto))?;
@@ -2768,6 +2769,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let status_get_name = scope.alloc_string("get status")?;
   scope.push_root(Value::String(status_get_name))?;
   let status_get_fn = scope.alloc_native_function(status_get_id, None, status_get_name, 0)?;
+  scope.push_root(Value::Object(status_get_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(status_get_fn, Some(func_proto))?;
@@ -2784,6 +2786,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope.push_root(Value::String(status_text_get_name))?;
   let status_text_get_fn =
     scope.alloc_native_function(status_text_get_id, None, status_text_get_name, 0)?;
+  scope.push_root(Value::Object(status_text_get_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(status_text_get_fn, Some(func_proto))?;
@@ -2815,6 +2818,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let rt_get_name = scope.alloc_string("get responseType")?;
   scope.push_root(Value::String(rt_get_name))?;
   let rt_get_fn = scope.alloc_native_function(rt_get_id, None, rt_get_name, 0)?;
+  scope.push_root(Value::Object(rt_get_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(rt_get_fn, Some(func_proto))?;
@@ -2825,6 +2829,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let rt_set_name = scope.alloc_string("set responseType")?;
   scope.push_root(Value::String(rt_set_name))?;
   let rt_set_fn = scope.alloc_native_function(rt_set_id, None, rt_set_name, 1)?;
+  scope.push_root(Value::Object(rt_set_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(rt_set_fn, Some(func_proto))?;
@@ -2840,6 +2845,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let wc_get_name = scope.alloc_string("get withCredentials")?;
   scope.push_root(Value::String(wc_get_name))?;
   let wc_get_fn = scope.alloc_native_function(wc_get_id, None, wc_get_name, 0)?;
+  scope.push_root(Value::Object(wc_get_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(wc_get_fn, Some(func_proto))?;
@@ -2850,6 +2856,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let wc_set_name = scope.alloc_string("set withCredentials")?;
   scope.push_root(Value::String(wc_set_name))?;
   let wc_set_fn = scope.alloc_native_function(wc_set_id, None, wc_set_name, 1)?;
+  scope.push_root(Value::Object(wc_set_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(wc_set_fn, Some(func_proto))?;
@@ -2887,6 +2894,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope.push_root(Value::String(response_text_get_name))?;
   let response_text_get_fn =
     scope.alloc_native_function(response_text_get_id, None, response_text_get_name, 0)?;
+  scope.push_root(Value::Object(response_text_get_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(response_text_get_fn, Some(func_proto))?;
@@ -2902,6 +2910,7 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let response_get_name = scope.alloc_string("get response")?;
   scope.push_root(Value::String(response_get_name))?;
   let response_get_fn = scope.alloc_native_function(response_get_id, None, response_get_name, 0)?;
+  scope.push_root(Value::Object(response_get_fn))?;
   scope
     .heap_mut()
     .object_set_prototype(response_get_fn, Some(func_proto))?;

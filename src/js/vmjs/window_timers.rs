@@ -2326,12 +2326,18 @@ mod tests {
     _host: &mut dyn VmHost,
     _hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
-    _this: Value,
+    this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
       return Ok(Value::Undefined);
     };
+    set_prop(
+      scope,
+      global,
+      "__this_is_global",
+      Value::Bool(matches!(this, Value::Object(obj) if obj == global)),
+    );
     if let Some(v) = args.get(0).copied() {
       set_prop(scope, global, "__arg0", v);
     }
@@ -3875,6 +3881,7 @@ mod tests {
       let global = realm.global_object();
       set_prop(&mut scope, global, "__arg0", Value::Undefined);
       set_prop(&mut scope, global, "__arg1", Value::Undefined);
+      set_prop(&mut scope, global, "__this_is_global", Value::Bool(false));
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
@@ -3919,13 +3926,14 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
 
-    let (arg0, arg1) = {
+    let (arg0, arg1, this_is_global) = {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
       let global = realm.global_object();
       (
         get_prop(&mut scope, global, "__arg0"),
         get_prop(&mut scope, global, "__arg1"),
+        get_prop(&mut scope, global, "__this_is_global"),
       )
     };
     assert_eq!(arg0, Value::Number(1.0));
@@ -3936,6 +3944,155 @@ mod tests {
       }
       other => panic!("expected string, got {other:?}"),
     }
+    assert_eq!(this_is_global, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn set_timeout_orders_by_due_time_then_registration_order() -> crate::error::Result<()> {
+    fn cb_push_t10(
+      _vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      callee: vm_js::GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+        return Ok(Value::Undefined);
+      };
+      push_log(scope, global, "t10");
+      Ok(Value::Undefined)
+    }
+
+    fn cb_push_t5a(
+      _vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      callee: vm_js::GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+        return Ok(Value::Undefined);
+      };
+      push_log(scope, global, "t5a");
+      Ok(Value::Undefined)
+    }
+
+    fn cb_push_t5b(
+      _vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      callee: vm_js::GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+        return Ok(Value::Undefined);
+      };
+      push_log(scope, global, "t5b");
+      Ok(Value::Undefined)
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock.clone());
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+      let mut scope = heap.scope();
+      init_log(&mut scope, realm.global_object());
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      {
+        let mut scope = heap.scope();
+        let set_timeout = get_prop(&mut scope, global, "setTimeout");
+
+        let cb10 = make_callback(vm, &mut scope, global, "cb10", cb_push_t10);
+        let cb5a = make_callback(vm, &mut scope, global, "cb5a", cb_push_t5a);
+        let cb5b = make_callback(vm, &mut scope, global, "cb5b", cb_push_t5b);
+
+        vm.call_with_host_and_hooks(
+          &mut host.host_ctx,
+          &mut scope,
+          &mut hooks,
+          set_timeout,
+          Value::Undefined,
+          &[Value::Object(cb10), Value::Number(10.0)],
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        vm.call_with_host_and_hooks(
+          &mut host.host_ctx,
+          &mut scope,
+          &mut hooks,
+          set_timeout,
+          Value::Undefined,
+          &[Value::Object(cb5a), Value::Number(5.0)],
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        vm.call_with_host_and_hooks(
+          &mut host.host_ctx,
+          &mut scope,
+          &mut hooks,
+          set_timeout,
+          Value::Undefined,
+          &[Value::Object(cb5b), Value::Number(5.0)],
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+      }
+
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert!(log.is_empty(), "expected no timers to be due at t=0");
+
+    clock.advance(Duration::from_millis(5));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert_eq!(log, vec!["t5a".to_string(), "t5b".to_string()]);
+
+    clock.advance(Duration::from_millis(5));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert_eq!(
+      log,
+      vec!["t5a".to_string(), "t5b".to_string(), "t10".to_string()]
+    );
 
     Ok(())
   }

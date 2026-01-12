@@ -3375,6 +3375,62 @@ mod tests {
   }
 
   #[test]
+  fn set_timeout_can_mutate_dom_after_virtual_time_advance() -> Result<()> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id='root'></div></body></html>")
+        .expect("parse_html");
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+
+    let clock = Arc::new(crate::js::VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let event_loop = EventLoop::<WindowHostState>::with_clock(clock_for_loop);
+    let mut host = WindowHost::new_with_event_loop(dom, "https://example.invalid/", event_loop)?;
+
+    host.exec_script(
+      r#"
+      setTimeout(() => {
+        document.getElementById("root").setAttribute("data-done", "1");
+      }, 10);
+      "#,
+    )?;
+
+    // Timer isn't due yet.
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    let root = host
+      .host()
+      .dom()
+      .get_element_by_id("root")
+      .expect("expected #root element");
+    assert_eq!(
+      host
+        .host()
+        .dom()
+        .get_attribute(root, "data-done")
+        .expect("get data-done attribute"),
+      None
+    );
+
+    // Advance virtual time and run again.
+    clock.advance(Duration::from_millis(10));
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(
+      host
+        .host()
+        .dom()
+        .get_attribute(root, "data-done")
+        .expect("get data-done attribute"),
+      Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
   fn set_interval_callback_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

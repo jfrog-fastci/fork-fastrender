@@ -20,7 +20,6 @@ mod determinism;
 mod dom_integration;
 mod iframe;
 mod image_integration;
-mod js_harness;
 mod grid;
 mod display_list;
 mod misc;
