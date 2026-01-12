@@ -12,6 +12,7 @@ mod ecma_rs_workspace_exclude_guard;
 mod fetch_and_render_exit_presence;
 mod js_runtime_consolidation_guard;
 mod no_deprecated_test_harness_names;
+mod no_extra_test_binaries;
 mod no_path_env_mutation;
 mod no_fastr_use_bundled_fonts_env_mutation;
 mod no_process_global_env_mutation;

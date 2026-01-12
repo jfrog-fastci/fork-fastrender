@@ -14,11 +14,12 @@ Update this inventory in every migration PR:
 The target is **one** main integration-test binary, plus special binaries only when absolutely
 required:
 
-- `tests/integration.rs` — one integration test binary (`mod common; mod api; mod fixtures; mod wpt;`)
-- `tests/allocation_failure.rs` — special: `#[global_allocator]` (must be its own binary)
+- `tests/integration.rs` — unified integration test binary.
+- `tests/allocation_failure.rs` — special harness for allocation failure tests (custom
+  `#[global_allocator]`; must be its own binary).
 
-**Goal: keep total `tests/*.rs` at 2.** Any additional test binaries must be justified and treated
-as temporary exceptions.
+**Goal: keep total `tests/*.rs` at exactly 2.** Any additional test binaries must be justified as a
+special harness and documented in this inventory.
 
 ## Top-level `tests/*.rs` inventory
 
