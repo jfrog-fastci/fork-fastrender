@@ -871,14 +871,15 @@ pub fn object_from_entries(
     .heap_mut()
     .object_set_prototype(out, Some(intr.object_prototype()))?;
 
-  let result: Result<Value, VmError> = (|| {
-    loop {
-      let next_value =
-        crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
-      let Some(next_value) = next_value else {
-        return Ok(Value::Object(out));
+  loop {
+    let next_value =
+      match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(Value::Object(out)),
+        Err(err) => return Err(err),
       };
 
+    let entry_result: Result<(), VmError> = (|| {
       // Use a nested scope so per-entry roots do not accumulate.
       let mut step_scope = scope.reborrow();
       step_scope.push_root(next_value)?;
@@ -911,17 +912,18 @@ pub fn object_from_entries(
       )?;
 
       step_scope.create_data_property_or_throw(out, prop_key, value)?;
-    }
-  })();
+      Ok(())
+    })();
 
-  match result {
-    Ok(v) => Ok(v),
-    Err(err) => {
+    if let Err(entry_err) = entry_result {
       if !iterator_record.done {
         // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
         // but it must not replace VM-internal fatal errors (termination, OOM, etc).
-        let original_is_throw = err.is_throw_completion();
-        let pending_root = err.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
+        let original_is_throw = entry_err.is_throw_completion();
+        let pending_root = entry_err
+          .thrown_value()
+          .map(|v| scope.heap_mut().add_root(v))
+          .transpose()?;
         let close_res = crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
         if let Some(root) = pending_root {
           scope.heap_mut().remove_root(root);
@@ -932,7 +934,7 @@ pub fn object_from_entries(
           }
         }
       }
-      Err(err)
+      return Err(entry_err);
     }
   }
 }
