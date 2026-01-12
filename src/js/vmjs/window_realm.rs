@@ -24565,6 +24565,8 @@ fn init_window_globals(
     ("onmousedown", "mousedown"),
     ("onmouseup", "mouseup"),
     ("onmousemove", "mousemove"),
+    ("onmouseover", "mouseover"),
+    ("onmouseout", "mouseout"),
     ("onmouseenter", "mouseenter"),
     ("onmouseleave", "mouseleave"),
     // Keyboard events.
@@ -30094,7 +30096,7 @@ mod tests {
   #[test]
   fn host_dom_event_dispatch_synthesizes_mouse_events() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html(
-      "<!doctype html><html><body><div id=target></div></body></html>",
+      "<!doctype html><html><body><div id=target></div><div id=other></div></body></html>",
     )
     .unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
@@ -30103,25 +30105,33 @@ mod tests {
     exec_script_with_dom_host(
       &mut realm,
       &mut host,
-      "globalThis.__log = [];\n\
-       const target = document.getElementById('target');\n\
-       function cap(e) {\n\
-         __log.push([\n\
-           e.type,\n\
-           e instanceof MouseEvent,\n\
-           e.clientX,\n\
-           e.clientY,\n\
-           e.button,\n\
-           e.buttons,\n\
-           e.ctrlKey,\n\
-           e.shiftKey,\n\
-           e.altKey,\n\
-           e.metaKey,\n\
-         ].join('|'));\n\
-       }\n\
-       target.addEventListener('mousedown', cap);\n\
-       target.addEventListener('mousemove', cap);\n\
-       target.addEventListener('mouseup', cap);",
+       "globalThis.__log = [];\n\
+        const target = document.getElementById('target');\n\
+        function cap(e) {\n\
+          __log.push([\n\
+            e.type,\n\
+            e instanceof MouseEvent,\n\
+            e.clientX,\n\
+            e.clientY,\n\
+            e.button,\n\
+            e.buttons,\n\
+            e.ctrlKey,\n\
+            e.shiftKey,\n\
+            e.altKey,\n\
+            e.metaKey,\n\
+          ].join('|'));\n\
+        }\n\
+        function capRelated(e) {\n\
+          __log.push([\n\
+            e.type,\n\
+            e instanceof MouseEvent,\n\
+            e.relatedTarget && e.relatedTarget.id,\n\
+          ].join('|'));\n\
+        }\n\
+        target.addEventListener('mousedown', cap);\n\
+        target.addEventListener('mousemove', cap);\n\
+        target.addEventListener('mouseup', cap);\n\
+        target.addEventListener('mouseover', capRelated);",
     )?;
 
     struct DummyHost;
@@ -30146,6 +30156,7 @@ mod tests {
       );
 
     let target = host.dom().get_element_by_id("target").expect("missing #target");
+    let other = host.dom().get_element_by_id("other").expect("missing #other");
 
     let mut down = web_events::Event::new(
       "mousedown",
@@ -30234,14 +30245,44 @@ mod tests {
     )
     .expect("mouseup dispatch should succeed");
 
+    let mut over = web_events::Event::new(
+      "mouseover",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    over.is_trusted = true;
+    over.mouse = Some(web_events::MouseEvent {
+      client_x: 0.0,
+      client_y: 0.0,
+      button: 0,
+      buttons: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: Some(web_events::EventTargetId::Node(other).normalize()),
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut over,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("mouseover dispatch should succeed");
+
     let realm = realm_slot.as_mut().expect("expected realm slot");
     let ok = realm.exec_script(
       "(() => {\n\
-         return __log.length === 3 &&\n\
+         return __log.length === 4 &&\n\
            __log[0] === 'mousedown|true|10|20|0|1|true|false|true|false' &&\n\
            __log[1] === 'mousemove|true|11|22|0|1|false|true|false|true' &&\n\
-           __log[2] === 'mouseup|true|12|24|0|0|false|false|false|false';\n\
-       })()",
+           __log[2] === 'mouseup|true|12|24|0|0|false|false|false|false' &&\n\
+           __log[3] === 'mouseover|true|other';\n\
+        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
