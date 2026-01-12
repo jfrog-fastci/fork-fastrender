@@ -852,13 +852,47 @@ impl BrowserDocumentDom2 {
   /// to the node's **principal box** (so used-value adjustments like blockification are observed).
   /// If the node does not generate a principal box (e.g. `display: contents`), it falls back to
   /// scanning the styled tree.
-  pub fn computed_style_for_dom_node(&self, node_id: crate::dom2::NodeId) -> Option<Arc<ComputedStyle>> {
+  pub fn computed_style_for_dom_node(
+    &self,
+    node_id: crate::dom2::NodeId,
+  ) -> Option<Arc<ComputedStyle>> {
     let prepared = self.prepared.as_ref()?;
     let mapping = self.last_dom_mapping.as_ref()?;
     let preorder = mapping.preorder_for_node_id(node_id)?;
 
     principal_box_style_for_styled_node_id(&prepared.box_tree.root, preorder)
       .or_else(|| styled_tree_style_for_preorder_id(&prepared.styled_tree, preorder))
+  }
+
+  /// Builds a scroll- and sticky-aware geometry context for the most recently prepared layout.
+  ///
+  /// Callers can use the returned [`super::Dom2GeometryContext`] to compute border/padding/content
+  /// boxes and scrollport (client) rects in viewport coordinates for `dom2` nodes.
+  pub fn geometry_context(&self) -> Result<super::Dom2GeometryContext<'_>> {
+    let prepared = self.prepared.as_ref().ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocumentDom2 has no cached layout; call render_frame() first".to_string(),
+      })
+    })?;
+    let mapping = self.last_dom_mapping.as_ref().ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocumentDom2 has no DOM mapping; call render_frame() first".to_string(),
+      })
+    })?;
+
+    let scroll_state = ScrollState::from_parts_with_deltas(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
+    );
+
+    Ok(super::Dom2GeometryContext::new(
+      &self.renderer,
+      prepared,
+      mapping,
+      scroll_state,
+    ))
   }
 
   /// Returns counters describing how invalidations have been satisfied over this document's

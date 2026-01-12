@@ -260,6 +260,9 @@ pub use browser_document_js::{BrowserDocumentJs, RunUntilStableOutcome, RunUntil
 mod browser_document2;
 pub use browser_document2::BrowserDocument2;
 
+mod dom2_geometry;
+pub use dom2_geometry::Dom2GeometryContext;
+
 mod browser_tab;
 pub use browser_tab::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus};
 

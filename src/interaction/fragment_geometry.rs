@@ -4,6 +4,7 @@ use crate::geometry::Size;
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
+use crate::tree::fragment_tree::ScrollbarReservation;
 
 pub fn absolute_bounds_for_box_id(tree: &FragmentTree, box_id: usize) -> Option<Rect> {
   struct Frame<'a> {
@@ -44,6 +45,54 @@ pub fn absolute_bounds_for_box_id(tree: &FragmentTree, box_id: usize) -> Option<
   }
 
   bounds
+}
+
+pub fn scrollbar_reservation_for_box_id(
+  tree: &FragmentTree,
+  box_id: usize,
+) -> Option<ScrollbarReservation> {
+  struct Frame<'a> {
+    node: &'a FragmentNode,
+  }
+
+  let mut found = false;
+  let mut combined = ScrollbarReservation::default();
+
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+  for root in tree.additional_fragments.iter().rev() {
+    stack.push(Frame { node: root });
+  }
+  stack.push(Frame { node: &tree.root });
+
+  while let Some(frame) = stack.pop() {
+    if frame.node.box_id() == Some(box_id) {
+      found = true;
+      let reservation = frame.node.scrollbar_reservation;
+      combined.left = combined.left.max(reservation.left);
+      combined.right = combined.right.max(reservation.right);
+      combined.top = combined.top.max(reservation.top);
+      combined.bottom = combined.bottom.max(reservation.bottom);
+    }
+
+    for child in frame.node.children.iter().rev() {
+      stack.push(Frame { node: child });
+    }
+  }
+
+  found.then_some(combined)
+}
+
+pub fn scrollport_rect_for_padding_rect(
+  padding_rect: Rect,
+  reservation: ScrollbarReservation,
+) -> Rect {
+  inset_rect(
+    padding_rect,
+    reservation.left,
+    reservation.top,
+    reservation.right,
+    reservation.bottom,
+  )
 }
 
 fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {

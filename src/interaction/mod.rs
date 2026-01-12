@@ -26,6 +26,8 @@ pub use form_submit::{
 pub use fragment_geometry::absolute_bounds_for_box_id;
 pub use fragment_geometry::content_rect_for_border_rect;
 pub use fragment_geometry::padding_rect_for_border_rect;
+pub use fragment_geometry::scrollbar_reservation_for_box_id;
+pub use fragment_geometry::scrollport_rect_for_padding_rect;
 pub use hit_test::{hit_test_dom, resolve_label_associated_control, HitTestKind, HitTestResult};
 pub use hit_testing::{
   fragment_tree_with_scroll, fragment_tree_with_scroll_and_sticky, hit_test_dom_viewport_point,
