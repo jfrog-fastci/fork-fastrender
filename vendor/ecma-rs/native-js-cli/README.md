@@ -15,6 +15,7 @@ If you have the `native-js` binary installed on your `PATH`, common commands are
 ```bash
 native-js check input.ts
 native-js run input.ts
+native-js --release build input.ts -o ./out
 native-js bench input.ts --warmup 1 --iters 10
 # Symbolize instruction addresses back to TypeScript source:
 native-js addr2line /tmp/out 0x401234 0x4012ab
@@ -399,6 +400,20 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   build path/to/entry.ts -o /tmp/out
 ```
 
+Build with full optimizations (`--release` sets `--opt-level 3` unless overridden):
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  --release build path/to/entry.ts -o /tmp/out
+```
+
+Emit LLVM IR as the primary output:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  build path/to/entry.ts -o /tmp/out.ll --emit llvm
+```
+
 Also emit LLVM IR (for debugging, as a secondary output while building an executable):
 
 ```bash
@@ -436,6 +451,14 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   run path/to/entry.ts -- arg1 arg2
 ```
 
+Benchmark (build once, run repeatedly; prints a human-readable summary by default; pass `--json`
+for machine-readable output):
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  --json bench path/to/entry.ts --warmup 0 --iters 10
+```
+
 ### Options (selected)
 
 - `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
@@ -445,16 +468,20 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   - `bench`: benchmark JSON (`command = "bench"`)
   - `addr2line`: symbolization JSON (`command = "addr2line"`)
   - not supported with `run` (it would mix with program stdout)
-- `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
-- `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
+- `--release`: defaults to `--opt-level 3` (unless overridden).
+- `--debug`: defaults to `--opt-level 0` (unless overridden) and enables `CompilerOptions.debug`.
+  - emits DWARF debug info in the generated executable (line tables / function names)
+  - keeps intermediate build artifacts where possible (e.g. `build` writes adjacent `.o`/`.ll`)
+  - for `run`/`bench`, keeps the temporary build directory (and prints its path to stderr in
+    non-`--json` modes).
+- `--opt-level=0|1|2|3` (alias: `--opt`): set the LLVM target machine optimization level.
+- `--target <triple>`: set the compilation target triple (parsed via `target_lexicon::Triple`).
 - `build|emit --emit <KIND>`: emit one or more artifacts (`llvm`, `bc`, `obj`, `asm`, `exe`, `hir`).
 - `build|emit --out-dir <DIR>`: directory for outputs when emitting multiple artifacts (required for
   multiple `--emit` kinds).
-- `--opt=0|1|2|3`: set the LLVM target machine optimization level.
-  - default: `2`
-  - when `--debug` is set and `--opt` is not explicitly provided, defaults to `0`
-- `--debug`: emit DWARF debug info in the generated executable (line tables / function names).
-  - as the backend grows, this will include more source-level information (e.g. local variables)
+- `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
+- `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable (deprecated; prefer `build --emit llvm`).
+- `--pie`: produce a PIE executable (ET_DYN) on Linux.
 - `--extra-strict`: also run the legacy strict validator (`native_js::strict::validate`).
 
 ### Debugging generated executables (gdb / lldb)

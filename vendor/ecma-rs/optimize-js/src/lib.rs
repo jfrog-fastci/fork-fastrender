@@ -716,11 +716,11 @@ pub(crate) fn build_program_function_with_options(
         // more labels using `c_label`, so keep the counter in sync to avoid collisions.
         if licm_result.cfg_changed {
           let licm_after = cfg.graph.labels().max().unwrap_or(cfg.entry);
-          let next = licm_after
-            .checked_add(1)
-            .expect("label overflow in build_program_function");
           // Only advance when LICM actually created new labels.
-          if next > licm_before {
+          if licm_after > licm_before {
+            let next = licm_after
+              .checked_add(1)
+              .expect("label overflow in build_program_function");
             c_label = Counter::new(next);
           }
         }

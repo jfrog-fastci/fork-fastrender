@@ -422,7 +422,12 @@ fn build_and_run_returns_exit_code() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(42),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -472,7 +477,63 @@ fn invalid_target_triple_is_rejected_by_cli() {
     .assert()
     .failure()
     .code(2)
-    .stderr(predicate::str::contains("invalid --target"));
+    .stderr(predicate::str::contains("invalid target triple"));
+}
+
+#[test]
+fn release_build_succeeds() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--release")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let output = StdCommand::new(&out).output().unwrap();
+  assert_eq!(
+    output.status.code(),
+    Some(0),
+    "unexpected status {:?}",
+    output.status
+  );
+}
+
+#[test]
+fn debug_build_succeeds_and_keeps_intermediates() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--debug")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  assert!(out.is_file(), "expected executable at {}", out.display());
+  assert!(
+    out.with_extension("o").is_file(),
+    "expected object file at {}",
+    out.with_extension("o").display()
+  );
+  assert!(
+    out.with_extension("ll").is_file(),
+    "expected LLVM IR at {}",
+    out.with_extension("ll").display()
+  );
 }
 
 #[test]
@@ -763,7 +824,12 @@ fn build_and_run_returns_boolean_exit_code() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(1), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(1),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -808,7 +874,12 @@ fn build_with_emit_ir_writes_executable_and_ir_file() {
   );
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(7), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(7),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -988,7 +1059,12 @@ fn relative_imports_are_resolved() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(42),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -1041,7 +1117,12 @@ fn tsconfig_paths_are_resolved() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(42),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -1077,7 +1158,12 @@ fn ts_runtime_inert_wrappers_succeed_in_check_and_build() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(1), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(1),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -1134,7 +1220,9 @@ fn check_and_build_reject_string_literal() {
     .assert()
     .failure()
     .stderr(predicates::str::contains("NJS0009"))
-    .stderr(predicates::str::contains("string literals are not supported"));
+    .stderr(predicates::str::contains(
+      "string literals are not supported",
+    ));
 
   let out = tmp.path().join("out-bin");
   native_js()
@@ -1146,7 +1234,9 @@ fn check_and_build_reject_string_literal() {
     .assert()
     .failure()
     .stderr(predicates::str::contains("NJS0009"))
-    .stderr(predicates::str::contains("string literals are not supported"))
+    .stderr(predicates::str::contains(
+      "string literals are not supported",
+    ))
     // Ensure we don't fall through to the opaque backend errors (`NJS01xx`) at build time.
     .stderr(predicates::str::contains("NJS010").not());
 }
@@ -1197,7 +1287,12 @@ fn tsconfig_types_are_loaded_from_type_roots() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(0), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(0),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -1249,7 +1344,11 @@ fn checked_pipeline_run_prints_stdout() {
 fn checked_pipeline_supports_import_and_call_across_modules() {
   let tmp = TempDir::new().unwrap();
   let math = tmp.path().join("math.ts");
-  fs::write(&math, "export function add(a:number,b:number): number { return a+b; }\n").unwrap();
+  fs::write(
+    &math,
+    "export function add(a:number,b:number): number { return a+b; }\n",
+  )
+  .unwrap();
 
   let entry = tmp.path().join("entry.ts");
   fs::write(
@@ -2035,7 +2134,12 @@ export function main(): number { return x; }
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(42),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -2110,7 +2214,12 @@ export function main(): number { return x; }
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(2), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(2),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -2185,7 +2294,12 @@ x += 2;
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(42),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",
@@ -2229,7 +2343,12 @@ export function main(): number { return y; }
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert_eq!(
+    output.status.code(),
+    Some(42),
+    "unexpected status {:?}",
+    output.status
+  );
   assert!(
     output.stdout.is_empty(),
     "expected stdout to be empty, got: {}",

@@ -1,26 +1,29 @@
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::Parser;
 use diagnostics::{host_error, Diagnostic, FileId, Severity, Span, TextRange};
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
+use target_lexicon::HOST;
 use tempfile::tempdir;
 use typecheck_ts::Program;
 use wait_timeout::ChildExt;
 
-#[path = "../host.rs"]
-mod host;
-
 #[path = "../bench.rs"]
 mod bench;
 
-#[path = "../diag.rs"]
-#[allow(dead_code)]
-mod diag;
+#[path = "../cli_args.rs"]
+mod cli_args;
+
+#[path = "../host.rs"]
+mod host;
 
 #[path = "../output.rs"]
 mod output;
+
+#[path = "../diag.rs"]
+mod diag;
 
 #[path = "../emit.rs"]
 mod emit;
@@ -30,6 +33,8 @@ mod type_libs;
 #[path = "../project_load.rs"]
 mod project_load;
 
+use cli_args::{Cli, Commands};
+
 fn emit_bench_json(payload: &bench::BenchJsonOutput) {
   let stdout = std::io::stdout();
   let mut handle = stdout.lock();
@@ -37,247 +42,31 @@ fn emit_bench_json(payload: &bench::BenchJsonOutput) {
   let _ = writeln!(&mut handle);
 }
 
-#[derive(Parser, Debug)]
-#[command(author, version, about = "Compile TypeScript to native executables via native-js (LLVM)")]
-struct Cli {
-  #[command(subcommand)]
-  command: Commands,
-
-  /// TypeScript project file (tsconfig.json) to load.
-  #[arg(long, short = 'p', global = true)]
-  project: Option<PathBuf>,
-
-  /// Emit JSON output to stdout.
-  ///
-  /// - `check`/`build`/`emit-ir`: diagnostics JSON (`schema_version = 1`)
-  /// - `bench`: benchmark JSON (`schema_version = 1`, `command = "bench"`)
-  /// - `addr2line`: symbolization JSON (`schema_version = 1`, `command = "addr2line"`)
-  #[arg(long, global = true)]
-  json: bool,
-
-  /// Force-enable ANSI colors in diagnostics output.
-  #[arg(long, global = true, action = ArgAction::SetTrue)]
-  color: bool,
-
-  /// Disable ANSI colors in diagnostics output.
-  #[arg(long, global = true, action = ArgAction::SetTrue)]
-  no_color: bool,
-
-  /// Optimization level (0-3).
-  ///
-  /// Defaults to `2` for most commands, but `bench` defaults to `3` unless explicitly overridden.
-  ///
-  /// When `--debug` is enabled and `--opt` is not explicitly provided, defaults to `0` for easier
-  /// source-level debugging.
-  #[arg(long, global = true)]
-  opt: Option<u8>,
-
-  /// Target triple to compile and link for (e.g. `x86_64-unknown-linux-gnu`).
-  ///
-  /// When provided, this is passed through to both LLVM codegen and the system linker driver
-  /// (`clang -target <triple>`). Cross-compiling executables is not supported yet.
-  #[arg(long, value_name = "TRIPLE", global = true)]
-  target: Option<String>,
-
-  /// Emit DWARF debug info in the generated executable (line tables / function names).
-  #[arg(long, global = true)]
-  debug: bool,
-
-  /// Produce a PIE executable (ET_DYN) on Linux.
-  ///
-  /// By default native-js links non-PIE so LLVM stackmap relocations are resolved at link time.
-  #[arg(long, global = true)]
-  pie: bool,
-
-  /// Override the `clang` used for linking.
-  #[arg(long, value_name = "PATH", global = true)]
-  clang: Option<PathBuf>,
-
-  /// Override the `llvm-objcopy` used for stackmaps section rewriting (PIE + lld).
-  #[arg(long, value_name = "PATH", global = true)]
-  llvm_objcopy: Option<PathBuf>,
-
-  /// Override the optional `llvm-objdump` used by debugging tools.
-  #[arg(long, value_name = "PATH", global = true)]
-  llvm_objdump: Option<PathBuf>,
-
-  /// Pass `--sysroot=<PATH>` to clang during linking.
-  #[arg(long, value_name = "PATH", global = true)]
-  sysroot: Option<PathBuf>,
-
-  /// Extra argument to pass to clang during linking (repeatable).
-  #[arg(long, value_name = "ARG", global = true)]
-  link_arg: Vec<String>,
-
-  /// Print the exact tool invocations used during linking.
-  #[arg(long, global = true, alias = "print-commands")]
-  verbose: bool,
-
-  /// Keep temporary build directories (for debugging) and print their paths.
-  #[arg(long, global = true)]
-  keep_temp: bool,
-
-  /// Also run the legacy `native_js::strict::validate` checks.
-  ///
-  /// This is stricter than `validate_strict_subset` and may reject TypeScript-only,
-  /// runtime-inert "escape hatches" like type assertions (`as`) and non-null assertions (`!`).
-  #[arg(long, global = true)]
-  extra_strict: bool,
-}
-
-#[derive(Subcommand, Debug)]
-enum Commands {
-  /// Type-check and validate the native-js strict subset.
-  Check(CheckArgs),
-  /// Compile an entry file and emit compiler artifacts (defaults to an executable).
-  Build(BuildArgs),
-  /// Compile an entry file and run it immediately.
-  Run(RunArgs),
-  /// Compile an entry file and run it multiple times, reporting wall-clock timings.
-  Bench(BenchArgs),
-  /// Emit one or more compiler artifacts for an entry file.
-  Emit(EmitArgs),
-  /// Emit LLVM IR to a file.
-  EmitIr(EmitIrArgs),
-  /// Resolve instruction addresses to source locations using DWARF debug info.
-  #[command(name = "addr2line")]
-  Addr2Line(Addr2LineArgs),
-}
-
-#[derive(Args, Debug)]
-struct CheckArgs {
-  /// Entry TypeScript file (must export `main()`).
-  #[arg(value_name = "PATH")]
-  entry: PathBuf,
-}
-
-#[derive(Args, Debug)]
-struct BuildArgs {
-  /// Entry TypeScript file (must export `main()`).
-  #[arg(value_name = "PATH")]
-  entry: PathBuf,
-
-  /// Output path for the emitted artifact.
-  ///
-  /// - When emitting a single kind without `--out-dir`, this is the full output path.
-  /// - When `--out-dir` is set, this is treated as the output *stem* (filename) used to name
-  ///   outputs in the directory.
-  #[arg(short = 'o', long, value_name = "PATH")]
-  output: Option<PathBuf>,
-
-  /// Also emit LLVM IR (`.ll`) to the given path.
-  #[arg(long, value_name = "PATH.ll")]
-  emit_ir: Option<PathBuf>,
-
-  /// Which artifacts to emit (`llvm`, `bc`, `obj`, `asm`, `exe`, `hir`).
-  ///
-  /// If omitted, defaults to `exe` (the historical `build` behavior).
-  #[arg(long, value_enum, action = ArgAction::Append, value_name = "KIND")]
-  emit: Vec<emit::EmitKindArg>,
-
-  /// Output directory for emitted artifacts.
-  ///
-  /// Required when multiple `--emit` kinds are requested.
-  #[arg(long, value_name = "DIR")]
-  out_dir: Option<PathBuf>,
-}
-
-#[derive(Args, Debug)]
-struct RunArgs {
-  /// Entry TypeScript file (must export `main()`).
-  #[arg(value_name = "PATH")]
-  entry: PathBuf,
-
-  /// Arguments to pass to the generated executable (after `--`).
-  #[arg(trailing_var_arg = true, value_name = "ARGS")]
-  args: Vec<OsString>,
-}
-
-#[derive(Args, Debug)]
-struct BenchArgs {
-  /// Entry TypeScript file (must export `main()`).
-  #[arg(value_name = "PATH")]
-  entry: PathBuf,
-
-  /// Number of warmup runs (not included in timings).
-  #[arg(long, default_value_t = 1, value_name = "N")]
-  warmup: u32,
-
-  /// Number of measured iterations.
-  #[arg(long, default_value_t = 10, value_name = "N")]
-  iters: u32,
-
-  /// Timeout per run, in milliseconds.
-  #[arg(long, default_value_t = 5000, value_name = "N")]
-  timeout_ms: u64,
-
-  /// Arguments to pass to the generated executable (after `--`).
-  #[arg(trailing_var_arg = true, value_name = "ARGS")]
-  args: Vec<OsString>,
-}
-
-#[derive(Args, Debug)]
-struct EmitIrArgs {
-  /// Entry TypeScript file (must export `main()`).
-  #[arg(value_name = "PATH")]
-  entry: PathBuf,
-
-  /// Output path for the emitted LLVM IR.
-  #[arg(short = 'o', long, value_name = "PATH.ll")]
-  output: PathBuf,
-}
-
-#[derive(Args, Debug)]
-struct EmitArgs {
-  /// Entry TypeScript file (must export `main()`).
-  #[arg(value_name = "PATH")]
-  entry: PathBuf,
-
-  /// Which artifacts to emit (`llvm`, `bc`, `obj`, `asm`, `exe`, `hir`).
-  #[arg(long, value_enum, action = ArgAction::Append, required = true, value_name = "KIND")]
-  emit: Vec<emit::EmitKindArg>,
-
-  /// Output directory for emitted artifacts.
-  ///
-  /// Required when multiple `--emit` kinds are requested.
-  #[arg(long, value_name = "DIR")]
-  out_dir: Option<PathBuf>,
-
-  /// Output path for the emitted artifact (single-emit mode) or output stem (when `--out-dir` is
-  /// set).
-  #[arg(short = 'o', long, value_name = "PATH")]
-  output: Option<PathBuf>,
-}
-
-#[derive(Args, Debug)]
-struct Addr2LineArgs {
-  /// Executable or object file containing DWARF debug info.
-  #[arg(value_name = "PATH")]
-  exe: PathBuf,
-
-  /// Instruction addresses to resolve (hex, with or without 0x prefix).
-  #[arg(value_name = "ADDR", required_unless_present = "stdin", num_args = 1..)]
-  addrs: Vec<String>,
-
-  /// Base load address to subtract from each input address (hex).
-  ///
-  /// Useful when addresses come from a PIE binary in a running process.
-  #[arg(long, value_name = "ADDR")]
-  base: Option<String>,
-
-  /// Demangle function names when possible (Rust symbols).
-  #[arg(long, action = ArgAction::SetTrue)]
-  demangle: bool,
-
-  /// Also read addresses from stdin (best-effort scan per line).
-  #[arg(long, action = ArgAction::SetTrue)]
-  stdin: bool,
-
-  /// Exit with code 1 if any address cannot be resolved to a source line.
-  ///
-  /// This is useful in CI to validate that emitted debug info contains expected line tables.
-  #[arg(long, action = ArgAction::SetTrue)]
-  strict: bool,
+fn exit_bench_json_error(args: &cli_args::BenchArgs, message: String) -> ExitCode {
+  let bench_args: Vec<String> = args
+    .args
+    .iter()
+    .map(|a| a.to_string_lossy().into_owned())
+    .collect();
+  let diagnostic = host_error(None, message.clone());
+  let payload = bench::BenchJsonOutput {
+    schema_version: bench::JSON_SCHEMA_VERSION,
+    command: "bench",
+    diagnostics: vec![diagnostic],
+    error: Some(message),
+    entry: args.entry.display().to_string(),
+    args: bench_args,
+    warmup: args.warmup,
+    iters: args.iters,
+    timeout_ms: args.timeout_ms,
+    compile_time_ms: 0.0,
+    run_times_ms: Vec::new(),
+    run_exit_codes: Vec::new(),
+    stats: bench::stats(&[]),
+    exit_code: 2,
+  };
+  emit_bench_json(&payload);
+  ExitCode::from(2)
 }
 
 const ADDR2LINE_JSON_SCHEMA_VERSION: u32 = 1;
@@ -311,6 +100,20 @@ struct Addr2LineJsonResult {
 fn main() -> ExitCode {
   let cli = Cli::parse();
 
+  // Phase 7 profile flags: `--release` vs `--debug`.
+  if cli.debug && cli.release {
+    let message = "--debug and --release cannot be used together".to_string();
+    if cli.json {
+      if let Commands::Bench(args) = &cli.command {
+        return exit_bench_json_error(args, message);
+      }
+    }
+    eprintln!("{message}");
+    return ExitCode::from(2);
+  }
+
+  // `--json` is reserved for machine-readable output on stdout. `run` inherits the program stdout,
+  // so it would mix.
   if cli.json && matches!(&cli.command, Commands::Run(_)) {
     eprintln!("--json is not supported with `run` (it would mix with program stdout)");
     return ExitCode::from(2);
@@ -320,37 +123,12 @@ fn main() -> ExitCode {
     Some(raw) => match raw.parse::<target_lexicon::Triple>() {
       Ok(triple) => Some(triple),
       Err(err) => {
-        let message = format!(
-          "invalid --target={raw} (expected a target triple like `x86_64-unknown-linux-gnu`): {err}"
-        );
+        let message = format!("invalid target triple `{raw}`: {err}");
         if cli.json {
           // Ensure `native-js --json bench ...` always emits the bench schema, even on early errors
           // that happen before we can dispatch into `cmd_bench`.
           if let Commands::Bench(args) = &cli.command {
-            let bench_args: Vec<String> = args
-              .args
-              .iter()
-              .map(|a| a.to_string_lossy().into_owned())
-              .collect();
-            let diagnostic = host_error(None, message.clone());
-            let payload = bench::BenchJsonOutput {
-              schema_version: bench::JSON_SCHEMA_VERSION,
-              command: "bench",
-              diagnostics: vec![diagnostic],
-              error: Some(message),
-              entry: args.entry.display().to_string(),
-              args: bench_args,
-              warmup: args.warmup,
-              iters: args.iters,
-              timeout_ms: args.timeout_ms,
-              compile_time_ms: 0.0,
-              run_times_ms: Vec::new(),
-              run_exit_codes: Vec::new(),
-              stats: bench::stats(&[]),
-              exit_code: 2,
-            };
-            emit_bench_json(&payload);
-            return ExitCode::from(2);
+            return exit_bench_json_error(args, message);
           }
         }
         return exit_internal_without_program(cli.json, message);
@@ -358,6 +136,21 @@ fn main() -> ExitCode {
     },
     None => None,
   };
+
+  // `run`/`bench` only make sense when the produced executable can run on the host.
+  if target.as_ref().is_some_and(|target| target != &HOST)
+    && matches!(&cli.command, Commands::Run(_) | Commands::Bench(_))
+  {
+    let message =
+      "`run`/`bench` do not support cross-target execution; use `build --target ...`".to_string();
+    if cli.json {
+      if let Commands::Bench(args) = &cli.command {
+        return exit_bench_json_error(args, message);
+      }
+    }
+    eprintln!("{message}");
+    return ExitCode::from(2);
+  }
 
   let render = output::render_options(cli.color, cli.no_color);
   match &cli.command {
@@ -372,15 +165,17 @@ fn main() -> ExitCode {
 }
 
 fn cmd_check(cli: &Cli, entry: &Path, render: diagnostics::render::RenderOptions) -> ExitCode {
-  let (program, entry_file) =
-    match project_load::load_program(cli.project.as_deref(), entry, project_load::LoadMode::Checked)
-    {
+  let (program, entry_file) = match project_load::load_program(
+    cli.project.as_deref(),
+    entry,
+    project_load::LoadMode::Checked,
+  ) {
     Ok(res) => res,
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
 
   let diagnostics = collect_check_diagnostics(&program, entry_file, cli.extra_strict);
-  let exit_code = ExitCode::from(diag::exit_code_for_diagnostics(&diagnostics));
+  let exit_code = exit_code_for_diagnostics(&diagnostics);
   match output::emit_diagnostics(&program, diagnostics, cli.json, render) {
     Ok(_) => exit_code,
     Err(err) => exit_internal(
@@ -394,7 +189,7 @@ fn cmd_check(cli: &Cli, entry: &Path, render: diagnostics::render::RenderOptions
 
 fn cmd_build(
   cli: &Cli,
-  args: &BuildArgs,
+  args: &cli_args::BuildArgs,
   target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
@@ -493,8 +288,7 @@ fn cmd_build(
     }
   }
 
-  let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
-  let opt = match opt_level(opt_raw) {
+  let opt = match opt_level_for_command(cli, native_js::OptLevel::O2) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
   };
@@ -573,7 +367,7 @@ fn cmd_build(
 
 fn cmd_emit(
   cli: &Cli,
-  args: &EmitArgs,
+  args: &cli_args::EmitArgs,
   target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
@@ -636,8 +430,7 @@ fn cmd_emit(
     }
   }
 
-  let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
-  let opt = match opt_level(opt_raw) {
+  let opt = match opt_level_for_command(cli, native_js::OptLevel::O2) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
   };
@@ -712,48 +505,16 @@ fn cmd_emit_ir(
   target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
-  let (program, entry_file) =
-    match project_load::load_program(cli.project.as_deref(), entry, project_load::LoadMode::Checked)
-    {
-    Ok(res) => res,
-    Err(err) => return exit_internal_without_program(cli.json, err),
-  };
-
-  if cli.extra_strict {
-    let diagnostics = collect_check_diagnostics(&program, entry_file, true);
-    let exit_code = ExitCode::from(diag::exit_code_for_diagnostics(&diagnostics));
-    if exit_code != ExitCode::SUCCESS {
-      let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
-      return exit_code;
-    }
-  }
-
-  let mut opts = native_js::CompilerOptions::default();
-  opts.emit = native_js::EmitKind::LlvmIr;
-  opts.output = Some(output_ll.to_path_buf());
-  opts.debug = cli.debug;
-  opts.print_commands = cli.verbose;
-  opts.keep_temp = cli.keep_temp;
-  opts.target = target.clone();
-  let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
-  opts.opt_level = match opt_level(opt_raw) {
-    Ok(level) => level,
-    Err(err) => return exit_internal(&program, cli.json, render, err),
-  };
-
-  if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
-    if let Some(diags) = err.diagnostics() {
-      let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
-      return ExitCode::from(diag::exit_code_for_diagnostics(diags));
-    }
-    return exit_internal(&program, cli.json, render, err.to_string());
-  }
-
-  if cli.json {
-    let _ = output::emit_diagnostics(&program, Vec::new(), true, render);
-  }
-
-  ExitCode::SUCCESS
+  cmd_compile(
+    cli,
+    entry,
+    native_js::EmitKind::LlvmIr,
+    output_ll,
+    None,
+    target,
+    render,
+    native_js::OptLevel::O2,
+  )
 }
 
 fn cmd_run(
@@ -769,17 +530,20 @@ fn cmd_run(
       return exit_internal_without_program(cli.json, format!("failed to create tempdir: {err}"));
     }
   };
-  let (exe_dir, _exe_dir_keepalive) = if cli.keep_temp {
-    let path = dir.path().to_path_buf();
+
+  let dir_path = dir.path().to_path_buf();
+  let keep_dir = cli.keep_temp || cli.debug;
+  let (dir_path, _keep_dir): (PathBuf, Option<tempfile::TempDir>) = if keep_dir {
+    let path = dir_path.clone();
     let _ = dir.keep();
     eprintln!("kept tempdir: {}", path.display());
     (path, None)
   } else {
-    (dir.path().to_path_buf(), Some(dir))
+    (dir_path, Some(dir))
   };
-  let exe = exe_dir.join("out");
 
-  let build_args = BuildArgs {
+  let exe = dir_path.join("out");
+  let build_args = cli_args::BuildArgs {
     entry: entry.to_path_buf(),
     output: Some(exe.clone()),
     emit_ir: None,
@@ -818,7 +582,7 @@ fn cmd_run(
 
 fn cmd_bench(
   cli: &Cli,
-  args: &BenchArgs,
+  args: &cli_args::BenchArgs,
   target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
@@ -858,7 +622,22 @@ fn cmd_bench(
       return ExitCode::from(2);
     }
   };
-  let exe = dir.path().join("out");
+
+  let dir_path = dir.path().to_path_buf();
+  let keep_dir = cli.keep_temp || cli.debug;
+  let (dir_path, _keep_dir): (PathBuf, Option<tempfile::TempDir>) = if keep_dir {
+    // Avoid emitting extra stderr in `--json` mode (tests expect stderr to be empty there).
+    let path = dir_path.clone();
+    let _ = dir.keep();
+    if !cli.json {
+      eprintln!("kept tempdir: {}", path.display());
+    }
+    (path, None)
+  } else {
+    (dir_path, Some(dir))
+  };
+
+  let exe = dir_path.join("out");
 
   let compile_start = Instant::now();
   let (program, entry_file) = match project_load::load_program(
@@ -894,13 +673,13 @@ fn cmd_bench(
     }
   };
 
-    if cli.extra_strict {
-      let diagnostics = collect_check_diagnostics(&program, entry_file, true);
-      let exit_code = diag::exit_code_for_diagnostics(&diagnostics);
-      if exit_code != 0 {
-        if cli.json {
-          let payload = bench::BenchJsonOutput {
-            schema_version: bench::JSON_SCHEMA_VERSION,
+  if cli.extra_strict {
+    let diagnostics = collect_check_diagnostics(&program, entry_file, true);
+    let exit_code = exit_u8_for_diagnostics(&diagnostics);
+    if exit_code != 0 {
+      if cli.json {
+        let payload = bench::BenchJsonOutput {
+          schema_version: bench::JSON_SCHEMA_VERSION,
           command: "bench",
           diagnostics,
           error: None,
@@ -923,8 +702,7 @@ fn cmd_bench(
     }
   }
 
-  let opt_raw = cli.opt.unwrap_or(3);
-  let opt = match opt_level(opt_raw) {
+  let opt = match opt_level_for_command(cli, native_js::OptLevel::O3) {
     Ok(level) => level,
     Err(err) => {
       if cli.json {
@@ -955,16 +733,60 @@ fn cmd_bench(
   let mut opts = native_js::CompilerOptions::default();
   opts.emit = native_js::EmitKind::Executable;
   opts.output = Some(exe.clone());
-  // Bench builds should be representative "release" builds.
-  opts.debug = false;
-  opts.pie = cli.pie;
   opts.target = target.clone();
+  opts.debug = cli.debug;
+  opts.print_commands = cli.verbose;
+  opts.keep_temp = cli.keep_temp;
+  opts.pie = cli.pie;
   opts.opt_level = opt;
+  if cli.clang.is_some()
+    || cli.llvm_objcopy.is_some()
+    || cli.llvm_objdump.is_some()
+    || cli.sysroot.is_some()
+    || !cli.link_arg.is_empty()
+  {
+    let toolchain = native_js::Toolchain::detect_with_overrides(
+      cli.clang.clone(),
+      cli.llvm_objcopy.clone(),
+      cli.llvm_objdump.clone(),
+      cli.sysroot.clone(),
+      cli.link_arg.clone(),
+    );
+    match toolchain {
+      Ok(tc) => opts.toolchain = Some(tc),
+      Err(err) => {
+        let message = err.to_string();
+        let compile_time_ms = bench::duration_ms(compile_start.elapsed());
+        if cli.json {
+          let diagnostic = host_error(None, message.clone());
+          let payload = bench::BenchJsonOutput {
+            schema_version: bench::JSON_SCHEMA_VERSION,
+            command: "bench",
+            diagnostics: vec![diagnostic],
+            error: Some(message),
+            entry,
+            args: bench_args,
+            warmup: args.warmup,
+            iters: args.iters,
+            timeout_ms: args.timeout_ms,
+            compile_time_ms,
+            run_times_ms: Vec::new(),
+            run_exit_codes: Vec::new(),
+            stats: bench::stats(&[]),
+            exit_code: 2,
+          };
+          emit_bench_json(&payload);
+          return ExitCode::from(2);
+        }
+        return exit_internal(&program, false, render, message);
+      }
+    }
+  }
 
   if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
     let compile_time_ms = bench::duration_ms(compile_start.elapsed());
     if let Some(diags) = err.diagnostics() {
-      let exit_code = diag::exit_code_for_diagnostics(diags);
+      let exit_code = exit_u8_for_diagnostics(diags);
       if cli.json {
         let payload = bench::BenchJsonOutput {
           schema_version: bench::JSON_SCHEMA_VERSION,
@@ -1015,7 +837,6 @@ fn cmd_bench(
   }
 
   let compile_time_ms = bench::duration_ms(compile_start.elapsed());
-
   let timeout = Duration::from_millis(args.timeout_ms);
 
   // Warmup (unmeasured).
@@ -1193,7 +1014,7 @@ fn run_bench_once(exe: &Path, args: &[OsString], timeout: Duration) -> Result<Be
   }
 }
 
-fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
+fn cmd_addr2line(cli: &Cli, args: &cli_args::Addr2LineArgs) -> ExitCode {
   fn emit_json(payload: &Addr2LineJsonOutput) {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
@@ -1569,6 +1390,85 @@ fn try_parse_hex_u64(raw: &str) -> Option<u64> {
   has_digit.then_some(out)
 }
 
+fn cmd_compile(
+  cli: &Cli,
+  entry: &Path,
+  emit: native_js::EmitKind,
+  output_path: &Path,
+  emit_ir: Option<&Path>,
+  target: &Option<target_lexicon::Triple>,
+  render: diagnostics::render::RenderOptions,
+  default_opt: native_js::OptLevel,
+) -> ExitCode {
+  let (program, entry_file) = match project_load::load_program(
+    cli.project.as_deref(),
+    entry,
+    project_load::LoadMode::Checked,
+  ) {
+    Ok(res) => res,
+    Err(err) => return exit_internal_without_program(cli.json, err),
+  };
+
+  // `compile_program` already runs typechecking, strict-subset validation, and entrypoint checks.
+  // We only pre-run the legacy strict validator when explicitly requested.
+  if cli.extra_strict {
+    let diagnostics = collect_check_diagnostics(&program, entry_file, true);
+    let exit_code = exit_code_for_diagnostics(&diagnostics);
+    if exit_code != ExitCode::SUCCESS {
+      let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
+      return exit_code;
+    }
+  }
+
+  let mut opts = native_js::CompilerOptions::default();
+  opts.emit = emit;
+  opts.output = Some(output_path.to_path_buf());
+  opts.emit_ir = emit_ir.map(|p| p.to_path_buf());
+  opts.target = target.clone();
+  opts.debug = cli.debug;
+  opts.print_commands = cli.verbose;
+  opts.keep_temp = cli.keep_temp;
+  opts.pie = cli.pie;
+  opts.opt_level = match opt_level_for_command(cli, default_opt) {
+    Ok(level) => level,
+    Err(err) => return exit_internal(&program, cli.json, render, err),
+  };
+  if matches!(emit, native_js::EmitKind::Executable)
+    && (cli.clang.is_some()
+      || cli.llvm_objcopy.is_some()
+      || cli.llvm_objdump.is_some()
+      || cli.sysroot.is_some()
+      || !cli.link_arg.is_empty())
+  {
+    let toolchain = native_js::Toolchain::detect_with_overrides(
+      cli.clang.clone(),
+      cli.llvm_objcopy.clone(),
+      cli.llvm_objdump.clone(),
+      cli.sysroot.clone(),
+      cli.link_arg.clone(),
+    );
+    match toolchain {
+      Ok(tc) => opts.toolchain = Some(tc),
+      Err(err) => return exit_internal(&program, cli.json, render, err.to_string()),
+    }
+  }
+
+  if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
+    if let Some(diags) = err.diagnostics() {
+      let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
+      return exit_code_for_diagnostics(diags);
+    }
+    return exit_internal(&program, cli.json, render, err.to_string());
+  }
+
+  // Emit JSON even on success so callers can depend on a stable output shape.
+  if cli.json {
+    let _ = output::emit_diagnostics(&program, Vec::new(), true, render);
+  }
+
+  ExitCode::SUCCESS
+}
+
 fn collect_check_diagnostics(program: &Program, entry_file: FileId, extra_strict: bool) -> Vec<Diagnostic> {
   let mut diagnostics = program.check();
   let has_type_errors = diagnostics.iter().any(|d| d.severity == Severity::Error);
@@ -1597,8 +1497,50 @@ fn opt_level(raw: u8) -> Result<native_js::OptLevel, String> {
     1 => Ok(native_js::OptLevel::O1),
     2 => Ok(native_js::OptLevel::O2),
     3 => Ok(native_js::OptLevel::O3),
-    other => Err(format!("invalid --opt={other} (expected 0,1,2,3)")),
+    other => Err(format!("invalid --opt-level={other} (expected 0,1,2,3)")),
   }
+}
+
+fn opt_level_for_command(cli: &Cli, default: native_js::OptLevel) -> Result<native_js::OptLevel, String> {
+  if let Some(raw) = cli.opt_level {
+    opt_level(raw)
+  } else if cli.release {
+    Ok(native_js::OptLevel::O3)
+  } else if cli.debug {
+    Ok(native_js::OptLevel::O0)
+  } else {
+    Ok(default)
+  }
+}
+
+fn exit_code_for_diagnostics(diagnostics: &[Diagnostic]) -> ExitCode {
+  let has_errors = diagnostics.iter().any(|d| d.severity == Severity::Error);
+  if !has_errors {
+    return ExitCode::SUCCESS;
+  }
+
+  let has_internal = diagnostics.iter().any(|d| {
+    d.severity == Severity::Error
+      && (d.code.as_str().starts_with("ICE") || d.code.as_str().starts_with("HOST"))
+  });
+  if has_internal {
+    ExitCode::from(2)
+  } else {
+    ExitCode::from(1)
+  }
+}
+
+fn exit_u8_for_diagnostics(diagnostics: &[Diagnostic]) -> u8 {
+  let has_errors = diagnostics.iter().any(|d| d.severity == Severity::Error);
+  if !has_errors {
+    return 0;
+  }
+
+  let has_internal = diagnostics.iter().any(|d| {
+    d.severity == Severity::Error
+      && (d.code.as_str().starts_with("ICE") || d.code.as_str().starts_with("HOST"))
+  });
+  if has_internal { 2 } else { 1 }
 }
 
 fn exit_internal_without_program(json: bool, message: String) -> ExitCode {
