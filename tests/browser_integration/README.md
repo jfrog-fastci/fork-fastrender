@@ -50,8 +50,8 @@ Notes:
 - Rust's test harness runs tests in parallel threads by default. Many browser integration tests
   share process-global state. To avoid cross-test interference while still allowing the overall
   integration test suite to run with default libtest parallelism, tests that touch shared global
-  state should acquire `stage_listener_test_lock()` (see below) or the shared
-  `crate::common::global_test_lock()` helper.
+  state should acquire `stage_listener_test_lock()` (see below) or the shared integration-test lock
+  in `tests/common/global_state.rs` (`crate::common::global_test_lock()`).
 - If you need fully single-threaded execution (e.g. when debugging a flaky global-state
   interaction), run with:
 
@@ -62,8 +62,7 @@ Notes:
   `support::deterministic_renderer()` / `support::deterministic_factory()` (or pass an explicit
   `FontConfig`, such as `FontConfig::bundled_only()`) so text rendering does not depend on
   system-installed fonts. Under `--features browser_ui`, `FontConfig::default()` already prefers
-  bundled fonts by default, so the test harness does not mutate `FASTR_USE_BUNDLED_FONTS`
-  process-wide.
+  bundled fonts by default, so the test harness does not need process-wide env var overrides.
 
 ## Headless constraints (no winit/wgpu/egui)
 
