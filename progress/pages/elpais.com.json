@@ -14,7 +14,7 @@
     "layout": 259.23427606719997,
     "paint": 80.07236326399999
   },
-  "notes": "",
+  "notes": "Fixed border fast path for single-edge bottom borders: avoid shifting pixel-aligned 1px dividers down by 1px due to opaque fill snapping. Remaining pixel diffs are mostly text rasterization (hinting/subpixel AA) differences vs Chrome.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 44046,

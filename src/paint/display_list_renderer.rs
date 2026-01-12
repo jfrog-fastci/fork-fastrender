@@ -7486,7 +7486,10 @@ impl DisplayListRenderer {
           // bottom borders land on row N+1 while FastRender paints row N.
           //
           // Match Chrome by biasing *single-edge* bottom borders (no other sides) down by half a
-          // device pixel when the border width is an integer number of device pixels.
+          // device pixel when the border width is an integer number of device pixels and the top
+          // edge falls in the first half of a device pixel. This avoids our opaque-fill snapping
+          // expanding the strip by an extra scanline (and also avoids shifting pixel-aligned
+          // borders down by 1px).
           //
           // Even-width borders can still land on fractional device pixels (because the border box
           // height is often fractional in text-heavy layouts). Without this bias the fill-rect snap
@@ -7496,16 +7499,17 @@ impl DisplayListRenderer {
           let mut bottom_y = y + h - bottom.width;
           let single_edge_bottom =
             top.width <= 0.0 && right.width <= 0.0 && left.width <= 0.0 && bottom.width > 0.0;
-          // Only apply the Chrome-matching bias when the border's top edge lands on a fractional
-          // device pixel. If the edge is already aligned to an integer pixel, shifting the border
-          // down by half a pixel can move it outside the element's border box and allow later
-          // siblings to paint over it (regressions: MDN sticky header divider, wired.com header
-          // divider).
-          if single_edge_bottom
-            && Self::is_near_integer(bottom.width)
-            && !Self::is_near_integer(bottom_y)
-          {
-            bottom_y += 0.5;
+          if single_edge_bottom && Self::is_near_integer(bottom.width) && bottom_y.is_finite() {
+            // Only apply the Chrome-matching bias when the border's top edge falls in the *first
+            // half* of a device pixel. In that range our opaque fill snapping (`ceil(max)`) would
+            // otherwise expand the snapped rect by an extra scanline (producing a (k+1)px tall
+            // border for an intended kpx border). Avoid applying the bias when already
+            // pixel-aligned, as it shifts the border down by 1px and can move it outside the
+            // element's border box.
+            let frac = bottom_y.rem_euclid(1.0);
+            if frac > 1e-3 && frac < 0.5 - 1e-3 {
+              bottom_y += 0.5;
+            }
           }
           self
             .canvas
@@ -25270,12 +25274,83 @@ mod tests {
     })));
 
     let pixmap = renderer.render(&list).unwrap();
-
     // The bottom border should land on y=90 (0 + 91 - 1) rather than being shifted down into
     // y=91.
     assert_eq!(pixel(&pixmap, 5, 89), (255, 255, 255, 255));
     assert_eq!(pixel(&pixmap, 5, 90), (0, 0, 0, 255));
     assert_eq!(pixel(&pixmap, 5, 91), (255, 255, 255, 255));
+  }
+
+  #[test]
+  fn single_edge_bottom_border_does_not_shift_when_pixel_aligned() {
+    // Regression test: the fast path for simple solid borders uses `Canvas::draw_rect`, which
+    // snaps opaque fills to device pixels. We apply an extra bias for *fractional* bottom borders
+    // to avoid snapping to a (k+1)px band, but that bias must not trigger for integer-aligned
+    // borders (it would shift the border down by 1px).
+    let renderer = DisplayListRenderer::new(12, 10, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+
+    let bottom = BorderSide {
+      width: 1.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::new(74, 74, 74, 1.0),
+    };
+    let none = BorderSide {
+      width: 0.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::new(74, 74, 74, 1.0),
+    };
+    list.push(DisplayItem::Border(Box::new(BorderItem {
+      rect: Rect::from_xywh(1.0, 1.0, 10.0, 4.0),
+      top: none.clone(),
+      right: none.clone(),
+      bottom,
+      left: none,
+      image: None,
+      radii: BorderRadii::ZERO,
+      gap: None,
+    })));
+
+    let pixmap = renderer.render(&list).unwrap();
+    // Border should occupy the last row of the border box (y + h - 1).
+    assert_eq!(pixel(&pixmap, 5, 4), (74, 74, 74, 255));
+    assert_eq!(pixel(&pixmap, 5, 5), (255, 255, 255, 255));
+  }
+
+  #[test]
+  fn single_edge_bottom_border_fractional_top_edge_paints_one_scanline() {
+    // When the border's top edge lands in the first half of a device pixel, our opaque-fill
+    // snapping rules (`ceil(max)`) would otherwise expand the strip by one scanline (making a 1px
+    // border render as 2px). The border fast path should compensate so the border stays 1px.
+    let renderer = DisplayListRenderer::new(12, 10, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+
+    let bottom = BorderSide {
+      width: 1.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::new(74, 74, 74, 1.0),
+    };
+    let none = BorderSide {
+      width: 0.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::new(74, 74, 74, 1.0),
+    };
+    list.push(DisplayItem::Border(Box::new(BorderItem {
+      rect: Rect::from_xywh(1.0, 0.2, 10.0, 4.0),
+      top: none.clone(),
+      right: none.clone(),
+      bottom,
+      left: none,
+      image: None,
+      radii: BorderRadii::ZERO,
+      gap: None,
+    })));
+
+    let pixmap = renderer.render(&list).unwrap();
+    // The border box's bottom edge is at y=4.2; the bottom border is 1px and should paint on the
+    // scanline just above that (row 4) without also filling row 3.
+    assert_eq!(pixel(&pixmap, 5, 3), (255, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 5, 4), (74, 74, 74, 255));
   }
 
   #[test]
