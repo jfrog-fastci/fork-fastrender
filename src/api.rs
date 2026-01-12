@@ -5725,6 +5725,18 @@ struct RuntimeTogglesSwap {
   previous: Option<Arc<RuntimeToggles>>,
 }
 
+#[inline]
+fn captured_display_list_for_paint<'a>(
+  paint_from_captured_display_list: bool,
+  captured_display_list: &'a Option<crate::paint::display_list::DisplayList>,
+) -> Option<&'a crate::paint::display_list::DisplayList> {
+  if paint_from_captured_display_list {
+    captured_display_list.as_ref()
+  } else {
+    None
+  }
+}
+
 impl RuntimeTogglesSwap {
   fn new(target: &mut Arc<RuntimeToggles>, next: Arc<RuntimeToggles>) -> Self {
     let previous = Some(std::mem::replace(target, next));
@@ -7305,15 +7317,15 @@ impl FastRender {
           .record_start(RenderStage::Paint, paint_rss_start);
       }
       check_stage_mem_budget(RenderStage::Paint, paint_rss_start, stage_mem_budget_bytes)?;
-      let pixmap = if paint_from_captured_display_list {
+      let pixmap = if let Some(display_list) =
+        captured_display_list_for_paint(paint_from_captured_display_list, &captured_display_list)
+      {
         // We're bypassing the normal display-list backend's builder stage (already done above), so
         // manually emit the paint-build heartbeat.
         record_stage(StageHeartbeat::PaintBuild);
         crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
         paint_display_list_with_resources_scaled_with_trace(
-          captured_display_list
-            .as_ref()
-            .expect("display list must be present when painting from it"),
+          display_list,
           target_width,
           target_height,
           self.background_color,
@@ -20582,6 +20594,15 @@ mod tests {
       }
     }
     None
+  }
+
+  #[test]
+  fn captured_display_list_for_paint_requires_flag_and_value() {
+    let some = Some(crate::paint::display_list::DisplayList::new());
+    assert!(captured_display_list_for_paint(true, &some).is_some());
+    assert!(captured_display_list_for_paint(false, &some).is_none());
+    let none: Option<crate::paint::display_list::DisplayList> = None;
+    assert!(captured_display_list_for_paint(true, &none).is_none());
   }
 
   #[test]

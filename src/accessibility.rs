@@ -1609,9 +1609,7 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
       continue;
     }
 
-    let finished = stack
-      .pop()
-      .expect("frame exists (we are in while stack.last_mut)");
+    let Some(finished) = stack.pop() else { break };
     let node = finished.node;
     let children = finished.built_children;
 

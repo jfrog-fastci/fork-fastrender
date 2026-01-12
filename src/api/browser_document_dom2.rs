@@ -504,33 +504,32 @@ impl BrowserDocumentDom2 {
 
       let mut did_incremental_layout = false;
       if can_incremental_relayout {
-        let mut prepared = self
-          .prepared
-          .take()
-          .expect("prepared exists when can_incremental_relayout=true");
-        match self.incremental_relayout_for_text_changes(&mut prepared) {
-          Ok(true) => {
-            self.invalidation_counters.incremental_relayouts = self
-              .invalidation_counters
-              .incremental_relayouts
-              .saturating_add(1);
-            // Incremental relayout produces fresh cached layout artifacts without taking a full
-            // renderer-DOM snapshot, so we still need to record that we've now "seen" the live DOM
-            // mutation generation. Without this, generation-based dirty detection would force an
-            // extra full pipeline run on the next `render_if_needed()` call.
-            self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
-            self.prepared = Some(prepared);
-            did_incremental_layout = true;
-          }
-          Ok(false) => {
-            // Could not safely apply incremental relayout; fall back to a full pipeline run.
-            self.prepared = Some(prepared);
-          }
-          Err(err) => {
-            // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
-            self.prepared = Some(prepared);
-            return Err(err);
-          }
+        match self.prepared.take() {
+          Some(mut prepared) => match self.incremental_relayout_for_text_changes(&mut prepared) {
+            Ok(true) => {
+              self.invalidation_counters.incremental_relayouts = self
+                .invalidation_counters
+                .incremental_relayouts
+                .saturating_add(1);
+              // Incremental relayout produces fresh cached layout artifacts without taking a full
+              // renderer-DOM snapshot, so we still need to record that we've now "seen" the live DOM
+              // mutation generation. Without this, generation-based dirty detection would force an
+              // extra full pipeline run on the next `render_if_needed()` call.
+              self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+              self.prepared = Some(prepared);
+              did_incremental_layout = true;
+            }
+            Ok(false) => {
+              // Could not safely apply incremental relayout; fall back to a full pipeline run.
+              self.prepared = Some(prepared);
+            }
+            Err(err) => {
+              // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
+              self.prepared = Some(prepared);
+              return Err(err);
+            }
+          },
+          None => {}
         }
       }
 
@@ -1141,6 +1140,32 @@ mod tests {
 
     assert!(doc.render_if_needed().unwrap().is_some());
     assert!(doc.render_if_needed().unwrap().is_none());
+  }
+
+  #[test]
+  fn text_mutation_uses_incremental_relayout() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+    assert_eq!(before.incremental_relayouts, 0);
+    assert_eq!(before.full_restyles, 1);
+    assert_eq!(before.full_relayouts, 1);
+
+    let text_id = first_text_node_id(doc.dom()).expect("text node");
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_id, "Updated").expect("set text"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(after.full_restyles, before.full_restyles);
+    assert_eq!(after.full_relayouts, before.full_relayouts);
+    Ok(())
   }
 
   #[test]
