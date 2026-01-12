@@ -12,7 +12,7 @@ impl ProgramState {
   pub(super) fn body_check_context(&mut self) -> Arc<BodyCheckContext> {
     let fingerprint = self
       .decl_types_fingerprint
-      .unwrap_or_else(|| db::decl_types_fingerprint(&self.typecheck_db));
+      .unwrap_or_else(|| db::decl_types_fingerprint(&*self.typecheck_db.lock()));
     let file_text_revision = self.file_text_revision;
     let cache_options = self.compiler_options.cache.clone();
     let store = Arc::clone(&self.store);

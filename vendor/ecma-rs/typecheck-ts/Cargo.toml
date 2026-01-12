@@ -37,6 +37,7 @@ num-bigint = { workspace = true }
 bumpalo = { workspace = true, features = ["collections"] }
 rayon = { workspace = true }
 smallvec = { workspace = true }
+parking_lot = { workspace = true }
 # salsa 0.18 provides the 2022 tracked/input APIs without the newer Rust 1.85 toolchain
 # requirement and uses clone-based snapshots instead of the removed ParallelDatabase trait.
 salsa = { workspace = true }

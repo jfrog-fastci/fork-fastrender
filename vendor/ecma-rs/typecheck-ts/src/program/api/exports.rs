@@ -13,7 +13,7 @@ impl Program {
   }
 
   pub fn exports_of_fallible(&self, file: FileId) -> Result<ExportMap, FatalError> {
-    self.with_interned_state(|state| {
+    self.with_interned_state_mut(|state| {
       let mut exports = state.exports_of_file(file)?;
 
       // `typecheck-ts-harness` gathers export type facts via `Program::exports_of`.

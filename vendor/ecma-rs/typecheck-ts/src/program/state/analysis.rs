@@ -69,6 +69,7 @@ impl ProgramState {
     // specifier so downstream module graph queries see the dependency.
     self
       .typecheck_db
+      .lock()
       .set_module_resolution_ref(from, specifier, Some(target));
     Some(target)
   }
@@ -112,6 +113,7 @@ impl ProgramState {
     self.root_ids = root_ids;
     self
       .typecheck_db
+      .lock()
       .set_roots(Arc::<[FileKey]>::from(root_keys));
     let mut queue: VecDeque<FileId> = self.root_ids.iter().copied().collect();
     queue.extend(lib_queue);
@@ -136,6 +138,7 @@ impl ProgramState {
         for root in self.root_ids.iter().copied() {
           self
             .typecheck_db
+            .lock()
             .set_module_resolution_ref(root, name.as_str(), resolved);
         }
 
@@ -241,7 +244,7 @@ impl ProgramState {
       // module specifiers in the file. This avoids accumulating stale edges
       // once program edits become incremental (without recreating the salsa DB)
       // and keeps serialized snapshots consistent with the current module graph.
-      let current_specifiers = db::module_specifiers(&self.typecheck_db, file);
+      let current_specifiers = db::module_specifiers(&*self.typecheck_db.lock(), file);
       let is_root = self.root_ids.contains(&file);
       let mut keep_specifiers: AHashSet<&str> = AHashSet::new();
       for specifier in current_specifiers.iter() {
@@ -252,9 +255,9 @@ impl ProgramState {
           keep_specifiers.insert(specifier.as_str());
         }
       }
-      self
-        .typecheck_db
-        .retain_module_resolutions_for_file(file, |specifier| keep_specifiers.contains(specifier));
+      self.typecheck_db.lock().retain_module_resolutions_for_file(file, |specifier| {
+        keep_specifiers.contains(specifier)
+      });
 
       let mut type_package_specifiers: AHashSet<&str> = AHashSet::new();
       for specifier in triple_slash_types.iter().copied() {
@@ -291,9 +294,9 @@ impl ProgramState {
             ),
             None,
             false,
-            Some(self.query_stats.clone()),
-          );
-          let lowered = db::lower_hir(&self.typecheck_db, file);
+          Some(self.query_stats.clone()),
+        );
+          let lowered = db::lower_hir(&*self.typecheck_db.lock(), file);
           let Some(lowered) = lowered.lowered else {
             if let Some(span) = lower_span {
               span.finish(None);
@@ -332,7 +335,7 @@ impl ProgramState {
     }
     if !self.hir_lowered.is_empty() {
       self.check_cancelled()?;
-      let ts_semantics = db::ts_semantics(&self.typecheck_db);
+      let ts_semantics = db::ts_semantics(&*self.typecheck_db.lock());
       self.check_cancelled()?;
       self.semantics = Some(Arc::clone(&ts_semantics.semantics));
       self.extend_symbol_to_def_with_semantic_ids();

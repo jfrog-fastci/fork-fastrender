@@ -334,7 +334,8 @@ impl Program {
             .map(|data| Span::new(data.file, data.span)),
         );
       }
-      if let Some(span) = db::span_of_def(&state.typecheck_db, def) {
+      let db = state.typecheck_db.lock().clone();
+      if let Some(span) = db::span_of_def(&db, def) {
         return Ok(Some(span));
       }
       Ok(
@@ -362,22 +363,33 @@ impl Program {
     body: BodyId,
     expr: ExprId,
   ) -> Result<Option<Span>, FatalError> {
-    self.with_analyzed_state(|state| {
+    let (db_span, file) = self.with_analyzed_state(|state| {
       if state.snapshot_loaded {
-        let Some(meta) = state.body_map.get(&body).copied() else {
-          return Ok(None);
+        let meta = state.body_map.get(&body).copied();
+        let range = state
+          .body_results
+          .get(&body)
+          .and_then(|result| result.expr_span(expr));
+        let span = match (meta.as_ref(), range) {
+          (Some(meta), Some(range)) => Some(Span::new(meta.file, range)),
+          _ => None,
         };
-        let res = state.check_body(body)?;
-        return Ok(res.expr_span(expr).map(|range| Span::new(meta.file, range)));
+        return Ok((span, meta.map(|m| m.file)));
       }
-      if let Some(span) = db::span_of_expr(&state.typecheck_db, body, expr) {
-        return Ok(Some(span));
-      }
-      let Some(meta) = state.body_map.get(&body).copied() else {
-        return Ok(None);
-      };
-      let res = state.check_body(body)?;
-      Ok(res.expr_span(expr).map(|range| Span::new(meta.file, range)))
-    })
+      let db = state.typecheck_db.lock().clone();
+      let db_span = db::span_of_expr(&db, body, expr);
+      let file = state.body_map.get(&body).map(|meta| meta.file);
+      Ok((db_span, file))
+    })?;
+
+    if db_span.is_some() {
+      return Ok(db_span);
+    }
+
+    let Some(file) = file else {
+      return Ok(None);
+    };
+    let res = self.check_body_fallible(body)?;
+    Ok(res.expr_span(expr).map(|range| Span::new(file, range)))
   }
 }

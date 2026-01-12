@@ -129,13 +129,13 @@ impl Program {
     let mut symbol_files: Vec<_> = state.file_kinds.keys().copied().collect();
     symbol_files.sort_by_key(|file| file.0);
     for file in symbol_files.iter().copied() {
-      let occs = crate::db::symbol_occurrences(&state.typecheck_db, file);
+      let occs = crate::db::symbol_occurrences(&*state.typecheck_db.lock(), file);
       symbol_occurrences.push((file, occs.iter().cloned().collect()));
     }
 
     let mut local_symbol_info = Vec::new();
     for file in symbol_files.iter().copied() {
-      let locals = crate::db::local_symbol_info(&state.typecheck_db, file);
+      let locals = crate::db::local_symbol_info(&*state.typecheck_db.lock(), file);
       for (symbol, info) in locals.iter() {
         local_symbol_info.push(LocalSymbolInfoSnapshot {
           symbol: *symbol,
@@ -238,6 +238,7 @@ impl Program {
 
     let module_resolutions = state
       .typecheck_db
+      .lock()
       .module_resolutions_snapshot()
       .into_iter()
       .map(|(from, specifier, resolved)| ModuleResolutionSnapshot {
@@ -314,17 +315,20 @@ impl Program {
       state.snapshot_loaded = true;
       state.compiler_options = snapshot.compiler_options;
       state.checker_caches = CheckerCaches::new(state.compiler_options.cache.clone());
-      state.cache_stats = CheckerCacheStats::default();
+      *state.cache_stats.lock() = CheckerCacheStats::default();
       let options = state.compiler_options.clone();
       let cancelled = state.cancelled.clone();
-      state.typecheck_db.set_compiler_options(options);
-      state.typecheck_db.set_cancellation_flag(cancelled);
-      for resolution in snapshot.module_resolutions.into_iter() {
-        state.typecheck_db.set_module_resolution_ref(
-          resolution.from,
-          resolution.specifier.as_str(),
-          resolution.resolved,
-        );
+      {
+        let mut db = state.typecheck_db.lock();
+        db.set_compiler_options(options);
+        db.set_cancellation_flag(cancelled);
+        for resolution in snapshot.module_resolutions.into_iter() {
+          db.set_module_resolution_ref(
+            resolution.from,
+            resolution.specifier.as_str(),
+            resolution.resolved,
+          );
+        }
       }
       for file in snapshot.files.into_iter() {
         let key = file.key.clone();
@@ -421,6 +425,7 @@ impl Program {
       let store = Arc::clone(&state.store);
       state
         .typecheck_db
+        .lock()
         .set_type_store(crate::db::types::SharedTypeStore(store));
       state.interned_def_types = snapshot.interned_def_types.into_iter().collect();
       for (def, ty) in snapshot.enum_value_types.into_iter() {
@@ -454,7 +459,8 @@ impl Program {
       state.rebuild_callable_overloads();
       state.merge_callable_overload_types();
       state.rebuild_interned_named_def_types();
-      state.decl_types_fingerprint = Some(db::decl_types_fingerprint(&state.typecheck_db));
+      state.decl_types_fingerprint =
+        Some(db::decl_types_fingerprint(&*state.typecheck_db.lock()));
     }
     program
   }

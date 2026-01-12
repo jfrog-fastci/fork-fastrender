@@ -78,7 +78,8 @@ impl ProgramState {
       return None;
     }
 
-    if let Some(init) = crate::db::var_initializer(&self.typecheck_db, def) {
+    let db = self.typecheck_db.lock().clone();
+    if let Some(init) = crate::db::var_initializer(&db, def) {
       if std::env::var("DEBUG_OVERLOAD").is_ok() {
         if let Some(data) = self.def_data.get(&def) {
           eprintln!("DEBUG var initializer for {} -> {:?}", data.name, init);

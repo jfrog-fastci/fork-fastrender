@@ -47,7 +47,7 @@ impl ProgramState {
         .unwrap_or_else(|| self.intern_file_key(target_key.clone(), FileOrigin::Source))
     });
     if let (Some(file), Some(target_key)) = (resolved, resolved_key.as_ref()) {
-      if db::Db::file_input(&self.typecheck_db, file).is_none() {
+      if db::Db::file_input(&*self.typecheck_db.lock(), file).is_none() {
         // Lib file inputs are seeded up-front in `process_libs`. When resolving
         // module specifiers during lib processing we may see dependent lib IDs
         // before their texts are staged, so only auto-seed source files here.
@@ -69,6 +69,7 @@ impl ProgramState {
     }
     self
       .typecheck_db
+      .lock()
       .set_module_resolution_ref(from, specifier, resolved);
     resolved
   }
@@ -82,20 +83,21 @@ impl ProgramState {
       .file_registry
       .lookup_origin(file)
       .unwrap_or(FileOrigin::Source);
-    if let Some(existing) = db::Db::file_input(&self.typecheck_db, file) {
-      let existing_key = existing.key(&self.typecheck_db);
-      let existing_kind = existing.kind(&self.typecheck_db);
-      let existing_text = existing.text(&self.typecheck_db);
+    let mut db = self.typecheck_db.lock();
+    if let Some(existing) = db::Db::file_input(&*db, file) {
+      let existing_key = existing.key(&*db);
+      let existing_kind = existing.kind(&*db);
+      let existing_text = existing.text(&*db);
       if existing_kind == kind
         && existing_key == key
         && existing_text.as_ref() == text.as_ref()
-        && db::Db::file_origin(&self.typecheck_db, file) == Some(origin)
+        && db::Db::file_origin(&*db, file) == Some(origin)
       {
         return;
       }
     }
 
-    self.typecheck_db.set_file(file, key, kind, text, origin);
+    db.set_file(file, key, kind, text, origin);
   }
 
   pub(super) fn parse_via_salsa(
@@ -105,7 +107,8 @@ impl ProgramState {
     text: Arc<str>,
   ) -> Result<Arc<Node<TopLevel>>, Diagnostic> {
     self.set_salsa_inputs(file, kind, Arc::clone(&text));
-    let result = db::parse(&self.typecheck_db, file);
+    let db = self.typecheck_db.lock();
+    let result = db::parse(&*db, file);
     match result.ast {
       Some(ast) => Ok(ast),
       None => Err(result.diagnostics.into_iter().next().unwrap_or_else(|| {

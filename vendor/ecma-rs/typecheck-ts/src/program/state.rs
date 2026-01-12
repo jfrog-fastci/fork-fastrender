@@ -23,6 +23,7 @@ use parse_js::ast::stx::TopLevel;
 use parse_js::ast::ts_stmt::{ImportEqualsRhs, NamespaceBody};
 use parse_js::ast::type_expr::{TypeEntityName, TypeExpr, TypeMember};
 use parse_js::loc::Loc;
+use parking_lot::Mutex;
 use semantic_js_crate::ts as sem_ts;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -145,9 +146,9 @@ struct ProgramState {
   /// change even when the declaration surface is identical.
   file_text_revision: u64,
   cached_body_context: Option<body_context::CachedBodyCheckContext>,
-  typecheck_db: db::TypecheckDb,
+  typecheck_db: Mutex<db::TypecheckDb>,
   checker_caches: CheckerCaches,
-  cache_stats: CheckerCacheStats,
+  cache_stats: Mutex<CheckerCacheStats>,
   asts: HashMap<FileId, Arc<Node<TopLevel>>>,
   ast_indexes: HashMap<FileId, Arc<check::hir_body::AstIndex>>,
   files: HashMap<FileId, FileState>,
@@ -258,9 +259,9 @@ impl ProgramState {
       decl_types_fingerprint: None,
       file_text_revision: 0,
       cached_body_context: None,
-      typecheck_db,
+      typecheck_db: Mutex::new(typecheck_db),
       checker_caches: CheckerCaches::new(default_options.cache.clone()),
-      cache_stats: CheckerCacheStats::default(),
+      cache_stats: Mutex::new(CheckerCacheStats::default()),
       asts: HashMap::new(),
       ast_indexes: HashMap::new(),
       files: HashMap::new(),
@@ -315,9 +316,9 @@ impl ProgramState {
     self.decl_types_fingerprint = None;
     self.cached_body_context = None;
 
-    self.typecheck_db.clear_body_results();
+    self.typecheck_db.lock().clear_body_results();
     self.checker_caches.clear_shared();
-    self.cache_stats = CheckerCacheStats::default();
+    *self.cache_stats.lock() = CheckerCacheStats::default();
 
     self.asts.clear();
     self.ast_indexes.clear();
@@ -381,7 +382,7 @@ impl ProgramState {
     // any edit. We clear both the in-memory cache and the DB-backed cache used
     // by `expr_at`/`type_at`.
     self.body_results.clear();
-    self.typecheck_db.clear_body_results();
+    self.typecheck_db.lock().clear_body_results();
 
     // Internal body checker caches AST indexes per file; these depend on AST
     // pointer identity/spans, so drop them for the edited file.
@@ -432,7 +433,7 @@ impl ProgramState {
 
   fn set_extra_diagnostics_input(&mut self) {
     let arc: Arc<[Diagnostic]> = Arc::from(self.lib_diagnostics.clone().into_boxed_slice());
-    self.typecheck_db.set_extra_diagnostics(arc);
+    self.typecheck_db.lock().set_extra_diagnostics(arc);
   }
 
   fn file_id_for_key(&self, key: &FileKey) -> Option<FileId> {
@@ -615,6 +616,7 @@ impl ProgramState {
     keys.dedup();
     self
       .typecheck_db
+      .lock()
       .set_roots(Arc::from(keys.into_boxed_slice()));
   }
 

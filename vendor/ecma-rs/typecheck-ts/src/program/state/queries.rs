@@ -71,8 +71,9 @@ impl ProgramState {
       }
       let mut files: Vec<_> = self.file_kinds.keys().copied().collect();
       files.sort_by_key(|file| file.0);
+      let db = self.typecheck_db.lock().clone();
       for file in files {
-        let locals = crate::db::local_symbol_info(&self.typecheck_db, file);
+        let locals = crate::db::local_symbol_info(&db, file);
         if let Some(local) = locals.get(&symbol) {
           return Some(SymbolInfo {
             symbol,
@@ -100,7 +101,7 @@ impl ProgramState {
     })
   }
 
-  pub(super) fn expr_at(&mut self, file: FileId, offset: u32) -> Option<(BodyId, ExprId)> {
+  pub(super) fn expr_at(&self, file: FileId, offset: u32) -> Option<(BodyId, ExprId)> {
     if self.snapshot_loaded {
       if self.body_results.is_empty() {
         return None;
@@ -180,10 +181,11 @@ impl ProgramState {
       };
     }
 
-    db::expr_at(&self.typecheck_db, file, offset)
+    let db = self.typecheck_db.lock().clone();
+    db::expr_at(&db, file, offset)
   }
 
-  pub(super) fn pat_at(&mut self, file: FileId, offset: u32) -> Option<(BodyId, PatId)> {
+  pub(super) fn pat_at(&self, file: FileId, offset: u32) -> Option<(BodyId, PatId)> {
     if self.snapshot_loaded {
       let mut best_containing: Option<(
         (u32, u32, u32, u32, u32, u32, BodyId, PatId),
@@ -255,7 +257,8 @@ impl ProgramState {
       }
     }
 
-    db::file_span_index(&self.typecheck_db, file)
+    let db = self.typecheck_db.lock().clone();
+    db::file_span_index(&db, file)
       .pat_at(offset)
       .map(|res| res.id)
   }

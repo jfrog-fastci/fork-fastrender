@@ -46,36 +46,25 @@ impl Program {
   }
 
   pub fn declared_type_of_def_interned_fallible(&self, def: DefId) -> Result<TypeId, FatalError> {
+    let ty = self.type_of_def_fallible(def)?;
     self.with_interned_state(|state| {
       let store = Arc::clone(&state.store);
-      let expanded = match state.interned_def_types.get(&def).copied() {
-        Some(existing) if !matches!(store.type_kind(existing), tti::TypeKind::Unknown) => existing,
-        _ => {
-          ProgramState::type_of_def(state, def)?;
-          state
-            .interned_def_types
-            .get(&def)
-            .copied()
-            .unwrap_or(store.primitive_ids().unknown)
-        }
-      };
-      Ok(store.canon(expanded))
+      Ok(if store.contains_type_id(ty) {
+        store.canon(ty)
+      } else {
+        store.primitive_ids().unknown
+      })
     })
   }
 
   pub fn type_of_def_interned_fallible(&self, def: DefId) -> Result<TypeId, FatalError> {
+    let expanded = self.type_of_def_fallible(def)?;
     self.with_interned_state(|state| {
       let store = Arc::clone(&state.store);
-      let expanded = match state.interned_def_types.get(&def).copied() {
-        Some(existing) if !matches!(store.type_kind(existing), tti::TypeKind::Unknown) => existing,
-        _ => {
-          ProgramState::type_of_def(state, def)?;
-          state
-            .interned_def_types
-            .get(&def)
-            .copied()
-            .unwrap_or(store.primitive_ids().unknown)
-        }
+      let expanded = if store.contains_type_id(expanded) {
+        store.canon(expanded)
+      } else {
+        store.primitive_ids().unknown
       };
       let wants_named_ref = state
         .def_data
@@ -132,7 +121,7 @@ impl Program {
       let queries = TypeQueries::with_caches(Arc::clone(&store), &expander, caches.eval.clone());
       let result = queries.type_kind(ty);
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(result)
     })
@@ -197,7 +186,7 @@ impl Program {
       let queries = TypeQueries::with_caches(Arc::clone(&store), &expander, caches.eval.clone());
       let evaluated = store.canon(queries.evaluate(ty));
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(evaluated)
     })
@@ -242,7 +231,7 @@ impl Program {
         _ => Vec::new(),
       };
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(members)
     })
@@ -288,7 +277,7 @@ impl Program {
       let evaluated = store.canon(queries.evaluate(ty));
       let layout = store.layout_of(evaluated);
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(layout)
     })
@@ -401,7 +390,7 @@ impl Program {
         prop.ty = state.prefer_named_refs(prop.ty);
       }
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(props)
     })
@@ -440,7 +429,7 @@ impl Program {
         .property_type(ty, key)
         .map(|ty| state.prefer_named_refs(ty));
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(prop)
     })
@@ -491,7 +480,7 @@ impl Program {
       let queries = TypeQueries::with_caches(Arc::clone(&store), &expander, caches.eval.clone());
       let sigs = queries.call_signatures(ty);
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(sigs)
     })
@@ -527,7 +516,7 @@ impl Program {
       let queries = TypeQueries::with_caches(Arc::clone(&store), &expander, caches.eval.clone());
       let sigs = queries.construct_signatures(ty);
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(sigs)
     })
@@ -560,7 +549,7 @@ impl Program {
       let queries = TypeQueries::with_caches(Arc::clone(&store), &expander, caches.eval.clone());
       let indexers = queries.indexers(ty);
       if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-        state.cache_stats.merge(&caches.stats());
+        state.cache_stats.lock().merge(&caches.stats());
       }
       Ok(indexers)
     })

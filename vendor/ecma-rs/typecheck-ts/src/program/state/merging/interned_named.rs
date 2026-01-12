@@ -354,7 +354,7 @@ impl ProgramState {
     }
 
     if matches!(self.compiler_options.cache.mode, CacheMode::PerBody) {
-      self.cache_stats.merge(&caches.stats());
+      self.cache_stats.lock().merge(&caches.stats());
     }
 
     Ok(())

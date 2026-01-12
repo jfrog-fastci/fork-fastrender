@@ -54,7 +54,7 @@ impl Program {
                 _ => false,
               };
               if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-                state.cache_stats.merge(&caches.stats());
+                state.cache_stats.lock().merge(&caches.stats());
               }
               if ok {
                 evaluated
@@ -76,7 +76,7 @@ impl Program {
           let evaluated = queries.evaluate(ty);
           let evaluated = state.prefer_named_refs_in_store(&store, evaluated);
           if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-            state.cache_stats.merge(&caches.stats());
+            state.cache_stats.lock().merge(&caches.stats());
           }
           evaluated
         }
@@ -94,7 +94,7 @@ impl Program {
           let evaluated = queries.evaluate(ty);
           let evaluated = state.prefer_named_refs_in_store(&store, evaluated);
           if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-            state.cache_stats.merge(&caches.stats());
+            state.cache_stats.lock().merge(&caches.stats());
           }
           evaluated
         }
@@ -163,7 +163,7 @@ impl Program {
             let evaluated = queries.evaluate(ty);
             let evaluated = state.prefer_named_refs_in_store(&store, evaluated);
             if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
-              state.cache_stats.merge(&caches.stats());
+              state.cache_stats.lock().merge(&caches.stats());
             }
             // Preserve user-defined alias names when they only expand to a
             // primitive keyword type. Those names often carry meaning (e.g.

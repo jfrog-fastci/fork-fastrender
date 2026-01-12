@@ -16,6 +16,7 @@ use crate::type_queries::{
 use crate::{FatalError, HostError, Ice, SymbolBinding, SymbolInfo, SymbolOccurrence};
 use hir_js::ids::MISSING_BODY;
 use hir_js::{BinaryOp as HirBinaryOp, ExprKind as HirExprKind};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use semantic_js_crate::ts as sem_ts;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -288,7 +289,7 @@ pub struct Program {
   pub(super) host: Arc<dyn Host>,
   pub(super) roots: Vec<FileKey>,
   cancelled: Arc<AtomicBool>,
-  state: std::sync::Mutex<ProgramState>,
+  state: RwLock<ProgramState>,
   query_stats: QueryStatsCollector,
 }
 
@@ -344,11 +345,66 @@ impl Program {
     }
   }
 
-  pub(super) fn lock_state(&self) -> std::sync::MutexGuard<'_, ProgramState> {
-    self.state.lock().unwrap_or_else(|err| err.into_inner())
+  pub(super) fn lock_state(&self) -> RwLockWriteGuard<'_, ProgramState> {
+    self.state.write()
+  }
+
+  pub(super) fn read_state(&self) -> RwLockReadGuard<'_, ProgramState> {
+    self.state.read()
   }
 
   fn with_analyzed_state<R>(
+    &self,
+    f: impl FnOnce(&ProgramState) -> Result<R, FatalError>,
+  ) -> Result<R, FatalError> {
+    self.catch_fatal(|| {
+      self.ensure_not_cancelled()?;
+      {
+        let state = self.read_state();
+        if state.analyzed {
+          return f(&state);
+        }
+      }
+
+      {
+        let mut state = self.lock_state();
+        state.ensure_analyzed_result(&self.host, &self.roots)?;
+      }
+
+      let state = self.read_state();
+      f(&state)
+    })
+  }
+
+  fn with_interned_state<R>(
+    &self,
+    f: impl FnOnce(&ProgramState) -> Result<R, FatalError>,
+  ) -> Result<R, FatalError> {
+    self.catch_fatal(|| {
+      self.ensure_not_cancelled()?;
+      {
+        let state = self.read_state();
+        if state.analyzed {
+          let db = state.typecheck_db.lock().clone();
+          let fingerprint = db::decl_types_fingerprint(&db);
+          if state.decl_types_fingerprint == Some(fingerprint) {
+            return f(&state);
+          }
+        }
+      }
+
+      {
+        let mut state = self.lock_state();
+        state.ensure_interned_types(&self.host, &self.roots)?;
+      }
+
+      let state = self.read_state();
+      f(&state)
+    })
+  }
+
+  #[allow(dead_code)]
+  fn with_analyzed_state_mut<R>(
     &self,
     f: impl FnOnce(&mut ProgramState) -> Result<R, FatalError>,
   ) -> Result<R, FatalError> {
@@ -360,7 +416,7 @@ impl Program {
     })
   }
 
-  fn with_interned_state<R>(
+  fn with_interned_state_mut<R>(
     &self,
     f: impl FnOnce(&mut ProgramState) -> Result<R, FatalError>,
   ) -> Result<R, FatalError> {
@@ -400,7 +456,7 @@ impl Program {
   }
 
   fn builtin_unknown(&self) -> TypeId {
-    let state = self.lock_state();
+    let state = self.read_state();
     state.interned_unknown()
   }
 }

@@ -42,8 +42,8 @@ impl Program {
   /// Return collected query and cache statistics for this program.
   pub fn query_stats(&self) -> QueryStats {
     let (cache_stats, mut snapshot) = {
-      let state = self.lock_state();
-      let mut caches = state.cache_stats.clone();
+      let state = self.read_state();
+      let mut caches = state.cache_stats.lock().clone();
       caches.merge(&state.checker_caches.stats());
       (caches, self.query_stats.snapshot())
     };

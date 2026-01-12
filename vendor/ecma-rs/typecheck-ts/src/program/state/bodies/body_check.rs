@@ -6,15 +6,17 @@ impl ProgramState {
   pub(in super::super) fn cache_body_result(&mut self, body: BodyId, result: Arc<BodyCheckResult>) {
     self.body_results.insert(body, Arc::clone(&result));
     if !self.snapshot_loaded {
-      self.typecheck_db.set_body_result(body, result);
+      self.typecheck_db.lock().set_body_result(body, result);
     }
   }
 
+  #[allow(dead_code)]
   fn cached_body_result(&mut self, body: BodyId) -> Option<Arc<BodyCheckResult>> {
     let cached = self.body_results.get(&body).cloned()?;
     if !self.snapshot_loaded {
       self
         .typecheck_db
+        .lock()
         .set_body_result(body, Arc::clone(&cached));
     }
     self
@@ -23,6 +25,7 @@ impl ProgramState {
     Some(cached)
   }
 
+  #[allow(dead_code)]
   pub(in super::super) fn check_body(
     &mut self,
     body_id: BodyId,

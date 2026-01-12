@@ -163,7 +163,7 @@ impl ProgramState {
     let can_reuse_cached_bodies = self.decl_types_fingerprint == prev_decl_fingerprint;
 
     let body_ids: Vec<_> = {
-      let db = self.typecheck_db.clone();
+      let db = self.typecheck_db.lock().clone();
       let mut body_ids: Vec<_> = db::body_to_file(&db)
         .iter()
         .filter_map(|(body, file)| {
@@ -203,16 +203,24 @@ impl ProgramState {
   pub(super) fn finish_program_diagnostics(
     &mut self,
     cache_stats: CheckerCacheStats,
-    results: Vec<(BodyId, Arc<BodyCheckResult>)>,
+    mut results: Vec<(BodyId, Arc<BodyCheckResult>)>,
   ) -> Result<Arc<[Diagnostic]>, FatalError> {
-    for (body, res) in results {
-      self.cache_body_result(body, res);
+    // Preserve determinism regardless of parallel scheduling.
+    results.sort_by_key(|(id, _)| id.0);
+    {
+      let mut db = self.typecheck_db.lock();
+      for (body, res) in results {
+        self.body_results.insert(body, Arc::clone(&res));
+        if !self.snapshot_loaded {
+          db.set_body_result(body, res);
+        }
+      }
     }
     if matches!(self.compiler_options.cache.mode, CacheMode::PerBody) {
-      self.cache_stats.merge(&cache_stats);
+      self.cache_stats.lock().merge(&cache_stats);
     }
 
-    let db = self.typecheck_db.clone();
+    let db = self.typecheck_db.lock().clone();
     let mut diagnostics: Vec<_> = db::program_diagnostics(&db).as_ref().to_vec();
     diagnostics.extend(self.diagnostics.clone());
     let mut seen = HashSet::new();

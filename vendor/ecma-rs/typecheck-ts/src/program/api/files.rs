@@ -30,7 +30,7 @@ impl Program {
       host: Arc::clone(&host),
       roots,
       cancelled: Arc::clone(&cancelled),
-      state: std::sync::Mutex::new(ProgramState::new(
+      state: RwLock::new(ProgramState::new(
         Arc::clone(&host),
         lib_manager,
         query_stats.clone(),
@@ -62,15 +62,19 @@ impl Program {
   pub fn set_compiler_options(&mut self, options: CompilerOptions) {
     {
       let mut state = self.lock_state();
-      state.typecheck_db.set_compiler_options(options.clone());
+      state
+        .typecheck_db
+        .lock()
+        .set_compiler_options(options.clone());
       state.compiler_options = options.clone();
       state.compiler_options_override = Some(options.clone());
       state.checker_caches = CheckerCaches::new(options.cache.clone());
-      state.cache_stats = CheckerCacheStats::default();
+      *state.cache_stats.lock() = CheckerCacheStats::default();
       state.store = tti::TypeStore::with_options((&options).into());
       let store = Arc::clone(&state.store);
       state
         .typecheck_db
+        .lock()
         .set_type_store(crate::db::types::SharedTypeStore(store));
     }
     self.reset_state();
@@ -84,9 +88,11 @@ impl Program {
         return;
       };
       state.file_overrides.insert(key.clone(), Arc::clone(&text));
-      if db::Db::file_input(&state.typecheck_db, file).is_some() {
-        state.typecheck_db.set_file_text(file, text);
+      let mut db = state.typecheck_db.lock();
+      if db::Db::file_input(&*db, file).is_some() {
+        db.set_file_text(file, text);
       }
+      drop(db);
       state.invalidate_on_file_text_change(file);
     }
     self.reset_state();
@@ -158,15 +164,15 @@ impl Program {
     self
       .with_analyzed_state(|state| {
         let mut files: Vec<FileId> = if state.snapshot_loaded {
-          use std::collections::{BTreeMap, VecDeque};
+         use std::collections::{BTreeMap, VecDeque};
 
-          let mut edges: BTreeMap<FileId, Vec<FileId>> = BTreeMap::new();
-          for (from, _specifier, resolved) in state.typecheck_db.module_resolutions_snapshot() {
-            let Some(resolved) = resolved else {
-              continue;
-            };
-            edges.entry(from).or_default().push(resolved);
-          }
+           let mut edges: BTreeMap<FileId, Vec<FileId>> = BTreeMap::new();
+           for (from, _specifier, resolved) in state.typecheck_db.lock().module_resolutions_snapshot() {
+             let Some(resolved) = resolved else {
+               continue;
+             };
+             edges.entry(from).or_default().push(resolved);
+           }
           for deps in edges.values_mut() {
             deps.sort_by_key(|id| id.0);
             deps.dedup();
@@ -195,13 +201,14 @@ impl Program {
             .copied()
             .filter(|file| !state.lib_file_ids.contains(file))
             .collect()
-        } else {
-          state
-            .typecheck_db
-            .reachable_files()
-            .iter()
-            .copied()
-            .filter(|file| !state.lib_file_ids.contains(file))
+         } else {
+           state
+             .typecheck_db
+             .lock()
+             .reachable_files()
+             .iter()
+             .copied()
+             .filter(|file| !state.lib_file_ids.contains(file))
             .collect()
         };
         files.sort_by_key(|id| id.0);
@@ -219,11 +226,8 @@ impl Program {
   /// otherwise does not map to a file in the program.
   pub fn resolve_module(&self, from: FileId, specifier: &str) -> Option<FileId> {
     match self.with_analyzed_state(|state| {
-      Ok(db::queries::module_resolve_ref(
-        &state.typecheck_db,
-        from,
-        specifier,
-      ))
+      let db = state.typecheck_db.lock();
+      Ok(db::queries::module_resolve_ref(&*db, from, specifier))
     }) {
       Ok(resolved) => resolved,
       Err(fatal) => {
@@ -242,6 +246,7 @@ impl Program {
       Ok(
         state
           .typecheck_db
+          .lock()
           .module_resolutions_snapshot_for_file(from)
           .into_iter()
           .filter_map(|(specifier, resolved)| resolved.map(|file| (specifier, file)))
@@ -262,7 +267,8 @@ impl Program {
   /// (only edges that resolved to a file are considered).
   pub fn reverse_module_deps(&self, file: FileId) -> Vec<FileId> {
     match self.with_analyzed_state(|state| {
-      Ok(state.typecheck_db.module_reverse_deps(file).iter().copied().collect())
+      let db = state.typecheck_db.lock().clone();
+      Ok(db.module_reverse_deps(file).iter().copied().collect())
     }) {
       Ok(files) => files,
       Err(fatal) => {
@@ -277,9 +283,11 @@ impl Program {
   /// The result is deterministic and sorted by [`FileId`]. Ambient module specifiers are excluded
   /// (only edges that resolved to a file are considered).
   pub fn transitive_reverse_module_deps(&self, file: FileId) -> Vec<FileId> {
-    match self.with_analyzed_state(|state| Ok(state.typecheck_db.module_transitive_reverse_deps(file)))
-    {
-      Ok(files) => files.as_ref().clone(),
+    match self.with_analyzed_state(|state| {
+      let db = state.typecheck_db.lock().clone();
+      Ok(db.module_transitive_reverse_deps(file).as_ref().clone())
+    }) {
+      Ok(files) => files,
       Err(fatal) => {
         self.record_fatal(fatal);
         Vec::new()

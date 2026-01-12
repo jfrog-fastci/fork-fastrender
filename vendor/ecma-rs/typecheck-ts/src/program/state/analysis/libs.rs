@@ -44,10 +44,14 @@ impl ProgramState {
 
     self.compiler_options = options.clone();
     self.checker_caches = CheckerCaches::new(options.cache.clone());
-    self.cache_stats = CheckerCacheStats::default();
-    self.typecheck_db.set_compiler_options(options.clone());
+    *self.cache_stats.lock() = CheckerCacheStats::default();
     self
       .typecheck_db
+      .lock()
+      .set_compiler_options(options.clone());
+    self
+      .typecheck_db
+      .lock()
       .set_cancellation_flag(self.cancelled.clone());
     let store_options = (&options).into();
     if self.store.options() != store_options {
@@ -55,6 +59,7 @@ impl ProgramState {
       self.store = Arc::clone(&store);
       self
         .typecheck_db
+        .lock()
         .set_type_store(crate::db::types::SharedTypeStore(Arc::clone(&store)));
       self.decl_types_fingerprint = None;
       self.interned_def_types.clear();
@@ -66,6 +71,7 @@ impl ProgramState {
     } else {
       self
         .typecheck_db
+        .lock()
         .set_type_store(crate::db::types::SharedTypeStore(Arc::clone(&self.store)));
     }
     let collected = collect_libs(&options, host.lib_files(), &self.lib_manager);
@@ -171,13 +177,17 @@ impl ProgramState {
       // Keep module resolution edges in sync with the lib's current set of
       // module specifiers, including `@types` fallback behaviour for
       // triple-slash `reference types`.
-      let current_specifiers = db::module_specifiers(&self.typecheck_db, file_id);
+      let current_specifiers = {
+        let db = self.typecheck_db.lock().clone();
+        db::module_specifiers(&db, file_id)
+      };
       let mut keep_specifiers: AHashSet<&str> = AHashSet::new();
       for specifier in current_specifiers.iter() {
         keep_specifiers.insert(specifier.as_ref());
       }
       self
         .typecheck_db
+        .lock()
         .retain_module_resolutions_for_file(file_id, |specifier| keep_specifiers.contains(specifier));
       let mut type_package_specifiers: AHashSet<&str> = AHashSet::new();
       for specifier in triple_slash_types.iter().copied() {
@@ -203,7 +213,7 @@ impl ProgramState {
           self.local_semantics.insert(file_id, locals);
           self.asts.insert(file_id, Arc::clone(&ast));
           self.queue_type_imports_in_ast(file_id, ast.as_ref(), host, queue);
-          let lowered = db::lower_hir(&self.typecheck_db, file_id);
+          let lowered = db::lower_hir(&*self.typecheck_db.lock(), file_id);
           let Some(lowered) = lowered.lowered else {
             continue;
           };

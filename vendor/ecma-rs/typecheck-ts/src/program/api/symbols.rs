@@ -23,7 +23,8 @@ impl Program {
           return Ok(Self::symbol_from_occurrences(occurrences, offset));
         }
       }
-      let occurrences = crate::db::symbol_occurrences(&state.typecheck_db, file);
+      let db = state.typecheck_db.lock().clone();
+      let occurrences = crate::db::symbol_occurrences(&db, file);
       Ok(Self::symbol_from_occurrences(&occurrences, offset))
     })
   }
@@ -78,7 +79,8 @@ impl Program {
           return Ok(occurrences.clone());
         }
       }
-      Ok(crate::db::symbol_occurrences(&state.typecheck_db, file).to_vec())
+      let db = state.typecheck_db.lock().clone();
+      Ok(crate::db::symbol_occurrences(&db, file).to_vec())
     }) {
       Ok(occurrences) => occurrences
         .iter()

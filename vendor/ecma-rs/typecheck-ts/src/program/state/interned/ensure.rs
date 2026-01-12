@@ -12,9 +12,10 @@ impl ProgramState {
     // Keep the salsa type store input synchronized with the program-wide store.
     self
       .typecheck_db
+      .lock()
       .set_type_store(crate::db::types::SharedTypeStore(Arc::clone(&store)));
     let prim = store.primitive_ids();
-    let fingerprint = db::decl_types_fingerprint(&self.typecheck_db);
+    let fingerprint = db::decl_types_fingerprint(&*self.typecheck_db.lock());
     if self.decl_types_fingerprint == Some(fingerprint) {
       return Ok(());
     }
@@ -34,13 +35,16 @@ impl ProgramState {
     let mut def_types = HashMap::new();
     let mut type_params = HashMap::new();
     let mut type_param_decls = HashMap::new();
-    let mut decl_files: Vec<_> = db::all_files(&self.typecheck_db).iter().copied().collect();
+    let mut decl_files: Vec<_> = db::all_files(&*self.typecheck_db.lock())
+      .iter()
+      .copied()
+      .collect();
     decl_files.sort_by_key(|file| file.0);
     for (idx, file) in decl_files.iter().enumerate() {
       if (idx % 16) == 0 {
         self.check_cancelled()?;
       }
-      let decls = db::decl_types(&self.typecheck_db, *file);
+      let decls = db::decl_types(&*self.typecheck_db.lock(), *file);
       for (def, ty) in decls.types.iter() {
         def_types
           .entry(*def)
