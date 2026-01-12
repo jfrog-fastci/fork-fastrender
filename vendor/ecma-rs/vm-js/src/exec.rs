@@ -20985,11 +20985,11 @@ pub(crate) fn module_tla_init_default_export_on_fulfilled(
 }
 
 pub(crate) fn module_tla_throw_on_fulfilled(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
@@ -20997,6 +20997,94 @@ pub(crate) fn module_tla_throw_on_fulfilled(
   // machinery (which already treats rejected awaited promises as fatal) reuse the same path by
   // converting fulfillment into rejection.
   let value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Best-effort: if the thrown value is an object (typically an Error instance), attach a `stack`
+  // property that points at the `throw` statement location (mirrors sync `eval_throw` behavior).
+  //
+  // This is primarily for debugging: module evaluation is asynchronous here, so the stack trace
+  // would otherwise refer to the internal Promise reaction job rather than the original throw
+  // statement.
+  if let Value::Object(obj) = value {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    if slots.len() != 3 {
+      return Err(VmError::InvariantViolation(
+        "module TLA throw callback missing location slots",
+      ));
+    }
+
+    let source_name = match slots[0] {
+      Value::String(s) => Arc::<str>::from(scope.heap().get_string(s)?.to_utf8_lossy()),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "module TLA throw callback source slot must be a string",
+        ))
+      }
+    };
+    let line = match slots[1] {
+      Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "module TLA throw callback line slot must be a number",
+        ))
+      }
+    };
+    let col = match slots[2] {
+      Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "module TLA throw callback col slot must be a number",
+        ))
+      }
+    };
+
+    let stack_trace = {
+      let mut stack = vm.capture_stack();
+      if let Some(top) = stack.first_mut() {
+        top.source = source_name.clone();
+        top.line = line;
+        top.col = col;
+      } else {
+        stack.push(StackFrame {
+          function: None,
+          source: source_name.clone(),
+          line,
+          col,
+        });
+      }
+      crate::format_stack_trace(&stack)
+    };
+
+    if !stack_trace.is_empty() {
+      // Do not overwrite an existing own `stack` property; mirrors browser behavior where
+      // `Error.stack` can be customized by user code.
+      let mut scope = scope.reborrow();
+      if scope.push_root(Value::Object(obj)).is_ok() {
+        if let Ok(key_s) = scope.alloc_string("stack") {
+          if scope.push_root(Value::String(key_s)).is_ok() {
+            let key = PropertyKey::from_string(key_s);
+            if matches!(scope.heap().object_get_own_property(obj, &key), Ok(None)) {
+              if let Ok(stack_s) = scope.alloc_string(&stack_trace) {
+                if scope.push_root(Value::String(stack_s)).is_ok() {
+                  let _ = scope.define_property(
+                    obj,
+                    key,
+                    PropertyDescriptor {
+                      enumerable: false,
+                      configurable: true,
+                      kind: PropertyKind::Data {
+                        value: Value::String(stack_s),
+                        writable: true,
+                      },
+                    },
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   Err(VmError::Throw(value))
 }
 
@@ -21230,6 +21318,13 @@ pub(crate) fn run_module_until_await(
 
               // Evaluate the awaited expression (argument) and coerce it with `PromiseResolve`.
               let awaited_value = evaluator.eval_expr(scope, &unary.stx.argument)?;
+              let rel_start = throw_stmt
+                .loc
+                .start_u32()
+                .saturating_sub(evaluator.env.prefix_len());
+              let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
+              let (throw_line, throw_col) = source.line_col(abs_offset);
+
               let intr = vm_frame
                 .intrinsics()
                 .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
@@ -21250,7 +21345,15 @@ pub(crate) fn run_module_until_await(
               // an abrupt completion (matching the semantics of `throw await <expr>`).
               let call_id = vm_frame.module_tla_throw_on_fulfilled_call_id()?;
               let name = promise_scope.alloc_string("")?;
-              let on_fulfilled = promise_scope.alloc_native_function(call_id, None, name, 1)?;
+              let source_name = promise_scope.alloc_string(source.name.as_ref())?;
+              promise_scope.push_root(Value::String(source_name))?;
+              let slots = [
+                Value::String(source_name),
+                Value::Number(throw_line as f64),
+                Value::Number(throw_col as f64),
+              ];
+              let on_fulfilled =
+                promise_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots)?;
               promise_scope.push_root(Value::Object(on_fulfilled))?;
               promise_scope
                 .heap_mut()

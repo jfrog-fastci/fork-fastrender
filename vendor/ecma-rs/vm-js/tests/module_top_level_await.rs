@@ -607,6 +607,90 @@ fn throw_await_rejects_module_evaluation_promise() -> Result<(), VmError> {
 }
 
 #[test]
+fn throw_await_error_object_attaches_throw_site_stack() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = graph.add_module_with_specifier(
+    "m.js",
+    SourceTextModuleRecord::parse(
+      "const err = new Error('boom');\nawait Promise.resolve();\nthrow await Promise.resolve(err);\nexport const unreachable = 1;",
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(heap.promise_state(eval_promise_obj)?, PromiseState::Pending);
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let eval_promise_value = scope
+    .heap()
+    .get_root(eval_promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(eval_promise_obj) = eval_promise_value else {
+    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+  };
+  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Rejected);
+
+  let reason = scope
+    .heap()
+    .promise_result(eval_promise_obj)?
+    .expect("rejected promise should have a reason");
+  let Value::Object(err_obj) = reason else {
+    return Err(VmError::InvariantViolation(
+      "expected module evaluation rejection reason to be an object",
+    ));
+  };
+
+  scope.push_root(Value::Object(err_obj))?;
+  let key_s = scope.alloc_string("stack")?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  let Value::String(stack_s) = scope
+    .heap()
+    .object_get_own_data_property_value(err_obj, &key)?
+    .unwrap_or(Value::Undefined)
+  else {
+    return Err(VmError::InvariantViolation(
+      "expected rejection Error object to have a string `stack` property",
+    ));
+  };
+
+  // The `throw await` statement is the 3rd line of the module and starts at column 1.
+  let stack = scope.heap().get_string(stack_s)?.to_utf8_lossy();
+  assert!(
+    stack.starts_with("at <inline>:3:1"),
+    "unexpected stack trace: {stack:?}"
+  );
+
+  drop(scope);
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn dynamic_import_after_top_level_await_starts_and_resolves() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
