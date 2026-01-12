@@ -2631,6 +2631,15 @@ pub fn data_view_constructor_construct(
     }
     n as usize
   };
+  // Per ECMAScript, DataView construction on a detached ArrayBuffer throws (even for a 0-length
+  // view). The detachment check happens after ToIndex(byteOffset) conversion.
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("DataView constructor expects an ArrayBuffer"))?
+  {
+    return Err(VmError::TypeError("DataView constructor on detached ArrayBuffer"));
+  }
   if byte_offset > buf_len {
     return Err(VmError::TypeError("DataView view out of bounds"));
   }
@@ -2671,10 +2680,20 @@ pub fn data_view_prototype_byte_length_get(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("DataView.byteLength called on non-object"));
   };
-  let len = scope
-    .heap()
-    .data_view_byte_length(obj)
+  let heap = scope.heap();
+  let buffer = heap
+    .data_view_buffer(obj)
     .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
+  let len = if heap
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?
+  {
+    0
+  } else {
+    heap
+      .data_view_byte_length(obj)
+      .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?
+  };
   Ok(Value::Number(len as f64))
 }
 
@@ -2690,10 +2709,20 @@ pub fn data_view_prototype_byte_offset_get(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("DataView.byteOffset called on non-object"));
   };
-  let offset = scope
-    .heap()
-    .data_view_byte_offset(obj)
+  let heap = scope.heap();
+  let buffer = heap
+    .data_view_buffer(obj)
     .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
+  let offset = if heap
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?
+  {
+    0
+  } else {
+    heap
+      .data_view_byte_offset(obj)
+      .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?
+  };
   Ok(Value::Number(offset as f64))
 }
 
@@ -2775,6 +2804,15 @@ fn data_view_get_impl(
     Value::Undefined => false,
     v => scope.heap().to_boolean(v)?,
   };
+
+  // Spec: detached ArrayBuffer check happens after ToIndex(byteOffset).
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
 
   let size = kind.size();
   let end = offset.checked_add(size).ok_or(VmError::OutOfMemory)?;
@@ -2913,6 +2951,15 @@ fn data_view_set_impl(
     Value::Undefined => false,
     v => scope.heap().to_boolean(v)?,
   };
+
+  // Spec: detached ArrayBuffer check happens after ToIndex(byteOffset).
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
 
   let size = kind.size();
   let end = offset.checked_add(size).ok_or(VmError::OutOfMemory)?;
