@@ -469,7 +469,8 @@ impl Backend for VmJsRenderedBackend {
 
       // IMPORTANT: use `new_with_host` so `VmJsHostHooksPayload` exposes the embedder state. This is
       // required by runner-installed native helpers like `__fastrender_register_import_map_native`.
-      let mut hooks = VmJsEventLoopHooks::<RenderedHost>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<RenderedHost>::new_with_host(host)
+        .map_err(|err| RunError::Js(err.to_string()))?;
       hooks.set_event_loop(event_loop);
 
       let (vm_host, window_realm) = host
