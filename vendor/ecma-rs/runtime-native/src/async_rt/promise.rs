@@ -38,7 +38,7 @@ enum PendingPromiseKeepAlive {
 /// This enables `rt_async_cancel_all` to abandon pending async work safely by dropping reaction
 /// nodes that would otherwise never be enqueued (because the promise never settles after the host
 /// shuts down timers/I/O).
-static PROMISES_WITH_PENDING_REACTIONS: Lazy<GcAwareMutex<HashMap<usize, PendingPromiseKeepAlive>>> =
+static PROMISES_WITH_PENDING_REACTIONS: Lazy<GcAwareMutex<HashMap<HandleId, PendingPromiseKeepAlive>>> =
   Lazy::new(|| GcAwareMutex::new(HashMap::new()));
 
 pub(crate) fn track_pending_reactions(promise: *mut PromiseHeader) {
@@ -56,24 +56,78 @@ fn track_pending_reactions_keepalive(promise: *mut PromiseHeader, keepalive: Pen
   if promise.is_null() {
     return;
   }
-  // Track by raw promise header pointer. Promises are currently allocated in non-moving memory; if
-  // promises become GC-movable in the future, this tracking mechanism must be updated to use stable
-  // handles/roots.
+  if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+
+  // Promises can be GC-movable; track them via stable persistent handle IDs (and keep them alive)
+  // instead of raw pointers, which become stale after relocation.
   //
   // The optional `keepalive` policy determines whether it is safe to dereference this pointer
   // during teardown if cancellation races with the promise being dropped on another thread.
-  let addr = promise as usize;
-  let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
-  match map.get_mut(&addr) {
-    None => {
-      map.insert(addr, keepalive);
-    }
-    Some(existing) => {
-      // Preserve any existing keepalive (it may have been upgraded to `Weak` by another caller).
-      if matches!(existing, PendingPromiseKeepAlive::None) && matches!(keepalive, PendingPromiseKeepAlive::Weak(_)) {
-        *existing = keepalive;
+  let root = threading::registry::current_thread_state().is_some().then(|| crate::roots::Root::new(promise));
+  let table = crate::roots::global_persistent_handle_table();
+  let current_ptr = || {
+    // Re-load from the root slot in case this thread was GC-stopped while blocked on a GC-aware
+    // lock (a moving GC may have relocated the promise in the meantime).
+    root
+      .as_ref()
+      .map(|r| r.get().cast::<u8>())
+      .unwrap_or(promise.cast::<u8>())
+  };
+
+  let mut ids_to_free: Vec<HandleId> = Vec::new();
+
+  {
+    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+
+    let mut found: Option<HandleId> = None;
+    for id in map.keys().copied() {
+      match table.get(id) {
+        Some(p) if p == current_ptr() => {
+          if found.is_none() {
+            found = Some(id);
+          } else {
+            // Defensive: remove duplicates so we don't leak persistent handles if tracking raced.
+            ids_to_free.push(id);
+          }
+        }
+        None => {
+          // Stale handle (freed elsewhere); remove it so it doesn't bloat the map.
+          ids_to_free.push(id);
+        }
+        _ => {}
       }
     }
+
+    for id in &ids_to_free {
+      map.remove(id);
+    }
+
+    match found {
+      Some(id) => {
+        // Preserve any existing keepalive (it may have been upgraded to `Weak` by another caller).
+        if let Some(existing) = map.get_mut(&id) {
+          if matches!(existing, PendingPromiseKeepAlive::None) && matches!(keepalive, PendingPromiseKeepAlive::Weak(_))
+          {
+            *existing = keepalive;
+          }
+        }
+      }
+      None => {
+        let id = if let Some(r) = &root {
+          // Safety: `r.handle()` is a valid pointer to an addressable GC pointer slot.
+          unsafe { table.alloc_from_slot(r.handle()) }
+        } else {
+          table.alloc(current_ptr())
+        };
+        map.insert(id, keepalive);
+      }
+    }
+  }
+
+  for id in ids_to_free {
+    let _ = table.free(id);
   }
 }
 
@@ -81,7 +135,47 @@ pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
   if promise.is_null() {
     return;
   }
-  PROMISES_WITH_PENDING_REACTIONS.lock().remove(&(promise as usize));
+  if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+
+  let root = threading::registry::current_thread_state().is_some().then(|| crate::roots::Root::new(promise));
+  let table = crate::roots::global_persistent_handle_table();
+
+  let ids_to_free: Vec<HandleId> = {
+    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+    let mut to_remove = Vec::new();
+    let current_ptr = || {
+      root
+        .as_ref()
+        .map(|r| r.get().cast::<u8>())
+        .unwrap_or(promise.cast::<u8>())
+    };
+
+    for id in map.keys().copied() {
+      match table.get(id) {
+        Some(p) if p == current_ptr() => {
+          // Defensive: remove all matches to avoid leaking duplicate roots if tracking was raced.
+          to_remove.push(id);
+        }
+        None => {
+          // Stale handle (freed elsewhere); remove it so it doesn't bloat the set.
+          to_remove.push(id);
+        }
+        _ => {}
+      }
+    }
+
+    for id in &to_remove {
+      map.remove(id);
+    }
+
+    to_remove
+  };
+
+  for id in ids_to_free {
+    let _ = table.free(id);
+  }
 }
 /// Internal promise state used while a promise is being settled.
 ///
@@ -723,57 +817,62 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
 /// This is used by `rt_async_cancel_all` to ensure awaiting coroutines (and other `then` callbacks)
 /// are properly torn down if the host stops driving the event loop before those promises settle.
 pub(crate) fn cancel_all_pending_reactions() {
-  let promises: Vec<(usize, PendingPromiseKeepAlive)> = {
+  let promises: Vec<(HandleId, PendingPromiseKeepAlive)> = {
     let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
     map.drain().collect()
   };
 
-  for (addr, keepalive) in promises {
-    let promise = addr as *mut PromiseHeader;
-    if promise.is_null() {
-      continue;
-    }
-    if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
-      std::process::abort();
-    }
+  let table = crate::roots::global_persistent_handle_table();
 
+  for (id, keepalive) in promises {
     let (needs_keepalive, _keepalive) = match keepalive {
       PendingPromiseKeepAlive::None => (false, None),
       PendingPromiseKeepAlive::Weak(w) => (true, w.upgrade()),
     };
     if needs_keepalive && _keepalive.is_none() {
       // Promise was dropped concurrently with cancellation; its `Drop` implementation is
-      // responsible for discarding any waiter list. Avoid dereferencing the raw pointer.
+      // responsible for discarding any waiter list. Avoid dereferencing the pointer.
+      let _ = table.free(id);
       continue;
     }
 
-    // If this promise was counted as "external pending" (e.g. a parallel task), clear the flag so
-    // a later settlement can't perturb `EXTERNAL_PENDING` after teardown.
-    //
-    // Do this *before* dropping reaction nodes so we don't touch `promise` after potentially freeing
-    // it (e.g. if some reaction node holds the last strong reference to the promise allocation).
-    maybe_clear_external_pending(promise);
-
-    let reactions = unsafe { &(*promise).waiters };
-    let head_val = reactions.swap(0, Ordering::AcqRel);
-    let mut head = decode_waiters_ptr(head_val);
-    while !head.is_null() {
-      let next = unsafe { (*head).next };
-      unsafe {
-        (*head).next = null_mut();
-      }
-
-      let vtable = unsafe { (*head).vtable };
-      if vtable.is_null() {
+    let promise = table.get(id).unwrap_or(core::ptr::null_mut()).cast::<PromiseHeader>();
+    if !promise.is_null() {
+      if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
         std::process::abort();
       }
-      crate::ffi::abort_on_callback_panic(|| unsafe {
-        let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
-        drop_fn(head);
-      });
 
-      head = next;
+      // If this promise was counted as "external pending" (e.g. a parallel task), clear the flag so
+      // a later settlement can't perturb `EXTERNAL_PENDING` after teardown.
+      //
+      // Do this *before* dropping reaction nodes so we don't touch `promise` after potentially freeing
+      // it (e.g. if some reaction node holds the last strong reference to the promise allocation).
+      maybe_clear_external_pending(promise);
+
+      let reactions = unsafe { &(*promise).waiters };
+      let head_val = reactions.swap(0, Ordering::AcqRel);
+      let mut head = decode_waiters_ptr(head_val);
+      while !head.is_null() {
+        let next = unsafe { (*head).next };
+        unsafe {
+          (*head).next = null_mut();
+        }
+
+        let vtable = unsafe { (*head).vtable };
+        if vtable.is_null() {
+          std::process::abort();
+        }
+        crate::ffi::abort_on_callback_panic(|| unsafe {
+          let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+          drop_fn(head);
+        });
+
+        head = next;
+      }
     }
+
+    // Free the persistent root so we no longer keep this promise alive (if it is GC-managed).
+    let _ = table.free(id);
   }
 }
 
