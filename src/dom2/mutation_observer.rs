@@ -328,7 +328,6 @@ impl Document {
       }
     }
   }
-
   pub fn mutation_observer_observe(
     &mut self,
     observer: MutationObserverId,
