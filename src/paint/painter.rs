@@ -13239,6 +13239,8 @@ impl Painter {
   }
 
   fn missing_image_icon_size(content_rect: Rect) -> f32 {
+    // Keep behaviour in sync with `DisplayListBuilder::missing_image_icon_size` so the immediate
+    // paint path matches the display-list pipeline.
     if !content_rect.width().is_finite() || !content_rect.height().is_finite() {
       return 0.0;
     }
@@ -13253,6 +13255,8 @@ impl Painter {
   }
 
   fn paint_inside_border_rect(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    // Keep behaviour in sync with `DisplayListBuilder::emit_inside_border_rect` so broken-image
+    // placeholders render consistently across the display-list and immediate paint paths.
     if !rect.width().is_finite() || !rect.height().is_finite() {
       return;
     }
@@ -13262,6 +13266,8 @@ impl Painter {
       return;
     }
 
+    // Chrome's 1px border sits inside the image box. Using `stroke_path` would center the stroke
+    // on the edge, which gets clipped/anti-aliased and ends up darker than browsers.
     let thickness: f32 = 1.0;
     let th = thickness.min(h);
     let tw = thickness.min(w);
@@ -13282,6 +13288,8 @@ impl Painter {
   }
 
   fn paint_broken_image_icon(&mut self, icon_rect: Rect, clip_mask: Option<&Mask>) {
+    // Keep behaviour in sync with `DisplayListBuilder::emit_broken_image_icon` so broken-image
+    // placeholders render consistently across the display-list and immediate paint paths.
     let inner_rect = Rect::from_xywh(
       icon_rect.x() + 1.0,
       icon_rect.y() + 1.0,
@@ -13292,6 +13300,7 @@ impl Painter {
     if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
       self.paint_fill_rect_crisp(inner_rect, Rgba::WHITE, clip_mask);
 
+      // Sky.
       let sky_h = (inner_rect.height() * 0.62)
         .floor()
         .clamp(0.0, inner_rect.height());
@@ -13303,6 +13312,7 @@ impl Painter {
         );
       }
 
+      // Ground.
       let ground_h = (inner_rect.height() * 0.3)
         .floor()
         .clamp(0.0, inner_rect.height());
@@ -13319,6 +13329,7 @@ impl Painter {
         );
       }
 
+      // "Sun" highlight.
       self.paint_fill_rect_crisp(
         Rect::from_xywh(inner_rect.x() + 2.0, inner_rect.y() + 2.0, 3.0, 3.0),
         Rgba::WHITE,
@@ -13328,6 +13339,7 @@ impl Painter {
 
     self.paint_inside_border_rect(icon_rect, Rgba::rgb(192, 192, 192), clip_mask);
   }
+
   fn paint_missing_image_placeholder(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
     self.paint_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192), clip_mask);
     let icon_inset = 2.0;
