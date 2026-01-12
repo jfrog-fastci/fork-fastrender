@@ -37,6 +37,8 @@ mod live_collection_query;
 mod live_mutation;
 mod mutation;
 mod mutation_observer;
+mod intersection_observer;
+mod resize_observer;
 mod scripting_parser;
 mod serialization;
 mod xml_serialization;
@@ -217,6 +219,8 @@ pub struct Document {
   selector_snapshot_cache: Option<SelectorSnapshotCache>,
   mutation_observer_agent: Rc<RefCell<mutation_observer::MutationObserverAgent>>,
   live_mutation: live_mutation::LiveMutation,
+  intersection_observers: intersection_observer::IntersectionObserverRegistry,
+  resize_observers: resize_observer::ResizeObserverRegistry,
 }
 
 impl Clone for Document {
@@ -237,6 +241,8 @@ impl Clone for Document {
       selector_snapshot_cache: None,
       mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
       live_mutation: live_mutation::LiveMutation::default(),
+      intersection_observers: intersection_observer::IntersectionObserverRegistry::new(self.nodes.len()),
+      resize_observers: resize_observer::ResizeObserverRegistry::new(self.nodes.len()),
     }
   }
 }
@@ -408,6 +414,8 @@ impl Document {
       selector_snapshot_cache: None,
       mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
       live_mutation: live_mutation::LiveMutation::default(),
+      intersection_observers: intersection_observer::IntersectionObserverRegistry::new(self.nodes.len()),
+      resize_observers: resize_observer::ResizeObserverRegistry::new(self.nodes.len()),
     }
   }
 
@@ -489,6 +497,8 @@ impl Document {
       selector_snapshot_cache: None,
       mutation_observer_agent,
       live_mutation: live_mutation::LiveMutation::default(),
+      intersection_observers: intersection_observer::IntersectionObserverRegistry::new(0),
+      resize_observers: resize_observer::ResizeObserverRegistry::new(0),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -865,6 +875,8 @@ impl Document {
     });
     self.input_states.push(input_state);
     self.textarea_states.push(textarea_state);
+    self.intersection_observers.on_node_added();
+    self.resize_observers.on_node_added();
     if let Some(parent_id) = parent {
       self.nodes[parent_id.0].children.push(id);
     }
