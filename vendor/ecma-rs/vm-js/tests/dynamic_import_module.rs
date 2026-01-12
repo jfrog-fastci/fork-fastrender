@@ -245,6 +245,7 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
 
   scope.heap_mut().remove_root(promise_root);
   drop(scope);
+  modules.teardown(&mut vm, &mut heap);
   host_hooks.teardown_jobs(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())

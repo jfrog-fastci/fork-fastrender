@@ -1282,8 +1282,10 @@ impl JsRuntime {
 
 impl Drop for JsRuntime {
   fn drop(&mut self) {
-    // Unregister persistent roots created by global lexical bindings and the realm. This keeps heap
-    // reuse in tests/embeddings from accumulating roots and satisfies `Realm`'s debug assertion.
+    // Unregister persistent roots created by the module graph, global lexical bindings, and the
+    // realm. This keeps heap reuse in tests/embeddings from accumulating roots and satisfies
+    // `Realm`'s debug assertion.
+    self.modules.teardown(&mut self.vm, &mut self.heap);
     self.env.teardown(&mut self.heap);
     self.realm.teardown(&mut self.heap);
   }

@@ -123,11 +123,24 @@ fn attach_stack_property_for_promise_rejection(scope: &mut Scope<'_>, reason: Va
 /// This intentionally does **not** implement a full module loader. Tests are responsible for
 /// constructing module records and linking their `[[RequestedModules]]` entries to concrete
 /// [`ModuleId`]s.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ModuleGraph {
   modules: Vec<SourceTextModuleRecord>,
   host_resolve: Vec<(ModuleRequest, ModuleId)>,
   tla_states: Vec<Option<TlaEvaluationState>>,
+  torn_down: bool,
+}
+
+impl Default for ModuleGraph {
+  fn default() -> Self {
+    Self {
+      modules: Vec::new(),
+      host_resolve: Vec::new(),
+      tla_states: Vec::new(),
+      // A freshly-created graph does not own any persistent roots yet, and can be dropped safely.
+      torn_down: true,
+    }
+  }
 }
 
 impl ModuleGraph {
@@ -186,6 +199,64 @@ impl ModuleGraph {
 
   pub fn module_count(&self) -> usize {
     self.modules.len()
+  }
+
+  /// Unregisters all persistent roots owned by this module graph.
+  ///
+  /// `ModuleGraph` caches several VM values using persistent GC roots (module environments, module
+  /// namespace objects, cached `import.meta` objects, async module evaluation promise capabilities,
+  /// etc). Dropping the graph without explicitly removing those roots is fine if the entire
+  /// [`Heap`] is dropped, but is a leak hazard for embeddings that reuse a heap across multiple
+  /// graphs.
+  ///
+  /// This method is **idempotent**.
+  pub fn teardown(&mut self, vm: &mut Vm, heap: &mut Heap) {
+    if self.torn_down {
+      // Even if there are no roots to remove, ensure the VM does not retain a raw pointer to this
+      // graph before the embedding drops it.
+      if vm.module_graph_ptr() == Some(self as *mut ModuleGraph) {
+        vm.clear_module_graph();
+      }
+      return;
+    }
+    self.torn_down = true;
+
+    // Abort any in-progress async module evaluation so its promise capability roots are removed.
+    for slot in &mut self.tla_states {
+      if let Some(state) = slot.take() {
+        state.teardown(vm, heap);
+      }
+    }
+
+    // Remove per-module persistent roots.
+    for (idx, module) in self.modules.iter_mut().enumerate() {
+      if let Some(ns) = module.namespace.take() {
+        heap.remove_root(ns.object);
+      }
+      if let Some(env_root) = module.environment.take() {
+        heap.remove_env_root(env_root);
+      }
+      if let Some(root) = module.import_meta.take() {
+        heap.remove_root(root);
+      }
+
+      // Cyclic module record persistent roots (top-level await state / cached errors).
+      module.teardown_top_level_capability(heap);
+      module.teardown_evaluation_error(heap);
+
+      // `import.meta` is currently cached on the `Vm` (not on the module record).
+      vm.remove_import_meta_cache_entry(heap, ModuleId::from_raw(idx as u64));
+    }
+
+    // Ensure the VM does not retain a raw pointer to this graph after teardown.
+    if vm.module_graph_ptr() == Some(self as *mut ModuleGraph) {
+      vm.clear_module_graph();
+    }
+  }
+
+  /// Alias for [`ModuleGraph::teardown`].
+  pub fn remove_roots(&mut self, vm: &mut Vm, heap: &mut Heap) {
+    self.teardown(vm, heap);
   }
 
   /// Abort an in-progress async module evaluation created via top-level `await`.
@@ -349,6 +420,7 @@ impl ModuleGraph {
       exports: exports_sorted,
       external_memory: Some(Arc::new(token)),
     });
+    self.torn_down = false;
 
     Ok(namespace_obj)
   }
@@ -599,6 +671,7 @@ impl ModuleGraph {
       scope.push_env_root(env)?;
       let root = scope.heap_mut().add_env_root(env)?;
       self.modules[idx].environment = Some(root);
+      self.torn_down = false;
     }
 
     let requested_modules = self.modules[idx].requested_modules.clone();
@@ -833,6 +906,7 @@ impl ModuleGraph {
 
           // Root the capability values in the heap so they survive across microtasks.
           let roots = PromiseCapabilityRoots::new(&mut eval_scope, cap)?;
+          self.torn_down = false;
 
           // Store async evaluation state for resume/reject callbacks.
           if self.tla_states.len() <= idx {
@@ -1200,6 +1274,19 @@ impl ModuleGraph {
   }
 }
 
+impl Drop for ModuleGraph {
+  fn drop(&mut self) {
+    // Avoid panicking from a destructor while unwinding (that would abort).
+    if std::thread::panicking() {
+      return;
+    }
+    debug_assert!(
+      self.torn_down,
+      "ModuleGraph dropped with leaked persistent roots; call teardown() if the Heap is reused"
+    );
+  }
+}
+
 #[derive(Debug)]
 struct TlaEvaluationState {
   resume_index: usize,
@@ -1221,6 +1308,20 @@ impl TlaEvaluationState {
         vm.set_module_graph(&mut *ptr);
       },
       None => vm.clear_module_graph(),
+    }
+  }
+
+  fn teardown(mut self, vm: &mut Vm, heap: &mut Heap) {
+    // Restore the previous graph pointer so any queued resume callbacks cannot access a graph that
+    // is being torn down.
+    self.restore_module_graph(vm);
+
+    for id in self.async_continuation_ids.drain(..) {
+      vm.abort_async_continuation(heap, id);
+    }
+
+    if let Some(roots) = self.promise_roots.take() {
+      roots.teardown(heap);
     }
   }
 }

@@ -70,8 +70,8 @@ fn module_namespace_is_cached_and_spec_shaped() -> Result<(), VmError> {
     "exports list should be sorted"
   );
 
-  // Avoid leaking persistent roots (and tripping the Realm drop assertion).
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -135,6 +135,7 @@ fn module_namespace_import_star_is_non_extensible() -> Result<(), VmError> {
   assert_eq!(scope.heap().get_string(tag)?.to_utf8_lossy(), "[object Module]");
 
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -202,6 +203,7 @@ fn module_namespace_rejects_adding_new_properties_in_strict_mode() -> Result<(),
   }
 
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }

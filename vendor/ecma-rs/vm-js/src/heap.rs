@@ -310,6 +310,20 @@ impl Heap {
     self.root_stack.len()
   }
 
+  /// Returns the number of active persistent roots registered via [`Heap::add_root`].
+  pub fn persistent_root_count(&self) -> usize {
+    self.persistent_roots.iter().filter(|slot| slot.is_some()).count()
+  }
+
+  /// Returns the number of active persistent environment roots registered via [`Heap::add_env_root`].
+  pub fn persistent_env_root_count(&self) -> usize {
+    self
+      .persistent_env_roots
+      .iter()
+      .filter(|slot| slot.is_some())
+      .count()
+  }
+
   /// Pushes a value stack root.
   ///
   /// Stack roots are traced during GC until removed (typically via

@@ -98,6 +98,7 @@ fn module_evaluate_supports_named_default_imports_and_live_bindings() -> Result<
   );
 
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -157,6 +158,7 @@ fn module_evaluate_supports_anonymous_default_export_function_decls() -> Result<
   assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
 
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -235,6 +237,7 @@ fn module_evaluate_supports_reexports_and_export_star_as_namespace() -> Result<(
   );
 
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -322,6 +325,7 @@ fn module_evaluate_handles_cycles_with_function_decls() -> Result<(), VmError> {
       }
     }
     drop(scope);
+    graph.teardown(&mut vm, &mut heap);
     realm.teardown(&mut heap);
     panic!("expected cycle evaluation to fulfill, got {state:?} with {reason:?}{extra}");
   }
@@ -347,6 +351,7 @@ fn module_evaluate_handles_cycles_with_function_decls() -> Result<(), VmError> {
   assert_eq!(scope.heap().get_string(also_from_a)?.to_utf8_lossy(), "A");
 
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -462,6 +467,7 @@ fn module_evaluate_supports_import_meta_and_caches_it_per_module() -> Result<(),
   assert_eq!(hooks.finalize_calls, 1);
 
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }

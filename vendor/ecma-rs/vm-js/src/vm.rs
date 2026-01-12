@@ -1890,6 +1890,19 @@ impl Vm {
     Ok(cooked)
   }
 
+  #[allow(dead_code)]
+  pub(crate) fn teardown_import_meta_cache(&mut self, heap: &mut Heap) {
+    for (_, root) in self.import_meta_cache.drain() {
+      heap.remove_root(root);
+    }
+  }
+
+  pub(crate) fn remove_import_meta_cache_entry(&mut self, heap: &mut Heap, module: ModuleId) {
+    if let Some(root) = self.import_meta_cache.remove(&module) {
+      heap.remove_root(root);
+    }
+  }
+
   /// Returns the realm of the currently-running execution context, if any.
   pub fn current_realm(&self) -> Option<RealmId> {
     self.execution_context_stack.last().map(|ctx| ctx.realm)

@@ -142,7 +142,7 @@ fn abort_tla_evaluation_rejects_pending_module_evaluation_promise() -> Result<()
   // duration of module evaluation).
   assert!(vm.module_graph_ptr().is_none());
 
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
-

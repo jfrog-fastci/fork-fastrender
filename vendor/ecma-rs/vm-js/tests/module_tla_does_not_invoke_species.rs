@@ -129,7 +129,7 @@ fn module_tla_does_not_invoke_species_constructor() -> Result<(), VmError> {
   assert_eq!(scope.heap().get_string(out)?.to_utf8_lossy(), "ok");
 
   drop(scope);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
-

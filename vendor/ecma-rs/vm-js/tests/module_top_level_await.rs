@@ -359,6 +359,7 @@ fn import_meta_works_after_top_level_await() -> Result<(), VmError> {
   heap.remove_root(eval_promise_root);
   graph.abort_tla_evaluation(&mut vm, &mut heap, m);
   hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -429,6 +430,7 @@ fn export_default_await_initializes_default_binding() -> Result<(), VmError> {
   heap.remove_root(eval_promise_root);
   graph.abort_tla_evaluation(&mut vm, &mut heap, m);
   hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -531,6 +533,7 @@ fn dynamic_import_after_top_level_await_starts_and_resolves() -> Result<(), VmEr
   heap.remove_root(eval_promise_root);
   graph.abort_tla_evaluation(&mut vm, &mut heap, m);
   hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
