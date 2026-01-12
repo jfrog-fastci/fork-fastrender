@@ -995,6 +995,7 @@ fn jsx_text_children_are_not_string_literals() {
       r#"
 declare namespace JSX {
   interface Element {}
+  interface ElementChildrenAttribute { children: {} }
   interface IntrinsicElements {
     div: { children?: "hi" };
   }

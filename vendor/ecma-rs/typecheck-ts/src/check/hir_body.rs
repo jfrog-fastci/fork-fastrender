@@ -4766,7 +4766,34 @@ impl<'a> Checker<'a> {
     for (semantic_idx, child_idx) in semantic_children.into_iter().enumerate() {
       match &children[child_idx] {
         JsxElemChild::Text(text) => {
-          if let Some(ty) = self.jsx_child_text_type(text) {
+          let expected_ty = if semantic_len == 1 {
+            expected_children_ty
+          } else if expected_is_array_like {
+            let key_ty = self
+              .store
+              .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(semantic_idx as f64)));
+            self.member_type_for_index_key(expected_children_ty, key_ty)
+          } else {
+            expected_children_ty
+          };
+
+          let mut ty = self.jsx_child_text_type(text).unwrap_or(prim.unknown);
+          if should_check_children_assignability
+            && expected_ty != prim.unknown
+            && !matches!(self.store.type_kind(expected_ty), TypeKind::Any | TypeKind::Unknown)
+            && !matches!(self.store.type_kind(ty), TypeKind::Any | TypeKind::Unknown)
+            && !self.relate.is_assignable(ty, expected_ty)
+          {
+            self.diagnostics.push(codes::TYPE_MISMATCH.error(
+              "type mismatch",
+              Span::new(self.file, loc_to_range(self.file, text.loc)),
+            ));
+            ty = expected_ty;
+          }
+
+          if should_return_tuple {
+            collected.push(ty);
+          } else if ty != prim.unknown {
             collected.push(ty);
           }
         }
@@ -4785,6 +4812,7 @@ impl<'a> Checker<'a> {
           };
 
           let expr_ty = self.check_expr_with_expected(&expr.stx.value, expected_ty);
+          let mut forced_ty = None;
 
           if expr.stx.spread {
             let expanded = self.expand_ref(expr_ty);
@@ -4806,6 +4834,7 @@ impl<'a> Checker<'a> {
           }
 
           if should_check_children_assignability && !expr.stx.spread && expected_ty != prim.unknown {
+            let before = self.diagnostics.len();
             // `parse-js` assigns JSX expression containers a span that excludes the surrounding
             // `{`/`}` tokens. `tsc` anchors diagnostics on the full container (including braces),
             // so expand the span by one byte on each side for JSX child assignability checks.
@@ -4820,6 +4849,9 @@ impl<'a> Checker<'a> {
               expected_ty,
               Some(container),
             );
+            if self.diagnostics.len() > before {
+              forced_ty = Some(expected_ty);
+            }
           }
           if !expr.stx.spread
             && !should_check_children_assignability
@@ -4841,10 +4873,8 @@ impl<'a> Checker<'a> {
 
           let ty = if expr.stx.spread {
             self.spread_element_type(expr_ty)
-          } else if should_check_children_assignability {
-            expected_ty
           } else {
-            expr_ty
+            forced_ty.unwrap_or(expr_ty)
           };
 
           if should_return_tuple {
@@ -4854,7 +4884,32 @@ impl<'a> Checker<'a> {
           }
         }
         JsxElemChild::Element(elem) => {
-          collected.push(self.check_jsx_elem(elem));
+          let expected_ty = if semantic_len == 1 {
+            expected_children_ty
+          } else if expected_is_array_like {
+            let key_ty = self
+              .store
+              .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(semantic_idx as f64)));
+            self.member_type_for_index_key(expected_children_ty, key_ty)
+          } else {
+            expected_children_ty
+          };
+
+          let mut ty = self.check_jsx_elem(elem);
+          if should_check_children_assignability
+            && expected_ty != prim.unknown
+            && !matches!(self.store.type_kind(expected_ty), TypeKind::Any | TypeKind::Unknown)
+            && !matches!(self.store.type_kind(ty), TypeKind::Any | TypeKind::Unknown)
+            && !self.relate.is_assignable(ty, expected_ty)
+          {
+            self.diagnostics.push(codes::TYPE_MISMATCH.error(
+              "type mismatch",
+              Span::new(self.file, loc_to_range(self.file, elem.loc)),
+            ));
+            ty = expected_ty;
+          }
+
+          collected.push(ty);
         }
       }
     }
