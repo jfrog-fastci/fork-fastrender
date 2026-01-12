@@ -202,7 +202,11 @@ impl TypeLowerer {
     match expr.stx.as_ref() {
       TypeExpr::Any(_) => {
         if self.strict_native {
-          self.push_diag(expr.loc, &codes::FORBIDDEN_ANY, "forbidden `any` type");
+          self.push_diag(
+            expr.loc,
+            &codes::FORBIDDEN_ANY,
+            "`any` is forbidden when `native_strict` is enabled",
+          );
         }
         self.store.primitive_ids().any
       }

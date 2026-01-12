@@ -1533,7 +1533,7 @@ impl<'a> Checker<'a> {
       }
       if let Some(span) = self.expr_spans.get(idx).copied() {
         self.diagnostics.push(codes::FORBIDDEN_ANY.error(
-          "forbidden `any` type",
+          "`any` is forbidden when `native_strict` is enabled",
           Span::new(self.file, span),
         ));
       }
@@ -1546,7 +1546,7 @@ impl<'a> Checker<'a> {
       }
       if let Some(span) = self.pat_spans.get(idx).copied() {
         self.diagnostics.push(codes::FORBIDDEN_ANY.error(
-          "forbidden `any` type",
+          "`any` is forbidden when `native_strict` is enabled",
           Span::new(self.file, span),
         ));
       }

@@ -542,7 +542,10 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
         if self.strict_native {
           self
             .diagnostics
-            .push(codes::FORBIDDEN_ANY.error("forbidden `any` type", span));
+            .push(codes::FORBIDDEN_ANY.error(
+              "`any` is forbidden when `native_strict` is enabled",
+              span,
+            ));
         }
         self.store.primitive_ids().any
       }

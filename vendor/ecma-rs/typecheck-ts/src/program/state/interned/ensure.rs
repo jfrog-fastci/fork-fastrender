@@ -844,7 +844,7 @@ impl ProgramState {
       }
       for (file, span) in offenders {
         self.push_program_diagnostic(codes::FORBIDDEN_ANY.error(
-          "forbidden `any` type",
+          "`any` is forbidden when `native_strict` is enabled",
           Span::new(file, span),
         ));
       }
