@@ -31,6 +31,7 @@ use crate::resource::{
   ReferrerPolicy, ResourceFetcher,
 };
 use crate::style::media::MediaContext;
+use crate::Rect;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
 use base64::Engine as _;

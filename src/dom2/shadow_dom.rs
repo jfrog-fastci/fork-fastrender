@@ -10,6 +10,11 @@ fn node_is_element_like(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
 }
 
+#[inline]
+fn is_html_namespace(namespace: &str) -> bool {
+  namespace.is_empty() || namespace == HTML_NAMESPACE
+}
+
 fn node_is_template_element(doc: &Document, kind: &NodeKind) -> bool {
   matches!(
     kind,

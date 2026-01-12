@@ -1,9 +1,10 @@
-use crate::css::parser::parse_stylesheet;
-use crate::dom;
-use crate::style::cascade::apply_styles_with_media_target_and_imports;
-use crate::style::cascade::StyledNode;
-use crate::style::media::ColorScheme;
-use crate::style::media::MediaContext;
+use fastrender::css::parser::parse_stylesheet;
+use fastrender::dom;
+use fastrender::style::cascade::apply_styles_with_media;
+use fastrender::style::cascade::apply_styles_with_media_target_and_imports;
+use fastrender::style::cascade::StyledNode;
+use fastrender::style::media::ColorScheme;
+use fastrender::style::media::MediaContext;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node
@@ -14,6 +15,97 @@ fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
     return Some(node);
   }
   node.children.iter().find_map(|child| find_by_id(child, id))
+}
+
+#[test]
+fn hostile_css_no_panic_smoke_test() {
+  let dom = dom::parse_html(
+    r#"
+      <div id="root" class="a b">
+        <x-foo id="custom" class="b c" data-attr="value">
+          <span class="child" lang="en">
+            <em class="inner">hi</em>
+          </span>
+          <p class="child2" data-flag></p>
+        </x-foo>
+        <ul id="list">
+          <li class="item first"></li>
+          <li class="item"></li>
+        </ul>
+      </div>
+    "#,
+  )
+  .expect("parse html");
+
+  let media = MediaContext::screen(800.0, 600.0);
+
+  let corpus: Vec<&'static str> = vec![
+    r#"div { color: red"#,
+    r#"div { color: rgb(1 2 3"#,
+    r#"div { --x: func("#,
+    r#"}}}} ;;;"#,
+    r#"div { color: red background: blue; }"#,
+    r#"div { color: red; background: blue }"#,
+    r#":root { --x: func(a, (b [c {d}])) }"#,
+    r#":root { --x: { foo: bar; baz: (qux [1 {2}]); }; }"#,
+    r#"div/**/span { color: red !/**/important; }"#,
+    r#"div { color: red ! important; }"#,
+    r#"div { color: red /*!important*/ !important; }"#,
+    r#".cl\61 ss { color: green; }"#,
+    r#"#\31 23 { color: blue; }"#,
+    r#":root { --f: f\75 nc(a, (b [c {d}])) }"#,
+    r#"div { width: 999999999999999999999999999999px; }"#,
+    r#"div { opacity: 1e309; }"#,
+    r#"x-foo { rotate: 999999999999999999999deg; }"#,
+    r#"x-foo:nth-child(999999999999n+999999999999) { color: red; }"#,
+    r#"x-foo:has(> span.child:has(em.inner)) { color: red; }"#,
+    r#"x-foo:has(> :is(span.child, p.child2):not(:nth-child(2n+))) { color: red; }"#,
+    r#"div::before::after { content: "x"; }"#,
+    r#":not() { color: red; }"#,
+    r#":is(.a, .b,, .c) { color: red; }"#,
+    r#"@supports (display: grid) and (color: ) { #root { color: red; } }"#,
+    r#"@supports selector(:has(> .child)) { #root { color: red; } }"#,
+    r#"@supports (display: grid { #root { color: red; } }"#,
+    r#"@media screen and (min-width: ) { #root { color: red; } }"#,
+    r#"@media (width >= 100px) and (height < ) { #root { color: red; } }"#,
+    r#"@container (min-width: ) { x-foo { color: red; } }"#,
+    r#"@container style(--x: {) { x-foo { color: red; } }"#,
+    r#"@layer foo { #root { color: red; }"#,
+    r#"@scope (.a) to (.b { #root { color: red; } }"#,
+  ];
+
+  const PREFIX: &str = r#"
+    :root { --baseline: 1; }
+    #root { font-size: 16px; color: rgb(1 2 3); }
+    #root::before { content: "x"; }
+    x-foo { display: block; container-type: inline-size; }
+    x-foo > span.child { color: blue; }
+  "#;
+
+  const SUFFIX: &str = r#"
+    #root > x-foo > span.child > em.inner { margin-left: 1px; }
+  "#;
+
+  let baseline_stylesheet =
+    parse_stylesheet(&format!("{PREFIX}\n{SUFFIX}")).expect("parse baseline stylesheet");
+
+  for (idx, snippet) in corpus.iter().enumerate() {
+    let css = format!("{PREFIX}\n{snippet}\n{SUFFIX}");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let stylesheet = parse_stylesheet(&css).unwrap_or_else(|_| baseline_stylesheet.clone());
+
+      let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+
+      let _ = styled.styles.color;
+      let _ = styled.before_styles.as_ref().map(|styles| styles.color);
+      let _ = styled.children.len();
+    }));
+
+    assert!(
+      result.is_ok(),
+      "style pipeline panicked for corpus entry {idx}:\n{snippet}\n--- full stylesheet ---\n{css}"
+    );
+  }
 }
 
 #[test]
@@ -221,8 +313,7 @@ fn hostile_css_does_not_panic_smoke_test() {
   )
   .expect("parse stylesheet");
 
-  let media =
-    MediaContext::screen(800.0, 600.0).with_color_scheme(ColorScheme::Light);
+  let media = MediaContext::screen(800.0, 600.0).with_color_scheme(ColorScheme::Light);
   let styled = apply_styles_with_media_target_and_imports(
     &dom, &stylesheet, &media, None, None, None, None, None, None,
   );
