@@ -126,6 +126,8 @@ mod tests {
     last_receiver: Option<Value>,
     last_interface: Option<&'static str>,
     last_member: Option<&'static str>,
+    last_overload: Option<usize>,
+    last_args: Vec<Value>,
   }
 
   impl WebIdlBindingsHost for ConstructorDispatchHost {
@@ -136,12 +138,15 @@ mod tests {
       receiver: Option<Value>,
       interface: &'static str,
       operation: &'static str,
-      _overload: usize,
-      _args: &[Value],
+      overload: usize,
+      args: &[Value],
     ) -> Result<Value, VmError> {
       self.last_receiver = receiver;
       self.last_interface = Some(interface);
       self.last_member = Some(operation);
+      self.last_overload = Some(overload);
+      self.last_args.clear();
+      self.last_args.extend_from_slice(args);
       Ok(Value::Undefined)
     }
 
@@ -306,6 +311,60 @@ mod tests {
         }));
       }
     }
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_bindings_event_target_constructor_passes_parent_arg_to_host() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+    let global = realm.global_object();
+
+    let mut host_impl = ConstructorDispatchHost::default();
+    let mut hooks = HostHooksWithBindingsHost::new(&mut host_impl);
+    let mut dummy_host = ();
+    let mut scope = heap.scope();
+
+    scope.push_root(Value::Object(global))?;
+    let ctor_key = alloc_key(&mut scope, "EventTarget")?;
+    let ctor = scope
+      .heap()
+      .object_get_own_data_property_value(global, &ctor_key)?
+      .expect("globalThis.EventTarget should be defined");
+    scope.push_root(ctor)?;
+
+    // Create a parent EventTarget instance.
+    let parent = vm.construct_with_host_and_hooks(
+      &mut dummy_host,
+      &mut scope,
+      &mut hooks,
+      ctor,
+      &[],
+      ctor,
+    )?;
+    scope.push_root(parent)?;
+
+    // Create a child EventTarget with an explicit parent.
+    let _child = vm.construct_with_host_and_hooks(
+      &mut dummy_host,
+      &mut scope,
+      &mut hooks,
+      ctor,
+      &[parent],
+      ctor,
+    )?;
+
+    assert_eq!(host_impl.last_interface, Some("EventTarget"));
+    assert_eq!(host_impl.last_member, Some("constructor"));
+    assert_eq!(host_impl.last_overload, Some(1));
+    assert_eq!(host_impl.last_args.get(0).copied(), Some(parent));
 
     drop(scope);
     realm.teardown(&mut heap);

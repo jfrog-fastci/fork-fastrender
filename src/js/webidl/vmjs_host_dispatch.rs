@@ -88,6 +88,12 @@ struct RootedCallback {
   root: RootId,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RootedValue {
+  value: Value,
+  root: RootId,
+}
+
 #[derive(Debug)]
 struct TimerEntry {
   callback: RootedCallback,
@@ -104,6 +110,7 @@ struct EventListenerEntry {
 
 #[derive(Debug, Default)]
 struct EventTargetState {
+  parent: Option<RootedValue>,
   listeners: Vec<EventListenerEntry>,
 }
 
@@ -703,6 +710,9 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       if k.upgrade(heap).is_some() {
         true
       } else {
+        if let Some(parent) = state.parent {
+          heap.remove_root(parent.root);
+        }
         for listener in &state.listeners {
           heap.remove_root(listener.callback.root);
         }
@@ -1498,7 +1508,6 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         //
         // The overload is by argument count so we avoid expensive platform object conversions here.
         // The parent value is forwarded by the bindings generator and can be inspected via `args`.
-        let _parent = args.get(0).copied().unwrap_or(Value::Undefined);
         let obj = Self::require_receiver_object(receiver)?;
         scope.heap_mut().object_set_host_slots(
           obj,
@@ -1507,10 +1516,30 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             b: 0,
           },
         )?;
-        self
-          .event_targets
-          .entry(WeakGcObject::from(obj))
-          .or_default();
+        let state = self.event_targets.entry(WeakGcObject::from(obj)).or_default();
+
+        // If the object is somehow initialized twice, ensure we do not leak persistent roots.
+        if let Some(parent) = state.parent.take() {
+          scope.heap_mut().remove_root(parent.root);
+        }
+
+        let parent_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        match parent_value {
+          Value::Undefined | Value::Null => {}
+          Value::Object(_) => {
+            let root = scope.heap_mut().add_root(parent_value)?;
+            state.parent = Some(RootedValue {
+              value: parent_value,
+              root,
+            });
+          }
+          _ => {
+            return Err(VmError::TypeError(
+              "EventTarget parent must be null, undefined, or an object",
+            ))
+          }
+        }
+
         Ok(Value::Undefined)
       }
       ("EventTarget", "addEventListener", 0) => {
