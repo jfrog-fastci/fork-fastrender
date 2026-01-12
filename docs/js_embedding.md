@@ -307,11 +307,14 @@ The long-term plan is to plumb renderer-level budgets into the JS VM.
 
 What exists today:
 
-- The legacy heap-only WebIDL runtime (Cargo package `webidl-runtime`, Rust crate `webidl_runtime`)
+- The legacy heap-only WebIDL runtime adapter (canonical: `vendor/ecma-rs/webidl-runtime` / Cargo
+  package `webidl-runtime` (Rust crate `webidl_runtime`); transitional copy:
+  `crates/webidl-js-runtime` / Cargo package `webidl-js-runtime` (Rust crate `webidl_js_runtime`))
   builds on `vm-js`, which supports `HeapLimits`.
 - The runtime constructs a `Heap` with conservative fixed limits by default (see
-  `webidl_runtime::VmJsRuntime::new` / `VmJsRuntime::with_limits`, implemented in
-  `vendor/ecma-rs/webidl-runtime/src/ecma_runtime.rs`).
+  `VmJsRuntime::new` / `VmJsRuntime::with_limits` in the `ecma_runtime.rs` implementation:
+  `vendor/ecma-rs/webidl-runtime/src/ecma_runtime.rs` (canonical) or
+  `crates/webidl-js-runtime/src/ecma_runtime.rs` (transitional copy)).
 
 As JS execution is wired into page rendering, these heap limits should become part of the tab-level
 budgeting story (alongside renderer stage budgets and OS caps).

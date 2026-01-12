@@ -179,8 +179,10 @@ src/dom2/                      — Mutable DOM implementation
 
 vendor/ecma-rs/webidl/         — WebIDL IR + spec algorithms (`webidl::ir`, conversions, overload resolution)
 vendor/ecma-rs/webidl-vm-js/   — vm-js adapter + shared realm bindings helpers used by generated glue
-vendor/ecma-rs/webidl-runtime/ — Legacy heap-only runtime adapter (Cargo package `webidl-runtime`, re-exported as `fastrender::js::webidl::legacy`)
-crates/webidl-js-runtime/      — Deprecated wrapper for the legacy heap-only runtime adapter (Cargo package `webidl-js-runtime`)
+vendor/ecma-rs/webidl-runtime/ — Legacy heap-only runtime adapter (Cargo package `webidl-runtime`; compat/migration only)
+
+crates/webidl-js-runtime/      — Transitional (deprecated) workspace-local copy of the legacy runtime
+                                 (Cargo package `webidl-js-runtime`, re-exported as `fastrender::js::webidl::legacy`)
 
 crates/js-wpt-dom-runner/      — Tooling (offline WPT `testharness.js` runner)
 ```

@@ -33,6 +33,11 @@ repo) when the canonical implementation lives in:
 This creates maintenance burden, sync overhead, and divergence. Every line in a parallel crate is
 technical debt.
 
+Note: a transitional workspace-local copy of the legacy heap-only runtime currently exists at
+`crates/webidl-js-runtime/` while consolidation/migration is in progress. Treat it as technical debt:
+do not add new features there; prefer modifying `vendor/ecma-rs/webidl-runtime/` and migrating
+callers.
+
 ### ❌ "Workspace isolation" as justification
 
 **Wrong reasoning:**
@@ -106,9 +111,11 @@ This is a one-time fix. Don't create parallel crates to avoid it.
 
 ---
 
-## Repository shape (post-consolidation)
+## Repository shape (consolidation in progress)
 
-`crates/` exists only for FastRender-specific tooling (currently `crates/js-wpt-dom-runner/`).
+`crates/` should be reserved for FastRender-specific tooling (currently `crates/js-wpt-dom-runner/`).
+The only JS/WebIDL-related crate that should exist there is the transitional
+`crates/webidl-js-runtime/` copy, and it should be removed once migration is complete.
 
 All generic JS/WebIDL infrastructure lives in `vendor/ecma-rs/`. If you find yourself reaching for
 `crates/` to add WebIDL parsing/conversions/VM integration, that is almost certainly a design
@@ -127,11 +134,11 @@ Before creating any new code:
 
 ---
 
-## No exceptions
+## No new exceptions
 
 There are no valid reasons to:
-- Create parallel JS/WebIDL infrastructure crates in `crates/`
-- Maintain "workspace-local copies" of ecma-rs crates
+- Create new parallel JS/WebIDL infrastructure crates in `crates/`
+- Introduce or extend "workspace-local copies" of ecma-rs crates
 - Avoid modifying ecma-rs "because it's separate"
 
 If you think you have an exception, you don't. Fix the underlying issue instead.
