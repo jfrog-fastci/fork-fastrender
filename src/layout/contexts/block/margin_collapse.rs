@@ -60,13 +60,25 @@ fn has_non_zero_block_size(style: &ComputedStyle) -> bool {
   // Margin collapsing operates on the block axis. In vertical writing modes, the block axis is
   // horizontal so the physical `width` maps to the block size. In horizontal writing modes, the
   // block axis is vertical so the physical `height` maps to the block size.
-  let (block_size, keyword) = if block_axis_is_horizontal(style.writing_mode) {
+  let block_axis_is_horizontal = block_axis_is_horizontal(style.writing_mode);
+  let (block_size, keyword) = if block_axis_is_horizontal {
     (style.width.as_ref(), style.width_keyword)
   } else {
     (style.height.as_ref(), style.height_keyword)
   };
 
   if keyword.is_some() {
+    return true;
+  }
+
+  // `width:auto` usually resolves to a non-zero used width for normal-flow block boxes (CSS 2.1
+  // §10.3.3). In vertical writing modes the physical width corresponds to the block axis, so
+  // treating `auto` as "potentially zero" can misclassify a box as empty and allow margins to
+  // collapse through it. That in turn can cause in-flow siblings to overlap (because the BFC cursor
+  // does not advance).
+  //
+  // Be conservative: if we can't prove the block size is zero, assume it's non-zero.
+  if block_axis_is_horizontal && block_size.is_none() {
     return true;
   }
 

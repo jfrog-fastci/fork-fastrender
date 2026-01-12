@@ -1798,6 +1798,34 @@ pub fn paginate_fragment_tree(
           }
         }
 
+        // `clip_node` treats line boxes as indivisible: when a page boundary falls inside a line, it
+        // moves the entire line to the *next* page. In that case, continuing pagination from the raw
+        // boundary would cause the next page to start before this page's effective end, producing
+        // overlapping/duplicated content (and sometimes a trailing blank page).
+        //
+        // Snap the break position back to the start of the line containing the boundary so both the
+        // clipped page content and the continuation token agree on the same flow position.
+        let mut containing_line = None;
+        line_start_containing_pos(
+          &layout.root,
+          end,
+          0.0,
+          root_block_size,
+          &axis,
+          &mut containing_line,
+          false,
+        );
+        if let Some(line_start) = containing_line {
+          // When the line itself starts at (or before) the current page start (e.g. an oversized
+          // line that overflows the fragmentainer), snapping would produce an empty page and stall
+          // pagination. Only snap when it advances beyond the current page start.
+          if line_start > start + EPSILON && line_start + EPSILON < end {
+            end = line_start;
+            page_footnotes.clear();
+            clipped = None;
+          }
+        }
+
         if clipped.is_none() {
           clipped = clip_node(
             &layout.root,
@@ -2239,17 +2267,34 @@ pub fn paginate_fragment_tree(
           // offsets. (This is especially important for line/text tokens, which enable stable trimming
           // when rewrapping causes the token offset to land mid-line.)
           Some((next_start, tok)) if (next_start - token_pos).abs() < EPSILON => tok,
-          Some((_next_start, tok)) => continuation.unwrap_or(tok),
-          None => continuation.unwrap_or(BreakToken::End),
+          Some((_next_start, tok)) => continuation.clone().unwrap_or(tok),
+          None => continuation.clone().unwrap_or(BreakToken::End),
         };
 
         // Ensure the continuation token actually advances pagination. If it doesn't, fall back to a
         // geometry-based continuation at the page boundary so we never enter an infinite pagination
         // loop (which would otherwise eventually OOM).
+        //
+        // Break tokens that refer to blocks can be ambiguous when a box is split into multiple
+        // fragments (e.g. multi-column layout): the token can resolve to the *first* fragment of the
+        // box when the boundary is actually at a later fragment start, causing pagination to move
+        // backwards and duplicate content. Detect that case and fall back to a continuation token at
+        // the boundary.
         if !matches!(next_token, BreakToken::End) {
-          let next_start =
+          let mut next_start =
             flow_start_for_token_in_layout(&layout.root, &next_token, 0.0, root_block_size, &axis)
               .unwrap_or(total_height);
+          if next_start + EPSILON < token_pos {
+            next_token = continuation.clone().unwrap_or(BreakToken::End);
+            next_start = flow_start_for_token_in_layout(
+              &layout.root,
+              &next_token,
+              0.0,
+              root_block_size,
+              &axis,
+            )
+            .unwrap_or(total_height);
+          }
           if next_start <= start + EPSILON {
             next_token = continuation_token_for_pos(&layout.root, end, 0.0, root_block_size, &axis)
               .unwrap_or(BreakToken::End);
