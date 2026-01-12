@@ -16,8 +16,8 @@ fn flow_checker_keeps_regex_literals_unknown_without_regexp_lib() {
   let program = Program::new(host, vec![file.clone()]);
   let diagnostics = program.check();
   assert!(
-    diagnostics.is_empty(),
-    "unexpected diagnostics: {diagnostics:?}"
+    diagnostics.iter().all(|diag| diag.code.as_str() == "TS2318"),
+    "unexpected diagnostics (expected only TS2318 for missing global types): {diagnostics:?}"
   );
 
   let file_id = program.file_id(&file).expect("file id");

@@ -4790,7 +4790,6 @@ impl<'a> Checker<'a> {
       }
     }
     self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
-
     // Match `tsc`: `super(...)` is treated as `void` (the value is not usable).
     prim.void
   }
