@@ -140,6 +140,12 @@ struct ProgramState {
   compiler_options_override: Option<CompilerOptions>,
   file_overrides: HashMap<FileKey, Arc<str>>,
   decl_types_fingerprint: Option<u64>,
+  /// Monotonically increasing counter bumped on any file text edit.
+  ///
+  /// This is separate from the declaration fingerprint because body-dependent
+  /// caches (expression spans, inferred return types, initializer inference) can
+  /// change even when the declaration surface is identical.
+  file_text_revision: u64,
   cached_body_context: Option<body_context::CachedBodyCheckContext>,
   typecheck_db: db::TypecheckDb,
   checker_caches: CheckerCaches,
@@ -253,6 +259,7 @@ impl ProgramState {
       compiler_options_override: None,
       file_overrides: HashMap::new(),
       decl_types_fingerprint: None,
+      file_text_revision: 0,
       cached_body_context: None,
       typecheck_db,
       checker_caches: CheckerCaches::new(default_options.cache.clone()),
@@ -360,6 +367,56 @@ impl ProgramState {
     self.next_body = 0;
     self.next_symbol = 0;
     self.type_stack.clear();
+  }
+
+  /// Invalidate caches that depend on executable bodies when a file's text
+  /// changes.
+  ///
+  /// This is intentionally *not* tied to `decl_types_fingerprint`: body-level
+  /// inference (return types, initializer types) and expression spans can change
+  /// even when the declaration surface and its fingerprint remain stable.
+  pub(super) fn invalidate_on_file_text_change(&mut self, file: FileId) {
+    self.file_text_revision = self.file_text_revision.wrapping_add(1);
+
+    // Body check contexts snapshot AST/lowering pointers; always drop them on
+    // text edits so subsequent checks use the updated syntax trees.
+    self.cached_body_context = None;
+
+    // Body results include per-expression spans and types; they become stale on
+    // any edit. We clear both the in-memory cache and the DB-backed cache used
+    // by `expr_at`/`type_at`.
+    self.body_results.clear();
+    self.typecheck_db.clear_body_results();
+    self.checking_bodies.clear();
+
+    // Internal body checker caches AST indexes per file; these depend on AST
+    // pointer identity/spans, so drop them for the edited file.
+    self.ast_indexes.remove(&file);
+
+    // Invalidate cached def types that can be inferred from bodies/initializers
+    // in this file. (Declared types are keyed by `decl_types_fingerprint` and
+    // are handled separately.)
+    let mut defs_to_invalidate: Vec<DefId> = Vec::new();
+    for (def, data) in self.def_data.iter() {
+      if data.file != file {
+        continue;
+      }
+      let depends_on_body = match &data.kind {
+        DefKind::Function(func) => func.return_ann.is_none() && func.body.is_some(),
+        // Vars can be inferred from their initializer; conservatively treat any
+        // var with an attached initializer body as body-inferred.
+        DefKind::Var(var) => var.body != MISSING_BODY,
+        _ => false,
+      };
+      if depends_on_body {
+        defs_to_invalidate.push(*def);
+      }
+    }
+    defs_to_invalidate.sort_by_key(|def| def.0);
+    defs_to_invalidate.dedup();
+    for def in defs_to_invalidate {
+      self.interned_def_types.remove(&def);
+    }
   }
 
   fn check_cancelled(&self) -> Result<(), FatalError> {

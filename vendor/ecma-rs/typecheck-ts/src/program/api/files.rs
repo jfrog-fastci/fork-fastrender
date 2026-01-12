@@ -87,6 +87,7 @@ impl Program {
       if db::Db::file_input(&state.typecheck_db, file).is_some() {
         state.typecheck_db.set_file_text(file, text);
       }
+      state.invalidate_on_file_text_change(file);
     }
     self.reset_state();
   }
