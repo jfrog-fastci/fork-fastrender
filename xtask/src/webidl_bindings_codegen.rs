@@ -2331,19 +2331,8 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
   let mut interface_installers: Vec<String> = Vec::new();
 
-  for (iface_index, iface) in selected.values().enumerate() {
+  for iface in selected.values() {
     let global_iface = is_global_iface(&iface.name);
-    let proto_chain_parent = if config.prototype_chains {
-      iface.inherits.as_deref().filter(|parent| {
-        selected.contains_key(*parent) && !is_global_iface(parent)
-      })
-    } else {
-      None
-    };
-    // Marker used to detect constructors installed by this generated module so we can patch
-    // prototype chains without clobbering legacy globals.
-    let proto_chain_marker: Option<u64> =
-      proto_chain_parent.map(|_| 0xFA57_0000u64 + iface_index as u64);
     let install_name = if global_iface {
       format!(
         "install_{}_ops_bindings_vm_js",
@@ -2364,30 +2353,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
     out.push_str("  let global = realm.global_object();\n");
     out.push_str("  rt.scope.push_root(Value::Object(global))?;\n\n");
 
-    // Idempotent install: avoid clobbering existing globals.
-    //
-    // For non-global interfaces, we can use the constructor name as a single "sentinel". For global
-    // interface operations (e.g. `Window.setTimeout`) we need to check each operation independently
-    // because a realm may already have some (handwritten) globals installed.
-    if !global_iface {
-      if let (Some(parent), Some(marker)) = (proto_chain_parent, proto_chain_marker) {
-        // For interfaces with prototype chains we may need to patch the prototype on subsequent
-        // runs (e.g. install Node before EventTarget, then rerun Node after EventTarget is
-        // installed). Only patch when we can prove the existing constructor was installed by this
-        // generated module.
-        out.push_str(&format!(
-          "  let key = rt.property_key({name_lit})?;\n  if rt\n    .scope\n    .heap()\n    .object_get_own_property(global, &key)?\n    .is_some()\n  {{\n    let existing_ctor = rt\n      .scope\n      .heap()\n      .object_get_own_data_property_value(global, &key)?\n      .unwrap_or(Value::Undefined);\n    if let Value::Object(ctor_obj) = existing_ctor {{\n      let proto_obj = if let Ok(slots) = rt.scope.heap().get_function_native_slots(ctor_obj) {{\n        if !matches!(slots.get(1), Some(Value::Number(n)) if *n == {marker}u64 as f64) {{\n          None\n        }} else {{\n          match slots.get(0).copied().unwrap_or(Value::Undefined) {{\n            Value::Object(obj) => Some(obj),\n            _ => None,\n          }}\n        }}\n      }} else {{\n        None\n      }};\n      if let Some(proto_obj) = proto_obj {{\n        let parent_proto = {{\n          let ctor_key = rt.property_key({parent_lit})?;\n          let ctor_value = rt\n            .scope\n            .heap()\n            .object_get_own_data_property_value(global, &ctor_key)?\n            .unwrap_or(Value::Undefined);\n          if let Value::Object(ctor_obj) = ctor_value {{\n            let proto_key = rt.property_key(\"prototype\")?;\n            match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {{\n              Value::Object(obj) => Some(obj),\n              _ => None,\n            }}\n          }} else {{\n            None\n          }}\n        }};\n        if let Some(parent_proto) = parent_proto {{\n          rt.set_prototype(proto_obj, Some(parent_proto))?;\n        }}\n      }}\n    }}\n    return Ok(());\n  }}\n\n",
-          name_lit = rust_string_literal(&iface.name),
-          parent_lit = rust_string_literal(parent),
-          marker = marker,
-        ));
-      } else {
-        out.push_str(&format!(
-          "  let key = rt.property_key({name_lit})?;\n  if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {{\n    return Ok(());\n  }}\n\n",
-          name_lit = rust_string_literal(&iface.name),
-        ));
-      }
-    }
+    // Install in "merge" mode so generated bindings can coexist with handwritten globals.
 
     out.push_str("  let global_var_attrs = DataPropertyAttributes::new(true, false, true);\n");
 
@@ -2455,6 +2421,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
     out.push_str("  let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);\n\n");
 
+    let ctor_var = format!("ctor_{}", to_snake_ident(&iface.name));
     let proto_var = format!("proto_{}", to_snake_ident(&iface.name));
     let iterable_iterator_alias = iface.iterable.as_ref().map(|it| {
       if it.key_type.is_some() {
@@ -2463,11 +2430,54 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
         "values"
       }
     });
-    out.push_str(&format!("  let {proto_var} = rt.alloc_object()?;\n",));
+
+    // Constructor function (even for static-only interfaces like URL).
+    let ctor_call_fn = ctor_call_without_new_fn_name(&iface.name);
+    let ctor_construct_fn = ctor_construct_fn_name(&iface.name);
+    let construct_expr = format!("Some({ctor_construct_fn})");
+    let ctor_length = iface
+      .constructors
+      .iter()
+      .map(|sig| required_arg_count(&sig.arguments) as u32)
+      .min()
+      .unwrap_or(0);
+
+    let uses_ctor = !iface.static_operations.is_empty()
+      || !iface.static_attributes.is_empty()
+      || !iface.constants.is_empty();
+    let uses_proto = !iface.operations.is_empty()
+      || !iface.attributes.is_empty()
+      || !iface.constants.is_empty()
+      || (config.prototype_chains
+        && iface
+          .inherits
+          .as_deref()
+          .is_some_and(|parent| !is_global_iface(parent)));
+    let ctor_binding = if uses_ctor {
+      ctor_var.clone()
+    } else {
+      format!("_{ctor_var}")
+    };
+    let proto_binding = if uses_proto {
+      proto_var.clone()
+    } else {
+      format!("_{proto_var}")
+    };
+
+    // Acquire constructor + prototype objects, reusing existing values when present.
+    out.push_str(&format!(
+      "  let ({ctor_var}, {proto_var}) = {{\n    let ctor_key = rt.property_key({name_lit})?;\n    let ctor_value = rt\n      .scope\n      .heap()\n      .object_get_own_data_property_value(global, &ctor_key)?\n      .unwrap_or(Value::Undefined);\n    if let Value::Object(ctor_obj) = ctor_value {{\n      let proto_key = rt.property_key(\"prototype\")?;\n      let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;\n      let proto_obj = if let Value::Object(proto_obj) = proto_value {{\n        proto_obj\n      }} else {{\n        let proto_obj = rt.alloc_object()?;\n        rt.define_data_property_str(ctor_obj, \"prototype\", Value::Object(proto_obj), ctor_link_attrs)?;\n        proto_obj\n      }};\n      let constructor_key = rt.property_key(\"constructor\")?;\n      if rt\n        .scope\n        .heap()\n        .object_get_own_property(proto_obj, &constructor_key)?\n        .is_none()\n      {{\n        rt.define_data_property_str(\n          proto_obj,\n          \"constructor\",\n          Value::Object(ctor_obj),\n          ctor_link_attrs,\n        )?;\n      }}\n      (ctor_obj, proto_obj)\n    }} else {{\n      let proto_obj = rt.alloc_object()?;\n      let slots = [Value::Object(proto_obj)];\n      let ctor_obj = rt.alloc_native_function_with_slots(\n        {ctor_call_fn},\n        {construct_expr},\n        {name_lit},\n        {ctor_length},\n        &slots,\n      )?;\n      rt.define_data_property_str(global, {name_lit}, Value::Object(ctor_obj), global_var_attrs)?;\n      rt.define_data_property_str(ctor_obj, \"prototype\", Value::Object(proto_obj), ctor_link_attrs)?;\n      rt.define_data_property_str(proto_obj, \"constructor\", Value::Object(ctor_obj), ctor_link_attrs)?;\n      (ctor_obj, proto_obj)\n    }}\n  }};\n\n",
+      ctor_var = ctor_binding,
+      proto_var = proto_binding,
+      name_lit = rust_string_literal(&iface.name),
+      ctor_call_fn = ctor_call_fn,
+      construct_expr = construct_expr,
+      ctor_length = ctor_length,
+    ));
 
     if config.prototype_chains {
       if let Some(parent) = iface.inherits.as_deref() {
-        if selected.contains_key(parent) && !is_global_iface(parent) {
+        if !is_global_iface(parent) {
           // Look up the parent prototype object from the existing global bindings (installed earlier
           // by the aggregator or supplied by the embedder).
           out.push_str(&format!(
@@ -2486,82 +2496,57 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
         .map(|sig| required_arg_count(&sig.arguments))
         .min()
         .unwrap_or(0) as u32;
-      out.push_str(&format!(
-        "  let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n  rt.define_data_property_str({proto_var}, {name_lit}, Value::Object(func), DataPropertyAttributes::METHOD)?;\n",
-        func = op_wrapper_fn_name(&iface.name, op_name),
-        name_lit = rust_string_literal(op_name),
-        proto_var = proto_var,
-        length = length,
-      ));
-      if iterable_iterator_alias.is_some_and(|target| target == op_name.as_str()) {
-        if iface.iterable.as_ref().is_some_and(|it| it.async_) {
-          out.push_str(&format!(
-            "  let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().async_iterator);\n  rt.define_data_property({proto_var}, iterator_key, Value::Object(func), DataPropertyAttributes::METHOD)?;\n",
-            proto_var = proto_var,
-          ));
+      let is_iterable_iterator_alias =
+        iterable_iterator_alias.is_some_and(|target| target == op_name.as_str());
+      if is_iterable_iterator_alias {
+        let iterator_key = if iface.iterable.as_ref().is_some_and(|it| it.async_) {
+          "realm.well_known_symbols().async_iterator"
         } else {
-          out.push_str(&format!(
-            "  let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);\n  rt.define_data_property({proto_var}, iterator_key, Value::Object(func), DataPropertyAttributes::METHOD)?;\n",
-            proto_var = proto_var,
-          ));
-        }
+          "realm.well_known_symbols().iterator"
+        };
+        out.push_str(&format!(
+          "  {{\n    let key = rt.property_key({name_lit})?;\n    let installed = rt.scope.heap().object_get_own_property({proto_var}, &key)?.is_some();\n    let func = if installed {{\n      None\n    }} else {{\n      let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n      rt.define_data_property_str(\n        {proto_var},\n        {name_lit},\n        Value::Object(func),\n        DataPropertyAttributes::METHOD,\n      )?;\n      Some(func)\n    }};\n\n    let iterator_key = vm_js::PropertyKey::from_symbol({iterator_key});\n    if rt\n      .scope\n      .heap()\n      .object_get_own_property({proto_var}, &iterator_key)?\n      .is_none()\n    {{\n      if let Some(func) = func {{\n        rt.define_data_property(\n          {proto_var},\n          iterator_key,\n          Value::Object(func),\n          DataPropertyAttributes::METHOD,\n        )?;\n      }} else {{\n        match rt.vm.get(&mut rt.scope, {proto_var}, key)? {{\n          Value::Object(existing) => {{\n            rt.define_data_property(\n              {proto_var},\n              iterator_key,\n              Value::Object(existing),\n              DataPropertyAttributes::METHOD,\n            )?;\n          }}\n          _ => {{}}\n        }}\n      }}\n    }}\n  }}\n",
+          func = op_wrapper_fn_name(&iface.name, op_name),
+          name_lit = rust_string_literal(op_name),
+          proto_var = proto_var,
+          length = length,
+          iterator_key = iterator_key,
+        ));
+      } else {
+        out.push_str(&format!(
+          "  {{\n    let key = rt.property_key({name_lit})?;\n    if rt.scope.heap().object_get_own_property({proto_var}, &key)?.is_none() {{\n      let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n      rt.define_data_property_str(\n        {proto_var},\n        {name_lit},\n        Value::Object(func),\n        DataPropertyAttributes::METHOD,\n      )?;\n    }}\n  }}\n",
+          func = op_wrapper_fn_name(&iface.name, op_name),
+          name_lit = rust_string_literal(op_name),
+          proto_var = proto_var,
+          length = length,
+        ));
       }
     }
 
     // Prototype attributes.
     for attr in iface.attributes.values() {
       out.push_str(&format!(
-        "  let get = rt.alloc_native_function({getter}, None, {name_lit}, 0)?;\n",
+        "  {{\n    let key = rt.property_key({attr_lit})?;\n    if rt.scope.heap().object_get_own_property({proto_var}, &key)?.is_none() {{\n      let get = rt.alloc_native_function({getter}, None, {get_name_lit}, 0)?;\n",
+        proto_var = proto_var,
+        attr_lit = rust_string_literal(&attr.name),
         getter = attr_getter_fn_name(&iface.name, &attr.name, false),
-        name_lit = rust_string_literal(&format!("get {}", attr.name)),
+        get_name_lit = rust_string_literal(&format!("get {}", attr.name)),
       ));
       if attr.readonly {
-        out.push_str("  let set = Value::Undefined;\n");
+        out.push_str("      let set = Value::Undefined;\n");
       } else {
         out.push_str(&format!(
-          "  let set = Value::Object(rt.alloc_native_function({setter}, None, {name_lit}, 1)?);\n",
+          "      let set = Value::Object(rt.alloc_native_function({setter}, None, {set_name_lit}, 1)?);\n",
           setter = attr_setter_fn_name(&iface.name, &attr.name, false),
-          name_lit = rust_string_literal(&format!("set {}", attr.name)),
+          set_name_lit = rust_string_literal(&format!("set {}", attr.name)),
         ));
       }
       out.push_str(&format!(
-        "  rt.define_accessor_property_str({proto_var}, {attr_lit}, Value::Object(get), set, AccessorPropertyAttributes::ATTRIBUTE)?;\n",
+        "      rt.define_accessor_property_str(\n        {proto_var},\n        {attr_lit},\n        Value::Object(get),\n        set,\n        AccessorPropertyAttributes::ATTRIBUTE,\n      )?;\n    }}\n  }}\n",
         proto_var = proto_var,
         attr_lit = rust_string_literal(&attr.name),
       ));
     }
-
-    // Constructor function (even for static-only interfaces like URL).
-    let ctor_call_fn = ctor_call_without_new_fn_name(&iface.name);
-    let ctor_construct_fn = ctor_construct_fn_name(&iface.name);
-    let construct_expr = format!("Some({ctor_construct_fn})");
-    let length = iface
-      .constructors
-      .iter()
-      .map(|sig| required_arg_count(&sig.arguments) as u32)
-      .min()
-      .unwrap_or(0);
-
-    let slots_line = match proto_chain_marker {
-      Some(marker) => format!(
-        "  let slots = [Value::Object({proto_var}), Value::Number({marker}u64 as f64)];\n",
-        proto_var = proto_var,
-        marker = marker
-      ),
-      None => format!("  let slots = [Value::Object({proto_var})];\n", proto_var = proto_var),
-    };
-
-    out.push_str(&slots_line);
-    out.push_str(&format!(
-      "  let ctor_{snake} = rt.alloc_native_function_with_slots({ctor_call_fn}, {construct_expr}, {name_lit}, {length}, &slots)?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(ctor_{snake}), global_var_attrs)?;\n  rt.define_data_property_str(ctor_{snake}, \"prototype\", Value::Object({proto_var}), ctor_link_attrs)?;\n  rt.define_data_property_str({proto_var}, \"constructor\", Value::Object(ctor_{snake}), ctor_link_attrs)?;\n",
-      snake = to_snake_ident(&iface.name),
-      ctor_call_fn = ctor_call_fn,
-      construct_expr = construct_expr,
-      name_lit = rust_string_literal(&iface.name),
-      proto_var = proto_var,
-      length = length,
-    ));
-
     // Static methods.
     for (op_name, overloads) in &iface.static_operations {
       let length = overloads
@@ -2570,10 +2555,10 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
         .min()
         .unwrap_or(0) as u32;
       out.push_str(&format!(
-        "  let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n  rt.define_data_property_str(ctor_{snake}, {name_lit}, Value::Object(func), DataPropertyAttributes::METHOD)?;\n",
+        "  {{\n    let key = rt.property_key({name_lit})?;\n    if rt.scope.heap().object_get_own_property({ctor_var}, &key)?.is_none() {{\n      let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n      rt.define_data_property_str(\n        {ctor_var},\n        {name_lit},\n        Value::Object(func),\n        DataPropertyAttributes::METHOD,\n      )?;\n    }}\n  }}\n",
         func = op_wrapper_fn_name(&iface.name, op_name),
         name_lit = rust_string_literal(op_name),
-        snake = to_snake_ident(&iface.name),
+        ctor_var = ctor_var,
         length = length,
       ));
     }
@@ -2581,34 +2566,31 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
     // Static attributes.
     for attr in iface.static_attributes.values() {
       out.push_str(&format!(
-        "  let get = rt.alloc_native_function({getter}, None, {name_lit}, 0)?;\n",
+        "  {{\n    let key = rt.property_key({attr_lit})?;\n    if rt.scope.heap().object_get_own_property({ctor_var}, &key)?.is_none() {{\n      let get = rt.alloc_native_function({getter}, None, {get_name_lit}, 0)?;\n",
+        ctor_var = ctor_var,
+        attr_lit = rust_string_literal(&attr.name),
         getter = attr_getter_fn_name(&iface.name, &attr.name, true),
-        name_lit = rust_string_literal(&format!("get {}", attr.name)),
+        get_name_lit = rust_string_literal(&format!("get {}", attr.name)),
       ));
       if attr.readonly {
-        out.push_str("  let set = Value::Undefined;\n");
+        out.push_str("      let set = Value::Undefined;\n");
       } else {
         out.push_str(&format!(
-          "  let set = Value::Object(rt.alloc_native_function({setter}, None, {name_lit}, 1)?);\n",
+          "      let set = Value::Object(rt.alloc_native_function({setter}, None, {set_name_lit}, 1)?);\n",
           setter = attr_setter_fn_name(&iface.name, &attr.name, true),
-          name_lit = rust_string_literal(&format!("set {}", attr.name)),
+          set_name_lit = rust_string_literal(&format!("set {}", attr.name)),
         ));
       }
       out.push_str(&format!(
-        "  rt.define_accessor_property_str(ctor_{snake}, {attr_lit}, Value::Object(get), set, AccessorPropertyAttributes::ATTRIBUTE)?;\n",
-        snake = to_snake_ident(&iface.name),
+        "      rt.define_accessor_property_str(\n        {ctor_var},\n        {attr_lit},\n        Value::Object(get),\n        set,\n        AccessorPropertyAttributes::ATTRIBUTE,\n      )?;\n    }}\n  }}\n",
+        ctor_var = ctor_var,
         attr_lit = rust_string_literal(&attr.name),
       ));
     }
 
     // Constants.
     for constant in iface.constants.values() {
-      write_constant_define_vmjs(
-        &mut out,
-        &format!("ctor_{}", to_snake_ident(&iface.name)),
-        &proto_var,
-        constant,
-      );
+      write_constant_define_vmjs(&mut out, &ctor_var, &proto_var, constant);
     }
 
     out.push_str("  Ok(())\n");
@@ -2668,31 +2650,18 @@ fn write_constant_define_vmjs(
   match &constant.value {
     IdlLiteral::String(s) => {
       out.push_str(&format!(
-        "  let value = Value::String(rt.alloc_string({value_lit})?);\n",
-        value_lit = rust_string_literal(s)
-      ));
-      out.push_str("  let value = rt.scope.push_root(value)?;\n");
-      out.push_str(&format!(
-        "  rt.define_data_property_str({ctor_var}, {name_lit}, value, DataPropertyAttributes::CONST)?;\n",
+        "  {{\n    let key = rt.property_key({name_lit})?;\n    let install_ctor = rt.scope.heap().object_get_own_property({ctor_var}, &key)?.is_none();\n    let install_proto = rt.scope.heap().object_get_own_property({proto_var}, &key)?.is_none();\n    if install_ctor || install_proto {{\n      let value = Value::String(rt.alloc_string({value_lit})?);\n      let value = rt.scope.push_root(value)?;\n      if install_ctor {{\n        rt.define_data_property_str({ctor_var}, {name_lit}, value, DataPropertyAttributes::CONST)?;\n      }}\n      if install_proto {{\n        rt.define_data_property_str({proto_var}, {name_lit}, value, DataPropertyAttributes::CONST)?;\n      }}\n    }}\n  }}\n",
         ctor_var = ctor_var,
-        name_lit = rust_string_literal(&constant.name)
-      ));
-      out.push_str(&format!(
-        "  rt.define_data_property_str({proto_var}, {name_lit}, value, DataPropertyAttributes::CONST)?;\n",
         proto_var = proto_var,
-        name_lit = rust_string_literal(&constant.name)
+        name_lit = rust_string_literal(&constant.name),
+        value_lit = rust_string_literal(s),
       ));
     }
     _ => {
       let expr = emit_constant_value_expr_vmjs(&constant.value);
       out.push_str(&format!(
-        "  rt.define_data_property_str({ctor_var}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n",
+        "  {{\n    let key = rt.property_key({name_lit})?;\n    if rt.scope.heap().object_get_own_property({ctor_var}, &key)?.is_none() {{\n      rt.define_data_property_str({ctor_var}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n    }}\n    if rt.scope.heap().object_get_own_property({proto_var}, &key)?.is_none() {{\n      rt.define_data_property_str({proto_var}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n    }}\n  }}\n",
         ctor_var = ctor_var,
-        name_lit = rust_string_literal(&constant.name),
-        expr = expr,
-      ));
-      out.push_str(&format!(
-        "  rt.define_data_property_str({proto_var}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n",
         proto_var = proto_var,
         name_lit = rust_string_literal(&constant.name),
         expr = expr,

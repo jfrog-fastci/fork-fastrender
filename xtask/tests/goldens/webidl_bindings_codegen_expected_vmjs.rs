@@ -18,7 +18,7 @@ pub mod window {
     hooks: &mut dyn VmHostHooks,
     value: Value,
   ) -> Result<Value, VmError> {
-    let _ = (host, hooks);
+    let _ = (&mut *host, &mut *hooks);
     if matches!(value, Value::Undefined | Value::Null) {
       let obj = rt.alloc_object()?;
       return Ok(Value::Object(obj));
@@ -891,76 +891,173 @@ pub mod window {
     let global = realm.global_object();
     rt.scope.push_root(Value::Object(global))?;
 
-    let key = rt.property_key("Bar")?;
-    if rt
-      .scope
-      .heap()
-      .object_get_own_property(global, &key)?
-      .is_some()
-    {
-      return Ok(());
-    }
-
     let global_var_attrs = DataPropertyAttributes::new(true, false, true);
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
-    let proto_bar = rt.alloc_object()?;
-    let func = rt.alloc_native_function(bar_entries, None, "entries", 0)?;
-    rt.define_data_property_str(
-      proto_bar,
-      "entries",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(bar_for_each, None, "forEach", 1)?;
-    rt.define_data_property_str(
-      proto_bar,
-      "forEach",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(bar_keys, None, "keys", 0)?;
-    rt.define_data_property_str(
-      proto_bar,
-      "keys",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(bar_values, None, "values", 0)?;
-    rt.define_data_property_str(
-      proto_bar,
-      "values",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
-    rt.define_data_property(
-      proto_bar,
-      iterator_key,
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let slots = [Value::Object(proto_bar)];
-    let ctor_bar = rt.alloc_native_function_with_slots(
-      bar_call_without_new,
-      Some(bar_construct),
-      "Bar",
-      0,
-      &slots,
-    )?;
-    rt.define_data_property_str(global, "Bar", Value::Object(ctor_bar), global_var_attrs)?;
-    rt.define_data_property_str(
-      ctor_bar,
-      "prototype",
-      Value::Object(proto_bar),
-      ctor_link_attrs,
-    )?;
-    rt.define_data_property_str(
-      proto_bar,
-      "constructor",
-      Value::Object(ctor_bar),
-      ctor_link_attrs,
-    )?;
+    let (_ctor_bar, proto_bar) = {
+      let ctor_key = rt.property_key("Bar")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          bar_call_without_new,
+          Some(bar_construct),
+          "Bar",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(global, "Bar", Value::Object(ctor_obj), global_var_attrs)?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("entries")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_bar, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(bar_entries, None, "entries", 0)?;
+        rt.define_data_property_str(
+          proto_bar,
+          "entries",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("forEach")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_bar, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(bar_for_each, None, "forEach", 1)?;
+        rt.define_data_property_str(
+          proto_bar,
+          "forEach",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("keys")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_bar, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(bar_keys, None, "keys", 0)?;
+        rt.define_data_property_str(
+          proto_bar,
+          "keys",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("values")?;
+      let installed = rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_bar, &key)?
+        .is_some();
+      let func = if installed {
+        None
+      } else {
+        let func = rt.alloc_native_function(bar_values, None, "values", 0)?;
+        rt.define_data_property_str(
+          proto_bar,
+          "values",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+        Some(func)
+      };
+
+      let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_bar, &iterator_key)?
+        .is_none()
+      {
+        if let Some(func) = func {
+          rt.define_data_property(
+            proto_bar,
+            iterator_key,
+            Value::Object(func),
+            DataPropertyAttributes::METHOD,
+          )?;
+        } else {
+          match rt.vm.get(&mut rt.scope, proto_bar, key)? {
+            Value::Object(existing) => {
+              rt.define_data_property(
+                proto_bar,
+                iterator_key,
+                Value::Object(existing),
+                DataPropertyAttributes::METHOD,
+              )?;
+            }
+            _ => {}
+          }
+        }
+      }
+    }
     Ok(())
   }
 
@@ -973,111 +1070,258 @@ pub mod window {
     let global = realm.global_object();
     rt.scope.push_root(Value::Object(global))?;
 
-    let key = rt.property_key("Foo")?;
-    if rt
-      .scope
-      .heap()
-      .object_get_own_property(global, &key)?
-      .is_some()
-    {
-      return Ok(());
-    }
-
     let global_var_attrs = DataPropertyAttributes::new(true, false, true);
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
-    let proto_foo = rt.alloc_object()?;
-    let func = rt.alloc_native_function(foo_baz, None, "baz", 1)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "baz",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(foo_do_thing, None, "doThing", 1)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "doThing",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(foo_entries, None, "entries", 0)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "entries",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
-    rt.define_data_property(
-      proto_foo,
-      iterator_key,
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(foo_for_each, None, "forEach", 1)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "forEach",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(foo_keys, None, "keys", 0)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "keys",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(foo_qux, None, "qux", 0)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "qux",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(foo_takes_frozen_array, None, "takesFrozenArray", 1)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "takesFrozenArray",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(foo_takes_sequence, None, "takesSequence", 1)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "takesSequence",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let func = rt.alloc_native_function(foo_values, None, "values", 0)?;
-    rt.define_data_property_str(
-      proto_foo,
-      "values",
-      Value::Object(func),
-      DataPropertyAttributes::METHOD,
-    )?;
-    let slots = [Value::Object(proto_foo)];
-    let ctor_foo = rt.alloc_native_function_with_slots(
-      foo_call_without_new,
-      Some(foo_construct),
-      "Foo",
-      0,
-      &slots,
-    )?;
-    rt.define_data_property_str(global, "Foo", Value::Object(ctor_foo), global_var_attrs)?;
-    rt.define_data_property_str(
-      ctor_foo,
-      "prototype",
-      Value::Object(proto_foo),
-      ctor_link_attrs,
-    )?;
-    rt.define_data_property_str(
-      proto_foo,
-      "constructor",
-      Value::Object(ctor_foo),
-      ctor_link_attrs,
-    )?;
+    let (_ctor_foo, proto_foo) = {
+      let ctor_key = rt.property_key("Foo")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          foo_call_without_new,
+          Some(foo_construct),
+          "Foo",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(global, "Foo", Value::Object(ctor_obj), global_var_attrs)?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("baz")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(foo_baz, None, "baz", 1)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "baz",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("doThing")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(foo_do_thing, None, "doThing", 1)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "doThing",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("entries")?;
+      let installed = rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_some();
+      let func = if installed {
+        None
+      } else {
+        let func = rt.alloc_native_function(foo_entries, None, "entries", 0)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "entries",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+        Some(func)
+      };
+
+      let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &iterator_key)?
+        .is_none()
+      {
+        if let Some(func) = func {
+          rt.define_data_property(
+            proto_foo,
+            iterator_key,
+            Value::Object(func),
+            DataPropertyAttributes::METHOD,
+          )?;
+        } else {
+          match rt.vm.get(&mut rt.scope, proto_foo, key)? {
+            Value::Object(existing) => {
+              rt.define_data_property(
+                proto_foo,
+                iterator_key,
+                Value::Object(existing),
+                DataPropertyAttributes::METHOD,
+              )?;
+            }
+            _ => {}
+          }
+        }
+      }
+    }
+    {
+      let key = rt.property_key("forEach")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(foo_for_each, None, "forEach", 1)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "forEach",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("keys")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(foo_keys, None, "keys", 0)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "keys",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("qux")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(foo_qux, None, "qux", 0)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "qux",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("takesFrozenArray")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(foo_takes_frozen_array, None, "takesFrozenArray", 1)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "takesFrozenArray",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("takesSequence")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(foo_takes_sequence, None, "takesSequence", 1)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "takesSequence",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("values")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_foo, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(foo_values, None, "values", 0)?;
+        rt.define_data_property_str(
+          proto_foo,
+          "values",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
     Ok(())
   }
 

@@ -1480,19 +1480,29 @@ mod tests {
           .map_err(|err| Error::Other(err.to_string()))?;
       }
     }
+    // Install Node first (without EventTarget present), then install EventTarget, then rerun the
+    // Node installer. The second run should patch `Node.prototype` to inherit from
+    // `EventTarget.prototype` without replacing the global constructor object.
     {
       let window = host.host_mut().window_mut();
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      // Install Node first (without EventTarget present), then install EventTarget, then rerun the
-      // Node installer. The second run should patch `Node.prototype` to inherit from
-      // `EventTarget.prototype`.
       crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)
         .map_err(|err| Error::Other(err.to_string()))?;
+    }
+    let before_ctor = get_global_prop(&mut host, "Node");
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)
         .map_err(|err| Error::Other(err.to_string()))?;
       crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)
         .map_err(|err| Error::Other(err.to_string()))?;
     }
+    let after_ctor = get_global_prop(&mut host, "Node");
+    assert_eq!(
+      before_ctor, after_ctor,
+      "expected Node installer rerun to not replace global constructor object"
+    );
 
     let out =
       host.exec_script("Object.getPrototypeOf(Node.prototype) === EventTarget.prototype")?;
