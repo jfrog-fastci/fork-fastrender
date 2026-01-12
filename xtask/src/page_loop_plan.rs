@@ -80,7 +80,7 @@ pub fn build_bins_command(repo_root: &Path, debug: bool, bins: &[&str]) -> Comma
 }
 
 #[cfg(test)]
-mod tests {
+mod build_bins_tests {
   use super::*;
   use std::path::PathBuf;
 
@@ -372,7 +372,7 @@ mod tests {
     let envs = env_map(&cmd);
     assert_eq!(
       envs.get("FASTR_WEB_FONT_WAIT_MS").and_then(|v| v.as_deref()),
-      Some("500")
+      Some("1000")
     );
   }
 
