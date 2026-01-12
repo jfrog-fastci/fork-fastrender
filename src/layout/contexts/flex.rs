@@ -1101,9 +1101,15 @@ impl FormattingContext for FlexFormattingContext {
         );
         let container_inner_size = self.flex_container_inner_size(style_override, &constraints);
         self.apply_calc_percentage_gaps(style_override, container_inner_size, &mut override_style);
-        taffy_tree
-          .set_style(root_node, override_style)
-          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        let needs_override_update = match taffy_tree.style(root_node) {
+          Ok(existing) => existing != &override_style,
+          Err(_) => true,
+        };
+        if needs_override_update {
+          taffy_tree
+            .set_style(root_node, override_style)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
       }
       flex_profile::record_build_time(build_timer);
 
@@ -1113,17 +1119,20 @@ impl FormattingContext for FlexFormattingContext {
       if physical_width_is_auto(style) && matches!(style.display, Display::Flex) {
         if let CrateAvailableSpace::Definite(w) = constraints.available_width {
           if let Ok(existing) = taffy_tree.style(root_node) {
-            let mut updated = existing.clone();
             let border_box_width = w.max(0.0);
-            updated.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+            let next_width = Dimension::length(self.border_box_to_taffy_style_size(
               border_box_width,
               style,
               Axis::Horizontal,
               border_box_width,
             ));
-            taffy_tree
-              .set_style(root_node, updated)
-              .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+            if existing.size.width != next_width {
+              let mut updated = existing.clone();
+              updated.size.width = next_width;
+              taffy_tree
+                .set_style(root_node, updated)
+                .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+            }
           }
         }
       }
@@ -1193,11 +1202,13 @@ impl FormattingContext for FlexFormattingContext {
         && !matches!(style.position, Position::Absolute | Position::Fixed)
       {
         if let Ok(existing) = taffy_tree.style(root_node) {
-          let mut updated = existing.clone();
-          updated.size.height = Dimension::auto();
-          taffy_tree
-            .set_style(root_node, updated)
-            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+          if existing.size.height != Dimension::auto() {
+            let mut updated = existing.clone();
+            updated.size.height = Dimension::auto();
+            taffy_tree
+              .set_style(root_node, updated)
+              .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+          }
         }
       }
 
@@ -6738,6 +6749,63 @@ fn layout_cache_key(constraints: &LayoutConstraints, viewport: Size) -> Option<F
   Some((w, h))
 }
 
+fn hash_available_space(space: CrateAvailableSpace, hasher: &mut FingerprintHasher) {
+  use std::hash::Hash;
+  match space {
+    CrateAvailableSpace::Definite(value) => {
+      0u8.hash(hasher);
+      f32_to_canonical_bits(value).hash(hasher);
+    }
+    CrateAvailableSpace::Indefinite => {
+      1u8.hash(hasher);
+    }
+    CrateAvailableSpace::MinContent => {
+      2u8.hash(hasher);
+    }
+    CrateAvailableSpace::MaxContent => {
+      3u8.hash(hasher);
+    }
+  }
+}
+
+fn hash_opt_f32(value: Option<f32>, hasher: &mut FingerprintHasher) {
+  use std::hash::Hash;
+  match value.filter(|v| v.is_finite() && *v >= 0.0) {
+    Some(v) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(v).hash(hasher);
+    }
+    None => {
+      0u8.hash(hasher);
+    }
+  }
+}
+
+fn flex_constraints_fingerprint(constraints: &LayoutConstraints) -> u64 {
+  use std::hash::Hash;
+  use std::hash::Hasher;
+  let mut h = FingerprintHasher::default();
+  hash_available_space(constraints.available_width, &mut h);
+  hash_available_space(constraints.available_height, &mut h);
+  hash_opt_f32(constraints.used_border_box_width, &mut h);
+  hash_opt_f32(constraints.used_border_box_height, &mut h);
+  constraints
+    .used_border_box_size_forces_block_percentage_base
+    .hash(&mut h);
+  hash_opt_f32(constraints.inline_percentage_base, &mut h);
+  hash_opt_f32(constraints.block_percentage_base, &mut h);
+  h.finish()
+}
+
+fn combine_fingerprints(a: u64, b: u64) -> u64 {
+  use std::hash::Hash;
+  use std::hash::Hasher;
+  let mut h = FingerprintHasher::default();
+  a.hash(&mut h);
+  b.hash(&mut h);
+  h.finish()
+}
+
 fn flex_child_fingerprint(
   children: &[&BoxNode],
   deadline_counter: &mut usize,
@@ -6789,6 +6857,23 @@ impl FlexFormattingContext {
         let mut deadline_counter = 0usize;
         let child_fingerprint = flex_child_fingerprint(root_children, &mut deadline_counter)?;
         let root_style_fingerprint = taffy_flex_style_fingerprint(root_style);
+        let constraints_fingerprint = flex_constraints_fingerprint(constraints);
+        let root_layout_fingerprint =
+          combine_fingerprints(root_style_fingerprint, constraints_fingerprint);
+        let fingerprints_match = taffy_tree
+          .cached_fingerprints()
+          .is_some_and(|(prev_root, prev_child)| {
+            prev_root == root_layout_fingerprint && prev_child == child_fingerprint
+          });
+
+        if fingerprints_match {
+          node_map.insert(box_node as *const BoxNode, root_id);
+          for (node_id, child) in existing_children.iter().zip(root_children.iter()) {
+            node_map.insert(*child as *const BoxNode, *node_id);
+          }
+          taffy_tree.set_root(root_id);
+          return Ok(root_id);
+        }
         let cache_key = TaffyNodeCacheKey::new(
           TaffyAdapterKind::Flex,
           root_style_fingerprint,
@@ -6948,7 +7033,7 @@ impl FlexFormattingContext {
 
         node_map.insert(box_node as *const BoxNode, root_id);
         taffy_tree.set_root(root_id);
-        taffy_tree.set_fingerprints(root_style_fingerprint, child_fingerprint);
+        taffy_tree.set_fingerprints(root_layout_fingerprint, child_fingerprint);
         return Ok(root_id);
       }
 
@@ -6966,6 +7051,13 @@ impl FlexFormattingContext {
       node_map,
     )?;
     taffy_tree.set_root(root_id);
+    let mut deadline_counter = 0usize;
+    let child_fingerprint = flex_child_fingerprint(root_children, &mut deadline_counter)?;
+    let root_style_fingerprint = taffy_flex_style_fingerprint(root_style);
+    let constraints_fingerprint = flex_constraints_fingerprint(constraints);
+    let root_layout_fingerprint =
+      combine_fingerprints(root_style_fingerprint, constraints_fingerprint);
+    taffy_tree.set_fingerprints(root_layout_fingerprint, child_fingerprint);
     Ok(root_id)
   }
 
