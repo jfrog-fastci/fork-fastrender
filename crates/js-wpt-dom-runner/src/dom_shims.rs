@@ -842,6 +842,41 @@ const DOM_SHIM: &str = r##"
     el.setAttribute("style", serializeStyleDecls(decls));
   };
 
+  CSSStyleDeclaration.prototype.removeProperty = function (name) {
+    var el = cssStyleFromThis(this);
+    var needle = String(name).trim().toLowerCase();
+    if (!needle) return "";
+    var cssText = el.getAttribute("style") || "";
+    var decls = parseStyleDecls(cssText);
+    for (var i = 0; i < decls.length; i++) {
+      if (decls[i].name === needle) {
+        var prev = decls[i].value || "";
+        decls.splice(i, 1);
+        el.setAttribute("style", serializeStyleDecls(decls));
+        return prev;
+      }
+    }
+    return "";
+  };
+
+  // Minimal named CSS properties used by common scripts and our WPT corpus.
+  function defineStyleProperty(prop) {
+    Object.defineProperty(CSSStyleDeclaration.prototype, prop, {
+      get: function () {
+        return CSSStyleDeclaration.prototype.getPropertyValue.call(this, prop);
+      },
+      set: function (value) {
+        CSSStyleDeclaration.prototype.setProperty.call(this, prop, value);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  defineStyleProperty("display");
+  defineStyleProperty("cursor");
+  defineStyleProperty("width");
+  defineStyleProperty("height");
+
   Object.defineProperty(HTMLElement.prototype, "hidden", {
     get: function () {
       nodeIdFromThis(this);

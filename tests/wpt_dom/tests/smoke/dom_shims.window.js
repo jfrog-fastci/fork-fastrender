@@ -206,4 +206,11 @@ test(() => {
   el.style.setProperty("color", "red");
   assert_true(el.getAttribute("style").includes("color: red"));
   assert_equals(el.style.getPropertyValue("color"), "red");
+
+  el.style.width = "1px";
+  assert_true(el.getAttribute("style").includes("width: 1px"));
+  assert_equals(el.style.getPropertyValue("width"), "1px");
+
+  assert_equals(el.style.removeProperty("color"), "red");
+  assert_false(el.getAttribute("style").includes("color: red"));
 }, "HTMLElement.style (CSSStyleDeclaration shim)");
