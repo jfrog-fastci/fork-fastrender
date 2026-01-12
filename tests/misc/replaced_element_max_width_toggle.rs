@@ -1,4 +1,4 @@
-use fastrender::debug::runtime::{set_runtime_toggles, RuntimeToggles};
+use fastrender::debug::runtime::{set_thread_runtime_toggles, RuntimeToggles};
 use fastrender::dom::{DomNode, DomNodeType};
 use fastrender::style::defaults::get_default_styles_for_element;
 use fastrender::Length;
@@ -23,7 +23,8 @@ fn element(tag_name: &str) -> DomNode {
 
 #[test]
 fn replaced_element_max_width_100_is_disabled_by_default() {
-  let _guard_default = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())));
+  let _guard_default =
+    set_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())));
 
   for tag in REPLACED_ELEMENTS {
     let node = element(tag);
@@ -34,7 +35,7 @@ fn replaced_element_max_width_100_is_disabled_by_default() {
 
 #[test]
 fn replaced_element_max_width_100_can_be_toggled() {
-  let _guard_off = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from([(
+  let _guard_off = set_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from([(
     ENV_COMPAT_REPLACED_MAX_WIDTH_100.to_string(),
     "0".to_string(),
   )]))));
@@ -47,7 +48,7 @@ fn replaced_element_max_width_100_can_be_toggled() {
 
   drop(_guard_off);
 
-  let _guard_on = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from([(
+  let _guard_on = set_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from([(
     ENV_COMPAT_REPLACED_MAX_WIDTH_100.to_string(),
     "1".to_string(),
   )]))));

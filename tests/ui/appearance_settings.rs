@@ -1,4 +1,4 @@
-use fastrender::debug::runtime::{with_runtime_toggles, RuntimeToggles};
+use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::ui::appearance::{
   AppearanceEnvOverrides, AppearanceSettings, DEFAULT_UI_SCALE, ENV_BROWSER_HIGH_CONTRAST,
   ENV_BROWSER_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE,
@@ -17,7 +17,7 @@ fn appearance_env_overrides_take_precedence_over_persisted_settings() {
     (ENV_REDUCED_MOTION.to_string(), "1".to_string()),
   ]));
 
-  with_runtime_toggles(Arc::new(toggles), || {
+  with_thread_runtime_toggles(Arc::new(toggles), || {
     let persisted = AppearanceSettings {
       theme: BrowserTheme::Light,
       ui_scale: 1.25,
@@ -70,7 +70,7 @@ fn appearance_ui_scale_is_sanitized_and_clamped() {
 
 #[test]
 fn reduced_motion_env_override_beats_settings() {
-  with_runtime_toggles(
+  with_thread_runtime_toggles(
     Arc::new(RuntimeToggles::from_map(HashMap::from([(
       ENV_REDUCED_MOTION.to_string(),
       "1".to_string(),
@@ -83,7 +83,7 @@ fn reduced_motion_env_override_beats_settings() {
     },
   );
 
-  with_runtime_toggles(
+  with_thread_runtime_toggles(
     Arc::new(RuntimeToggles::from_map(HashMap::from([(
       ENV_REDUCED_MOTION.to_string(),
       "0".to_string(),
@@ -96,4 +96,3 @@ fn reduced_motion_env_override_beats_settings() {
     },
   );
 }
-

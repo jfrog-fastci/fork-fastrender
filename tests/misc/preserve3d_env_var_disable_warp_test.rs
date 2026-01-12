@@ -1,4 +1,4 @@
-use fastrender::debug::runtime::{with_runtime_toggles, RuntimeToggles};
+use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::paint::display_list::{
   BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, StackingContextItem, Transform3D,
 };
@@ -153,7 +153,7 @@ fn preserve3d_disable_warp_env_forces_affine_approximation() {
   list.push(DisplayItem::PopStackingContext);
 
   let predicate = |(r, g, b, a): (u8, u8, u8, u8)| a > 0 && r > 200 && g < 250 && b < 250;
-  let pixmap = with_runtime_toggles(toggles, || {
+  let pixmap = with_thread_runtime_toggles(toggles, || {
     DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new())
       .unwrap()
       .render(&list)
