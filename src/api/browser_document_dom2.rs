@@ -1,6 +1,6 @@
 use crate::animation::TransitionState;
 use crate::error::{Error, RenderError, RenderStage, Result};
-use crate::geometry::{Point, Rect};
+use crate::geometry::{Point, Rect, Size};
 use crate::js::clock::{Clock, RealClock};
 use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use crate::js::CurrentScriptStateHandle;
@@ -440,14 +440,35 @@ impl BrowserDocumentDom2 {
         .prepared
         .take()
         .expect("prepared exists when can_incremental_relayout=true");
+      let prev_fragment_tree = prepared.fragment_tree.clone();
+
+      let mapping = self
+        .last_dom_mapping
+        .as_ref()
+        .expect("mapping exists when can_incremental_relayout=true");
+      let mut updated_styled_ids: FxHashSet<usize> = FxHashSet::default();
+      for &node in &self.dirty_text_nodes {
+        if let Some(preorder) = mapping.preorder_for_node_id(node) {
+          updated_styled_ids.insert(preorder);
+        }
+      }
+
+      let prev_text_by_box_id = if updated_styled_ids.is_empty() {
+        FxHashMap::default()
+      } else {
+        capture_text_for_styled_node_ids(&prepared.box_tree.root, &updated_styled_ids)
+      };
+
       match self.incremental_relayout_for_text_changes(&mut prepared) {
         Ok(true) => {
           self.invalidation_counters.incremental_relayouts = self
             .invalidation_counters
             .incremental_relayouts
             .saturating_add(1);
-          // Incremental relayout does not take a new renderer DOM snapshot, but it does satisfy the
-          // outstanding layout invalidation for the current DOM generation.
+          // Incremental relayout does not take a new renderer-DOM snapshot, but it *does* satisfy
+          // the outstanding layout invalidation for the current DOM generation. Record the live DOM
+          // generation so subsequent `ensure_layout_for_dom_queries()` calls do not force an extra
+          // full pipeline run.
           self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
           self.prepared = Some(prepared);
           did_incremental_layout = true;
@@ -457,7 +478,12 @@ impl BrowserDocumentDom2 {
           self.prepared = Some(prepared);
         }
         Err(err) => {
-          // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
+          // Restore the last known-good layout artifacts if incremental relayout fails so callers
+          // do not lose the prepared cache.
+          prepared.fragment_tree = prev_fragment_tree;
+          if !prev_text_by_box_id.is_empty() {
+            restore_text_for_box_ids(&mut prepared.box_tree.root, &prev_text_by_box_id);
+          }
           self.prepared = Some(prepared);
           return Err(err);
         }
@@ -466,10 +492,15 @@ impl BrowserDocumentDom2 {
 
     if !did_incremental_layout {
       let prev_prepared = self.prepared.take();
+      let prev_mapping = self.last_dom_mapping.take();
+      let prev_seen_generation = self.last_seen_dom_mutation_generation;
+
       let mut prepared = match self.prepare_dom_with_options() {
         Ok(prepared) => prepared,
         Err(err) => {
           self.prepared = prev_prepared;
+          self.last_dom_mapping = prev_mapping;
+          self.last_seen_dom_mutation_generation = prev_seen_generation;
           return Err(err);
         }
       };
@@ -509,8 +540,18 @@ impl BrowserDocumentDom2 {
     self.dirty_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
+    // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
+    // can be retried.
     self.paint_dirty = true;
     Ok(())
+  }
+
+  /// Ensures style/layout artifacts are available and up to date, without painting.
+  ///
+  /// Alias for [`BrowserDocumentDom2::ensure_layout_for_dom_queries`], used by geometry/scroll metric
+  /// query helpers.
+  pub fn ensure_layout(&mut self) -> Result<()> {
+    self.ensure_layout_for_dom_queries()
   }
 
   /// Returns the most recently prepared layout artifacts, ensuring layout is up-to-date first.
@@ -808,6 +849,460 @@ impl BrowserDocumentDom2 {
       false,
     );
     Ok(bounds.clamp(desired))
+  }
+
+  fn is_root_scrolling_element(&self, node: crate::dom2::NodeId) -> bool {
+    let dom = self.dom();
+    dom.document_element() == Some(node) || dom.body() == Some(node)
+  }
+
+  pub fn bounding_client_rect(&mut self, node: crate::dom2::NodeId) -> Option<Rect> {
+    let _ = self.ensure_layout();
+    let prepared = self.prepared.as_ref()?;
+    let mapping = self.last_dom_mapping.as_ref()?;
+    let styled_id = mapping.preorder_for_node_id(node)?;
+
+    let box_ids =
+      crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let principal_box_id = *box_ids.first()?;
+
+    let viewport_fixed = crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
+      prepared.fragment_tree(),
+      principal_box_id,
+    )
+    .and_then(|(root_kind, path)| {
+      crate::interaction::dom_geometry::resolve_fragment_path(
+        prepared.fragment_tree(),
+        root_kind,
+        &path,
+      )
+    })
+    .is_some_and(|(fragment, _origin, has_fixed_cb_ancestor)| {
+      fragment
+        .style
+        .as_deref()
+        .is_some_and(|style| matches!(style.position, crate::style::position::Position::Fixed))
+        && !has_fixed_cb_ancestor
+    });
+
+    let rect_page = crate::interaction::dom_geometry::union_scrolled_absolute_bounds_for_box_ids(
+      prepared.fragment_tree(),
+      &self.scroll_state(),
+      &box_ids,
+    )?;
+
+    let offset = if viewport_fixed {
+      Point::ZERO
+    } else {
+      Point::new(-self.options.scroll_x, -self.options.scroll_y)
+    };
+    Some(rect_page.translate(offset))
+  }
+
+  pub fn offset_rect(&mut self, node: crate::dom2::NodeId) -> Option<Rect> {
+    let _ = self.ensure_layout();
+    let prepared = self.prepared.as_ref()?;
+    let mapping = self.last_dom_mapping.as_ref()?;
+    let styled_id = mapping.preorder_for_node_id(node)?;
+
+    let box_ids =
+      crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let principal_box_id = *box_ids.first()?;
+
+    let rect_page = crate::interaction::dom_geometry::union_absolute_bounds_for_box_ids(
+      prepared.fragment_tree(),
+      &box_ids,
+    )?;
+
+    let is_fixed = crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
+      prepared.fragment_tree(),
+      principal_box_id,
+    )
+    .and_then(|(root_kind, path)| {
+      crate::interaction::dom_geometry::resolve_fragment_path(
+        prepared.fragment_tree(),
+        root_kind,
+        &path,
+      )
+    })
+    .is_some_and(|(fragment, _origin, _has_fixed_cb_ancestor)| {
+      fragment
+        .style
+        .as_deref()
+        .is_some_and(|style| matches!(style.position, crate::style::position::Position::Fixed))
+    });
+
+    let offset_parent = if is_fixed || self.is_root_scrolling_element(node) {
+      None
+    } else {
+      let mut candidate = None;
+      let mut current = self.dom().parent_node(node);
+      while let Some(parent) = current {
+        if self.is_root_scrolling_element(parent) {
+          break;
+        }
+
+        let Some(parent_styled_id) = mapping.preorder_for_node_id(parent) else {
+          current = self.dom().parent_node(parent);
+          continue;
+        };
+        let parent_box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+          prepared.box_tree(),
+          parent_styled_id,
+        );
+        let Some(&parent_principal_box_id) = parent_box_ids.first() else {
+          current = self.dom().parent_node(parent);
+          continue;
+        };
+
+        let qualifies = find_box_node_by_id(&prepared.box_tree.root, parent_principal_box_id)
+          .is_some_and(|node| node.style.establishes_abs_containing_block());
+        if qualifies {
+          candidate = Some(parent);
+          break;
+        }
+
+        current = self.dom().parent_node(parent);
+      }
+
+      candidate.or(self.dom().body())
+    };
+
+    let sanitize_nonneg = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+
+    let reference = if let Some(offset_parent) = offset_parent {
+      match mapping.preorder_for_node_id(offset_parent) {
+        Some(offset_parent_styled_id) => {
+          let parent_box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+            prepared.box_tree(),
+            offset_parent_styled_id,
+          );
+          match parent_box_ids.first() {
+            Some(&parent_principal_box_id) => crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
+              prepared.fragment_tree(),
+              parent_principal_box_id,
+            )
+            .and_then(|(root_kind, path)| {
+              crate::interaction::dom_geometry::resolve_fragment_path(
+                prepared.fragment_tree(),
+                root_kind,
+                &path,
+              )
+            })
+            .map(|(fragment, origin, _has_fixed_cb_ancestor)| {
+              let (border_left, border_top) = fragment
+                .style
+                .as_deref()
+                .map(|style| {
+                  (
+                    sanitize_nonneg(style.used_border_left_width().to_px()),
+                    sanitize_nonneg(style.used_border_top_width().to_px()),
+                  )
+                })
+                .unwrap_or((0.0, 0.0));
+              Point::new(origin.x + border_left, origin.y + border_top)
+            })
+            .unwrap_or(Point::ZERO),
+            None => Point::ZERO,
+          }
+        }
+        None => Point::ZERO,
+      }
+    } else {
+      Point::ZERO
+    };
+
+    Some(Rect::from_xywh(
+      rect_page.x() - reference.x,
+      rect_page.y() - reference.y,
+      rect_page.width(),
+      rect_page.height(),
+    ))
+  }
+
+  pub fn client_size(&mut self, node: crate::dom2::NodeId) -> Option<Size> {
+    let _ = self.ensure_layout();
+    let prepared = self.prepared.as_ref()?;
+    let fragment_tree = prepared.fragment_tree();
+
+    let sanitize_nonneg = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+
+    if self.is_root_scrolling_element(node) {
+      let viewport = fragment_tree.viewport_size();
+      let (border_left, border_right, border_top, border_bottom) = fragment_tree
+        .root
+        .style
+        .as_deref()
+        .map(|style| {
+          (
+            sanitize_nonneg(style.used_border_left_width().to_px()),
+            sanitize_nonneg(style.used_border_right_width().to_px()),
+            sanitize_nonneg(style.used_border_top_width().to_px()),
+            sanitize_nonneg(style.used_border_bottom_width().to_px()),
+          )
+        })
+        .unwrap_or((0.0, 0.0, 0.0, 0.0));
+      let reservation = fragment_tree.root.scrollbar_reservation;
+      let width = (sanitize_nonneg(viewport.width)
+        - border_left
+        - border_right
+        - sanitize_nonneg(reservation.left)
+        - sanitize_nonneg(reservation.right))
+        .max(0.0);
+      let height = (sanitize_nonneg(viewport.height)
+        - border_top
+        - border_bottom
+        - sanitize_nonneg(reservation.top)
+        - sanitize_nonneg(reservation.bottom))
+        .max(0.0);
+      return Some(Size::new(width, height));
+    }
+
+    let mapping = self.last_dom_mapping.as_ref()?;
+    let styled_id = mapping.preorder_for_node_id(node)?;
+
+    let box_ids =
+      crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let principal_box_id = *box_ids.first()?;
+
+    let (fragment, _origin, _has_fixed_cb_ancestor) =
+      crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
+        prepared.fragment_tree(),
+        principal_box_id,
+      )
+      .and_then(|(root_kind, path)| {
+        crate::interaction::dom_geometry::resolve_fragment_path(
+          prepared.fragment_tree(),
+          root_kind,
+          &path,
+        )
+      })?;
+
+    Some(crate::interaction::dom_geometry::client_size_for_fragment(fragment))
+  }
+
+  pub fn scroll_size(&mut self, node: crate::dom2::NodeId) -> Option<Size> {
+    let _ = self.ensure_layout();
+    let prepared = self.prepared.as_ref()?;
+    let fragment_tree = prepared.fragment_tree();
+
+    let sanitize_nonneg = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+
+    if self.is_root_scrolling_element(node) {
+      let viewport = fragment_tree.viewport_size();
+      let client = {
+        let (border_left, border_right, border_top, border_bottom) = fragment_tree
+          .root
+          .style
+          .as_deref()
+          .map(|style| {
+            (
+              sanitize_nonneg(style.used_border_left_width().to_px()),
+              sanitize_nonneg(style.used_border_right_width().to_px()),
+              sanitize_nonneg(style.used_border_top_width().to_px()),
+              sanitize_nonneg(style.used_border_bottom_width().to_px()),
+            )
+          })
+          .unwrap_or((0.0, 0.0, 0.0, 0.0));
+        let reservation = fragment_tree.root.scrollbar_reservation;
+        let width = (viewport.width
+          - border_left
+          - border_right
+          - sanitize_nonneg(reservation.left)
+          - sanitize_nonneg(reservation.right))
+          .max(0.0);
+        let height = (viewport.height
+          - border_top
+          - border_bottom
+          - sanitize_nonneg(reservation.top)
+          - sanitize_nonneg(reservation.bottom))
+          .max(0.0);
+        Size::new(width, height)
+      };
+
+      let bounds = crate::scroll::scroll_bounds_for_fragment(
+        &fragment_tree.root,
+        Point::new(fragment_tree.root.bounds.x(), fragment_tree.root.bounds.y()),
+        viewport,
+        viewport,
+        true,
+        false,
+      );
+      return Some(Size::new(
+        sanitize_nonneg(client.width + sanitize_nonneg(bounds.max_x)),
+        sanitize_nonneg(client.height + sanitize_nonneg(bounds.max_y)),
+      ));
+    }
+
+    let mapping = self.last_dom_mapping.as_ref()?;
+    let styled_id = mapping.preorder_for_node_id(node)?;
+    let box_ids =
+      crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let principal_box_id = *box_ids.first()?;
+
+    let (fragment, origin, has_fixed_cb_ancestor) =
+      crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
+        fragment_tree,
+        principal_box_id,
+      )
+      .and_then(|(root_kind, path)| {
+        crate::interaction::dom_geometry::resolve_fragment_path(fragment_tree, root_kind, &path)
+      })?;
+
+    let client = crate::interaction::dom_geometry::client_size_for_fragment(fragment);
+    let viewport_for_units = fragment_tree.viewport_size();
+    let bounds = crate::scroll::scroll_bounds_for_fragment(
+      fragment,
+      origin,
+      fragment.bounds.size,
+      viewport_for_units,
+      false,
+      has_fixed_cb_ancestor,
+    );
+
+    Some(Size::new(
+      sanitize_nonneg(client.width + sanitize_nonneg(bounds.max_x)),
+      sanitize_nonneg(client.height + sanitize_nonneg(bounds.max_y)),
+    ))
+  }
+
+  pub fn scroll_offset(&mut self, node: crate::dom2::NodeId) -> Point {
+    if self.is_root_scrolling_element(node) {
+      return Point::new(self.options.scroll_x, self.options.scroll_y);
+    }
+
+    let _ = self.ensure_layout();
+    let Some(prepared) = self.prepared.as_ref() else {
+      return Point::ZERO;
+    };
+    let Some(mapping) = self.last_dom_mapping.as_ref() else {
+      return Point::ZERO;
+    };
+    let Some(styled_id) = mapping.preorder_for_node_id(node) else {
+      return Point::ZERO;
+    };
+
+    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let Some(&principal_box_id) = box_ids.first() else {
+      return Point::ZERO;
+    };
+    let scroll = self
+      .options
+      .element_scroll_offsets
+      .get(&principal_box_id)
+      .copied()
+      .unwrap_or(Point::ZERO);
+    Point::new(
+      if scroll.x.is_finite() { scroll.x } else { 0.0 },
+      if scroll.y.is_finite() { scroll.y } else { 0.0 },
+    )
+  }
+
+  pub fn set_scroll_offset(&mut self, node: crate::dom2::NodeId, offset: Point) -> Result<()> {
+    let offset = Point::new(
+      if offset.x.is_finite() { offset.x } else { 0.0 },
+      if offset.y.is_finite() { offset.y } else { 0.0 },
+    );
+
+    let _ = self.ensure_layout();
+    let sanitize_nonneg = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+    let desired = Point::new(sanitize_nonneg(offset.x), sanitize_nonneg(offset.y));
+
+    if self.is_root_scrolling_element(node) {
+      let current = Point::new(self.options.scroll_x, self.options.scroll_y);
+      let clamped = if let Some(prepared) = self.prepared.as_ref() {
+        let tree = prepared.fragment_tree();
+        let viewport = tree.viewport_size();
+        let bounds = crate::scroll::scroll_bounds_for_fragment(
+          &tree.root,
+          Point::new(tree.root.bounds.x(), tree.root.bounds.y()),
+          viewport,
+          viewport,
+          true,
+          false,
+        );
+        bounds.clamp(desired)
+      } else {
+        desired
+      };
+
+      if clamped != current {
+        self.options.scroll_delta = Point::new(clamped.x - current.x, clamped.y - current.y);
+        self.options.scroll_x = clamped.x;
+        self.options.scroll_y = clamped.y;
+        self.paint_dirty = true;
+      }
+      return Ok(());
+    }
+
+    let Some(prepared) = self.prepared.as_ref() else {
+      return Ok(());
+    };
+    let Some(mapping) = self.last_dom_mapping.as_ref() else {
+      return Ok(());
+    };
+    let Some(styled_id) = mapping.preorder_for_node_id(node) else {
+      return Ok(());
+    };
+
+    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let Some(&principal_box_id) = box_ids.first() else {
+      return Ok(());
+    };
+
+    let viewport_for_units = prepared.fragment_tree().viewport_size();
+
+    let clamped = crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
+      prepared.fragment_tree(),
+      principal_box_id,
+    )
+    .and_then(|(root_kind, path)| {
+      crate::interaction::dom_geometry::resolve_fragment_path(
+        prepared.fragment_tree(),
+        root_kind,
+        &path,
+      )
+    })
+    .map(|(fragment, origin, has_fixed_cb_ancestor)| {
+      let bounds = crate::scroll::scroll_bounds_for_fragment(
+        fragment,
+        origin,
+        fragment.bounds.size,
+        viewport_for_units,
+        false,
+        has_fixed_cb_ancestor,
+      );
+      bounds.clamp(desired)
+    })
+    .unwrap_or(Point::ZERO);
+
+    let prev = self
+      .options
+      .element_scroll_offsets
+      .get(&principal_box_id)
+      .copied()
+      .unwrap_or(Point::ZERO);
+    if clamped != prev {
+      if clamped == Point::ZERO {
+        self.options.element_scroll_offsets.remove(&principal_box_id);
+      } else {
+        self.options.element_scroll_offsets.insert(principal_box_id, clamped);
+      }
+
+      let delta = Point::new(clamped.x - prev.x, clamped.y - prev.y);
+      if delta == Point::ZERO {
+        self.options.element_scroll_deltas.remove(&principal_box_id);
+      } else {
+        self
+          .options
+          .element_scroll_deltas
+          .insert(principal_box_id, delta);
+      }
+
+      self.paint_dirty = true;
+    }
+
+    Ok(())
   }
 
   /// Updates the animation/transition sampling timestamp in milliseconds since document load.
@@ -1788,6 +2283,71 @@ fn styled_tree_style_for_preorder_id(root: &StyledNode, preorder_id: usize) -> O
   None
 }
 
+fn find_box_node_by_id<'a>(root: &'a BoxNode, box_id: usize) -> Option<&'a BoxNode> {
+  let mut stack: Vec<&BoxNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if node.id == box_id {
+      return Some(node);
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+fn capture_text_for_styled_node_ids(
+  root: &BoxNode,
+  styled_node_ids: &FxHashSet<usize>,
+) -> FxHashMap<usize, String> {
+  let mut out: FxHashMap<usize, String> = FxHashMap::default();
+  let mut stack: Vec<&BoxNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if node
+      .styled_node_id
+      .is_some_and(|id| styled_node_ids.contains(&id))
+    {
+      if let BoxType::Text(text_box) = &node.box_type {
+        out.insert(node.id, text_box.text.clone());
+      }
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  out
+}
+
+fn restore_text_for_box_ids(root: &mut BoxNode, text_by_box_id: &FxHashMap<usize, String>) {
+  let mut stack: Vec<*mut BoxNode> = vec![root as *mut _];
+  while let Some(node_ptr) = stack.pop() {
+    // Safety: stack contains pointers to nodes owned by `root` and we never move nodes during the
+    // traversal.
+    unsafe {
+      let node = &mut *node_ptr;
+      if let Some(text) = text_by_box_id.get(&node.id) {
+        if let BoxType::Text(text_box) = &mut node.box_type {
+          text_box.text.clear();
+          text_box.text.push_str(text);
+        }
+      }
+
+      if let Some(body) = node.footnote_body.as_deref_mut() {
+        stack.push(body as *mut _);
+      }
+      for child in node.children.iter_mut().rev() {
+        stack.push(child as *mut _);
+      }
+    }
+  }
+}
+
 impl crate::js::DomHost for BrowserDocumentDom2 {
   fn with_dom<R, F>(&self, f: F) -> R
   where
@@ -2331,7 +2891,7 @@ mod tests {
   fn dom_pointer_is_stable_across_moves_and_changes_on_reset_paths() -> Result<()> {
     let renderer = renderer_for_tests();
     let options = RenderOptions::new().with_viewport(16, 16);
-    let mut doc = BrowserDocumentDom2::new(
+    let doc = BrowserDocumentDom2::new(
       renderer,
       "<!doctype html><html><body><div>hi</div></body></html>",
       options.clone(),

@@ -7,7 +7,7 @@ use crate::js::dom_platform::{DomInterface, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
-  make_dom_exception, EVENT_TARGET_HOST_TAG,
+  EVENT_TARGET_HOST_TAG,
 };
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,

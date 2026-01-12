@@ -2,6 +2,7 @@ pub mod anchor_scroll;
 pub mod autofocus;
 pub mod dom_index;
 pub mod dom_mutation;
+pub mod dom_geometry;
 pub(crate) mod effective_disabled;
 pub mod engine;
 pub mod focus_scroll;
