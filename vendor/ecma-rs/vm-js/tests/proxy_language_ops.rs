@@ -135,6 +135,41 @@ fn proxy_object_spread_uses_copy_data_properties_dispatch() {
 }
 
 #[test]
+fn proxy_object_spread_copies_symbol_keys_via_dispatch() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = "";
+      var sym = Symbol("s");
+      var target = {};
+      Object.defineProperty(target, sym, { value: 1, enumerable: true, configurable: true, writable: true });
+      Object.defineProperty(target, "a", { value: 2, enumerable: true, configurable: true, writable: true });
+      var p = new Proxy(target, {
+        ownKeys: function(t) {
+          log += "ownKeys|";
+          return [sym, "a"];
+        },
+        getOwnPropertyDescriptor: function(t, prop) {
+          log += "gOPD:" + (prop === sym ? "sym" : prop) + "|";
+          if (prop === sym) return { value: 1, enumerable: true, configurable: true, writable: true };
+          if (prop === "a") return { value: 2, enumerable: true, configurable: true, writable: true };
+          return undefined;
+        },
+        get: function(t, prop, receiver) {
+          log += "get:" + (prop === sym ? "sym" : prop) + "|";
+          return t[prop];
+        }
+      });
+      var o = { ...p };
+      log === "ownKeys|gOPD:sym|get:sym|gOPD:a|get:a|" && o[sym] === 1 && o.a === 2
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn proxy_object_rest_destructuring_uses_copy_data_properties_dispatch() {
   let mut rt = new_runtime();
   let value = rt
@@ -168,6 +203,41 @@ fn proxy_object_rest_destructuring_uses_copy_data_properties_dispatch() {
         rest.b === 2 &&
         !("a" in rest) &&
         !("c" in rest)
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn proxy_object_rest_destructuring_excludes_symbol_keys() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = "";
+      var sym = Symbol("s");
+      var target = {};
+      Object.defineProperty(target, sym, { value: 1, enumerable: true, configurable: true, writable: true });
+      Object.defineProperty(target, "a", { value: 2, enumerable: true, configurable: true, writable: true });
+      var p = new Proxy(target, {
+        ownKeys: function(t) {
+          log += "ownKeys|";
+          return [sym, "a"];
+        },
+        getOwnPropertyDescriptor: function(t, prop) {
+          log += "gOPD:" + (prop === sym ? "sym" : prop) + "|";
+          if (prop === sym) return { value: 1, enumerable: true, configurable: true, writable: true };
+          if (prop === "a") return { value: 2, enumerable: true, configurable: true, writable: true };
+          return undefined;
+        },
+        get: function(t, prop, receiver) {
+          log += "get:" + (prop === sym ? "sym" : prop) + "|";
+          return t[prop];
+        }
+      });
+      var { [sym]: x, ...rest } = p;
+      log === "get:sym|ownKeys|gOPD:a|get:a|" && x === 1 && rest.a === 2 && !(sym in rest)
     "#,
     )
     .unwrap();
