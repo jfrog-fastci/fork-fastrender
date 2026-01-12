@@ -11,6 +11,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   TEST262_REPORT: target/js/test262.json
+  TEST262_SUMMARY: target/js/test262_summary.md
 
 jobs:
   test262-semantic:
@@ -84,6 +85,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$(dirname "${TEST262_REPORT}")"
           rm -f "${TEST262_REPORT}"
+          rm -f "${TEST262_SUMMARY}"
           chmod +x scripts/run_limited.sh
 
           status=0
@@ -91,8 +93,10 @@ jobs:
             cargo run -p xtask --release --locked -- \
               js test262 \
               --fail-on new \
-              --report "${TEST262_REPORT}" || status=$?
+              --report "${TEST262_REPORT}" \
+              --summary "${TEST262_SUMMARY}" || status=$?
           test -s "${TEST262_REPORT}"
+          test -s "${TEST262_SUMMARY}"
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -104,6 +108,12 @@ jobs:
           assert isinstance(data.get("summary"), dict), "missing summary object in test262 report"
           assert isinstance(data.get("results"), list), "missing results array in test262 report"
           PY
+
+          {
+            echo "## test262 semantic summary"
+            echo
+            cat "${TEST262_SUMMARY}"
+          } >> "$GITHUB_STEP_SUMMARY"
           exit $status
 
       - name: Upload test262 semantic report
@@ -111,74 +121,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test262_semantic_report
-          path: ${{ env.TEST262_REPORT }}
+          path: |
+            ${{ env.TEST262_REPORT }}
+            ${{ env.TEST262_SUMMARY }}
           if-no-files-found: error
-
-      - name: Download previous baseline report
-        id: download_baseline
-        uses: dawidd6/action-download-artifact@v3
-        continue-on-error: true
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: js_test262.yml
-          workflow_conclusion: success
-          branch: main
-          name: test262_semantic_report
-          path: baseline
-
-      - name: Locate baseline report
-        if: steps.download_baseline.outcome == 'success'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f baseline/"${TEST262_REPORT}" ]; then
-            echo "BASELINE_REPORT=baseline/${TEST262_REPORT}" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          match=$(find baseline -type f -name "$(basename "${TEST262_REPORT}")" | head -n 1 || true)
-          if [ -z "$match" ]; then
-            echo "Downloaded artifact did not contain ${TEST262_REPORT}" >&2
-            exit 1
-          fi
-          echo "BASELINE_REPORT=$match" >> "$GITHUB_ENV"
-          echo "Using baseline report at $match"
-
-      - name: Compare against baseline (fail on regressions)
-        if: steps.download_baseline.outcome == 'success'
-        shell: bash
-        run: |
-          set -o pipefail
-          report_out="test262_report_compare.txt"
-          rm -f "${report_out}"
-
-          (
-            cd vendor/ecma-rs
-            cargo run -p test262-semantic -- \
-              report compare \
-              --baseline "${GITHUB_WORKSPACE}/${BASELINE_REPORT}" \
-              --current "${GITHUB_WORKSPACE}/${TEST262_REPORT}" \
-              --fail-on-regression
-          ) | tee "${report_out}"
-          status=${PIPESTATUS[0]}
-
-          {
-            echo "## test262 semantic regression check"
-            echo
-            echo '```'
-            cat "${report_out}"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          exit $status
-
-      - name: Baseline unavailable
-        if: steps.download_baseline.outcome != 'success'
-        shell: bash
-        run: |
-          echo "Previous test262 semantic report artifact not found; skipping regression gate."
-          {
-            echo "## test262 semantic regression check"
-            echo
-            echo "No prior baseline artifact was available from main."
-            echo "The uploaded JSON report from this run will serve as the next baseline."
-          } >> "$GITHUB_STEP_SUMMARY"

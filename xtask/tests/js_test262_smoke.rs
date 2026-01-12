@@ -62,7 +62,19 @@ fi
 
 mkdir -p "$(dirname "$report")"
 cat > "$report" <<'JSON'
-{"schema_version":1,"summary":{"total":1,"passed":1,"failed":0,"timed_out":0,"skipped":0},"results":[]}
+{
+  "schema_version": 1,
+  "summary": { "total": 1, "passed": 1, "failed": 0, "timed_out": 0, "skipped": 0 },
+  "results": [
+    {
+      "id": "language/expressions/addition/S11.6.1_A2.1_T1.js",
+      "variant": "non_strict",
+      "outcome": "passed",
+      "expectation": { "expectation": "pass", "expected": true, "from_manifest": false },
+      "mismatched": false
+    }
+  ]
+}
 JSON
 exit 0
 "#,
@@ -91,6 +103,7 @@ exit 0
   .expect("write test file");
 
   let report_path = temp.path().join("out").join("test262.json");
+  let summary_path = temp.path().join("out").join("test262.md");
 
   let path_var = std::env::var_os("PATH").unwrap_or_default();
   let mut paths = vec![bin_dir];
@@ -114,6 +127,8 @@ exit 0
     .arg(&test262_dir)
     .arg("--report")
     .arg(&report_path)
+    .arg("--summary")
+    .arg(&summary_path)
     .output()
     .expect("run xtask js test262 smoke");
 
@@ -128,6 +143,12 @@ exit 0
     report_path.is_file(),
     "expected report file to be created at {}",
     report_path.display()
+  );
+
+  assert!(
+    summary_path.is_file(),
+    "expected summary file to be created at {}",
+    summary_path.display()
   );
 }
 

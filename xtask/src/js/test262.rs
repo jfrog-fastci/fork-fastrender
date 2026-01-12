@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_TEST262_DIR: &str = "vendor/ecma-rs/test262-semantic/data";
 const DEFAULT_REPORT_PATH: &str = "target/js/test262.json";
+const DEFAULT_SUMMARY_PATH: &str = "target/js/test262_summary.md";
 const DEFAULT_MANIFEST_PATH: &str = "tests/js/test262_manifest.toml";
 const DEFAULT_CURATED_SUITE_PATH: &str = "tests/js/test262_suites/curated.toml";
 const DEFAULT_SMOKE_SUITE_PATH: &str = "tests/js/test262_suites/smoke.toml";
@@ -14,6 +15,7 @@ const DEFAULT_LANGUAGE_FUNCTIONS_SUITE_PATH: &str = "tests/js/test262_suites/lan
 const DEFAULT_LANGUAGE_CLASSES_SUITE_PATH: &str = "tests/js/test262_suites/language_classes.toml";
 const DEFAULT_BUILTINS_CORE_SUITE_PATH: &str = "tests/js/test262_suites/builtins_core.toml";
 const DEFAULT_BUILTINS_JSON_MATH_SUITE_PATH: &str = "tests/js/test262_suites/builtins_json_math.toml";
+const DEFAULT_BASELINE_PATH: &str = "progress/test262/baseline.json";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_JOBS_CAP: usize = 4;
@@ -102,6 +104,22 @@ pub struct Test262Args {
   )]
   pub report: PathBuf,
 
+  /// Write a human-readable Markdown summary alongside the JSON report.
+  #[arg(long, value_name = "PATH", default_value = DEFAULT_SUMMARY_PATH)]
+  pub summary: PathBuf,
+
+  /// Path to the committed baseline snapshot used for monotonic-progress enforcement.
+  #[arg(long, value_name = "PATH", default_value = DEFAULT_BASELINE_PATH)]
+  pub baseline: PathBuf,
+
+  /// Refresh the committed baseline snapshot (and its summaries) intentionally.
+  #[arg(long)]
+  pub update_baseline: bool,
+
+  /// Disable baseline regression/timeouts gating (useful for local iteration).
+  #[arg(long)]
+  pub no_gate: bool,
+
   /// Glob or regex to filter tests by id (after suite selection).
   #[arg(long, value_name = "FILTER")]
   pub filter: Option<String>,
@@ -159,6 +177,14 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
       .with_context(|| format!("failed to create report directory {}", parent.display()))?;
   }
 
+  let summary_path = resolve_repo_path(&repo_root, &args.summary);
+  if let Some(parent) = summary_path.parent() {
+    fs::create_dir_all(parent)
+      .with_context(|| format!("failed to create summary directory {}", parent.display()))?;
+  }
+
+  let baseline_path = resolve_repo_path(&repo_root, &args.baseline);
+
   let jobs = crate::cpu_budget().min(DEFAULT_JOBS_CAP).max(1);
   let shard_arg = args.shard.map(|(idx, total)| format!("{idx}/{total}"));
   let fail_on_arg = match args.fail_on {
@@ -203,7 +229,190 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
 
   cmd.current_dir(&ecma_rs_root);
   println!("Running test262 semantic suite ({:?})...", args.suite);
-  crate::run_command(cmd)
+
+  crate::print_command(&cmd);
+  let status = cmd
+    .status()
+    .with_context(|| format!("failed to run {:?}", cmd.get_program()))?;
+
+  // The underlying runner should always write its report even on failures. Parse the report and
+  // emit a human-readable summary so developers/CI have something actionable to look at.
+  let report_exists = report_path.is_file();
+  if !report_exists {
+    bail!(
+      "test262 runner did not write report JSON to {} (status={status})",
+      report_path.display()
+    );
+  }
+
+  let report = super::test262_report::read_report(&report_path)
+    .with_context(|| format!("load test262 report {}", report_path.display()))?;
+  let stats = super::test262_report::compute_report_stats(&report);
+
+  let baseline_compare_enabled = matches!(args.suite, Test262Suite::Curated)
+    && args.filter.is_none()
+    && args.shard.is_none()
+    && matches!(args.harness, HarnessMode::Test262)
+    && baseline_path.is_file();
+
+  let (baseline, comparison) = if baseline_compare_enabled {
+    let baseline = super::test262_report::read_baseline(&baseline_path)
+      .with_context(|| format!("load test262 baseline {}", baseline_path.display()))?;
+    let comparison =
+      super::test262_report::compare_to_baseline(&baseline, &report).with_context(|| {
+        format!(
+          "compare report {} against baseline {}",
+          report_path.display(),
+          baseline_path.display()
+        )
+      })?;
+    (Some(baseline), Some(super::test262_report::take_comparison(comparison)))
+  } else {
+    (None, None)
+  };
+
+  let markdown = super::test262_report::render_markdown(
+    &report,
+    &stats,
+    baseline.as_ref(),
+    comparison.as_ref(),
+    super::test262_report::MarkdownOptions {
+      title: "test262 semantic report",
+      report_path: &report_path,
+      baseline_path: if baseline_compare_enabled {
+        Some(&baseline_path)
+      } else {
+        None
+      },
+    },
+  );
+  super::test262_report::write_markdown(&summary_path, &markdown)
+    .with_context(|| format!("write test262 summary {}", summary_path.display()))?;
+
+  println!("JSON report: {}", report_path.display());
+  println!("Summary: {}", summary_path.display());
+
+  if args.update_baseline {
+    if !matches!(args.suite, Test262Suite::Curated) || args.filter.is_some() || args.shard.is_some()
+    {
+      bail!("--update-baseline requires the full curated suite (no --filter/--shard)");
+    }
+    if !matches!(args.harness, HarnessMode::Test262) {
+      bail!("--update-baseline requires --harness test262");
+    }
+
+    let baseline = super::test262_report::baseline_from_report(&report)?;
+    super::test262_report::write_baseline(&baseline_path, &baseline)
+      .with_context(|| format!("write baseline {}", baseline_path.display()))?;
+
+    let baseline_dir = baseline_path
+      .parent()
+      .map(ToOwned::to_owned)
+      .unwrap_or_else(|| repo_root.clone());
+    let baseline_summary_path = baseline_dir.join("summary.md");
+    let baseline_trend_path = baseline_dir.join("trend.json");
+
+    // The committed baseline summary should describe the baseline itself (not a diff against the
+    // previous baseline we may have loaded above).
+    let baseline_markdown = super::test262_report::render_markdown(
+      &report,
+      &stats,
+      None,
+      None,
+      super::test262_report::MarkdownOptions {
+        title: "test262 semantic baseline",
+        report_path: &baseline_path,
+        baseline_path: None,
+      },
+    );
+    super::test262_report::write_markdown(&baseline_summary_path, &baseline_markdown)
+      .with_context(|| {
+        format!(
+          "write baseline summary {}",
+          baseline_summary_path.display()
+        )
+      })?;
+
+    let trend = super::test262_report::trend_from_report(&report);
+    super::test262_report::write_trend(&baseline_trend_path, &trend).with_context(|| {
+      format!(
+        "write baseline trend file {}",
+        baseline_trend_path.display()
+      )
+    })?;
+
+    println!("Updated baseline: {}", baseline_path.display());
+    println!("Baseline summary: {}", baseline_summary_path.display());
+    println!("Baseline trend: {}", baseline_trend_path.display());
+
+    if !status.success() {
+      eprintln!(
+        "Warning: test262 runner exited with non-zero status {status}, but baseline was updated because --update-baseline was specified."
+      );
+    }
+
+    return Ok(());
+  }
+
+  // Optional environment-variable escape hatch (useful for local shell aliases).
+  let gate_disabled_by_env = std::env::var_os("FASTR_TEST262_NO_GATE").is_some();
+  let gate_enabled = baseline_compare_enabled && !args.no_gate && !gate_disabled_by_env;
+
+  let mut gate_errors: Vec<String> = Vec::new();
+  if gate_enabled {
+    let comparison = comparison.as_ref().expect("baseline_compare_enabled implies comparison");
+
+    let mut current_by_key = std::collections::BTreeMap::new();
+    for result in &report.results {
+      let key = super::test262_report::ResultKey::from_result(result).to_string_key();
+      current_by_key.insert(key, result);
+    }
+
+    let mut unexpected_regressions = 0usize;
+    for change in &comparison.regressions {
+      let current = current_by_key
+        .get(&change.key.to_string_key())
+        .copied()
+        .unwrap_or_else(|| {
+          panic!(
+            "comparison key {} missing from current report index",
+            change.key
+          )
+        });
+      if current.expectation.expectation == conformance_harness::ExpectationKind::Pass {
+        unexpected_regressions += 1;
+      }
+    }
+
+    if unexpected_regressions > 0 {
+      gate_errors.push(format!(
+        "{unexpected_regressions} unexpected regression(s) vs baseline (matched -> mismatched without a manifest skip/xfail/flaky)"
+      ));
+    }
+
+    if !comparison.new_timeouts.is_empty() {
+      gate_errors.push(format!(
+        "{} new timeout(s) vs baseline (hangs must be fixed or skipped)",
+        comparison.new_timeouts.len()
+      ));
+    }
+  }
+
+  let mut errors: Vec<String> = Vec::new();
+  if !status.success() {
+    errors.push(format!("test262 runner exited with status {status}"));
+  }
+  errors.extend(gate_errors);
+
+  if errors.is_empty() {
+    return Ok(());
+  }
+
+  bail!(
+    "test262 run did not satisfy requested gates:\n  - {}\n\nSee summary: {}",
+    errors.join("\n  - "),
+    summary_path.display()
+  );
 }
 
 fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {

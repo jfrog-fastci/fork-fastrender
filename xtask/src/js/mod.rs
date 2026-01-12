@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 mod test262;
+mod test262_report;
 mod test262_parser;
 mod wpt_dom;
 

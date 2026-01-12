@@ -1827,89 +1827,119 @@ fn rewrite_lazy_load_image_attrs(
     let tag = &input[tag_match.start()..tag_match.end()];
     let mut rewritten_tag = tag.to_string();
 
-    let mut data_src_rewritten: Option<String> = None;
-    if let Some(caps) = attr_data_src.captures(&rewritten_tag) {
-      if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
-        if let Some(new_value) = rewrite_reference(m.as_str(), base_url, ctx, catalog)? {
-          let start = m.start();
-          let end = m.end();
-          rewritten_tag = format!(
-            "{}{}{}",
-            &rewritten_tag[..start],
-            new_value,
-            &rewritten_tag[end..]
-          );
-          data_src_rewritten = Some(new_value);
-        }
-      }
-    }
+    // Only consult `data-src` / `data-srcset` when we're going to *use* them to backfill a
+    // placeholder/missing `src`/`srcset`. Many pages include `data-src` for JS-driven lazy loading
+    // even when `src` already points at the real image; in that case, rewriting `data-src` would
+    // incorrectly require the bundle to contain it.
+    let src_needs_backfill = attr_src
+      .captures(&rewritten_tag)
+      .and_then(|caps| {
+        capture_first_match(&caps, &[1, 2, 3]).map(|m| src_or_srcset_placeholder(m.as_str()))
+      })
+      .unwrap_or(true);
 
-    let mut data_srcset_rewritten: Option<String> = None;
-    if let Some(caps) = attr_data_srcset.captures(&rewritten_tag) {
-      if let Some(m) = capture_first_match(&caps, &[1, 2]) {
-        let new_value = rewrite_srcset_with_limit(
-          m.as_str(),
-          base_url,
-          ctx,
-          catalog,
-          IMG_SRCSET_MAX_CANDIDATES,
-        )?;
-        let start = m.start();
-        let end = m.end();
-        rewritten_tag = format!(
-          "{}{}{}",
-          &rewritten_tag[..start],
-          new_value,
-          &rewritten_tag[end..]
-        );
-        data_srcset_rewritten = Some(new_value);
-      }
-    }
+    if src_needs_backfill {
+      if let Some(caps) = attr_data_src.captures(&rewritten_tag) {
+        if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
+          if let Some(new_src) = rewrite_reference(m.as_str(), base_url, ctx, catalog)? {
+            if let Some(src_caps) = attr_src.captures(&rewritten_tag) {
+              if let Some(src_match) = capture_first_match(&src_caps, &[1, 2, 3]) {
+                if src_or_srcset_placeholder(src_match.as_str()) {
+                  let start = src_match.start();
+                  let end = src_match.end();
+                  rewritten_tag = format!(
+                    "{}{}{}",
+                    &rewritten_tag[..start],
+                    &new_src,
+                    &rewritten_tag[end..]
+                  );
+                }
+              }
+            } else {
+              insert_attr(&mut rewritten_tag, "src", &new_src);
+            }
 
-    if let Some(new_src) = &data_src_rewritten {
-      if let Some(src_caps) = attr_src.captures(&rewritten_tag) {
-        if let Some(m) = capture_first_match(&src_caps, &[1, 2, 3]) {
-          if src_or_srcset_placeholder(m.as_str()) {
-            let start = m.start();
-            let end = m.end();
-            rewritten_tag = format!(
-              "{}{}{}",
-              &rewritten_tag[..start],
-              new_src,
-              &rewritten_tag[end..]
-            );
+            // If we actually used `data-src` to populate `src`, keep `data-src` pointing at the
+            // rewritten local asset path so JS-capable fixtures remain offline-friendly.
+            if let Some(data_caps) = attr_data_src.captures(&rewritten_tag) {
+              if let Some(data_match) = capture_first_match(&data_caps, &[1, 2, 3]) {
+                let start = data_match.start();
+                let end = data_match.end();
+                rewritten_tag = format!(
+                  "{}{}{}",
+                  &rewritten_tag[..start],
+                  &new_src,
+                  &rewritten_tag[end..]
+                );
+              }
+            }
           }
         }
-      } else {
-        insert_attr(&mut rewritten_tag, "src", new_src);
       }
     }
 
-    if let Some(new_srcset) = &data_srcset_rewritten {
-      if let Some(srcset_caps) = attr_srcset.captures(&rewritten_tag) {
-        if let Some(m) = capture_first_match(&srcset_caps, &[1, 2]) {
-          if srcset_is_placeholder(m.as_str()) {
-            let start = m.start();
-            let end = m.end();
-            rewritten_tag = format!(
-              "{}{}{}",
-              &rewritten_tag[..start],
-              new_srcset,
-              &rewritten_tag[end..]
-            );
+    let data_srcset_value = attr_data_srcset
+      .captures(&rewritten_tag)
+      .and_then(|caps| capture_first_match(&caps, &[1, 2]).map(|m| m.as_str().to_string()));
+    let srcset_needs_backfill = attr_srcset
+      .captures(&rewritten_tag)
+      .and_then(|caps| {
+        capture_first_match(&caps, &[1, 2]).map(|m| srcset_is_placeholder(m.as_str()))
+      })
+      .unwrap_or(false)
+      || (!attr_srcset.is_match(&rewritten_tag) && data_srcset_value.is_some());
+
+    let mut inserted_srcset = false;
+    if srcset_needs_backfill {
+      if let Some(raw) = data_srcset_value.as_deref() {
+        let new_srcset =
+          rewrite_srcset_with_limit(raw, base_url, ctx, catalog, IMG_SRCSET_MAX_CANDIDATES)?;
+        if let Some(srcset_caps) = attr_srcset.captures(&rewritten_tag) {
+          if let Some(srcset_match) = capture_first_match(&srcset_caps, &[1, 2]) {
+            if srcset_is_placeholder(srcset_match.as_str()) {
+              let start = srcset_match.start();
+              let end = srcset_match.end();
+              rewritten_tag = format!(
+                "{}{}{}",
+                &rewritten_tag[..start],
+                &new_srcset,
+                &rewritten_tag[end..]
+              );
+              inserted_srcset = true;
+            }
+          }
+        } else {
+          insert_attr(&mut rewritten_tag, "srcset", &new_srcset);
+          inserted_srcset = true;
+        }
+
+        if inserted_srcset {
+          if let Some(data_caps) = attr_data_srcset.captures(&rewritten_tag) {
+            if let Some(data_match) = capture_first_match(&data_caps, &[1, 2]) {
+              let start = data_match.start();
+              let end = data_match.end();
+              rewritten_tag = format!(
+                "{}{}{}",
+                &rewritten_tag[..start],
+                &new_srcset,
+                &rewritten_tag[end..]
+              );
+            }
           }
         }
-      } else {
-        insert_attr(&mut rewritten_tag, "srcset", new_srcset);
       }
     }
 
-    let data_sizes_value = attr_data_sizes.captures(&rewritten_tag).and_then(|caps| {
-      capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string())
-    });
-    if let Some(value) = data_sizes_value {
-      if !value.is_empty() && !attr_sizes.is_match(&rewritten_tag) {
-        insert_attr(&mut rewritten_tag, "sizes", &value);
+    if inserted_srcset && !attr_sizes.is_match(&rewritten_tag) {
+      let data_sizes_value = attr_data_sizes
+        .captures(&rewritten_tag)
+        .and_then(|caps| {
+          capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string())
+        });
+      if let Some(value) = data_sizes_value {
+        if !value.is_empty() {
+          insert_attr(&mut rewritten_tag, "sizes", &value);
+        }
       }
     }
 
@@ -1926,48 +1956,64 @@ fn rewrite_lazy_load_image_attrs(
     let tag = &input[tag_match.start()..tag_match.end()];
     let mut rewritten_tag = tag.to_string();
 
-    let mut data_srcset_rewritten: Option<String> = None;
-    if let Some(caps) = attr_data_srcset.captures(&rewritten_tag) {
-      if let Some(m) = capture_first_match(&caps, &[1, 2]) {
-        let new_value =
-          rewrite_srcset_with_limit(m.as_str(), base_url, ctx, catalog, SRCSET_MAX_CANDIDATES)?;
-        let start = m.start();
-        let end = m.end();
-        rewritten_tag = format!(
-          "{}{}{}",
-          &rewritten_tag[..start],
-          new_value,
-          &rewritten_tag[end..]
-        );
-        data_srcset_rewritten = Some(new_value);
-      }
-    }
+    let data_srcset_value = attr_data_srcset
+      .captures(&rewritten_tag)
+      .and_then(|caps| capture_first_match(&caps, &[1, 2]).map(|m| m.as_str().to_string()));
+    let srcset_needs_backfill = attr_srcset
+      .captures(&rewritten_tag)
+      .and_then(|caps| capture_first_match(&caps, &[1, 2]).map(|m| srcset_is_placeholder(m.as_str())))
+      .unwrap_or(false)
+      || (!attr_srcset.is_match(&rewritten_tag) && data_srcset_value.is_some());
 
-    if let Some(new_srcset) = &data_srcset_rewritten {
-      if let Some(srcset_caps) = attr_srcset.captures(&rewritten_tag) {
-        if let Some(m) = capture_first_match(&srcset_caps, &[1, 2]) {
-          if srcset_is_placeholder(m.as_str()) {
-            let start = m.start();
-            let end = m.end();
-            rewritten_tag = format!(
-              "{}{}{}",
-              &rewritten_tag[..start],
-              new_srcset,
-              &rewritten_tag[end..]
-            );
+    let mut inserted_srcset = false;
+    if srcset_needs_backfill {
+      if let Some(raw) = data_srcset_value.as_deref() {
+        let new_srcset =
+          rewrite_srcset_with_limit(raw, base_url, ctx, catalog, SRCSET_MAX_CANDIDATES)?;
+        if let Some(srcset_caps) = attr_srcset.captures(&rewritten_tag) {
+          if let Some(srcset_match) = capture_first_match(&srcset_caps, &[1, 2]) {
+            if srcset_is_placeholder(srcset_match.as_str()) {
+              let start = srcset_match.start();
+              let end = srcset_match.end();
+              rewritten_tag = format!(
+                "{}{}{}",
+                &rewritten_tag[..start],
+                &new_srcset,
+                &rewritten_tag[end..]
+              );
+              inserted_srcset = true;
+            }
+          }
+        } else {
+          insert_attr(&mut rewritten_tag, "srcset", &new_srcset);
+          inserted_srcset = true;
+        }
+
+        if inserted_srcset {
+          if let Some(data_caps) = attr_data_srcset.captures(&rewritten_tag) {
+            if let Some(data_match) = capture_first_match(&data_caps, &[1, 2]) {
+              let start = data_match.start();
+              let end = data_match.end();
+              rewritten_tag = format!(
+                "{}{}{}",
+                &rewritten_tag[..start],
+                &new_srcset,
+                &rewritten_tag[end..]
+              );
+            }
           }
         }
-      } else {
-        insert_attr(&mut rewritten_tag, "srcset", new_srcset);
       }
     }
 
-    let data_sizes_value = attr_data_sizes.captures(&rewritten_tag).and_then(|caps| {
-      capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string())
-    });
-    if let Some(value) = data_sizes_value {
-      if !value.is_empty() && !attr_sizes.is_match(&rewritten_tag) {
-        insert_attr(&mut rewritten_tag, "sizes", &value);
+    if inserted_srcset && !attr_sizes.is_match(&rewritten_tag) {
+      let data_sizes_value = attr_data_sizes
+        .captures(&rewritten_tag)
+        .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string()));
+      if let Some(value) = data_sizes_value {
+        if !value.is_empty() {
+          insert_attr(&mut rewritten_tag, "sizes", &value);
+        }
       }
     }
 

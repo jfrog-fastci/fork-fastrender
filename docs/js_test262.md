@@ -48,8 +48,53 @@ By default, the runner writes a JSON report to:
 target/js/test262.json
 ```
 
+Alongside the JSON report, xtask also writes a human-readable Markdown summary to:
+
+```
+target/js/test262_summary.md
+```
+
 Run `bash scripts/cargo_agent.sh xtask js test262 --help` for the full, authoritative CLI (this doc only calls out the
 flags we use the most).
+
+## Baseline + monotonic progress
+
+FastRender keeps a **committed** baseline snapshot for the curated suite at:
+
+```
+progress/test262/baseline.json
+```
+
+`xtask js test262` compares the current run against this baseline and:
+
+- fails CI on **new regressions** (tests that previously matched test262 expectations but now mismatch), unless they are
+  explicitly classified in `tests/js/test262_manifest.toml` as `skip`/`xfail`/`flaky`.
+- fails CI on **new timeouts/hangs**, even if the affected tests are `xfail` (timeouts waste CI time and often signal
+  cancellation bugs). If a test is known to hang, prefer marking it as `skip` in the manifest.
+
+### Updating the baseline intentionally
+
+When you intentionally change expectations or land a large batch of conformance fixes, refresh the committed baseline:
+
+```bash
+bash scripts/cargo_agent.sh xtask js test262 --update-baseline
+```
+
+This updates (and you should commit) the files under `progress/test262/`:
+
+- `baseline.json` (snapshot used for CI gating)
+- `summary.md` (human-readable baseline summary)
+- `trend.json` (aggregated per-area counts for easy diffs over time)
+
+### Opting out locally
+
+For local iteration where you only want a report+summary without baseline gating:
+
+```bash
+bash scripts/cargo_agent.sh xtask js test262 --fail-on none --no-gate
+```
+
+Or set `FASTR_TEST262_NO_GATE=1`.
 
 ## Key flags
 
@@ -81,6 +126,14 @@ flags we use the most).
     - `new` (default): fail only on **unexpected** mismatches (not covered by the manifest).
     - `all`: fail on any mismatch (including expected/xfail/flaky).
     - `none`: always exit 0 (useful for generating reports while iterating).
+- `--summary <PATH>`
+  - Override where to write the Markdown summary (defaults to `target/js/test262_summary.md`).
+- `--baseline <PATH>`
+  - Override which baseline snapshot to compare against (defaults to `progress/test262/baseline.json`).
+- `--update-baseline`
+  - Refresh the committed baseline snapshot + summaries.
+- `--no-gate`
+  - Disable baseline regression/timeout gating (useful for local debugging).
 
 ## Running subsets
 

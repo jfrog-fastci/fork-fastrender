@@ -124,7 +124,7 @@ mod some_specific_test;
 
 ```bash
 # This already works:
-cargo test --test integration layout::some_specific_test
+bash scripts/cargo_agent.sh test --test integration layout::some_specific_test
 ```
 
 The `#[path = ...]` pattern creates a second binary for zero benefit.
@@ -286,13 +286,13 @@ After moving tests from a module:
 
 ```bash
 # Before: tests ran via
-cargo test --test layout_tests flex_wrap
+bash scripts/cargo_agent.sh test --test layout_tests flex_wrap
 
 # After: tests run via
-cargo test --lib flex_wrap
+bash scripts/cargo_agent.sh test --lib flex_wrap
 
 # Verify same tests exist
-cargo test --lib -- --list | grep flex_wrap
+bash scripts/cargo_agent.sh test --lib -- --list | grep flex_wrap
 ```
 
 ---
@@ -359,8 +359,8 @@ rm tests/style_tests.rs
 
 **Verify nothing broke:**
 ```bash
-cargo test --test integration
-cargo test --lib
+bash scripts/cargo_agent.sh test --test integration
+bash scripts/cargo_agent.sh test --lib
 ```
 
 ---
@@ -387,7 +387,7 @@ Current shims:
 These files serve no purpose. The tests they reference are already in subdirectories and can be run with:
 
 ```bash
-cargo test --test integration specific_test_name
+bash scripts/cargo_agent.sh test --test integration specific_test_name
 ```
 
 **Just delete the shim files.** No migration needed — the actual tests remain in their subdirectories.
@@ -510,12 +510,12 @@ Update `scripts/cargo_agent.sh` and any CI scripts:
 
 ```bash
 # Old (broken)
-cargo test --test layout_tests
-cargo test --test paint_tests
+bash scripts/cargo_agent.sh test --test layout_tests
+bash scripts/cargo_agent.sh test --test paint_tests
 
 # New (correct)
-cargo test --lib           # unit tests
-cargo test --test integration  # integration tests
+bash scripts/cargo_agent.sh test --lib           # unit tests
+bash scripts/cargo_agent.sh test --test integration  # integration tests
 ```
 
 ---
@@ -530,8 +530,8 @@ Every new file is a new binary. There is no reason to ever add one.
 
 You can already run specific tests:
 ```bash
-cargo test --test integration specific::test::name
-cargo test --lib specific::test::name
+bash scripts/cargo_agent.sh test --test integration specific::test::name
+bash scripts/cargo_agent.sh test --lib specific::test::name
 ```
 
 ### DO NOT put unit tests in `tests/`
