@@ -67,6 +67,7 @@ mod grid_template_areas_single_row_test;
 mod grid_track_list_single_token_test;
 mod has_selector_quirks_bloom_test;
 mod has_selector_test;
+mod hostile_css_no_panic_smoke_test;
 mod import_layer_supports_test;
 mod isolation_case_insensitive_test;
 mod justify_content_normal_test;
