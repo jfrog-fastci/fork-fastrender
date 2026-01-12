@@ -2504,7 +2504,7 @@ impl<'a> Scope<'a> {
         &mut trap_scope,
         host,
         hooks,
-        trap_result_obj,
+        Value::Object(trap_result_obj),
       )?;
  
       // Validate and materialize the returned keys *before* dropping `trap_scope`, so keys remain
