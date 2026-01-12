@@ -29,6 +29,11 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
     rt.exec_script("Object.getPrototypeOf([].values()) === Object.getPrototypeOf([][Symbol.iterator]())")?;
   assert_eq!(same_values_proto, Value::Bool(true));
 
+  // `Object.prototype.toString` should observe the `@@toStringTag` on `%ArrayIteratorPrototype%`.
+  let to_string_tag =
+    rt.exec_script(r#"Object.prototype.toString.call([][Symbol.iterator]()) === "[object Array Iterator]""#)?;
+  assert_eq!(to_string_tag, Value::Bool(true));
+
   let it = rt.exec_script("[][Symbol.iterator]()")?;
   let array_iter_proto_v = rt.exec_script("Object.getPrototypeOf([][Symbol.iterator]())")?;
   let iterator_proto_v =
