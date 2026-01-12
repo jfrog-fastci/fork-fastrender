@@ -1139,8 +1139,9 @@ impl<'vm> HirEvaluator<'vm> {
     root_property_key(&mut scope, key)?;
 
     let receiver = Value::Object(obj);
-    let ok = scope.ordinary_set_with_host_and_hooks(
+    let ok = crate::spec_ops::internal_set_with_host_and_hooks(
       self.vm,
+      &mut scope,
       &mut *self.host,
       &mut *self.hooks,
       obj,
@@ -1150,8 +1151,11 @@ impl<'vm> HirEvaluator<'vm> {
     )?;
     if ok {
       Ok(())
+    } else if self.strict {
+      Err(VmError::TypeError("Cannot assign to read-only property"))
     } else {
-      Err(VmError::TypeError("assignment rejected"))
+      // Sloppy-mode assignment to a non-writable/non-extensible target fails silently.
+      Ok(())
     }
   }
 
