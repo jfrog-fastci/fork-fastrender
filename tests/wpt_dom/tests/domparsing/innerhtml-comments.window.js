@@ -30,8 +30,16 @@ test(() => {
   assert_equals(comment.data, "c");
   assert_equals(text_b.data, "b");
 
+  assert_equals(comment.nodeValue, "c");
+  assert_equals(comment.textContent, "c");
+  assert_equals(el.textContent, "ab", "Element.textContent should ignore comments");
+
   assert_equals(text_a.nextSibling, comment);
   assert_equals(comment.previousSibling, text_a);
   assert_equals(comment.nextSibling, text_b);
   assert_equals(text_b.previousSibling, comment);
+
+  comment.data = "d";
+  assert_equals(el.innerHTML, "a<!--d-->b");
+  assert_equals(el.textContent, "ab");
 }, "Comment nodes appear in childNodes and affect sibling relationships");
