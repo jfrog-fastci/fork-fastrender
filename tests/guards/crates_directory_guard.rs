@@ -2,9 +2,15 @@
 //!
 //! See `instructions/webidl_consolidation.md`.
 //!
-//! WebIDL stack consolidation is complete: shared JS/WebIDL infrastructure should live in the
-//! vendored `vendor/ecma-rs/` workspace and `crates/` should be reserved for FastRender-specific
+//! WebIDL stack consolidation is nearly complete: shared JS/WebIDL infrastructure should live in
+//! the vendored `vendor/ecma-rs/` workspace and `crates/` should be reserved for FastRender-specific
 //! tooling.
+//!
+//! The only remaining legacy crate under `crates/` is the temporary `webidl-js-runtime`
+//! compatibility crate. (The legacy WebIDL crates `webidl-ir` and `webidl-bindings-core` have
+//! already been removed.)
+//!
+//! Once the migration completes, remove the `webidl-js-runtime` entry from the allowlist below.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -58,16 +64,18 @@ fn crates_directory_is_explicitly_allowlisted() {
   );
 
   let actual = list_crate_dirs(&crates_dir);
-  let allowlist: BTreeSet<String> =
+  let expected: BTreeSet<String> =
     ALLOWED_CRATE_DIRS.iter().map(|dir| (*dir).to_owned()).collect();
 
-  let unexpected: Vec<_> = actual.difference(&allowlist).cloned().collect();
+  let unexpected: Vec<_> = actual.difference(&expected).cloned().collect();
+  let missing: Vec<_> = expected.difference(&actual).cloned().collect();
 
   assert!(
-    unexpected.is_empty(),
-    "unexpected crate directories found under crates/.\n\
+    unexpected.is_empty() && missing.is_empty(),
+    "crates/ directory contents must match the explicit allowlist.\n\
 unexpected crate dirs found: {unexpected:?}\n\
-allowlisted crate dirs: {allowlist:?}\n\
+missing allowlisted crate dirs: {missing:?}\n\
+expected crate dirs (allowlist): {expected:?}\n\
 actual crate dirs: {actual:?}",
   );
 }
