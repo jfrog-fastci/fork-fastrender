@@ -3,6 +3,7 @@
 use crate::render_control::StageHeartbeat;
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::messages::TabId;
+use crate::ui::motion::UiMotion;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::zoom;
 
@@ -86,12 +87,19 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
   })
 }
 
+fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
+  let [r, g, b, a] = color.to_array();
+  let a = ((a as f32) * alpha).round().clamp(0.0, 255.0) as u8;
+  egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
 pub fn chrome_ui(
   ctx: &egui::Context,
   app: &mut BrowserAppState,
   mut favicon_for_tab: impl FnMut(TabId) -> Option<egui::TextureId>,
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
+  let motion = UiMotion::from_env();
 
   // -----------------------------------------------------------------------------
   // Chrome-level keyboard shortcuts
@@ -308,42 +316,86 @@ pub fn chrome_ui(
         let is_active = app.active_tab_id() == Some(tab.id);
         let title = tab.display_title();
 
-        if let Some(tex_id) = favicon_for_tab(tab.id) {
-          if let Some(meta) = tab.favicon_meta {
-            let (w, h) = meta.size_px;
-            if w > 0 && h > 0 {
-              let height_points = 16.0;
-              let aspect = (w as f32) / (h as f32);
-              let width_points = (height_points * aspect).clamp(8.0, 32.0);
-              let response = ui.add(
-                egui::Image::new((tex_id, egui::vec2(width_points, height_points)))
-                  .sense(egui::Sense::click()),
-              );
-              if response.clicked_by(egui::PointerButton::Middle) {
-                if can_close_tabs {
-                  actions.push(ChromeAction::CloseTab(tab.id));
+        let tab_anim_id = ui.make_persistent_id(("tab_anim", tab.id));
+        let inner = ui.horizontal(|ui| {
+          if let Some(tex_id) = favicon_for_tab(tab.id) {
+            if let Some(meta) = tab.favicon_meta {
+              let (w, h) = meta.size_px;
+              if w > 0 && h > 0 {
+                let height_points = 16.0;
+                let aspect = (w as f32) / (h as f32);
+                let width_points = (height_points * aspect).clamp(8.0, 32.0);
+                let response = ui.add(
+                  egui::Image::new((tex_id, egui::vec2(width_points, height_points)))
+                    .sense(egui::Sense::click()),
+                );
+                if response.clicked_by(egui::PointerButton::Middle) {
+                  if can_close_tabs {
+                    actions.push(ChromeAction::CloseTab(tab.id));
+                  }
+                } else if response.clicked() {
+                  actions.push(ChromeAction::ActivateTab(tab.id));
                 }
-              } else if response.clicked() {
-                actions.push(ChromeAction::ActivateTab(tab.id));
               }
             }
           }
-        }
 
-        let response = ui.selectable_label(is_active, title);
-        if response.clicked_by(egui::PointerButton::Middle) {
-          if can_close_tabs {
+          let response = ui.selectable_label(is_active, title);
+          if response.clicked_by(egui::PointerButton::Middle) {
+            if can_close_tabs {
+              actions.push(ChromeAction::CloseTab(tab.id));
+            }
+          } else if response.clicked() {
+            actions.push(ChromeAction::ActivateTab(tab.id));
+          }
+
+          if ui
+            .add_enabled(can_close_tabs, egui::Button::new("×"))
+            .clicked()
+          {
             actions.push(ChromeAction::CloseTab(tab.id));
           }
-        } else if response.clicked() {
-          actions.push(ChromeAction::ActivateTab(tab.id));
+        });
+
+        // Micro-interactions: tab hover highlight + active underline.
+        let hovered = inner.response.hovered();
+        let hover_t = motion.animate_bool(
+          ctx,
+          tab_anim_id.with("hover"),
+          hovered,
+          motion.durations.hover_fade,
+        );
+        if hover_t > 0.0 {
+          // We draw the hover highlight on the same layer as the tab contents, so keep the alpha
+          // intentionally low to avoid obscuring text/icons.
+          let max_alpha = if ui.visuals().dark_mode { 0.25 } else { 0.15 };
+          let hover_fill = with_alpha(ui.visuals().widgets.hovered.bg_fill, hover_t * max_alpha);
+          ui.painter().rect_filled(
+            inner.response.rect.expand(2.0),
+            egui::Rounding::same(4.0),
+            hover_fill,
+          );
         }
 
-        if ui
-          .add_enabled(can_close_tabs, egui::Button::new("×"))
-          .clicked()
-        {
-          actions.push(ChromeAction::CloseTab(tab.id));
+        let active_t = motion.animate_bool(
+          ctx,
+          tab_anim_id.with("underline"),
+          is_active,
+          motion.durations.tab_underline,
+        );
+        if active_t > 0.0 {
+          let underline_height = 2.0;
+          let underline_width = inner.response.rect.width() * active_t;
+          let cx = inner.response.rect.center().x;
+          let x0 = cx - underline_width * 0.5;
+          let x1 = cx + underline_width * 0.5;
+          let y1 = inner.response.rect.bottom();
+          let y0 = y1 - underline_height;
+          let rect = egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
+          let color = with_alpha(ui.visuals().selection.stroke.color, active_t);
+          ui
+            .painter()
+            .rect_filled(rect, egui::Rounding::same(1.0), color);
         }
 
         ui.separator();
@@ -435,6 +487,44 @@ pub fn chrome_ui(
       }
 
       let has_focus = response.has_focus();
+
+      // Micro-interaction: address bar focus ring animation.
+      let focus_t = motion.animate_bool(
+        ctx,
+        address_bar_id.with("focus_ring"),
+        has_focus,
+        motion.durations.focus_ring,
+      );
+      if focus_t > 0.0 {
+        let ring_color = with_alpha(ui.visuals().selection.stroke.color, focus_t);
+        let ring_width = 1.0 + focus_t;
+        let ring_rect = response.rect.expand(1.0 + focus_t);
+        ui.painter().rect_stroke(
+          ring_rect,
+          egui::Rounding::same(4.0),
+          egui::Stroke::new(ring_width, ring_color),
+        );
+      }
+
+      // Micro-interaction: loading progress indicator (fade in/out).
+      let loading_t = motion.animate_bool(
+        ctx,
+        address_bar_id.with("loading_progress"),
+        loading,
+        motion.durations.progress_fade,
+      );
+      if loading_t > 0.0 {
+        let bar_h = 2.0;
+        let rect = egui::Rect::from_min_max(
+          egui::pos2(response.rect.left(), response.rect.bottom() - bar_h),
+          egui::pos2(response.rect.right(), response.rect.bottom()),
+        );
+        let color = with_alpha(ui.visuals().selection.stroke.color, loading_t);
+        ui
+          .painter()
+          .rect_filled(rect, egui::Rounding::same(1.0), color);
+      }
+
       if has_focus != app.chrome.address_bar_has_focus {
         // Keep `address_bar_editing` and `address_bar_has_focus` in sync, and when the user leaves
         // the address bar revert any uncommitted edits back to the active tab URL (matching typical
@@ -529,6 +619,8 @@ mod tests {
       egui::Pos2::new(0.0, 0.0),
       egui::vec2(800.0, 600.0),
     ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
     ctx.begin_frame(raw);
     ctx
   }
@@ -540,6 +632,8 @@ mod tests {
       egui::Pos2::new(0.0, 0.0),
       egui::vec2(800.0, 600.0),
     ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
     raw.events.push(egui::Event::Key {
       key,
       pressed: true,
@@ -556,6 +650,8 @@ mod tests {
       egui::Pos2::new(0.0, 0.0),
       egui::vec2(800.0, 600.0),
     ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
     raw.events = events;
     ctx.begin_frame(raw);
   }

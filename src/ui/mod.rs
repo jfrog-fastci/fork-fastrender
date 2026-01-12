@@ -24,6 +24,7 @@ pub mod shortcuts;
 pub mod url;
 pub mod worker;
 pub mod zoom;
+pub mod motion;
 
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
