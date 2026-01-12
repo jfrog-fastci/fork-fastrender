@@ -14205,7 +14205,7 @@ fn mutation_observer_notify_native(
     if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
       continue;
     }
- 
+  
     let records_array = {
       // SAFETY: `dom_ptr_for_wrappers` is only used to create wrappers. The reference must not live
       // across the callback invocation (callbacks can mutate the DOM), so keep it scoped to this
@@ -34742,6 +34742,13 @@ fn init_window_globals(
   crate::js::window_intersection_observer::install_window_intersection_observer_bindings(vm, realm, heap)?;
   crate::js::window_crypto::install_window_crypto_bindings(vm, realm, heap)?;
   crate::js::window_css::install_window_css_bindings(vm, realm, heap)?;
+  // Streams APIs (`ReadableStream`/`WritableStream`/`TransformStream`) are used by many real-world
+  // apps (e.g. Shopify's React Router bootstrap uses
+  // `new ReadableStream(...).pipeThrough(new TextEncoderStream())`).
+  //
+  // Install these before text encoding because `TextEncoderStream` is implemented on top of
+  // `TransformStream`.
+  crate::js::window_streams::install_window_streams_bindings(vm, realm, heap)?;
   crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
   crate::js::window_dom_rect::install_window_dom_rect_bindings(vm, realm, heap)?;
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
@@ -34751,7 +34758,6 @@ fn init_window_globals(
   crate::js::window_xml_serializer::install_window_xml_serializer_bindings(vm, realm, heap)?;
   crate::js::window_broadcast_channel::install_window_broadcast_channel_bindings(vm, realm, heap)?;
   crate::js::window_worker::install_window_worker_bindings(vm, realm, heap)?;
-  crate::js::window_streams::install_window_streams_bindings(vm, realm, heap)?;
 
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),

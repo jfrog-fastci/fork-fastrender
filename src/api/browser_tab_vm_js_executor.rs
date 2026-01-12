@@ -578,6 +578,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       )
       .map_err(|err| Error::Other(err.to_string()))?;
 
+      crate::js::window_streams::install_window_streams_bindings(vm, realm_ref, heap)
+        .map_err(|err| Error::Other(err.to_string()))?;
+
       (fetch_bindings, xhr_bindings, websocket_bindings)
     };
 

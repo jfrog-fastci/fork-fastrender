@@ -7,7 +7,7 @@ use crate::js::dom_platform::{DomInterface, DomNodeKey, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
-  EVENT_TARGET_HOST_TAG,
+  make_dom_exception, EVENT_TARGET_HOST_TAG,
 };
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
@@ -3103,6 +3103,11 @@ mod element_dispatch_tests {
     let document_key = WeakGcObject::from(realm.global_object());
 
     let wrapper = {
+      // `DomPlatform` caches wrappers keyed by `(document, node_id)`; tests can use a synthetic
+      // document object as the key.
+      let document_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(document_obj))?;
+      let document_key = vm_js::WeakGcObject::from(document_obj);
       let data = vm.user_data_mut::<WindowRealmUserData>().expect("user data");
       let platform = data.dom_platform_mut().expect("platform");
       platform.get_or_create_wrapper(&mut scope, document_key, div, DomInterface::Element)?

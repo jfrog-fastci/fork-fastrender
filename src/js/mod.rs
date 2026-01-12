@@ -104,6 +104,8 @@ pub mod window_file_reader;
 pub mod window_dom_rect;
 #[path = "vmjs/window_text_encoding.rs"]
 pub mod window_text_encoding;
+#[path = "vmjs/window_streams.rs"]
+pub mod window_streams;
 #[path = "vmjs/window_env.rs"]
 pub mod window_env;
 #[path = "vmjs/window_fetch.rs"]
@@ -131,9 +133,6 @@ pub mod window_xhr;
 
 #[path = "vmjs/window_structured_clone.rs"]
 pub mod window_structured_clone;
-
-#[path = "vmjs/window_streams.rs"]
-pub mod window_streams;
 
 #[cfg(test)]
 #[path = "vmjs/regression_tests.rs"]

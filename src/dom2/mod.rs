@@ -787,7 +787,11 @@ impl Document {
   pub fn set_script_already_started(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
     // This is a per-script-element internal slot that does not affect rendering. Avoid bumping the
     // mutation generation so hosts can use it to detect *real* DOM changes.
-    if !self.kind_is_html_script(&self.node_checked(node)?.kind) {
+    let is_script = {
+      let node = self.node_checked(node)?;
+      self.kind_is_html_script(&node.kind)
+    };
+    if !is_script {
       return Err(DomError::InvalidNodeType);
     }
     let node = self.node_checked_mut(node)?;
@@ -804,7 +808,11 @@ impl Document {
   }
 
   pub fn set_script_force_async(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
-    if !self.kind_is_html_script(&self.node_checked(node)?.kind) {
+    let is_script = {
+      let node = self.node_checked(node)?;
+      self.kind_is_html_script(&node.kind)
+    };
+    if !is_script {
       return Err(DomError::InvalidNodeType);
     }
     let node = self.node_checked_mut(node)?;
@@ -820,7 +828,11 @@ impl Document {
     Ok(node.script_parser_document)
   }
   pub fn set_script_parser_document(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
-    if !self.kind_is_html_script(&self.node_checked(node)?.kind) {
+    let is_script = {
+      let node = self.node_checked(node)?;
+      self.kind_is_html_script(&node.kind)
+    };
+    if !is_script {
       return Err(DomError::InvalidNodeType);
     }
     let node = self.node_checked_mut(node)?;

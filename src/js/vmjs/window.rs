@@ -626,6 +626,10 @@ impl WindowHostState {
         }
       };
 
+      if let Err(err) = crate::js::window_streams::install_window_streams_bindings(vm, realm, heap) {
+        return Err(Error::Other(err.to_string()));
+      }
+
       (fetch_bindings, xhr_bindings, websocket_bindings)
     };
 
@@ -3207,6 +3211,61 @@ mod tests {
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
     ));
+    Ok(())
+  }
+
+  #[test]
+  fn streams_text_encoder_stream_shopify_bootstrap() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    // Mirrors the Shopify fixture pattern:
+    // - create a ReadableStream and capture its controller
+    // - pipe through TextEncoderStream
+    // - enqueue a string chunk
+    // - read bytes and decode via TextDecoder
+    host.exec_script(
+      r#"
+      globalThis.__err = "";
+      globalThis.__decoded = undefined;
+
+      try {
+        window.__reactRouterContext = {};
+        window.__reactRouterContext.stream = new ReadableStream({
+          start(controller) {
+            window.__reactRouterContext.streamController = controller;
+          },
+        }).pipeThrough(new TextEncoderStream());
+
+        window.__reactRouterContext.streamController.enqueue("hello");
+        window.__reactRouterContext.streamController.close();
+
+        (async () => {
+          const reader = window.__reactRouterContext.stream.getReader();
+          const { value, done } = await reader.read();
+          if (done) throw new Error("unexpected done=true");
+          window.__decoded = new TextDecoder().decode(value);
+        })().catch((e) => {
+          globalThis.__err = String(e && (e.stack || e.message) || e);
+        });
+      } catch (e) {
+        globalThis.__err = String(e && (e.stack || e.message) || e);
+      }
+      "#,
+    )?;
+
+    // Drive microtasks so the async reader finishes.
+    for _ in 0..8 {
+      host.perform_microtask_checkpoint()?;
+      if get_global_prop_utf8(&mut host, "__decoded").is_some()
+        || !get_global_prop_utf8(&mut host, "__err").unwrap_or_default().is_empty()
+      {
+        break;
+      }
+    }
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(get_global_prop_utf8(&mut host, "__decoded").as_deref(), Some("hello"));
     Ok(())
   }
 
