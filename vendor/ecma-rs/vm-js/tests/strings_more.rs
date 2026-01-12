@@ -6,6 +6,13 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn value_to_string(rt: &JsRuntime, value: Value) -> String {
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  rt.heap.get_string(s).unwrap().to_utf8_lossy()
+}
+
 #[test]
 fn string_code_points() {
   let mut rt = new_runtime();
@@ -114,10 +121,52 @@ fn string_prototype_to_string_works_on_string_prototype() {
   let value = rt
     .exec_script(
       r#"
-      String.prototype.toString() === "" &&
-      Object.prototype.toString.call(String.prototype) === "[object String]"
-    "#,
+       String.prototype.toString() === "" &&
+       Object.prototype.toString.call(String.prototype) === "[object String]"
+     "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_raw_is_proxy_aware() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+         var log = [];
+         var raw;
+         raw = new Proxy(["a", "b", "c"], {
+           get(t, k, r) {
+            log.push("rawget:" + String(k) + ":" + (r === raw));
+            return t[k];
+          },
+        });
+        var callSite;
+        callSite = new Proxy({ raw: raw }, {
+          get(t, k, r) {
+            log.push("csget:" + String(k) + ":" + (r === callSite));
+            return t[k];
+          },
+        });
+        var out = String.raw(callSite, 1, 2);
+        out + "|" + log.join(",")
+      "#,
+    )
+    .unwrap();
+  let out = value_to_string(&rt, value);
+  assert!(out.starts_with("a1b2c|"), "expected output to start with a1b2c, got {out}");
+  assert!(
+    out.contains("csget:raw:true"),
+    "expected Proxy get trap for callSite.raw with receiver===proxy, got {out}"
+  );
+  assert!(
+    out.contains("rawget:length:true"),
+    "expected Proxy get trap for raw.length with receiver===proxy, got {out}"
+  );
+  assert!(
+    out.contains("rawget:0:true") && out.contains("rawget:1:true") && out.contains("rawget:2:true"),
+    "expected Proxy get traps for raw indices with receiver===proxy, got {out}"
+  );
 }
