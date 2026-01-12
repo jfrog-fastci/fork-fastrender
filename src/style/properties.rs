@@ -1499,7 +1499,6 @@ fn parse_view_phase(token: &str) -> Option<ViewTimelinePhase> {
     "entry-crossing" => Some(ViewTimelinePhase::EntryCrossing),
     "contain" => Some(ViewTimelinePhase::Contain),
     "cover" => Some(ViewTimelinePhase::Cover),
-    "cross" => Some(ViewTimelinePhase::Contain),
     "exit" => Some(ViewTimelinePhase::Exit),
     "exit-crossing" => Some(ViewTimelinePhase::ExitCrossing),
     _ => None,

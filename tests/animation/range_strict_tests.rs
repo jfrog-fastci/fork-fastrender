@@ -93,3 +93,78 @@ fn animation_range_end_ignores_invalid_comma_list() {
     RangeOffset::Progress(0.8)
   );
 }
+
+#[test]
+fn animation_range_rejects_cross_keyword() {
+  let css = r#"
+    #box {
+      animation-range: 20% 80%;
+      animation-range: cross;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+
+  assert_eq!(div.styles.animation_ranges.len(), 1);
+  assert_eq!(
+    div.styles.animation_ranges[0].start,
+    RangeOffset::Progress(0.2)
+  );
+  assert_eq!(
+    div.styles.animation_ranges[0].end,
+    RangeOffset::Progress(0.8)
+  );
+}
+
+#[test]
+fn animation_range_start_rejects_cross_keyword() {
+  let css = r#"
+    #box {
+      animation-range: 20% 80%;
+      animation-range-start: cross;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+
+  assert_eq!(div.styles.animation_ranges.len(), 1);
+  assert_eq!(
+    div.styles.animation_ranges[0].start,
+    RangeOffset::Progress(0.2)
+  );
+  assert_eq!(
+    div.styles.animation_ranges[0].end,
+    RangeOffset::Progress(0.8)
+  );
+}
+
+#[test]
+fn animation_range_end_rejects_cross_keyword() {
+  let css = r#"
+    #box {
+      animation-range: 20% 80%;
+      animation-range-end: cross;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+
+  assert_eq!(div.styles.animation_ranges.len(), 1);
+  assert_eq!(
+    div.styles.animation_ranges[0].start,
+    RangeOffset::Progress(0.2)
+  );
+  assert_eq!(
+    div.styles.animation_ranges[0].end,
+    RangeOffset::Progress(0.8)
+  );
+}
