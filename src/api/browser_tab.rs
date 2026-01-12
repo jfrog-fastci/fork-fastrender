@@ -1849,6 +1849,35 @@ impl BrowserTabHost {
     for node_id in clear_state {
       self.image_load_state.remove(&node_id);
     }
+
+    // Avoid retaining per-node state for images that are no longer connected to the document.
+    //
+    // `dom2` node ids are stable indices, so pages that create/remove many images could otherwise
+    // accumulate unbounded bookkeeping. Removing state also ensures queued loads for disconnected
+    // images become deterministic no-ops (they will still clear their registered load blocker).
+    {
+      let dom = self.document.dom();
+      fn is_html_namespace(namespace: &str) -> bool {
+        namespace.is_empty() || namespace == HTML_NAMESPACE
+      }
+      let mut to_remove = Vec::new();
+      for (&node_id, _state) in &self.image_load_state {
+        if !dom.is_connected_for_scripting(node_id) {
+          to_remove.push(node_id);
+          continue;
+        }
+        match &dom.node(node_id).kind {
+          NodeKind::Element { tag_name, namespace, .. }
+            if tag_name.eq_ignore_ascii_case("img") && is_html_namespace(namespace) => {}
+          _ => {
+            to_remove.push(node_id);
+          }
+        }
+      }
+      for node_id in to_remove {
+        self.image_load_state.remove(&node_id);
+      }
+    }
     for (node_id, url, cors_mode) in discovered {
       self.start_image_load(node_id, url, cors_mode, event_loop)?;
     }
@@ -1905,6 +1934,7 @@ impl BrowserTabHost {
         .get(&node_id)
         .is_some_and(|state| state.request_id == request_id);
 
+      let mut fetch_err: Option<Error> = None;
       if is_current {
         let fetcher = host.document.fetcher();
 
@@ -1920,7 +1950,16 @@ impl BrowserTabHost {
           req = req.with_credentials_mode(cors_mode.credentials_mode());
         }
 
-        let _ = fetcher.fetch_with_request(req);
+        match fetcher.fetch_with_request(req) {
+          Ok(_) => {}
+          Err(err) => {
+            // Treat ordinary network/image decode failures as non-fatal (they should not abort
+            // `window.load`), but still propagate cooperative deadline/cancellation errors.
+            if matches!(err, Error::Render(_)) {
+              fetch_err = Some(err);
+            }
+          }
+        }
       }
 
       if host.pending_image_load_blockers.remove(&pending_key) {
@@ -1929,7 +1968,7 @@ impl BrowserTabHost {
           .load_blocker_completed(LoadBlockerKind::Other, event_loop)?;
       }
 
-      Ok(())
+      fetch_err.map_or(Ok(()), Err)
     });
 
     if let Err(err) = queued {
@@ -10417,6 +10456,72 @@ html, body { margin: 0; padding: 0; }
       urls,
       vec!["https://example.com/b.png".to_string()],
       "expected only the final src URL to be fetched"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_load_fires_even_if_image_fetch_fails() -> Result<()> {
+    #[derive(Debug, Default, Clone)]
+    struct FailingImageFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for FailingImageFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("FailingImageFetcher::fetch should not be used".to_string()))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if !matches!(req.destination, FetchDestination::Image | FetchDestination::ImageCors) {
+          return Err(Error::Other(format!(
+            "unexpected fetch destination {:?} for url={}",
+            req.destination, req.url
+          )));
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(Error::Other("simulated image fetch failure".to_string()))
+      }
+    }
+
+    let fetcher = Arc::new(FailingImageFetcher::default());
+    let html = r#"<!doctype html><body>
+      <img src="https://example.com/a.png">
+      <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.setAttribute('data-dom', '1');
+        });
+        window.addEventListener('load', function () {
+          document.body.setAttribute('data-load', '1');
+        });
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>,
+    )?;
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-dom")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(
+      fetcher.calls.load(Ordering::SeqCst),
+      1,
+      "expected failing image fetch to be attempted once"
     );
     Ok(())
   }
