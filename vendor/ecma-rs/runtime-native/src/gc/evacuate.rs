@@ -49,7 +49,13 @@ impl GcHeap {
       // Process-global roots/handles registered outside of stackmaps (intern tables, runtime-owned
       // queues, host handles, ...).
       crate::roots::global_root_registry().for_each_root_slot(|slot| evac.visit_slot(slot));
-      crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| evac.visit_slot(slot));
+      let persistent = crate::roots::global_persistent_handle_table();
+      // Avoid contending on the handle table's STW write lock when there are no live handles. This
+      // keeps stop-the-world minor GC deterministic under tests that intentionally hold the table's
+      // read lock while another thread is blocked allocating a new handle.
+      if persistent.live_count() != 0 {
+        persistent.for_each_root_slot(|slot| evac.visit_slot(slot));
+      }
 
       let mut root_handles = mem::take(&mut evac.heap.root_handles);
       root_handles.for_each_root_slot(&mut |slot| {

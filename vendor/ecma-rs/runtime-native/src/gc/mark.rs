@@ -156,8 +156,15 @@ impl GcHeap {
           });
 
           crate::roots::global_root_registry().for_each_root_slot(|slot| compactor.visit_slot(slot));
-          crate::roots::global_persistent_handle_table()
-            .for_each_root_slot(|slot| compactor.visit_slot(slot));
+          // Avoid deadlocking on the persistent-handle table lock when it is empty.
+          //
+          // Some tests deterministically hold the table's shared/read lock while triggering GC; the
+          // GC enumerator takes the write lock. If the table is empty, we can skip enumeration
+          // entirely.
+          let persistent = crate::roots::global_persistent_handle_table();
+          if persistent.live_count() != 0 {
+            persistent.for_each_root_slot(|slot| compactor.visit_slot(slot));
+          }
 
           let mut root_handles = mem::take(&mut compactor.heap.root_handles);
           root_handles.for_each_root_slot(&mut |slot| {
@@ -359,9 +366,16 @@ fn parallel_mark_major(heap: &mut GcHeap, epoch: u8, roots: &mut dyn RootSet, ma
     crate::roots::global_root_registry().for_each_root_slot(|slot| unsafe {
       mark_obj_enqueue_global(&*heap, epoch, *slot, &pool.pending, &mut global);
     });
-    crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| unsafe {
-      mark_obj_enqueue_global(&*heap, epoch, *slot, &pool.pending, &mut global);
-    });
+    // Avoid deadlocking on the persistent-handle table lock when it is empty.
+    //
+    // Some tests deterministically hold the table's shared/read lock while triggering GC; the GC
+    // enumerator takes the write lock. If the table is empty, we can skip enumeration entirely.
+    let persistent = crate::roots::global_persistent_handle_table();
+    if persistent.live_count() != 0 {
+      persistent.for_each_root_slot(|slot| unsafe {
+        mark_obj_enqueue_global(&*heap, epoch, *slot, &pool.pending, &mut global);
+      });
+    }
 
     let mut root_handles = mem::take(&mut heap.root_handles);
     root_handles.for_each_root_slot(&mut |slot| unsafe {

@@ -1,6 +1,7 @@
 use core::ptr::NonNull;
 
 use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::gc::{HandleId, HandleTable};
 use crate::threading::registry;
@@ -29,12 +30,14 @@ use crate::threading::registry;
 #[derive(Debug, Default)]
 pub struct PersistentHandleTable {
   inner: HandleTable<u8>,
+  live_count: AtomicUsize,
 }
 
 impl PersistentHandleTable {
   pub fn new() -> Self {
     Self {
       inner: HandleTable::new(),
+      live_count: AtomicUsize::new(0),
     }
   }
 
@@ -43,7 +46,9 @@ impl PersistentHandleTable {
   /// The returned handle remains a GC root until freed via [`Self::free`].
   pub fn alloc(&self, ptr: *mut u8) -> HandleId {
     let ptr = NonNull::new(ptr).unwrap_or_else(|| std::process::abort());
-    self.inner.alloc(ptr)
+    let id = self.inner.alloc(ptr);
+    self.live_count.fetch_add(1, Ordering::Relaxed);
+    id
   }
 
   /// Like [`Self::alloc`], but reads the pointer value from an addressable slot *after* acquiring
@@ -56,7 +61,9 @@ impl PersistentHandleTable {
   /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot.
   pub unsafe fn alloc_from_slot(&self, slot: *mut *mut u8) -> HandleId {
     // Safety: caller contract.
-    unsafe { self.inner.alloc_from_slot(slot) }
+    let id = unsafe { self.inner.alloc_from_slot(slot) };
+    self.live_count.fetch_add(1, Ordering::Relaxed);
+    id
   }
 
   /// Moving-GC-safe allocation for a raw pointer value on a registered thread.
@@ -95,7 +102,16 @@ impl PersistentHandleTable {
 
   /// Frees `id`, removing it from the persistent root set and allowing slot reuse.
   pub fn free(&self, id: HandleId) -> bool {
-    self.inner.free(id).is_some()
+    let freed = self.inner.free(id).is_some();
+    if freed {
+      let prev = self.live_count.fetch_sub(1, Ordering::Relaxed);
+      if prev == 0 {
+        // Underflow indicates internal bookkeeping corruption; fail fast to avoid skipping root
+        // enumeration in moving collectors.
+        std::process::abort();
+      }
+    }
+    freed
   }
 
   /// Update the pointer stored for `id`.
@@ -117,10 +133,8 @@ impl PersistentHandleTable {
   }
 
   /// Returns the number of currently-live handles in the table.
-  ///
-  /// This is intended for debugging/tests; it performs an O(n) scan of the slot table.
   pub fn live_count(&self) -> usize {
-    self.inner.live_count()
+    self.live_count.load(Ordering::Acquire)
   }
 
   /// Enumerate all live pointer slots.
@@ -150,6 +164,7 @@ impl PersistentHandleTable {
 
   pub(crate) fn clear_for_tests(&self) {
     self.inner.clear_for_tests();
+    self.live_count.store(0, Ordering::Release);
   }
 }
 

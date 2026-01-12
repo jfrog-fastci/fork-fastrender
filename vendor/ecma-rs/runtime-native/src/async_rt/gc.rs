@@ -42,11 +42,23 @@ impl Root {
   ///
   /// Pointers that do not point into the GC heap are ignored by GC tracing (they remain valid as
   /// stable handles, but do not keep any GC object alive).
+  ///
+  /// ## Moving-GC safety
+  /// When the current thread is registered with the runtime thread registry, this function is
+  /// moving-GC safe even for **movable** objects: it temporarily roots `ptr` in the thread's shadow
+  /// stack and only reads the pointer value *after* acquiring the persistent handle table lock,
+  /// avoiding a TOCTOU race under lock contention.
+  ///
+  /// If the current thread is **unregistered**, this falls back to storing `ptr` directly and
+  /// provides **no moving-GC safety guarantees**. In that case, this is only safe to use with:
+  /// - pointers that are not GC-managed, or
+  /// - GC-managed pointers that are known to be stable for the duration of the call (e.g. pinned
+  ///   objects), or
+  /// - situations where the embedder can guarantee no GC can run concurrently.
+  ///
+  /// When a `GcHandle` (pointer-to-slot) is already available, prefer
+  /// [`Root::new_from_slot_unchecked`] to avoid temporarily pushing a shadow-stack root.
   pub unsafe fn new_unchecked(ptr: *mut u8) -> Self {
-    // Use the moving-GC-safe allocation path: if persistent-handle lock acquisition blocks and this
-    // thread enters a GC-safe ("NativeSafe") region, a moving GC may relocate `ptr` before the
-    // handle-table slot is allocated. `alloc_movable` temporarily stores `ptr` in an addressable
-    // shadow-stack slot so it can be updated by the GC while we are blocked.
     let id = crate::roots::global_persistent_handle_table().alloc_movable(ptr);
     Self {
       inner: Arc::new(RootInner { id }),
