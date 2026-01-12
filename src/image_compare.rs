@@ -1020,6 +1020,59 @@ fn allocate_diff_image(width: u32, height: u32) -> Option<RgbaImage> {
 mod tests {
   use super::*;
 
+  fn structured_image_64() -> RgbaImage {
+    let (width, height) = (64u32, 64u32);
+    let mut img = RgbaImage::new(width, height);
+    for y in 0..height {
+      for x in 0..width {
+        // Keep the dynamic range modest so small per-channel perturbations meaningfully affect SSIM.
+        // This helps ensure the preset `max_perceptual_distance` thresholds remain calibrated.
+        let base_r = 80 + (x / 2) as u8;
+        let base_g = 80 + (y / 2) as u8;
+        let base_b = 80 + ((x + y) / 4) as u8;
+
+        // Overlay a low-frequency checkerboard so the image has edges/structure (more representative
+        // than a pure gradient).
+        let cell = ((x / 8) + (y / 8)) % 2;
+        let (r, g, b) = if cell == 0 {
+          (
+            (base_r as i16 + 20).clamp(0, 255) as u8,
+            (base_g as i16 - 10).clamp(0, 255) as u8,
+            (base_b as i16 + 15).clamp(0, 255) as u8,
+          )
+        } else {
+          (
+            (base_r as i16 - 10).clamp(0, 255) as u8,
+            (base_g as i16 + 20).clamp(0, 255) as u8,
+            (base_b as i16 - 15).clamp(0, 255) as u8,
+          )
+        };
+
+        img.put_pixel(x, y, Rgba([r, g, b, 255]));
+      }
+    }
+    img
+  }
+
+  fn add_luma_checker_noise(img: &RgbaImage, amplitude: i16) -> RgbaImage {
+    assert!(amplitude >= 0);
+    let mut out = img.clone();
+    for y in 0..img.height() {
+      for x in 0..img.width() {
+        let px = img.get_pixel(x, y);
+        let sign = if (x + y) % 2 == 0 { 1 } else { -1 };
+        let delta = amplitude * sign;
+        let rgb = [
+          (px[0] as i16 + delta).clamp(0, 255) as u8,
+          (px[1] as i16 + delta).clamp(0, 255) as u8,
+          (px[2] as i16 + delta).clamp(0, 255) as u8,
+        ];
+        out.put_pixel(x, y, Rgba([rgb[0], rgb[1], rgb[2], px[3]]));
+      }
+    }
+    out
+  }
+
   fn solid(color: [u8; 4]) -> RgbaImage {
     RgbaImage::from_pixel(2, 2, Rgba(color))
   }
@@ -1171,6 +1224,68 @@ mod tests {
     assert!(
       d_small < d_large,
       "expected small noise distance < large noise distance, got {d_small} vs {d_large}"
+    );
+  }
+
+  #[test]
+  fn lenient_and_fuzzy_perceptual_thresholds_are_calibrated() {
+    let base = structured_image_64();
+    let lenient = CompareConfig::lenient();
+    let fuzzy = CompareConfig::fuzzy();
+
+    let lenient_max = lenient
+      .max_perceptual_distance
+      .expect("lenient should set max_perceptual_distance");
+    let fuzzy_max = fuzzy
+      .max_perceptual_distance
+      .expect("fuzzy should set max_perceptual_distance");
+
+    // Small "AA/rounding style" diff: tiny high-frequency +/- perturbation within the per-channel
+    // tolerance so the result is driven primarily by the perceptual threshold.
+    let small = add_luma_checker_noise(&base, 2);
+    let small_diff = compare_images(&small, &base, &lenient);
+    assert!(small_diff.is_match(), "small diff should pass lenient: {}", small_diff.summary());
+    assert!(
+      small_diff.statistics.perceptual_distance <= lenient_max + 0.000_001,
+      "expected small perceptual distance <= {lenient_max}, got {}",
+      small_diff.statistics.perceptual_distance
+    );
+
+    // Medium diff: still within channel tolerance (5) but intended to cross the lenient perceptual
+    // threshold. This guards against accidental rescaling of the perceptual metric.
+    let medium = add_luma_checker_noise(&base, 3);
+    let medium_stats = compare_images(&medium, &base, &lenient).statistics;
+    assert!(
+      medium_stats.perceptual_distance > lenient_max + 0.002,
+      "expected medium perceptual distance > {lenient_max}, got {}",
+      medium_stats.perceptual_distance
+    );
+
+    // The same medium diff should still be acceptable under the fuzzier preset.
+    let medium_fuzzy = compare_images(&medium, &base, &fuzzy);
+    assert!(
+      medium_fuzzy.is_match(),
+      "medium diff should pass fuzzy: {}",
+      medium_fuzzy.summary()
+    );
+    assert!(
+      medium_fuzzy.statistics.perceptual_distance <= fuzzy_max + 0.000_001,
+      "expected medium perceptual distance <= {fuzzy_max}, got {}",
+      medium_fuzzy.statistics.perceptual_distance
+    );
+
+    // A larger within-tolerance perturbation should exceed the fuzzy perceptual threshold.
+    let large = add_luma_checker_noise(&base, 4);
+    let large_fuzzy = compare_images(&large, &base, &fuzzy);
+    assert!(
+      large_fuzzy.statistics.perceptual_distance > fuzzy_max + 0.002,
+      "expected large perceptual distance > {fuzzy_max}, got {}",
+      large_fuzzy.statistics.perceptual_distance
+    );
+    assert!(
+      !large_fuzzy.is_match(),
+      "large diff should fail fuzzy: {}",
+      large_fuzzy.summary()
     );
   }
 }
