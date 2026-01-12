@@ -2260,6 +2260,8 @@ const EVENT_HANDLER_EVENT_TYPE_SLOT: usize = 3;
 pub(crate) const EVENT_TARGET_HOST_TAG: u64 = u64::from_be_bytes(*b"EVTARGET");
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
+const DOM_PARSER_BRAND_KEY: &str = "__fastrender_dom_parser";
+const DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT: usize = 0;
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 
 const WINDOW_REALM_GLOBAL_OBJECT_HOST_TAG: u64 = u64::from_be_bytes(*b"WINDOW__");
@@ -7866,6 +7868,174 @@ fn get_or_create_node_wrapper(
   Ok(Value::Object(wrapper))
 }
 
+/// Copy the internal FastRender DOM shim function objects from `host_document_obj` onto
+/// `new_document_obj`.
+///
+/// `get_or_create_node_wrapper(..)` looks up these shims as *own* data properties on the owning
+/// document wrapper (via `Heap::object_get_own_data_property_value`). Detached documents created by
+/// DOMParser (or other cloning APIs) must therefore copy these keys so Node/Element wrappers created
+/// from the detached document expose the same API surface (e.g. `textContent`, traversal accessors,
+/// `appendChild`, etc).
+fn copy_document_internal_shims(
+  scope: &mut Scope<'_>,
+  host_document_obj: GcObject,
+  new_document_obj: GcObject,
+) -> Result<(), VmError> {
+  // Root objects while allocating property keys: `alloc_key` can trigger GC.
+  scope.push_root(Value::Object(host_document_obj))?;
+  scope.push_root(Value::Object(new_document_obj))?;
+
+  for key_name in [
+    // Node methods/accessors.
+    NODE_APPEND_CHILD_KEY,
+    NODE_INSERT_BEFORE_KEY,
+    NODE_REMOVE_CHILD_KEY,
+    NODE_REPLACE_CHILD_KEY,
+    NODE_CLONE_NODE_KEY,
+    NODE_PARENT_NODE_GET_KEY,
+    NODE_FIRST_CHILD_GET_KEY,
+    NODE_PREVIOUS_SIBLING_GET_KEY,
+    NODE_NEXT_SIBLING_GET_KEY,
+    NODE_REMOVE_KEY,
+    NODE_TEXT_CONTENT_GET_KEY,
+    NODE_TEXT_CONTENT_SET_KEY,
+    // EventTarget shims.
+    EVENT_TARGET_ADD_EVENT_LISTENER_KEY,
+    EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY,
+    EVENT_TARGET_DISPATCH_EVENT_KEY,
+    // Element attribute shims.
+    ELEMENT_GET_ATTRIBUTE_KEY,
+    ELEMENT_SET_ATTRIBUTE_KEY,
+    ELEMENT_REMOVE_ATTRIBUTE_KEY,
+    // Element query shims.
+    ELEMENT_QUERY_SELECTOR_KEY,
+    ELEMENT_QUERY_SELECTOR_ALL_KEY,
+    ELEMENT_MATCHES_KEY,
+    ELEMENT_CLOSEST_KEY,
+    ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY,
+    // Markup serialization shims.
+    ELEMENT_INNER_HTML_GET_KEY,
+    ELEMENT_INNER_HTML_SET_KEY,
+    ELEMENT_OUTER_HTML_GET_KEY,
+    ELEMENT_OUTER_HTML_SET_KEY,
+    // Adjacent insertion shims.
+    ELEMENT_INSERT_ADJACENT_HTML_KEY,
+    ELEMENT_INSERT_ADJACENT_ELEMENT_KEY,
+    ELEMENT_INSERT_ADJACENT_TEXT_KEY,
+    // Element reflected getters/setters and common properties.
+    ELEMENT_CLASS_NAME_GET_KEY,
+    ELEMENT_CLASS_NAME_SET_KEY,
+    ELEMENT_CLASS_LIST_ADD_KEY,
+    ELEMENT_CLASS_LIST_REMOVE_KEY,
+    ELEMENT_CLASS_LIST_TOGGLE_KEY,
+    ELEMENT_CLASS_LIST_CONTAINS_KEY,
+    ELEMENT_CLASS_LIST_REPLACE_KEY,
+    ELEMENT_ID_GET_KEY,
+    ELEMENT_ID_SET_KEY,
+    ELEMENT_TITLE_GET_KEY,
+    ELEMENT_TITLE_SET_KEY,
+    ELEMENT_LANG_GET_KEY,
+    ELEMENT_LANG_SET_KEY,
+    ELEMENT_DIR_GET_KEY,
+    ELEMENT_DIR_SET_KEY,
+    ELEMENT_HIDDEN_GET_KEY,
+    ELEMENT_HIDDEN_SET_KEY,
+    ELEMENT_SRC_GET_KEY,
+    ELEMENT_SRC_SET_KEY,
+    ELEMENT_SRCSET_GET_KEY,
+    ELEMENT_SRCSET_SET_KEY,
+    ELEMENT_SIZES_GET_KEY,
+    ELEMENT_SIZES_SET_KEY,
+    ELEMENT_HREF_GET_KEY,
+    ELEMENT_HREF_SET_KEY,
+    ELEMENT_REL_GET_KEY,
+    ELEMENT_REL_SET_KEY,
+    ELEMENT_TYPE_GET_KEY,
+    ELEMENT_TYPE_SET_KEY,
+    ELEMENT_CHARSET_GET_KEY,
+    ELEMENT_CHARSET_SET_KEY,
+    ELEMENT_CROSS_ORIGIN_GET_KEY,
+    ELEMENT_CROSS_ORIGIN_SET_KEY,
+    ELEMENT_ASYNC_GET_KEY,
+    ELEMENT_ASYNC_SET_KEY,
+    ELEMENT_DEFER_GET_KEY,
+    ELEMENT_DEFER_SET_KEY,
+    ELEMENT_HEIGHT_GET_KEY,
+    ELEMENT_HEIGHT_SET_KEY,
+    ELEMENT_WIDTH_GET_KEY,
+    ELEMENT_WIDTH_SET_KEY,
+    INPUT_VALUE_GET_KEY,
+    INPUT_VALUE_SET_KEY,
+    INPUT_CHECKED_GET_KEY,
+    INPUT_CHECKED_SET_KEY,
+    TEXTAREA_VALUE_GET_KEY,
+    TEXTAREA_VALUE_SET_KEY,
+    FORM_RESET_KEY,
+    // Optional style shims (used by wrapper style objects).
+    CSS_STYLE_DECL_PROTOTYPE_KEY,
+    STYLE_GET_PROPERTY_VALUE_KEY,
+    STYLE_SET_PROPERTY_KEY,
+    STYLE_REMOVE_PROPERTY_KEY,
+    STYLE_CSS_TEXT_GET_KEY,
+    STYLE_CSS_TEXT_SET_KEY,
+    STYLE_DISPLAY_GET_KEY,
+    STYLE_DISPLAY_SET_KEY,
+    STYLE_CURSOR_GET_KEY,
+    STYLE_CURSOR_SET_KEY,
+    STYLE_HEIGHT_GET_KEY,
+    STYLE_HEIGHT_SET_KEY,
+    STYLE_WIDTH_GET_KEY,
+    STYLE_WIDTH_SET_KEY,
+  ] {
+    let key = alloc_key(scope, key_name)?;
+    let value = match scope
+      .heap()
+      .object_get_own_data_property_value(host_document_obj, &key)
+    {
+      Ok(value) => value,
+      // Detached documents should tolerate missing optional shims.
+      Err(VmError::PropertyNotData) => None,
+      Err(err) => return Err(err),
+    };
+    let Some(value) = value else {
+      continue;
+    };
+    // Root values while defining the new property: `define_property` can allocate and trigger GC.
+    scope.push_root(value)?;
+    scope.define_property(new_document_obj, key, data_desc(value))?;
+  }
+
+  Ok(())
+}
+
+fn copy_own_property_descriptor(
+  scope: &mut Scope<'_>,
+  from_obj: GcObject,
+  to_obj: GcObject,
+  name: &str,
+) -> Result<(), VmError> {
+  // Root objects while allocating property keys: string allocation can trigger GC.
+  scope.push_root(Value::Object(from_obj))?;
+  scope.push_root(Value::Object(to_obj))?;
+  let key = alloc_key(scope, name)?;
+  let Some(desc) = scope.heap().object_get_own_property(from_obj, &key)? else {
+    return Ok(());
+  };
+
+  match &desc.kind {
+    PropertyKind::Data { value, .. } => {
+      scope.push_root(*value)?;
+    }
+    PropertyKind::Accessor { get, set } => {
+      scope.push_root(*get)?;
+      scope.push_root(*set)?;
+    }
+  }
+
+  scope.define_property(to_obj, key, desc)?;
+  Ok(())
+}
+
 fn node_wrapper_document_obj(
   scope: &mut Scope<'_>,
   wrapper_obj: GcObject,
@@ -8370,10 +8540,18 @@ fn document_document_element_get_native(
     return Ok(Value::Null);
   };
 
+  let document_id = match dom_platform_mut(vm) {
+    Some(platform) => match platform.require_document_id(scope.heap(), Value::Object(document_obj)) {
+      Ok(id) => id,
+      Err(_) => return Ok(Value::Null),
+    },
+    None => return Ok(Value::Null),
+  };
+
   let Some(dom) = dom_from_vm_host(host) else {
     return Ok(Value::Null);
   };
-  let Some(node_id) = dom.document_element() else {
+  let Some(node_id) = dom.document_element_for(document_id) else {
     return Ok(Value::Null);
   };
 
@@ -8393,10 +8571,18 @@ fn document_head_get_native(
     return Ok(Value::Null);
   };
 
+  let document_id = match dom_platform_mut(vm) {
+    Some(platform) => match platform.require_document_id(scope.heap(), Value::Object(document_obj)) {
+      Ok(id) => id,
+      Err(_) => return Ok(Value::Null),
+    },
+    None => return Ok(Value::Null),
+  };
+
   let Some(dom) = dom_from_vm_host(host) else {
     return Ok(Value::Null);
   };
-  let Some(node_id) = dom.head() else {
+  let Some(node_id) = dom.head_for(document_id) else {
     return Ok(Value::Null);
   };
 
@@ -8416,10 +8602,18 @@ fn document_body_get_native(
     return Ok(Value::Null);
   };
 
+  let document_id = match dom_platform_mut(vm) {
+    Some(platform) => match platform.require_document_id(scope.heap(), Value::Object(document_obj)) {
+      Ok(id) => id,
+      Err(_) => return Ok(Value::Null),
+    },
+    None => return Ok(Value::Null),
+  };
+
   let Some(dom) = dom_from_vm_host(host) else {
     return Ok(Value::Null);
   };
-  let Some(node_id) = dom.body() else {
+  let Some(node_id) = dom.body_for(document_id) else {
     return Ok(Value::Null);
   };
 
@@ -8476,9 +8670,9 @@ fn document_get_element_by_id_native(
 
   // Brand check: `Document.prototype.getElementById` must only be callable on real Document
   // wrappers, not arbitrary DOM-backed nodes (e.g. Elements) that happen to have a source id.
-  {
+  let document_id = {
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+    platform.require_document_id(scope.heap(), Value::Object(document_obj))?
   };
   let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
@@ -8490,7 +8684,7 @@ fn document_get_element_by_id_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let Some(node_id) = dom.get_element_by_id(&query) else {
+  let Some(node_id) = dom.get_element_by_id_from(document_id, &query) else {
     return Ok(Value::Null);
   };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
@@ -8544,9 +8738,9 @@ fn document_query_selector_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  {
+  let document_id = {
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+    platform.require_document_id(scope.heap(), Value::Object(document_obj))?
   };
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -8557,8 +8751,10 @@ fn document_query_selector_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let result = mutate_dom_for_vm_host(host, |dom| (dom.query_selector(&selector, None), false))
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  let result = mutate_dom_for_vm_host(host, |dom| {
+    (dom.query_selector(&selector, Some(document_id)), false)
+  })
+  .ok_or(VmError::TypeError("Illegal invocation"))?;
   let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
   match result {
@@ -8595,9 +8791,9 @@ fn document_query_selector_all_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  {
+  let document_id = {
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+    platform.require_document_id(scope.heap(), Value::Object(document_obj))?
   };
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -8608,8 +8804,10 @@ fn document_query_selector_all_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let matches = match mutate_dom_for_vm_host(host, |dom| (dom.query_selector_all(&selector, None), false))
-    .ok_or(VmError::TypeError("Illegal invocation"))?
+  let matches = match mutate_dom_for_vm_host(host, |dom| {
+    (dom.query_selector_all(&selector, Some(document_id)), false)
+  })
+  .ok_or(VmError::TypeError("Illegal invocation"))?
   {
     Ok(nodes) => nodes,
     Err(err) => {
@@ -10047,6 +10245,207 @@ fn dom_implementation_create_document_type_native(
   };
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
+fn dom_parser_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DOMParser constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn dom_parser_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  // Brand-check for DOMParser.prototype.parseFromString.
+  let brand_key = alloc_key(scope, DOM_PARSER_BRAND_KEY)?;
+  scope.define_property(
+    obj,
+    brand_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn dom_parser_parse_from_string_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Brand check.
+  let Value::Object(parser_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let brand_key = alloc_key(scope, DOM_PARSER_BRAND_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(parser_obj, &brand_key)?
+  {
+    Some(Value::Bool(true)) => {}
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  // Slot 0: host `window.document` wrapper object.
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let host_document_obj = match slots
+    .get(DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "DOMParser.parseFromString native missing host document slot",
+      ))
+    }
+  };
+
+  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_value = scope.heap_mut().to_string(html_value)?;
+  let html = scope
+    .heap()
+    .get_string(html_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let type_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let type_value = scope.heap_mut().to_string(type_value)?;
+  let ty = scope
+    .heap()
+    .get_string(type_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  if ty.to_ascii_lowercase() != "text/html" {
+    return Err(VmError::TypeError(
+      "DOMParser.parseFromString only supports 'text/html'",
+    ));
+  }
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "DOMParser.parseFromString requires a DOM-backed document",
+  ))?;
+
+  let parsed_dom = crate::dom::parse_html_with_options(
+    html.as_ref(),
+    crate::dom::DomParseOptions::with_scripting_enabled(false),
+  )
+  .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?;
+
+  // Create a detached document root node inside the shared `dom2::Document`.
+  let document_id = dom
+    .clone_node(dom.root(), /* deep */ false)
+    .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to create a Document"))?;
+
+  if let crate::dom::DomNodeType::Document { quirks_mode, .. } = &parsed_dom.node_type {
+    dom.node_mut(document_id).kind = NodeKind::Document {
+      quirks_mode: *quirks_mode,
+    };
+  }
+
+  crate::dom2::import::import_domnode_into_parent(dom, document_id, &parsed_dom);
+
+  // Create a JS wrapper for the detached document node.
+  let platform = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("DOMParser.parseFromString requires a DOM-backed realm"))?;
+  let document_obj = platform.get_or_create_wrapper(scope, document_id, DomInterface::Document)?;
+  scope.push_root(Value::Object(document_obj))?;
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  scope.define_property(
+    document_obj,
+    node_id_key,
+    data_desc(Value::Number(document_id.index() as f64)),
+  )?;
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  scope.define_property(
+    document_obj,
+    wrapper_document_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(document_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Detached documents need the same internal shim function objects as the host document so
+  // wrappers created via `get_or_create_node_wrapper(..)` have `textContent`, traversal accessors,
+  // and Node mutation methods.
+  copy_document_internal_shims(scope, host_document_obj, document_obj)?;
+
+  // Copy essential Document properties/methods defined as own properties on `window.document`.
+  for name in [
+    "documentElement",
+    "head",
+    "body",
+    "getElementById",
+    "querySelector",
+    "querySelectorAll",
+    "createElement",
+    "createTextNode",
+    "createComment",
+    "createDocumentFragment",
+    "textContent",
+    // Node mutation APIs (Document inherits from Node).
+    "appendChild",
+    "insertBefore",
+    "removeChild",
+    "replaceChild",
+    "cloneNode",
+  ] {
+    copy_own_property_descriptor(scope, host_document_obj, document_obj, name)?;
+  }
+
+  Ok(Value::Object(document_obj))
 }
 
 fn define_event_default_properties(scope: &mut Scope<'_>, obj: GcObject) -> Result<(), VmError> {
@@ -19963,7 +20362,7 @@ fn node_node_value_set_native(
 fn node_owner_document_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -19976,8 +20375,16 @@ fn node_owner_document_get_native(
   let node_id = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
     .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+  // Document.ownerDocument is always null. The `dom2` document root is `NodeId(0)`, but detached
+  // documents created by DOMParser (and cloned documents) have their own `NodeKind::Document` nodes
+  // with non-zero ids.
   if node_id.index() == 0 {
     return Ok(Value::Null);
+  }
+  if let Some(dom) = dom_from_vm_host(host) {
+    if matches!(dom.node(node_id).kind, NodeKind::Document { .. }) {
+      return Ok(Value::Null);
+    }
   }
 
   let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
@@ -27778,6 +28185,70 @@ fn init_window_globals(
   let prototype_key = alloc_key(&mut scope, "prototype")?;
   let constructor_key = alloc_key(&mut scope, "constructor")?;
 
+  // --- DOMParser -------------------------------------------------------------------------------
+  //
+  // `DOMParser.parseFromString` returns a detached `Document`. We implement detached documents as
+  // additional `NodeKind::Document` roots stored inside the same `dom2::Document` so they can reuse
+  // the existing mutation/traversal/query machinery.
+  let dom_parser_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(dom_parser_proto))?;
+
+  let parse_from_string_call_id = vm.register_native_call(dom_parser_parse_from_string_native)?;
+  let parse_from_string_name = scope.alloc_string("parseFromString")?;
+  scope.push_root(Value::String(parse_from_string_name))?;
+  let parse_from_string_func = scope.alloc_native_function_with_slots(
+    parse_from_string_call_id,
+    None,
+    parse_from_string_name,
+    2,
+    &[Value::Object(document_obj)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    parse_from_string_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(parse_from_string_func))?;
+
+  let parse_from_string_key = alloc_key(&mut scope, "parseFromString")?;
+  scope.define_property(
+    dom_parser_proto,
+    parse_from_string_key,
+    data_desc(Value::Object(parse_from_string_func)),
+  )?;
+
+  let dom_parser_ctor_call_id = vm.register_native_call(dom_parser_constructor_native)?;
+  let dom_parser_ctor_construct_id =
+    vm.register_native_construct(dom_parser_constructor_construct_native)?;
+  let dom_parser_ctor_name = scope.alloc_string("DOMParser")?;
+  scope.push_root(Value::String(dom_parser_ctor_name))?;
+  let dom_parser_ctor_func = scope.alloc_native_function(
+    dom_parser_ctor_call_id,
+    Some(dom_parser_ctor_construct_id),
+    dom_parser_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    dom_parser_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(dom_parser_ctor_func))?;
+  scope.define_property(
+    dom_parser_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(dom_parser_proto)),
+  )?;
+  scope.define_property(
+    dom_parser_proto,
+    constructor_key,
+    data_desc(Value::Object(dom_parser_ctor_func)),
+  )?;
+  let dom_parser_key = alloc_key(&mut scope, "DOMParser")?;
+  scope.define_property(
+    global,
+    dom_parser_key,
+    data_desc(Value::Object(dom_parser_ctor_func)),
+  )?;
+
   let event_ctor_call_id = vm.register_native_call(event_constructor_native)?;
   let event_ctor_construct_id = vm.register_native_construct(event_constructor_construct_native)?;
   let event_ctor_name = scope.alloc_string("Event")?;
@@ -34357,6 +34828,30 @@ mod tests {
       })()",
     )?;
     assert_eq!(get_string(realm.heap(), result), "error|x|true");
+    Ok(())
+  }
+
+  #[test]
+  fn dom_parser_parse_from_string_copies_node_wrapper_shims_for_detached_documents() -> Result<(), VmError>
+  {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc = new DOMParser().parseFromString('<html><body><div id="a">hi</div></body></html>', 'text/html');
+        return typeof doc.body.appendChild + '|' +
+          doc.getElementById('a').textContent + '|' +
+          (doc.documentElement.parentNode === doc);
+      })()"#,
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "function|hi|true");
     Ok(())
   }
 
