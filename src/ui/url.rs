@@ -1,5 +1,30 @@
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::path::{Path, PathBuf};
 use url::Url;
+
+pub const DEFAULT_SEARCH_ENGINE_TEMPLATE: &str = "https://duckduckgo.com/?q={query}";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OmniboxInputResolution {
+  Url { url: String },
+  Search { query: String, url: String },
+}
+
+impl OmniboxInputResolution {
+  pub fn url(&self) -> &str {
+    match self {
+      Self::Url { url } | Self::Search { url, .. } => url,
+    }
+  }
+
+  pub fn query(&self) -> Option<&str> {
+    match self {
+      Self::Url { .. } => None,
+      Self::Search { query, .. } => Some(query),
+    }
+  }
+}
 
 /// Validate that a normalized, user-supplied URL uses a supported scheme.
 ///
@@ -242,13 +267,181 @@ fn windows_unc_path_to_file_url(input: &str) -> Option<String> {
   Some(url.to_string())
 }
 
-fn trim_ascii_whitespace(value: &str) -> &str {
+pub(crate) fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+/// Heuristic for deciding whether a user-typed omnibox string should be treated as a URL
+/// (navigate) or a search query (search fallback).
+///
+/// The input is first trimmed of ASCII whitespace (space, tab, newlines). After trimming:
+///
+/// - If input contains any ASCII whitespace → Search
+/// - If input contains `://` → URL
+/// - If input begins with `about:` (case-insensitive) → URL
+/// - If input looks like a filesystem path → URL
+/// - If input is `localhost` (case-insensitive) → URL
+/// - If input parses as an IPv4/IPv6 literal → URL
+/// - If input looks like `host:port` (without scheme) → URL
+/// - If input contains a dot (`.`) → URL
+/// - Otherwise → Search
+pub fn omnibox_input_looks_like_url(input: &str) -> bool {
+  let input = trim_ascii_whitespace(input);
+  if input.is_empty() {
+    return false;
+  }
+
+  if input.as_bytes().iter().any(|b| b.is_ascii_whitespace()) {
+    return false;
+  }
+  if input.contains("://") {
+    return true;
+  }
+  if input
+    .as_bytes()
+    .get(.."about:".len())
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"about:"))
+  {
+    return true;
+  }
+  if looks_like_file_path(input) {
+    return true;
+  }
+  if input.eq_ignore_ascii_case("localhost") {
+    return true;
+  }
+  if parse_ip_literal(input).is_some() {
+    return true;
+  }
+  if looks_like_host_port_without_scheme(input) || looks_like_bracketed_ipv6_host_port_without_scheme(input) {
+    return true;
+  }
+  input.contains('.')
+}
+
+pub fn resolve_omnibox_input(input: &str) -> Result<OmniboxInputResolution, String> {
+  resolve_omnibox_input_with_search_template(input, DEFAULT_SEARCH_ENGINE_TEMPLATE)
+}
+
+pub fn resolve_omnibox_input_with_search_template(
+  input: &str,
+  search_engine_template: &str,
+) -> Result<OmniboxInputResolution, String> {
+  let input = trim_ascii_whitespace(input);
+  if input.is_empty() {
+    return Err("empty URL".to_string());
+  }
+
+  if has_explicit_scheme(input) {
+    return Ok(OmniboxInputResolution::Url {
+      url: normalize_user_url(input)?,
+    });
+  }
+
+  if let Some(ip) = parse_ip_literal(input) {
+    return Ok(OmniboxInputResolution::Url {
+      url: https_url_from_ip_literal(ip)?,
+    });
+  }
+
+  if omnibox_input_looks_like_url(input) {
+    return Ok(OmniboxInputResolution::Url {
+      url: normalize_user_url(input)?,
+    });
+  }
+
+  let query = input.to_string();
+  let url = search_url_for_query(&query, search_engine_template)?;
+  Ok(OmniboxInputResolution::Search { query, url })
+}
+
+fn search_url_for_query(query: &str, template: &str) -> Result<String, String> {
+  if !template.contains("{query}") {
+    return Err("search engine template missing `{query}` placeholder".to_string());
+  }
+  let encoded = urlencoding::encode(query);
+  let url_str = template.replace("{query}", encoded.as_ref());
+  Url::parse(&url_str)
+    .map(|url| url.to_string())
+    .map_err(|err| err.to_string())
+}
+
+fn parse_ip_literal(input: &str) -> Option<IpAddr> {
+  let trimmed = trim_ascii_whitespace(input);
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  let candidate = trimmed
+    .strip_prefix('[')
+    .and_then(|s| s.strip_suffix(']'))
+    .unwrap_or(trimmed);
+  IpAddr::from_str(candidate).ok()
+}
+
+fn looks_like_bracketed_ipv6_host_port_without_scheme(input: &str) -> bool {
+  if input.contains("://") || input.as_bytes().iter().any(|b| b.is_ascii_whitespace()) {
+    return false;
+  }
+  let Some((host, rest)) = input.split_once("]:") else {
+    return false;
+  };
+  if !host.starts_with('[') {
+    return false;
+  }
+  let host = host.trim_start_matches('[');
+  if IpAddr::from_str(host).is_err() {
+    return false;
+  }
+  rest
+    .as_bytes()
+    .first()
+    .is_some_and(|ch| ch.is_ascii_digit())
+}
+
+fn https_url_from_ip_literal(ip: IpAddr) -> Result<String, String> {
+  let host = match ip {
+    IpAddr::V4(v4) => v4.to_string(),
+    IpAddr::V6(v6) => format!("[{v6}]"),
+  };
+  let url_str = format!("https://{host}/");
+  Url::parse(&url_str)
+    .map(|url| url.to_string())
+    .map_err(|err| err.to_string())
+}
+
+fn has_explicit_scheme(input: &str) -> bool {
+  // Treat obvious host:port values and IP literals as non-explicit-scheme inputs so they can be
+  // handled like normal URLs in an omnibox.
+  if looks_like_host_port_without_scheme(input)
+    || looks_like_bracketed_ipv6_host_port_without_scheme(input)
+    || parse_ip_literal(input).is_some()
+    || looks_like_file_path(input)
+  {
+    return false;
+  }
+
+  let Some((scheme, _rest)) = input.split_once(':') else {
+    return false;
+  };
+  let bytes = scheme.as_bytes();
+  if bytes.is_empty() {
+    return false;
+  }
+  if !bytes[0].is_ascii_alphabetic() {
+    return false;
+  }
+  bytes
+    .iter()
+    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
 }
 
 #[cfg(test)]
 mod tests {
-  use super::{normalize_user_url, resolve_link_url, validate_user_navigation_url_scheme};
+  use super::{
+    normalize_user_url, omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
+    validate_user_navigation_url_scheme, OmniboxInputResolution,
+  };
 
   #[test]
   fn bare_domain_defaults_to_https() {
@@ -374,5 +567,80 @@ mod tests {
       normalize_user_url("example.com:8080/path").unwrap(),
       "https://example.com:8080/path"
     );
+  }
+
+  #[test]
+  fn omnibox_heuristic_treats_words_as_search_and_domains_as_urls() {
+    assert!(!omnibox_input_looks_like_url("cats"));
+    assert!(!omnibox_input_looks_like_url("cats dogs"));
+    assert!(omnibox_input_looks_like_url("example.com"));
+    assert!(omnibox_input_looks_like_url("localhost"));
+    assert!(omnibox_input_looks_like_url("127.0.0.1"));
+    assert!(omnibox_input_looks_like_url("localhost:3000"));
+    assert!(omnibox_input_looks_like_url("about:help"));
+  }
+
+  #[test]
+  fn omnibox_resolves_search_queries_to_duckduckgo() {
+    let resolved = resolve_omnibox_input("cats").unwrap();
+    assert_eq!(resolved.query(), Some("cats"));
+    assert_eq!(resolved.url(), "https://duckduckgo.com/?q=cats");
+  }
+
+  #[test]
+  fn omnibox_resolves_queries_with_whitespace_to_search() {
+    match resolve_omnibox_input("cats dogs").unwrap() {
+      OmniboxInputResolution::Search { query, url } => {
+        assert_eq!(query, "cats dogs");
+        assert_eq!(url, "https://duckduckgo.com/?q=cats%20dogs");
+      }
+      other => panic!("expected Search, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn omnibox_resolves_domains_and_hosts_to_urls() {
+    match resolve_omnibox_input("example.com").unwrap() {
+      OmniboxInputResolution::Url { url } => assert_eq!(url, "https://example.com/"),
+      other => panic!("expected Url, got {other:?}"),
+    }
+    match resolve_omnibox_input("localhost").unwrap() {
+      OmniboxInputResolution::Url { url } => assert_eq!(url, "https://localhost/"),
+      other => panic!("expected Url, got {other:?}"),
+    }
+    match resolve_omnibox_input("127.0.0.1").unwrap() {
+      OmniboxInputResolution::Url { url } => assert_eq!(url, "https://127.0.0.1/"),
+      other => panic!("expected Url, got {other:?}"),
+    }
+    match resolve_omnibox_input("localhost:3000").unwrap() {
+      OmniboxInputResolution::Url { url } => assert_eq!(url, "https://localhost:3000/"),
+      other => panic!("expected Url, got {other:?}"),
+    }
+    match resolve_omnibox_input("about:help").unwrap() {
+      OmniboxInputResolution::Url { url } => assert_eq!(url, "about:help"),
+      other => panic!("expected Url, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn omnibox_does_not_search_explicit_schemes() {
+    let resolved = resolve_omnibox_input("javascript:alert(1)").unwrap();
+    assert_eq!(resolved.query(), None);
+    assert!(validate_user_navigation_url_scheme(resolved.url()).is_err());
+
+    let resolved = resolve_omnibox_input("foo:bar").unwrap();
+    assert_eq!(resolved.query(), None);
+    assert!(validate_user_navigation_url_scheme(resolved.url()).is_err());
+  }
+
+  #[test]
+  fn omnibox_search_percent_encodes_special_chars() {
+    match resolve_omnibox_input("a&b").unwrap() {
+      OmniboxInputResolution::Search { query, url } => {
+        assert_eq!(query, "a&b");
+        assert_eq!(url, "https://duckduckgo.com/?q=a%26b");
+      }
+      other => panic!("expected Search, got {other:?}"),
+    }
   }
 }

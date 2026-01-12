@@ -92,7 +92,10 @@ pub use worker::RenderWorker;
 #[cfg(feature = "browser_ui")]
 pub mod wgpu_pixmap_texture;
 
-pub use url::{normalize_user_url, resolve_link_url, validate_user_navigation_url_scheme};
+pub use url::{
+  normalize_user_url, omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
+  validate_user_navigation_url_scheme, OmniboxInputResolution, DEFAULT_SEARCH_ENGINE_TEMPLATE,
+};
 #[cfg(feature = "browser_ui")]
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
 
