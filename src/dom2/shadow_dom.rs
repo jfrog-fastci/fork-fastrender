@@ -282,7 +282,6 @@ mod tests {
   use super::*;
   use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
   use crate::debug::snapshot::snapshot_dom;
-  use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
   use selectors::context::QuirksMode;
 
   fn node_id_attribute(kind: &NodeKind) -> Option<&str> {
@@ -655,75 +654,6 @@ mod tests {
     assert!(
       doc.node(host).children.contains(&template),
       "detached template should remain untouched"
-    );
-  }
-
-  #[test]
-  fn attach_shadow_roots_emits_live_mutation_hooks() {
-    let mut doc = Document::new(QuirksMode::NoQuirks);
-    let root = doc.root();
-
-    let host = doc.push_node(
-      NodeKind::Element {
-        tag_name: "div".to_string(),
-        namespace: String::new(),
-        prefix: None,
-        attributes: Vec::new(),
-      },
-      Some(root),
-      /* inert_subtree */ false,
-    );
-    let template = doc.push_node(
-      NodeKind::Element {
-        tag_name: "template".to_string(),
-        namespace: String::new(),
-        prefix: None,
-        attributes: vec![("shadowroot".to_string(), "open".to_string())],
-      },
-      Some(host),
-      /* inert_subtree */ false,
-    );
-    let child = doc.push_node(
-      NodeKind::Text {
-        content: "shadow".to_string(),
-      },
-      Some(template),
-      /* inert_subtree */ false,
-    );
-
-    let recorder = LiveMutationTestRecorder::default();
-    doc
-      .live_mutation
-      .set_hook(Some(Box::new(recorder.clone())));
-
-    let expected_shadow_root = NodeId::from_index(doc.nodes_len());
-    doc.attach_shadow_roots();
-
-    let events = recorder.take();
-    assert_eq!(
-      events,
-      vec![
-        LiveMutationEvent::PreRemove {
-          node: template,
-          old_parent: host,
-          old_index: 0
-        },
-        LiveMutationEvent::PreRemove {
-          node: child,
-          old_parent: template,
-          old_index: 0
-        },
-        LiveMutationEvent::PreInsert {
-          parent: expected_shadow_root,
-          index: 0,
-          count: 1
-        },
-        LiveMutationEvent::PreInsert {
-          parent: host,
-          index: 0,
-          count: 1
-        }
-      ]
     );
   }
 }
