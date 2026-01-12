@@ -303,8 +303,10 @@ jobs:
           stderr_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.stderr.log"
           triage_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.json"
           triage_stderr_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.stderr.log"
+          triage_manifest_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.manifest.toml"
           rm -f "${report_path}" "${stderr_path}"
           rm -f "${triage_path}" "${triage_stderr_path}"
+          rm -f "${triage_manifest_path}"
 
           status=0
           timeout -k 10 600 bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
@@ -354,12 +356,17 @@ jobs:
           if [[ -x "target/release/typecheck-ts-harness" ]]; then
             timeout -k 10 120 target/release/typecheck-ts-harness triage --input "${report_path}" --json \
               > "${triage_path}" 2> "${triage_stderr_path}" || true
+            timeout -k 10 120 target/release/typecheck-ts-harness triage --input "${report_path}" --emit-manifest \
+              > "${triage_manifest_path}" 2> /dev/null || true
           fi
           if [[ ! -s "${triage_path}" ]]; then
             echo "{\"error\":\"triage_failed\"}" > "${triage_path}"
           fi
           if [[ ! -s "${triage_stderr_path}" ]]; then
             echo "triage: failed or produced no output" > "${triage_stderr_path}"
+          fi
+          if [[ ! -s "${triage_manifest_path}" ]]; then
+            echo "# triage: failed or produced no manifest suggestions" > "${triage_manifest_path}"
           fi
 
           echo "status=${status}" >> "${GITHUB_OUTPUT}"
@@ -374,6 +381,7 @@ jobs:
             typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.stderr.log
             typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.json
             typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.stderr.log
+            typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.manifest.toml
           if-no-files-found: error
 
       - name: Shard summary (step summary)
