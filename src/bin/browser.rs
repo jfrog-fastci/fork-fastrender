@@ -773,10 +773,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     history,
   )?;
   app.startup(startup_session);
-  app.profile_autosave = Some(fastrender::ui::ProfileAutosaveHandle::spawn(
+  match fastrender::ui::ProfileAutosaveHandle::spawn(
     app.bookmarks_path.clone(),
     app.history_path.clone(),
-  ));
+  ) {
+    Ok(autosave) => {
+      app.profile_autosave = Some(autosave);
+    }
+    Err(err) => {
+      eprintln!("profile autosave disabled: {err}");
+      app.profile_autosave = None;
+    }
+  }
 
   let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
 

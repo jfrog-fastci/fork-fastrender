@@ -193,7 +193,7 @@ impl ProfileAutosaveHandle {
     self.tx.send(msg)
   }
 
-  pub fn spawn(bookmarks_path: PathBuf, history_path: PathBuf) -> Self {
+  pub fn spawn(bookmarks_path: PathBuf, history_path: PathBuf) -> Result<Self, String> {
     Self::spawn_with_debounce(
       bookmarks_path,
       history_path,
@@ -207,7 +207,7 @@ impl ProfileAutosaveHandle {
     history_path: PathBuf,
     bookmarks_debounce: Duration,
     history_debounce: Duration,
-  ) -> Self {
+  ) -> Result<Self, String> {
     let (tx, rx) = mpsc::channel::<AutosaveMsg>();
     let join = std::thread::Builder::new()
       .name("fastr_profile_autosave".to_string())
@@ -220,12 +220,12 @@ impl ProfileAutosaveHandle {
           history_debounce,
         );
       })
-      .expect("failed to spawn profile autosave thread");
+      .map_err(|err| format!("failed to spawn profile autosave thread: {err}"))?;
 
-    Self {
+    Ok(Self {
       tx,
       join: Some(join),
-    }
+    })
   }
 
   pub fn flush(&self, timeout: Duration) -> Result<(), String> {
@@ -401,7 +401,8 @@ mod tests {
       history_path.clone(),
       Duration::from_secs(3600),
       Duration::from_secs(3600),
-    );
+    )
+    .unwrap();
 
     autosave
       .send(AutosaveMsg::UpdateBookmarks(BookmarkStore {
@@ -474,7 +475,8 @@ mod tests {
       history_path.clone(),
       Duration::from_secs(3600),
       Duration::from_secs(3600),
-    );
+    )
+    .unwrap();
 
     autosave
       .send(AutosaveMsg::UpdateBookmarks(BookmarkStore {
@@ -499,5 +501,17 @@ mod tests {
 
     // History file should not exist (no history updates were sent).
     assert!(!history_path.exists());
+  }
+
+  #[test]
+  fn disabled_handle_does_not_panic() {
+    let (tx, rx) = mpsc::channel::<AutosaveMsg>();
+    drop(rx);
+    let autosave = ProfileAutosaveHandle { tx, join: None };
+
+    let err = autosave.flush(Duration::from_millis(10)).unwrap_err();
+    assert!(err.contains("autosave thread disconnected"));
+
+    autosave.shutdown_with_timeout(Duration::from_millis(10));
   }
 }
