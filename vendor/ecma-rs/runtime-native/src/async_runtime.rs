@@ -36,8 +36,13 @@ pub(crate) struct MicrotaskCheckpointGuard;
 
 impl MicrotaskCheckpointGuard {
   pub(crate) fn enter() -> Option<Self> {
-    let already_in_checkpoint =
-      PERFORMING_MICROTASK_CHECKPOINT.with(|performing| performing.replace(true));
+    // `rt_*` entrypoints may be called from other thread-local destructors during TLS teardown. If
+    // this key has already been destroyed, `LocalKey::with` would panic with `AccessError` and
+    // abort the process (`abort_on_dtor_unwind`). Treat "TLS inaccessible" as "already in a
+    // checkpoint" so callers become a no-op rather than aborting.
+    let already_in_checkpoint = PERFORMING_MICROTASK_CHECKPOINT
+      .try_with(|performing| performing.replace(true))
+      .unwrap_or(true);
     if already_in_checkpoint {
       return None;
     }
@@ -47,7 +52,7 @@ impl MicrotaskCheckpointGuard {
 
 impl Drop for MicrotaskCheckpointGuard {
   fn drop(&mut self) {
-    PERFORMING_MICROTASK_CHECKPOINT.with(|performing| performing.set(false));
+    let _ = PERFORMING_MICROTASK_CHECKPOINT.try_with(|performing| performing.set(false));
   }
 }
 
@@ -60,7 +65,7 @@ static MAX_READY_QUEUE_LEN: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_READY_QUE
 static LAST_ERROR: Lazy<GcAwareMutex<Option<String>>> = Lazy::new(|| GcAwareMutex::new(None));
 
 pub(crate) fn reset_for_tests() {
-  PERFORMING_MICROTASK_CHECKPOINT.with(|performing| performing.set(false));
+  let _ = PERFORMING_MICROTASK_CHECKPOINT.try_with(|performing| performing.set(false));
   *MICROTASK_CHECKPOINT_END_HOOK.lock() = None;
   *LAST_ERROR.lock() = None;
   MAX_READY_STEPS_PER_POLL.store(DEFAULT_MAX_READY_STEPS_PER_POLL, Ordering::Release);
@@ -71,7 +76,7 @@ pub(crate) fn reset_for_tests() {
 ///
 /// Unlike [`reset_for_tests`], this preserves user-configured limits and hooks.
 pub(crate) fn reset_after_cancel() {
-  PERFORMING_MICROTASK_CHECKPOINT.with(|performing| performing.set(false));
+  let _ = PERFORMING_MICROTASK_CHECKPOINT.try_with(|performing| performing.set(false));
   *LAST_ERROR.lock() = None;
 }
 
