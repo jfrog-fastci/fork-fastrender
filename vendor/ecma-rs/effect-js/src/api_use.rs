@@ -614,6 +614,8 @@ fn is_allowed_global_member_root(name: &str) -> bool {
       | "window"
       | "self"
       | "global"
+      | "AbortController"
+      | "AbortSignal"
       | "console"
       | "crypto"
       | "EventTarget"
@@ -891,6 +893,24 @@ mod tests {
         id: ApiId::from_name("navigator.userAgent"),
         name: "navigator.userAgent".to_string(),
         kind: ApiKind::Getter,
+        aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSummary::PURE,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("AbortSignal.timeout"),
+        name: "AbortSignal.timeout".to_string(),
+        kind: ApiKind::Function,
         aliases: vec![],
         effects: EffectTemplate::Pure,
         effect_summary: EffectSummary::PURE,
@@ -1323,6 +1343,26 @@ mod tests {
       Some(ResolvedApiUse {
         api: ApiId::from_name("navigator.userAgent"),
         kind: ApiUseKind::Get,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_abort_signal_timeout_call() {
+    let source = r#"AbortSignal.timeout(1);"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("AbortSignal.timeout"),
+        kind: ApiUseKind::Call,
       })
     );
   }

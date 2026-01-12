@@ -170,10 +170,62 @@
   effects: Pure
   purity: Pure
 
+- name: AbortSignal.abort
+  kind: function
+  aliases:
+    - AbortSignal.abort
+    - window.AbortSignal.abort
+    - globalThis.AbortSignal.abort
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: true
+
+- name: AbortSignal.timeout
+  kind: function
+  aliases:
+    - AbortSignal.timeout
+    - window.AbortSignal.timeout
+    - globalThis.AbortSignal.timeout
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: AbortSignal.any
+  kind: function
+  aliases:
+    - AbortSignal.any
+    - window.AbortSignal.any
+    - globalThis.AbortSignal.any
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
 - name: AbortSignal.prototype.aborted
   kind: getter
   aliases:
     - AbortSignal.prototype.aborted
+  since: "baseline"
+  effects: Pure
+  purity: ReadOnly
+
+- name: AbortSignal.prototype.reason
+  kind: getter
+  aliases:
+    - AbortSignal.prototype.reason
   since: "baseline"
   effects: Pure
   purity: ReadOnly

@@ -2829,6 +2829,10 @@ properties:
       kb.api_for_target("Event", &node_16).is_none(),
       "Event should not resolve for Node < 18"
     );
+    assert!(
+      kb.api_for_target("AbortSignal.timeout", &node_16).is_none(),
+      "AbortSignal.timeout should not resolve for Node < 18"
+    );
 
     let abort = kb
       .api_for_target("AbortController", &node_20)
@@ -2836,6 +2840,15 @@ properties:
     assert_eq!(abort.name, "AbortController");
     assert_eq!(
       kb.source_for_target("AbortController", &node_20),
+      Some("node/web_abort.yaml")
+    );
+
+    let timeout = kb
+      .api_for_target("AbortSignal.timeout", &node_20)
+      .expect("AbortSignal.timeout should resolve for Node targets with AbortSignal static helpers");
+    assert_eq!(timeout.name, "AbortSignal.timeout");
+    assert_eq!(
+      kb.source_for_target("AbortSignal.timeout", &node_20),
       Some("node/web_abort.yaml")
     );
 

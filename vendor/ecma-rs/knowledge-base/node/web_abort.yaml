@@ -35,9 +35,47 @@
   effects: Pure
   purity: Pure
 
+- name: AbortSignal.abort
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: true
+
+- name: AbortSignal.timeout
+  kind: function
+  since: "v18.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: AbortSignal.any
+  kind: function
+  since: "v18.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
 - name: AbortSignal.prototype.aborted
   kind: getter
   since: "v15.0.0"
+  effects: Pure
+  purity: ReadOnly
+
+- name: AbortSignal.prototype.reason
+  kind: getter
+  since: "v18.0.0"
   effects: Pure
   purity: ReadOnly
 
