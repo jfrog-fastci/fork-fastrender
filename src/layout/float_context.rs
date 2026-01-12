@@ -958,10 +958,10 @@ impl FloatContext {
         self.record_timeout(elapsed);
         break;
       }
- 
+  
       let segment_start = cache.sweep_state.current_y;
       let segment_end =
-        self.next_float_boundary_after_internal(&mut cache.sweep_state, segment_start);
+        self.next_float_boundary_after_internal_for_range_cache(&mut cache.sweep_state, segment_start);
       let (left_edge, right_edge) = self.edges_at_in_containing_block_with_state(
         &mut cache.sweep_state,
         segment_start,
@@ -993,6 +993,123 @@ impl FloatContext {
       // Advance to the next boundary so the active set is correct for the next segment. This
       // mirrors the range scan loop which advances after consuming a segment.
       self.advance_sweep_to(segment_end, &mut cache.sweep_state);
+    }
+  }
+
+  /// Compute the next Y boundary where float constraints might change *for range-cache construction*.
+  ///
+  /// Unlike [`Self::next_float_boundary_after_internal`], this routine is allowed to consume start
+  /// events from `state.pending_start_events` because the range-cache builder will immediately
+  /// advance the sweep state to the returned boundary (therefore any start events below that
+  /// boundary will be processed anyway).
+  ///
+  /// This lets us skip over long runs of float starts that cannot affect the constraining edges
+  /// (e.g. floats that are narrower than the current constraining float) and avoid producing an
+  /// explosion of cache segments in float-heavy documents.
+  fn next_float_boundary_after_internal_for_range_cache(
+    &self,
+    state: &mut FloatSweepState,
+    y: f32,
+  ) -> f32 {
+    // Start with the next boundary induced by the current constraining floats / shapes.
+    let mut left_edge = FloatKey(f32::NEG_INFINITY);
+    let mut left_bottom = FloatKey(f32::INFINITY);
+    if let Some((edge, bottom, _)) = state.active_left.peek() {
+      left_edge = *edge;
+      left_bottom = *bottom;
+    }
+
+    let mut right_edge = FloatKey(f32::INFINITY);
+    let mut right_bottom = FloatKey(f32::INFINITY);
+    if let Some((Reverse(edge), bottom, _)) = state.active_right.peek() {
+      right_edge = *edge;
+      right_bottom = *bottom;
+    }
+
+    let shape_boundary = if state.active_shape_left.is_empty() && state.active_shape_right.is_empty()
+    {
+      FloatKey(f32::INFINITY)
+    } else {
+      FloatKey(self.next_shape_boundary_after(state, y))
+    };
+
+    let mut next_end = left_bottom.min(right_bottom).min(shape_boundary);
+
+    // Scan upcoming float starts that occur before `next_end`. Only start events that tighten the
+    // constraining edge (or extend the current constraining edge's bottom) can affect the cached
+    // constraints before `next_end`. All others are guaranteed to not affect constraints until at
+    // least `next_end` (at which point the sweep will process them anyway).
+    let mut deadline_counter = 0usize;
+    loop {
+      if let Err(RenderError::Timeout { elapsed, .. }) =
+        check_active_periodic(&mut deadline_counter, 256, RenderStage::Layout)
+      {
+        self.record_timeout(elapsed);
+        return y;
+      }
+
+      // Discard already-processed start events.
+      while let Some(Reverse(event)) = state.pending_start_events.peek().copied() {
+        if event.y <= state.current_y {
+          state.pending_start_events.pop();
+          continue;
+        }
+        break;
+      }
+
+      let Some(Reverse(event)) = state.pending_start_events.peek().copied() else {
+        return next_end.0;
+      };
+      let event_y = FloatKey(event.y);
+      if event_y >= next_end {
+        return next_end.0;
+      }
+
+      let float = self.float_info(event.float_id);
+      if float.shape.is_some() {
+        // Conservatively treat shape floats as boundaries: their spans can vary per row.
+        return event.y;
+      }
+
+      match float.side {
+        FloatSide::Left => {
+          let edge = FloatKey(float.right_edge());
+          if edge > left_edge {
+            return event.y;
+          }
+          if edge == left_edge {
+            let bottom = FloatKey(float.bottom());
+            if bottom > left_bottom && left_bottom == next_end {
+              // Extend the constraining float's bottom without creating a new segment boundary: the
+              // edge is unchanged, but the y at which it can relax is now later.
+              left_bottom = bottom;
+              next_end = left_bottom.min(right_bottom).min(shape_boundary);
+              state.pending_start_events.pop();
+              continue;
+            }
+          }
+
+          // This start cannot affect constraints before `next_end`.
+          state.pending_start_events.pop();
+        }
+        FloatSide::Right => {
+          let edge = FloatKey(float.left_edge());
+          if edge < right_edge {
+            return event.y;
+          }
+          if edge == right_edge {
+            let bottom = FloatKey(float.bottom());
+            if bottom > right_bottom && right_bottom == next_end {
+              right_bottom = bottom;
+              next_end = left_bottom.min(right_bottom).min(shape_boundary);
+              state.pending_start_events.pop();
+              continue;
+            }
+          }
+
+          state.pending_start_events.pop();
+        }
+      }
     }
   }
 
