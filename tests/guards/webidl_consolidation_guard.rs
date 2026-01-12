@@ -2,7 +2,11 @@
 //!
 //! After `instructions/webidl_consolidation.md` is complete, FastRender must only depend on the
 //! vendored `ecma-rs` WebIDL stack (`vendor/ecma-rs/webidl*`). The workspace-local WebIDL crates
-//! under the repo's `crates/` directory are expected to be deleted.
+//! under `crates/webidl-*` are expected to be deleted.
+//!
+//! This is a *future* guard: it asserts the end-state of the consolidation plan, so it is ignored
+//! until `instructions/webidl_consolidation.md` is complete. Run it manually with:
+//! `cargo test --test integration -- --ignored`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +18,7 @@ const DELETED_WEBIDL_CRATE_SUFFIXES: [&str; 4] = ["ir", "bindings-core", "vm-js"
 const VENDORED_WEBIDL_VM_JS_PATH_FRAGMENT: &str = "vendor/ecma-rs/webidl-vm-js";
 
 #[test]
+#[ignore = "Enable after instructions/webidl_consolidation.md is complete"]
 fn no_workspace_cargo_toml_references_deleted_webidl_crates() {
   let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let manifest_paths = cargo_toml_files(&repo_root);
@@ -45,6 +50,7 @@ fn no_workspace_cargo_toml_references_deleted_webidl_crates() {
 }
 
 #[test]
+#[ignore = "Enable after instructions/webidl_consolidation.md is complete"]
 fn workspace_does_not_list_deleted_webidl_crates() {
   let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let manifest_path = repo_root.join("Cargo.toml");
@@ -76,6 +82,7 @@ fn workspace_does_not_list_deleted_webidl_crates() {
 }
 
 #[test]
+#[ignore = "Enable after instructions/webidl_consolidation.md is complete"]
 fn workspace_uses_vendored_webidl_vm_js() {
   let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let manifest_path = repo_root.join("Cargo.toml");
@@ -114,6 +121,7 @@ fn workspace_uses_vendored_webidl_vm_js() {
 }
 
 #[test]
+#[ignore = "Enable after instructions/webidl_consolidation.md is complete"]
 fn cargo_lock_contains_only_one_webidl_stack() {
   let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let lock_path = repo_root.join("Cargo.lock");

@@ -7,6 +7,7 @@
 mod common;
 mod api;
 mod fixtures;
+mod guards;
 
 // Keep the reference image comparison helpers available for fixture-style tests.
 #[allow(dead_code)]
