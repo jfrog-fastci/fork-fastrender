@@ -458,17 +458,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use winit::event::WindowEvent;
   use winit::event_loop::ControlFlow;
   use winit::event_loop::EventLoopBuilder;
+  use winit::window::Theme;
   use winit::window::WindowBuilder;
 
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
   let window_icon = load_window_icon();
-  let window = WindowBuilder::new()
+  let window_builder = WindowBuilder::new()
     .with_title("FastRender")
     .with_inner_size(LogicalSize::new(1200.0, 800.0))
     .with_min_inner_size(LogicalSize::new(480.0, 320.0))
     .with_window_icon(window_icon)
-    .build(&event_loop)?;
+    // Prefer a consistent in-app theme for now so the native titlebar doesn't clash badly with
+    // our egui chrome.
+    .with_theme(Some(Theme::Dark));
+
+  // Platform-native titlebar integration.
+  //
+  // On macOS, render the chrome into the titlebar area (unified toolbar look).
+  #[cfg(target_os = "macos")]
+  let window_builder = {
+    use winit::platform::macos::WindowBuilderExtMacOS;
+
+    window_builder
+      .with_title_hidden(true)
+      .with_titlebar_transparent(true)
+      .with_fullsize_content_view(true)
+  };
+
+  let window = window_builder.build(&event_loop)?;
+
+  #[cfg(target_os = "macos")]
+  {
+    use winit::platform::macos::WindowExtMacOS;
+
+    // Ensure the titlebar settings are applied on the native window as well.
+    //
+    // NOTE: These are best-effort; on older macOS versions some settings may be ignored.
+    window.set_title_hidden(true);
+    window.set_titlebar_transparent(true);
+    window.set_fullsize_content_view(true);
+  }
 
   let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
@@ -3817,9 +3847,32 @@ error: {err}",
 
     let ctx = self.egui_ctx.clone();
 
+    // When using a full-size content view on macOS (transparent titlebar / unified toolbar),
+    // the top chrome is drawn into the titlebar area. Reserve a left inset so the system traffic
+    // lights remain visible and clickable.
+    #[cfg(target_os = "macos")]
+    let original_style = (*ctx.style()).clone();
+    #[cfg(target_os = "macos")]
+    {
+      // Rough sizing (in egui points) for the traffic-light region: 3 × 12px buttons + padding.
+      // This doesn't need to be pixel-perfect; it just needs to ensure we never place tab widgets
+      // directly under the buttons.
+      const TRAFFIC_LIGHTS_LEFT_INSET_POINTS: f32 = 72.0;
+      let mut style = original_style.clone();
+      style.spacing.window_margin.left =
+        style.spacing.window_margin.left.max(TRAFFIC_LIGHTS_LEFT_INSET_POINTS);
+      ctx.set_style(style);
+    }
+
     let chrome_actions = fastrender::ui::chrome_ui(&ctx, &mut self.browser_state, |tab_id| {
       self.tab_favicons.get(&tab_id).map(|tex| tex.id())
     });
+
+    #[cfg(target_os = "macos")]
+    {
+      ctx.set_style(original_style);
+    }
+
     self.handle_chrome_actions(chrome_actions);
     self.sync_window_title();
 

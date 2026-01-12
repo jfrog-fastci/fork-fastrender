@@ -184,6 +184,40 @@ The `browser` window attempts to behave like a “real” native app instead of 
 - **System theme changes**: when `winit` emits `WindowEvent::ThemeChanged`, the egui visuals are
   updated to match (light/dark). Platform support for live theme change notifications varies.
 
+## Platform-native titlebar integration
+
+The browser UI draws its own chrome (tabs + toolbar) in egui, but relies on `winit` for the native
+window and titlebar. The `browser` entrypoint ([`src/bin/browser.rs`](../src/bin/browser.rs))
+contains a small amount of platform-specific window configuration so the app feels less “winit
+default” and more like a native browser.
+
+### macOS (unified toolbar / traffic lights)
+
+On macOS the browser enables a transparent titlebar + full-size content view via
+`winit::platform::macos::{WindowBuilderExtMacOS, WindowExtMacOS}`. This allows the egui chrome to be
+rendered *into* the titlebar area (unified toolbar style).
+
+Because the system “traffic light” buttons occupy the top-left of the titlebar, the chrome UI
+reserves extra left padding so tabs/toolbar controls don’t end up underneath those buttons.
+
+Manual verification checklist (macOS):
+
+- The chrome background extends behind the titlebar (no extra “empty” titlebar strip).
+- Traffic lights remain visible and clickable.
+- Tabs/toolbar controls don’t start underneath the traffic lights.
+
+### Windows (best-effort titlebar theming)
+
+On Windows the browser requests `winit::window::Theme::Dark` when creating the window. On supported
+Windows versions this enables a dark titlebar that better matches the (currently dark) egui chrome.
+
+### Linux (X11 + Wayland)
+
+The browser also requests `Theme::Dark` on Linux:
+
+- **X11:** winit uses the `_GTK_THEME_VARIANT=dark` hint (best-effort; depends on the window manager).
+- **Wayland:** applies to client-side decorations (CSD) where supported by the compositor.
+
 ## Keyboard / mouse shortcuts
 
 | Shortcut | Action |
