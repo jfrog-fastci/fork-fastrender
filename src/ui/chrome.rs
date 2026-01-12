@@ -449,8 +449,7 @@ fn tab_search_overlay_ui(
     .order(egui::Order::Foreground)
     .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0));
 
-  let action = area
-    .show(ctx, |ui| {
+  let inner = area.show(ctx, |ui| {
       ui.visuals_mut().override_text_color =
         Some(with_alpha(ui.visuals().text_color(), open_opacity));
       let mut frame = egui::Frame::popup(ui.style());
@@ -635,8 +634,25 @@ fn tab_search_overlay_ui(
       });
 
       frame.inner
+    });
+  let action = inner.inner;
+
+  // Click-away dismissal (common quick-switcher UX).
+  //
+  // Note that we do not attempt to "consume" the click: closing the overlay on a tab click should
+  // still activate that tab, matching typical menu dismissal behaviour.
+  let overlay_rect = inner.response.rect;
+  let clicked_outside = ctx.input(|i| {
+    i.events.iter().any(|event| match event {
+      egui::Event::PointerButton { pos, pressed: true, .. } => !overlay_rect.contains(*pos),
+      _ => false,
     })
-    .inner;
+  });
+  if clicked_outside {
+    app.chrome.tab_search.open = false;
+    actions.push(ChromeAction::CloseTabSearch);
+    return;
+  }
 
   if let Some(tab_id) = action {
     app.chrome.tab_search.open = false;
@@ -3253,6 +3269,29 @@ mod tests {
     app.chrome.tab_search.selected = 0;
 
     let ctx = new_context_with_key(egui::Key::Escape, Default::default());
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::CloseTabSearch)),
+      "expected ChromeAction::CloseTabSearch, got {actions:?}"
+    );
+    assert!(!app.chrome.tab_search.open, "expected tab search to be closed");
+  }
+
+  #[test]
+  fn click_outside_closes_tab_search_overlay() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.chrome.tab_search.open = true;
+    app.chrome.tab_search.query.clear();
+    app.chrome.tab_search.selected = 0;
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, left_click_at(egui::pos2(12.0, 590.0)));
     let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
