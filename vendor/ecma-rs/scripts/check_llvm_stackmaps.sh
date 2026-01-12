@@ -590,7 +590,12 @@ if [[ -n "${LLD_FUSE}" ]]; then
     must_have_faultmaps_symbols "${tmp}/a_policy_lld_pie"
     must_not_have_textrel "${tmp}/a_policy_lld_pie"
     must_not_have_rwx_segment "${tmp}/a_policy_lld_pie"
-    must_have_stackmaps_in_relro "${tmp}/a_policy_lld_pie"
+    # Note: the lld-oriented PIE linker fragment (`runtime-native/link/stackmaps.ld`) deliberately
+    # inserts stackmaps/faultmaps *outside* the RELRO range (see docs/native_stackmaps.md and the
+    # fragment itself). This avoids lld "relro sections not contiguous" failures in hardened links.
+    #
+    # GNU ld uses a different fragment (`stackmaps_gnuld.ld`) that keeps stackmaps within RELRO,
+    # so only the GNU ld PIE path asserts RELRO coverage.
 
     echo "[stackmaps] link: lld (pie, full RELRO) => EXPECTED OK"
     # Rust's default Linux hardening flags include full RELRO (`-z relro -z now`).
@@ -617,7 +622,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
     must_have_faultmaps_symbols "${tmp}/a_lld_pie_relro_now"
     must_not_have_textrel "${tmp}/a_lld_pie_relro_now"
     must_not_have_rwx_segment "${tmp}/a_lld_pie_relro_now"
-    must_have_stackmaps_in_relro "${tmp}/a_lld_pie_relro_now"
+    # Same as above: stackmaps.ld intentionally places stackmaps outside RELRO in lld mode.
   else
     echo "[stackmaps] note: llvm-objcopy not found; skipping PIE+lld policy link"
   fi
