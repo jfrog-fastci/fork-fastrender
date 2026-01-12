@@ -714,6 +714,47 @@ impl Document {
     }
   }
 
+  pub fn replace_data(
+    &mut self,
+    node: NodeId,
+    offset: usize,
+    count: usize,
+    data: &str,
+  ) -> Result<bool, DomError> {
+    let node_id = node;
+    let (changed, old_value) = {
+      let node = self.node_checked_mut(node_id)?;
+      let target: &mut String = match &mut node.kind {
+        NodeKind::Text { content } => content,
+        NodeKind::Comment { content } => content,
+        NodeKind::ProcessingInstruction { data, .. } => data,
+        _ => return Err(DomError::InvalidNodeType),
+      };
+
+      let old = target.clone();
+      let mut units: Vec<u16> = old.encode_utf16().collect();
+      let offset = offset.min(units.len());
+      let end = offset.saturating_add(count).min(units.len());
+      // `Vec::splice` applies its mutation when the returned iterator is dropped; we discard it.
+      let _ = units.splice(offset..end, data.encode_utf16());
+      let new_value = String::from_utf16_lossy(&units);
+      if new_value == old {
+        (false, None)
+      } else {
+        *target = new_value;
+        (true, Some(old))
+      }
+    };
+
+    if changed {
+      self.record_text_mutation(node_id);
+      self.bump_mutation_generation();
+      let _ = self.queue_mutation_record_character_data(node_id, old_value);
+    }
+
+    Ok(changed)
+  }
+
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     let node_id = node;
     self.node_checked(node_id)?;

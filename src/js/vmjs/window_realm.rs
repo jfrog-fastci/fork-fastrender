@@ -18018,7 +18018,7 @@ fn node_text_content_set_native(
   let mut maybe_script_children_changed: Option<NodeId> = None;
   match target {
     TextContentTarget::Text => {
-      if let Err(err) = dom.set_text_data(node_id, &value) {
+      if let Err(err) = dom.replace_data(node_id, 0, usize::MAX, &value) {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
       if let Some(parent) = dom.node(node_id).parent {
@@ -18028,49 +18028,46 @@ fn node_text_content_set_native(
       }
     }
     TextContentTarget::Comment => {
-      let node = dom.node_mut(node_id);
-      if let NodeKind::Comment { content } = &mut node.kind {
-        if content != &value {
-          content.clear();
-          content.push_str(&value);
-        }
+      if let Err(err) = dom.replace_data(node_id, 0, usize::MAX, &value) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
     }
     TextContentTarget::ProcessingInstruction => {
-      let node = dom.node_mut(node_id);
-      if let NodeKind::ProcessingInstruction { data, .. } = &mut node.kind {
-        if data != &value {
-          data.clear();
-          data.push_str(&value);
-        }
+      if let Err(err) = dom.replace_data(node_id, 0, usize::MAX, &value) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
     }
     TextContentTarget::ReplaceChildren {
       preserve_shadow_roots,
     } => {
-      let old_children = {
-        let node = dom.node_mut(node_id);
-        std::mem::take(&mut node.children)
+      // IMPORTANT: remove/insert operations must route through `dom2::Document` primitives so any
+      // DOM Standard hooks (MutationObserver, live Range updates) run.
+      let to_remove: Vec<NodeId> = {
+        let node = dom.node(node_id);
+        node
+          .children
+          .iter()
+          .copied()
+          .filter(|&child| {
+            if child.index() >= dom.nodes_len() {
+              return false;
+            }
+            if dom.node(child).parent != Some(node_id) {
+              return false;
+            }
+            if preserve_shadow_roots && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
+              return false;
+            }
+            true
+          })
+          .collect()
       };
 
-      let mut preserved: Vec<NodeId> = Vec::new();
-      for child in old_children {
-        if child.index() >= dom.nodes_len() {
-          continue;
+      for child in to_remove {
+        if let Err(err) = dom.remove_child(node_id, child) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
         }
-        if dom.node(child).parent != Some(node_id) {
-          continue;
-        }
-
-        if preserve_shadow_roots && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
-          preserved.push(child);
-          continue;
-        }
-
-        dom.node_mut(child).parent = None;
       }
-
-      dom.node_mut(node_id).children = preserved;
 
       if !value.is_empty() {
         let text_node = dom.create_text(&value);
@@ -18078,6 +18075,9 @@ fn node_text_content_set_native(
           return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
         }
       }
+
+      // Keep cached `childNodes` live NodeLists updated.
+      sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, node_id)?;
 
       if is_html_script_element(dom, node_id) {
         maybe_script_children_changed = Some(node_id);
