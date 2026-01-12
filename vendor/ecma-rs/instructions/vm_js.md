@@ -2,20 +2,21 @@
 
 ---
 
-**STOP. Read [`../AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
+**STOP. JavaScript is hostile input. Read [`../AGENTS.md`](../AGENTS.md) first.**
 
-### Assume every process can misbehave
+**Every command requires `timeout -k` — JS execution can `while(true){}` forever:**
 
-JavaScript is hostile input. **Any script can hang, explode memory, or refuse to terminate.**
+```bash
+# ALWAYS use this format (no exceptions):
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p vm-js
 
-**Every command must have hard external limits:**
-- `timeout -k 10 <seconds>` — time limit with guaranteed SIGKILL
-- Memory limits via `cargo_agent.sh` wrapper
-- Scoped test runs (`-p <crate>`, `--test <name>`)
+# NEVER run without timeout (tests execute arbitrary JS):
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib  # WRONG
+cargo test  # WRONG
+```
 
-**MANDATORY (no exceptions):**
-- `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands (from ecma-rs root)
-- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh ...` for commands from FastRender root
+If a command times out, that's a bug to investigate — not a limit to raise.
 
 ---
 

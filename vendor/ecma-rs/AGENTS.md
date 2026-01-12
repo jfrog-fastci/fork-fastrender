@@ -1,80 +1,86 @@
 # ecma-rs (agent instructions)
 
-This file contains **repo-wide** rules shared by all workstreams.
+## The Cardinal Rule: All Code is Hostile
 
-**Note**: ecma-rs is **vendored into FastRender** at `vendor/ecma-rs/`. FastRender owns this code and
-modifies it directly for browser JavaScript support. Changes here serve FastRender's browser needs first.
+This codebase implements a JavaScript engine. You are working with code that **executes arbitrary programs from untrusted sources**. Treat every process — builds, tests, binaries, scripts — as potentially adversarial.
+
+**This is not paranoia. This is operational reality:**
+
+- Parser bugs cause infinite loops and exponential backtracking
+- Runtime tests trigger `while(true){}` in generated code
+- LLVM compilation hangs on pathological IR
+- Type checker recursion explodes on adversarial types
+- Tests that passed yesterday regress into livelocks today
+- "Simple" operations allocate unbounded memory on edge cases
+
+**Any command you run can hang forever, consume all RAM, or refuse to terminate.** The code you're testing cannot be trusted to respect limits it sets on itself. Only the kernel can enforce limits on hostile code.
+
+**Every command requires:**
+1. `timeout -k 10 <seconds>` — hard time limit with **guaranteed SIGKILL** (not just SIGTERM)
+2. Memory limits via wrapper scripts (kernel-enforced RLIMIT_AS)
+3. Scoped builds/tests (never compile/test "everything")
+
+**No exceptions. No "just this once." No "it should be fast."**
+
+---
 
 ## Workstreams
 
-Pick one workstream and follow its specific doc. Work can proceed **in parallel** across all workstreams.
-
-### Browser JavaScript (FastRender priority)
-
-These workstreams support FastRender's browser JS needs and are the **highest priority**:
-
-- **vm-js runtime (execution, GC, builtins)**: `instructions/vm_js.md`
-- **Web platform integration (host hooks, modules)**: `instructions/web_platform.md`
-
-### Language Tooling (independent tracks)
-
-These workstreams develop ecma-rs as standalone JS/TS tooling:
+Pick one workstream and follow its specific doc:
 
 - **TypeScript type checking (from-scratch rigorous checker)**: `instructions/ts_typecheck.md`
 - **Native AOT compilation (LLVM-based JS/TS → native)**: `instructions/native_aot.md`
 
-## FastRender integration
+---
 
-FastRender uses ecma-rs as its JavaScript engine. Key integration points:
-
-- **vm-js** (`vm-js/`) — The JavaScript runtime used by FastRender
-- **parse-js** (`parse-js/`) — JavaScript parser
-- **Host hooks** — `VmHostHooks` for Promise jobs, module loading, etc.
-
-When making changes, consider FastRender's needs:
-- Execution budgets (instruction limits, wall-time limits)
-- Memory safety (heap limits, GC under pressure)
-- Host hook integration (Promise jobs → event loop, module resolution)
-- Performance (real-world scripts must execute efficiently)
-
-## Agent Resource Guidelines
+## Mandatory Resource Limits
 
 **Context:** Hundreds of concurrent coding agents on one system (192 vCPU, 1.5TB RAM, 110TB disk).
 
-### Assume every process can misbehave
+**Critical constraint:** RAM. Too many concurrent memory-heavy processes will OOM-kill the entire machine, killing all agents.
 
-This codebase implements a JavaScript engine — code designed to execute arbitrary, potentially hostile programs. **Any test or binary can hang, explode memory, or refuse to terminate:**
+**Not a constraint:** CPU and disk I/O. The scheduler handles contention. Don't be overly conservative with parallelism.
 
-- Parser bugs can cause infinite loops or exponential backtracking
-- Runtime tests can trigger `while(true){}` in generated code
-- LLVM compilation can hang on pathological IR
-- Tests that worked yesterday can regress into livelocks today
+### Never Raise Limits
 
-**Every command needs hard external limits that the code being run cannot bypass:**
-- `timeout -k 10 <seconds>` — time limit with **guaranteed SIGKILL** (plain `timeout` sends SIGTERM which can be ignored)
-- Memory limits via `run_limited.sh` / `cargo_agent.sh` (kernel-enforced)
-- Scoped builds/tests (don't compile the universe)
+If a process exceeds its timeout or memory limit:
+- That is a **bug to investigate**, not a limit to increase
+- Do not retry with a longer timeout
+- Do not retry with more memory
+- Report the hang/OOM and investigate root cause
 
-If something exceeds limits, that's a **bug to investigate** — not a limit to raise.
+Raising limits masks bugs and creates unbounded processes that brick the machine.
 
-**Critical constraint:** RAM. Too many concurrent memory-heavy processes will OOM-kill everything.
+### If You Are Stuck
 
-**Not a constraint:** CPU and disk I/O. Scheduler handles contention fine. Don't be overly conservative.
+If your command seems hung (no output, not responding):
 
-**Vendored checkout note:** In FastRender, ecma-rs lives under `vendor/ecma-rs/` as a nested
-workspace. The commands below are written to run from the **FastRender repo root**. If you've
-already `cd vendor/ecma-rs`, drop the `vendor/ecma-rs/` prefix from paths (scripts and `target/`).
+```bash
+# 1. The timeout -k should have killed it. If somehow still running, find and kill:
+ps aux | grep -E 'cargo|rustc|native-js' | grep -v grep
+kill -9 <pid>
 
-### Rules
+# 2. Check if you forgot timeout -k:
+#    WRONG: bash vendor/ecma-rs/scripts/cargo_agent.sh test ...
+#    RIGHT: timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test ...
 
-**1. Always use timeout + wrapper scripts:**
+# 3. Report what hung (command, how long, any output) so we can fix the root cause
+```
+
+**Vendored checkout note:** ecma-rs lives under `vendor/ecma-rs/` as a nested workspace. Commands below run from the **top-level repo root**. If you `cd vendor/ecma-rs`, drop the `vendor/ecma-rs/` prefix.
+
+### Mandatory Command Format
+
+**Every command. No exceptions.**
+
+**1. Always use timeout -k + wrapper scripts:**
 ```bash
 # CORRECT — time limit + memory limit + scoped:
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p vm-js
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p effect-js --lib
 
 # WRONG — no time limit (can hang forever):
-bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p vm-js
+bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
 
 # WRONG — no wrapper (uncontrolled parallelism + no memory limit):
 cargo build
@@ -93,8 +99,8 @@ the top-level `scripts/cargo_agent.sh` wrapper. It enforces:
 **2. Scope your cargo commands:**
 ```bash
 # CORRECT (scoped to specific crate + timeout):
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p parse-js
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p effect-js
 
 # WRONG (compiles entire workspace — combinatorial explosion):
 bash vendor/ecma-rs/scripts/cargo_agent.sh build --all
@@ -129,11 +135,11 @@ timeout -k 10 1800 FASTR_CARGO_LIMIT_AS=128G bash vendor/ecma-rs/scripts/cargo_a
 FASTR_CARGO_JOBS=1 bash vendor/ecma-rs/scripts/cargo_agent.sh build ...
 
 # RIGHT (let the wrapper decide based on available slots):
-bash vendor/ecma-rs/scripts/cargo_agent.sh build ...
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build ...
 
 # RIGHT (if you need to limit for a specific reason, document why):
 # Reduce parallelism because this test spawns subprocesses
-FASTR_CARGO_JOBS=8 bash vendor/ecma-rs/scripts/cargo_agent.sh test ...
+timeout -k 10 600 FASTR_CARGO_JOBS=8 bash vendor/ecma-rs/scripts/cargo_agent.sh test ...
 ```
 
 **5. ALL processes need time limits (not just "long-running"):**
@@ -159,7 +165,7 @@ if [[ -d vendor/ecma-rs/target ]]; then
   size_gb=$(du -sg vendor/ecma-rs/target 2>/dev/null | cut -f1 || echo 0)
   if [[ "${size_gb}" -ge "${TARGET_MAX_GB}" ]]; then
     echo "vendor/ecma-rs/target at ${size_gb}GB, cleaning..." >&2
-    bash vendor/ecma-rs/scripts/cargo_agent.sh clean
+    timeout -k 10 120 bash vendor/ecma-rs/scripts/cargo_agent.sh clean
   fi
 fi
 ```

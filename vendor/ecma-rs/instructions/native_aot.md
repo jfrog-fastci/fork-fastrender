@@ -2,10 +2,23 @@
 
 ---
 
-**STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
+**STOP. All code in this project is hostile. Read [`AGENTS.md`](../AGENTS.md) first.**
 
-AGENTS.md contains the mandatory resource limits, timeout rules, and cargo wrapper requirements.
-All commands must use `timeout -k` + wrapper scripts. No exceptions.
+**Every command requires `timeout -k` — the code you're building/testing can hang forever:**
+
+```bash
+# ALWAYS use this format (no exceptions):
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh <command>
+
+# LLVM operations need more time/RAM:
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh <command>
+
+# NEVER run without timeout (will hang forever on bugs):
+bash vendor/ecma-rs/scripts/cargo_agent.sh <command>  # WRONG
+cargo build  # WRONG
+```
+
+If a command times out, that's a bug to investigate — not a limit to raise.
 
 ---
 

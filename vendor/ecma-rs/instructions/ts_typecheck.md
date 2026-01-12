@@ -2,13 +2,23 @@
 
 ---
 
-**STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
+**STOP. All code in this project is hostile. Read [`AGENTS.md`](../AGENTS.md) first.**
 
-AGENTS.md contains the mandatory resource limits, timeout rules, and cargo wrapper requirements.
-All commands must use `timeout -k` + wrapper scripts. No exceptions.
+**Every command requires `timeout -k` — type checking can hang on adversarial types:**
+
+```bash
+# ALWAYS use this format (no exceptions):
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p typecheck-ts --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p typecheck-ts
+
+# NEVER run without timeout (recursive types can loop forever):
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p typecheck-ts --lib  # WRONG
+cargo test  # WRONG
+```
+
+If a command times out, that's a bug to investigate — not a limit to raise.
 
 ---
-
 
 This document is the **authoritative architecture + implementation playbook** for adding **comprehensive, rigorous TypeScript type checking** to this repository.
 

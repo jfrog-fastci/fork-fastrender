@@ -2,17 +2,21 @@
 
 ---
 
-**STOP. Read [`../AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
+**STOP. All code in this project is hostile. Read [`../AGENTS.md`](../AGENTS.md) first.**
 
-### Assume every process can misbehave
+**Every command requires `timeout -k` — module loading can trigger infinite JS:**
 
-**Every command must have hard external limits:**
-- `timeout -k 10 <seconds>` — time limit with guaranteed SIGKILL
-- Memory limits via `cargo_agent.sh` wrapper
-- Scoped test runs (`-p <crate>`, `--test <name>`)
+```bash
+# ALWAYS use this format (no exceptions):
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-vm-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p runtime-js
 
-**MANDATORY (no exceptions):**
-- `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
+# NEVER run without timeout:
+bash vendor/ecma-rs/scripts/cargo_agent.sh test ...  # WRONG
+cargo test  # WRONG
+```
+
+If a command times out, that's a bug to investigate — not a limit to raise.
 
 ---
 
