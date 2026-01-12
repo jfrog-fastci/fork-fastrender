@@ -10,6 +10,8 @@ use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::parser::SelectorList;
 use selectors::OpaqueElement;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 mod attrs;
@@ -44,7 +46,7 @@ pub use html_parse::{parse_html, parse_html_with_options};
 pub use cross_document::AdoptedSubtree;
 
 pub use mutation_observer::{
-  MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord,
+  MutationObserverAgent, MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord,
   MutationRecordType,
 };
 pub use scripting_parser::parse_html_with_scripting_dom2;
@@ -126,7 +128,7 @@ pub enum NodeKind {
   },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Node {
   pub kind: NodeKind,
   pub parent: Option<NodeId>,
@@ -137,6 +139,7 @@ pub struct Node {
   /// inert template contents by keeping template descendants in `children` while skipping them for
   /// selector matching and other traversals.
   pub inert_subtree: bool,
+  registered_observers: Vec<mutation_observer::RegisteredObserver>,
   pub script_already_started: bool,
   /// Whether this script element was created by the HTML parser.
   ///
@@ -154,6 +157,22 @@ pub struct Node {
   /// - Scripts created via DOM APIs default it to true.
   pub script_force_async: bool,
   pub mathml_annotation_xml_integration_point: bool,
+}
+
+impl Clone for Node {
+  fn clone(&self) -> Self {
+    Self {
+      kind: self.kind.clone(),
+      parent: self.parent,
+      children: self.children.clone(),
+      inert_subtree: self.inert_subtree,
+      registered_observers: Vec::new(),
+      script_already_started: self.script_already_started,
+      script_parser_document: self.script_parser_document,
+      script_force_async: self.script_force_async,
+      mathml_annotation_xml_integration_point: self.mathml_annotation_xml_integration_point,
+    }
+  }
 }
 
 /// Summary of DOM mutations recorded since the last call to [`Document::take_mutations`].
@@ -194,7 +213,7 @@ pub struct Document {
   mutations: MutationLog,
   mutation_generation: u64,
   selector_snapshot_cache: Option<SelectorSnapshotCache>,
-  mutation_observers: mutation_observer::MutationObserverRegistry,
+  mutation_observer_agent: Rc<RefCell<mutation_observer::MutationObserverAgent>>,
 }
 
 impl Clone for Document {
@@ -213,7 +232,7 @@ impl Clone for Document {
       mutations: MutationLog::default(),
       mutation_generation: self.mutation_generation,
       selector_snapshot_cache: None,
-      mutation_observers: mutation_observer::MutationObserverRegistry::new(self.nodes.len()),
+      mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
     }
   }
 }
@@ -383,7 +402,7 @@ impl Document {
       mutations: MutationLog::default(),
       mutation_generation: self.mutation_generation,
       selector_snapshot_cache: None,
-      mutation_observers: mutation_observer::MutationObserverRegistry::new(self.nodes.len()),
+      mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
     }
   }
 
@@ -440,6 +459,18 @@ impl Document {
   }
 
   pub fn new_with_scripting(quirks_mode: QuirksMode, scripting_enabled: bool) -> Self {
+    Self::new_with_mutation_observer_agent(
+      quirks_mode,
+      scripting_enabled,
+      Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
+    )
+  }
+
+  pub fn new_with_mutation_observer_agent(
+    quirks_mode: QuirksMode,
+    scripting_enabled: bool,
+    mutation_observer_agent: Rc<RefCell<mutation_observer::MutationObserverAgent>>,
+  ) -> Self {
     let mut doc = Self {
       nodes: Vec::new(),
       input_states: Vec::new(),
@@ -451,7 +482,7 @@ impl Document {
       mutations: MutationLog::default(),
       mutation_generation: 0,
       selector_snapshot_cache: None,
-      mutation_observers: mutation_observer::MutationObserverRegistry::new(0),
+      mutation_observer_agent,
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -802,6 +833,7 @@ impl Document {
       parent,
       children: Vec::new(),
       inert_subtree,
+      registered_observers: Vec::new(),
       script_parser_document: false,
       script_already_started: false,
       script_force_async: false,
@@ -809,7 +841,6 @@ impl Document {
     });
     self.input_states.push(input_state);
     self.textarea_states.push(textarea_state);
-    self.mutation_observers.on_node_added();
     if let Some(parent_id) = parent {
       self.nodes[parent_id.0].children.push(id);
     }

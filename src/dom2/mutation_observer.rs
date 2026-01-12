@@ -5,6 +5,17 @@ use std::collections::{HashMap, HashSet};
 
 pub type MutationObserverId = u64;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RegisteredObserver {
+  pub observer: MutationObserverId,
+  pub options: MutationObserverInit,
+  /// Transient registered observers are used to preserve subtree observation across removals.
+  ///
+  /// FastRender does not implement transient registered observer behavior yet; this field exists so
+  /// future adoption can follow the WHATWG DOM model without changing the storage shape.
+  pub transient_source: Option<NodeId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationRecordType {
   Attributes,
@@ -76,12 +87,10 @@ impl Default for MutationObserverLimits {
   }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct MutationObserverRegistry {
+#[derive(Debug)]
+pub struct MutationObserverAgent {
   limits: MutationObserverLimits,
   observers: HashMap<MutationObserverId, ObserverState>,
-  /// Per-node registered observers (indexed by `NodeId.index()`).
-  registrations: Vec<Vec<Registration>>,
   pending: Vec<MutationObserverId>,
   microtask_queued: bool,
   microtask_needs_queueing: bool,
@@ -91,31 +100,23 @@ pub(crate) struct MutationObserverRegistry {
 #[derive(Debug, Clone)]
 struct ObserverState {
   records: Vec<MutationRecord>,
-  observed_targets: Vec<NodeId>,
+  /// The spec's "node list" for the observer.
+  ///
+  /// This contains all observed targets (and will later also contain transient-registration nodes).
+  node_list: Vec<NodeId>,
   in_pending: bool,
 }
 
-#[derive(Debug, Clone)]
-struct Registration {
-  observer: MutationObserverId,
-  options: MutationObserverInit,
-}
-
-impl MutationObserverRegistry {
-  pub(crate) fn new(nodes_len: usize) -> Self {
+impl MutationObserverAgent {
+  pub fn new() -> Self {
     Self {
       limits: MutationObserverLimits::default(),
       observers: HashMap::new(),
-      registrations: vec![Vec::new(); nodes_len],
       pending: Vec::new(),
       microtask_queued: false,
       microtask_needs_queueing: false,
       total_records: 0,
     }
-  }
-
-  pub(crate) fn on_node_added(&mut self) {
-    self.registrations.push(Vec::new());
   }
 
   pub(crate) fn limits(&self) -> MutationObserverLimits {
@@ -231,7 +232,7 @@ impl MutationObserverRegistry {
         .entry(observer)
         .or_insert_with(|| ObserverState {
           records: Vec::new(),
-          observed_targets: Vec::new(),
+          node_list: Vec::new(),
           in_pending: false,
         }),
     )
@@ -256,7 +257,7 @@ impl MutationObserverRegistry {
         }
         entry.insert(ObserverState {
           records: Vec::new(),
-          observed_targets: Vec::new(),
+          node_list: Vec::new(),
           in_pending: false,
         })
       }
@@ -298,15 +299,16 @@ fn is_html_element_kind(kind: &NodeKind) -> bool {
 
 impl Document {
   pub fn mutation_observer_limits(&self) -> MutationObserverLimits {
-    self.mutation_observers.limits()
+    self.mutation_observer_agent.borrow().limits()
   }
 
   pub fn set_mutation_observer_limits(&mut self, limits: MutationObserverLimits) {
-    self.mutation_observers.set_limits(limits);
+    self.mutation_observer_agent.borrow_mut().set_limits(limits);
   }
 
   pub fn take_mutation_observer_microtask_needed(&mut self) -> bool {
-    std::mem::take(&mut self.mutation_observers.microtask_needs_queueing)
+    let mut agent = self.mutation_observer_agent.borrow_mut();
+    std::mem::take(&mut agent.microtask_needs_queueing)
   }
 
   pub fn mutation_observer_observe(
@@ -318,86 +320,82 @@ impl Document {
     self.node_checked(target)?;
 
     // Remove any existing registration for (target, observer).
-    if let Some(existing) = self
-      .mutation_observers
-      .registrations
-      .get_mut(target.index())
     {
-      existing.retain(|reg| reg.observer != observer);
-      existing.push(Registration {
+      let node = self.node_checked_mut(target)?;
+      node
+        .registered_observers
+        .retain(|reg| reg.observer != observer);
+      node.registered_observers.push(RegisteredObserver {
         observer,
         options: options.clone(),
+        transient_source: None,
       });
     }
 
-    let state = self.mutation_observers.state_for_observer_mut(observer)?;
-    if !state.observed_targets.contains(&target) {
-      state.observed_targets.push(target);
+    let mut agent = self.mutation_observer_agent.borrow_mut();
+    let state = agent.state_for_observer_mut(observer)?;
+    if !state.node_list.contains(&target) {
+      state.node_list.push(target);
     }
 
     Ok(())
   }
 
   pub fn mutation_observer_disconnect(&mut self, observer: MutationObserverId) {
-    let Some(state) = self.mutation_observers.observers.remove(&observer) else {
-      return;
+    let state = {
+      let mut agent = self.mutation_observer_agent.borrow_mut();
+      let Some(state) = agent.observers.remove(&observer) else {
+        return;
+      };
+
+      agent.total_records = agent.total_records.saturating_sub(state.records.len());
+
+      if state.in_pending {
+        agent.pending.retain(|&id| id != observer);
+      }
+      state
     };
 
-    self.mutation_observers.total_records = self
-      .mutation_observers
-      .total_records
-      .saturating_sub(state.records.len());
-
-    if state.in_pending {
-      self.mutation_observers.pending.retain(|&id| id != observer);
-    }
-
-    for target in state.observed_targets {
-      if let Some(list) = self
-        .mutation_observers
-        .registrations
-        .get_mut(target.index())
-      {
-        list.retain(|reg| reg.observer != observer);
-      }
+    for target in state.node_list {
+      let Some(node) = self.nodes.get_mut(target.index()) else {
+        continue;
+      };
+      node
+        .registered_observers
+        .retain(|reg| reg.observer != observer);
     }
   }
 
-  pub fn mutation_observer_take_records(
-    &mut self,
-    observer: MutationObserverId,
-  ) -> Vec<MutationRecord> {
-    let Some(state) = self.mutation_observers.observers.get_mut(&observer) else {
+  pub fn mutation_observer_take_records(&mut self, observer: MutationObserverId) -> Vec<MutationRecord> {
+    let mut agent = self.mutation_observer_agent.borrow_mut();
+    let Some(state) = agent.observers.get_mut(&observer) else {
       return Vec::new();
     };
-    self.mutation_observers.total_records = self
-      .mutation_observers
-      .total_records
-      .saturating_sub(state.records.len());
-    std::mem::take(&mut state.records)
+    let records = std::mem::take(&mut state.records);
+    let record_count = records.len();
+    agent.total_records = agent.total_records.saturating_sub(record_count);
+    records
   }
 
-  pub fn mutation_observer_take_deliveries(
-    &mut self,
-  ) -> Vec<(MutationObserverId, Vec<MutationRecord>)> {
-    self.mutation_observers.microtask_queued = false;
-    self.mutation_observers.microtask_needs_queueing = false;
+  pub fn mutation_observer_take_deliveries(&mut self) -> Vec<(MutationObserverId, Vec<MutationRecord>)> {
+    let mut agent = self.mutation_observer_agent.borrow_mut();
+    agent.microtask_queued = false;
+    agent.microtask_needs_queueing = false;
 
-    let pending = std::mem::take(&mut self.mutation_observers.pending);
+    let pending = std::mem::take(&mut agent.pending);
     let mut out: Vec<(MutationObserverId, Vec<MutationRecord>)> = Vec::new();
     for observer in pending {
-      let Some(state) = self.mutation_observers.observers.get_mut(&observer) else {
+      let Some(state) = agent.observers.get_mut(&observer) else {
         continue;
       };
       state.in_pending = false;
-      if state.records.is_empty() {
+      let records = std::mem::take(&mut state.records);
+      if records.is_empty() {
         continue;
       }
-      self.mutation_observers.total_records = self
-        .mutation_observers
-        .total_records
-        .saturating_sub(state.records.len());
-      out.push((observer, std::mem::take(&mut state.records)));
+      let record_count = records.len();
+      agent.total_records = agent.total_records.saturating_sub(record_count);
+      out.push((observer, records));
     }
     out
   }
@@ -420,31 +418,31 @@ impl Document {
     let mut interested: HashMap<MutationObserverId, MutationObserverInit> = HashMap::new();
     let mut current = Some(target);
     while let Some(node) = current {
-      if let Some(list) = self.mutation_observers.registrations.get(node.index()) {
-        for reg in list {
-          if !reg.options.attributes {
-            continue;
-          }
-          if node != target && !reg.options.subtree {
-            continue;
-          }
-          if let Some(filter) = reg.options.attribute_filter.as_ref() {
-            // `attributeFilter` matching is case-sensitive; HTML attribute names are already
-            // normalized to ASCII lowercase before reaching this stage, mirroring the DOM Standard's
-            // `localName` normalization.
-            let matches = filter.iter().any(|f| f == &attr_name);
-            if !matches {
-              continue;
-            }
-          }
-          interested
-            .entry(reg.observer)
-            .or_insert_with(|| reg.options.clone());
+      let list = &self.nodes[node.index()].registered_observers;
+      for reg in list {
+        if !reg.options.attributes {
+          continue;
         }
+        if node != target && !reg.options.subtree {
+          continue;
+        }
+        if let Some(filter) = reg.options.attribute_filter.as_ref() {
+          // `attributeFilter` matching is case-sensitive; HTML attribute names are already
+          // normalized to ASCII lowercase before reaching this stage, mirroring the DOM Standard's
+          // `localName` normalization.
+          let matches = filter.iter().any(|f| f == &attr_name);
+          if !matches {
+            continue;
+          }
+        }
+        interested
+          .entry(reg.observer)
+          .or_insert_with(|| reg.options.clone());
       }
       current = self.nodes[node.index()].parent;
     }
 
+    let mut agent = self.mutation_observer_agent.borrow_mut();
     for (observer, options) in interested {
       let record = MutationRecord {
         type_: MutationRecordType::Attributes,
@@ -460,7 +458,7 @@ impl Document {
           None
         },
       };
-      self.mutation_observers.queue_record(observer, record)?;
+      agent.queue_record(observer, record)?;
     }
 
     Ok(())
@@ -476,22 +474,22 @@ impl Document {
     let mut interested: HashMap<MutationObserverId, MutationObserverInit> = HashMap::new();
     let mut current = Some(target);
     while let Some(node) = current {
-      if let Some(list) = self.mutation_observers.registrations.get(node.index()) {
-        for reg in list {
-          if !reg.options.character_data {
-            continue;
-          }
-          if node != target && !reg.options.subtree {
-            continue;
-          }
-          interested
-            .entry(reg.observer)
-            .or_insert_with(|| reg.options.clone());
+      let list = &self.nodes[node.index()].registered_observers;
+      for reg in list {
+        if !reg.options.character_data {
+          continue;
         }
+        if node != target && !reg.options.subtree {
+          continue;
+        }
+        interested
+          .entry(reg.observer)
+          .or_insert_with(|| reg.options.clone());
       }
       current = self.nodes[node.index()].parent;
     }
 
+    let mut agent = self.mutation_observer_agent.borrow_mut();
     for (observer, options) in interested {
       let record = MutationRecord {
         type_: MutationRecordType::CharacterData,
@@ -507,7 +505,7 @@ impl Document {
           None
         },
       };
-      self.mutation_observers.queue_record(observer, record)?;
+      agent.queue_record(observer, record)?;
     }
 
     Ok(())
@@ -526,18 +524,17 @@ impl Document {
     let mut interested: HashMap<MutationObserverId, MutationObserverInit> = HashMap::new();
     let mut current = Some(target);
     while let Some(node) = current {
-      if let Some(list) = self.mutation_observers.registrations.get(node.index()) {
-        for reg in list {
-          if !reg.options.child_list {
-            continue;
-          }
-          if node != target && !reg.options.subtree {
-            continue;
-          }
-          interested
-            .entry(reg.observer)
-            .or_insert_with(|| reg.options.clone());
+      let list = &self.nodes[node.index()].registered_observers;
+      for reg in list {
+        if !reg.options.child_list {
+          continue;
         }
+        if node != target && !reg.options.subtree {
+          continue;
+        }
+        interested
+          .entry(reg.observer)
+          .or_insert_with(|| reg.options.clone());
       }
       current = self.nodes[node.index()].parent;
     }
@@ -546,6 +543,7 @@ impl Document {
       return Ok(());
     }
 
+    let mut agent = self.mutation_observer_agent.borrow_mut();
     for (observer, _options) in interested {
       let record = MutationRecord {
         type_: MutationRecordType::ChildList,
@@ -557,7 +555,7 @@ impl Document {
         attribute_name: None,
         old_value: None,
       };
-      self.mutation_observers.queue_record(observer, record)?;
+      agent.queue_record(observer, record)?;
     }
 
     Ok(())
@@ -583,51 +581,51 @@ mod tests {
 
   #[test]
   fn queue_record_creates_state_and_schedules_delivery() {
-    let mut registry = MutationObserverRegistry::new(1);
-    registry.queue_record(1, record(NodeId::from_index(0))).unwrap();
+    let mut agent = MutationObserverAgent::new();
+    agent.queue_record(1, record(NodeId::from_index(0))).unwrap();
 
-    assert!(registry.microtask_queued);
-    assert!(registry.microtask_needs_queueing);
-    assert_eq!(registry.pending, vec![1]);
-    assert_eq!(registry.total_records, 1);
+    assert!(agent.microtask_queued);
+    assert!(agent.microtask_needs_queueing);
+    assert_eq!(agent.pending, vec![1]);
+    assert_eq!(agent.total_records, 1);
 
-    let state = registry.observers.get(&1).unwrap();
+    let state = agent.observers.get(&1).unwrap();
     assert_eq!(state.records.len(), 1);
     assert!(state.in_pending);
   }
 
   #[test]
   fn queue_record_is_bounded_per_observer() {
-    let mut registry = MutationObserverRegistry::new(1);
-    registry.set_limits(MutationObserverLimits {
+    let mut agent = MutationObserverAgent::new();
+    agent.set_limits(MutationObserverLimits {
       max_observers: 10,
       max_records_per_observer: 1,
       max_total_records: 10,
     });
 
-    registry.queue_record(1, record(NodeId::from_index(0))).unwrap();
-    registry.queue_record(1, record(NodeId::from_index(0))).unwrap();
+    agent.queue_record(1, record(NodeId::from_index(0))).unwrap();
+    agent.queue_record(1, record(NodeId::from_index(0))).unwrap();
 
-    assert_eq!(registry.total_records, 1);
-    assert_eq!(registry.pending, vec![1]);
-    assert_eq!(registry.observers.get(&1).unwrap().records.len(), 1);
+    assert_eq!(agent.total_records, 1);
+    assert_eq!(agent.pending, vec![1]);
+    assert_eq!(agent.observers.get(&1).unwrap().records.len(), 1);
   }
 
   #[test]
   fn queue_record_is_bounded_globally() {
-    let mut registry = MutationObserverRegistry::new(1);
-    registry.set_limits(MutationObserverLimits {
+    let mut agent = MutationObserverAgent::new();
+    agent.set_limits(MutationObserverLimits {
       max_observers: 10,
       max_records_per_observer: 10,
       max_total_records: 1,
     });
 
-    registry.queue_record(1, record(NodeId::from_index(0))).unwrap();
-    registry.queue_record(2, record(NodeId::from_index(0))).unwrap();
+    agent.queue_record(1, record(NodeId::from_index(0))).unwrap();
+    agent.queue_record(2, record(NodeId::from_index(0))).unwrap();
 
-    assert_eq!(registry.total_records, 1);
-    assert!(registry.observers.contains_key(&1));
-    assert!(!registry.observers.contains_key(&2));
-    assert_eq!(registry.pending, vec![1]);
+    assert_eq!(agent.total_records, 1);
+    assert!(agent.observers.contains_key(&1));
+    assert!(!agent.observers.contains_key(&2));
+    assert_eq!(agent.pending, vec![1]);
   }
 }
