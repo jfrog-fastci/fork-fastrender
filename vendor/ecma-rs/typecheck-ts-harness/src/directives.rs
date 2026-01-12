@@ -872,6 +872,13 @@ fn parse_jsonish_value(raw: &str, notes: &mut Vec<String>) -> Option<Value> {
   match json5::from_str::<Value>(raw) {
     Ok(value) => Some(value),
     Err(err) => {
+      // TypeScript harness directives sometimes include a trailing comma (e.g.
+      // `// @paths: { ... },`). Retry without it before giving up.
+      if let Some(stripped) = raw.strip_suffix(',') {
+        if let Ok(value) = json5::from_str::<Value>(stripped) {
+          return Some(value);
+        }
+      }
       notes.push(format!("failed to parse JSON-ish directive value: {err}"));
       Some(Value::String(raw.to_string()))
     }
@@ -1176,6 +1183,34 @@ mod tests {
     assert_eq!(
       foo.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
       vec!["bar/*"]
+    );
+  }
+
+  #[test]
+  fn parses_paths_as_jsonish_with_trailing_comma() {
+    let directives = vec![dir("paths", Some(r#"{ "foo/*": ["bar/*"] },"#))];
+    let parsed =
+      HarnessOptions::from_directives_with_options(&directives, DirectiveParseOptions::default());
+    let tsc = parsed.options.to_tsc_options_map();
+    let paths = tsc
+      .get("paths")
+      .and_then(|v| v.as_object())
+      .expect("paths should parse as object");
+    let foo = paths
+      .get("foo/*")
+      .and_then(|v| v.as_array())
+      .expect("foo array");
+    assert_eq!(
+      foo.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
+      vec!["bar/*"]
+    );
+    assert!(
+      !parsed
+        .notes
+        .iter()
+        .any(|note| note.contains("failed to parse JSON-ish directive value")),
+      "expected trailing comma to parse without JSON-ish parse errors; notes={:?}",
+      parsed.notes
     );
   }
 
