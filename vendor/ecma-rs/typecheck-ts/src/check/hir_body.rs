@@ -1430,7 +1430,7 @@ pub fn check_body_with_expander(
     return_types: Vec::new(),
     index: ast_index,
     value_defs,
-    def_spans: None,
+    def_spans,
     scopes: vec![Scope::default()],
     var_scopes: vec![0],
     type_param_scopes: Vec::new(),
