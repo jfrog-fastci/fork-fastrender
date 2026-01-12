@@ -3426,24 +3426,77 @@ impl BrowserRuntime {
       return;
     };
 
-    let href = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scrolled =
-        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-      let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-      let href = hit_test_dom(dom, box_tree, hit_tree, page_point).and_then(|hit| {
-        if hit.kind == HitTestKind::Link {
-          hit.href
-        } else {
-          None
-        }
-      });
-      (false, href)
-    }) {
-      Ok(href) => href,
-      Err(_) => None,
-    };
+    let (href, target_id, target_element_id) =
+      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let scrolled =
+          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+        let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let hit = hit_test_dom(dom, box_tree, hit_tree, page_point);
+        let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
+        let target_element_id = target_id.and_then(|target_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
+        let href = hit.and_then(|hit| {
+          if hit.kind == HitTestKind::Link {
+            hit.href
+          } else {
+            None
+          }
+        });
+        (false, (href, target_id, target_element_id))
+      }) {
+        Ok(result) => result,
+        Err(_) => (None, None, None),
+      };
 
     let link_url = href.and_then(|href| resolve_link_url(&base_url, &href));
+
+    // Dispatch a cancelable `contextmenu` event before opening the default UI context menu.
+    //
+    // If JS calls `preventDefault()`, suppress the UI menu (matching browser behavior).
+    if let Some(target_id) = target_id {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let target =
+          js_dom_node_for_preorder_id(js_tab, target_id, target_element_id.as_deref());
+        if let Some(node_id) = target {
+          let mouse = web_events::MouseEvent {
+            client_x: mouse_client_coord(pos_css.0),
+            client_y: mouse_client_coord(pos_css.1),
+            button: mouse_event_button(PointerButton::Secondary),
+            buttons: tab.pointer_buttons,
+            ctrl_key: false,
+            shift_key: false,
+            alt_key: false,
+            meta_key: false,
+            related_target: None,
+          };
+          match js_tab.dispatch_mouse_event(
+            node_id,
+            "contextmenu",
+            web_events::EventInit {
+              bubbles: true,
+              cancelable: true,
+              composed: false,
+            },
+            mouse,
+          ) {
+            Ok(allowed) => {
+              if !allowed {
+                return;
+              }
+            }
+            Err(err) => {
+              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("js contextmenu event dispatch failed: {err}"),
+              });
+            }
+          }
+        }
+      }
+    }
 
     let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
       tab_id,
