@@ -106,6 +106,7 @@ Or set `FASTR_TEST262_NO_GATE=1`.
     - `language_statements`: control-flow + declaration statements.
     - `language_functions`: function declarations + generators + async.
     - `language_classes`: basic class declarations + inheritance.
+    - `language_scopes`: lexical scope + directive prologue semantics.
     - `builtins_core`: core built-ins (Object/Array/String/Number/Boolean/Symbol).
     - `builtins_json_math`: JSON + Math built-ins.
 - `--harness <test262|includes|none>`

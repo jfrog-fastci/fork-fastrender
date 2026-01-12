@@ -7,6 +7,7 @@
 # - `language_statements.toml`
 # - `language_functions.toml`
 # - `language_classes.toml`
+# - `language_scopes.toml`
 # - `builtins_core.toml`
 # - `builtins_json_math.toml`
 #
@@ -87,6 +88,11 @@ include = [
   "language/statements/class/arguments/**/*.js",
   "language/statements/class/accessor-name-inst/**/*.js",
   "language/statements/class/accessor-name-static/**/*.js",
+
+  # --- Language: scope/directive prologue ---
+  "language/block-scope/**/*.js",
+  "language/function-code/**/*.js",
+  "language/directive-prologue/**/*.js",
 
   # --- Built-ins ---
   "built-ins/Object/assign/**/*.js",

@@ -1,0 +1,23 @@
+# Curated suite: lexical scope + directive prologue semantics.
+#
+# Intent:
+# - Cover core binding/execution semantics that live outside `language/statements/**`:
+#   - `let`/`const`/TDZ behavior (`language/block-scope`)
+#   - strict mode / directive prologue parsing (`language/directive-prologue`)
+#   - function body parsing/execution edge cases (`language/function-code`)
+# - Keep modules excluded until module execution lands.
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  "language/block-scope/**/*.js",
+  "language/function-code/**/*.js",
+  "language/directive-prologue/**/*.js",
+]
+
+exclude = [
+  # No module support yet (kept for consistency with other curated suites).
+  "language/import/**",
+  "language/export/**",
+  "language/module-code/**",
+]
+

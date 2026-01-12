@@ -99,6 +99,21 @@ status = "xfail"
 reason = "vm-js: statement/function/class semantics are still incomplete; tracked via curated test262 progress."
 
 [[expectations]]
+glob = "language/block-scope/**"
+status = "xfail"
+reason = "vm-js: lexical scope/TDZ semantics are still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "language/function-code/**"
+status = "xfail"
+reason = "vm-js: function parsing/execution semantics are still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+glob = "language/directive-prologue/**"
+status = "xfail"
+reason = "vm-js: directive prologue / strict mode semantics are still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
 glob = "built-ins/Object/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
