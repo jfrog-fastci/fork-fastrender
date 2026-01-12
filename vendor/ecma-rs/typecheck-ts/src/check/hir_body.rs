@@ -5084,12 +5084,19 @@ impl<'a> Checker<'a> {
               ));
           }
         } else {
+          let expected_props_ty_for_context = self.refine_jsx_expected_props_by_discriminants(
+            expected_props_ty,
+            &elem.stx.attributes,
+            &elem.stx.children,
+          );
+          let expected_props_ty_for_context =
+            self.jsx_apply_intrinsic_attributes(expected_props_ty_for_context);
           let expected_props_ty = self.jsx_apply_intrinsic_attributes(expected_props_ty);
           let actual_props = self.jsx_actual_props(
             elem.loc,
             &elem.stx.attributes,
             &elem.stx.children,
-            Some(expected_props_ty),
+            Some(expected_props_ty_for_context),
           );
           self.check_jsx_props(name.loc, &actual_props, expected_props_ty);
         }
@@ -5128,12 +5135,19 @@ impl<'a> Checker<'a> {
                 ));
             }
           } else {
+            let expected_props_ty_for_context = self.refine_jsx_expected_props_by_discriminants(
+              expected_props_ty,
+              &elem.stx.attributes,
+              &elem.stx.children,
+            );
+            let expected_props_ty_for_context =
+              self.jsx_apply_intrinsic_attributes(expected_props_ty_for_context);
             let expected_props_ty = self.jsx_apply_intrinsic_attributes(expected_props_ty);
             let actual_props = self.jsx_actual_props(
               elem.loc,
               &elem.stx.attributes,
               &elem.stx.children,
-              Some(expected_props_ty),
+              Some(expected_props_ty_for_context),
             );
             self.check_jsx_props(id.loc, &actual_props, expected_props_ty);
           }
@@ -5159,9 +5173,16 @@ impl<'a> Checker<'a> {
               ));
             }
           }
-          let expected_props_ty = self
-            .jsx_expected_props_for_value_tag(component_ty, elem.loc)
-            .map(|expected| self.jsx_apply_intrinsic_attributes(expected));
+          let expected_props_ty = self.jsx_expected_props_for_value_tag(component_ty, elem.loc).map(
+            |expected| {
+              let refined = self.refine_jsx_expected_props_by_discriminants(
+                expected,
+                &elem.stx.attributes,
+                &elem.stx.children,
+              );
+              self.jsx_apply_intrinsic_attributes(refined)
+            },
+          );
           let actual_props = self.jsx_actual_props(
             elem.loc,
             &elem.stx.attributes,
@@ -5210,12 +5231,19 @@ impl<'a> Checker<'a> {
                 ));
             }
           } else {
+            let expected_props_ty_for_context = self.refine_jsx_expected_props_by_discriminants(
+              expected_props_ty,
+              &elem.stx.attributes,
+              &elem.stx.children,
+            );
+            let expected_props_ty_for_context =
+              self.jsx_apply_intrinsic_attributes(expected_props_ty_for_context);
             let expected_props_ty = self.jsx_apply_intrinsic_attributes(expected_props_ty);
             let actual_props = self.jsx_actual_props(
               elem.loc,
               &elem.stx.attributes,
               &elem.stx.children,
-              Some(expected_props_ty),
+              Some(expected_props_ty_for_context),
             );
             self.check_jsx_props(member.loc, &actual_props, expected_props_ty);
           }
@@ -5246,9 +5274,16 @@ impl<'a> Checker<'a> {
               ));
             }
           }
-          let expected_props_ty = self
-            .jsx_expected_props_for_value_tag(current, elem.loc)
-            .map(|expected| self.jsx_apply_intrinsic_attributes(expected));
+          let expected_props_ty = self.jsx_expected_props_for_value_tag(current, elem.loc).map(
+            |expected| {
+              let refined = self.refine_jsx_expected_props_by_discriminants(
+                expected,
+                &elem.stx.attributes,
+                &elem.stx.children,
+              );
+              self.jsx_apply_intrinsic_attributes(refined)
+            },
+          );
           let actual_props = self.jsx_actual_props(
             elem.loc,
             &elem.stx.attributes,
@@ -5454,6 +5489,120 @@ impl<'a> Checker<'a> {
     }
     let expected_props_ty = self.jsx_apply_intrinsic_attributes(expected_props_ty);
     self.check_jsx_props(tag_loc, actual_props, expected_props_ty);
+  }
+
+  fn jsx_discriminant_value_type(&mut self, expr: &Node<AstExpr>) -> Option<TypeId> {
+    let prim = self.store.primitive_ids();
+    let is_literal_type = |checker: &Checker<'_>, ty: TypeId| {
+      let ty = checker.expand_ref(ty);
+      ty == prim.null
+        || matches!(
+          checker.store.type_kind(ty),
+          TypeKind::StringLiteral(_)
+            | TypeKind::NumberLiteral(_)
+            | TypeKind::BooleanLiteral(_)
+            | TypeKind::BigIntLiteral(_)
+        )
+    };
+    match expr.stx.as_ref() {
+      AstExpr::LitStr(str_lit) => {
+        let name = self.store.intern_name_ref(&str_lit.stx.value);
+        Some(self.store.intern_type(TypeKind::StringLiteral(name)))
+      }
+      AstExpr::LitNum(num) => Some(
+        self
+          .store
+          .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(num.stx.value.0))),
+      ),
+      AstExpr::LitBool(b) => Some(self.store.intern_type(TypeKind::BooleanLiteral(b.stx.value))),
+      AstExpr::LitNull(_) => Some(prim.null),
+      AstExpr::TypeAssertion(assert) if assert.stx.const_assertion => {
+        self.jsx_discriminant_value_type(&assert.stx.expression)
+      }
+      AstExpr::Id(id) => {
+        let binding_ty = self.lookup(&id.stx.name).map(|binding| binding.ty);
+        let ty = binding_ty.or_else(|| self.recorded_expr_type(expr.loc))?;
+        is_literal_type(self, ty).then_some(ty)
+      }
+      _ => None,
+    }
+  }
+
+  fn refine_jsx_expected_props_by_discriminants(
+    &mut self,
+    expected: TypeId,
+    attrs: &[JsxAttr],
+    _children: &[JsxElemChild],
+  ) -> TypeId {
+    let prim = self.store.primitive_ids();
+    let expected_expanded = self.expand_ref(expected);
+    let TypeKind::Union(members) = self.store.type_kind(expected_expanded) else {
+      return expected;
+    };
+
+    let mut discriminants: Vec<(String, TypeId)> = Vec::new();
+    for attr in attrs {
+      let JsxAttr::Named { name, value } = attr else {
+        continue;
+      };
+
+      if name.stx.namespace.is_some()
+        || name.stx.name.contains('-')
+        || name.stx.name.contains(':')
+      {
+        continue;
+      }
+
+      let value_ty = match value {
+        None => Some(self.store.intern_type(TypeKind::BooleanLiteral(true))),
+        Some(JsxAttrVal::Text(text)) => Some(self.jsx_attr_text_type(text)),
+        Some(JsxAttrVal::Expression(container)) => {
+          if is_empty_jsx_expr_placeholder(&container.stx.value) {
+            None
+          } else {
+            self.jsx_discriminant_value_type(&container.stx.value)
+          }
+        }
+        Some(JsxAttrVal::Element(_)) => None,
+      };
+      let Some(value_ty) = value_ty else {
+        continue;
+      };
+
+      discriminants.push((name.stx.name.clone(), value_ty));
+    }
+
+    if discriminants.is_empty() {
+      return expected;
+    }
+
+    let mut filtered: Vec<TypeId> = Vec::new();
+    for member in members.iter().copied() {
+      let mut matches = true;
+      for (name, lit_ty) in discriminants.iter() {
+        let prop_ty = self.member_type(member, name.as_str());
+        if prop_ty == prim.unknown || !self.relate.is_assignable(*lit_ty, prop_ty) {
+          matches = false;
+          break;
+        }
+      }
+      if matches {
+        filtered.push(member);
+      }
+    }
+
+    if filtered.is_empty() {
+      return expected;
+    }
+
+    filtered.sort_by(|a, b| self.store.type_cmp(*a, *b));
+    filtered.dedup();
+
+    match filtered.len() {
+      0 => expected,
+      1 => filtered[0],
+      _ => self.store.union(filtered),
+    }
   }
 
   fn jsx_actual_props(
