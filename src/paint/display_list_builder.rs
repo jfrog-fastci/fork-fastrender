@@ -17190,20 +17190,25 @@ mod tests {
 
   #[test]
   fn parallel_builder_matches_sequential_output() {
-    std::env::set_var("FASTR_DISPLAY_LIST_PARALLEL_MIN", "1");
-    std::env::set_var("FASTR_DISPLAY_LIST_PARALLEL", "1");
-
     let child1 = create_text_fragment(0.0, 0.0, 20.0, 10.0, "One");
     let child2 = create_text_fragment(0.0, 10.0, 20.0, 10.0, "Two");
     let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 20.0, 20.0), vec![child1, child2]);
 
-    let parallel = DisplayListBuilder::new().build(&root);
+    let parallel_toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_DISPLAY_LIST_PARALLEL_MIN".to_string(), "1".to_string()),
+      ("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "1".to_string()),
+    ])));
+    let parallel = runtime::with_runtime_toggles(parallel_toggles, || {
+      DisplayListBuilder::new().build(&root)
+    });
 
-    std::env::set_var("FASTR_DISPLAY_LIST_PARALLEL", "0");
-    let sequential = DisplayListBuilder::new().build(&root);
-
-    std::env::remove_var("FASTR_DISPLAY_LIST_PARALLEL_MIN");
-    std::env::remove_var("FASTR_DISPLAY_LIST_PARALLEL");
+    let sequential_toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_DISPLAY_LIST_PARALLEL".to_string(),
+      "0".to_string(),
+    )])));
+    let sequential = runtime::with_runtime_toggles(sequential_toggles, || {
+      DisplayListBuilder::new().build(&root)
+    });
 
     assert_eq!(parallel.len(), sequential.len());
     let parallel_debug: Vec<String> = parallel
