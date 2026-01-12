@@ -1320,8 +1320,12 @@ impl<'a> Scope<'a> {
     self.push_roots(&roots)?;
 
     // Integer-indexed exotic objects (typed arrays): numeric index writes update the view's backing
-    // buffer. Out-of-bounds / detached writes are silently ignored, but still considered
-    // successful so strict-mode assignments do not throw.
+    // buffer.
+    //
+    // Per `IntegerIndexedExoticObject.[[Set]]`, numeric index writes:
+    // - return `false` if `receiver` is not the typed array itself,
+    // - silently no-op for detached/out-of-bounds,
+    // - and report success so strict-mode assignments do not throw.
     if self.heap().is_typed_array_object(obj) {
       if let Some(index) = self.heap().array_index(&key) {
         let Value::Object(receiver_obj) = receiver else {
