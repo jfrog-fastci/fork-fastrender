@@ -408,6 +408,13 @@ impl ProgramState {
     self.callable_overloads.retain(|(owner, _), _| *owner != file);
     self.import_assignment_requires.retain(|rec| rec.file != file);
 
+    // Cached module namespace types depend on exported value types, which can
+    // change with body inference, so invalidate them for affected files as well.
+    for affected_file in affected.iter().copied() {
+      self.module_namespace_types.remove(&affected_file);
+      self.module_namespace_in_progress.remove(&affected_file);
+    }
+
     // Invalidate cached def types that can be inferred from bodies/initializers
     // in the edited file *or* in transitive dependents. Inferred types in
     // downstream files can change when an imported dependency's inferred types
@@ -417,17 +424,30 @@ impl ProgramState {
     // separately.
     let mut defs_to_invalidate: Vec<DefId> = Vec::new();
     for (def, data) in self.def_data.iter() {
-      if !affected.contains(&data.file) {
-        continue;
-      }
+      let in_affected_file = affected.contains(&data.file);
       let depends_on_body = match &data.kind {
         DefKind::Function(func) => func.return_ann.is_none() && func.body.is_some(),
-        // Vars can be inferred from their initializer; conservatively treat any
-        // var with an attached initializer body as body-inferred.
-        DefKind::Var(var) => var.body != MISSING_BODY,
+        // Var types can be inferred from initializer expressions, and those
+        // expressions can depend on body-inferred types from other files (for
+        // example, calling an imported function whose return type changes).
+        //
+        // Conservatively invalidate *all* var def types in affected files so
+        // subsequent queries re-infer them against the new program revision.
+        DefKind::Var(_) => true,
+        // Import binding types depend on the exported surface of the referenced
+        // module, and must be invalidated when any upstream export type changes.
+        DefKind::Import(import) => match import.target {
+          ImportTarget::File(target) => affected.contains(&target),
+          ImportTarget::Unresolved { .. } => false,
+        },
+        DefKind::ImportAlias(_) => in_affected_file,
         _ => false,
       };
-      if depends_on_body {
+      let invalidate = match &data.kind {
+        DefKind::Import(_) => depends_on_body,
+        _ => depends_on_body && in_affected_file,
+      };
+      if invalidate {
         defs_to_invalidate.push(*def);
       }
     }
