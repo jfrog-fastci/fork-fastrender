@@ -642,7 +642,7 @@ impl<'a> FunctionDecompiler<'a> {
         let stmt = il::lower_promise_race_inst(self, self, inst, init).expect("promise race should lower");
         Ok(Some(stmt))
       }
-      #[cfg(feature = "native-fusion")]
+      #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
       InstTyp::ArrayChain => {
         self.ensure_supported_args(inst.args.iter())?;
         let (tgt, _, _) = inst.as_array_chain();

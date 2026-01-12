@@ -1096,7 +1096,7 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
           self.set_var(state, tgt, IntRange::Unknown);
         }
       }
-      #[cfg(feature = "native-fusion")]
+      #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
       InstTyp::ArrayChain => {
         let (tgt, _base, _ops) = inst.as_array_chain();
         if let Some(tgt) = tgt {

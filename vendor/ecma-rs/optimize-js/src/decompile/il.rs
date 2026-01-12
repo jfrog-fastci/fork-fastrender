@@ -1,6 +1,6 @@
 use super::foreign::ForeignBindings;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 use crate::il::inst::ArrayChainOp;
 use crate::symbol::semantics::SymbolId;
 use crate::{Program, ProgramFunction};
@@ -772,7 +772,7 @@ pub fn lower_call_inst<V: VarNamer, F: FnEmitter>(
   }
 }
 
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 pub fn lower_array_chain_inst<V: VarNamer, F: FnEmitter>(
   var_namer: &V,
   fn_emitter: &F,
@@ -786,25 +786,25 @@ pub fn lower_array_chain_inst<V: VarNamer, F: FnEmitter>(
   let (tgt, base_array, ops) = inst.as_array_chain();
   let mut current = lower_arg(var_namer, fn_emitter, base_array);
 
+  // Emit `base.map(cb).filter(cb2)...` rather than `Array.prototype.map.call(base, cb)` to better
+  // resemble the original source.
   for op in ops {
-    let (builtin, callback_idx, init_idx) = match *op {
-      ArrayChainOp::Map { callback } => ("Array.prototype.map", callback, None),
-      ArrayChainOp::Filter { callback } => ("Array.prototype.filter", callback, None),
-      ArrayChainOp::Reduce { callback, init } => ("Array.prototype.reduce", callback, init),
-      ArrayChainOp::Find { callback } => ("Array.prototype.find", callback, None),
-      ArrayChainOp::Every { callback } => ("Array.prototype.every", callback, None),
-      ArrayChainOp::Some { callback } => ("Array.prototype.some", callback, None),
+    let (method, callback_idx, init_idx) = match *op {
+      ArrayChainOp::Map { callback } => ("map", callback, None),
+      ArrayChainOp::Filter { callback } => ("filter", callback, None),
+      ArrayChainOp::Reduce { callback, init } => ("reduce", callback, init),
+      ArrayChainOp::Find { callback } => ("find", callback, None),
+      ArrayChainOp::Every { callback } => ("every", callback, None),
+      ArrayChainOp::Some { callback } => ("some", callback, None),
     };
 
-    let callee_expr = lower_arg(var_namer, fn_emitter, &Arg::Builtin(builtin.to_string()));
     let callee = node(Expr::Member(node(MemberExpr {
       optional_chaining: false,
-      left: callee_expr,
-      right: "call".to_string(),
+      left: current,
+      right: method.to_string(),
     })));
 
-    let mut args = Vec::new();
-    args.push(current);
+    let mut args = Vec::with_capacity(if init_idx.is_some() { 2 } else { 1 });
     args.push(lower_arg(var_namer, fn_emitter, &inst.args[callback_idx]));
     if let Some(init_idx) = init_idx {
       args.push(lower_arg(var_namer, fn_emitter, &inst.args[init_idx]));
@@ -1016,6 +1016,8 @@ pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
     InstTyp::Call => lower_call_inst(var_namer, fn_emitter, inst, None, None, None, init),
     #[cfg(feature = "semantic-ops")]
     InstTyp::KnownApiCall { .. } => lower_known_api_call_inst(var_namer, fn_emitter, inst, init),
+    #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+    InstTyp::ArrayChain => lower_array_chain_inst(var_namer, fn_emitter, inst, init),
     #[cfg(feature = "native-async-ops")]
     InstTyp::Await => lower_await_inst(var_namer, fn_emitter, inst, init),
     #[cfg(feature = "native-async-ops")]
@@ -1314,43 +1316,38 @@ fn handle_known_api_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExp
   )
 }
 
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 fn handle_array_chain(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<u32>) {
   let (tgt, base_array, ops) = inst.as_array_chain();
   let mut current = expr_from_arg(base_array, env);
   for op in ops {
-    let (builtin, callback_idx, init_idx) = match *op {
-      ArrayChainOp::Map { callback } => ("Array.prototype.map", callback, None),
-      ArrayChainOp::Filter { callback } => ("Array.prototype.filter", callback, None),
-      ArrayChainOp::Reduce { callback, init } => ("Array.prototype.reduce", callback, init),
-      ArrayChainOp::Find { callback } => ("Array.prototype.find", callback, None),
-      ArrayChainOp::Every { callback } => ("Array.prototype.every", callback, None),
-      ArrayChainOp::Some { callback } => ("Array.prototype.some", callback, None),
+    let (method, callback_idx, init_idx) = match *op {
+      ArrayChainOp::Map { callback } => ("map", callback, None),
+      ArrayChainOp::Filter { callback } => ("filter", callback, None),
+      ArrayChainOp::Reduce { callback, init } => ("reduce", callback, init),
+      ArrayChainOp::Find { callback } => ("find", callback, None),
+      ArrayChainOp::Every { callback } => ("every", callback, None),
+      ArrayChainOp::Some { callback } => ("some", callback, None),
     };
 
-    let callee_expr = builtin_to_expr(builtin);
-    let call_callee = FlatExpr::Member {
-      object: Box::new(callee_expr),
-      property: "call".to_string(),
-    };
-    let mut call_args = Vec::new();
-    call_args.push(FlatCallArg {
-      expr: current,
-      spread: false,
-    });
-    call_args.push(FlatCallArg {
+    let mut args = Vec::with_capacity(if init_idx.is_some() { 2 } else { 1 });
+    args.push(FlatCallArg {
       expr: expr_from_arg(&inst.args[callback_idx], env),
       spread: false,
     });
     if let Some(init_idx) = init_idx {
-      call_args.push(FlatCallArg {
+      args.push(FlatCallArg {
         expr: expr_from_arg(&inst.args[init_idx], env),
         spread: false,
       });
     }
+    let callee = FlatExpr::Member {
+      object: Box::new(current),
+      property: method.to_string(),
+    };
     current = FlatExpr::Call {
-      callee: Box::new(call_callee),
-      args: call_args,
+      callee: Box::new(callee),
+      args,
     };
   }
 
@@ -1579,7 +1576,7 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             stmts.push(expr_stmt(call_expr));
           }
         }
-        #[cfg(feature = "native-fusion")]
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
         InstTyp::ArrayChain => {
           let (expr, tgt) = handle_array_chain(inst, &env);
           if let Some(tgt) = tgt {
@@ -1882,7 +1879,7 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       tgt: inst.tgts.get(0).copied(),
       promises: inst.args.iter().map(lowered_arg).collect(),
     },
-    #[cfg(feature = "native-fusion")]
+    #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
     InstTyp::ArrayChain => {
       let (tgt, base_array, ops) = inst.as_array_chain();
       let mut args = Vec::new();

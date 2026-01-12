@@ -10,7 +10,7 @@ fn is_call_like(inst: &crate::il::inst::Inst) -> bool {
   if inst.t == InstTyp::Call {
     return true;
   }
-  #[cfg(feature = "native-fusion")]
+  #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
   {
     if inst.t == InstTyp::ArrayChain {
       return true;

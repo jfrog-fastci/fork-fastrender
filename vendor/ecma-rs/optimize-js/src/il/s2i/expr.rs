@@ -1,7 +1,7 @@
 use super::stmt::key_arg;
 use super::{Chain, HirSourceToInst, VarType, DUMMY_LABEL};
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp, ValueTypeSummary};
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 use crate::il::inst::ArrayChainOpData;
 use crate::symbol::semantics::SymbolId;
 use crate::unsupported_syntax;
@@ -2119,35 +2119,63 @@ impl<'p> HirSourceToInst<'p> {
       ExprKind::ArrayMap { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin("Array.prototype.map".to_string()),
-            this_arg,
-            vec![callback_arg],
-            Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Map {
+              callback: callback_arg,
+            }]),
+          );
+          Ok(Arg::Var(tmp))
+        }
+        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin("Array.prototype.map".to_string()),
+              this_arg,
+              vec![callback_arg],
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayFilter { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin("Array.prototype.filter".to_string()),
-            this_arg,
-            vec![callback_arg],
-            Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Filter {
+              callback: callback_arg,
+            }]),
+          );
+          Ok(Arg::Var(tmp))
+        }
+        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin("Array.prototype.filter".to_string()),
+              this_arg,
+              vec![callback_arg],
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayReduce {
@@ -2157,77 +2185,138 @@ impl<'p> HirSourceToInst<'p> {
       } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
-        let mut args = vec![callback_arg];
-        if let Some(init) = init {
-          args.push(self.compile_expr(*init)?);
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        {
+          let init_arg = match init {
+            Some(init) => Some(self.compile_expr(*init)?),
+            None => None,
+          };
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Reduce {
+              callback: callback_arg,
+              init: init_arg,
+            }]),
+          );
+          Ok(Arg::Var(tmp))
         }
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin("Array.prototype.reduce".to_string()),
-            this_arg,
-            args,
-            Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
+        {
+          let mut args = vec![callback_arg];
+          if let Some(init) = init {
+            args.push(self.compile_expr(*init)?);
+          }
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin("Array.prototype.reduce".to_string()),
+              this_arg,
+              args,
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayFind { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin("Array.prototype.find".to_string()),
-            this_arg,
-            vec![callback_arg],
-            Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Find {
+              callback: callback_arg,
+            }]),
+          );
+          Ok(Arg::Var(tmp))
+        }
+        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin("Array.prototype.find".to_string()),
+              this_arg,
+              vec![callback_arg],
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayEvery { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin("Array.prototype.every".to_string()),
-            this_arg,
-            vec![callback_arg],
-            Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Every {
+              callback: callback_arg,
+            }]),
+          );
+          Ok(Arg::Var(tmp))
+        }
+        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin("Array.prototype.every".to_string()),
+              this_arg,
+              vec![callback_arg],
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArraySome { array, callback } => {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin("Array.prototype.some".to_string()),
-            this_arg,
-            vec![callback_arg],
-            Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::array_chain(tmp, this_arg, vec![ArrayChainOpData::Some {
+              callback: callback_arg,
+            }]),
+          );
+          Ok(Arg::Var(tmp))
+        }
+        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin("Array.prototype.some".to_string()),
+              this_arg,
+              vec![callback_arg],
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayChain { array, ops } => {
-        #[cfg(feature = "native-fusion")]
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
         {
           let base_array = self.compile_expr(*array)?;
           let mut compiled_ops = Vec::with_capacity(ops.len());
@@ -2261,7 +2350,7 @@ impl<'p> HirSourceToInst<'p> {
           self.push_value_inst(expr_id, Inst::array_chain(tmp, base_array, compiled_ops));
           Ok(Arg::Var(tmp))
         }
-        #[cfg(not(feature = "native-fusion"))]
+        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
         {
           let mut current = self.compile_expr(*array)?;
           for (pos, op) in ops.iter().enumerate() {

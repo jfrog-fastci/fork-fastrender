@@ -387,6 +387,16 @@ fn collect_local_alloc_flow_facts(
           };
           facts.external_defs.insert(tgt);
         }
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        InstTyp::ArrayChain => {
+          // Array semantic ops go through builtin/VM machinery and may allocate or return aliases
+          // into existing arrays. Conservatively treat their results as external objects rather
+          // than local allocations.
+          let Some(&tgt) = inst.tgts.get(0) else {
+            continue;
+          };
+          facts.external_defs.insert(tgt);
+        }
         InstTyp::VarAssign => {
           let (tgt, arg) = inst.as_var_assign();
           facts.var_assigns.push((tgt, arg.clone()));
@@ -902,6 +912,16 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
           // Async semantic ops may retain references to their inputs (e.g. awaiting thenables or
           // Promise.all attaching handlers). Conservatively treat any allocation passed as
           // escaping.
+          for arg in inst.args.iter() {
+            for alloc in allocs_for_arg(&var_allocs, arg) {
+              join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
+            }
+          }
+        }
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        InstTyp::ArrayChain => {
+          // Array semantic ops may invoke user callbacks and can retain references to inputs
+          // through those callbacks. Conservatively treat any allocation passed as escaping.
           for arg in inst.args.iter() {
             for alloc in allocs_for_arg(&var_allocs, arg) {
               join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);

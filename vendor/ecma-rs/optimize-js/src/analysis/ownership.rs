@@ -214,6 +214,12 @@ fn collect_borrowed_defs(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTr
           // unknown call for ownership purposes.
           borrowed.insert(tgt);
         }
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+        InstTyp::ArrayChain => {
+          // Array semantic ops may allocate or return aliases into existing arrays. Conservatively
+          // treat their results as borrowed (non-owned) values.
+          borrowed.insert(tgt);
+        }
         InstTyp::Call => {
           if is_allocation_inst(inst) {
             continue;
@@ -361,6 +367,11 @@ fn is_consume_site(inst: &Inst, arg_idx: usize) -> bool {
     InstTyp::Call => arg_idx >= 1, // this + call args; callee is always borrowed
     #[cfg(feature = "semantic-ops")]
     InstTyp::KnownApiCall { .. } => true,
+    #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+    InstTyp::ArrayChain => {
+      let _ = arg_idx;
+      true // may invoke callbacks / retain references to operands
+    }
     InstTyp::Return | InstTyp::Throw => arg_idx == 0,
     InstTyp::ForeignStore | InstTyp::UnknownStore => arg_idx == 0,
     _ => false,

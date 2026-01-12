@@ -10,6 +10,7 @@ default = []
 semantic-ops = ["hir-js/semantic-ops", "emit-js/semantic-ops", "typecheck-ts?/semantic-ops"]
 native-async-ops = []
 native-fusion = ["semantic-ops"]
+native-array-ops = []
 typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
 parallel-analyses = ["dep:rayon"]
 serde = [

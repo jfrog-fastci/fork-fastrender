@@ -93,6 +93,10 @@ impl Debug for Arg {
   }
 }
 
+// NOTE: Array chain semantic instructions are exposed under both `native-fusion` (upstream) and
+// `native-array-ops` (this task). Keep the representation unified so enabling both features does
+// not introduce duplicate types or match arms.
+
 /// These must all be pure; impure operations (e.g. prop assign) are separate insts.
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -177,7 +181,7 @@ impl Debug for UnOp {
   }
 }
 
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum ArrayChainOp {
@@ -189,7 +193,7 @@ pub enum ArrayChainOp {
   Some { callback: usize },
 }
 
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayChainOpData {
   Map { callback: Arg },
@@ -255,7 +259,7 @@ pub enum InstTyp {
   /// When `tgts` is non-empty, `tgts[0] = Promise.race(args...)`.
   #[cfg(feature = "native-async-ops")]
   PromiseRace,
-  #[cfg(feature = "native-fusion")]
+  #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
   /// Fused array pipeline suitable for native backends to lower as a single loop.
   ///
   /// Convention:
@@ -306,7 +310,7 @@ pub struct Inst {
   pub args: Vec<Arg>,
   pub spreads: Vec<usize>, // Indices into `args` that are spread, for Call. Cannot have values less than 2 as the first two args are `callee` and `this`.
   pub labels: Vec<u32>,
-  #[cfg(feature = "native-fusion")]
+  #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
   #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
   pub array_chain: Vec<ArrayChainOp>,
   #[cfg_attr(feature = "serde", serde(skip))]
@@ -347,11 +351,11 @@ impl PartialEq for Inst {
       && self.spreads == other.spreads
       && self.labels == other.labels
       && {
-        #[cfg(feature = "native-fusion")]
+        #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
         {
           self.array_chain == other.array_chain
         }
-        #[cfg(not(feature = "native-fusion"))]
+        #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
         {
           true
         }
@@ -374,7 +378,7 @@ impl Debug for Inst {
       .field("args", &self.args)
       .field("spreads", &self.spreads)
       .field("labels", &self.labels);
-    #[cfg(feature = "native-fusion")]
+    #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
     {
       if self.t == InstTyp::ArrayChain {
         s.field("array_chain", &self.array_chain);
@@ -418,7 +422,7 @@ impl Default for Inst {
       args: Default::default(),
       spreads: Default::default(),
       labels: Default::default(),
-      #[cfg(feature = "native-fusion")]
+      #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
       array_chain: Default::default(),
       value_type: ValueTypeSummary::UNKNOWN,
       meta: Default::default(),
@@ -605,7 +609,7 @@ impl Inst {
     }
   }
 
-  #[cfg(feature = "native-fusion")]
+  #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
   pub fn array_chain(tgt: u32, base_array: Arg, ops: Vec<ArrayChainOpData>) -> Self {
     // Keep all SSA values in `args` so existing passes (SSA renaming, DCE, etc) that walk
     // `inst.args` continue to see the full def-use surface area.
@@ -786,7 +790,7 @@ impl Inst {
     (self.tgts.get(0).copied(), *api, &self.args)
   }
 
-  #[cfg(feature = "native-fusion")]
+  #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
   pub fn as_array_chain(&self) -> (Option<u32>, &Arg, &[ArrayChainOp]) {
     assert_eq!(self.t, InstTyp::ArrayChain);
     assert!(

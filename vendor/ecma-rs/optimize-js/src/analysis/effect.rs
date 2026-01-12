@@ -799,11 +799,10 @@ fn inst_local_effect_with_value_types(
       // Native backends can use the structured instruction kind to implement these precisely.
       effects.mark_unknown();
     }
-    #[cfg(feature = "native-fusion")]
+    #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
     InstTyp::ArrayChain => {
-      // `ArrayChain` represents a fused `map`/`filter`/`reduce`/... pipeline and can invoke user
-      // callbacks for each element. Until we have a dedicated effect model for array iteration and
-      // callback invocation counts, stay conservative and treat this as an unknown call.
+      // Array semantic ops may allocate, may throw, and may invoke user callbacks. Model
+      // conservatively until native lowering provides more precise summaries.
       effects.mark_unknown();
     }
     InstTyp::CondGoto

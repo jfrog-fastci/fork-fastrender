@@ -215,7 +215,7 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
     InstTyp::Assume => false,
     #[cfg(feature = "native-async-ops")]
     InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => false,
-    #[cfg(feature = "native-fusion")]
+    #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
     InstTyp::ArrayChain => {
       // A fused array pipeline may execute user callbacks; only hoist when downstream analysis
       // proved it is pure (and the local effect summary is pure).
