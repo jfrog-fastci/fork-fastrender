@@ -152,6 +152,111 @@ pub fn get_prototype_from_constructor(
   result
 }
 
+/// `SpeciesConstructor(O, defaultConstructor)` (ECMA-262), using an explicit embedder host context
+/// and host hook implementation.
+///
+/// Spec: <https://tc39.es/ecma262/#sec-speciesconstructor>
+pub fn species_constructor_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  default_constructor: Value,
+) -> Result<Value, VmError> {
+  // Note: `obj` is already a `GcObject`, so the spec assertion `Type(O) is Object` holds.
+
+  // Root inputs and intermediate values across property lookups / calls, which can allocate and
+  // trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(obj), default_constructor])?;
+
+  // 2. Let C be ? Get(O, "constructor").
+  let key_s = scope.alloc_string("constructor")?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  let constructor = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    obj,
+    key,
+    Value::Object(obj),
+  )?;
+  scope.push_root(constructor)?;
+
+  // 3. If C is undefined, return defaultConstructor.
+  if matches!(constructor, Value::Undefined) {
+    return Ok(default_constructor);
+  }
+
+  // 4. If Type(C) is not Object, throw a TypeError exception.
+  let Value::Object(constructor_obj) = constructor else {
+    return Err(VmError::TypeError("SpeciesConstructor: constructor is not an object"));
+  };
+
+  // 5. Let S be ? Get(C, @@species).
+  let species_sym = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented(
+      "SpeciesConstructor requires intrinsics (create a Realm first)",
+    ))?
+    .well_known_symbols()
+    .species;
+  scope.push_root(Value::Symbol(species_sym))?;
+  let species_key = PropertyKey::from_symbol(species_sym);
+  let species = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    constructor_obj,
+    species_key,
+    Value::Object(constructor_obj),
+  )?;
+  scope.push_root(species)?;
+
+  // 6. If S is either undefined or null, return defaultConstructor.
+  if matches!(species, Value::Undefined | Value::Null) {
+    return Ok(default_constructor);
+  }
+
+  // 7. If IsConstructor(S) is true, return S.
+  if scope.heap().is_constructor(species)? {
+    return Ok(species);
+  }
+
+  // 8. Throw a TypeError exception.
+  Err(VmError::TypeError("SpeciesConstructor: @@species is not a constructor"))
+}
+
+/// Convenience wrapper around [`species_constructor_with_host_and_hooks`] that passes a dummy host
+/// context (`()`) and uses the VM-owned microtask queue as hooks.
+///
+/// ## ⚠️ Dummy `VmHost` context
+///
+/// `SpeciesConstructor` performs `Get` operations which can invoke user JS via accessors. Host
+/// embeddings that need native handlers to observe real host state should prefer
+/// [`species_constructor_with_host_and_hooks`].
+pub fn species_constructor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  default_constructor: Value,
+) -> Result<Value, VmError> {
+  let mut dummy_host = ();
+  let mut hooks = mem::take(vm.microtask_queue_mut());
+  let result = species_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    &mut dummy_host,
+    &mut hooks,
+    obj,
+    default_constructor,
+  );
+  *vm.microtask_queue_mut() = hooks;
+  result
+}
+
 /// `OrdinaryCreateFromConstructor(constructor, intrinsicDefaultProto, internalSlotsList)`
 /// (ECMA-262).
 ///

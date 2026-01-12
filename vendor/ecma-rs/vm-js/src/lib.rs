@@ -314,6 +314,8 @@ pub use crate::spec_ops::get_method;
 pub use crate::spec_ops::get_method_with_host_and_hooks;
 pub use crate::spec_ops::get_prototype_from_constructor;
 pub use crate::spec_ops::ordinary_create_from_constructor;
+pub use crate::spec_ops::species_constructor;
+pub use crate::spec_ops::species_constructor_with_host_and_hooks;
 pub use crate::string::JsString;
 pub use crate::symbol::JsSymbol;
 pub use crate::value::JsBigInt;
