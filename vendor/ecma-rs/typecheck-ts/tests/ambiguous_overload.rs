@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use diagnostics::TextRange;
-
 mod common;
 
 use typecheck_ts::lib_support::CompilerOptions;
