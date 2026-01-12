@@ -16,7 +16,7 @@ use rayon::prelude::*;
 
 use super::{
   alias, array_repr, call_summary, consume, effect, encoding, escape, interproc_escape, nullability,
-  ownership, parallelize, purity, range,
+  numeric_repr, ownership, parallelize, purity, range,
 };
 
 /// Per-function analysis bundle.
@@ -769,10 +769,15 @@ where
     let program_ref: &Program = program;
     map_over_keys(keys, parallelism, |key| {
       let cfg = cfg_for_key(program_ref, key);
+      let nullability_result = nullability::calculate_nullability(cfg);
+      let range_result = range::analyze_ranges(cfg);
+      let numeric_repr_result = numeric_repr::analyze_cfg_numeric_repr(cfg, &range_result);
+      let encoding_result = encoding::analyze_cfg_encoding(cfg);
       (
-        nullability::calculate_nullability(cfg),
-        range::analyze_ranges(cfg),
-        encoding::analyze_cfg_encoding(cfg),
+        nullability_result,
+        range_result,
+        numeric_repr_result,
+        encoding_result,
       )
     })
   };
@@ -785,18 +790,30 @@ where
     .collect()
   };
 
-  for (key, (nullability_result, range_result, encoding_result)) in analysis_results {
+  for (key, (nullability_result, range_result, numeric_repr_result, encoding_result)) in
+    analysis_results
+  {
     analyses.nullability.insert(key, nullability_result);
     analyses.range.insert(key, range_result);
     annotate_cfg_nullability_narrowings(cfg_for_key_deconstructed_mut(program, key));
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       annotate_cfg_nullability_narrowings(cfg);
     }
-    encoding::annotate_cfg_encoding(cfg_for_key_mut(program, key), &encoding_result);
+
+    // Numeric representation inference is currently only consumed by native backends, which operate
+    // on the SSA CFG (`ProgramFunction::analyzed_cfg()`).
+    {
+      let cfg = cfg_for_key_mut(program, key);
+      numeric_repr::annotate_cfg_numeric_repr(cfg, &numeric_repr_result);
+      encoding::annotate_cfg_encoding(cfg, &encoding_result);
+    }
     let deconstructed_encoding = deconstructed_encoding_results
       .get(&key)
       .expect("deconstructed encoding results should be populated");
-    encoding::annotate_cfg_encoding(cfg_for_key_deconstructed_mut(program, key), deconstructed_encoding);
+    encoding::annotate_cfg_encoding(
+      cfg_for_key_deconstructed_mut(program, key),
+      deconstructed_encoding,
+    );
     analyses.encoding.insert(key, encoding_result);
   }
 

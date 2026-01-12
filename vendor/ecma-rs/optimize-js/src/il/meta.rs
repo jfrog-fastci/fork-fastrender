@@ -276,6 +276,31 @@ impl Default for StringEncoding {
   }
 }
 
+/// Narrow numeric representation hint for native backends.
+///
+/// This metadata is populated by a best-effort analysis pass (see
+/// `analysis::numeric_repr`) and is intentionally conservative:
+/// - `I32`/`I64` are only used when the value is proven to be an integer within
+///   the respective bounds.
+/// - `F64` indicates a number value that is not proven to be an integer.
+/// - `Unknown` is used for non-number values or when analysis is unavailable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum NumericRepr {
+  I32,
+  I64,
+  F64,
+  #[default]
+  Unknown,
+}
+
+impl NumericRepr {
+  pub fn is_default(&self) -> bool {
+    matches!(self, Self::Unknown)
+  }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
@@ -567,6 +592,11 @@ pub struct InstMeta {
     serde(default, skip_serializing_if = "Option::is_none")
   )]
   pub type_summary: Option<ValueTypeSummary>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "NumericRepr::is_default")
+  )]
+  pub numeric_repr: NumericRepr,
   #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
   pub excludes_nullish: bool,
   /// Preserve this instruction through copy-propagation passes.
@@ -687,6 +717,7 @@ impl InstMeta {
     }
     self.hir_expr = None;
     self.type_summary = None;
+    self.numeric_repr = NumericRepr::Unknown;
     self.excludes_nullish = false;
     self.ownership = OwnershipState::Unknown;
     self.result_escape = None;
@@ -716,6 +747,7 @@ impl InstMeta {
     self.hir_expr = src.hir_expr;
     self.span = src.span;
     self.type_summary = src.type_summary;
+    self.numeric_repr = src.numeric_repr;
     self.excludes_nullish = src.excludes_nullish;
     self.ownership = src.ownership;
     self.result_escape = src.result_escape;
@@ -755,6 +787,7 @@ impl InstMeta {
       && self.hir_expr.is_none()
       && self.span.is_none()
       && self.type_summary.is_none()
+      && self.numeric_repr.is_default()
       && !self.excludes_nullish
       && !self.preserve_var_assign
       && self.ownership.is_default()

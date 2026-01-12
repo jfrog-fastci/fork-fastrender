@@ -21,6 +21,7 @@ pub mod loop_info;
 #[cfg(feature = "typed")]
 pub mod layout;
 pub mod nullability;
+pub mod numeric_repr;
 pub mod ownership;
 pub mod parallelize;
 pub mod purity;
