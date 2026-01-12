@@ -176,6 +176,108 @@ fn compute_value_states(cfg: &Cfg) -> HashMap<u32, ValueState> {
   vars
 }
 
+fn compute_known_arrays(cfg: &Cfg) -> HashMap<u32, Vec<Arg>> {
+  // Map SSA vars to the arguments used to construct an internal `__optimize_js_array(...)` marker.
+  //
+  // This is *not* a general constant evaluator. It exists to support strict-native validation of
+  // indirect call patterns like:
+  // - `Reflect.apply.apply(Reflect, [eval, null, ["1"]])`
+  // - `Reflect.construct.apply(Reflect, [Function, ["return 1"]])`
+  //
+  // In these cases the banned builtin (`eval`/`Function`) is an element of an array literal. We can
+  // conservatively recover the element list by recognizing the optimizer's internal array marker.
+  const INTERNAL_ARRAY_CALLEE: &str = "__optimize_js_array";
+
+  // Collect SSA defs in deterministic order.
+  let labels = cfg.graph.labels_sorted();
+  let mut defs: Vec<(u32, &Inst)> = Vec::new();
+  for label in labels.iter().copied() {
+    for inst in cfg.bblocks.get(label).iter() {
+      for &tgt in &inst.tgts {
+        defs.push((tgt, inst));
+      }
+    }
+  }
+
+  let mut arrays: HashMap<u32, Vec<Arg>> = HashMap::new();
+  for (tgt, inst) in defs.iter().copied() {
+    if inst.t != InstTyp::Call || inst.spreads.len() != 0 {
+      continue;
+    }
+    if inst.tgts.len() != 1 {
+      continue;
+    }
+    if !matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == INTERNAL_ARRAY_CALLEE) {
+      continue;
+    }
+
+    // Per `InstTyp::Call` convention: args[2..] are call arguments.
+    arrays.insert(tgt, inst.args.get(2..).unwrap_or_default().to_vec());
+  }
+
+  // Propagate array literals through simple SSA moves / merges so we can recognize patterns like:
+  //
+  //   const args = [eval, null, ["1"]];
+  //   Reflect.apply.apply(Reflect, args);
+  loop {
+    let mut changed = false;
+    for (tgt, inst) in defs.iter().copied() {
+      match inst.t {
+        InstTyp::VarAssign => {
+          let Some(Arg::Var(src)) = inst.args.get(0) else {
+            continue;
+          };
+          let Some(value) = arrays.get(src).cloned() else {
+            continue;
+          };
+          if arrays.get(&tgt) != Some(&value) {
+            arrays.insert(tgt, value);
+            changed = true;
+          }
+        }
+        InstTyp::Phi => {
+          let mut iter = inst.args.iter();
+          let Some(first) = iter.next() else {
+            continue;
+          };
+          let Arg::Var(first_var) = first else {
+            continue;
+          };
+          let Some(first_value) = arrays.get(first_var).cloned() else {
+            continue;
+          };
+          let mut all_same = true;
+          for arg in iter {
+            let Arg::Var(var) = arg else {
+              all_same = false;
+              break;
+            };
+            let Some(value) = arrays.get(var) else {
+              all_same = false;
+              break;
+            };
+            if *value != first_value {
+              all_same = false;
+              break;
+            }
+          }
+          if all_same && arrays.get(&tgt) != Some(&first_value) {
+            arrays.insert(tgt, first_value);
+            changed = true;
+          }
+        }
+        _ => {}
+      }
+    }
+
+    if !changed {
+      break;
+    }
+  }
+
+  arrays
+}
+
 #[cfg(feature = "typed")]
 fn compute_var_layouts(cfg: &Cfg) -> HashMap<u32, types_ts_interned::LayoutId> {
   let labels = cfg.graph.labels_sorted();
@@ -292,7 +394,11 @@ static REFLECT_CONSTRUCT_API: Lazy<hir_js::ApiId> =
 /// The goal is not to fully emulate JS semantics, but to prevent obvious strict-native escapes such
 /// as `Function.prototype.call.call(eval, ...)` when typecheck-ts native-strict checking is not
 /// available (e.g. JS inputs or typed builds without `nativeStrict`).
-fn banned_call_from_call_inst(inst: &Inst, vars: &HashMap<u32, ValueState>) -> Option<BannedUse> {
+fn banned_call_from_call_inst(
+  inst: &Inst,
+  vars: &HashMap<u32, ValueState>,
+  arrays: &HashMap<u32, Vec<Arg>>,
+) -> Option<BannedUse> {
   if inst.t != InstTyp::Call {
     return None;
   }
@@ -438,14 +544,22 @@ fn banned_call_from_call_inst(inst: &Inst, vars: &HashMap<u32, ValueState>) -> O
     if callee_path.ends_with(".apply") {
       // `this` is the base function being invoked via its `.apply` method.
       //
-      // We intentionally drop the argument array here: strict-native bans are currently based on
-      // the *identity* of the ultimately-called builtin (eval/Function/Proxy/etc), which does not
-      // require reconstructing the full spread list.
+      // When the argument array is a literal (lowered as `__optimize_js_array(...)`), recover the
+      // element list so we can see through call-forwarding patterns like:
+      // - `Reflect.apply.apply(Reflect, [eval, null, ["1"]])`
+      // - `Reflect.construct.apply(Reflect, [Function, ["return 1"]])`
       let new_callee = this.clone();
       let new_this = args.get(0).cloned().unwrap_or(Arg::Const(Const::Undefined));
+      let expanded = args
+        .get(1)
+        .and_then(|arg| match arg {
+          Arg::Var(v) => arrays.get(v).cloned(),
+          _ => None,
+        })
+        .unwrap_or_default();
       callee = new_callee;
       this = new_this;
-      args.clear();
+      args = expanded;
       continue;
     }
 
@@ -543,6 +657,7 @@ impl SymbolScopes {
 
 fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: StrictNativeOpts) -> Vec<Diagnostic> {
   let vars = compute_value_states(cfg);
+  let arrays = compute_known_arrays(cfg);
   let labels = cfg.graph.labels_sorted();
   let mut diagnostics = Vec::new();
 
@@ -594,7 +709,7 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
             ));
           }
 
-          if let Some(banned) = banned_call_from_call_inst(inst, &vars) {
+          if let Some(banned) = banned_call_from_call_inst(inst, &vars, &arrays) {
             match banned {
               BannedUse::Call { path } => diagnostics.push(diag(
                 program,
