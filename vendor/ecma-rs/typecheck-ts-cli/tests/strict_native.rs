@@ -384,3 +384,32 @@ eval("1+1");
     "expected compiler_options.strict_native=false, got {json:?}"
   );
 }
+
+#[test]
+fn native_strict_requires_strict_null_checks() {
+  let tmp = tempdir().expect("temp dir");
+  let tsconfig = tmp.path().join("tsconfig.json");
+  let entry = tmp.path().join("main.ts");
+
+  fs::write(
+    &tsconfig,
+    r#"{
+  "compilerOptions": { "nativeStrict": true, "strictNullChecks": false },
+  "files": ["main.ts"]
+}
+"#,
+  )
+  .expect("write tsconfig.json");
+  fs::write(&entry, "export const x = 1;\n").expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--project")
+    .arg(tsconfig.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_REQUIRES_STRICT_NULL_CHECKS.as_str(),
+    ));
+}

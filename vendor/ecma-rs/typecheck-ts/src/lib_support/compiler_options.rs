@@ -98,6 +98,9 @@ pub struct CompilerOptions {
   pub no_implicit_any: bool,
   /// Enforce the AOT-friendly subset of TypeScript described in EXEC.plan.
   ///
+  /// Native-strict relies on sound nullability and therefore requires
+  /// [`strict_null_checks`](Self::strict_null_checks) to be enabled.
+  ///
   /// This is intentionally opt-in so existing conformance behavior remains
   /// unchanged unless explicitly enabled.
   #[cfg_attr(feature = "serde", serde(default))]

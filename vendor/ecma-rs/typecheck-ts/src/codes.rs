@@ -916,6 +916,24 @@ pub const NATIVE_STRICT_PROTOTYPE_MUTATION: Code = Code::new(
   &[],
 );
 
+/// TC4010: `native_strict` / `strict_native` requires `strictNullChecks`.
+///
+/// Native-strict mode relies on sound nullability tracking. When `strictNullChecks`
+/// is disabled, `null` and `undefined` are effectively erased from most types and
+/// native-strict checks (notably non-null assertion validation) become unsound.
+///
+/// - Primary span: zero-length span at the start of a checked root file when available,
+///   otherwise a placeholder span.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_REQUIRES_STRICT_NULL_CHECKS: Code = Code::new(
+  "TC4010",
+  "native-strict requires strict null checks",
+  "file start placeholder when native-strict is enabled without strictNullChecks",
+  &["primary: placeholder at start of file"],
+  &[],
+);
+
 /// HOST0001: Host environment failed to provide required input.
 ///
 /// - Primary span: zero-length placeholder when no source span is available.

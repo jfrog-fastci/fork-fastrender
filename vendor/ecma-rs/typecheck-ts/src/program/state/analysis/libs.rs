@@ -35,6 +35,19 @@ impl ProgramState {
       options.libs.clear();
     }
 
+    if (options.native_strict || options.strict_native) && !options.strict_null_checks {
+      let primary = if let Some(key) = roots.first() {
+        let file_id = self.intern_file_key(key.clone(), FileOrigin::Source);
+        Span::new(file_id, TextRange::new(0, 0))
+      } else {
+        Span::new(FileId(u32::MAX), TextRange::new(0, 0))
+      };
+      self.push_program_diagnostic(codes::NATIVE_STRICT_REQUIRES_STRICT_NULL_CHECKS.error(
+        "`nativeStrict`/`strictNative` requires `strictNullChecks`; enable `strictNullChecks` (or `strict`) or disable native-strict mode",
+        primary,
+      ));
+    }
+
     self.compiler_options = options.clone();
     self.checker_caches = CheckerCaches::new(options.cache.clone());
     self.cache_stats = CheckerCacheStats::default();
