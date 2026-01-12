@@ -4,7 +4,6 @@
     "typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
-      "moduleResolution": 1,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -18,12 +17,21 @@
   },
   "diagnostics": [
     {
-      "code": 2307,
+      "code": 2792,
       "file": "main.ts",
-      "start": 7,
-      "end": 38,
+      "start": 18,
+      "end": 49,
       "category": "error",
-      "message": "Cannot find module 'difftsc-module-resolution-pkg' or its corresponding type declarations."
+      "message": "Cannot find module 'difftsc-module-resolution-pkg'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?"
     }
-  ]
+  ],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "main.ts",
+        "name": "y",
+        "type": "any"
+      }
+    ]
+  }
 }

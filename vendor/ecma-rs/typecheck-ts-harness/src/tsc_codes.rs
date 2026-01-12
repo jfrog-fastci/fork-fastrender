@@ -52,7 +52,8 @@ pub(crate) fn mapped_tsc_codes_for_rust_code(raw: &str) -> Option<&'static [u32]
     // `typecheck-ts` also reuses this code for missing triple-slash reference
     // directives (`/// <reference path="..." />` and `types="..."`), which tsc
     // reports as TS6053 / TS2688 respectively.
-    "TC1001" => Some(&[2307, 6053, 2688]),
+    // TS2792 is used in Classic module resolution mode.
+    "TC1001" => Some(&[2307, 2792, 6053, 2688]),
     // Module '"..."' has no exported member '...'.
     "TC1002" => Some(&[2305]),
     // Expected N arguments, but got M.

@@ -478,6 +478,13 @@ impl ProgramState {
           }
         }
         DefKind::Import(import) => {
+          // TypeScript treats unresolved module imports as `any` once the
+          // resolution diagnostic has been reported so that downstream checking
+          // can proceed without cascading `unknown` types.
+          //
+          // This matches tsc's behaviour for both Classic (TS2792) and Node
+          // (TS2307) module resolution failures.
+          let unresolved_fallback = matches!(import.target, ImportTarget::Unresolved { .. });
           if import.original == "*" {
             match import.target {
               ImportTarget::File(file) => {
@@ -492,7 +499,11 @@ impl ProgramState {
               ImportTarget::Unresolved { ref specifier } => {
                 let exports = self.exports_of_ambient_module(specifier)?;
                 if exports.is_empty() {
-                  prim.unknown
+                  if unresolved_fallback {
+                    prim.any
+                  } else {
+                    prim.unknown
+                  }
                 } else if let Some(entry) = exports.get("export=") {
                   if let Some(def) = entry.def {
                     self
@@ -516,6 +527,9 @@ impl ProgramState {
             }
           } else {
             let exports = self.exports_for_import(&import)?;
+            if exports.is_empty() && unresolved_fallback {
+              return Ok(prim.any);
+            }
             if let Some(entry) = exports.get(&import.original) {
               if let Some(def) = entry.def {
                 if let Some(ty) = self.export_type_for_def(def)? {

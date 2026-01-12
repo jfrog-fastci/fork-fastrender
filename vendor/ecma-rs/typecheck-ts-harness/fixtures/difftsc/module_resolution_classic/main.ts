@@ -1,1 +1,3 @@
-import "difftsc-module-resolution-pkg";
+import { x } from "difftsc-module-resolution-pkg";
+
+export const y = x;

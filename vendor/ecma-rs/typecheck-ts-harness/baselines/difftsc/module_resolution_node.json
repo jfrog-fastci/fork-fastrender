@@ -16,5 +16,19 @@
       "useDefineForClassFields": true
     }
   },
-  "diagnostics": []
+  "diagnostics": [],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "main.ts",
+        "name": "y",
+        "type": "number"
+      },
+      {
+        "file": "node_modules/difftsc-module-resolution-pkg/dist/index.d.ts",
+        "name": "x",
+        "type": "number"
+      }
+    ]
+  }
 }
