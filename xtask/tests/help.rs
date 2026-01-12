@@ -44,6 +44,25 @@ fn help_lists_commands() {
 }
 
 #[test]
+fn update_goldens_help_lists_pages_suite() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["update-goldens", "--help"])
+    .output()
+    .expect("run xtask update-goldens --help");
+
+  assert!(
+    output.status.success(),
+    "update-goldens help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("Possible values:") && stdout.contains("- pages:"),
+    "update-goldens help should list the `pages` suite; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn js_help_lists_subcommands() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["js", "--help"])

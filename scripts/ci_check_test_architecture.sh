@@ -143,6 +143,6 @@ if [[ "${#missing[@]}" -ne 0 || "${#extra[@]}" -ne 0 ]]; then
     echo >&2
   fi
   echo "hint: add integration tests as modules under tests/ and include them from tests/integration.rs" >&2
-  echo "hint: unit tests belong in src/ (run with: cargo test --lib)" >&2
+  echo "hint: unit tests belong in src/ (run with: bash scripts/cargo_agent.sh test --quiet -p fastrender --lib)" >&2
   exit 1
 fi

@@ -126,8 +126,8 @@ New columns/transform/form fixtures ship with checked-in goldens; keep these up 
 
 ## Offline page regression suite
 
-- Run: `bash scripts/cargo_agent.sh test -p fastrender --test integration regression::pages::pages_regression_suite`
-- Refresh goldens: `UPDATE_PAGES_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration regression::pages::pages_regression_suite`
+- Run: `bash scripts/cargo_agent.sh test -p fastrender --test integration regression::pages::pages_regression_suite -- --exact`
+- Refresh goldens: `bash scripts/cargo_agent.sh xtask update-goldens pages` (or `UPDATE_PAGES_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration regression::pages::pages_regression_suite -- --exact`)
 
 This suite renders a curated set of realistic pages under `tests/pages/fixtures/` (flex/grid/table, multicol, pagination, masks/filters, SVG, writing modes, form controls, plus a positioned-child regression) and compares them against goldens in `tests/pages/golden/`.
 
@@ -406,7 +406,7 @@ There is a self-contained WPT-style runner under `tests/wpt/` for local “rende
   - `<link rel="match" | rel="mismatch">` inside HTML declares reftest references without touching the manifest.
   - The legacy `tests/wpt/manifest.toml` is still honored; set `HarnessConfig::with_discovery_mode(DiscoveryMode::MetadataOnly)` to ignore it when adding new offline WPT dumps.
 - New curated tests should start as `expected = "fail"` in `tests/wpt/manifest.toml` until the underlying primitive is implemented. Once a test starts passing, flip it to `expected = "pass"` (the harness treats “unexpected pass” as a failure so CI stays honest).
-- The `wpt_local_suite_passes` smoke-test suite is strict by default: visual tests compare against checked-in PNGs under `tests/wpt/expected/` and fail on diffs. Set `UPDATE_WPT_EXPECTED=1` (or run `bash scripts/cargo_agent.sh xtask update-goldens --suite wpt`) to regenerate/update those goldens. (Optional: `WPT_EXPECTED_DIR` overrides the baseline directory for local experimentation.)
+- The `wpt_local_suite_passes` smoke-test suite is strict by default: visual tests compare against checked-in PNGs under `tests/wpt/expected/` and fail on diffs. Set `UPDATE_WPT_EXPECTED=1` (or run `bash scripts/cargo_agent.sh xtask update-goldens wpt`) to regenerate/update those goldens. (Optional: `WPT_EXPECTED_DIR` overrides the baseline directory for local experimentation.)
 - Artifacts always land in `target/wpt-output/<id>/{actual,expected,diff}.png` with `report.html` + `report.json` for debugging and tooling.
 - Viewport/DPR are fixed per-test from metadata. CI can pin fonts for deterministic renders via `HarnessConfig::with_font_dir`/`WptRunnerBuilder::font_dir` (for example, point at `tests/fonts/`).
 - The runner supports parallel execution and per-test timeouts (see `HarnessConfig`).

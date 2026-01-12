@@ -93,7 +93,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 - Help: `bash scripts/cargo_agent.sh xtask --help`
 - Capability map (breadth-first roadmap): `bash scripts/cargo_agent.sh xtask capability-map` (writes `docs/capability_map.md` by default)
 - Tests: `bash scripts/cargo_agent.sh xtask test [core|style|fixtures|wpt|all]`
-- Refresh goldens: `bash scripts/cargo_agent.sh xtask update-goldens [all|fixtures|reference|wpt]` (sets the appropriate `UPDATE_*` env vars)
+- Refresh goldens: `bash scripts/cargo_agent.sh xtask update-goldens [all|fixtures|reference|wpt|pages]` (sets `UPDATE_GOLDEN`, `UPDATE_WPT_EXPECTED`, or `UPDATE_PAGES_GOLDEN` as appropriate)
 - Pageset scoreboard (`fetch_pages` → `prefetch_assets` → `pageset_progress` when disk cache is enabled; bundled fonts by default): `bash scripts/cargo_agent.sh xtask pageset [--pages example.com,news.ycombinator.com] [--shard 0/4] [--no-fetch] [--refresh] [--allow-http-error-status] [--allow-collisions] [--timings] [--disk-cache] [--no-disk-cache] [--cache-dir <dir>] [--bundled-fonts|--system-fonts] [--cascade-diagnostics] [--cascade-diagnostics-slow-ms 500] [--accuracy] [--accuracy-baseline existing|chrome] [--accuracy-baseline-dir <dir>] [--accuracy-tolerance <u8>] [--accuracy-max-diff-percent <float>] [--accuracy-diff-dir <dir>] [--capture-missing-failure-fixtures] [-- <pageset_progress args...>]`
   - Sharded example: `bash scripts/cargo_agent.sh xtask pageset --shard 0/4` (applies to fetch + prefetch (disk cache only) + render; add `--no-fetch` to reuse cached pages)
   - Forward compatibility gates when needed: `--compat-profile site` and/or `--dom-compat compat` are passed through to `pageset_progress run` but remain off by default.

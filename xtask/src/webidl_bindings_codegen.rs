@@ -821,6 +821,8 @@ fn dom_parse_interface_entry(
 
   // Constructors.
   if allow.constructors {
+    let mut saw_constructor_with_args = false;
+
     for member in iface.members {
       if member.name != Some("constructor") {
         continue;
@@ -834,15 +836,23 @@ fn dom_parse_interface_entry(
       let InterfaceMember::Constructor { arguments } = parsed else {
         continue;
       };
-      if !arguments.is_empty() {
+      if arguments.is_empty() {
+        constructible = true;
+      } else {
+        // MVP DOM bindings currently only support `constructor()` (no-argument) wiring. Some specs
+        // (or our combined WebIDL snapshot) may include additional constructor overloads with
+        // arguments; treat those as unsupported-but-ignorable as long as a no-arg constructor also
+        // exists.
+        saw_constructor_with_args = true;
+      }
+    }
+    if !constructible {
+      if saw_constructor_with_args {
         bail!(
-          "only no-argument constructors are supported in MVP DOM bindings (interface={})",
+          "DOM allowlist requested constructors for `{}`, but WORLD only provides constructors with arguments (MVP DOM bindings only support `constructor()`)",
           iface.name
         );
       }
-      constructible = true;
-    }
-    if !constructible {
       bail!(
         "DOM allowlist requested constructors for `{}`, but none were found in WORLD",
         iface.name

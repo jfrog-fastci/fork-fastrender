@@ -7,7 +7,7 @@ This page describes how to build, test, and run the renderer using the repo as i
 Use the `xtask` wrapper for common local loops:
 
 - Test: `bash scripts/cargo_agent.sh xtask test [core|style|fixtures|wpt|all]` (default: `core`)
-- Refresh goldens: `bash scripts/cargo_agent.sh xtask update-goldens [all|fixtures|reference|wpt]`
+- Refresh goldens: `bash scripts/cargo_agent.sh xtask update-goldens [all|fixtures|reference|wpt|pages]`
 - Update pageset scoreboard: `bash scripts/cargo_agent.sh xtask pageset` (add `--capture-missing-failure-fixtures` to auto-import offline fixtures for failing pages from warmed caches)
 - Render a page: `bash scripts/cargo_agent.sh xtask render-page --url https://example.com --output out.png`
 - Diff renders: `bash scripts/cargo_agent.sh xtask diff-renders --before fetches/renders/baseline --after fetches/renders/new`

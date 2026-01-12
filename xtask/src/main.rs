@@ -105,7 +105,7 @@ struct Cli {
 enum Commands {
   /// Run common test subsets (core/style/fixtures/WPT)
   Test(TestArgs),
-  /// Refresh checked-in render goldens (fixtures, reference images, WPT)
+  /// Refresh checked-in render goldens (fixtures, reference images, WPT, pages regression)
   UpdateGoldens(UpdateGoldensArgs),
   /// JavaScript workflows (conformance, harnesses, etc.)
   Js(js::JsArgs),
@@ -594,7 +594,7 @@ enum TestSuite {
 
 #[derive(Args)]
 struct UpdateGoldensArgs {
-  /// Which golden set to refresh (fixtures + ref + WPT by default)
+  /// Which golden set to refresh (fixtures + ref + WPT + pages by default)
   #[arg(value_enum, default_value_t = GoldenSuite::All)]
   suite: GoldenSuite,
 
@@ -605,7 +605,7 @@ struct UpdateGoldensArgs {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum GoldenSuite {
-  /// Refresh fixtures, reference images, and WPT expected outputs
+  /// Refresh fixtures, reference images, WPT expected outputs, and pages regression goldens
   All,
   /// Refresh `tests/fixtures/golden/*`
   Fixtures,
@@ -613,6 +613,8 @@ enum GoldenSuite {
   Reference,
   /// Refresh WPT expected images under `tests/wpt/expected/*`
   Wpt,
+  /// Refresh pages regression images under `tests/pages/golden/*`
+  Pages,
 }
 
 #[derive(Args)]
@@ -950,6 +952,7 @@ fn run_update_goldens(args: UpdateGoldensArgs) -> Result<()> {
       GoldenSuite::Fixtures,
       GoldenSuite::Reference,
       GoldenSuite::Wpt,
+      GoldenSuite::Pages,
     ],
     suite => vec![suite],
   };
@@ -979,6 +982,16 @@ fn run_update_goldens(args: UpdateGoldensArgs) -> Result<()> {
           "--test",
           "integration",
           "wpt::wpt_local_suite_passes",
+          "--",
+          "--exact",
+        ]);
+      }
+      GoldenSuite::Pages => {
+        cmd.env("UPDATE_PAGES_GOLDEN", "1");
+        cmd.args([
+          "--test",
+          "integration",
+          "regression::pages::pages_regression_suite",
           "--",
           "--exact",
         ]);

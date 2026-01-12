@@ -483,16 +483,27 @@ fn build_bundle_page_command(
   url: Option<&str>,
   bundle_path: &Path,
 ) -> Result<Command> {
-  let mut cmd = xtask::cmd::cargo_agent_command(&crate::repo_root());
-  cmd.arg("run").arg("--quiet");
-  if !args.debug {
-    cmd.arg("--release");
-  }
-  if args.capture_mode == CaptureMode::Cache {
-    use crate::DiskCacheFeatureExt;
-    cmd.apply_disk_cache_feature(true);
-  }
-  cmd.args(["--bin", "bundle_page", "--"]);
+  let bundle_page_bin = std::env::var_os("FASTR_XTASK_BUNDLE_PAGE_BIN")
+    .map(|value| value.to_string_lossy().trim().to_string())
+    .filter(|value| !value.is_empty());
+
+  let mut cmd = if let Some(bundle_page_bin) = bundle_page_bin {
+    // Allow tests (and power users) to override the `bundle_page` binary used for capture so we can
+    // avoid nested Cargo invocations when desired.
+    Command::new(bundle_page_bin)
+  } else {
+    let mut cmd = xtask::cmd::cargo_agent_command(&crate::repo_root());
+    cmd.arg("run").arg("--quiet");
+    if !args.debug {
+      cmd.arg("--release");
+    }
+    if args.capture_mode == CaptureMode::Cache {
+      use crate::DiskCacheFeatureExt;
+      cmd.apply_disk_cache_feature(true);
+    }
+    cmd.args(["--bin", "bundle_page", "--"]);
+    cmd
+  };
   match args.capture_mode {
     CaptureMode::Render => {
       let Some(url) = url else {

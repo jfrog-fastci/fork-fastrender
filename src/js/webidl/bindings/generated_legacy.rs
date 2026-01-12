@@ -515,8 +515,40 @@ pub mod window {
     Host: WebHostBindings<R>,
   {
     static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![
+        vec![],
+        vec![ArgumentSchema {
+          name: "parent",
+          ty: IdlType::Any,
+          optional: false,
+          variadic: false,
+          default: None,
+        }],
+      ]
+    });
+    let overload_index: usize = {
+      static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();
+      let overloads = OVERLOADS.get_or_init(|| {
+        vec![
+          OverloadSig {
+            args: vec![],
+            decl_index: 0,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+          OverloadSig {
+            args: vec![OverloadArg {
+              ty: IdlType::Any,
+              optionality: Optionality::Required,
+              default: None,
+            }],
+            decl_index: 1,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+        ]
+      });
+      resolve_overload(rt, overloads, args)?.overload_index
+    };
     let params = &arg_schemas[overload_index];
     let ctx = type_context();
     let converted_args = convert_arguments(rt, args, params, ctx)?;
@@ -710,24 +742,6 @@ pub mod window {
       return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "URL", "href")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
     binding_value_to_js::<Host, R>(rt, result)
   }
 
@@ -2621,8 +2635,40 @@ pub mod worker {
     Host: WebHostBindings<R>,
   {
     static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![
+        vec![],
+        vec![ArgumentSchema {
+          name: "parent",
+          ty: IdlType::Any,
+          optional: false,
+          variadic: false,
+          default: None,
+        }],
+      ]
+    });
+    let overload_index: usize = {
+      static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();
+      let overloads = OVERLOADS.get_or_init(|| {
+        vec![
+          OverloadSig {
+            args: vec![],
+            decl_index: 0,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+          OverloadSig {
+            args: vec![OverloadArg {
+              ty: IdlType::Any,
+              optionality: Optionality::Required,
+              default: None,
+            }],
+            decl_index: 1,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+        ]
+      });
+      resolve_overload(rt, overloads, args)?.overload_index
+    };
     let params = &arg_schemas[overload_index];
     let ctx = type_context();
     let converted_args = convert_arguments(rt, args, params, ctx)?;
@@ -2816,24 +2862,6 @@ pub mod worker {
       return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "URL", "href")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
     binding_value_to_js::<Host, R>(rt, result)
   }
 

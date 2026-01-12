@@ -2436,6 +2436,7 @@ fn proxy_constructor_impl(
   let proxy = proxy_scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
+
 /// `Proxy` constructor (ECMA-262).
 ///
 /// Proxy must be called with `new`; calling it as a normal function throws a TypeError.
@@ -2452,7 +2453,6 @@ pub fn proxy_constructor_call(
   Err(VmError::TypeError("Proxy constructor requires 'new'"))
 }
 
-/// `new Proxy(target, handler)` (ECMA-262).
 pub fn proxy_constructor_construct(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2521,13 +2521,13 @@ pub fn proxy_revocable(
   scope.define_property(
     result,
     proxy_key,
-    data_desc(Value::Object(proxy), true, false, true),
+    data_desc(Value::Object(proxy), true, true, true),
   )?;
   let revoke_key = PropertyKey::from_string(revoke_name);
   scope.define_property(
     result,
     revoke_key,
-    data_desc(Value::Object(revoke), true, false, true),
+    data_desc(Value::Object(revoke), true, true, true),
   )?;
 
   Ok(Value::Object(result))
