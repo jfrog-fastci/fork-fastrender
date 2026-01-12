@@ -3619,6 +3619,141 @@ mod tests {
   }
 
   #[test]
+  fn error_beforeunload_and_pagetransition_event_constructors_exist_and_roundtrip_init() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host_state, event_loop| {
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "this.__has_error_event_ctor = (typeof ErrorEvent === 'function');\n\
+         this.__has_beforeunload_event_ctor = (typeof BeforeUnloadEvent === 'function');\n\
+         this.__has_pagetransition_event_ctor = (typeof PageTransitionEvent === 'function');\n\
+         this.__listener_message = undefined;\n\
+         addEventListener('error', (e) => { this.__listener_message = e && e.message; });\n\
+         var e1 = new ErrorEvent('error', {\n\
+           message: 'boom',\n\
+           filename: 'https://example.invalid/app.js',\n\
+           lineno: 10,\n\
+           colno: 20,\n\
+           error: 123,\n\
+           bubbles: true,\n\
+           cancelable: true,\n\
+           composed: true,\n\
+         });\n\
+         this.__e1_is_instance = (e1 instanceof ErrorEvent);\n\
+         this.__e1_message = e1.message;\n\
+         this.__e1_filename = e1.filename;\n\
+         this.__e1_lineno = e1.lineno;\n\
+         this.__e1_colno = e1.colno;\n\
+         this.__e1_error = e1.error;\n\
+         this.__e1_bubbles = e1.bubbles;\n\
+         this.__e1_cancelable = e1.cancelable;\n\
+         this.__e1_composed = e1.composed;\n\
+         dispatchEvent(e1);\n\
+         var e2 = new BeforeUnloadEvent('beforeunload', { returnValue: 'bye', cancelable: true });\n\
+         this.__e2_is_instance = (e2 instanceof BeforeUnloadEvent);\n\
+         this.__e2_return_value = e2.returnValue;\n\
+         e2.returnValue = 'changed';\n\
+         this.__e2_return_value_after = e2.returnValue;\n\
+         var e3 = new PageTransitionEvent('pageshow', { persisted: true, bubbles: true });\n\
+         this.__e3_is_instance = (e3 instanceof PageTransitionEvent);\n\
+         this.__e3_persisted = e3.persisted;\n\
+         this.__e3_bubbles = e3.bubbles;\n",
+      )?;
+      Ok(())
+    })?;
+
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__has_error_event_ctor"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__has_beforeunload_event_ctor"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__has_pagetransition_event_ctor"),
+      Value::Bool(true)
+    ));
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_is_instance"),
+      Value::Bool(true)
+    ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__e1_message").as_deref(),
+      Some("boom")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__e1_filename").as_deref(),
+      Some("https://example.invalid/app.js")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_lineno"),
+      Value::Number(n) if (n - 10.0).abs() < f64::EPSILON
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_colno"),
+      Value::Number(n) if (n - 20.0).abs() < f64::EPSILON
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_error"),
+      Value::Number(n) if (n - 123.0).abs() < f64::EPSILON
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_bubbles"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_cancelable"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_composed"),
+      Value::Bool(true)
+    ));
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__listener_message").as_deref(),
+      Some("boom")
+    );
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__e2_is_instance"),
+      Value::Bool(true)
+    ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__e2_return_value").as_deref(),
+      Some("bye")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__e2_return_value_after").as_deref(),
+      Some("changed")
+    );
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__e3_is_instance"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__e3_persisted"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__e3_bubbles"),
+      Value::Bool(true)
+    ));
+
+    Ok(())
+  }
+
+  #[test]
   fn handled_after_notification_dispatches_rejectionhandled_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

@@ -5259,6 +5259,356 @@ fn promise_rejection_event_constructor_native(
   Ok(Value::Object(obj))
 }
 
+fn error_event_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut message = scope.alloc_string("")?;
+  let mut filename = scope.alloc_string("")?;
+  let mut lineno = 0u32;
+  let mut colno = 0u32;
+  let mut error = Value::Undefined;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let message_key = alloc_key(scope, "message")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &message_key)?
+      {
+        message = scope.heap_mut().to_string(value)?;
+      }
+
+      let filename_key = alloc_key(scope, "filename")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &filename_key)?
+      {
+        filename = scope.heap_mut().to_string(value)?;
+      }
+
+      let lineno_key = alloc_key(scope, "lineno")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &lineno_key)?
+      {
+        let n = scope.heap_mut().to_number(value)?;
+        lineno = if n.is_finite() && n >= 0.0 {
+          n.floor().min(u32::MAX as f64) as u32
+        } else {
+          0
+        };
+      }
+
+      let colno_key = alloc_key(scope, "colno")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &colno_key)?
+      {
+        let n = scope.heap_mut().to_number(value)?;
+        colno = if n.is_finite() && n >= 0.0 {
+          n.floor().min(u32::MAX as f64) as u32
+        } else {
+          0
+        };
+      }
+
+      let error_key = alloc_key(scope, "error")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &error_key)?
+      {
+        error = value;
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let message_key = alloc_key(scope, "message")?;
+  scope.define_property(obj, message_key, read_only_data_desc(Value::String(message)))?;
+
+  let filename_key = alloc_key(scope, "filename")?;
+  scope.define_property(obj, filename_key, read_only_data_desc(Value::String(filename)))?;
+
+  let lineno_key = alloc_key(scope, "lineno")?;
+  scope.define_property(
+    obj,
+    lineno_key,
+    read_only_data_desc(Value::Number(lineno as f64)),
+  )?;
+
+  let colno_key = alloc_key(scope, "colno")?;
+  scope.define_property(
+    obj,
+    colno_key,
+    read_only_data_desc(Value::Number(colno as f64)),
+  )?;
+
+  let error_key = alloc_key(scope, "error")?;
+  scope.define_property(obj, error_key, read_only_data_desc(error))?;
+
+  Ok(Value::Object(obj))
+}
+
+fn before_unload_event_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut return_value = scope.alloc_string("")?;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let return_value_key = alloc_key(scope, "returnValue")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &return_value_key)?
+      {
+        return_value = scope.heap_mut().to_string(value)?;
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let return_value_key = alloc_key(scope, "returnValue")?;
+  scope.define_property(
+    obj,
+    return_value_key,
+    data_desc(Value::String(return_value)),
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn page_transition_event_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut persisted = false;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let persisted_key = alloc_key(scope, "persisted")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &persisted_key)?
+      {
+        persisted = scope.heap().to_boolean(value)?;
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let persisted_key = alloc_key(scope, "persisted")?;
+  scope.define_property(
+    obj,
+    persisted_key,
+    read_only_data_desc(Value::Bool(persisted)),
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
 fn event_constructor_construct_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5305,6 +5655,54 @@ fn promise_rejection_event_constructor_construct_native(
     _ => callee,
   };
   promise_rejection_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
+fn error_event_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  error_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
+fn before_unload_event_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  before_unload_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
+fn page_transition_event_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  page_transition_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
 }
 
 fn event_init_event_native(
@@ -13480,6 +13878,24 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(promise_rejection_event_proto, Some(event_proto))?;
 
+  let error_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(error_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(error_event_proto, Some(event_proto))?;
+
+  let before_unload_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(before_unload_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(before_unload_event_proto, Some(event_proto))?;
+
+  let page_transition_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(page_transition_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(page_transition_event_proto, Some(event_proto))?;
+
   // Constructors on the global object.
   let prototype_key = alloc_key(&mut scope, "prototype")?;
   let constructor_key = alloc_key(&mut scope, "constructor")?;
@@ -13581,6 +13997,107 @@ fn init_window_globals(
     global,
     promise_rejection_event_ctor_key,
     data_desc(Value::Object(promise_rejection_event_ctor_func)),
+  )?;
+
+  let error_event_ctor_call_id = vm.register_native_call(error_event_constructor_native)?;
+  let error_event_ctor_construct_id =
+    vm.register_native_construct(error_event_constructor_construct_native)?;
+  let error_event_ctor_name = scope.alloc_string("ErrorEvent")?;
+  scope.push_root(Value::String(error_event_ctor_name))?;
+  let error_event_ctor_func = scope.alloc_native_function(
+    error_event_ctor_call_id,
+    Some(error_event_ctor_construct_id),
+    error_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    error_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(error_event_ctor_func))?;
+  scope.define_property(
+    error_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(error_event_proto)),
+  )?;
+  scope.define_property(
+    error_event_proto,
+    constructor_key,
+    data_desc(Value::Object(error_event_ctor_func)),
+  )?;
+  let error_event_ctor_key = alloc_key(&mut scope, "ErrorEvent")?;
+  scope.define_property(
+    global,
+    error_event_ctor_key,
+    data_desc(Value::Object(error_event_ctor_func)),
+  )?;
+
+  let before_unload_event_ctor_call_id =
+    vm.register_native_call(before_unload_event_constructor_native)?;
+  let before_unload_event_ctor_construct_id =
+    vm.register_native_construct(before_unload_event_constructor_construct_native)?;
+  let before_unload_event_ctor_name = scope.alloc_string("BeforeUnloadEvent")?;
+  scope.push_root(Value::String(before_unload_event_ctor_name))?;
+  let before_unload_event_ctor_func = scope.alloc_native_function(
+    before_unload_event_ctor_call_id,
+    Some(before_unload_event_ctor_construct_id),
+    before_unload_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    before_unload_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(before_unload_event_ctor_func))?;
+  scope.define_property(
+    before_unload_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(before_unload_event_proto)),
+  )?;
+  scope.define_property(
+    before_unload_event_proto,
+    constructor_key,
+    data_desc(Value::Object(before_unload_event_ctor_func)),
+  )?;
+  let before_unload_event_ctor_key = alloc_key(&mut scope, "BeforeUnloadEvent")?;
+  scope.define_property(
+    global,
+    before_unload_event_ctor_key,
+    data_desc(Value::Object(before_unload_event_ctor_func)),
+  )?;
+
+  let page_transition_event_ctor_call_id =
+    vm.register_native_call(page_transition_event_constructor_native)?;
+  let page_transition_event_ctor_construct_id =
+    vm.register_native_construct(page_transition_event_constructor_construct_native)?;
+  let page_transition_event_ctor_name = scope.alloc_string("PageTransitionEvent")?;
+  scope.push_root(Value::String(page_transition_event_ctor_name))?;
+  let page_transition_event_ctor_func = scope.alloc_native_function(
+    page_transition_event_ctor_call_id,
+    Some(page_transition_event_ctor_construct_id),
+    page_transition_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    page_transition_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(page_transition_event_ctor_func))?;
+  scope.define_property(
+    page_transition_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(page_transition_event_proto)),
+  )?;
+  scope.define_property(
+    page_transition_event_proto,
+    constructor_key,
+    data_desc(Value::Object(page_transition_event_ctor_func)),
+  )?;
+  let page_transition_event_ctor_key = alloc_key(&mut scope, "PageTransitionEvent")?;
+  scope.define_property(
+    global,
+    page_transition_event_ctor_key,
+    data_desc(Value::Object(page_transition_event_ctor_func)),
   )?;
 
   // Expose the prototypes on document for `document.createEvent`.
