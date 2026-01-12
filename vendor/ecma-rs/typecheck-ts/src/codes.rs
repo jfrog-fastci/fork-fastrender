@@ -804,6 +804,24 @@ pub const JSX_SPREAD_CHILD_MUST_BE_ARRAY: Code = Code::new(
   &[],
 );
 
+/// TS18053: JSX tag expression type does not satisfy `JSX.ElementType`.
+///
+/// TypeScript reports this diagnostic when a `JSX.ElementType` alias is present
+/// and a JSX opening tag's *expression type* is not assignable to it. Intrinsic
+/// tags are checked as string literal types; component tags use the resolved
+/// value type.
+///
+/// - Primary span: the JSX tag name in the opening element.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_INVALID_ELEMENT_TYPE: Code = Code::new(
+  "TS18053",
+  "invalid JSX element type",
+  "JSX opening tag name",
+  &["primary: JSX element tag name"],
+  &[],
+);
+
 /// TC3004: Variance annotation on a type parameter does not match its usage
 /// within the declaring type.
 ///

@@ -1048,6 +1048,7 @@ pub fn check_body_with_expander(
     type_resolver,
     jsx_mode,
     jsx_element_ty: None,
+    jsx_element_type_constraint_ty: None,
     jsx_element_class_ty: None,
     jsx_intrinsic_elements_ty: None,
     jsx_intrinsic_attributes_ty: None,
@@ -1182,6 +1183,7 @@ struct Checker<'a> {
   type_resolver: Option<Arc<dyn TypeResolver>>,
   jsx_mode: Option<JsxMode>,
   jsx_element_ty: Option<TypeId>,
+  jsx_element_type_constraint_ty: Option<Option<TypeId>>,
   jsx_element_class_ty: Option<TypeId>,
   jsx_intrinsic_elements_ty: Option<TypeId>,
   jsx_intrinsic_attributes_ty: Option<TypeId>,
@@ -3756,6 +3758,7 @@ impl<'a> Checker<'a> {
     }
 
     let element_ty = self.jsx_element_type(elem.loc);
+    let element_type_constraint = self.jsx_element_type_constraint_type();
 
     match &elem.stx.name {
       None => {
@@ -3769,6 +3772,20 @@ impl<'a> Checker<'a> {
           .as_ref()
           .map(|ns| format!("{ns}:{}", name.stx.name));
         let tag = tag_buf.as_deref().unwrap_or_else(|| name.stx.name.as_str());
+        if let Some(constraint) = element_type_constraint {
+          let tag_ty = self.store.intern_type(TypeKind::StringLiteral(
+            self.store.intern_name(tag.to_string()),
+          ));
+          if !self.relate.is_assignable(tag_ty, constraint) {
+            self.diagnostics.push(codes::JSX_INVALID_ELEMENT_TYPE.error(
+              format!(
+                "Its type '{}' is not a valid JSX element type.",
+                TypeDisplay::new(self.store.as_ref(), tag_ty)
+              ),
+              Span::new(self.file, loc_to_range(self.file, name.loc)),
+            ));
+          }
+        }
         let intrinsic_elements = self.jsx_intrinsic_elements_type(elem.loc);
         let expected_props_ty = if intrinsic_elements != prim.unknown {
           self.member_type(intrinsic_elements, tag)
@@ -3799,6 +3816,20 @@ impl<'a> Checker<'a> {
       Some(JsxElemName::Id(id)) => {
         let name = id.stx.name.as_str();
         if name.contains(':') || name.contains('-') {
+          if let Some(constraint) = element_type_constraint {
+            let tag_ty = self.store.intern_type(TypeKind::StringLiteral(
+              self.store.intern_name(name.to_string()),
+            ));
+            if !self.relate.is_assignable(tag_ty, constraint) {
+              self.diagnostics.push(codes::JSX_INVALID_ELEMENT_TYPE.error(
+                format!(
+                  "Its type '{}' is not a valid JSX element type.",
+                  TypeDisplay::new(self.store.as_ref(), tag_ty)
+                ),
+                Span::new(self.file, loc_to_range(self.file, id.loc)),
+              ));
+            }
+          }
           let intrinsic_elements = self.jsx_intrinsic_elements_type(elem.loc);
           let expected_props_ty = if intrinsic_elements != prim.unknown {
             self.member_type(intrinsic_elements, name)
@@ -3836,6 +3867,17 @@ impl<'a> Checker<'a> {
               ));
               prim.unknown
             });
+          if let Some(constraint) = element_type_constraint {
+            if !self.relate.is_assignable(component_ty, constraint) {
+              self.diagnostics.push(codes::JSX_INVALID_ELEMENT_TYPE.error(
+                format!(
+                  "Its type '{}' is not a valid JSX element type.",
+                  TypeDisplay::new(self.store.as_ref(), component_ty)
+                ),
+                Span::new(self.file, loc_to_range(self.file, id.loc)),
+              ));
+            }
+          }
           let expected_props_ty = self
             .jsx_expected_props_for_value_tag(component_ty, elem.loc)
             .map(|expected| self.jsx_apply_intrinsic_attributes(expected));
@@ -3855,6 +3897,20 @@ impl<'a> Checker<'a> {
           for segment in member.stx.path.iter() {
             tag.push('.');
             tag.push_str(segment);
+          }
+          if let Some(constraint) = element_type_constraint {
+            let tag_ty = self.store.intern_type(TypeKind::StringLiteral(
+              self.store.intern_name(tag.clone()),
+            ));
+            if !self.relate.is_assignable(tag_ty, constraint) {
+              self.diagnostics.push(codes::JSX_INVALID_ELEMENT_TYPE.error(
+                format!(
+                  "Its type '{}' is not a valid JSX element type.",
+                  TypeDisplay::new(self.store.as_ref(), tag_ty)
+                ),
+                Span::new(self.file, loc_to_range(self.file, member.loc)),
+              ));
+            }
           }
           let intrinsic_elements = self.jsx_intrinsic_elements_type(elem.loc);
           let expected_props_ty = if intrinsic_elements != prim.unknown {
@@ -3897,6 +3953,17 @@ impl<'a> Checker<'a> {
             });
           for segment in member.stx.path.iter() {
             current = self.member_type(current, segment);
+          }
+          if let Some(constraint) = element_type_constraint {
+            if !self.relate.is_assignable(current, constraint) {
+              self.diagnostics.push(codes::JSX_INVALID_ELEMENT_TYPE.error(
+                format!(
+                  "Its type '{}' is not a valid JSX element type.",
+                  TypeDisplay::new(self.store.as_ref(), current)
+                ),
+                Span::new(self.file, loc_to_range(self.file, member.loc)),
+              ));
+            }
           }
           let expected_props_ty = self
             .jsx_expected_props_for_value_tag(current, elem.loc)
@@ -4680,6 +4747,21 @@ impl<'a> Checker<'a> {
       "missing JSX namespace typings",
       Span::new(self.file, loc_to_range(self.file, loc)),
     ));
+  }
+
+  fn jsx_element_type_constraint_type(&mut self) -> Option<TypeId> {
+    if let Some(cached) = self.jsx_element_type_constraint_ty {
+      return cached;
+    }
+    let resolved = self.resolve_type_ref(&["JSX", "ElementType"]);
+    let ty = resolved
+      .map(|ty| self.expand_ref(ty))
+      .and_then(|ty| match self.store.type_kind(ty) {
+        TypeKind::Any | TypeKind::Unknown => None,
+        _ => Some(ty),
+      });
+    self.jsx_element_type_constraint_ty = Some(ty);
+    ty
   }
 
   fn jsx_element_type(&mut self, loc: Loc) -> TypeId {

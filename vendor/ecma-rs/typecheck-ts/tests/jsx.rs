@@ -197,6 +197,43 @@ const bad2 = <div {...{ id: 123 }} />;
 }
 
 #[test]
+fn jsx_element_type_constraint_rejects_intrinsic_tag() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let lib = r#"
+declare namespace JSX {
+  interface Element {}
+  type ElementType = "div";
+  interface IntrinsicElements {
+    div: {};
+    span: {};
+  }
+}
+"#;
+
+  let entry = FileKey::new("entry.tsx");
+  let host = TestHost::new(options)
+    .with_lib(LibFile {
+      key: FileKey::new("jsx.d.ts"),
+      name: Arc::from("jsx.d.ts"),
+      kind: FileKind::Dts,
+      text: Arc::from(lib),
+    })
+    .with_file(entry.clone(), "const ok = <div />; const bad = <span />;");
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::JSX_INVALID_ELEMENT_TYPE.as_str()),
+    "expected TS18053 diagnostic, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn intrinsic_attribute_values_are_contextually_typed() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
