@@ -247,6 +247,59 @@ fn legacy_attribute_wrappers_do_not_duplicate_rust_symbols() {
 }
 
 #[test]
+fn vmjs_union_conversion_supports_callback_types() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  let idl = r#"
+    callback FooCallback = undefined ();
+
+    callback interface Listener {
+      undefined handleEvent();
+    };
+
+    [Exposed=Window]
+    interface Foo {
+      undefined takesFunction(Function f);
+      undefined takesHandler((DOMString or Function) handler);
+      undefined takesCallback((DOMString or FooCallback) cb);
+      undefined takesListener((DOMString or Listener) listener);
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Vmjs,
+  )
+  .unwrap();
+
+  assert!(
+    out.contains("conversions::to_callback_function"),
+    "expected vm-js backend to emit callback function conversions for `Function` and callback types"
+  );
+  assert!(
+    out.contains("conversions::to_callback_interface"),
+    "expected vm-js backend to emit callback interface conversions"
+  );
+  assert!(
+    out.contains("rt.scope.heap().is_callable(v)?"),
+    "expected callback unions to include a callable discrimination branch"
+  );
+}
+
+#[test]
 fn legacy_converted_value_to_binding_value_preserves_union_and_record_wrappers() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()

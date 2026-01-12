@@ -7068,6 +7068,8 @@ fn type_needs_host_vmjs(resolved: &ResolvedWebIdlWorld, ty: &IdlType) -> bool {
         true
       } else if resolved.enums.contains_key(name) {
         true
+      } else if name == "Function" {
+        true
       } else if resolved.callbacks.contains_key(name) {
         true
       } else if resolved
@@ -7431,6 +7433,15 @@ fn emit_conversion_expr_vmjs(
           enum_name = rust_string_literal(name),
           allowed = allowed,
         )
+      } else if name == "Function" {
+        // WebIDL uses the `Function` interface type for "callable objects". Treat it like a
+        // callback function conversion so non-callables throw a TypeError.
+        let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
+        format!(
+          "conversions::to_callback_function({rt_expr}, host, hooks, {value_ident})?",
+          rt_expr = rt_expr,
+          value_ident = value_ident
+        )
       } else if resolved.callbacks.contains_key(name) {
         let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
         format!(
@@ -7482,6 +7493,36 @@ fn emit_union_conversion_expr_vmjs(
   value_ident: &str,
   rt_is_ref: bool,
 ) -> String {
+  fn push_expanded_union_members(ty: IdlType, out: &mut Vec<IdlType>) {
+    match ty {
+      IdlType::Union(members) => {
+        for member in members {
+          push_expanded_union_members(member, out);
+        }
+      }
+      IdlType::Nullable(inner) => match *inner {
+        IdlType::Union(members) => {
+          for member in members {
+            push_expanded_union_members(IdlType::Nullable(Box::new(member)), out);
+          }
+        }
+        other => out.push(IdlType::Nullable(Box::new(other))),
+      },
+      other => out.push(other),
+    }
+  }
+
+  // Expand any typedefs referenced inside the union. This ensures union members like
+  // `Foo = (DOMString or Callback)` participate in discrimination (rather than being treated as an
+  // opaque object).
+  let mut expanded_members: Vec<IdlType> = Vec::new();
+  for member in members {
+    let expanded = member
+      .canonicalize(resolved)
+      .unwrap_or_else(|_| member.clone());
+    push_expanded_union_members(expanded, &mut expanded_members);
+  }
+
   let mut has_undefined = false;
   let mut has_nullable = false;
   let mut has_any = false;
@@ -7490,11 +7531,13 @@ fn emit_union_conversion_expr_vmjs(
   let mut sequence_member: Option<&IdlType> = None;
   let mut dict_member: Option<&String> = None;
   let mut record_member: Option<&IdlType> = None;
+  let mut callback_function_member: Option<&IdlType> = None;
+  let mut callback_interface_member: Option<&IdlType> = None;
   let mut boolean_member: Option<&IdlType> = None;
   let mut numeric_member: Option<&IdlType> = None;
   let mut string_member: Option<&IdlType> = None;
 
-  for member in members {
+  for member in &expanded_members {
     let mut inner = member;
     if let IdlType::Nullable(t) = member {
       has_nullable = true;
@@ -7534,9 +7577,16 @@ fn emit_union_conversion_expr_vmjs(
           let _ = dict_member.get_or_insert(name);
         } else if resolved.enums.contains_key(name) {
           let _ = string_member.get_or_insert(member);
+        } else if name == "Function" || resolved.callbacks.contains_key(name) {
+          let _ = callback_function_member.get_or_insert(member);
+        } else if resolved
+          .interfaces
+          .get(name)
+          .is_some_and(|iface| iface.callback)
+        {
+          let _ = callback_interface_member.get_or_insert(member);
         } else {
-          // For now treat unknown/unsupported named types as opaque objects so unions like
-          // `TimerHandler = (DOMString or Function)` can still accept callable objects.
+          // For now treat unknown/unsupported named types as opaque objects.
           has_object = true;
         }
       }
@@ -7560,6 +7610,10 @@ fn emit_union_conversion_expr_vmjs(
   let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
   let seq_expr = sequence_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
   let record_expr = record_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
+  let callback_expr =
+    callback_function_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
+  let callback_iface_expr =
+    callback_interface_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
   let boolean_expr =
     boolean_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
   let numeric_expr =
@@ -7592,7 +7646,14 @@ fn emit_union_conversion_expr_vmjs(
     out.push_str(" else if matches!(v, Value::Null | Value::Undefined) {\n    Value::Null\n  }");
   }
 
-  // Object branch: sequence/record/dictionary/object.
+  // Callback function special-case.
+  if let Some(callback_expr) = &callback_expr {
+    out.push_str(" else if rt.scope.heap().is_callable(v)? {\n    ");
+    out.push_str(callback_expr);
+    out.push_str("\n  }");
+  }
+
+  // Object branch: sequence/record/dictionary/callback interface/object.
   if seq_expr.is_some() {
     out.push_str(" else if let Value::Object(obj) = v {\n");
   } else {
@@ -7618,6 +7679,10 @@ fn emit_union_conversion_expr_vmjs(
       out.push_str(" else {\n      ");
       out.push_str(record_expr);
       out.push_str("\n    }");
+    } else if let Some(callback_iface_expr) = &callback_iface_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(callback_iface_expr);
+      out.push_str("\n    }");
     } else if has_object || has_any {
       out.push_str(" else {\n      v\n    }");
     } else {
@@ -7631,6 +7696,10 @@ fn emit_union_conversion_expr_vmjs(
   } else if let Some(record_expr) = &record_expr {
     out.push_str("    ");
     out.push_str(record_expr);
+    out.push_str("\n  }");
+  } else if let Some(callback_iface_expr) = &callback_iface_expr {
+    out.push_str("    ");
+    out.push_str(callback_iface_expr);
     out.push_str("\n  }");
   } else if has_object || has_any {
     out.push_str("    v\n  }");
