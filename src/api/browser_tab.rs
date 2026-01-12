@@ -13546,6 +13546,57 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn module_script_error_event_fires_for_synchronous_module_evaluation_error() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+ 
+    let module_source = r#"
+      globalThis.__log.push("module-start");
+      throw new Error("boom");
+    "#;
+    let b64 = BASE64_STANDARD.encode(module_source.as_bytes());
+    let entry_url = Url::parse(&format!("data:text/javascript;base64,{b64}"))
+      .expect("data URL should parse")
+      .to_string();
+ 
+    let html = format!(
+      r#"<!doctype html><body>
+        <script type="module" src="{entry_url}"></script>
+        <script>
+          globalThis.__log = [];
+          const mod = document.querySelector('script[type="module"]');
+          mod.addEventListener("load", () => {{
+            globalThis.__log.push("load-event");
+            document.body.setAttribute("data-log", globalThis.__log.join(","));
+          }});
+          mod.addEventListener("error", () => {{
+            globalThis.__log.push("error-event");
+            document.body.setAttribute("data-log", globalThis.__log.join(","));
+          }});
+        </script>
+      </body>"#
+    );
+ 
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+ 
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-log")
+        .expect("get_attribute should succeed"),
+      Some("module-start,error-event"),
+      "expected module <script> to fire an error event (not load) when evaluation throws synchronously"
+    );
+    Ok(())
+  }
+ 
+  #[test]
   fn module_top_level_await_rejection_is_reported_as_uncaught_exception() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;

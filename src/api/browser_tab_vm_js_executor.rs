@@ -1141,7 +1141,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           err,
           Some(&entry_specifier),
         )?;
-        Ok(ModuleScriptExecutionStatus::Completed)
+        // Unlike classic scripts, module evaluation failures should surface as `<script>` element
+        // errors (and should not fire a `load` event for external module scripts). Bubble a normal
+        // host error so `BrowserTabHost` dispatches the script element `error` event.
+        Err(Error::Other("module script evaluation failed".to_string()))
       }
       Err(err) => Err(err),
     }
