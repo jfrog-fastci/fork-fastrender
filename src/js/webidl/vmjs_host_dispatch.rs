@@ -1,16 +1,16 @@
+use crate::js::bindings::DomExceptionClassVmJs;
+use crate::js::window_realm::{
+  abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
+  event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
+  EVENT_TARGET_HOST_TAG,
+};
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
   QUEUE_MICROTASK_NOT_CALLABLE_ERROR, QUEUE_MICROTASK_STRING_HANDLER_ERROR,
   SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR,
   SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
-use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
-use crate::js::window_realm::{
-  abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
-  event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
-  EVENT_TARGET_HOST_TAG,
-};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -36,14 +36,14 @@ enum UrlSearchParamsIteratorKind {
   Values,
 }
 
-fn url_search_params_iterator_kind(operation: &str) -> Result<UrlSearchParamsIteratorKind, VmError> {
+fn url_search_params_iterator_kind(
+  operation: &str,
+) -> Result<UrlSearchParamsIteratorKind, VmError> {
   match operation {
     "entries" => Ok(UrlSearchParamsIteratorKind::Entries),
     "keys" => Ok(UrlSearchParamsIteratorKind::Keys),
     "values" => Ok(UrlSearchParamsIteratorKind::Values),
-    _ => Err(VmError::TypeError(
-      "URLSearchParams iterator kind mismatch",
-    )),
+    _ => Err(VmError::TypeError("URLSearchParams iterator kind mismatch")),
   }
 }
 
@@ -56,6 +56,21 @@ mod url_search_params_iterator_kind_tests {
     let err = url_search_params_iterator_kind("bogus").unwrap_err();
     assert!(matches!(err, VmError::TypeError(_)));
   }
+}
+
+fn should_delegate_dom_interface(interface: &'static str) -> bool {
+  matches!(
+    interface,
+    "Node"
+      | "Element"
+      | "Document"
+      | "DocumentFragment"
+      | "Attr"
+      | "NamedNodeMap"
+      | "NodeList"
+      | "HTMLCollection"
+      | "DOMTokenList"
+  )
 }
 #[derive(Debug, Clone, Copy)]
 struct RootedCallback {
@@ -343,7 +358,11 @@ fn throw_dom_exception(
   }
 }
 
-fn throw_dom_error(scope: &mut Scope<'_>, class: DomExceptionClassVmJs, err: crate::dom2::DomError) -> VmError {
+fn throw_dom_error(
+  scope: &mut Scope<'_>,
+  class: DomExceptionClassVmJs,
+  err: crate::dom2::DomError,
+) -> VmError {
   throw_dom_exception(scope, class, err.code(), "")
 }
 
@@ -467,7 +486,10 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     self.last_gc_runs = 0;
   }
 
-  fn abort_signal_listener_cleanup_call_id(&mut self, vm: &mut Vm) -> Result<NativeFunctionId, VmError> {
+  fn abort_signal_listener_cleanup_call_id(
+    &mut self,
+    vm: &mut Vm,
+  ) -> Result<NativeFunctionId, VmError> {
     if let Some(id) = self.abort_signal_listener_cleanup_call {
       return Ok(id);
     }
@@ -637,7 +659,9 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     let ctor = get_with_active_vm_host_and_hooks(vm, scope, global, ctor_key)?;
     scope.push_root(ctor)?;
     let Value::Object(ctor_obj) = ctor else {
-      return Err(VmError::TypeError("globalThis.URLSearchParams is not an object"));
+      return Err(VmError::TypeError(
+        "globalThis.URLSearchParams is not an object",
+      ));
     };
 
     let proto_key = key_from_str(scope, "prototype")?;
@@ -1052,6 +1076,92 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
 
     Ok(Value::Undefined)
   }
+
+  fn try_delegate_dom_call_operation(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    operation: &'static str,
+    overload: usize,
+    args: &[Value],
+  ) -> Result<Option<Value>, VmError> {
+    if !should_delegate_dom_interface(interface) {
+      return Ok(None);
+    }
+
+    let self_ptr = std::ptr::from_mut(self).cast::<()>();
+    let delegated = with_active_vm_host_and_hooks(vm, |vm, host, _hooks| {
+      let host_ptr = (host as *mut dyn VmHost).cast::<()>();
+      if host_ptr == self_ptr {
+        return Ok(None);
+      }
+
+      let any = host.as_any_mut();
+      if let Some(dom) = any.downcast_mut::<crate::api::BrowserDocumentDom2>() {
+        return Ok(Some(dom.call_operation(
+          vm, scope, receiver, interface, operation, overload, args,
+        )?));
+      }
+      if let Some(dom) = any.downcast_mut::<crate::js::host_document::HostDocumentState>() {
+        return Ok(Some(dom.call_operation(
+          vm, scope, receiver, interface, operation, overload, args,
+        )?));
+      }
+      #[cfg(test)]
+      if let Some(dom) = any.downcast_mut::<tests::RecordingDomWebIdlHost>() {
+        return Ok(Some(dom.call_operation(
+          vm, scope, receiver, interface, operation, overload, args,
+        )?));
+      }
+      Ok(None)
+    })?;
+
+    Ok(delegated.flatten())
+  }
+
+  fn try_delegate_dom_iterable_snapshot(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    kind: IterableKind,
+  ) -> Result<Option<Vec<BindingValue>>, VmError> {
+    if !should_delegate_dom_interface(interface) {
+      return Ok(None);
+    }
+
+    let self_ptr = std::ptr::from_mut(self).cast::<()>();
+    let delegated = with_active_vm_host_and_hooks(vm, |vm, host, _hooks| {
+      let host_ptr = (host as *mut dyn VmHost).cast::<()>();
+      if host_ptr == self_ptr {
+        return Ok(None);
+      }
+
+      let any = host.as_any_mut();
+      if let Some(dom) = any.downcast_mut::<crate::api::BrowserDocumentDom2>() {
+        return Ok(Some(
+          dom.iterable_snapshot(vm, scope, receiver, interface, kind)?,
+        ));
+      }
+      if let Some(dom) = any.downcast_mut::<crate::js::host_document::HostDocumentState>() {
+        return Ok(Some(
+          dom.iterable_snapshot(vm, scope, receiver, interface, kind)?,
+        ));
+      }
+      #[cfg(test)]
+      if let Some(dom) = any.downcast_mut::<tests::RecordingDomWebIdlHost>() {
+        return Ok(Some(
+          dom.iterable_snapshot(vm, scope, receiver, interface, kind)?,
+        ));
+      }
+      Ok(None)
+    })?;
+
+    Ok(delegated.flatten())
+  }
 }
 
 impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsHostDispatch<Host> {
@@ -1070,9 +1180,13 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
     match (interface, operation, overload) {
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
-        scope
-          .heap_mut()
-          .object_set_host_slots(obj, HostSlots { a: EVENT_TARGET_HOST_TAG, b: 0 })?;
+        scope.heap_mut().object_set_host_slots(
+          obj,
+          HostSlots {
+            a: EVENT_TARGET_HOST_TAG,
+            b: 0,
+          },
+        )?;
         self
           .event_targets
           .entry(WeakGcObject::from(obj))
@@ -1086,9 +1200,13 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         // The parent value is forwarded by the bindings generator and can be inspected via `args`.
         let _parent = args.get(0).copied().unwrap_or(Value::Undefined);
         let obj = Self::require_receiver_object(receiver)?;
-        scope
-          .heap_mut()
-          .object_set_host_slots(obj, HostSlots { a: EVENT_TARGET_HOST_TAG, b: 0 })?;
+        scope.heap_mut().object_set_host_slots(
+          obj,
+          HostSlots {
+            a: EVENT_TARGET_HOST_TAG,
+            b: 0,
+          },
+        )?;
         self
           .event_targets
           .entry(WeakGcObject::from(obj))
@@ -1867,9 +1985,17 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         self.clear_timer_impl(vm, scope, id, true)
       }
 
-      _ => Err(VmError::Unimplemented(
-        "WebIDL binding dispatch not implemented for operation",
-      )),
+      _ => {
+        if let Some(value) = self.try_delegate_dom_call_operation(
+          vm, scope, receiver, interface, operation, overload, args,
+        )? {
+          Ok(value)
+        } else {
+          Err(VmError::Unimplemented(
+            "WebIDL binding dispatch not implemented for operation",
+          ))
+        }
+      }
     }
   }
 
@@ -1889,7 +2015,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
 
   fn iterable_snapshot(
     &mut self,
-    _vm: &mut Vm,
+    vm: &mut Vm,
     scope: &mut Scope<'_>,
     receiver: Option<Value>,
     interface: &'static str,
@@ -1916,7 +2042,15 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         }
         Ok(out)
       }
-      _ => Err(VmError::TypeError("unimplemented host iterable snapshot")),
+      _ => {
+        if let Some(values) =
+          self.try_delegate_dom_iterable_snapshot(vm, scope, receiver, interface, kind)?
+        {
+          Ok(values)
+        } else {
+          Err(VmError::TypeError("unimplemented host iterable snapshot"))
+        }
+      }
     }
   }
 }
@@ -1929,8 +2063,8 @@ mod window_document_tests {
   use crate::js::window_timers::VmJsEventLoopHooks;
   use crate::js::WindowHostState;
   use vm_js::{
-    Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost,
-    VmHostHooks, VmOptions,
+    Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+    VmError, VmHost, VmHostHooks, VmOptions,
   };
 
   fn window_document_getter_native(
@@ -1962,7 +2096,9 @@ mod window_document_tests {
         .user_data_mut::<crate::js::window_realm::WindowRealmUserData>()
         .and_then(|data| data.document_obj())
       else {
-        return Err(VmError::TypeError("expected WindowRealm to cache a document object"));
+        return Err(VmError::TypeError(
+          "expected WindowRealm to cache a document object",
+        ));
       };
 
       let mut scope = heap.scope();
@@ -2045,7 +2181,11 @@ mod window_document_tests {
     Ok(())
   }
 
-  fn get_own_string_property(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<String, VmError> {
+  fn get_own_string_property(
+    scope: &mut Scope<'_>,
+    obj: GcObject,
+    name: &str,
+  ) -> Result<String, VmError> {
     // Root `obj` across string/key allocations.
     scope.push_root(Value::Object(obj))?;
     let key_s = scope.alloc_string(name)?;
@@ -2056,15 +2196,23 @@ mod window_document_tests {
       .object_get_own_data_property_value(obj, &key)?
       .unwrap_or(Value::Undefined);
     let Value::String(s) = value else {
-      return Err(VmError::TypeError("expected DOMException property to be a string"));
+      return Err(VmError::TypeError(
+        "expected DOMException property to be a string",
+      ));
     };
     Ok(scope.heap().get_string(s)?.to_utf8_lossy())
   }
 
-  fn assert_dom_exception_name(scope: &mut Scope<'_>, thrown: Value, expected: &str) -> Result<(), VmError> {
+  fn assert_dom_exception_name(
+    scope: &mut Scope<'_>,
+    thrown: Value,
+    expected: &str,
+  ) -> Result<(), VmError> {
     scope.push_root(thrown)?;
     let Value::Object(obj) = thrown else {
-      return Err(VmError::TypeError("expected thrown DOMException to be an object"));
+      return Err(VmError::TypeError(
+        "expected thrown DOMException to be an object",
+      ));
     };
     assert_eq!(get_own_string_property(scope, obj, "name")?, expected);
     Ok(())
@@ -2082,7 +2230,9 @@ mod window_document_tests {
 
     let err = throw_dom_exception(&mut scope, class, "SyntaxError", "m");
     let VmError::Throw(thrown) = err else {
-      return Err(VmError::TypeError("expected throw_dom_exception to return VmError::Throw"));
+      return Err(VmError::TypeError(
+        "expected throw_dom_exception to return VmError::Throw",
+      ));
     };
     assert_dom_exception_name(&mut scope, thrown, "SyntaxError")?;
 
@@ -2103,12 +2253,305 @@ mod window_document_tests {
 
     let err = throw_dom_error(&mut scope, class, DomError::NotFoundError);
     let VmError::Throw(thrown) = err else {
-      return Err(VmError::TypeError("expected throw_dom_error to return VmError::Throw"));
+      return Err(VmError::TypeError(
+        "expected throw_dom_error to return VmError::Throw",
+      ));
     };
     assert_dom_exception_name(&mut scope, thrown, "NotFoundError")?;
 
     drop(scope);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::any::Any;
+  use vm_js::{
+    Heap, HeapLimits, Job, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  };
+  use webidl_vm_js::host_from_hooks;
+
+  #[derive(Debug, Default)]
+  struct RecordingDomWebIdlHost {
+    last_call: Option<RecordingCall>,
+    last_iterable: Option<RecordingIterableSnapshot>,
+  }
+
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  struct RecordingCall {
+    interface: &'static str,
+    operation: &'static str,
+    overload: usize,
+  }
+
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  struct RecordingIterableSnapshot {
+    interface: &'static str,
+    kind: IterableKind,
+  }
+
+  impl WebIdlBindingsHost for RecordingDomWebIdlHost {
+    fn call_operation(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _receiver: Option<Value>,
+      interface: &'static str,
+      operation: &'static str,
+      overload: usize,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      self.last_call = Some(RecordingCall {
+        interface,
+        operation,
+        overload,
+      });
+      Ok(Value::Bool(true))
+    }
+
+    fn call_constructor(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _interface: &'static str,
+      _overload: usize,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("unimplemented host constructor"))
+    }
+
+    fn iterable_snapshot(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _receiver: Option<Value>,
+      interface: &'static str,
+      kind: IterableKind,
+    ) -> Result<Vec<BindingValue>, VmError> {
+      self.last_iterable = Some(RecordingIterableSnapshot { interface, kind });
+      Ok(vec![BindingValue::Number(123.0)])
+    }
+  }
+
+  #[derive(Default)]
+  struct TestHooks {
+    payload: VmJsHostHooksPayload,
+  }
+
+  impl VmHostHooks for TestHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+      Some(&mut self.payload)
+    }
+  }
+
+  struct DummyWindowRealmHost;
+
+  impl WindowRealmHost for DummyWindowRealmHost {
+    fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut crate::js::WindowRealm) {
+      unreachable!("DummyWindowRealmHost is only used as a type parameter in tests")
+    }
+  }
+
+  fn call_dom_operation_native(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(vm, scope, None, "Document", "testOperation", 0, &[])
+  }
+
+  fn call_dom_iterable_native(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let bindings_host = host_from_hooks(hooks)?;
+    let values =
+      bindings_host.iterable_snapshot(vm, scope, None, "NodeList", IterableKind::Values)?;
+    Ok(Value::Number(values.len() as f64))
+  }
+
+  fn call_non_dom_operation_native(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(vm, scope, None, "Window", "alert", 0, &[])
+  }
+
+  fn make_native_fn(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    name: &str,
+    native: vm_js::NativeCall,
+  ) -> Result<GcObject, VmError> {
+    let id = vm.register_native_call(native)?;
+    let name_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(name_s))?;
+    let func = scope.alloc_native_function(id, None, name_s, 0)?;
+    scope.push_root(Value::Object(func))?;
+    Ok(func)
+  }
+
+  #[test]
+  fn webidl_dispatch_delegates_dom_operation_to_active_vm_host() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let realm = Realm::new(&mut vm, &mut heap)?;
+
+    // Install bindings so global names exist (future allowlist expansions will install more DOM).
+    crate::js::bindings::install_node_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+    let global = realm.global_object();
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new(global);
+    let mut dom_host = RecordingDomWebIdlHost::default();
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom_host);
+    hooks
+      .payload
+      .webidl_bindings_host_slot_mut()
+      .set(&mut dispatch);
+
+    let mut dummy_vm_host = ();
+
+    let result = {
+      let mut scope = heap.scope();
+      let func = make_native_fn(
+        &mut vm,
+        &mut scope,
+        "callDomOperation",
+        call_dom_operation_native,
+      )?;
+      vm.call_with_host_and_hooks(
+        &mut dummy_vm_host,
+        &mut scope,
+        &mut hooks,
+        Value::Object(func),
+        Value::Undefined,
+        &[],
+      )?
+    };
+
+    assert_eq!(result, Value::Bool(true));
+    assert_eq!(
+      dom_host.last_call,
+      Some(RecordingCall {
+        interface: "Document",
+        operation: "testOperation",
+        overload: 0
+      })
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dispatch_delegates_dom_iterable_snapshot_to_active_vm_host() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let realm = Realm::new(&mut vm, &mut heap)?;
+
+    let global = realm.global_object();
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new(global);
+    let mut dom_host = RecordingDomWebIdlHost::default();
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom_host);
+    hooks
+      .payload
+      .webidl_bindings_host_slot_mut()
+      .set(&mut dispatch);
+
+    let mut dummy_vm_host = ();
+
+    let result = {
+      let mut scope = heap.scope();
+      let func = make_native_fn(
+        &mut vm,
+        &mut scope,
+        "callDomIterable",
+        call_dom_iterable_native,
+      )?;
+      vm.call_with_host_and_hooks(
+        &mut dummy_vm_host,
+        &mut scope,
+        &mut hooks,
+        Value::Object(func),
+        Value::Undefined,
+        &[],
+      )?
+    };
+
+    assert_eq!(result, Value::Number(1.0));
+    assert_eq!(
+      dom_host.last_iterable,
+      Some(RecordingIterableSnapshot {
+        interface: "NodeList",
+        kind: IterableKind::Values
+      })
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dispatch_does_not_delegate_non_dom_interfaces() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let realm = Realm::new(&mut vm, &mut heap)?;
+
+    let global = realm.global_object();
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new(global);
+    let mut dom_host = RecordingDomWebIdlHost::default();
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom_host);
+    hooks
+      .payload
+      .webidl_bindings_host_slot_mut()
+      .set(&mut dispatch);
+
+    let mut dummy_vm_host = ();
+
+    let result = {
+      let mut scope = heap.scope();
+      let func = make_native_fn(
+        &mut vm,
+        &mut scope,
+        "callNonDomOperation",
+        call_non_dom_operation_native,
+      )?;
+      vm.call_with_host_and_hooks(
+        &mut dummy_vm_host,
+        &mut scope,
+        &mut hooks,
+        Value::Object(func),
+        Value::Undefined,
+        &[],
+      )?
+    };
+
+    assert_eq!(result, Value::Undefined);
+    assert_eq!(dom_host.last_call, None);
     Ok(())
   }
 }

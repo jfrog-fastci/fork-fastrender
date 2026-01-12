@@ -4,6 +4,8 @@ use std::rc::Rc;
 use crate::dom2;
 use crate::js::{CurrentScriptHost, CurrentScriptStateHandle, DomHost, ScriptExecutionLog};
 use crate::web::events;
+use vm_js::{Scope, Value, Vm, VmError};
+use webidl_vm_js::WebIdlBindingsHost;
 
 #[derive(Debug, Default)]
 pub(crate) struct ActiveEventStack {
@@ -201,6 +203,37 @@ impl DomHost for HostDocumentState {
       self.dom.clear_mutations();
     }
     result
+  }
+}
+
+impl WebIdlBindingsHost for HostDocumentState {
+  fn call_operation(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _receiver: Option<Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented(
+      "WebIDL binding dispatch not implemented for operation",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented(
+      "WebIDL binding dispatch not implemented for constructor",
+    ))
   }
 }
 
