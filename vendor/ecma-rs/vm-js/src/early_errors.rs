@@ -683,6 +683,18 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
   fn visit_var_decl(&mut self, ctx: &mut ControlContext, decl: &VarDecl) -> Result<(), VmError> {
     for declarator in &decl.declarators {
+      // Destructuring `var`/`let` declarations require an initializer (early error).
+      //
+      // Note: `for (var {x} in obj)` / `for (let {x} of iter)` are valid because the binding
+      // pattern is parsed as `ForInOfLhs::Decl` (not a `VarDecl` with an omitted initializer).
+      if declarator.initializer.is_none()
+        && !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_))
+      {
+        self.push_error(
+          declarator.pattern.loc,
+          "Missing initializer in destructuring declaration",
+        )?;
+      }
       self.visit_pat(ctx, &declarator.pattern.stx.pat, PatRole::Binding)?;
       if let Some(expr) = &declarator.initializer {
         self.visit_expr(ctx, expr)?;
