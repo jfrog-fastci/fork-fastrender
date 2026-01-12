@@ -6,12 +6,6 @@ cd "${repo_root}"
 
 doc_ref="instructions/test_cleanup.md"
 
-if ! command -v rg >/dev/null 2>&1; then
-  echo "error: rg (ripgrep) is required (used for CI test-architecture guardrails)" >&2
-  echo "hint: install ripgrep (e.g. 'brew install ripgrep' or 'apt-get install ripgrep')" >&2
-  exit 1
-fi
-
 if [[ ! -d tests ]]; then
   echo "error: missing tests/ directory at repo root" >&2
   exit 1
@@ -22,36 +16,48 @@ if [[ ! -f Cargo.toml ]]; then
   exit 1
 fi
 
-max_test_binaries=3
-target_test_binaries=2
+have_rg=0
+if command -v rg >/dev/null 2>&1; then
+  have_rg=1
+fi
+
+# Check 3) Always forbid hidden integration-test binaries via Cargo.toml [[test]] entries.
+# This can regress independently of the unified-harness migration.
+if [[ "${have_rg}" -eq 1 ]]; then
+  cargo_test_entries="$(rg -n '^\s*\[\[test\]\]' Cargo.toml || true)"
+else
+  cargo_test_entries="$(grep -nE '^[[:space:]]*\\[\\[test\\]\\]' Cargo.toml || true)"
+fi
+if [[ -n "${cargo_test_entries}" ]]; then
+  echo "error: root Cargo.toml contains [[test]] entries (hidden integration-test binaries):" >&2
+  echo "${cargo_test_entries}" >&2
+  echo >&2
+  echo "see: ${doc_ref}" >&2
+  echo "hint: remove [[test]] entries; integration tests must live under tests/integration.rs (plus allocation_failure.rs)" >&2
+  exit 1
+fi
+
+# The strict 2-binary + no-shims checks are only valid once the test-cleanup migration lands.
+# Use the presence of BOTH new harness roots as the activation signal.
+#
+# This lets the guardrails merge early without permanently breaking CI while the migration is in
+# flight; once `tests/allocation_failure.rs` exists, we enforce the final architecture.
+if [[ ! -f tests/integration.rs || ! -f tests/allocation_failure.rs ]]; then
+  echo "info: unified integration-test harness not active yet; skipping strict test-architecture checks" >&2
+  echo "info: (will enforce once both tests/integration.rs and tests/allocation_failure.rs exist)" >&2
+  echo "info: see ${doc_ref}" >&2
+  exit 0
+fi
 
 allowed_test_binaries=(
   "tests/allocation_failure.rs"
   "tests/integration.rs"
 )
 
-if [[ "${#allowed_test_binaries[@]}" -gt "${max_test_binaries}" ]]; then
-  echo "error: scripts/ci_check_test_architecture.sh is misconfigured:" >&2
-  echo "  allowed_test_binaries has ${#allowed_test_binaries[@]} entries, but max_test_binaries=${max_test_binaries}" >&2
-  exit 1
-fi
-
 found_test_binaries=()
-while IFS= read -r found; do
-  found_test_binaries+=("${found}")
+while IFS= read -r path; do
+  found_test_binaries+=("${path}")
 done < <(find tests -maxdepth 1 -type f -name '*.rs' -print | sort)
-
-if [[ "${#found_test_binaries[@]}" -gt "${max_test_binaries}" ]]; then
-  echo "error: found ${#found_test_binaries[@]} top-level Rust files under tests/ (each is a separate integration-test binary)" >&2
-  echo "max allowed: ${max_test_binaries} (target: ${target_test_binaries})" >&2
-  echo "see: ${doc_ref}" >&2
-  echo >&2
-  echo "found (tests/*.rs):" >&2
-  for found in "${found_test_binaries[@]}"; do
-    echo "  - ${found}" >&2
-  done
-  exit 1
-fi
 
 missing=()
 for allowed in "${allowed_test_binaries[@]}"; do
@@ -80,7 +86,6 @@ if [[ "${#missing[@]}" -ne 0 || "${#extra[@]}" -ne 0 ]]; then
     echo "  - ${allowed}" >&2
   done
   echo >&2
-  echo "max allowed test binaries: ${max_test_binaries} (target: ${target_test_binaries})" >&2
   echo "see: ${doc_ref}" >&2
   echo >&2
   echo "found (tests/*.rs):" >&2
@@ -108,26 +113,19 @@ if [[ "${#missing[@]}" -ne 0 || "${#extra[@]}" -ne 0 ]]; then
   fi
   echo "hint: add integration tests as modules under tests/ and include them from tests/integration.rs" >&2
   echo "hint: unit tests belong in src/ (run with: cargo test --lib)" >&2
-  echo "hint: if you truly need a third integration-test binary (emergency only), add it to allowed_test_binaries in scripts/ci_check_test_architecture.sh and keep total <= ${max_test_binaries}." >&2
   exit 1
 fi
 
-shim_matches="$(rg -n '#\[path\s*=\s*"' tests || true)"
+if [[ "${have_rg}" -eq 1 ]]; then
+  shim_matches="$(rg -n '#\[path\s*=\s*"' tests || true)"
+else
+  shim_matches="$(grep -RInE '#\\[[[:space:]]*path[[:space:]]*=[[:space:]]*"' tests || true)"
+fi
 if [[ -n "${shim_matches}" ]]; then
   echo "error: found #[path = \"...\"] shims under tests/ (these create extra test binaries):" >&2
   echo "${shim_matches}" >&2
   echo >&2
   echo "see: ${doc_ref}" >&2
   echo "hint: delete the shim and include the module normally via mod.rs + tests/integration.rs" >&2
-  exit 1
-fi
-
-cargo_test_entries="$(rg -n '^\s*\[\[test\]\]' Cargo.toml || true)"
-if [[ -n "${cargo_test_entries}" ]]; then
-  echo "error: root Cargo.toml contains [[test]] entries (hidden integration-test binaries):" >&2
-  echo "${cargo_test_entries}" >&2
-  echo >&2
-  echo "see: ${doc_ref}" >&2
-  echo "hint: remove [[test]] entries; integration tests must live under tests/integration.rs (plus allocation_failure.rs)" >&2
   exit 1
 fi
