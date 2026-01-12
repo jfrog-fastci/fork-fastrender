@@ -895,7 +895,9 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
 
     // If evaluation has already hit the step limit, bail out conservatively
     // rather than performing potentially expensive normalization.
-    if self.limits.step_limit != EvaluatorLimits::DEFAULT_STEP_LIMIT && self.steps >= self.limits.step_limit {
+    if self.limits.step_limit != EvaluatorLimits::DEFAULT_STEP_LIMIT
+      && self.steps >= self.limits.step_limit
+    {
       return self.store.intersection(evaluated);
     }
 
@@ -937,6 +939,17 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       has_empty_object = false;
     }
 
+    if has_empty_object
+      && base_members.iter().any(|member| {
+        matches!(
+          self.store.type_kind(*member),
+          TypeKind::Null | TypeKind::Undefined
+        )
+      })
+    {
+      return primitives.never;
+    }
+
     let mut result = if base_members.is_empty() {
       primitives.unknown
     } else {
@@ -958,7 +971,9 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     if depth >= self.limits.depth_limit {
       return ty;
     }
-    if self.limits.step_limit != EvaluatorLimits::DEFAULT_STEP_LIMIT && self.steps >= self.limits.step_limit {
+    if self.limits.step_limit != EvaluatorLimits::DEFAULT_STEP_LIMIT
+      && self.steps >= self.limits.step_limit
+    {
       return ty;
     }
 

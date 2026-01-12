@@ -74,6 +74,38 @@ fn predicate_without_asserted_type_is_unchanged() {
 }
 
 #[test]
+fn intersection_with_empty_object_removes_nullish_from_union() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let union = store.union(vec![primitives.string, primitives.null, primitives.undefined]);
+  let intersection = store.intersection(vec![union, empty_object]);
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  assert_eq!(eval.evaluate(intersection), primitives.string);
+}
+
+#[test]
+fn type_param_intersection_empty_object_is_not_elided() {
+  let store = TypeStore::new();
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let t = store.intern_type(TypeKind::TypeParam(TypeParamId(0)));
+  let intersection = store.intersection(vec![t, empty_object]);
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(intersection);
+
+  assert_eq!(result, intersection);
+  let TypeKind::Intersection(members) = store.type_kind(result) else {
+    panic!("expected intersection, got {:?}", store.type_kind(result));
+  };
+  assert!(members.contains(&t));
+  assert!(members.contains(&empty_object));
+}
+
+#[test]
 fn signature_type_params_do_not_capture_outer_substitutions() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
