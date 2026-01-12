@@ -56,7 +56,7 @@ fi
 #   FASTR_CARGO_LIMIT_AS     Address-space cap forwarded to run_limited (default: 64G)
 #   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
 #   FASTR_FUZZ_LIMIT_AS      Address-space cap for `scripts/cargo_agent.sh fuzz ...` runs (default: 32T)
-#   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
+#   FASTR_CARGO_LOCK_DIR     Lock directory (default: ~/.cache/fastrender/cargo_agent_locks)
 #   FASTR_RUST_TEST_THREADS  Default `RUST_TEST_THREADS` for `cargo test` (default: min(nproc, 32))
 #
 # Notes:
@@ -83,7 +83,7 @@ Environment:
   FASTR_CARGO_LIMIT_AS     Address-space cap (default: 64G)
   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
   FASTR_FUZZ_LIMIT_AS      Address-space cap for `scripts/cargo_agent.sh fuzz ...` runs (default: 32T)
-  FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
+  FASTR_CARGO_LOCK_DIR     Lock directory (default: ~/.cache/fastrender/cargo_agent_locks)
   FASTR_RUST_TEST_THREADS  Default RUST_TEST_THREADS for `cargo test` (default: min(nproc, 32))
 
 Notes:
@@ -559,7 +559,14 @@ if [[ "${limit_as_defaulted}" -eq 1 ]]; then
   fi
 fi
 
-lock_dir="${FASTR_CARGO_LOCK_DIR:-${repo_root}/target/.cargo_agent_locks}"
+default_lock_dir="${repo_root}/target/.cargo_agent_locks"
+if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+  default_lock_dir="${XDG_CACHE_HOME}/fastrender/cargo_agent_locks"
+elif [[ -n "${HOME:-}" ]]; then
+  default_lock_dir="${HOME}/.cache/fastrender/cargo_agent_locks"
+fi
+
+lock_dir="${FASTR_CARGO_LOCK_DIR:-${default_lock_dir}}"
 mkdir -p "${lock_dir}"
 
 run_cargo() {
