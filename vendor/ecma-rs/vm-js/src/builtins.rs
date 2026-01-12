@@ -2500,6 +2500,8 @@ pub fn proxy_constructor_construct(
   let handler = args.get(1).copied().unwrap_or(Value::Undefined);
   proxy_constructor_impl(&mut scope, target, handler)
 }
+ 
+/// `Proxy.revocable(target, handler)` (ECMA-262).
 pub fn proxy_revocable(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

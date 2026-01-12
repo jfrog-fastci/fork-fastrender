@@ -75,6 +75,10 @@ impl Harness {
     self.tab.navigate_to_url(&self.document_url, self.options.clone())
   }
 
+  fn navigate_to(&mut self, url: &str) -> Result<()> {
+    self.tab.navigate_to_url(url, self.options.clone())
+  }
+
   fn run_until_idle(&mut self) -> Result<()> {
     let outcome = self.tab.run_event_loop_until_idle(RunLimits::unbounded())?;
     assert_eq!(outcome, RunUntilIdleOutcome::Idle);
@@ -380,11 +384,17 @@ fn p1_async_classic_scripts_do_not_block_parsing_when_not_preloaded() -> Result<
 
 #[test]
 fn p1_async_classic_scripts_can_interleave_ahead_of_later_parser_scripts_when_fast() -> Result<()> {
-  let js_options = JsExecutionOptions::default();
+  // Use a tiny parse budget so streaming parsing yields back to the event loop after encountering
+  // the async script, giving its execution task a chance to run before the later inline script is
+  // parsed.
+  let js_options = JsExecutionOptions {
+    dom_parse_budget: ParseBudget::new(1),
+    ..JsExecutionOptions::default()
+  };
   let mut h = Harness::new("https://example.invalid/p1_async_fast.html", js_options)?;
 
-  // Pre-register the script source so the streaming parser treats it as "fast" and yields at the
-  // async boundary, allowing the async script to run before parsing continues.
+  // Pre-register the script source so it loads immediately and can execute on the first parse
+  // yield.
   h.register_script_source("https://example.invalid/a.js", r#"console.log("async");"#);
   h.register_html_source(
     r#"<!doctype html><body>
@@ -777,44 +787,105 @@ fn p3_unhandledrejection_event_fires_for_unhandled_promise_rejections() -> Resul
   Ok(())
 }
 
-// These tests encode desired P3 lifecycle semantics, but are currently ignored because the
-// corresponding Web platform features are not yet implemented in the BrowserTab pipeline.
+// Note: image loading is not yet fully modeled by the `load` event pipeline, so the image-specific
+// test below remains ignored.
 
 #[test]
-#[ignore = "beforeunload/unload navigation interception is not implemented yet"]
 fn p3_beforeunload_can_cancel_navigation() -> Result<()> {
   let js_options = JsExecutionOptions::default();
-  let mut h = Harness::new("https://example.invalid/p3_beforeunload.html", js_options)?;
+  let page1_url = "https://example.invalid/p3_beforeunload.html";
+  let page2_url = "https://example.invalid/p3_beforeunload_next.html";
+  let mut h = Harness::new(page1_url, js_options)?;
 
   h.register_html_source(
     r#"<!doctype html><body>
+      <div id="page1"></div>
       <script>
         addEventListener("beforeunload", (e) => {
+          console.log("beforeunload");
           e.preventDefault();
-          e.returnValue = "";
+          e.returnValue = "stay";
         });
+        addEventListener("unload", () => console.log("unload"));
       </script>
     </body>"#,
   );
 
   h.navigate()?;
   h.run_until_idle()?;
+
+  h.tab.register_html_source(
+    page2_url.to_string(),
+    r#"<!doctype html><body>
+      <div id="page2"></div>
+      <script>console.log("page2");</script>
+    </body>"#
+      .to_string(),
+  );
+  h.navigate_to(page2_url)?;
+  h.run_until_idle()?;
+
+  assert_eq!(console_logs(&h.tab), vec!["beforeunload".to_string()]);
+  assert!(
+    h.tab.dom().get_element_by_id("page1").is_some(),
+    "expected canceled navigation to remain on page1"
+  );
+  assert!(
+    h.tab.dom().get_element_by_id("page2").is_none(),
+    "expected canceled navigation to not commit page2"
+  );
   Ok(())
 }
 
 #[test]
-#[ignore = "pagehide/pageshow are not implemented yet"]
 fn p3_pagehide_pageshow_fire_on_navigation_and_bfcache_transitions() -> Result<()> {
   let js_options = JsExecutionOptions::default();
-  let mut h = Harness::new("https://example.invalid/p3_pageshow.html", js_options)?;
-  h.register_html_source(r#"<!doctype html><body></body>"#);
+  let page1_url = "https://example.invalid/p3_pageshow.html";
+  let page2_url = "https://example.invalid/p3_pageshow_next.html";
+  let mut h = Harness::new(page1_url, js_options)?;
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <div id="page1"></div>
+      <script>
+        addEventListener("beforeunload", () => console.log("beforeunload"));
+        addEventListener("pagehide", (e) => console.log("pagehide:" + e.persisted));
+        addEventListener("unload", () => console.log("unload"));
+      </script>
+    </body>"#,
+  );
   h.navigate()?;
   h.run_until_idle()?;
+
+  h.tab.register_html_source(
+    page2_url.to_string(),
+    r#"<!doctype html><body>
+      <div id="page2"></div>
+      <script>
+        addEventListener("pageshow", (e) => console.log("pageshow:" + e.persisted));
+        document.addEventListener("DOMContentLoaded", () => console.log("DOMContentLoaded"));
+        addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+      .to_string(),
+  );
+  h.navigate_to(page2_url)?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "beforeunload".to_string(),
+      "pagehide:false".to_string(),
+      "unload".to_string(),
+      "pageshow:false".to_string(),
+      "DOMContentLoaded".to_string(),
+      "load".to_string(),
+    ]
+  );
   Ok(())
 }
 
 #[test]
-#[ignore = "visibilityState changes / visibilitychange events are not implemented yet"]
 fn p3_visibilitychange_fires_when_document_visibility_changes() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p3_visibility.html", js_options)?;
@@ -827,24 +898,41 @@ fn p3_visibilitychange_fires_when_document_visibility_changes() -> Result<()> {
   );
   h.navigate()?;
   h.run_until_idle()?;
+  assert!(console_logs(&h.tab).is_empty());
+  h.tab.set_hidden(true)?;
+  h.run_until_idle()?;
+  assert_eq!(console_logs(&h.tab), vec!["hidden".to_string()]);
   Ok(())
 }
 
 #[test]
-#[ignore = "window.onerror is not dispatched for uncaught exceptions yet"]
 fn p3_window_onerror_fires_for_uncaught_errors() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p3_onerror.html", js_options)?;
   h.register_html_source(
     r#"<!doctype html><body>
       <script>
+        window.onerror = function () { console.log("onerror"); };
         addEventListener("error", () => console.log("error"));
-        throw new Error("boom");
+        setTimeout(() => {
+          console.log("timer");
+          throw new Error("boom");
+        }, 0);
+        console.log("scheduled");
       </script>
     </body>"#,
   );
   h.navigate()?;
   h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "scheduled".to_string(),
+      "timer".to_string(),
+      "error".to_string(),
+      "onerror".to_string(),
+    ]
+  );
   Ok(())
 }
 

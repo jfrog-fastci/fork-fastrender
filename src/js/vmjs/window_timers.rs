@@ -1333,6 +1333,116 @@ fn promise_rejection_microtask_checkpoint_hook<Host: WindowRealmHost + 'static>(
   Ok(())
 }
 
+fn queue_uncaught_error_event_task<Host: WindowRealmHost + 'static>(
+  event_loop: &mut EventLoop<Host>,
+  message: String,
+) -> crate::error::Result<()> {
+  event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+    let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+    hooks.set_event_loop(event_loop);
+    window_realm.reset_interrupt();
+    let global_obj = window_realm.global_object();
+    let budget = window_realm.vm_budget_now();
+    let (vm, heap) = window_realm.vm_and_heap_mut();
+
+    // Best-effort: errors while reporting an error should not recursively trigger more reporting.
+    // Still surface failures as event-loop errors so diagnostics/tests can observe regressions.
+    let result = (|| -> Result<(), VmError> {
+      let mut vm = vm.push_budget(budget);
+      vm.tick()?;
+
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(global_obj))?;
+
+      let message_s = scope.alloc_string(&message)?;
+      scope.push_root(Value::String(message_s))?;
+
+      // `window.addEventListener("error", ...)` listeners should observe uncaught exceptions, and
+      // `window.onerror` (EventHandler) should be invoked with the standard signature.
+      //
+      // Dispatch an `ErrorEvent("error", { message, cancelable: true })` so the event is both
+      // dispatchable (`dispatchEvent` expects branded Event objects) and carries a message payload.
+      let event_type_s = scope.alloc_string("error")?;
+      scope.push_root(Value::String(event_type_s))?;
+
+      let init_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(init_obj))?;
+      let cancelable_key = alloc_key(&mut scope, "cancelable")?;
+      scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
+      let message_key = alloc_key(&mut scope, "message")?;
+      scope.define_property(init_obj, message_key, data_desc(Value::String(message_s)))?;
+
+      let error_event_ctor_key = alloc_key(&mut scope, "ErrorEvent")?;
+      let error_event_ctor = vm.get_with_host_and_hooks(
+        vm_host,
+        &mut scope,
+        &mut hooks,
+        global_obj,
+        error_event_ctor_key,
+      )?;
+      scope.push_root(error_event_ctor)?;
+      let event_value = if scope
+        .heap()
+        .is_constructor(error_event_ctor)
+        .unwrap_or(false)
+      {
+        vm.construct_with_host_and_hooks(
+          vm_host,
+          &mut scope,
+          &mut hooks,
+          error_event_ctor,
+          &[Value::String(event_type_s), Value::Object(init_obj)],
+          error_event_ctor,
+        )?
+      } else {
+        // Fall back to a plain `Event` object if the realm does not expose an `ErrorEvent`
+        // constructor.
+        let event_ctor_key = alloc_key(&mut scope, "Event")?;
+        let event_ctor =
+          vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, event_ctor_key)?;
+        scope.push_root(event_ctor)?;
+        vm.construct_with_host_and_hooks(
+          vm_host,
+          &mut scope,
+          &mut hooks,
+          event_ctor,
+          &[Value::String(event_type_s), Value::Object(init_obj)],
+          event_ctor,
+        )?
+      };
+      let Value::Object(event_obj) = event_value else {
+        return Ok(());
+      };
+      scope.push_root(Value::Object(event_obj))?;
+
+      let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
+      let dispatch = vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, dispatch_key)?;
+      vm.call_with_host_and_hooks(
+        vm_host,
+        &mut scope,
+        &mut hooks,
+        dispatch,
+        Value::Object(global_obj),
+        &[Value::Object(event_obj)],
+      )?;
+
+      Ok(())
+    })();
+
+    let finish_err = hooks.finish(heap);
+    if let Some(err) = finish_err {
+      return Err(err);
+    }
+    if let Err(err) = result {
+      return Err(vm_error_to_event_loop_error(heap, err));
+    }
+    Ok(())
+  })?;
+
+  Ok(())
+}
+
 // --- Compile-time regression guard (vm-js Promise-job GC safety) ---
 //
 // FastRender's host microtask queue is not traced by `vm-js`'s GC. Promise jobs can outlive the
@@ -1433,14 +1543,28 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
         )
         .map(|_| ())
       });
-      let result: crate::error::Result<()> = call_result
-        .map_err(|err| vm_error_to_event_loop_error(heap, err))
-        .map(|_| ());
+      let mut onerror_message: Option<String> = None;
+      let result: crate::error::Result<()> = match call_result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+          let is_js_exception = vm_error_format::vm_error_is_js_exception(&err);
+          let err = vm_error_to_event_loop_error(heap, err);
+          if is_js_exception {
+            onerror_message = Some(err.to_string());
+          }
+          Err(err)
+        }
+      };
 
       let drain_result: crate::error::Result<()> = {
         let drain_result = {
           let mut scope = heap.scope();
-          drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+          drain_pending_dataset_mutation_observer_microtasks(
+            &mut vm,
+            &mut scope,
+            vm_host,
+            &mut hooks,
+          )
         };
         drain_result
           .map_err(|err| vm_error_to_event_loop_error(heap, err))
@@ -1453,6 +1577,10 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
         (Ok(()), Err(err)) => Err(err),
         (other, _) => other,
       };
+
+      if let Some(message) = onerror_message {
+        let _ = queue_uncaught_error_event_task::<Host>(event_loop, message);
+      }
       let finish_err = hooks.finish(&mut *heap);
 
       {
@@ -1589,14 +1717,28 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
         .map(|_| ())
       });
 
-      let result: crate::error::Result<()> = call_result
-        .map_err(|err| vm_error_to_event_loop_error(heap, err))
-        .map(|_| ());
+      let mut onerror_message: Option<String> = None;
+      let result: crate::error::Result<()> = match call_result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+          let is_js_exception = vm_error_format::vm_error_is_js_exception(&err);
+          let err = vm_error_to_event_loop_error(heap, err);
+          if is_js_exception {
+            onerror_message = Some(err.to_string());
+          }
+          Err(err)
+        }
+      };
 
       let drain_result: crate::error::Result<()> = {
         let drain_result = {
           let mut scope = heap.scope();
-          drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+          drain_pending_dataset_mutation_observer_microtasks(
+            &mut vm,
+            &mut scope,
+            vm_host,
+            &mut hooks,
+          )
         };
         drain_result
           .map_err(|err| vm_error_to_event_loop_error(heap, err))
@@ -1609,6 +1751,10 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
         (Ok(()), Err(err)) => Err(err),
         (other, _) => other,
       };
+
+      if let Some(message) = onerror_message {
+        let _ = queue_uncaught_error_event_task::<Host>(event_loop, message);
+      }
       let finish_err = hooks.finish(&mut *heap);
 
       if let Some(err) = finish_err {
@@ -1737,9 +1883,22 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
         call_result
       });
 
-      let result: crate::error::Result<()> = call_result
-        .map_err(|err| vm_error_to_event_loop_error(heap, err))
-        .map(|_| ());
+      let mut onerror_message: Option<String> = None;
+      let result: crate::error::Result<()> = match call_result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+          let is_js_exception = vm_error_format::vm_error_is_js_exception(&err);
+          let err = vm_error_to_event_loop_error(heap, err);
+          if is_js_exception {
+            onerror_message = Some(err.to_string());
+          }
+          Err(err)
+        }
+      };
+
+      if let Some(message) = onerror_message {
+        let _ = queue_uncaught_error_event_task::<Host>(event_loop, message);
+      }
 
       let drain_result: crate::error::Result<()> = {
         let drain_result = {
