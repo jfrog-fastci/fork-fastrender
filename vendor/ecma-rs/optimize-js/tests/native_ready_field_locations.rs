@@ -59,10 +59,12 @@ fn collect_prop_assign_effects(
 fn native_ready_strict_native_populates_field_locations() {
   let native = compile_native_ready(
     r#"
+      declare function sink(x: unknown): void;
       interface Obj { x: number; y: number; }
       const obj: Obj = { x: 0, y: 0 };
       obj.x = 1;
       obj.y = 2;
+      sink(obj);
     "#,
     true,
   );
@@ -104,9 +106,11 @@ fn native_ready_strict_native_populates_field_locations() {
 fn native_ready_non_strict_native_falls_back_to_heap() {
   let native = compile_native_ready(
     r#"
+      declare function sink(x: unknown): void;
       interface Obj { x: number; }
       const obj: Obj = { x: 0 };
       obj.x = 1;
+      sink(obj);
     "#,
     false,
   );

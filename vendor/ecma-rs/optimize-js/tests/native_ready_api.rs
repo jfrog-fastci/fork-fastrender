@@ -51,14 +51,15 @@ fn native_ready_retains_ssa_phi_nodes() {
     declare function unknown_cond(): boolean;
     declare function side_effect_true(): void;
     declare function side_effect_false(): void;
+    declare function unknown_num(): number;
     declare function unknown_func(x: number): void;
-    let x = 0;
+    let x = unknown_num();
     if (unknown_cond()) {
       side_effect_true();
-      x = 1;
+      x = unknown_num();
     } else {
       side_effect_false();
-      x = 2;
+      x = unknown_num();
     }
     unknown_func(x);
   "#;
@@ -159,14 +160,15 @@ fn native_ready_program_analyses_are_deterministic() {
     declare function unknown_cond(): boolean;
     declare function side_effect_true(): void;
     declare function side_effect_false(): void;
+    declare function unknown_num(): number;
     declare function unknown_func(x: number): void;
-    let x = 0;
+    let x = unknown_num();
     if (unknown_cond()) {
       side_effect_true();
-      x = 1;
+      x = unknown_num();
     } else {
       side_effect_false();
-      x = 2;
+      x = unknown_num();
     }
     unknown_func(x);
   "#;
