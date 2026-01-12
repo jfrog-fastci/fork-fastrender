@@ -25,9 +25,10 @@ fn tests_do_not_mutate_process_stage_listener_directly() {
   let render_control = "render_control::";
   let global = "Global";
   let stage_guard = "StageListenerGuard";
+  let open_paren = "(";
   let forbidden = [
-    format!("{render_control}set_stage_listener("),
-    format!("{render_control}swap_stage_listener("),
+    format!("{render_control}set_stage_listener{open_paren}"),
+    format!("{render_control}swap_stage_listener{open_paren}"),
     // Forbid using the library guard directly; use `crate::common::StageListenerGuard` instead.
     format!("{global}{stage_guard}"),
   ];
@@ -56,4 +57,3 @@ fn tests_do_not_mutate_process_stage_listener_directly() {
     }
   }
 }
-
