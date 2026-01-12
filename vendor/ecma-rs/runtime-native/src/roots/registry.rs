@@ -1,6 +1,8 @@
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::sync::GcAwareMutex;
+use crate::threading::registry;
 
 /// A process-global registry of GC root *slots* that are not discovered via
 /// LLVM stackmaps (globals, persistent handles, etc).
@@ -13,6 +15,7 @@ use crate::sync::GcAwareMutex;
 /// and writable until it is unregistered.
 pub struct RootRegistry {
   inner: GcAwareMutex<Inner>,
+  live_count: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -51,6 +54,7 @@ impl RootRegistry {
   pub fn new() -> Self {
     Self {
       inner: GcAwareMutex::new(Inner::default()),
+      live_count: AtomicUsize::new(0),
     }
   }
 
@@ -65,7 +69,9 @@ impl RootRegistry {
       std::process::abort();
     }
     let mut inner = self.inner.lock();
-    inner.alloc(Entry::Borrowed(slot))
+    let handle = inner.alloc(Entry::Borrowed(slot));
+    self.live_count.fetch_add(1, Ordering::Release);
+    handle
   }
 
   /// Convenience helper: allocate an internal slot, initialize it to `ptr`, and
@@ -74,8 +80,23 @@ impl RootRegistry {
   /// The returned handle must later be passed to [`RootRegistry::unregister`]
   /// (or the C ABI `rt_gc_unpin`).
   pub fn pin(&self, ptr: *mut u8) -> u32 {
-    let mut inner = self.inner.lock();
-    inner.alloc(Entry::Pinned(Box::new(ptr)))
+    let ts = registry::current_thread_state_ptr();
+    if ts.is_null() {
+      let mut inner = self.inner.lock();
+      let handle = inner.alloc(Entry::Pinned(Box::new(ptr)));
+      self.live_count.fetch_add(1, Ordering::Release);
+      return handle;
+    }
+
+    // Safety: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let root = scope.root(ptr);
+    // Safety: `root.slot_ptr()` returns a valid, aligned pointer to a writable `*mut u8` slot in the
+    // current thread's shadow stack.
+    unsafe { self.pin_from_slot(root.slot_ptr()) }
   }
 
   /// Like [`Self::pin`], but reads the pointer value from an addressable slot *after* acquiring the
@@ -102,13 +123,21 @@ impl RootRegistry {
 
     // SAFETY: caller contract.
     let ptr = unsafe { slot.read() };
-    inner.alloc(Entry::Pinned(Box::new(ptr)))
+    let handle = inner.alloc(Entry::Pinned(Box::new(ptr)));
+    self.live_count.fetch_add(1, Ordering::Release);
+    handle
   }
 
   /// Unregister a previously registered root slot handle.
   pub fn unregister(&self, handle: u32) {
     let mut inner = self.inner.lock();
-    let _ = inner.remove(handle);
+    let removed = inner.remove(handle).is_some();
+    if removed {
+      let prev = self.live_count.fetch_sub(1, Ordering::AcqRel);
+      if prev == 0 {
+        std::process::abort();
+      }
+    }
   }
 
   /// Unregister a previously registered *borrowed* root slot by its address.
@@ -127,7 +156,13 @@ impl RootRegistry {
       std::process::abort();
     }
     let mut inner = self.inner.lock();
-    inner.remove_borrowed_slot_ptr(slot);
+    let removed = inner.remove_borrowed_slot_ptr(slot);
+    if removed != 0 {
+      let prev = self.live_count.fetch_sub(removed, Ordering::AcqRel);
+      if prev < removed {
+        std::process::abort();
+      }
+    }
   }
 
   /// Returns the current pointer value for a registered root handle.
@@ -159,15 +194,25 @@ impl RootRegistry {
   /// For handles created by [`RootRegistry::register_root_slot`], the caller must uphold the root
   /// registry contract: the registered slot pointer must remain valid until it is unregistered.
   pub fn set(&self, handle: u32, ptr: *mut u8) -> bool {
-    let mut inner = self.inner.lock();
-    let Some(slot_ptr) = inner.get_slot_ptr(handle) else {
-      return false;
-    };
-    // Safety: see [`RootRegistry::get`].
-    unsafe {
-      slot_ptr.write(ptr);
+    let ts = registry::current_thread_state_ptr();
+    if ts.is_null() {
+      let mut inner = self.inner.lock();
+      let Some(slot_ptr) = inner.get_slot_ptr(handle) else {
+        return false;
+      };
+      // Safety: see [`RootRegistry::get`].
+      unsafe {
+        slot_ptr.write(ptr);
+      }
+      return true;
     }
-    true
+
+    // Safety: see `RootRegistry::pin`.
+    let ts = unsafe { &*ts };
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let root = scope.root(ptr);
+    // Safety: see `RootRegistry::pin`.
+    unsafe { self.set_from_slot(handle, root.slot_ptr()) }
   }
 
   /// Like [`Self::set`], but reads the pointer value from an addressable slot *after* acquiring the
@@ -207,6 +252,9 @@ impl RootRegistry {
 
   /// Enumerate all registered root slots.
   pub fn for_each_root_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
+    if self.live_count.load(Ordering::Acquire) == 0 {
+      return;
+    }
     // Use the GC-aware `lock()` path so:
     // - contended acquisition enters a GC-safe ("NativeSafe") region (avoids STW deadlocks), and
     // - mutator threads cannot observe a stop-the-world (odd) epoch and still proceed holding this
@@ -221,6 +269,25 @@ impl RootRegistry {
       };
       f(entry.slot_ptr());
     }
+  }
+
+  /// Returns the number of currently-live roots registered in this registry.
+  pub fn live_count(&self) -> usize {
+    self.live_count.load(Ordering::Acquire)
+  }
+
+  /// Debug/test helper: run `f` while holding the registry lock.
+  ///
+  /// This exists so integration tests can deterministically create contention between:
+  /// - a long-held registry lock, and
+  /// - a thread blocked on `register_root_slot`/`pin`/`unregister`/`set`,
+  /// and assert that the blocked thread transitions into a GC-safe ("NativeSafe") region.
+  ///
+  /// This method is **not** considered stable API.
+  #[doc(hidden)]
+  pub fn debug_with_lock_for_tests<R>(&self, f: impl FnOnce() -> R) -> R {
+    let _guard = self.inner.lock();
+    f()
   }
 
   /// Test-only helper to reset the process-global registry.
@@ -247,6 +314,7 @@ impl RootRegistry {
         .free_list
         .push(u32::try_from(idx).expect("too many root slots"));
     }
+    self.live_count.store(0, Ordering::Release);
   }
 }
 
@@ -303,7 +371,8 @@ impl Inner {
     Some(entry)
   }
 
-  fn remove_borrowed_slot_ptr(&mut self, slot_ptr: *mut *mut u8) {
+  fn remove_borrowed_slot_ptr(&mut self, slot_ptr: *mut *mut u8) -> usize {
+    let mut removed = 0usize;
     for (idx, slot) in self.slots.iter_mut().enumerate() {
       let Some(entry) = slot.entry.as_ref() else {
         continue;
@@ -317,7 +386,9 @@ impl Inner {
       let _ = slot.entry.take();
       slot.generation = slot.generation.wrapping_add(1);
       self.free_list.push(idx as u32);
+      removed += 1;
     }
+    removed
   }
 
   fn get_slot_ptr(&mut self, handle: u32) -> Option<*mut *mut u8> {
