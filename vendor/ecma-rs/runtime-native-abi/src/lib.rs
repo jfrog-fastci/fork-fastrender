@@ -33,7 +33,7 @@ pub const RT_NATIVE_ABI_VERSION: u32 = 0;
 /// Must match:
 /// - `runtime-native/include/runtime_native.h` (`RT_ASYNC_ABI_VERSION`)
 /// - `runtime-native/src/async_abi.rs` (`RT_ASYNC_ABI_VERSION`)
-pub const RT_ASYNC_ABI_VERSION: u32 = 1;
+pub const RT_ASYNC_ABI_VERSION: u32 = 2;
 
 /// `Coroutine.flags` bitfield: when set, the runtime owns the coroutine frame and will call
 /// `vtable->destroy(coro)` exactly once after completion or cancellation.

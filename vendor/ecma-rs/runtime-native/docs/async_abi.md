@@ -768,7 +768,7 @@ Every coroutine frame is a `#[repr(C)]` struct whose first field (at offset `0`)
 
 ### ABI versioning (`CoroutineVTable::abi_version`)
 
-The native coroutine ABI is versioned via `RT_ASYNC_ABI_VERSION` (currently `1`).
+The native coroutine ABI is versioned via `RT_ASYNC_ABI_VERSION` (currently `2`).
 
 Codegen must set `CoroutineVTable::abi_version` to exactly this value. The runtime validates the
 version (and basic promise layout metadata) before dereferencing the vtable or calling into

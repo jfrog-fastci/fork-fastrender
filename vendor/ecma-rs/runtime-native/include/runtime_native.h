@@ -736,7 +736,7 @@ typedef CoroutineStep (*CoroutineResumeFn)(Coroutine*);
 // Guard against RT_ASYNC_ABI_VERSION being defined as a macro by other headers; otherwise the
 // preprocessor would substitute the name inside the enum definition.
 #ifndef RT_ASYNC_ABI_VERSION
-enum { RT_ASYNC_ABI_VERSION = 1 };
+enum { RT_ASYNC_ABI_VERSION = 2 };
 #endif
 
 struct CoroutineVTable {
