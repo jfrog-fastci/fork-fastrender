@@ -7499,7 +7499,8 @@ impl DisplayListRenderer {
           // Only apply the Chrome-matching bias when the border's top edge lands on a fractional
           // device pixel. If the edge is already aligned to an integer pixel, shifting the border
           // down by half a pixel can move it outside the element's border box and allow later
-          // siblings to paint over it (regression: MDN sticky header divider).
+          // siblings to paint over it (regressions: MDN sticky header divider, wired.com header
+          // divider).
           if single_edge_bottom
             && Self::is_near_integer(bottom.width)
             && !Self::is_near_integer(bottom_y)
@@ -25242,7 +25243,7 @@ mod tests {
     // Our border fast path historically biased single-edge bottom borders down by 0.5px even when
     // the border's top edge was already on an integer pixel. That could move the border outside
     // the element's border box and let later siblings paint over it (e.g. MDN sticky header
-    // divider).
+    // divider, wired.com header divider).
     let renderer = DisplayListRenderer::new(10, 100, Rgba::WHITE, FontContext::new()).unwrap();
     let mut list = DisplayList::new();
 
