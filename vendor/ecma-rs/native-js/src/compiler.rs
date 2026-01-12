@@ -284,7 +284,8 @@ fn require_runtime_native_staticlib() -> Result<PathBuf, NativeJsError> {
     return Err(NativeJsError::RuntimeNativeNotFound {
       message:
         "unable to locate runtime-native static library `libruntime_native.a` required for native executable linking; \
-set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override discovery"
+build it with `cargo build -p runtime-native` (from the ecma-rs workspace root), \
+or set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override discovery"
           .to_string(),
     });
   };
@@ -308,7 +309,8 @@ set it to the path of `libruntime_native.a`",
   Err(NativeJsError::RuntimeNativeNotFound {
     message: format!(
       "unable to locate runtime-native static library at {}; \
-set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override discovery",
+build it with `cargo build -p runtime-native` (from the ecma-rs workspace root), \
+or set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override discovery",
       p.display()
     ),
   })

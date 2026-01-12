@@ -15,7 +15,13 @@ If you have the `native-js` binary installed on your `PATH`, common commands are
 ```bash
 native-js check input.ts
 native-js run input.ts
+native-js bench input.ts --warmup 1 --iters 10
 ```
+
+Note: `native-js build`/`run`/`bench` emit and link native executables. This requires the
+`runtime-native` static library (`libruntime_native.a`) to be built and discoverable. If you see
+errors about missing `libruntime_native.a`, build it from the ecma-rs workspace root:
+`cargo build -p runtime-native` (or use `scripts/cargo_llvm.sh`).
 
 ## `native-js-cli` (minimal emitter)
 
