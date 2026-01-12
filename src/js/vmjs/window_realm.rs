@@ -1951,6 +1951,8 @@ const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
+const EVENT_IS_TRUSTED_VALUE_KEY: &str = "__fastrender_event_is_trusted";
+const EVENT_IS_TRUSTED_GETTER_KEY: &str = "__fastrender_event_is_trusted_getter";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
 const UI_EVENT_PROTOTYPE_KEY: &str = "__fastrender_ui_event_prototype";
@@ -3653,13 +3655,25 @@ fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
     let event_proto = {
       scope.push_root(Value::Object(document_obj))?;
       let key = alloc_key(&mut scope, HASH_CHANGE_EVENT_PROTOTYPE_KEY)?;
-      scope
+      let proto = scope
         .heap()
         .object_get_own_data_property_value(document_obj, &key)?
         .and_then(|v| match v {
           Value::Object(obj) => Some(obj),
           _ => None,
-        })
+        });
+      if proto.is_some() {
+        proto
+      } else {
+        let key = alloc_key(&mut scope, EVENT_PROTOTYPE_KEY)?;
+        scope
+          .heap()
+          .object_get_own_data_property_value(document_obj, &key)?
+          .and_then(|v| match v {
+            Value::Object(obj) => Some(obj),
+            _ => None,
+          })
+      }
     };
 
     let event_obj = scope.alloc_object()?;
@@ -9296,8 +9310,7 @@ fn define_event_default_properties(scope: &mut Scope<'_>, obj: GcObject) -> Resu
   let time_stamp_key = alloc_key(scope, "timeStamp")?;
   scope.define_property(obj, time_stamp_key, data_desc(Value::Number(0.0)))?;
 
-  let is_trusted_key = alloc_key(scope, "isTrusted")?;
-  scope.define_property(obj, is_trusted_key, data_desc(Value::Bool(false)))?;
+  define_event_is_trusted_legacy_unforgeable(scope, obj, false)?;
 
   // Base dispatch-control flags, mutable via `preventDefault()` / propagation control.
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
@@ -9309,6 +9322,94 @@ fn define_event_default_properties(scope: &mut Scope<'_>, obj: GcObject) -> Resu
   // Internal flag used by `stopImmediatePropagation()`.
   let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
   scope.define_property(obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
+  Ok(())
+}
+
+fn event_is_trusted_getter_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "Event.isTrusted must be called on an Event object",
+    ));
+  };
+  if !is_branded_event(scope, event_obj)? {
+    return Err(VmError::TypeError(
+      "Event.isTrusted must be called on an Event object",
+    ));
+  }
+  let key = alloc_key(scope, EVENT_IS_TRUSTED_VALUE_KEY)?;
+  match scope.heap().object_get_own_data_property_value(event_obj, &key)? {
+    Some(Value::Bool(v)) => Ok(Value::Bool(v)),
+    Some(v) => Ok(Value::Bool(scope.heap().to_boolean(v)?)),
+    None => Ok(Value::Bool(false)),
+  }
+}
+
+fn event_is_trusted_getter_func(scope: &mut Scope<'_>, obj: GcObject) -> Result<GcObject, VmError> {
+  let getter_key = alloc_key(scope, EVENT_IS_TRUSTED_GETTER_KEY)?;
+  let mut proto = scope.object_get_prototype(obj)?;
+  while let Some(proto_obj) = proto {
+    if let Some(value) = scope
+      .heap()
+      .object_get_own_data_property_value(proto_obj, &getter_key)?
+    {
+      if let Value::Object(func_obj) = value {
+        return Ok(func_obj);
+      }
+    }
+    proto = scope.object_get_prototype(proto_obj)?;
+  }
+  Err(VmError::InvariantViolation(
+    "missing Event.isTrusted getter function",
+  ))
+}
+
+fn define_event_is_trusted_legacy_unforgeable(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  is_trusted: bool,
+) -> Result<(), VmError> {
+  // WebIDL: `Event.isTrusted` is `[LegacyUnforgeable]`, so it must be an own, non-configurable
+  // accessor property on each instance (and not on `Event.prototype`).
+  //
+  // Store the value in an internal, non-writable data property so script cannot influence the
+  // getter result (e.g. via `e.isTrusted = true`).
+  let value_key = alloc_key(scope, EVENT_IS_TRUSTED_VALUE_KEY)?;
+  scope.define_property(
+    obj,
+    value_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(is_trusted),
+        writable: false,
+      },
+    },
+  )?;
+
+  let getter = event_is_trusted_getter_func(scope, obj)?;
+  let is_trusted_key = alloc_key(scope, "isTrusted")?;
+  scope.define_property(
+    obj,
+    is_trusted_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: false,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(getter),
+        set: Value::Undefined,
+      },
+    },
+  )?;
 
   Ok(())
 }
@@ -15415,6 +15516,8 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       data_desc(Value::Bool(event.composed)),
     )?;
 
+    define_event_is_trusted_legacy_unforgeable(scope, event_obj, event.is_trusted)?;
+
     if interface == EventInterface::CustomEvent {
       let detail_key = alloc_key(scope, "detail")?;
       let detail = event.detail.unwrap_or(Value::Null);
@@ -15731,13 +15834,6 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       event_obj,
       time_stamp_key,
       data_desc(Value::Number(event.time_stamp)),
-    )?;
-
-    let is_trusted_key = alloc_key(scope, "isTrusted")?;
-    scope.define_property(
-      event_obj,
-      is_trusted_key,
-      data_desc(Value::Bool(event.is_trusted)),
     )?;
 
     let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
@@ -16179,13 +16275,6 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
       self.event_obj,
       time_stamp_key,
       data_desc(Value::Number(event.time_stamp)),
-    )?;
-
-    let is_trusted_key = alloc_key(scope, "isTrusted")?;
-    scope.define_property(
-      self.event_obj,
-      is_trusted_key,
-      data_desc(Value::Bool(event.is_trusted)),
     )?;
 
     let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
@@ -17303,13 +17392,6 @@ pub(crate) fn event_target_dispatch_event_dom2(
       event_obj,
       time_stamp_key,
       data_desc(Value::Number(rust_event.time_stamp)),
-    )?;
-
-    let is_trusted_key = alloc_key(scope, "isTrusted")?;
-    scope.define_property(
-      event_obj,
-      is_trusted_key,
-      data_desc(Value::Bool(rust_event.is_trusted)),
     )?;
   }
 
@@ -25844,6 +25926,34 @@ fn init_window_globals(
   // scripts can run without immediately aborting.
   let event_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(event_proto))?;
+
+  // --- Event.isTrusted ([LegacyUnforgeable]) ---
+  //
+  // Store the shared native getter on `Event.prototype` so event instance shims can reuse it when
+  // defining the unforgeable own accessor property.
+  let is_trusted_get_call_id = vm.register_native_call(event_is_trusted_getter_native)?;
+  let is_trusted_get_name = scope.alloc_string("get isTrusted")?;
+  scope.push_root(Value::String(is_trusted_get_name))?;
+  let is_trusted_get_func =
+    scope.alloc_native_function(is_trusted_get_call_id, None, is_trusted_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    is_trusted_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(is_trusted_get_func))?;
+  let is_trusted_get_key = alloc_key(&mut scope, EVENT_IS_TRUSTED_GETTER_KEY)?;
+  scope.define_property(
+    event_proto,
+    is_trusted_get_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(is_trusted_get_func),
+        writable: false,
+      },
+    },
+  )?;
 
   let init_event_call_id = vm.register_native_call(event_init_event_native)?;
   let init_event_name = scope.alloc_string("initEvent")?;
