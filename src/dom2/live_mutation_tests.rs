@@ -23,7 +23,7 @@ fn insert_before_emits_pre_insert() {
     vec![LiveMutationEvent::PreInsert {
       parent,
       index: 0,
-      count: 1
+      count: 1,
     }]
   );
 }
@@ -49,7 +49,7 @@ fn remove_child_emits_pre_remove_with_old_parent_and_index() {
     vec![LiveMutationEvent::PreRemove {
       node: b,
       old_parent: parent,
-      old_index: 1
+      old_index: 1,
     }]
   );
 }
@@ -84,18 +84,18 @@ fn fragment_insertion_emits_pre_remove_for_fragment_children_then_pre_insert() {
       LiveMutationEvent::PreRemove {
         node: a,
         old_parent: frag,
-        old_index: 0
+        old_index: 0,
       },
       LiveMutationEvent::PreRemove {
         node: b,
         old_parent: frag,
-        old_index: 1
+        old_index: 1,
       },
       LiveMutationEvent::PreInsert {
         parent,
         index: 1,
-        count: 2
-      }
+        count: 2,
+      },
     ]
   );
 }
@@ -125,19 +125,19 @@ fn replace_child_emits_pre_remove_then_pre_insert() {
       LiveMutationEvent::PreRemove {
         node: old_child,
         old_parent: parent,
-        old_index: 0
+        old_index: 0,
       },
       LiveMutationEvent::PreInsert {
         parent,
         index: 0,
-        count: 1
-      }
+        count: 1,
+      },
     ]
   );
 }
 
 #[test]
-fn set_text_data_emits_replace_data_with_byte_lengths() {
+fn set_text_data_emits_replace_data() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let recorder = LiveMutationTestRecorder::default();
   doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
@@ -158,8 +158,72 @@ fn set_text_data_emits_replace_data_with_byte_lengths() {
       node: text,
       offset: 0,
       removed_len: 2,
-      inserted_len: 3
+      inserted_len: 3,
     }]
   );
+}
+
+#[test]
+fn move_between_parents_emits_pre_remove_then_pre_insert() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let recorder = LiveMutationTestRecorder::default();
+  doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+  let root = doc.root();
+  let p1 = doc.create_element("div", "");
+  let p2 = doc.create_element("div", "");
+  doc.append_child(root, p1).unwrap();
+  doc.append_child(root, p2).unwrap();
+
+  let child = doc.create_text("x");
+  doc.append_child(p1, child).unwrap();
+  let _ = recorder.take();
+
+  assert!(doc.append_child(p2, child).unwrap());
+
+  assert_eq!(
+    recorder.take(),
+    vec![
+      LiveMutationEvent::PreRemove {
+        node: child,
+        old_parent: p1,
+        old_index: 0,
+      },
+      LiveMutationEvent::PreInsert {
+        parent: p2,
+        index: 0,
+        count: 1,
+      },
+    ]
+  );
+}
+
+#[test]
+fn live_traversal_registry_is_gc_safe_and_sweeps_dead_entries() -> Result<(), vm_js::VmError> {
+  use vm_js::{Heap, HeapLimits, Value, WeakGcObject};
+
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut scope = heap.scope();
+
+  let obj = scope.alloc_object()?;
+  let weak = WeakGcObject::from(obj);
+  let root = scope.heap_mut().add_root(Value::Object(obj))?;
+
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let _id = doc.register_live_range(scope.heap(), obj);
+  assert_eq!(doc.live_mutation.live_range_len(), 1);
+
+  // Drop the last root and force a GC; the registry must not keep the JS object alive.
+  scope.heap_mut().remove_root(root);
+  scope.heap_mut().collect_garbage();
+  assert!(
+    weak.upgrade(scope.heap()).is_none(),
+    "registered WeakGcObject must not prevent collection"
+  );
+
+  // After a GC run, sweeping should prune the dead registry entry.
+  doc.sweep_dead_live_traversals_if_needed(scope.heap());
+  assert_eq!(doc.live_mutation.live_range_len(), 0);
+  Ok(())
 }
 

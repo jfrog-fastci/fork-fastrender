@@ -717,24 +717,27 @@ impl Document {
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     let node_id = node;
     self.node_checked(node_id)?;
-    let (old_len, old_value) = match &self.nodes[node_id.index()].kind {
-      NodeKind::Text { content } => {
-        if content == data {
-          return Ok(false);
-        }
-        (content.len(), Some(content.clone()))
-      }
+    // Implement `setTextData` in terms of the DOM "replace data" primitive so live Range updates can
+    // be driven by `replace_data(offset, removed_len, inserted_len)`.
+    let old_value = match &self.node_checked(node_id)?.kind {
+      NodeKind::Text { content } => content.clone(),
       _ => return Err(DomError::InvalidNodeType),
     };
+    if old_value == data {
+      return Ok(false);
+    }
 
-    self
-      .live_mutation
-      .replace_data(node_id, 0, old_len, data.len());
+    self.live_mutation.replace_data(
+      node_id,
+      /* offset */ 0,
+      /* removed_len */ old_value.encode_utf16().count(),
+      /* inserted_len */ data.encode_utf16().count(),
+    );
 
     {
       let node = self.node_checked_mut(node_id)?;
       let NodeKind::Text { content } = &mut node.kind else {
-        unreachable!();
+        return Err(DomError::InvalidNodeType);
       };
       content.clear();
       content.push_str(data);
@@ -742,8 +745,7 @@ impl Document {
 
     self.record_text_mutation(node_id);
     self.bump_mutation_generation();
-    let _ = self.queue_mutation_record_character_data(node_id, old_value);
-
+    let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
   }
 

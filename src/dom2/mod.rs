@@ -54,6 +54,7 @@ pub use mutation_observer::{
   MutationRecordType,
 };
 pub use scripting_parser::parse_html_with_scripting_dom2;
+pub(crate) use live_mutation::{LiveRangeId, NodeIteratorId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
