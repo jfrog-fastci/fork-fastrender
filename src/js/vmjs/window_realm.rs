@@ -361,6 +361,10 @@ impl WindowRealmUserData {
   pub(crate) fn document_url(&self) -> &str {
     &self.document_url
   }
+
+  pub(crate) fn document_obj(&self) -> Option<GcObject> {
+    self.document_obj
+  }
 }
 
 impl WindowRealm {

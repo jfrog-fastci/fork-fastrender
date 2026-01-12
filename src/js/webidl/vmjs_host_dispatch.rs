@@ -1665,6 +1665,24 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         Ok(Value::Undefined)
       }
 
+      // Global attribute getter (receiver is `None` for global interfaces in vm-js bindings).
+      ("Window", "document", 0) => {
+        let _ = receiver;
+        let _ = args;
+
+        let Some(data) = vm.user_data_mut::<crate::js::window_realm::WindowRealmUserData>() else {
+          return Err(VmError::TypeError(
+            "WebIDL Window.document called without a document object",
+          ));
+        };
+        let Some(document_obj) = data.document_obj() else {
+          return Err(VmError::TypeError(
+            "WebIDL Window.document called without a document object",
+          ));
+        };
+        Ok(Value::Object(document_obj))
+      }
+
       ("Window", "alert", _) => Ok(Value::Undefined),
       ("Window", "queueMicrotask", 0) => {
         let callback = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -1732,5 +1750,125 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
       }
       _ => Err(VmError::TypeError("unimplemented host iterable snapshot")),
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use crate::js::window_timers::VmJsEventLoopHooks;
+  use crate::js::WindowHostState;
+  use vm_js::{PropertyDescriptor, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+
+  fn window_document_getter_native(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let bindings_host = webidl_vm_js::host_from_hooks(hooks)?;
+    bindings_host.call_operation(vm, scope, None, "Window", "document", 0, &[])
+  }
+
+  #[test]
+  fn vmjs_webidl_window_document_global_getter_returns_realm_document() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let mut dummy_vm_host = ();
+
+    let mut webidl_host =
+      VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
+
+    // WindowRealm eagerly installs `document` as a data property. Delete it so the WebIDL bindings
+    // installer (or our test fallback) installs an accessor that routes through host dispatch.
+    {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let Some(document_obj) = vm
+        .user_data_mut::<crate::js::window_realm::WindowRealmUserData>()
+        .and_then(|data| data.document_obj())
+      else {
+        return Err(VmError::TypeError("expected WindowRealm to cache a document object"));
+      };
+
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global))?;
+      scope.push_root(Value::Object(document_obj))?;
+
+      // Keep the document object alive across the `document` delete + bindings installation (both
+      // can allocate and therefore GC).
+      let keepalive_key = key_from_str(&mut scope, "__fastrender_document_keepalive")?;
+      scope.define_property(
+        global,
+        keepalive_key,
+        data_property(Value::Object(document_obj), true, false, true),
+      )?;
+
+      let document_key = key_from_str(&mut scope, "document")?;
+      scope.delete_property_or_throw(global, document_key)?;
+    }
+
+    // Install the generated vm-js bindings. (As of some revisions, Window.document is not yet
+    // generated; the fallback below installs a minimal getter.)
+    {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm)?;
+    }
+
+    // If the generated bindings didn't install Window.document yet, install a minimal accessor that
+    // matches the vm-js codegen calling convention (receiver = None for global interface members).
+    {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global))?;
+
+      let document_key = key_from_str(&mut scope, "document")?;
+      let has_document = scope
+        .heap()
+        .object_get_own_property(global, &document_key)?
+        .is_some();
+
+      if !has_document {
+        let get_id = vm.register_native_call(window_document_getter_native)?;
+        let name = scope.alloc_string("get document")?;
+        scope.push_root(Value::String(name))?;
+        let get_func = scope.alloc_native_function(get_id, None, name, 0)?;
+        scope
+          .heap_mut()
+          .object_set_prototype(get_func, Some(realm.intrinsics().function_prototype()))?;
+        scope.push_root(Value::Object(get_func))?;
+
+        scope.define_property(
+          global,
+          document_key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get_func),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dummy_vm_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dummy_vm_host,
+      &mut hooks,
+      "typeof document === 'object' && document === globalThis.__fastrender_document_keepalive",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
   }
 }
