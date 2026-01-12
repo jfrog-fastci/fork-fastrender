@@ -2522,6 +2522,92 @@ fn form_control_values_use_html_sanitization_algorithms() {
 }
 
 #[test]
+fn textarea_runtime_value_preserves_leading_newline_and_drives_placeholder_shown_matching() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::dom::{DomNode, DomNodeType};
+  use crate::style::cascade::{apply_styles_with_media, StyledNode};
+  use crate::style::media::MediaContext;
+  use crate::style::values::Length;
+
+  fn find_by_tag<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
+    if let Some(name) = node.node.tag_name() {
+      if name.eq_ignore_ascii_case(tag) {
+        return Some(node);
+      }
+    }
+    node.children.iter().find_map(|child| find_by_tag(child, tag))
+  }
+
+  fn find_first_element_mut<'a>(node: &'a mut DomNode, tag: &str) -> Option<&'a mut DomNode> {
+    if node.tag_name().is_some_and(|t| t.eq_ignore_ascii_case(tag)) {
+      return Some(node);
+    }
+    for child in node.children.iter_mut() {
+      if let Some(found) = find_first_element_mut(child, tag) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  fn set_attribute(node: &mut DomNode, name: &str, value: &str) {
+    let attrs = match &mut node.node_type {
+      DomNodeType::Element { attributes, .. } | DomNodeType::Slot { attributes, .. } => {
+        attributes
+      }
+      _ => return,
+    };
+
+    if let Some((_, existing)) = attrs.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
+      existing.clear();
+      existing.push_str(value);
+      return;
+    }
+    attrs.push((name.to_string(), value.to_string()));
+  }
+
+  fn textarea_value<'a>(node: &'a BoxNode) -> Option<&'a str> {
+    if let BoxType::Replaced(replaced) = &node.box_type {
+      if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+        if let FormControlKind::TextArea { value, .. } = &control.control {
+          return Some(value.as_str());
+        }
+      }
+    }
+    node.children.iter().find_map(textarea_value)
+  }
+
+  let css = r#"
+    textarea { border-top-width: 1px; border-top-style: solid; }
+    textarea:placeholder-shown { border-top-width: 2px; }
+  "#;
+  let sheet = parse_stylesheet(css).expect("parse stylesheet");
+
+  // Empty textarea shows placeholder, so `:placeholder-shown` should match.
+  let dom_empty = crate::dom::parse_html(r#"<textarea placeholder="p"></textarea>"#)
+    .expect("parse html");
+  let styled_empty = apply_styles_with_media(&dom_empty, &sheet, &MediaContext::screen(800.0, 600.0));
+  let textarea_empty = find_by_tag(&styled_empty, "textarea").expect("textarea present");
+  assert_eq!(textarea_empty.styles.border_top_width, Length::px(2.0));
+
+  // Once the user has interacted with the control, we persist the value in `data-fastr-value`.
+  // Leading newlines are part of the runtime value and must not be stripped.
+  let mut dom =
+    crate::dom::parse_html(r#"<textarea placeholder="p">x</textarea>"#).expect("parse html");
+  let textarea = find_first_element_mut(&mut dom, "textarea").expect("textarea present");
+  set_attribute(textarea, "data-fastr-value", "\nabc");
+
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let textarea_styled = find_by_tag(&styled, "textarea").expect("textarea present");
+  // Non-empty runtime value => placeholder not shown.
+  assert_eq!(textarea_styled.styles.border_top_width, Length::px(1.0));
+
+  let box_tree = generate_box_tree(&styled);
+  let value = textarea_value(&box_tree.root).expect("textarea control value");
+  assert_eq!(value, "\nabc");
+}
+
+#[test]
 fn appearance_none_disables_form_control_replacement_and_generates_placeholder_text() {
   let html =
     "<html><body><input id=\"plain\" placeholder=\"hello\" style=\"appearance: none; border: 0\"></body></html>";
