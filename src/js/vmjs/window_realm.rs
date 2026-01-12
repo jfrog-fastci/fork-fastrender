@@ -442,6 +442,11 @@ impl WindowRealmUserData {
   pub(crate) fn dom_platform_mut(&mut self) -> Option<&mut DomPlatform> {
     self.dom_platform.as_mut()
   }
+
+  #[cfg(test)]
+  pub(crate) fn set_dom_platform(&mut self, platform: DomPlatform) {
+    self.dom_platform = Some(platform);
+  }
 }
 
 impl WindowRealm {

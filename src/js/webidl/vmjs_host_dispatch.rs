@@ -1,4 +1,9 @@
+use crate::api::BrowserDocumentDom2;
+use crate::dom::HTML_NAMESPACE;
+use crate::dom2::{DomError, NodeId, NodeKind};
 use crate::js::bindings::DomExceptionClassVmJs;
+use crate::js::dom2_bindings;
+use crate::js::dom_platform::{DomInterface, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
@@ -10,7 +15,7 @@ use crate::js::window_timers::{
   SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR,
   SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
-use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
+use crate::js::{DomHost, DocumentHostState, TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -28,6 +33,7 @@ const URLSP_ITER_VALUES_SLOT: &str = "__fastrender_urlsp_iter_values";
 const URLSP_ITER_INDEX_SLOT: &str = "__fastrender_urlsp_iter_index";
 const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
+const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -161,6 +167,35 @@ fn call_with_active_vm_host_and_hooks(
   } else {
     vm.call_without_host(scope, callee, this, args)
   }
+}
+
+fn with_active_vm_host<R>(
+  vm: &mut Vm,
+  f: impl FnOnce(&mut dyn VmHost) -> Result<R, VmError>,
+) -> Result<R, VmError> {
+  match with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| f(host))? {
+    Some(value) => Ok(value),
+    None => Err(VmError::TypeError("DOM host not available")),
+  }
+}
+
+fn dom_platform_mut(vm: &mut Vm) -> Option<&mut DomPlatform> {
+  vm
+    .user_data_mut::<WindowRealmUserData>()
+    .and_then(|data| data.dom_platform_mut())
+}
+
+fn require_element_receiver(
+  vm: &mut Vm,
+  scope: &Scope<'_>,
+  receiver: Option<Value>,
+) -> Result<(NodeId, GcObject), VmError> {
+  let Some(Value::Object(obj)) = receiver else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let node_id = platform.require_element_id(scope.heap(), Value::Object(obj))?;
+  Ok((node_id, obj))
 }
 
 fn urlsp_iterator_next_native(
@@ -1969,6 +2004,224 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         Ok(Value::Object(document_obj))
       }
 
+      ("Element", "id", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        if args.is_empty() {
+          let id = with_active_vm_host(vm, |host| {
+            let any = host.as_any_mut();
+            if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+              Ok(host.with_dom(|dom| dom.element_id(element_id).to_string()))
+            } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+              Ok(host.with_dom(|dom| dom.element_id(element_id).to_string()))
+            } else {
+              Err(VmError::TypeError("DOM host not available"))
+            }
+          })?;
+          let js = scope.alloc_string(&id)?;
+          scope.push_root(Value::String(js))?;
+          Ok(Value::String(js))
+        } else {
+          let value =
+            js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+          let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
+            let any = host.as_any_mut();
+            if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+              Ok(host.mutate_dom(|dom| match dom.set_element_id(element_id, &value) {
+                Ok(changed) => (Ok(()), changed),
+                Err(err) => (Err(err), false),
+              }))
+            } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+              Ok(host.mutate_dom(|dom| match dom.set_element_id(element_id, &value) {
+                Ok(changed) => (Ok(()), changed),
+                Err(err) => (Err(err), false),
+              }))
+            } else {
+              Err(VmError::TypeError("DOM host not available"))
+            }
+          })?;
+          match result {
+            Ok(()) => Ok(Value::Undefined),
+            Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+          }
+        }
+      }
+      ("Element", "className", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        if args.is_empty() {
+          let class_name = with_active_vm_host(vm, |host| {
+            let any = host.as_any_mut();
+            if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+              Ok(host.with_dom(|dom| dom.element_class_name(element_id).to_string()))
+            } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+              Ok(host.with_dom(|dom| dom.element_class_name(element_id).to_string()))
+            } else {
+              Err(VmError::TypeError("DOM host not available"))
+            }
+          })?;
+          let js = scope.alloc_string(&class_name)?;
+          scope.push_root(Value::String(js))?;
+          Ok(Value::String(js))
+        } else {
+          let value =
+            js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+          let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
+            let any = host.as_any_mut();
+            if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+              Ok(host.mutate_dom(|dom| match dom.set_element_class_name(element_id, &value) {
+                Ok(changed) => (Ok(()), changed),
+                Err(err) => (Err(err), false),
+              }))
+            } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+              Ok(host.mutate_dom(|dom| match dom.set_element_class_name(element_id, &value) {
+                Ok(changed) => (Ok(()), changed),
+                Err(err) => (Err(err), false),
+              }))
+            } else {
+              Err(VmError::TypeError("DOM host not available"))
+            }
+          })?;
+          match result {
+            Ok(()) => Ok(Value::Undefined),
+            Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+          }
+        }
+      }
+      ("Element", "tagName", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let tag_name = with_active_vm_host(vm, |host| {
+          let any = host.as_any_mut();
+          let compute = |dom: &crate::dom2::Document| match &dom.node(element_id).kind {
+            NodeKind::Element {
+              tag_name,
+              namespace,
+              ..
+            } => {
+              if namespace.is_empty() || namespace == HTML_NAMESPACE {
+                tag_name.to_ascii_uppercase()
+              } else {
+                tag_name.clone()
+              }
+            }
+            NodeKind::Slot { namespace, .. } => {
+              if namespace.is_empty() || namespace == HTML_NAMESPACE {
+                "SLOT".to_string()
+              } else {
+                "slot".to_string()
+              }
+            }
+            _ => String::new(),
+          };
+          if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+            Ok(host.with_dom(compute))
+          } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+            Ok(host.with_dom(compute))
+          } else {
+            Err(VmError::TypeError("DOM host not available"))
+          }
+        })?;
+        let js = scope.alloc_string(&tag_name)?;
+        scope.push_root(Value::String(js))?;
+        Ok(Value::String(js))
+      }
+      ("Element", "classList", 0) => {
+        let (_element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+ 
+        // TODO: Replace this placeholder with a real DOMTokenList wrapper (separate task). For now,
+        // return a stable per-element object so `element.classList` access does not crash.
+        let key = key_from_str(scope, ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT)?;
+        if let Some(Value::Object(existing)) =
+          scope
+            .heap()
+            .object_get_own_data_property_value(obj, &key)?
+        {
+          return Ok(Value::Object(existing));
+        }
+ 
+        let class_list = scope.alloc_object()?;
+        scope.push_root(Value::Object(class_list))?;
+        scope.define_property(
+          obj,
+          key,
+          data_property(Value::Object(class_list), false, false, false),
+        )?;
+        Ok(Value::Object(class_list))
+      }
+      ("Element", "getAttribute", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let name =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+ 
+        let value: Result<Option<String>, DomError> = with_active_vm_host(vm, |host| {
+          let any = host.as_any_mut();
+          let get = |dom: &crate::dom2::Document| {
+            dom
+              .get_attribute(element_id, &name)
+              .map(|v| v.map(str::to_string))
+          };
+          if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+            Ok(host.with_dom(get))
+          } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+            Ok(host.with_dom(get))
+          } else {
+            Err(VmError::TypeError("DOM host not available"))
+          }
+        })?;
+ 
+        match value {
+          Ok(Some(value)) => {
+            let js = scope.alloc_string(&value)?;
+            scope.push_root(Value::String(js))?;
+            Ok(Value::String(js))
+          }
+          Ok(None) => Ok(Value::Null),
+          Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        }
+      }
+      ("Element", "setAttribute", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let name =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let value =
+          js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
+ 
+        let result: Result<bool, DomError> = with_active_vm_host(vm, |host| {
+          let any = host.as_any_mut();
+          if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+            Ok(dom2_bindings::set_attribute(host, element_id, &name, &value))
+          } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+            Ok(dom2_bindings::set_attribute(host, element_id, &name, &value))
+          } else {
+            Err(VmError::TypeError("DOM host not available"))
+          }
+        })?;
+ 
+        match result {
+          Ok(_) => Ok(Value::Undefined),
+          Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        }
+      }
+      ("Element", "removeAttribute", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let name =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+ 
+        let result: Result<bool, DomError> = with_active_vm_host(vm, |host| {
+          let any = host.as_any_mut();
+          if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+            Ok(dom2_bindings::remove_attribute(host, element_id, &name))
+          } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+            Ok(dom2_bindings::remove_attribute(host, element_id, &name))
+          } else {
+            Err(VmError::TypeError("DOM host not available"))
+          }
+        })?;
+ 
+        match result {
+          Ok(_) => Ok(Value::Undefined),
+          Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        }
+      }
+
       ("Window", "alert", _) => Ok(Value::Undefined),
       ("Window", "queueMicrotask", 0) => {
         let callback = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -2558,6 +2811,205 @@ mod tests {
 
     assert_eq!(result, Value::Undefined);
     assert_eq!(dom_host.last_call, None);
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod element_dispatch_tests {
+  use super::*;
+  use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
+  use selectors::context::QuirksMode;
+  use std::any::Any;
+
+  #[derive(Default)]
+  struct TestHooks {
+    payload: VmJsHostHooksPayload,
+  }
+
+  impl VmHostHooks for TestHooks {
+    fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+      Some(&mut self.payload)
+    }
+  }
+
+  #[test]
+  fn element_dispatch_id_class_name_tag_name_and_attributes() -> Result<(), VmError> {
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = vm_js::Heap::new(vm_js::HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+    let document_url = "https://example.invalid/".to_string();
+    let module_loader: ModuleLoaderHandle =
+      std::rc::Rc::new(std::cell::RefCell::new(ModuleLoader::new(Some(document_url.clone()))));
+    vm.set_user_data(WindowRealmUserData::new(
+      document_url,
+      std::rc::Rc::clone(&module_loader),
+      1,
+      None,
+      5 * 1024 * 1024,
+    ));
+
+    let mut scope = heap.scope();
+    let platform = DomPlatform::new(&mut scope, &realm)?;
+    vm
+      .user_data_mut::<WindowRealmUserData>()
+      .expect("user data")
+      .set_dom_platform(platform);
+
+    let mut dom = crate::dom2::Document::new(QuirksMode::NoQuirks);
+    let div = dom.create_element("div", "");
+    dom.set_attribute(div, "id", "a").expect("set id");
+    dom.set_attribute(div, "class", "x").expect("set class");
+    dom
+      .append_child(dom.root(), div)
+      .expect("append div to document");
+    let mut host = DocumentHostState::new(dom);
+
+    let wrapper = {
+      let data = vm.user_data_mut::<WindowRealmUserData>().expect("user data");
+      let platform = data.dom_platform_mut().expect("platform");
+      platform.get_or_create_wrapper(&mut scope, div, DomInterface::Element)?
+    };
+    scope.push_root(Value::Object(wrapper))?;
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new_without_global();
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut host);
+
+    let result: Result<(), VmError> = vm.with_host_hooks_override(&mut hooks, |vm| {
+      // Getter attributes.
+      let got = dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "id", 0, &[])?;
+      assert_eq!(js_string_to_rust_string(&scope, got)?, "a");
+
+      let got =
+        dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "className", 0, &[])?;
+      assert_eq!(js_string_to_rust_string(&scope, got)?, "x");
+
+      let got =
+        dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "tagName", 0, &[])?;
+      assert_eq!(js_string_to_rust_string(&scope, got)?, "DIV");
+
+      // classList placeholder should be stable and not crash.
+      let got1 =
+        dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "classList", 0, &[])?;
+      let got2 =
+        dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "classList", 0, &[])?;
+      match (got1, got2) {
+        (Value::Object(o1), Value::Object(o2)) => assert_eq!(o1, o2),
+        other => panic!("expected object classList, got {other:?}"),
+      }
+
+      // getAttribute returns string/null.
+      let id_key = scope.alloc_string("id")?;
+      scope.push_root(Value::String(id_key))?;
+      let got = dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(wrapper)),
+        "Element",
+        "getAttribute",
+        0,
+        &[Value::String(id_key)],
+      )?;
+      assert_eq!(js_string_to_rust_string(&scope, got)?, "a");
+
+      let missing_key = scope.alloc_string("missing")?;
+      scope.push_root(Value::String(missing_key))?;
+      let got = dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(wrapper)),
+        "Element",
+        "getAttribute",
+        0,
+        &[Value::String(missing_key)],
+      )?;
+      assert_eq!(got, Value::Null);
+
+      // setAttribute + removeAttribute.
+      let data_x_key = scope.alloc_string("data-x")?;
+      scope.push_root(Value::String(data_x_key))?;
+      let one = scope.alloc_string("1")?;
+      scope.push_root(Value::String(one))?;
+      let got = dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(wrapper)),
+        "Element",
+        "setAttribute",
+        0,
+        &[Value::String(data_x_key), Value::String(one)],
+      )?;
+      assert_eq!(got, Value::Undefined);
+
+      let got = dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(wrapper)),
+        "Element",
+        "getAttribute",
+        0,
+        &[Value::String(data_x_key)],
+      )?;
+      assert_eq!(js_string_to_rust_string(&scope, got)?, "1");
+
+      let class_key = scope.alloc_string("class")?;
+      scope.push_root(Value::String(class_key))?;
+      let got = dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(wrapper)),
+        "Element",
+        "removeAttribute",
+        0,
+        &[Value::String(class_key)],
+      )?;
+      assert_eq!(got, Value::Undefined);
+
+      let got =
+        dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "className", 0, &[])?;
+      assert_eq!(js_string_to_rust_string(&scope, got)?, "");
+
+      // className setter reflects into `class`.
+      let new_class = scope.alloc_string("y")?;
+      scope.push_root(Value::String(new_class))?;
+      let got = dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(wrapper)),
+        "Element",
+        "className",
+        0,
+        &[Value::String(new_class)],
+      )?;
+      assert_eq!(got, Value::Undefined);
+
+      let got =
+        dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "className", 0, &[])?;
+      assert_eq!(js_string_to_rust_string(&scope, got)?, "y");
+
+      // Brand check: wrong receiver throws TypeError.
+      let bad = scope.alloc_object()?;
+      scope.push_root(Value::Object(bad))?;
+      let err = dispatch.call_operation(vm, &mut scope, Some(Value::Object(bad)), "Element", "id", 0, &[]);
+      assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
+
+      Ok(())
+    });
+    result?;
+
+    // Ensure we unregister persistent roots (Realm::drop debug-asserts on missing teardown).
+    drop(scope);
+    if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+      if let Some(platform) = data.dom_platform_mut() {
+        platform.teardown(&mut heap);
+      }
+    }
+    realm.teardown(&mut heap);
     Ok(())
   }
 }
