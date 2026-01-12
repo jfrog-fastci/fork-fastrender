@@ -24,6 +24,7 @@
 //! assert!(display.establishes_formatting_context());
 //! ```
 
+use cssparser::{Parser, ParserInput, Token};
 use std::fmt;
 
 #[inline]
@@ -464,51 +465,150 @@ impl Display {
   /// assert!(Display::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, DisplayParseError> {
-    let s = trim_css_whitespace(s).to_ascii_lowercase();
-    match s.as_str() {
-      "none" => Ok(Display::None),
-      "block" => Ok(Display::Block),
-      "inline" => Ok(Display::Inline),
-      // Legacy `*-box` values from the 2009 flexbox draft.
-      //
-      // These values are heavily used as a compatibility fallback. FastRender treats them as
-      // equivalent to modern flex containers (the legacy `*-box-*` properties are mapped to modern
-      // flexbox semantics during style application).
-      //
-      // Note: the classic `-webkit-line-clamp` pattern relies on `display: -webkit-box` but needs
-      // flow layout behavior. That compatibility quirk is handled when applying declarations (see
-      // `ComputedStyle::display_is_webkit_box`), not here.
-      "-webkit-box" => Ok(Display::Flex),
-      "-webkit-inline-box" => Ok(Display::InlineFlex),
-      "-moz-box" => Ok(Display::Flex),
-      "-moz-inline-box" => Ok(Display::InlineFlex),
-      "ruby" => Ok(Display::Ruby),
-      "ruby-base" => Ok(Display::RubyBase),
-      "ruby-text" => Ok(Display::RubyText),
-      "ruby-base-container" => Ok(Display::RubyBaseContainer),
-      "ruby-text-container" => Ok(Display::RubyTextContainer),
-      "inline-block" => Ok(Display::InlineBlock),
-      "flex" => Ok(Display::Flex),
-      // Vendor-prefixed flexbox keywords used by Safari/legacy IE.
-      "-webkit-flex" | "-ms-flexbox" => Ok(Display::Flex),
-      "inline-flex" => Ok(Display::InlineFlex),
-      "-webkit-inline-flex" | "-ms-inline-flexbox" => Ok(Display::InlineFlex),
-      "grid" | "-ms-grid" => Ok(Display::Grid),
-      "inline-grid" | "-ms-inline-grid" => Ok(Display::InlineGrid),
-      "table" => Ok(Display::Table),
-      "inline-table" => Ok(Display::InlineTable),
-      "table-row" => Ok(Display::TableRow),
-      "table-cell" => Ok(Display::TableCell),
-      "table-row-group" => Ok(Display::TableRowGroup),
-      "table-header-group" => Ok(Display::TableHeaderGroup),
-      "table-footer-group" => Ok(Display::TableFooterGroup),
-      "table-column" => Ok(Display::TableColumn),
-      "table-column-group" => Ok(Display::TableColumnGroup),
-      "table-caption" => Ok(Display::TableCaption),
-      "list-item" => Ok(Display::ListItem),
-      "flow-root" => Ok(Display::FlowRoot),
-      "contents" => Ok(Display::Contents),
-      _ => Err(DisplayParseError::InvalidValue(s.to_string())),
+    fn parse_single(lower: &str) -> Option<Display> {
+      match lower {
+        "none" => Some(Display::None),
+        "block" => Some(Display::Block),
+        "inline" => Some(Display::Inline),
+        // `flow` is the inner display type; when specified alone it defaults the outer type to
+        // `block` (CSS Display 3 §2.1).
+        "flow" => Some(Display::Block),
+        // Legacy `*-box` values from the 2009 flexbox draft.
+        //
+        // These values are heavily used as a compatibility fallback. FastRender treats them as
+        // equivalent to modern flex containers (the legacy `*-box-*` properties are mapped to
+        // modern flexbox semantics during style application).
+        //
+        // Note: the classic `-webkit-line-clamp` pattern relies on `display: -webkit-box` but needs
+        // flow layout behavior. That compatibility quirk is handled when applying declarations (see
+        // `ComputedStyle::display_is_webkit_box`), not here.
+        "-webkit-box" => Some(Display::Flex),
+        "-webkit-inline-box" => Some(Display::InlineFlex),
+        "-moz-box" => Some(Display::Flex),
+        "-moz-inline-box" => Some(Display::InlineFlex),
+        "ruby" => Some(Display::Ruby),
+        "ruby-base" => Some(Display::RubyBase),
+        "ruby-text" => Some(Display::RubyText),
+        "ruby-base-container" => Some(Display::RubyBaseContainer),
+        "ruby-text-container" => Some(Display::RubyTextContainer),
+        "inline-block" => Some(Display::InlineBlock),
+        "flex" => Some(Display::Flex),
+        // Vendor-prefixed flexbox keywords used by Safari/legacy IE.
+        "-webkit-flex" | "-ms-flexbox" => Some(Display::Flex),
+        "inline-flex" => Some(Display::InlineFlex),
+        "-webkit-inline-flex" | "-ms-inline-flexbox" => Some(Display::InlineFlex),
+        "grid" | "-ms-grid" => Some(Display::Grid),
+        "inline-grid" | "-ms-inline-grid" => Some(Display::InlineGrid),
+        "table" => Some(Display::Table),
+        "inline-table" => Some(Display::InlineTable),
+        "table-row" => Some(Display::TableRow),
+        "table-cell" => Some(Display::TableCell),
+        "table-row-group" => Some(Display::TableRowGroup),
+        "table-header-group" => Some(Display::TableHeaderGroup),
+        "table-footer-group" => Some(Display::TableFooterGroup),
+        "table-column" => Some(Display::TableColumn),
+        "table-column-group" => Some(Display::TableColumnGroup),
+        "table-caption" => Some(Display::TableCaption),
+        "list-item" => Some(Display::ListItem),
+        "flow-root" => Some(Display::FlowRoot),
+        "contents" => Some(Display::Contents),
+        _ => None,
+      }
+    }
+
+    fn outer_keyword(lower: &str) -> Option<OuterDisplay> {
+      match lower {
+        "block" => Some(OuterDisplay::Block),
+        "inline" => Some(OuterDisplay::Inline),
+        _ => None,
+      }
+    }
+
+    fn inner_keyword(lower: &str) -> Option<InnerDisplay> {
+      match lower {
+        "flow" => Some(InnerDisplay::Flow),
+        "flow-root" => Some(InnerDisplay::FlowRoot),
+        "flex" => Some(InnerDisplay::Flex),
+        "grid" => Some(InnerDisplay::Grid),
+        "table" => Some(InnerDisplay::Table),
+        _ => None,
+      }
+    }
+
+    fn from_outer_inner(outer: OuterDisplay, inner: InnerDisplay) -> Option<Display> {
+      match (outer, inner) {
+        (OuterDisplay::Block, InnerDisplay::Flow) => Some(Display::Block),
+        (OuterDisplay::Inline, InnerDisplay::Flow) => Some(Display::Inline),
+        (OuterDisplay::Block, InnerDisplay::FlowRoot) => Some(Display::FlowRoot),
+        (OuterDisplay::Inline, InnerDisplay::FlowRoot) => Some(Display::InlineBlock),
+        (OuterDisplay::Block, InnerDisplay::Flex) => Some(Display::Flex),
+        (OuterDisplay::Inline, InnerDisplay::Flex) => Some(Display::InlineFlex),
+        (OuterDisplay::Block, InnerDisplay::Grid) => Some(Display::Grid),
+        (OuterDisplay::Inline, InnerDisplay::Grid) => Some(Display::InlineGrid),
+        (OuterDisplay::Block, InnerDisplay::Table) => Some(Display::Table),
+        (OuterDisplay::Inline, InnerDisplay::Table) => Some(Display::InlineTable),
+        _ => None,
+      }
+    }
+
+    let trimmed = trim_css_whitespace(s);
+    if trimmed.is_empty() {
+      return Err(DisplayParseError::InvalidValue(String::new()));
+    }
+
+    // Fast path for common single-keyword values with no escapes or comments.
+    let bytes = trimmed.as_bytes();
+    let has_whitespace = bytes
+      .iter()
+      .any(|b| matches!(*b, b' ' | b'\t' | b'\n' | b'\r' | 0x0C));
+    let has_escape = bytes.contains(&b'\\');
+    let has_comment = bytes.windows(2).any(|pair| pair == b"/*");
+    if !has_whitespace && !has_escape && !has_comment {
+      let lower = trimmed.to_ascii_lowercase();
+      if let Some(display) = parse_single(&lower) {
+        return Ok(display);
+      }
+      return Err(DisplayParseError::InvalidValue(lower));
+    }
+
+    // CSS Display 3 allows "multi-keyword" values like `inline flex` / `block flow-root`.
+    // Comments/escapes are allowed between keywords, so use CSS tokenization rather than splitting
+    // the raw string on whitespace.
+    let mut input = ParserInput::new(trimmed);
+    let mut parser = Parser::new(&mut input);
+    let mut keywords: Vec<String> = Vec::with_capacity(2);
+
+    while let Ok(token) = parser.next_including_whitespace_and_comments() {
+      match token {
+        Token::WhiteSpace(_) | Token::Comment(_) => continue,
+        Token::Ident(ident) => {
+          if keywords.len() >= 2 {
+            return Err(DisplayParseError::InvalidValue(trimmed.to_string()));
+          }
+          keywords.push(ident.as_ref().to_ascii_lowercase());
+        }
+        _ => return Err(DisplayParseError::InvalidValue(trimmed.to_string())),
+      }
+    }
+
+    match keywords.as_slice() {
+      [] => Err(DisplayParseError::InvalidValue(String::new())),
+      [kw] => parse_single(kw).ok_or_else(|| DisplayParseError::InvalidValue(kw.clone())),
+      [a, b] => {
+        let outer_a = outer_keyword(a);
+        let outer_b = outer_keyword(b);
+        let inner_a = inner_keyword(a);
+        let inner_b = inner_keyword(b);
+
+        let mapped = match (outer_a, inner_b, outer_b, inner_a) {
+          (Some(outer), Some(inner), _, _) => from_outer_inner(outer, inner),
+          (_, _, Some(outer), Some(inner)) => from_outer_inner(outer, inner),
+          _ => None,
+        };
+
+        mapped.ok_or_else(|| DisplayParseError::InvalidValue(format!("{a} {b}")))
+      }
+      _ => Err(DisplayParseError::InvalidValue(trimmed.to_string())),
     }
   }
 }

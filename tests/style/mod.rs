@@ -46,6 +46,7 @@ mod custom_property_wide_keywords_test;
 mod defaults_test;
 mod default_pseudo_class_integration_test;
 mod defined_pseudo_cascade_toggle_test;
+mod display_multi_keyword_test;
 mod dynamic_range_limit_test;
 mod explicit_no_namespace_selector_test;
 mod extract_print;
