@@ -105,6 +105,19 @@ impl PersistentHandleTable {
     });
   }
 
+  /// Debug/test helper: run `f` while holding the table's shared/read lock.
+  ///
+  /// This exists so integration tests can deterministically create contention between:
+  /// - a long-held read lock, and
+  /// - a thread blocked on `alloc/free/set` (write lock),
+  /// and assert that the blocked thread transitions into a GC-safe ("NativeSafe") region.
+  ///
+  /// This method is **not** considered stable API.
+  #[doc(hidden)]
+  pub fn debug_with_read_lock_for_tests<R>(&self, f: impl FnOnce() -> R) -> R {
+    self.inner.debug_with_read_lock_for_tests(f)
+  }
+
   pub(crate) fn clear_for_tests(&self) {
     self.inner.clear_for_tests();
   }
