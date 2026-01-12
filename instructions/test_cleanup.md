@@ -490,7 +490,7 @@ Add a CI step that fails if `tests/*.rs` count exceeds threshold:
 
 ```bash
 #!/bin/bash
-MAX_TEST_BINARIES=3
+ MAX_TEST_BINARIES=2
 COUNT=$(ls tests/*.rs 2>/dev/null | wc -l)
 if [ "$COUNT" -gt "$MAX_TEST_BINARIES" ]; then
     echo "ERROR: Found $COUNT test binaries, max is $MAX_TEST_BINARIES"
@@ -557,7 +557,7 @@ Incremental migration leaves the codebase in a worse hybrid state. Do it all at 
 
 After completion:
 
-- [ ] `ls tests/*.rs | wc -l` returns ≤ 3
+- [ ] `ls tests/*.rs | wc -l` returns **2**
 - [ ] `cargo test --lib` runs all unit tests
 - [ ] `cargo test --test integration` runs all integration tests  
 - [ ] `cargo test` completes in < 2 minutes (was 5+ minutes)
