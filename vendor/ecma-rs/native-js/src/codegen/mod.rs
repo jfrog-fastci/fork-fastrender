@@ -119,7 +119,7 @@ enum TsAbiKind {
   /// GC-managed pointer value (`ptr addrspace(1)`).
   ///
   /// Used for local/global bindings of GC-managed types (arrays/tuples/objects) in the checked
-  /// pipeline. (Functions may not take/return this kind yet.)
+  /// pipeline.
   GcPtr,
 }
 
@@ -143,6 +143,10 @@ impl TsAbiKind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
       TypeKindSummary::String | TypeKindSummary::StringLiteral(_) => Some(Self::String),
+      TypeKindSummary::Object
+      | TypeKindSummary::EmptyObject
+      | TypeKindSummary::Array { .. }
+      | TypeKindSummary::Tuple { .. } => Some(Self::GcPtr),
       _ => None,
     }
   }
@@ -152,6 +156,10 @@ impl TsAbiKind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
       TypeKindSummary::String | TypeKindSummary::StringLiteral(_) => Some(Self::String),
+      TypeKindSummary::Object
+      | TypeKindSummary::EmptyObject
+      | TypeKindSummary::Array { .. }
+      | TypeKindSummary::Tuple { .. } => Some(Self::GcPtr),
       TypeKindSummary::Void | TypeKindSummary::Undefined | TypeKindSummary::Never => Some(Self::Void),
       _ => None,
     }
@@ -287,7 +295,7 @@ fn ts_function_sig_kind(
     let Some(kind) = TsAbiKind::from_param_type_kind(&kind) else {
       return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
         format!(
-          "unsupported parameter type for native-js ABI (expected number|boolean|string): {}",
+          "unsupported parameter type for native-js ABI (expected number|boolean|string|gc pointer): {}",
           program.display_type(param.ty)
         ),
         span,
@@ -300,7 +308,7 @@ fn ts_function_sig_kind(
   let Some(ret) = TsAbiKind::from_return_type_kind(&ret_kind) else {
     return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
       format!(
-        "unsupported return type for native-js ABI (expected number|boolean|string|void): {}",
+        "unsupported return type for native-js ABI (expected number|boolean|string|void|gc pointer): {}",
         program.display_type(sig.ret)
       ),
       span,
@@ -611,7 +619,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         TsAbiKind::Number => self.f64_ty.into(),
         TsAbiKind::Boolean => self.i1_ty.into(),
         TsAbiKind::String => self.i32_ty.into(),
-        TsAbiKind::GcPtr => unreachable!("GC pointer parameters are not supported by native-js ABI yet"),
+        TsAbiKind::GcPtr => self.gc_ptr_ty.into(),
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
       };
       params.push(ty);
@@ -622,7 +630,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       TsAbiKind::Boolean => self.i1_ty.fn_type(&params, false),
       TsAbiKind::String => self.i32_ty.fn_type(&params, false),
       TsAbiKind::Void => self.context.void_type().fn_type(&params, false),
-      TsAbiKind::GcPtr => unreachable!("GC pointer returns are not supported by native-js ABI yet"),
+      TsAbiKind::GcPtr => self.gc_ptr_ty.fn_type(&params, false),
     };
 
     let linkage = if self.exported_defs.contains(&def) {
@@ -949,7 +957,11 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           NativeValue::String(v)
         }
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
-        TsAbiKind::GcPtr => unreachable!("GC pointer parameters are not supported by native-js ABI yet"),
+        TsAbiKind::GcPtr => {
+          let v = value.into_pointer_value();
+          cg.builder.build_store(slot, v).expect("store param");
+          NativeValue::GcPtr(v)
+        }
       };
 
       let pat_span = hir_body
@@ -979,6 +991,9 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
             cg.builder.build_return(Some(&v)).expect("failed to build return");
           }
           (TsAbiKind::String, NativeValue::String(v)) => {
+            cg.builder.build_return(Some(&v)).expect("failed to build return");
+          }
+          (TsAbiKind::GcPtr, NativeValue::GcPtr(v)) => {
             cg.builder.build_return(Some(&v)).expect("failed to build return");
           }
           (expected, actual) => {
@@ -2279,6 +2294,11 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .expect("failed to build return");
           }
           (TsAbiKind::String, NativeValue::String(v)) => {
+            self.builder
+              .build_return(Some(&v))
+              .expect("failed to build return");
+          }
+          (TsAbiKind::GcPtr, NativeValue::GcPtr(v)) => {
             self.builder
               .build_return(Some(&v))
               .expect("failed to build return");
@@ -4498,7 +4518,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .expect("non-void call should return a value")
               .into_int_value(),
           )),
-          TsAbiKind::GcPtr => unreachable!("GC pointer returns are not supported by native-js ABI yet"),
+          TsAbiKind::GcPtr => Ok(NativeValue::GcPtr(
+            call
+              .try_as_basic_value()
+              .left()
+              .expect("non-void call should return a value")
+              .into_pointer_value(),
+          )),
         }
       }
 
