@@ -22,6 +22,7 @@ mod no_merge_markers;
 mod no_orphan_test_modules;
 mod no_path_shims_in_tests;
 mod no_production_panics;
+mod resource_net_helpers_guard;
 mod scroll_unit_tests_live_in_src;
 mod stage_listener_guard_tests;
 mod style_regressions_presence;
