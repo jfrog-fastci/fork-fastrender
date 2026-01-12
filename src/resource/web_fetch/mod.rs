@@ -230,6 +230,17 @@ mod tests {
   }
 
   #[test]
+  fn body_consume_bytes_moves_out_buffer() {
+    let bytes = b"hello".to_vec();
+    let mut body = Body::new(bytes.clone()).unwrap();
+    assert_eq!(body.consume_bytes().unwrap(), bytes);
+    // `consume_bytes` moves the internal buffer out, so the `Body` no longer exposes the bytes.
+    assert_eq!(body.as_bytes(), b"");
+    let err = body.consume_bytes().unwrap_err();
+    assert!(matches!(err, WebFetchError::BodyUsed));
+  }
+
+  #[test]
   fn body_text_utf8_replaces_invalid_sequences() {
     let mut body = Body::new(vec![0xff, b'a']).unwrap();
     let text = body.text_utf8().unwrap();
@@ -246,10 +257,11 @@ mod tests {
   #[test]
   fn body_clone_is_unconsumed() {
     let mut body = Body::new(b"hello".to_vec()).unwrap();
+    let mut cloned = body.clone();
+
     let _ = body.consume_bytes().unwrap();
     assert!(body.body_used());
 
-    let mut cloned = body.clone();
     assert!(!cloned.body_used());
     assert_eq!(cloned.consume_bytes().unwrap(), b"hello".to_vec());
   }

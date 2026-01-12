@@ -57,6 +57,9 @@ impl Body {
   /// In this in-memory model, `execute_web_fetch()` can send the request body without marking it
   /// as used; consumption only happens when the JavaScript-visible body is read (`text()`, `json()`,
   /// etc).
+  ///
+  /// Note: after the body has been consumed (e.g. via [`Body::consume_bytes`]), this returns an
+  /// empty slice because consumption moves the internal byte buffer out of the `Body`.
   pub fn as_bytes(&self) -> &[u8] {
     &self.bytes
   }
@@ -77,7 +80,7 @@ impl Body {
       return Err(WebFetchError::BodyUsed);
     }
     self.body_used = true;
-    Ok(self.bytes.clone())
+    Ok(std::mem::take(&mut self.bytes))
   }
 
   /// Consume the body as UTF-8 text.
