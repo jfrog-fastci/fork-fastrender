@@ -74,20 +74,20 @@ When `appearance:none` is computed, the control stops using the native form-cont
 
 ## Regression coverage
 
-- Box-generation unit tests:
-  - `src/tree/box_generation.rs::appearance_none_form_controls_generate_fallback_children`
-  - `src/tree/box_generation.rs::appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
-  - `src/tree/box_generation.rs::webkit_appearance_none_disables_form_control_replacement`
-  - `src/tree/box_generation.rs::moz_appearance_none_disables_form_control_replacement`
-  - `src/tree/box_generation.rs::button_appearance_none_preserves_dom_children`
-  - `src/tree/box_generation.rs::range_appearance_none_generates_slider_track_and_thumb_boxes`
-  - `src/tree/box_generation.rs::file_input_appearance_none_generates_file_selector_button_box`
-- Paint integration tests:
-  - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
-  - `tests/misc/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
-  - `tests/paint/range_track_pseudo_element.rs` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
-  - `tests/paint/range_pseudo_opacity.rs` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
-  - `tests/paint/file_selector_button_pseudo_element.rs` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
+- Box-generation unit tests (run with `--lib`):
+  - `appearance_none_form_controls_generate_fallback_children` (`src/tree/box_generation.rs`)
+  - `appearance_none_disables_form_control_replacement_and_generates_placeholder_text` (`src/tree/box_generation.rs`)
+  - `webkit_appearance_none_disables_form_control_replacement` (`src/tree/box_generation.rs`)
+  - `moz_appearance_none_disables_form_control_replacement` (`src/tree/box_generation.rs`)
+  - `button_appearance_none_preserves_dom_children` (`src/tree/box_generation.rs`)
+  - `range_appearance_none_generates_slider_track_and_thumb_boxes` (`src/tree/box_generation.rs`)
+  - `file_input_appearance_none_generates_file_selector_button_box` (`src/tree/box_generation.rs`)
+- Integration tests (run with `--test integration`) cover end-to-end behavior (box tree + paint):
+  - `form_control_appearance_none_affordances` (`tests/paint/form_control_appearance_none_affordances.rs`) asserts `appearance:none` suppresses number/date affordance glyphs.
+  - `form_control_placeholder_opacity` (`tests/misc/form_control_placeholder_opacity.rs`) asserts `::placeholder` opacity is applied (both paint backends).
+  - `range_track_pseudo_element` (`tests/paint/range_track_pseudo_element.rs`) asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
+  - `range_pseudo_opacity` (`tests/paint/range_pseudo_opacity.rs`) asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
+  - `file_selector_button_pseudo_element` (`tests/paint/file_selector_button_pseudo_element.rs`) asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
 
 To locate the exact test names, list tests and filter by name:
 

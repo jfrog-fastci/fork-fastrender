@@ -83,11 +83,10 @@ instead of inline `<svg>` so we exercise the `load_svg_filter()` /
 There is a golden-image test: `svg_filter_filterres_offset_clip_matches_golden`.
 
 - Golden image: `tests/fixtures/golden/svg_filter_filterres_offset_clip.png`
-- Update by running the test by name (works regardless of whether it currently lives under `src/` or `tests/`):
-  `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender -q svg_filter_filterres_offset_clip_matches_golden`
-  - Today this test is part of the unified integration harness, so you can also use:
-    `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender -q --test integration svg_filter_filterres_offset_clip_matches_golden`
-  - If the test has been migrated into `src/` as a unit test, you can also use: `... --lib svg_filter_filterres_offset_clip_matches_golden`
+- Update by running the test by name (currently under the unified integration harness):
+  - `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration -q svg_filter_filterres_offset_clip_matches_golden`
+  - If it is migrated into `src/` as a unit test, use:
+    `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --lib -q svg_filter_filterres_offset_clip_matches_golden`
 
 ## Chromium note (baseline)
 
