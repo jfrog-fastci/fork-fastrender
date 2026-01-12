@@ -839,7 +839,7 @@ fn split_image_set_candidates(inner: &str) -> Vec<String> {
   let mut current = String::new();
   let mut parts = Vec::new();
   let mut in_string: Option<char> = None;
-  let mut chars = inner.chars();
+  let mut chars = inner.chars().peekable();
 
   while let Some(ch) = chars.next() {
     if let Some(quote) = in_string {
@@ -852,6 +852,20 @@ fn split_image_set_candidates(inner: &str) -> Vec<String> {
       }
       if ch == quote {
         in_string = None;
+      }
+      continue;
+    }
+
+    if ch == '/' && matches!(chars.peek().copied(), Some('*')) {
+      // CSS comments behave like whitespace. Skip them and ensure any delimiter-like characters
+      // inside the comment do not affect candidate splitting.
+      chars.next();
+      current.push(' ');
+      while let Some(comment_ch) = chars.next() {
+        if comment_ch == '*' && matches!(chars.peek().copied(), Some('/')) {
+          chars.next();
+          break;
+        }
       }
       continue;
     }
@@ -925,20 +939,33 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
   let mut end = None;
   let mut in_string: Option<u8> = None;
   let mut escape = false;
-  for idx in start..bytes.len() {
+  let mut idx = start;
+  while idx < bytes.len() {
     let b = bytes[idx];
     if escape {
       escape = false;
+      idx += 1;
       continue;
     }
     if b == b'\\' {
       escape = true;
+      idx += 1;
       continue;
     }
     if let Some(q) = in_string {
       if b == q {
         in_string = None;
       }
+      idx += 1;
+      continue;
+    }
+    if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+      // CSS comments behave like whitespace and should not affect delimiter nesting.
+      idx += 2;
+      while idx + 1 < bytes.len() && !(bytes[idx] == b'*' && bytes[idx + 1] == b'/') {
+        idx += 1;
+      }
+      idx = idx.saturating_add(2).min(bytes.len());
       continue;
     }
     match b {
@@ -956,10 +983,34 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
       }
       _ => {}
     }
+    idx += 1;
   }
 
   let end_idx = end?;
-  if !trim_ascii_whitespace(&trimmed[end_idx + 1..]).is_empty() {
+  if {
+    let tail = trimmed.get(end_idx + 1..).unwrap_or("");
+    let bytes = tail.as_bytes();
+    let mut i = 0usize;
+    let mut ok = true;
+    while i < bytes.len() {
+      let b = bytes[i];
+      if matches!(b, b'\t' | b'\n' | b'\x0C' | b'\r' | b' ') {
+        i += 1;
+        continue;
+      }
+      if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+        i += 2;
+        while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+          i += 1;
+        }
+        i = i.saturating_add(2).min(bytes.len());
+        continue;
+      }
+      ok = false;
+      break;
+    }
+    !ok
+  } {
     return None;
   }
   let inner = trim_ascii_whitespace(trimmed.get(start + 1..end_idx)?);
@@ -1117,6 +1168,41 @@ fn tokenize_image_set_candidate(value_str: &str) -> Vec<String> {
       }
       if ch == quote {
         in_string = None;
+        // CSS tokenization does not require whitespace between tokens. For example,
+        // `url(a)1x` is valid (function token followed by a dimension token). Split
+        // the current token if we're at top-level and the next char is not whitespace.
+        if paren == 0 && bracket == 0 && brace == 0 {
+          if let Some(&next) = chars.peek() {
+            if !is_ascii_whitespace_html_css(next) {
+              if !trim_ascii_whitespace(&current).is_empty() {
+                tokens.push(trim_ascii_whitespace(&current).to_string());
+              }
+              current.clear();
+            }
+          }
+        }
+      }
+      continue;
+    }
+
+    if ch == '/' && matches!(chars.peek().copied(), Some('*')) {
+      // CSS comments behave like whitespace. Skip them, and ensure any punctuation inside does not
+      // affect delimiter nesting. Comments can appear between tokens without any surrounding
+      // whitespace (e.g. `url(a)/*c*/1x`), so treat them as a top-level delimiter.
+      chars.next();
+      if paren == 0 && bracket == 0 && brace == 0 {
+        if !trim_ascii_whitespace(&current).is_empty() {
+          tokens.push(trim_ascii_whitespace(&current).to_string());
+        }
+        current.clear();
+      } else {
+        current.push(' ');
+      }
+      while let Some(comment_ch) = chars.next() {
+        if comment_ch == '*' && matches!(chars.peek().copied(), Some('/')) {
+          chars.next();
+          break;
+        }
       }
       continue;
     }
@@ -1143,6 +1229,17 @@ fn tokenize_image_set_candidate(value_str: &str) -> Vec<String> {
           paren -= 1;
         }
         current.push(ch);
+        // See comment above about adjacent tokens like `url(a)1x`.
+        if paren == 0 && bracket == 0 && brace == 0 {
+          if let Some(&next) = chars.peek() {
+            if !is_ascii_whitespace_html_css(next) {
+              if !trim_ascii_whitespace(&current).is_empty() {
+                tokens.push(trim_ascii_whitespace(&current).to_string());
+              }
+              current.clear();
+            }
+          }
+        }
       }
       '[' => {
         bracket += 1;
@@ -33852,6 +33949,22 @@ mod tests {
   fn image_set_parses_unquoted_url_with_escaped_paren() {
     let parsed = parse_image_set("image-set(url(foo\\(bar.png) 1x)").expect("image-set");
     assert_eq!(parsed, BackgroundImage::Url("foo(bar.png".to_string()));
+  }
+
+  #[test]
+  fn image_set_parses_minified_candidates_without_whitespace() {
+    with_image_set_dpr(2.0, || {
+      let parsed =
+        parse_image_set("image-set(url(\"low.png\")1x,url(\"hi.png\")2x)").expect("image-set");
+      assert_eq!(parsed, BackgroundImage::Url("hi.png".to_string()));
+    });
+  }
+
+  #[test]
+  fn image_set_treats_comments_as_whitespace() {
+    let parsed =
+      parse_image_set("image-set(url(\"a.png\")/*comment*/1x, url(\"b.png\")2x)").expect("image-set");
+    assert_eq!(parsed, BackgroundImage::Url("a.png".to_string()));
   }
 
   #[test]
