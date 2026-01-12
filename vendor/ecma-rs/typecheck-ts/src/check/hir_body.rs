@@ -11577,7 +11577,7 @@ impl<'a> FlowBodyChecker<'a> {
         hir_js::Literal::BigInt(v) => self.store.intern_type(TypeKind::BigIntLiteral(
           v.parse::<i128>().unwrap_or(0).into(),
         )),
-        hir_js::Literal::Regex(_) => prim.string,
+        hir_js::Literal::Regex(_) => prim.unknown,
       },
       ExprKind::Unary { op, expr } => match op {
         UnaryOp::Not => {
