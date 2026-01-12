@@ -3,6 +3,7 @@
 use crate::text::font_db::{FontDatabase, FontStyle, FontWeight, GenericFamily, LoadedFont};
 use crate::debug::runtime::runtime_toggles;
 use crate::ui::high_contrast;
+use crate::ui::theme_parsing;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Style};
 use egui::epaint::Shadow;
 
@@ -516,6 +517,92 @@ pub fn apply_browser_theme_with_ui_scale(ctx: &egui::Context, theme: &BrowserThe
   visuals.widgets.open.fg_stroke = Stroke::new(1.0, theme.colors.text_primary);
 
   style.visuals = visuals;
+  ctx.set_style(style);
+}
+
+/// Returns whether high contrast mode is enabled via `FASTR_BROWSER_HIGH_CONTRAST=1`.
+///
+/// Invalid values are treated as "off" (we don't want UI rendering to go fallible just because an
+/// env var is misconfigured).
+pub fn high_contrast_enabled() -> bool {
+  match std::env::var(theme_parsing::ENV_BROWSER_HIGH_CONTRAST) {
+    Ok(raw) => theme_parsing::parse_high_contrast_env(Some(&raw)).unwrap_or(false),
+    Err(_) => false,
+  }
+}
+
+fn high_contrast_visuals(base: &egui::Visuals) -> egui::Visuals {
+  let dark_mode = base.dark_mode;
+  let mut visuals = base.clone();
+
+  // Base surfaces + text.
+  let (bg, fg, button_bg, button_bg_hover, button_bg_active, border, selection_bg, selection_fg) =
+    if dark_mode {
+      (
+        Color32::BLACK,
+        Color32::WHITE,
+        Color32::from_rgb(20, 20, 20),
+        Color32::from_rgb(35, 35, 35),
+        Color32::from_rgb(55, 55, 55),
+        Color32::WHITE,
+        Color32::from_rgb(255, 255, 0),
+        Color32::BLACK,
+      )
+    } else {
+      (
+        Color32::WHITE,
+        Color32::BLACK,
+        Color32::from_rgb(245, 245, 245),
+        Color32::from_rgb(235, 235, 235),
+        Color32::from_rgb(220, 220, 220),
+        Color32::BLACK,
+        Color32::from_rgb(0, 92, 230),
+        Color32::WHITE,
+      )
+    };
+
+  visuals.override_text_color = Some(fg);
+  visuals.panel_fill = bg;
+  visuals.window_fill = bg;
+  visuals.extreme_bg_color = bg;
+  visuals.faint_bg_color = button_bg;
+  visuals.hyperlink_color = selection_bg;
+
+  // Stronger borders everywhere (including separators).
+  visuals.window_stroke = Stroke::new(2.0, border);
+  visuals.widgets.noninteractive.bg_stroke = Stroke::new(2.0, border);
+
+  // Buttons / interactive widgets.
+  visuals.widgets.inactive.bg_fill = button_bg;
+  visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, fg);
+  visuals.widgets.inactive.bg_stroke = Stroke::new(2.0, border);
+
+  visuals.widgets.hovered.bg_fill = button_bg_hover;
+  visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, fg);
+  visuals.widgets.hovered.bg_stroke = Stroke::new(2.0, border);
+
+  visuals.widgets.active.bg_fill = button_bg_active;
+  visuals.widgets.active.fg_stroke = Stroke::new(1.0, fg);
+  visuals.widgets.active.bg_stroke = Stroke::new(2.0, border);
+
+  // Make selection highly visible (e.g. selected tab labels, text selection).
+  visuals.selection.bg_fill = selection_bg;
+  visuals.selection.stroke = Stroke::new(3.0, selection_fg);
+
+  visuals
+}
+
+/// Apply high-contrast palette overrides to egui when `FASTR_BROWSER_HIGH_CONTRAST=1` is set.
+///
+/// This function is intentionally cheap and idempotent; the browser UI may call it every frame so
+/// it does not need additional initialization plumbing.
+pub fn apply_high_contrast_if_enabled(ctx: &egui::Context) {
+  if !high_contrast_enabled() {
+    return;
+  }
+
+  let mut style = (*ctx.style()).clone();
+  style.visuals = high_contrast_visuals(&style.visuals);
   ctx.set_style(style);
 }
 

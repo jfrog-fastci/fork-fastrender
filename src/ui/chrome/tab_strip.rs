@@ -8,6 +8,7 @@ use crate::ui::{icon_button, BrowserIcon};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2};
 
 use super::ChromeAction;
+use super::FocusRingStyle;
 
 const TAB_STRIP_HEIGHT: f32 = 34.0;
 const TAB_HEIGHT: f32 = 32.0;
@@ -204,6 +205,7 @@ fn tab_ui(
   tab_width: f32,
   favicon_tex: Option<egui::TextureId>,
   chrome: &mut ChromeState,
+  focus_ring: FocusRingStyle,
 ) -> (Rect, Response, Option<ChromeAction>) {
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
@@ -234,6 +236,7 @@ fn tab_ui(
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
+  super::show_tooltip_on_focus(ui, &response, title.as_str());
 
   let visuals = ui.style().visuals.clone();
 
@@ -357,6 +360,7 @@ fn tab_ui(
       let label = format!("{}: {}", BrowserIcon::CloseTab.a11y_label(), title);
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
+    super::show_tooltip_on_focus(ui, &close_resp, "Close tab (Ctrl/Cmd+W)");
     close_clicked = close_enabled && close_resp.clicked();
 
     // Micro-interaction: fade close button hover fill in/out.
@@ -387,16 +391,7 @@ fn tab_ui(
       );
     }
 
-    if close_resp.has_focus() {
-      let focus_stroke = visuals.selection.stroke;
-      let expand = 1.0 + focus_stroke.width * 0.5;
-      let focus_rect = close_rect.expand(expand);
-      let focus_rounding = egui::Rounding::same(
-        (visuals.widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0) + expand,
-      );
-      ui.painter()
-        .rect_stroke(focus_rect, focus_rounding, focus_stroke);
-    }
+    super::paint_focus_ring(ui, &close_resp, focus_ring);
   }
 
   // Title.
@@ -450,6 +445,8 @@ fn tab_ui(
     return (tab_rect, response, Some(ChromeAction::ActivateTab(tab.id)));
   }
 
+  super::paint_focus_ring(ui, &response, focus_ring);
+
   (tab_rect, response, None)
 }
 
@@ -461,6 +458,7 @@ fn pinned_tab_ui(
   can_close_tabs: bool,
   favicon_tex: Option<egui::TextureId>,
   chrome: &mut ChromeState,
+  focus_ring: FocusRingStyle,
 ) -> (Rect, Response, Option<ChromeAction>) {
   let (_, tab_rect) = ui.allocate_space(Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
@@ -491,6 +489,7 @@ fn pinned_tab_ui(
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
+  super::show_tooltip_on_focus(ui, &response, title.as_str());
 
   let visuals = ui.style().visuals.clone();
 
@@ -594,6 +593,7 @@ fn pinned_tab_ui(
     return (tab_rect, response, Some(ChromeAction::ActivateTab(tab.id)));
   }
 
+  super::paint_focus_ring(ui, &response, focus_ring);
   (tab_rect, response, None)
 }
 
@@ -602,6 +602,7 @@ pub(super) fn tab_strip_ui(
   app: &mut BrowserAppState,
   favicon_for_tab: &mut impl FnMut(TabId) -> Option<egui::TextureId>,
   motion: UiMotion,
+  focus_ring: FocusRingStyle,
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
 
@@ -688,6 +689,7 @@ pub(super) fn tab_strip_ui(
             can_close_tabs,
             favicon_tex,
             chrome,
+            focus_ring,
           );
           if is_active {
             active_tab_rect = Some(tab_rect);
@@ -740,6 +742,7 @@ pub(super) fn tab_strip_ui(
                 sizing.tab_width,
                 favicon_tex,
                 chrome,
+                focus_ring,
               );
               if is_active {
                 active_tab_rect = Some(tab_rect);
@@ -962,6 +965,8 @@ pub(super) fn tab_strip_ui(
   new_tab_resp.widget_info(|| {
     egui::WidgetInfo::labeled(egui::WidgetType::Button, BrowserIcon::NewTab.a11y_label())
   });
+  super::show_tooltip_on_focus(ui, &new_tab_resp, "New tab (Ctrl/Cmd+T)");
+  super::paint_focus_ring(ui, &new_tab_resp, focus_ring);
   if new_tab_resp.clicked() {
     actions.push(ChromeAction::NewTab);
   }

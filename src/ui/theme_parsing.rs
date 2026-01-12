@@ -1,6 +1,22 @@
 /// Environment variable used to override the browser UI theme.
 pub const ENV_BROWSER_THEME: &str = "FASTR_BROWSER_THEME";
 
+/// Environment variable used to enable a high-contrast UI palette.
+pub const ENV_BROWSER_HIGH_CONTRAST: &str = "FASTR_BROWSER_HIGH_CONTRAST";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeEnvError {
+  pub message: String,
+}
+
+impl ThemeEnvError {
+  fn new(message: impl Into<String>) -> Self {
+    Self {
+      message: message.into(),
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserTheme {
   /// Do not override; follow the UI toolkit's default/system theme.
@@ -70,9 +86,38 @@ pub fn parse_browser_theme_env(raw: Option<&str>) -> Option<BrowserTheme> {
   raw.and_then(parse_browser_theme)
 }
 
+fn parse_env_bool(key: &str, raw: &str) -> Result<bool, ThemeEnvError> {
+  let v = raw.trim().to_ascii_lowercase();
+  if v.is_empty() {
+    return Ok(false);
+  }
+
+  if matches!(v.as_str(), "1" | "true" | "yes" | "on") {
+    return Ok(true);
+  }
+  if matches!(v.as_str(), "0" | "false" | "no" | "off") {
+    return Ok(false);
+  }
+
+  Err(ThemeEnvError::new(format!(
+    "{key}: invalid value {raw:?}; expected 0|1|true|false"
+  )))
+}
+
+/// Parse the `FASTR_BROWSER_HIGH_CONTRAST` environment variable value.
+///
+/// `None` (var unset) is treated as "off". Invalid values return an error so callers/tests can
+/// surface misconfiguration.
+pub fn parse_high_contrast_env(raw: Option<&str>) -> Result<bool, ThemeEnvError> {
+  let Some(raw) = raw else {
+    return Ok(false);
+  };
+  parse_env_bool(ENV_BROWSER_HIGH_CONTRAST, raw)
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{parse_browser_theme_env, BrowserTheme};
+  use super::*;
 
   #[test]
   fn theme_env_parsing_accepts_known_values() {
@@ -97,5 +142,20 @@ mod tests {
     assert_eq!(parse_browser_theme_env(Some("dark-mode")), None);
     assert_eq!(parse_browser_theme_env(Some("0")), None);
     assert_eq!(parse_browser_theme_env(Some("1")), None);
+  }
+
+  #[test]
+  fn parse_high_contrast_env_values() {
+    assert_eq!(parse_high_contrast_env(None), Ok(false));
+    assert_eq!(parse_high_contrast_env(Some("")), Ok(false));
+    assert_eq!(parse_high_contrast_env(Some("0")), Ok(false));
+    assert_eq!(parse_high_contrast_env(Some("1")), Ok(true));
+    assert_eq!(parse_high_contrast_env(Some("true")), Ok(true));
+    assert_eq!(parse_high_contrast_env(Some("yes")), Ok(true));
+    assert_eq!(parse_high_contrast_env(Some("on")), Ok(true));
+    assert_eq!(parse_high_contrast_env(Some("false")), Ok(false));
+    assert_eq!(parse_high_contrast_env(Some("no")), Ok(false));
+    assert_eq!(parse_high_contrast_env(Some("off")), Ok(false));
+    assert!(parse_high_contrast_env(Some("maybe")).is_err());
   }
 }

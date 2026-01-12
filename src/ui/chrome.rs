@@ -18,6 +18,7 @@ use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::url::{resolve_omnibox_input, search_url_for_query, OmniboxInputResolution, DEFAULT_SEARCH_ENGINE_TEMPLATE};
 use crate::ui::theme_parsing::BrowserTheme as ThemeChoice;
+use crate::ui::theme;
 use crate::ui::url_display;
 use crate::ui::zoom;
 use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
@@ -102,6 +103,52 @@ fn format_bytes(bytes: u64) -> String {
   } else {
     format!("{bytes} B")
   }
+}
+
+const MIN_CHROME_HIT_TARGET_POINTS: f32 = 30.0;
+
+#[derive(Clone, Copy)]
+struct FocusRingStyle {
+  stroke: egui::Stroke,
+  expand: f32,
+  rounding: egui::Rounding,
+}
+
+fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, style: FocusRingStyle) {
+  if !response.has_focus() {
+    return;
+  }
+
+  ui.painter()
+    .rect_stroke(response.rect.expand(style.expand), style.rounding, style.stroke);
+}
+
+fn show_tooltip_on_hover_or_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
+  if !(response.hovered() || response.has_focus()) {
+    return;
+  }
+
+  // `Response::on_hover_text` only triggers on pointer hover. Show the same tooltip when the widget
+  // is keyboard-focused so keyboard-only users can discover icon-only controls.
+  egui::show_tooltip_text(
+    ui.ctx(),
+    ui.make_persistent_id(("chrome_tooltip", response.id)),
+    tooltip,
+  );
+}
+
+fn show_tooltip_on_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
+  if !response.has_focus() || response.hovered() {
+    return;
+  }
+
+  // `Response::on_hover_text` only triggers on pointer hover. Show the same tooltip when the widget
+  // is focused via keyboard navigation.
+  egui::show_tooltip_text(
+    ui.ctx(),
+    ui.make_persistent_id(("chrome_focus_tooltip", response.id)),
+    tooltip,
+  );
 }
 
 fn egui_modifiers_to_shortcuts_modifiers(modifiers: egui::Modifiers) -> Modifiers {
@@ -613,6 +660,26 @@ pub fn chrome_ui_with_bookmarks(
   omnibox_bookmarks: Option<&BookmarkStore>,
   mut favicon_for_tab: impl FnMut(TabId) -> Option<egui::TextureId>,
 ) -> Vec<ChromeAction> {
+  theme::apply_high_contrast_if_enabled(ctx);
+  let high_contrast = theme::high_contrast_enabled();
+  let dark_mode = ctx.style().visuals.dark_mode;
+  let focus_color = if high_contrast {
+    if dark_mode {
+      egui::Color32::YELLOW
+    } else {
+      egui::Color32::from_rgb(0, 92, 230)
+    }
+  } else if dark_mode {
+    egui::Color32::from_rgb(80, 180, 255)
+  } else {
+    egui::Color32::from_rgb(0, 120, 215)
+  };
+  let focus_ring = FocusRingStyle {
+    stroke: egui::Stroke::new(if high_contrast { 3.0 } else { 2.0 }, focus_color),
+    expand: if high_contrast { 3.0 } else { 2.0 },
+    rounding: egui::Rounding::same(4.0),
+  };
+
   let mut actions = Vec::new();
   UiMotion::set_ctx_reduced_motion(ctx, app.appearance.reduced_motion);
   let motion = UiMotion::from_ctx(ctx);
@@ -947,7 +1014,20 @@ pub fn chrome_ui_with_bookmarks(
   let mut appearance_button_rect: Option<egui::Rect> = None;
   let mut appearance_opened_now = false;
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
-    actions.extend(tab_strip::tab_strip_ui(ui, app, &mut favicon_for_tab, motion));
+    // Ensure icon-only chrome buttons meet the minimum hit target size.
+    let interact_size = ui.spacing().interact_size;
+    ui.spacing_mut().interact_size = egui::vec2(
+      interact_size.x.max(MIN_CHROME_HIT_TARGET_POINTS),
+      interact_size.y.max(MIN_CHROME_HIT_TARGET_POINTS),
+    );
+
+    actions.extend(tab_strip::tab_strip_ui(
+      ui,
+      app,
+      &mut favicon_for_tab,
+      motion,
+      focus_ring,
+    ));
 
     ui.separator();
 
@@ -988,46 +1068,68 @@ pub fn chrome_ui_with_bookmarks(
       } else {
         "Back (Alt+Left)"
       };
-      if icon_button(ui, BrowserIcon::Back, back_tooltip, can_back).clicked() {
+      let back_response = icon_button(ui, BrowserIcon::Back, back_tooltip, can_back);
+      show_tooltip_on_focus(ui, &back_response, back_tooltip);
+      if back_response.clicked() {
         actions.push(ChromeAction::Back);
       }
+
       let forward_tooltip = if cfg!(target_os = "macos") {
         "Forward (Cmd+])"
       } else {
         "Forward (Alt+Right)"
       };
-      if icon_button(ui, BrowserIcon::Forward, forward_tooltip, can_forward).clicked() {
+      let forward_response = icon_button(ui, BrowserIcon::Forward, forward_tooltip, can_forward);
+      show_tooltip_on_focus(ui, &forward_response, forward_tooltip);
+      if forward_response.clicked() {
         actions.push(ChromeAction::Forward);
       }
       if loading {
-        if icon_button(ui, BrowserIcon::StopLoading, "Stop loading (Esc)", true).clicked() {
+        let response = icon_button(ui, BrowserIcon::StopLoading, "Stop loading (Esc)", true);
+        show_tooltip_on_focus(ui, &response, "Stop loading (Esc)");
+        paint_focus_ring(ui, &response, focus_ring);
+        if response.clicked() {
           actions.push(ChromeAction::StopLoading);
         }
-      } else if icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true).clicked() {
-        actions.push(ChromeAction::Reload);
+      } else {
+        let response = icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true);
+        show_tooltip_on_focus(ui, &response, "Reload (Ctrl/Cmd+R)");
+        paint_focus_ring(ui, &response, focus_ring);
+        if response.clicked() {
+          actions.push(ChromeAction::Reload);
+        }
       }
       let home_tooltip = if cfg!(target_os = "macos") {
         "Home (Cmd+Shift+H)"
       } else {
         "Home (Alt+Home)"
       };
-      if icon_button(ui, BrowserIcon::Home, home_tooltip, true).clicked() {
+      let home_response = icon_button(ui, BrowserIcon::Home, home_tooltip, true);
+      show_tooltip_on_focus(ui, &home_response, home_tooltip);
+      if home_response.clicked() {
         actions.push(ChromeAction::Home);
       }
 
       // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with
       // non-US keyboard layouts).
       if !is_compact {
-        if icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true).clicked() {
+        let response = icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true);
+        show_tooltip_on_focus(ui, &response, "Zoom out (Ctrl/Cmd+-)");
+        paint_focus_ring(ui, &response, focus_ring);
+        if response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_out(tab.zoom);
           }
         }
         let percent = zoom::zoom_percent(zoom_factor);
         let reset_zoom_label = format!("Zoom: {percent}% (reset)");
-        let reset_zoom_response = ui
-          .button(format!("{percent}%"))
-          .on_hover_text("Reset zoom (Ctrl/Cmd+0)");
+        let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
+          MIN_CHROME_HIT_TARGET_POINTS,
+          MIN_CHROME_HIT_TARGET_POINTS,
+        ));
+        let reset_zoom_response = ui.add(reset_btn);
+        show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
+        paint_focus_ring(ui, &reset_zoom_response, focus_ring);
         reset_zoom_response.widget_info({
           let reset_zoom_label = reset_zoom_label.clone();
           move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
@@ -1037,7 +1139,10 @@ pub fn chrome_ui_with_bookmarks(
             tab.zoom = zoom::zoom_reset();
           }
         }
-        if icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true).clicked() {
+        let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
+        show_tooltip_on_focus(ui, &response, "Zoom in (Ctrl/Cmd++)");
+        paint_focus_ring(ui, &response, focus_ring);
+        if response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_in(tab.zoom);
           }
@@ -1105,6 +1210,7 @@ pub fn chrome_ui_with_bookmarks(
         .unwrap_or(false);
 
       let menu_button = icon_button(ui, BrowserIcon::Menu, "Menu", true);
+      show_tooltip_on_focus(ui, &menu_button, "Menu");
       #[cfg(test)]
       store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
 
@@ -1225,9 +1331,8 @@ pub fn chrome_ui_with_bookmarks(
       });
 
       let bar_height = ui.spacing().interact_size.y;
-      let reserved_right =
-        ui.spacing().interact_size.y + ui.spacing().item_spacing.x;
-      let (bar_rect, bar_response) = ui.allocate_exact_size(
+      let reserved_right = ui.spacing().interact_size.y + ui.spacing().item_spacing.x;
+      let (bar_rect, mut bar_response) = ui.allocate_exact_size(
         egui::vec2((ui.available_width() - reserved_right).max(0.0), bar_height),
         if show_text_edit_initial {
           egui::Sense::hover()
@@ -1268,10 +1373,15 @@ pub fn chrome_ui_with_bookmarks(
           if let Some(bookmarks) = omnibox_bookmarks {
             let can_toggle = !active_url.trim().is_empty();
             let is_bookmarked = can_toggle && bookmarks.contains_url(active_url.trim());
-            let tooltip = if cfg!(target_os = "macos") {
-              "Bookmark this page (Cmd+D)"
+            let action_label = if is_bookmarked {
+              "Remove bookmark"
             } else {
-              "Bookmark this page (Ctrl+D)"
+              "Bookmark this page"
+            };
+            let tooltip = if cfg!(target_os = "macos") {
+              format!("{action_label} (Cmd+D)")
+            } else {
+              format!("{action_label} (Ctrl+D)")
             };
             let icon = if is_bookmarked {
               BrowserIcon::BookmarkFilled
@@ -1291,10 +1401,12 @@ pub fn chrome_ui_with_bookmarks(
                 egui::Sense::hover()
               },
             );
-            response = response.on_hover_text(tooltip);
-            response.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Bookmark this page")
+            response = response.on_hover_text(tooltip.as_str());
+            response.widget_info(move || {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, action_label)
             });
+            show_tooltip_on_focus(ui, &response, tooltip.as_str());
+            paint_focus_ring(ui, &response, focus_ring);
             paint_icon_in_rect(ui, rect, icon, ui.spacing().icon_width, color);
             if response.clicked() {
               actions.push(ChromeAction::ToggleBookmarkForActiveTab);
@@ -1586,6 +1698,25 @@ pub fn chrome_ui_with_bookmarks(
         });
       });
 
+      // Display mode: click-to-focus and show the full URL on hover.
+      if !show_text_edit {
+        if active_url.trim().is_empty() {
+          bar_response = bar_response.on_hover_text("Enter URL…");
+          show_tooltip_on_focus(ui, &bar_response, "Enter URL…");
+        } else {
+          bar_response = bar_response.on_hover_text(active_url.clone());
+          show_tooltip_on_focus(ui, &bar_response, &active_url);
+        }
+        if bar_response.clicked() {
+          app.chrome.request_focus_address_bar = true;
+          app.chrome.request_select_all_address_bar = true;
+          // Clicking the non-editing address bar flips state that is only observed on the next egui
+          // frame. Without an explicit repaint request, the windowed browser can stay stuck in
+          // display mode until another OS event arrives.
+          ctx.request_repaint();
+        }
+      }
+
       // Border stroke for the pill.
       let border_stroke = if bar_response.hovered() {
         ui.visuals().widgets.hovered.bg_stroke
@@ -1594,7 +1725,8 @@ pub fn chrome_ui_with_bookmarks(
       };
       ui.painter().rect_stroke(bar_rect, bar_rounding, border_stroke);
 
-      let has_focus = text_edit_response.as_ref().is_some_and(|r| r.has_focus()) || bar_response.has_focus();
+      let has_focus =
+        bar_response.has_focus() || text_edit_response.as_ref().is_some_and(|r| r.has_focus());
 
       // Micro-interaction: address bar focus ring animation.
       let focus_t = motion.animate_bool(
@@ -1604,10 +1736,12 @@ pub fn chrome_ui_with_bookmarks(
         motion.durations.focus_ring,
       );
       if focus_t > 0.0 {
-        let focus_stroke = ui.visuals().selection.stroke;
-        let ring_color = with_alpha(focus_stroke.color, focus_t);
-        let ring_width = focus_stroke.width + focus_t;
-        let ring_rect = bar_rect.expand(focus_stroke.width + focus_t);
+        let alpha = if has_focus { focus_t.max(0.35) } else { focus_t };
+        let ring_color = with_alpha(focus_ring.stroke.color, alpha);
+        // Keep the ring visible even when it is animating in/out (minimum 1pt stroke).
+        let ring_width = (focus_ring.stroke.width - 1.0) * focus_t + 1.0;
+        // Slightly expand beyond the pill's border to make focus more obvious.
+        let ring_rect = bar_rect.expand((focus_ring.expand - 1.0) * focus_t + 1.0);
         let ring_rounding = egui::Rounding::same(ring_rect.height() / 2.0);
         ui.painter().rect_stroke(
           ring_rect,
@@ -1678,15 +1812,16 @@ pub fn chrome_ui_with_bookmarks(
         }
       }
 
-      // Display mode: show the full URL on hover.
+      // Display mode: show the full URL on hover and when keyboard-focused.
       if !show_text_edit {
-        let _ = if active_url.trim().is_empty() {
-          bar_response.on_hover_text("Enter URL…")
+        let tooltip = if active_url.trim().is_empty() {
+          "Enter URL…".to_string()
         } else {
-          bar_response.on_hover_text(active_url.clone())
+          active_url.clone()
         };
+        bar_response = bar_response.on_hover_text(tooltip.clone());
+        show_tooltip_on_focus(ui, &bar_response, tooltip.as_str());
       }
-
       if let Some(response) = text_edit_response {
         // When the omnibox dropdown is open, keep keyboard focus in the address bar so keyboard
         // navigation remains stable across frames (and popups don't accidentally steal focus).
