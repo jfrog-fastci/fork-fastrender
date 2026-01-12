@@ -29,7 +29,7 @@ required:
 | `tests/animation_tests.rs` | unit | `src/animation/mod.rs` | Not just a harness (large file). Also uses `#[path]` to include `tests/animation/mod.rs`; migrate all to `src/animation/**`. | TODO |
 | `tests/bin_tests.rs` | integration | `tests/integration.rs::api::cli` | CLI/binary tests under `tests/bin/**`; currently pulls in `tests/test_support`. | TODO |
 | `tests/border_tests.rs` | unit | `src/style/` | Border parsing + cascade expectations (e.g. `src/style/types.rs`, `src/style/cascade.rs`). | TODO |
-| `tests/browser_integration_tests.rs` | integration | `tests/integration.rs::api::browser_integration` | `tests/browser_integration/mod.rs` mutates env at process init (sets `RUST_TEST_THREADS`, bundled fonts). May require isolation/explicit locking when merged. | TODO |
+| `tests/browser_integration_tests.rs` | integration | `tests/integration.rs::browser_integration` | Consolidated into the shared `tests/integration.rs` binary (deleted the standalone harness). Browser integration no longer mutates process-wide env vars at init; tests needing serialization use `stage_listener_test_lock()` / `common::global_test_lock()`. | DONE |
 | `tests/browser_tab_render_interleaving.rs` | integration | `tests/integration.rs::api::browser_tab_render_interleaving` | Uses public browser/tab APIs + JS event loop scheduling. | TODO |
 | `tests/bundle_vary_manifest_key_test.rs` | unit | `src/resource/bundle.rs` | Bundle manifest synthetic `Vary` key behavior. | TODO |
 | `tests/bundled_tests.rs` | unit | `src/text/font_loader.rs` | Bundled font fixture integrity/coverage (`FontContext::with_config(FontConfig::bundled_only())`). | TODO |
@@ -96,7 +96,7 @@ migrations.
 | `tests/allocation_failure/` | OOM + custom allocator harness | `tests/allocation_failure.rs` | Must stay separate due to `#[global_allocator]`. |
 | `tests/animation/` | animation engine tests | `src/animation/` | Unit tests; `tests/animation_tests.rs` also contains top-level test code. |
 | `tests/bin/` | CLI/binary tests | `tests/integration.rs::api::cli` | Keep as integration tests; share net/fs helpers via `tests/common/`. |
-| `tests/browser_integration/` | browser/UI worker integration suite | `tests/integration.rs::api::browser_integration` | Uses process init + env var mutation; may need explicit isolation/locking. |
+| `tests/browser_integration/` | browser/UI worker integration suite | `tests/integration.rs::browser_integration` | Runs in the shared integration binary; no process-init env mutation. Tests that touch global state should serialize via `stage_listener_test_lock()` / `common::global_test_lock()`. |
 | `tests/css_integration/` | css loader/import/url rewrite tests | `src/css/loader.rs` (+ friends) | Despite name, these are mostly unit tests. |
 | `tests/dom_integration/` | DOM parsing/query integration tests | `src/dom/**` + `src/dom2/**` | Unit tests. |
 | `tests/fixtures/` | HTML + golden-image fixtures | `tests/integration.rs::fixtures` | Stays in `tests/` (data-driven integration). |
@@ -120,4 +120,3 @@ migrations.
 - `ls tests/*.rs | wc -l` is **≤ 3**
 - No `#[path = "..."]` in `tests/` (shims removed): `rg '#\\[path\\s*=' tests/` returns nothing
 - No internal-module imports in `tests/` (integration tests use public API only)
-
