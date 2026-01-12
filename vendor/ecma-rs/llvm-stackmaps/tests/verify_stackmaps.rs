@@ -132,3 +132,96 @@ fn verify_enriches_parse_error_with_inferred_pc_when_possible() {
     assert_eq!(failure.function_address, Some(expected.function_address));
     assert_eq!(failure.record_index, Some(expected.record_index));
 }
+
+fn build_minimal_blob(func_addr: u64, rec_id: u64, inst_off: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[3, 0, 0, 0]);
+    bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+    bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+    bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+    bytes.extend_from_slice(&(func_addr).to_le_bytes());
+    bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+    bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+    bytes.extend_from_slice(&(rec_id).to_le_bytes());
+    bytes.extend_from_slice(&(inst_off).to_le_bytes());
+    bytes.extend_from_slice(&(0u16).to_le_bytes());
+    bytes.extend_from_slice(&(0u16).to_le_bytes()); // num locations
+
+    // Live-out header (already aligned): padding + num_liveouts.
+    bytes.extend_from_slice(&(0u16).to_le_bytes());
+    bytes.extend_from_slice(&(0u16).to_le_bytes());
+    // Align record end: 16 + 4 = 20 => +4.
+    bytes.extend_from_slice(&[0u8; 4]);
+
+    bytes
+}
+
+fn build_constindex_blob(func_addr: u64, rec_id: u64, inst_off: u32, constant: u64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[3, 0, 0, 0]);
+    bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+    bytes.extend_from_slice(&(1u32).to_le_bytes()); // num constants
+    bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+    // Function entry: 1 record.
+    bytes.extend_from_slice(&(func_addr).to_le_bytes());
+    bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+    bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+    // Constants table.
+    bytes.extend_from_slice(&(constant).to_le_bytes());
+
+    // Record header with num_locations=1.
+    bytes.extend_from_slice(&(rec_id).to_le_bytes());
+    bytes.extend_from_slice(&(inst_off).to_le_bytes());
+    bytes.extend_from_slice(&(0u16).to_le_bytes());
+    bytes.extend_from_slice(&(1u16).to_le_bytes()); // num locations
+
+    // Location: ConstantIndex(0)
+    bytes.push(5); // kind
+    bytes.push(0); // reserved0
+    bytes.extend_from_slice(&(8u16).to_le_bytes()); // size
+    bytes.extend_from_slice(&(0u16).to_le_bytes()); // reg
+    bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved1
+    bytes.extend_from_slice(&(0i32).to_le_bytes()); // constants[0]
+
+    // Align to 8 before live-out header: record header (16) + loc (12) = 28 => +4.
+    bytes.extend_from_slice(&[0u8; 4]);
+
+    // Live-out header: padding + num_liveouts=0.
+    bytes.extend_from_slice(&(0u16).to_le_bytes());
+    bytes.extend_from_slice(&(0u16).to_le_bytes());
+
+    // Align record end: 32 + 4 = 36 => +4.
+    bytes.extend_from_slice(&[0u8; 4]);
+
+    bytes
+}
+
+#[test]
+fn verifier_accepts_identical_duplicate_callsite_pcs() {
+    let blob_a = build_minimal_blob(0x1000, 1, 0x10);
+    let blob_b = build_minimal_blob(0x1000, 1, 0x10);
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&blob_a);
+    section.extend_from_slice(&blob_b);
+
+    let report = verify_stackmaps_bytes(&section, VerifyOptions::default());
+    assert!(report.ok(), "unexpected failures: {:#?}", report.failures);
+}
+
+#[test]
+fn verifier_accepts_duplicate_callsite_pcs_even_when_constindex_indices_differ() {
+    let blob_a = build_constindex_blob(0x1000, 1, 0x10, 0x1122_3344_5566_7788);
+    let blob_b = build_constindex_blob(0x1000, 1, 0x10, 0x1122_3344_5566_7788);
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&blob_a);
+    section.extend_from_slice(&blob_b);
+
+    let report = verify_stackmaps_bytes(&section, VerifyOptions::default());
+    assert!(report.ok(), "unexpected failures: {:#?}", report.failures);
+}

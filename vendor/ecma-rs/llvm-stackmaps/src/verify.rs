@@ -219,6 +219,7 @@ pub fn verify_stackmaps_bytes(bytes: &[u8], opts: VerifyOptions) -> Verification
     // Callsite index invariants.
     verify_callsites_sorted_and_unique(&maps, &mut report, &record_metas);
     verify_callsite_record_linkage(&maps, &mut report, &record_metas, &record_function_info);
+    verify_record_callsite_pc_dedup_invariant(&maps, &mut report, &record_metas, &record_function_info);
 
     // Statepoint-specific invariants.
     verify_statepoints(
@@ -415,6 +416,99 @@ fn verify_callsite_record_linkage(
     }
 }
 
+fn verify_record_callsite_pc_dedup_invariant(
+    maps: &StackMaps,
+    report: &mut VerificationReport,
+    record_metas: &Option<Vec<RecordMeta>>,
+    record_function_info: &[Option<RecordFunctionInfo>],
+) {
+    use std::collections::HashMap;
+
+    // Map callsite_pc -> first record index that claims that pc.
+    let mut seen: HashMap<u64, usize> = HashMap::new();
+
+    for (idx, rec) in maps.records.iter().enumerate() {
+        let pc = rec.callsite_pc;
+        if let Some(&base_idx) = seen.get(&pc) {
+            let base_rec = &maps.records[base_idx];
+            if !records_semantically_equal(base_rec, rec) {
+                report.failures.push(VerificationFailure {
+                    kind: "duplicate_record_callsite_pc_conflict",
+                    message: format!(
+                        "records[{base_idx}] and records[{idx}] share callsite_pc=0x{pc:x} but are not identical"
+                    ),
+                    offset: record_metas.as_ref().and_then(|v| v.get(idx).map(|m| m.offset)),
+                    pc: Some(pc),
+                    function_address: record_function_info
+                        .get(idx)
+                        .and_then(|v| v.map(|i| i.address)),
+                    record_index: Some(idx),
+                });
+            } else {
+                // If records are semantically identical, they should also point back at the same
+                // function metadata (ICF can fold functions, but then the function address and
+                // stack size must also match for the records to be unambiguous).
+                let base_info = record_function_info.get(base_idx).and_then(|v| *v);
+                let this_info = record_function_info.get(idx).and_then(|v| *v);
+                match (base_info, this_info) {
+                    (Some(a), Some(b)) => {
+                        if a.address != b.address || a.stack_size != b.stack_size {
+                            report.failures.push(VerificationFailure {
+                                kind: "duplicate_record_callsite_pc_function_mismatch",
+                                message: format!(
+                                    "records[{base_idx}] and records[{idx}] share callsite_pc=0x{pc:x} but have different function metadata: base(func=0x{:x}, stack={}) vs other(func=0x{:x}, stack={})",
+                                    a.address,
+                                    a.stack_size,
+                                    b.address,
+                                    b.stack_size
+                                ),
+                                offset: record_metas
+                                    .as_ref()
+                                    .and_then(|v| v.get(idx).map(|m| m.offset)),
+                                pc: Some(pc),
+                                function_address: Some(b.address),
+                                record_index: Some(idx),
+                            });
+                        }
+                    }
+                    _ => {
+                        report.failures.push(VerificationFailure {
+                            kind: "duplicate_record_callsite_pc_missing_function_info",
+                            message: format!(
+                                "records[{base_idx}] and records[{idx}] share callsite_pc=0x{pc:x} but function metadata could not be derived"
+                            ),
+                            offset: record_metas
+                                .as_ref()
+                                .and_then(|v| v.get(idx).map(|m| m.offset)),
+                            pc: Some(pc),
+                            function_address: None,
+                            record_index: Some(idx),
+                        });
+                    }
+                }
+            }
+        } else {
+            seen.insert(pc, idx);
+        }
+    }
+
+    // The callsite index is expected to be a deduplicated list of unique PCs.
+    let unique_pcs = seen.len();
+    if maps.callsites().len() != unique_pcs {
+        report.failures.push(VerificationFailure {
+            kind: "callsites_dedup_mismatch",
+            message: format!(
+                "callsites index length ({}) does not match number of unique record callsite_pcs ({unique_pcs})",
+                maps.callsites().len()
+            ),
+            offset: None,
+            pc: None,
+            function_address: None,
+            record_index: None,
+        });
+    }
+}
+
 fn verify_statepoints(
     maps: &StackMaps,
     opts: VerifyOptions,
@@ -575,6 +669,78 @@ fn looks_like_statepoint_record(rec: &StackMapRecord) -> bool {
     matches!(locs[0], Constant { .. } | ConstantIndex { .. })
         && matches!(locs[1], Constant { .. } | ConstantIndex { .. })
         && matches!(locs[2], Constant { .. } | ConstantIndex { .. })
+}
+
+fn records_semantically_equal(a: &StackMapRecord, b: &StackMapRecord) -> bool {
+    a.id == b.id
+        && a.instruction_offset == b.instruction_offset
+        && a.callsite_pc == b.callsite_pc
+        && locations_semantically_equal(&a.locations, &b.locations)
+        && a.live_outs == b.live_outs
+}
+
+fn locations_semantically_equal(a: &[Location], b: &[Location]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .all(|(a, b)| location_semantically_equal(a, b))
+}
+
+fn location_semantically_equal(a: &Location, b: &Location) -> bool {
+    use Location::*;
+    match (a, b) {
+        (Register { size: a_size, dwarf_reg: a_reg }, Register { size: b_size, dwarf_reg: b_reg }) => {
+            a_size == b_size && a_reg == b_reg
+        }
+        (
+            Direct {
+                size: a_size,
+                dwarf_reg: a_reg,
+                offset: a_off,
+            },
+            Direct {
+                size: b_size,
+                dwarf_reg: b_reg,
+                offset: b_off,
+            },
+        ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+        (
+            Indirect {
+                size: a_size,
+                dwarf_reg: a_reg,
+                offset: a_off,
+            },
+            Indirect {
+                size: b_size,
+                dwarf_reg: b_reg,
+                offset: b_off,
+            },
+        ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+        (Constant { size: a_size, value: a_val }, Constant { size: b_size, value: b_val }) => {
+            a_size == b_size && a_val == b_val
+        }
+        (
+            ConstantIndex {
+                size: a_size,
+                index: _,
+                value: a_val,
+            },
+            ConstantIndex {
+                size: b_size,
+                index: _,
+                value: b_val,
+            },
+        ) => a_size == b_size && a_val == b_val,
+        // A constant can be stored inline (`Constant`) or in the constants table (`ConstantIndex`).
+        // Treat them as equivalent if the resolved constant values match.
+        (Constant { size: a_size, .. }, ConstantIndex { size: b_size, .. })
+        | (ConstantIndex { size: a_size, .. }, Constant { size: b_size, .. }) => {
+            a_size == b_size && a.as_u64() == b.as_u64()
+        }
+        _ => false,
+    }
 }
 
 fn write_json_string(out: &mut String, s: &str) {
