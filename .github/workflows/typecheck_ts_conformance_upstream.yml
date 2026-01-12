@@ -309,7 +309,13 @@ jobs:
           rm -f "${triage_manifest_path}"
 
           status=0
-          timeout -k 10 600 bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
+          run_timeout_secs=600
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" || "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            # Scheduled/manual runs execute the full shard set; give each shard
+            # more time to complete (still bounded so hangs can't stall CI forever).
+            run_timeout_secs=1800
+          fi
+          timeout -k 10 "${run_timeout_secs}" bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
             conformance \
             --root parse-js/tests/TypeScript/tests/cases/conformance \
             --compare tsc \
