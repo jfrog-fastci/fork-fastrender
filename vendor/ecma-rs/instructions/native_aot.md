@@ -3790,6 +3790,44 @@ pub struct RtShapeDescriptor {
   pub reserved: u32,
 }
 
+// Opaque stable ABI types (see `runtime-native/include/runtime_native.h` for the authoritative C
+// declarations).
+#[repr(transparent)]
+pub struct InternedId(pub u32);
+
+#[repr(transparent)]
+pub struct TaskId(pub u64);
+
+#[repr(transparent)]
+pub struct HandleId(pub u64);
+
+#[repr(transparent)]
+pub struct CoroutineId(pub u64);
+
+#[repr(C)]
+pub struct StringRef {
+  pub ptr: *const u8,
+  pub len: usize,
+}
+
+#[repr(C)]
+pub struct PromiseHeader {
+  _private: [u8; 0],
+}
+
+#[repr(transparent)]
+pub struct PromiseRef(pub *mut PromiseHeader);
+
+/// Thread kind enum used by `rt_thread_register`.
+#[repr(C)]
+#[allow(non_camel_case_types)]
+pub enum RtThreadKind {
+  RT_THREAD_MAIN = 0,
+  RT_THREAD_WORKER = 1,
+  RT_THREAD_IO = 2,
+  RT_THREAD_EXTERNAL = 3,
+}
+
 // -----------------------------------------------------------------------------
 // Moving-GC safe pointer ABI
 // -----------------------------------------------------------------------------
@@ -3806,6 +3844,13 @@ pub struct RtShapeDescriptor {
 // See `runtime-native/docs/gc_handle_abi.md` for the detailed rule-set and rationale.
 pub type GcPtr = *mut u8;
 pub type GcHandle = *mut GcPtr;
+
+// Threads
+pub fn rt_thread_init(kind: u32);
+pub fn rt_thread_deinit();
+pub fn rt_thread_register(kind: RtThreadKind) -> u64;
+pub fn rt_thread_unregister();
+pub fn rt_thread_set_parked(parked: bool);
 
 // Memory
 pub fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize);
@@ -3826,6 +3871,7 @@ pub static RT_GC_EPOCH: u64;
 pub fn rt_gc_poll() -> bool; // cheap leaf check (fast-path helper for runtime loops)
 pub fn rt_gc_safepoint_slow(epoch: u64); // slow path entered only when `RT_GC_EPOCH` is odd
 pub fn rt_gc_safepoint(); // convenience wrapper (inline poll + slow-path call)
+pub fn rt_gc_safepoint_relocate_h(slot: GcHandle) -> GcPtr;
 // Extend liveness of a GC reference until a specific program point.
 //
 // This is the native equivalent of Go's `runtime.KeepAlive`: generated/native code uses it when it
@@ -3834,11 +3880,42 @@ pub fn rt_gc_safepoint(); // convenience wrapper (inline poll + slow-path call)
 // raw-pointer use.
 pub fn rt_keep_alive_gc_ref(gc_ref: GcPtr);
 pub fn rt_write_barrier(obj: GcPtr, field: *mut u8);
+pub fn rt_write_barrier_range(obj: GcPtr, start: *mut u8, len_bytes: usize);
+
+// Temporary roots (shadow stack for Rust/FFI code)
+pub fn rt_root_push(slot: GcHandle);
+pub fn rt_root_pop(slot: GcHandle);
+
+// Global/static roots (always-scanned root slots for module globals, etc.)
+pub fn rt_global_root_register(slot: *mut usize);
+pub fn rt_global_root_unregister(slot: *mut usize);
+
+// Root-slot handles (stable u32 ids) for host/FFI code.
+pub fn rt_gc_register_root_slot(slot: GcHandle) -> u32;
+pub fn rt_gc_unregister_root_slot(handle: u32);
+pub fn rt_gc_pin(ptr: GcPtr) -> u32;
+pub fn rt_gc_unpin(handle: u32);
+pub fn rt_gc_root_get(handle: u32) -> GcPtr;
+pub fn rt_gc_root_set(handle: u32, ptr: GcPtr) -> bool;
+
+// Persistent handles (stable u64 ids).
+pub fn rt_handle_alloc(ptr: GcPtr) -> HandleId;
+pub fn rt_handle_alloc_h(ptr: GcHandle) -> HandleId;
+pub fn rt_handle_free(handle: HandleId);
+pub fn rt_handle_load(handle: HandleId) -> GcPtr;
+pub fn rt_handle_store(handle: HandleId, ptr: GcPtr);
+pub fn rt_handle_store_h(handle: HandleId, ptr: GcHandle);
+
+// Write-barrier young-range configuration (used by the runtime write barrier fast path).
+pub fn rt_gc_set_young_range(start: *mut u8, end: *mut u8);
+pub fn rt_gc_get_young_range(out_start: *mut GcPtr, out_end: *mut GcPtr);
+
 pub fn rt_gc_collect();
 
 // Strings
 pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
 pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
+pub fn rt_string_pin_interned(id: InternedId);
 
 // Parallel
 pub fn rt_parallel_spawn(task: fn(*mut u8), data: *mut u8) -> TaskId;
