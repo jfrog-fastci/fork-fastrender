@@ -1,9 +1,11 @@
 use crate::style::computed::Visibility;
 use crate::style::display::Display;
 use crate::style::types::UserSelect;
+use crate::style::types::WritingMode;
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType, MarkerContent};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use rustc_hash::FxHashSet;
+use std::sync::Arc;
 
 /// A document text selection, used for serializing clipboard text.
 ///
@@ -84,7 +86,12 @@ impl TextBuilder {
 
   fn push_space(&mut self) {
     // Avoid leading whitespace and collapse consecutive spaces.
-    if self.out.is_empty() || matches!(self.last, LastToken::Space | LastToken::Newline | LastToken::Tab) {
+    if self.out.is_empty()
+      || matches!(
+        self.last,
+        LastToken::Space | LastToken::Newline | LastToken::Tab
+      )
+    {
       return;
     }
     self.out.push(' ');
@@ -155,11 +162,91 @@ fn collect_fragment_box_ids(node: &FragmentNode, ids: &mut FxHashSet<usize>) {
         ids.insert(id);
       }
     }
-    FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. } => {}
+    FragmentContent::Line { .. }
+    | FragmentContent::RunningAnchor { .. }
+    | FragmentContent::FootnoteAnchor { .. } => {}
   }
 
   for child in node.children.iter() {
     collect_fragment_box_ids(child, ids);
+  }
+}
+
+fn is_vertical_typographic_mode(mode: WritingMode) -> bool {
+  matches!(mode, WritingMode::VerticalRl | WritingMode::VerticalLr)
+}
+
+/// Inline layout can coalesce adjacent text boxes (e.g. comment-split text nodes like `1<!-- -->2`)
+/// into a single text run when `text-combine-upright` is active, so only one of the boxes appears
+/// in the fragment tree.
+///
+/// When serializing selections, we use the fragment tree to determine which text nodes were
+/// actually rendered (to avoid copying collapsed inter-element whitespace). Coalescing would cause
+/// sibling text boxes to be treated as not rendered, dropping their text from the selection.
+///
+/// Expand `visible_box_ids` so that if any box in a coalesced group produced fragments, all boxes
+/// in that group are considered visible for selection serialization.
+fn expand_visible_box_ids_for_text_combine_upright_groups(
+  node: &BoxNode,
+  visible: &mut FxHashSet<usize>,
+) {
+  if node.children.is_empty() && node.footnote_body.is_none() {
+    return;
+  }
+
+  let children = &node.children;
+  let mut idx = 0usize;
+  while idx < children.len() {
+    let start = idx;
+    let child = &children[idx];
+    let eligible = matches!(child.box_type, BoxType::Text(_))
+      && is_vertical_typographic_mode(child.style.writing_mode)
+      && !matches!(
+        child.style.text_combine_upright,
+        crate::style::types::TextCombineUpright::None
+      );
+    if !eligible {
+      idx += 1;
+      continue;
+    }
+
+    let style_arc = child.style.clone();
+    idx += 1;
+    while idx < children.len() {
+      let next = &children[idx];
+      if !matches!(next.box_type, BoxType::Text(_)) {
+        break;
+      }
+      if !Arc::ptr_eq(&style_arc, &next.style) {
+        break;
+      }
+      if !is_vertical_typographic_mode(next.style.writing_mode)
+        || matches!(
+          next.style.text_combine_upright,
+          crate::style::types::TextCombineUpright::None
+        )
+      {
+        break;
+      }
+      idx += 1;
+    }
+
+    let end = idx;
+    if end - start > 1 {
+      let any_visible = children[start..end].iter().any(|n| visible.contains(&n.id));
+      if any_visible {
+        for n in &children[start..end] {
+          visible.insert(n.id);
+        }
+      }
+    }
+  }
+
+  if let Some(body) = node.footnote_body.as_deref() {
+    expand_visible_box_ids_for_text_combine_upright_groups(body, visible);
+  }
+  for child in node.children.iter() {
+    expand_visible_box_ids_for_text_combine_upright_groups(child, visible);
   }
 }
 
@@ -177,7 +264,11 @@ fn byte_offset_for_char_idx(text: &str, char_idx: usize) -> usize {
   text.len()
 }
 
-fn slice_text_by_selection(text: &str, node_id: Option<usize>, selection: DocumentSelection) -> Option<&str> {
+fn slice_text_by_selection(
+  text: &str,
+  node_id: Option<usize>,
+  selection: DocumentSelection,
+) -> Option<&str> {
   let DocumentSelection::Range(range) = selection else {
     return Some(text);
   };
@@ -223,7 +314,9 @@ struct WalkCtx {
 
 impl WalkCtx {
   fn new() -> Self {
-    Self { row_stack: Vec::new() }
+    Self {
+      row_stack: Vec::new(),
+    }
   }
 
   fn current_row_mut(&mut self) -> Option<&mut TableRowCtx> {
@@ -275,7 +368,10 @@ fn before_enter_box(builder: &mut TextBuilder, ctx: &mut WalkCtx, node: &BoxNode
   // Block-level boundaries: browsers typically separate blocks with line breaks when copying.
   //
   // Avoid inserting a newline directly after a table-cell tab separator.
-  if display.is_block_level() && !builder.out.is_empty() && !matches!(builder.last, LastToken::Newline | LastToken::Tab) {
+  if display.is_block_level()
+    && !builder.out.is_empty()
+    && !matches!(builder.last, LastToken::Newline | LastToken::Tab)
+  {
     builder.push_newline();
   }
 }
@@ -303,7 +399,8 @@ fn walk_box_tree(
     BoxType::Text(text_box) => {
       // Use the fragment tree to ensure we only serialize text that actually produced layout.
       if visible_box_ids.contains(&node.id) {
-        if let Some(text) = slice_text_by_selection(&text_box.text, node.styled_node_id, selection) {
+        if let Some(text) = slice_text_by_selection(&text_box.text, node.styled_node_id, selection)
+        {
           builder.push_text(text);
         }
       }
@@ -339,15 +436,87 @@ fn walk_box_tree(
 /// - Inserts newlines between block-level elements and `<br>`.
 /// - Inserts `\t` between table cells and `\n` between table rows.
 /// - Collapses runs of ASCII whitespace to single spaces.
-pub fn serialize_document_selection(box_tree: &BoxTree, fragment_tree: &FragmentTree, selection: DocumentSelection) -> String {
+pub fn serialize_document_selection(
+  box_tree: &BoxTree,
+  fragment_tree: &FragmentTree,
+  selection: DocumentSelection,
+) -> String {
   let mut visible_box_ids: FxHashSet<usize> = FxHashSet::default();
   collect_fragment_box_ids(&fragment_tree.root, &mut visible_box_ids);
   for root in &fragment_tree.additional_fragments {
     collect_fragment_box_ids(root, &mut visible_box_ids);
   }
+  expand_visible_box_ids_for_text_combine_upright_groups(&box_tree.root, &mut visible_box_ids);
 
   let mut builder = TextBuilder::new();
   let mut ctx = WalkCtx::new();
-  walk_box_tree(&box_tree.root, selection, &visible_box_ids, &mut ctx, &mut builder);
+  walk_box_tree(
+    &box_tree.root,
+    selection,
+    &visible_box_ids,
+    &mut ctx,
+    &mut builder,
+  );
   builder.finish()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::types::TextCombineUpright;
+  use crate::style::ComputedStyle;
+  use crate::tree::box_tree::FormattingContextType;
+  use crate::tree::fragment_tree::{TextEmphasisOffset, TextSourceRange};
+  use crate::Rect;
+  use std::sync::Arc;
+
+  #[test]
+  fn selection_serialization_treats_text_combine_merged_text_nodes_as_visible() {
+    let mut style = ComputedStyle::default();
+    style.writing_mode = WritingMode::VerticalRl;
+    style.text_combine_upright = TextCombineUpright::Digits(2);
+    let style = Arc::new(style);
+
+    let span = BoxNode::new_inline(
+      style.clone(),
+      vec![
+        BoxNode::new_text(style.clone(), "1".into()),
+        BoxNode::new_text(style.clone(), "2".into()),
+      ],
+    );
+    let root = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![span]);
+    let box_tree = BoxTree::new(root);
+
+    let span = &box_tree.root.children[0];
+    let text1_id = span.children[0].id;
+    let _text2_id = span.children[1].id;
+
+    // Model the fragment output produced by inline layout when comment-split text nodes are
+    // coalesced for `text-combine-upright`: a single text fragment with the first node's box id.
+    let text_fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      FragmentContent::Text {
+        text: Arc::from("12"),
+        box_id: Some(text1_id),
+        source_range: Some(TextSourceRange::new(0..2)),
+        baseline_offset: 0.0,
+        shaped: None,
+        is_marker: false,
+        emphasis_offset: TextEmphasisOffset::default(),
+      },
+      vec![],
+      style.clone(),
+    );
+    let line = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      0.0,
+      vec![text_fragment],
+    );
+    let fragment_root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![line]);
+    let fragment_tree = FragmentTree::new(fragment_root);
+
+    let serialized =
+      serialize_document_selection(&box_tree, &fragment_tree, DocumentSelection::All);
+    assert_eq!(serialized, "12");
+  }
 }
