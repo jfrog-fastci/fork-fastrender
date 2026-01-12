@@ -4622,26 +4622,25 @@ impl<'a> Evaluator<'a> {
     catch: &CatchBlock,
     thrown: Value,
   ) -> Result<Completion, VmError> {
+    // Root the thrown value across all catch setup, including `env_create`, which may allocate and
+    // trigger GC before we instantiate bindings.
+    let mut catch_scope = scope.reborrow();
+    catch_scope.push_root(thrown)?;
+
     let outer = self.env.lexical_env;
-    let catch_env = scope.env_create(Some(outer))?;
-    self.env.set_lexical_env(scope.heap_mut(), catch_env);
+    let catch_env = catch_scope.env_create(Some(outer))?;
+    self.env.set_lexical_env(catch_scope.heap_mut(), catch_env);
 
-    let result = {
-      // Root the thrown value across catch binding instantiation, which may allocate.
-      let mut catch_scope = scope.reborrow();
-      catch_scope.push_root(thrown)?;
+    let result = self
+      .instantiate_block_decls_in_stmt_list(&mut catch_scope, catch_env, &catch.body)
+      .and_then(|_| {
+        if let Some(param) = &catch.parameter {
+          self.bind_catch_param(&mut catch_scope, &param.stx, thrown, catch_env)?;
+        }
+        self.eval_stmt_list(&mut catch_scope, &catch.body)
+      });
 
-      self
-        .instantiate_block_decls_in_stmt_list(&mut catch_scope, catch_env, &catch.body)
-        .and_then(|_| {
-          if let Some(param) = &catch.parameter {
-            self.bind_catch_param(&mut catch_scope, &param.stx, thrown, catch_env)?;
-          }
-          self.eval_stmt_list(&mut catch_scope, &catch.body)
-        })
-    };
-
-    self.env.set_lexical_env(scope.heap_mut(), outer);
+    self.env.set_lexical_env(catch_scope.heap_mut(), outer);
     result
   }
 
@@ -7104,7 +7103,9 @@ impl<'a> Evaluator<'a> {
               )?;
               new_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
               if let Err(err) = new_scope.push_root(iter.next_method) {
-                return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
+                // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform
+                // `IteratorClose` on abrupt completions (including when `next` throws).
+                return Err(err);
               }
 
               loop {
@@ -7133,7 +7134,7 @@ impl<'a> Evaluator<'a> {
                   Ok(())
                 })();
                 if let Err(err) = step_res {
-                  return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
+                  return Err(err);
                 }
               }
             } else {
@@ -7337,7 +7338,9 @@ impl<'a> Evaluator<'a> {
         )?;
         call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
         if let Err(err) = call_scope.push_root(iter.next_method) {
-          return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
+          // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform `IteratorClose`
+          // on abrupt completions (including when `next` throws).
+          return Err(err);
         }
 
         loop {
@@ -7347,12 +7350,12 @@ impl<'a> Evaluator<'a> {
             &mut *self.hooks,
             &mut call_scope,
             &mut iter,
-           ) {
-             Ok(v) => v,
-             // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
-             // while stepping the iterator (`next`/`done`/`value`).
-             Err(err) => return Err(err),
-           };
+          ) {
+            Ok(v) => v,
+            // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
+            // while stepping the iterator (`next`/`done`/`value`).
+            Err(err) => return Err(err),
+          };
 
           let Some(value) = next_value else {
             break;
@@ -7366,7 +7369,7 @@ impl<'a> Evaluator<'a> {
             Ok(())
           })();
           if let Err(err) = step_res {
-            return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
+            return Err(err);
           }
         }
       } else {
@@ -9923,25 +9926,36 @@ fn async_handle_body_result(
 
       let awaited_promise = match resolve_res {
         Ok(p) => p,
-        Err(VmError::Throw(reason)) => {
+        Err(err) if err.is_throw_completion() => {
           // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
           // promise must be rejected (and the resume callback must not throw synchronously).
+          //
+          // Note: many VM operations use internal helper errors (e.g. `VmError::TypeError`) that are
+          // coerced into JS throw completions at evaluator boundaries. `await` is such a boundary:
+          // an abrupt completion must become a promise rejection, not a host error.
+          let err = coerce_error_to_throw_for_async(vm, &mut await_scope, err);
+          let reason = match err {
+            VmError::Throw(reason) => reason,
+            VmError::ThrowWithStack { value: reason, .. } => reason,
+            other => {
+              async_teardown_continuation(&mut await_scope, cont);
+              return Err(other);
+            }
+          };
+
           let mut call_scope = await_scope.reborrow();
           if let Err(err) = call_scope.push_roots(&[reject, reason]) {
             async_teardown_continuation(&mut call_scope, cont);
             return Err(err);
           }
-          let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, reject, Value::Undefined, &[reason]);
-          async_teardown_continuation(&mut call_scope, cont);
-          return res.map(|_| Value::Undefined);
-        }
-        Err(VmError::ThrowWithStack { value: reason, .. }) => {
-          let mut call_scope = await_scope.reborrow();
-          if let Err(err) = call_scope.push_roots(&[reject, reason]) {
-            async_teardown_continuation(&mut call_scope, cont);
-            return Err(err);
-          }
-          let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, reject, Value::Undefined, &[reason]);
+          let res = vm.call_with_host_and_hooks(
+            host,
+            &mut call_scope,
+            hooks,
+            reject,
+            Value::Undefined,
+            &[reason],
+          );
           async_teardown_continuation(&mut call_scope, cont);
           return res.map(|_| Value::Undefined);
         }
@@ -18411,12 +18425,10 @@ fn async_call_store_arg_value(
     // iterator root in case root stack growth triggers GC.
     iter_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
     if let Err(err) = iter_scope.push_root(iter.next_method) {
-      return Err(async_iterator_close_on_error_force_close(
-        evaluator,
-        &mut iter_scope,
-        &iter,
-        err,
-      ));
+      // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform `IteratorClose` on
+      // abrupt completions. In particular, `next` throwing during spread expansion must *not* call
+      // the iterator's `return` method.
+      return Err(err);
     }
 
     loop {
@@ -18444,44 +18456,24 @@ fn async_call_store_arg_value(
       // Per-spread-element tick: spreading large iterators should be budgeted even when no `await`
       // occurs inside the spread.
       if let Err(err) = evaluator.tick() {
-        return Err(async_iterator_close_on_error_force_close(
-          evaluator,
-          &mut iter_scope,
-          &iter,
-          err,
-        ));
+        return Err(err);
       }
 
       let mut root_scope = iter_scope.reborrow();
       if let Err(err) = root_scope.push_root(v) {
-        return Err(async_iterator_close_on_error_force_close(
-          evaluator,
-          &mut root_scope,
-          &iter,
-          err,
-        ));
+        return Err(err);
       }
 
       // Ensure we can record the persistent root before allocating it so we don't leak roots on
       // `Vec` allocation failure.
       if let Err(err) = arg_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory) {
-        return Err(async_iterator_close_on_error_force_close(
-          evaluator,
-          &mut root_scope,
-          &iter,
-          err,
-        ));
+        return Err(err);
       }
 
       let id = match root_scope.heap_mut().add_root(v) {
         Ok(id) => id,
         Err(err) => {
-          return Err(async_iterator_close_on_error_force_close(
-            evaluator,
-            &mut root_scope,
-            &iter,
-            err,
-          ))
+          return Err(err);
         }
       };
       arg_roots.push(id);
@@ -25711,22 +25703,24 @@ pub(crate) fn run_ecma_function(
 
         let awaited_promise = match resolve_res {
           Ok(p) => p,
-          Err(VmError::Throw(reason)) => {
+          Err(err) if err.is_throw_completion() => {
             // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
             // promise must be rejected (the call must not throw synchronously).
-            let reason = root_scope.push_root(reason)?;
-            let reject_result = evaluator.vm.call_with_host_and_hooks(
-              &mut *evaluator.host,
-              &mut root_scope,
-              &mut *evaluator.hooks,
-              cap.reject,
-              Value::Undefined,
-              &[reason],
-            );
-            evaluator.env.teardown(root_scope.heap_mut());
-            return reject_result.map(|_| promise);
-          }
-          Err(VmError::ThrowWithStack { value: reason, .. }) => {
+            //
+            // `PromiseResolve` can throw due to user code (accessors, Proxy traps, revoked Proxies,
+            // etc), and vm-js represents many of those cases as internal helper errors (e.g.
+            // `VmError::TypeError`). Coerce to a JS throw completion so the rejection reason is a
+            // proper Error object.
+            let err = coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err);
+            let reason = match err {
+              VmError::Throw(reason) => reason,
+              VmError::ThrowWithStack { value: reason, .. } => reason,
+              other => {
+                evaluator.env.teardown(root_scope.heap_mut());
+                return Err(other);
+              }
+            };
+
             let reason = root_scope.push_root(reason)?;
             let reject_result = evaluator.vm.call_with_host_and_hooks(
               &mut *evaluator.host,

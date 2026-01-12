@@ -123,6 +123,9 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
     let call_builtin = get_builtin(&mut scope, &realm, "call")?;
     let apply_builtin = get_builtin(&mut scope, &realm, "apply")?;
     let bind_builtin = get_builtin(&mut scope, &realm, "bind")?;
+    // Root the builtins for the duration of the test: heap growth can trigger GC between calls,
+    // and `Value` handles are not traced unless explicitly rooted.
+    scope.push_roots(&[call_builtin, apply_builtin, bind_builtin])?;
 
     let call_id = vm.register_native_call(native_add)?;
     let add_name = scope.alloc_string("add")?;

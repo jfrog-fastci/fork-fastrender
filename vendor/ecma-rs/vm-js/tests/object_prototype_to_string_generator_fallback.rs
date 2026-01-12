@@ -26,7 +26,7 @@ fn object_prototype_to_string_generator_falls_back_when_to_string_tag_deleted() 
         if (proto2 !== null) {
           delete proto2[Symbol.toStringTag];
         }
-
+ 
         if (proto1[Symbol.toStringTag] !== undefined) return false;
         return Object.prototype.toString.call(it) === "[object Object]";
       })()
@@ -51,7 +51,7 @@ fn object_prototype_to_string_generator_falls_back_when_to_string_tag_non_string
           get: function () { return 1; },
           configurable: true
         });
-
+ 
         if (it[Symbol.toStringTag] !== 1) return false;
         return Object.prototype.toString.call(it) === "[object Object]";
       })()

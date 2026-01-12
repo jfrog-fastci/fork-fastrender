@@ -2423,7 +2423,6 @@ pub fn proxy_constructor_call(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // Per ECMA-262, `Proxy` is not callable without `new`.
   Err(VmError::TypeError("Proxy constructor requires 'new'"))
 }
 
@@ -2441,7 +2440,6 @@ pub fn proxy_constructor_construct(
   let handler = args.get(1).copied().unwrap_or(Value::Undefined);
   proxy_constructor_impl(&mut scope, target, handler)
 }
-
 pub fn proxy_revocable(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2676,6 +2674,13 @@ pub fn array_buffer_prototype_byte_length_get(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("ArrayBuffer.byteLength called on non-object"));
   };
+  if scope
+    .heap()
+    .is_detached_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.byteLength called on incompatible receiver"))?
+  {
+    return Ok(Value::Number(0.0));
+  }
   let len = scope
     .heap()
     .array_buffer_byte_length(obj)
@@ -3263,6 +3268,17 @@ pub fn typed_array_prototype_byte_length_get(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("TypedArray.byteLength called on non-object"));
   };
+  let buffer = scope
+    .heap()
+    .typed_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.byteLength called on incompatible receiver"))?;
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("TypedArray.byteLength called on incompatible receiver"))?
+  {
+    return Ok(Value::Number(0.0));
+  }
   let len = scope
     .heap()
     .typed_array_byte_length(obj)
@@ -3282,6 +3298,17 @@ pub fn typed_array_prototype_length_get(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("TypedArray.length called on non-object"));
   };
+  let buffer = scope
+    .heap()
+    .typed_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.length called on incompatible receiver"))?;
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("TypedArray.length called on incompatible receiver"))?
+  {
+    return Ok(Value::Number(0.0));
+  }
   let len = scope
     .heap()
     .typed_array_length(obj)
@@ -3301,6 +3328,17 @@ pub fn typed_array_prototype_byte_offset_get(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("TypedArray.byteOffset called on non-object"));
   };
+  let buffer = scope
+    .heap()
+    .typed_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.byteOffset called on incompatible receiver"))?;
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("TypedArray.byteOffset called on incompatible receiver"))?
+  {
+    return Ok(Value::Number(0.0));
+  }
   let offset = scope
     .heap()
     .typed_array_byte_offset(obj)
@@ -3409,23 +3447,29 @@ pub fn typed_array_prototype_slice(
     .heap()
     .typed_array_kind(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
+
+  // Spec: `%TypedArray%.prototype.slice` validates the typed array (including detached buffer
+  // checks) before coercing start/end arguments.
+  //
+  // Ensure detached/out-of-bounds views throw *before* `slice_range_from_args`, which can execute
+  // user code via `valueOf`/`toString`.
+  if scope
+    .heap()
+    .typed_array_is_out_of_bounds(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+
   let len = scope
     .heap()
     .typed_array_length(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
 
-  // Spec: `%TypedArray%.prototype.slice` validates the typed array (including detached buffer
-  // checks) before coercing start/end arguments.
-  //
-  // Ensure detached buffers throw *before* `slice_range_from_args`, which can execute user code via
-  // `valueOf`/`toString`.
   let buffer = scope
     .heap()
     .typed_array_buffer(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.slice called on incompatible receiver"))?;
-  if scope.heap().array_buffer_data(buffer).is_err() {
-    return Err(VmError::TypeError("ArrayBuffer is detached"));
-  }
 
   let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
   let bytes_per_element = kind.bytes_per_element();
@@ -11790,44 +11834,51 @@ fn regexp_constructor_impl(
   scope.push_root(pattern)?;
   scope.push_root(flags)?;
 
-  let (source_s, flags_s) = if let Value::Object(obj) = pattern {
+  // NOTE: Root `source_s` immediately after creation. Converting `flags` can allocate/GC, and a
+  // freshly allocated string held only in a Rust local is not traced.
+  let source_s: GcString;
+  let flags_s: GcString;
+
+  if let Value::Object(obj) = pattern {
     if scope.heap().is_regexp_object(obj) {
-      let source = scope.heap().regexp_original_source(obj)?;
+      source_s = scope.heap().regexp_original_source(obj)?;
+      scope.push_root(Value::String(source_s))?;
+
       let orig_flags = scope.heap().regexp_original_flags(obj)?;
-      let flags_s = if matches!(flags, Value::Undefined) {
+      flags_s = if matches!(flags, Value::Undefined) {
         orig_flags
       } else {
         scope.to_string(vm, host, hooks, flags)?
       };
-      (source, flags_s)
     } else {
-      let src = if matches!(pattern, Value::Undefined) {
+      source_s = if matches!(pattern, Value::Undefined) {
         scope.alloc_string("")?
       } else {
         scope.to_string(vm, host, hooks, pattern)?
       };
-      let fl = if matches!(flags, Value::Undefined) {
+      scope.push_root(Value::String(source_s))?;
+
+      flags_s = if matches!(flags, Value::Undefined) {
         scope.alloc_string("")?
       } else {
         scope.to_string(vm, host, hooks, flags)?
       };
-      (src, fl)
     }
   } else {
-    let src = if matches!(pattern, Value::Undefined) {
+    source_s = if matches!(pattern, Value::Undefined) {
       scope.alloc_string("")?
     } else {
       scope.to_string(vm, host, hooks, pattern)?
     };
-    let fl = if matches!(flags, Value::Undefined) {
+    scope.push_root(Value::String(source_s))?;
+
+    flags_s = if matches!(flags, Value::Undefined) {
       scope.alloc_string("")?
     } else {
       scope.to_string(vm, host, hooks, flags)?
     };
-    (src, fl)
-  };
+  }
 
-  scope.push_root(Value::String(source_s))?;
   scope.push_root(Value::String(flags_s))?;
 
   // Parse flags.

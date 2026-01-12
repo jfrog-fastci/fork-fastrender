@@ -415,6 +415,8 @@ fn promise_finally_on_fulfill_runs_callback_and_preserves_value() -> Result<(), 
     else {
       return Err(VmError::Unimplemented("Promise.resolve returned non-object"));
     };
+    // Root `p` across subsequent allocations/calls within this scope.
+    scope.push_root(Value::Object(p))?;
 
     let call_id = ctx.vm.register_native_call(on_finally_increments)?;
     let name = scope.alloc_string("onFinally")?;
@@ -431,6 +433,8 @@ fn promise_finally_on_fulfill_runs_callback_and_preserves_value() -> Result<(), 
     else {
       return Err(VmError::Unimplemented("Promise.prototype.finally returned non-object"));
     };
+    // Root `q` across allocation of the `then` handler below.
+    scope.push_root(Value::Object(q))?;
 
     q
   };
@@ -519,6 +523,16 @@ fn promise_finally_waits_for_returned_promise_before_continuing() -> Result<(), 
 
   let (gate_promise, gate_resolve, q) = {
     let mut scope = ctx.heap.scope();
+    // Root the intrinsic Promise constructor/prototype methods across all allocations in this
+    // scope: these tests exercise Promise job queues under small heap limits, so GC can occur
+    // frequently.
+    scope.push_roots(&[
+      Value::Object(promise_ctor),
+      Value::Object(promise_resolve),
+      Value::Object(with_resolvers),
+      Value::Object(promise_finally),
+      Value::Object(promise_then),
+    ])?;
 
     // p = Promise.resolve(1)
     let Value::Object(p) = ctx.vm.call_with_host(
@@ -531,6 +545,9 @@ fn promise_finally_waits_for_returned_promise_before_continuing() -> Result<(), 
     else {
       return Err(VmError::Unimplemented("Promise.resolve returned non-object"));
     };
+    // Root `p` before any further VM calls/allocations: the returned handle alone does not keep the
+    // promise alive across GC.
+    scope.push_root(Value::Object(p))?;
 
     // gate = Promise.withResolvers()
     let Value::Object(record) = ctx.vm.call_with_host(
@@ -576,6 +593,8 @@ fn promise_finally_waits_for_returned_promise_before_continuing() -> Result<(), 
     else {
       return Err(VmError::Unimplemented("Promise.prototype.finally returned non-object"));
     };
+    // Root `q` across the allocations for the `then` callback below.
+    scope.push_root(Value::Object(q))?;
 
     // Attach a handler to q before running jobs.
     let then_call = ctx.vm.register_native_call(then_records_value)?;

@@ -51,7 +51,7 @@ fn slice_on_detached_buffers_throws_type_error() {
 }
 
 #[test]
-fn heap_byte_access_helpers_throw_type_error_on_detached_and_writes_are_noop() -> Result<(), VmError> {
+fn heap_byte_access_helpers_throw_type_error_on_detached() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut scope = heap.scope();
 

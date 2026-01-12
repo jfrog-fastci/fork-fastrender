@@ -393,67 +393,100 @@ fn basic_fulfillment_then_schedules_microtask_and_fulfills_derived() -> Result<(
   let promise_proto = realm.intrinsics().promise_prototype();
   let promise_then = get_own_data_function(&mut ctx.heap, promise_proto, "then")?;
 
-  let (promise_obj, derived_obj) = {
-    let mut scope = ctx.heap.scope();
+  // Ensure the realm is always torn down even if the test returns early with an error. Otherwise,
+  // the Realm's `Drop` debug-assert will mask the real failure (and can leak persistent roots if the
+  // heap is reused).
+  let result: Result<(), VmError> = (|| {
+    let (promise_obj, derived_obj) = {
+      let mut scope = ctx.heap.scope();
+      scope.push_roots(&[
+        Value::Object(promise_ctor),
+        Value::Object(promise_then),
+      ])?;
 
-    let exec_id = ctx.vm.register_native_call(executor_resolve_one)?;
-    let exec_name = scope.alloc_string("executor")?;
-    let executor = scope.alloc_native_function(exec_id, None, exec_name, 2)?;
+      let exec_id = ctx.vm.register_native_call(executor_resolve_one)?;
+      let exec_name = scope.alloc_string("executor")?;
+      let executor = scope.alloc_native_function(exec_id, None, exec_name, 2)?;
 
-    let Value::Object(promise_obj) = ctx.vm.construct_with_host(
-      &mut scope,
-      &mut host,
-      Value::Object(promise_ctor),
-      &[Value::Object(executor)],
-      Value::Object(promise_ctor),
-    )?
-    else {
-      return Err(VmError::Unimplemented("Promise constructor returned non-object"));
+      let Value::Object(promise_obj) = ctx.vm.construct_with_host(
+        &mut scope,
+        &mut host,
+        Value::Object(promise_ctor),
+        &[Value::Object(executor)],
+        Value::Object(promise_ctor),
+      )?
+      else {
+        return Err(VmError::Unimplemented("Promise constructor returned non-object"));
+      };
+      // Root the created promises across subsequent allocations (e.g. creating the handlers)
+      // because holding a `GcObject` handle in a Rust local does not keep it alive across GC.
+      scope.push_root(Value::Object(promise_obj))?;
+
+      let add_one_id = ctx.vm.register_native_call(add_one)?;
+      let add_one_name = scope.alloc_string("add_one")?;
+      let add_one_fn = scope.alloc_native_function(add_one_id, None, add_one_name, 1)?;
+
+      let Value::Object(derived_obj) = ctx.vm.call_with_host(
+        &mut scope,
+        &mut host,
+        Value::Object(promise_then),
+        Value::Object(promise_obj),
+        &[Value::Object(add_one_fn)],
+      )?
+      else {
+        return Err(VmError::Unimplemented("Promise.prototype.then returned non-object"));
+      };
+      scope.push_root(Value::Object(derived_obj))?;
+
+      // Attach another handler to the derived promise before running jobs (pending-then path).
+      let then2_id = ctx.vm.register_native_call(record_then2_arg)?;
+      let then2_name = scope.alloc_string("then2")?;
+      let then2_fn = scope.alloc_native_function(then2_id, None, then2_name, 1)?;
+      let _ = ctx.vm.call_with_host(
+        &mut scope,
+        &mut host,
+        Value::Object(promise_then),
+        Value::Object(derived_obj),
+        &[Value::Object(then2_fn)],
+      )?;
+
+      (promise_obj, derived_obj)
     };
 
-    let add_one_id = ctx.vm.register_native_call(add_one)?;
-    let add_one_name = scope.alloc_string("add_one")?;
-    let add_one_fn = scope.alloc_native_function(add_one_id, None, add_one_name, 1)?;
+    // Keep promises alive across the job run: jobs and microtask execution can allocate and trigger
+    // GC.
+    let promise_root = ctx.heap.add_root(Value::Object(promise_obj))?;
+    let derived_root = ctx.heap.add_root(Value::Object(derived_obj))?;
 
-    let Value::Object(derived_obj) = ctx.vm.call_with_host(
-      &mut scope,
-      &mut host,
-      Value::Object(promise_then),
-      Value::Object(promise_obj),
-      &[Value::Object(add_one_fn)],
-    )?
-    else {
-      return Err(VmError::Unimplemented("Promise.prototype.then returned non-object"));
-    };
+    let result = (|| {
+      assert_eq!(ctx.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+      assert_eq!(ctx.heap.promise_state(derived_obj)?, PromiseState::Pending);
+      assert_eq!(host.queue.len(), 1, "then() should enqueue exactly one job");
+      assert_eq!(ctx.vm.microtask_queue().len(), 0, "custom host should be used");
 
-    // Attach another handler to the derived promise before running jobs (pending-then path).
-    let then2_id = ctx.vm.register_native_call(record_then2_arg)?;
-    let then2_name = scope.alloc_string("then2")?;
-    let then2_fn = scope.alloc_native_function(then2_id, None, then2_name, 1)?;
-    let _ = ctx.vm.call_with_host(
-      &mut scope,
-      &mut host,
-      Value::Object(promise_then),
-      Value::Object(derived_obj),
-      &[Value::Object(then2_fn)],
-    )?;
+      ctx.run_jobs(&mut host)?;
 
-    (promise_obj, derived_obj)
-  };
+      assert_eq!(ctx.heap.promise_state(derived_obj)?, PromiseState::Fulfilled);
+      assert_eq!(ctx.heap.promise_result(derived_obj)?, Some(Value::Number(2.0)));
+      assert_eq!(THEN2_ARG.with(|c| c.get()), Some(2.0));
 
-  assert_eq!(ctx.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
-  assert_eq!(ctx.heap.promise_state(derived_obj)?, PromiseState::Pending);
-  assert_eq!(host.queue.len(), 1, "then() should enqueue exactly one job");
-  assert_eq!(ctx.vm.microtask_queue().len(), 0, "custom host should be used");
+      Ok(())
+    })();
 
-  ctx.run_jobs(&mut host)?;
+    ctx.heap.remove_root(promise_root);
+    ctx.heap.remove_root(derived_root);
 
-  assert_eq!(ctx.heap.promise_state(derived_obj)?, PromiseState::Fulfilled);
-  assert_eq!(ctx.heap.promise_result(derived_obj)?, Some(Value::Number(2.0)));
-  assert_eq!(THEN2_ARG.with(|c| c.get()), Some(2.0));
+    result
+  })();
+
+  // If the test failed part-way through, there may be queued jobs that still own persistent roots.
+  // Discard them explicitly so `Job`'s `Drop` assertion doesn't mask the real error.
+  while let Some(job) = host.queue.pop_front() {
+    job.discard(&mut ctx);
+  }
 
   realm.teardown(&mut ctx.heap);
-  Ok(())
+  result
 }
 
 #[test]
@@ -615,6 +648,9 @@ fn fulfill_reactions_run_in_registration_order() -> Result<(), VmError> {
 
   let promise_obj = {
     let mut scope = ctx.heap.scope();
+    // Root `then` across the allocations/calls below. Even though this is an intrinsic, the handle
+    // itself is not traced unless rooted and can become stale under aggressive GC.
+    scope.push_root(Value::Object(promise_then))?;
 
     let exec_id = ctx.vm.register_native_call(executor_store_resolve)?;
     let exec_name = scope.alloc_string("executor")?;
@@ -630,14 +666,21 @@ fn fulfill_reactions_run_in_registration_order() -> Result<(), VmError> {
     else {
       return Err(VmError::Unimplemented("Promise constructor returned non-object"));
     };
+    // Root the promise before allocating handlers/calling `.then`: the returned handle alone does
+    // not keep it alive across GC.
+    scope.push_root(Value::Object(promise_obj))?;
 
     let log1_id = ctx.vm.register_native_call(log_1)?;
     let log1_name = scope.alloc_string("log1")?;
     let log1_fn = scope.alloc_native_function(log1_id, None, log1_name, 1)?;
+    scope.push_root(Value::Object(log1_fn))?;
 
     let log2_id = ctx.vm.register_native_call(log_2)?;
     let log2_name = scope.alloc_string("log2")?;
     let log2_fn = scope.alloc_native_function(log2_id, None, log2_name, 1)?;
+    // Root `log2_fn` *before* the first `.then` call: that call can allocate/GC, and this handler
+    // must survive for the second registration.
+    scope.push_root(Value::Object(log2_fn))?;
 
     // Attach two fulfill handlers in order.
     let _ = ctx.vm.call_with_host(

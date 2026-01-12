@@ -7774,6 +7774,12 @@ fn grown_capacity(current_capacity: usize, required_len: usize) -> usize {
   if required_len <= current_capacity {
     return current_capacity;
   }
+  // Heap metadata vectors (slot table, root stacks, etc) can contain very large elements (e.g. the
+  // slot table stores `HeapObject` inline), so "double on grow" can dramatically over-allocate and
+  // cause premature `OutOfMemory` under small heap limits.
+  //
+  // Use a more conservative growth strategy: grow by ~1.5x (plus a minimum of 1 element), which
+  // keeps amortized O(1) push behaviour while avoiding huge capacity cliffs.
   let mut cap = current_capacity.max(MIN_VEC_CAPACITY);
   while cap < required_len {
     let grow = (cap / 2).max(1);
